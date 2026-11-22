@@ -460,6 +460,8 @@ test("no two of the selection bar, the broadcast composer, Pending changes and t
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
+    const scrollToEnd = () =>
+      page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
     await page.route(`**/api/v1/issues/${refused.key}`, async (route) => {
       if (route.request().method() === "PATCH")
         await route.fulfill({ status: 403, json: { error: "Move refused" } });
@@ -560,20 +562,22 @@ test("no two of the selection bar, the broadcast composer, Pending changes and t
           .poll(
             async () => {
               const problems: string[] = [];
+              /** The box `box` has on the page, or null where it has none, which is then a
+               *  problem of `name`'s. */
+              const boxOf = async ({ box, name }: Pick<FootElement, "box" | "name">) => {
+                const found = await box.boundingBox({ timeout: 1_000 }).catch(() => null);
+                if (found === null) problems.push(`${name} has no box at ${at}`);
+                return found;
+              };
               // The padding that lets the last content scroll clear of the floats can grow a
               // frame or more after a scroll to the end, as the floats move under the content the
               // scroll brings, which leaves the page short of its new end. So each reading is
               // made at the end as it then stands.
-              if (end !== undefined) {
-                await page.evaluate(() =>
-                  window.scrollTo(0, document.documentElement.scrollHeight)
-                );
-              }
+              if (end !== undefined) await scrollToEnd();
               const boxes: { name: string; box: Box; float?: true }[] = [];
               for (const { box, float, name } of shown) {
-                const found = await box.boundingBox({ timeout: 1_000 }).catch(() => null);
-                if (found === null) problems.push(`${name} has no box at ${at}`);
-                else boxes.push({ box: found, float, name });
+                const found = await boxOf({ box, name });
+                if (found !== null) boxes.push({ box: found, float, name });
               }
               for (const [index, first] of boxes.entries()) {
                 for (const second of boxes.slice(index + 1)) {
@@ -583,13 +587,11 @@ test("no two of the selection bar, the broadcast composer, Pending changes and t
                 }
               }
               if (end !== undefined) {
-                const { box, name } = end.last;
-                const found = await box.boundingBox({ timeout: 1_000 }).catch(() => null);
-                if (found === null) problems.push(`${name} has no box at ${at}`);
-                else {
-                  for (const float of boxes) {
-                    if (float.float === true && !boxesApart(found, float.box)) {
-                      problems.push(`${name} meets ${float.name} at ${at}`);
+                const found = await boxOf(end.last);
+                if (found !== null) {
+                  for (const other of boxes) {
+                    if (other.float === true && !boxesApart(found, other.box)) {
+                      problems.push(`${end.last.name} meets ${other.name} at ${at}`);
                     }
                   }
                 }
@@ -713,7 +715,7 @@ test("no two of the selection bar, the broadcast composer, Pending changes and t
     // 640x480 the section once stayed out of view. So the scroll is made until the section shows.
     const toEnd = async () => {
       await expect(async () => {
-        await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+        await scrollToEnd();
         await expect(ended).toBeInViewport({ timeout: 1_000 });
       }).toPass({ timeout: 15_000 });
     };

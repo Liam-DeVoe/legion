@@ -665,9 +665,9 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
 
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);
-  // Where the document scrolls the page, `<main>` is a scroller of the foot
-  // (`hooks/useFootInset.ts` says what that is): its bottom padding lets its last content scroll
-  // clear of the foot's floats.
+  // Where the document scrolls the page, outside the new issue page's frame, `<main>` is a
+  // scroller of the foot (`hooks/useFootInset.ts` says what that is): its bottom padding lets its
+  // last content scroll clear of the foot's floats.
   useFootClearance(mainRef, !issueFrame && !fillsViewport);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   // The status corner is the one float of the foot's status layer (`hooks/useFootInset.ts` lists

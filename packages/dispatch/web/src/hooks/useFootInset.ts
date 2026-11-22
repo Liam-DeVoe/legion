@@ -90,7 +90,7 @@ import { type RefObject, useLayoutEffect } from "react";
  * where they were, and the view would take them back to the end.
  *
  * - `main` (`app.tsx`), whose content the document scrolls, on a page that does not fill the
- *   screen.
+ *   screen, outside the new issue page's frame.
  * - The margin's box (`MarginSheet`): the column from `xl` up, and Details' drawer. Not the sheet
  *   below `xl`.
  * - The agent live view's transcript (`AgentThread`), in the view in front.
@@ -145,6 +145,11 @@ function floatsOf(layer: FootLayer): Map<Element, Float> {
 /** What 1rem is, in pixels: the root font size. */
 function remPixels(): number {
   return Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
+}
+
+/** A lower edge `bottom`, clipped to the screen, as an offset up from the screen's bottom edge. */
+function footOffset(bottom: number, screen: number): number {
+  return screen - Math.min(bottom, screen);
 }
 
 /** A float's floor in pixels, from its `--foot-floor` in `px` or `rem`. An empty or other value
@@ -342,7 +347,7 @@ export function useFootInset(
       if (placed && box.top < screen && box.bottom > 0) {
         pageBands.set(element, {
           hi: screen - Math.max(box.top, 0),
-          lo: screen - Math.min(box.bottom, screen),
+          lo: footOffset(box.bottom, screen),
         });
       } else {
         pageBands.delete(element);
@@ -373,15 +378,22 @@ export function useFootInset(
 
 /**
  * While `active`, makes `ref`'s element a scroller of the foot (`FOOT_LAYERS` says what that
- * means and lists the scrollers), and publishes every layer's property again each time it
- * measures the element. Each `publish` writes the element's clearance to its own
+ * means and lists the scrollers), and publishes every layer's property again each time a measure
+ * finds the element's foot moved: always at the first, since the hook forgets the foot once the
+ * element is no longer a scroller. A measure that finds the same foot publishes nothing: `publish`
+ * measures nothing, and every other change to what it reads - a page band, a float, and the
+ * window's height, through each page element's and each float's own measure on a resize -
+ * publishes by itself. Each `publish` writes the element's clearance to its own
  * `--foot-clearance`, and the hook removes that property once the element is no longer one.
  *
  * The element is measured whenever its own box changes size or the window resizes, since its foot
  * moves with its box, and the hook holds its foot. Whether it scrolls itself is read again at each
  * measure, since a window resize can cross a breakpoint that changes that. The hook observes its
- * box rather than its content box: the padding its clearance gives it changes its content box,
- * and never moves its foot.
+ * border box rather than its content box. A scroller of set height - the margin's column,
+ * Details' drawer, the live view's transcript - takes the padding its clearance gives it in its
+ * content box alone, so the padding never moves its foot. `main` is as tall as its content, so the
+ * padding grows its border box too, and the measure that follows finds the same foot, 0 (the
+ * screen's bottom edge), and publishes nothing.
  */
 export function useFootClearance(ref: RefObject<HTMLElement | null>, active: boolean): void {
   useLayoutEffect(() => {
@@ -389,13 +401,12 @@ export function useFootClearance(ref: RefObject<HTMLElement | null>, active: boo
     if (!active || element === null) return;
     const measure = () => {
       const { overflowY } = getComputedStyle(element);
-      const screen = window.innerHeight;
-      scrollerFeet.set(
-        element,
+      const foot =
         overflowY === "auto" || overflowY === "scroll"
-          ? screen - Math.min(element.getBoundingClientRect().bottom, screen)
-          : 0
-      );
+          ? footOffset(element.getBoundingClientRect().bottom, window.innerHeight)
+          : 0;
+      if (scrollerFeet.get(element) === foot) return;
+      scrollerFeet.set(element, foot);
       publish();
     };
     const sizes = new ResizeObserver(() => measure());
