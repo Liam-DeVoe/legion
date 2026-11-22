@@ -1582,15 +1582,16 @@ func (m *sessionRelays) onReply(msg *nats.Msg) {
 // lost to it. It writes a fresh id, never the frame's own mark, since noteRepositoryGap mints a new
 // id for every mark, so the relay loop's clear of that mark as sent (repositoryGapSent) can never
 // take the re-mark's. The worst case is then one redundant notice at a later run, never a lost one.
-// While its write is in flight the mark this process noted stands, which noteRepositoryGap wrote on
-// the entry before it noted it, so the relay loop's owedRepositoryGap reads the mark the entry holds
-// rather than this listener's copy of the entry, which can trail that write. It runs off onReply's
-// callback, in its own goroutine, within sendRequestBudget, since the write is a KV read and write
-// that must not stall the other sessions' receipts that one callback carries. A write that fails
-// notes a fresh id in this process alone (the loop may have cleared the frame's own mark as sent,
-// and noteRepositoryGap notes nothing when its write fails), so this listener's next relay run still
-// sends it (owedRepositoryGap); a move to another listener before that run loses it, since the entry
-// carries no mark.
+// While its write is in flight the mark this process noted, if any, stands, and the relay loop's
+// owedRepositoryGap reads it rather than this listener's copy of the entry, which can trail the
+// write: a mark noteRepositoryGap noted is on the entry too, since it writes the entry before it
+// notes the mark, while one a failed re-mark noted (below) is in this process alone. It runs off
+// onReply's callback, in its own goroutine, within sendRequestBudget, since the write is a KV read
+// and write that must not stall the other sessions' receipts that one callback carries. A write
+// that fails notes a fresh id in this process alone (the loop may have cleared the frame's own mark
+// as sent, and noteRepositoryGap notes nothing when its write fails), so this listener's next relay
+// run still sends it (owedRepositoryGap); a move to another listener before that run loses it,
+// since the entry carries no mark.
 func (m *sessionRelays) reMarkWithheldGap(sessionID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), sendRequestBudget)
 	defer cancel()
