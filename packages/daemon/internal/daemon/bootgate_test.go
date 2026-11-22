@@ -650,16 +650,21 @@ func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutpu
 // A probe that exits on its own inside its budget was not cut off by it, however long
 // procgroup.WaitDelay then holds the run open for a child the probe left holding its output pipe.
 // The budget here is 100 ms short of WaitDelay, so every such run returns past its deadline, while
-// the probe still has 900 ms to exit under load: a run that read "timed out" from the deadline
-// having passed would call this answer a budget kill, and a load probe whose Oh My Pi answered yes
-// inside the last WaitDelay of slow_command_timeout_seconds would be retried, and refused once its
-// retries ran out.
+// the probe still has 900 ms to exit: a run that read "timed out" from the deadline having passed
+// would call this answer a budget kill, and a load probe whose Oh My Pi answered yes inside the
+// last WaitDelay of slow_command_timeout_seconds would be retried, and refused once its retries
+// ran out. The budget is counted from the shell's own start, its first act (budgetFromItsStart): a
+// loaded machine took longer than 900 ms to start the shell, and a budget counted from before that
+// cut off a probe that never had the time to exit.
 func TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt(t *testing.T) {
-	pidFile := filepath.Join(t.TempDir(), "lingering.pid")
+	dir := t.TempDir()
+	pidFile, started := filepath.Join(dir, "lingering.pid"), filepath.Join(dir, "started")
 	t.Cleanup(func() { killPIDFile(t, pidFile) })
 	gate := pluginGate{env: map[string]string{"PATH": os.Getenv("PATH")}, workDir: t.TempDir(), timeout: procgroup.WaitDelay - 100*time.Millisecond}
+	var attempt context.Context
+	gate.expire = budgetFromItsStart(started, gate.timeout, &attempt)
 
-	r, err := gate.run(context.Background(), `echo answered >&2; sleep 30 & echo $! >"$1"; exit 0`, pidFile)
+	r, err := gate.run(context.Background(), `: >"$2"; echo answered >&2; sleep 30 & echo $! >"$1"; exit 0`, pidFile, started)
 
 	if err != nil {
 		t.Fatalf("run = %v, want the probe's own exit", err)
@@ -667,9 +672,47 @@ func TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt(t
 	if r.elapsed < gate.timeout {
 		t.Fatalf("the run returned after %s, inside its %s budget: nothing held the pipe past the deadline, so this run proves nothing", r.elapsed, gate.timeout)
 	}
+	if cause := context.Cause(attempt); !errors.Is(cause, context.DeadlineExceeded) {
+		t.Fatalf("the attempt ended with %v, not its budget: the run returned before its %s budget, counted from the shell's start, had passed, so this run proves nothing", cause, gate.timeout)
+	}
 	if r.timedOut || r.exit != 0 || !strings.Contains(r.stderr, "answered") {
 		t.Errorf("run = exit %d, timed out %t, stderr %q after %s; want exit 0, not timed out, and the answer: the probe exited on its own inside its %s budget",
 			r.exit, r.timedOut, r.stderr, r.elapsed, gate.timeout)
+	}
+}
+
+// budgetFromItsStart is an expire (pluginGate.expire) whose attempt ends budget after the probe's
+// shell created started, its first act, with the cause context.DeadlineExceeded, as a deadline
+// ends one, and *attempt the attempt's context, for the test to read once the run has returned.
+// The budget is counted from the file's own modification time, the moment the shell created it,
+// and not from when the wait below saw it, so a wait that a loaded machine slows starts no budget
+// late. An attempt whose shell has not created the file within fakeBudget ends then.
+func budgetFromItsStart(started string, budget time.Duration, attempt *context.Context) func(context.Context) (context.Context, context.CancelFunc) {
+	return func(ctx context.Context) (context.Context, context.CancelFunc) {
+		run, cancel := context.WithCancelCause(ctx)
+		*attempt = run
+		go func() {
+			var at time.Time
+			testwait.Holds(fakeBudget, testwait.Poll, func() bool {
+				info, err := os.Stat(started)
+				if err == nil {
+					at = info.ModTime()
+				}
+				return run.Err() != nil || err == nil
+			})
+			if at.IsZero() {
+				cancel(context.DeadlineExceeded)
+				return
+			}
+			budgeted := time.NewTimer(time.Until(at.Add(budget)))
+			defer budgeted.Stop()
+			select {
+			case <-budgeted.C:
+				cancel(context.DeadlineExceeded)
+			case <-run.Done():
+			}
+		}()
+		return run, func() { cancel(context.Canceled) }
 	}
 }
 
