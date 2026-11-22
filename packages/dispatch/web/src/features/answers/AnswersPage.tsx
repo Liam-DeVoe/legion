@@ -7,7 +7,7 @@ import { nextOffsetPage } from "../../api/queries";
 import type { MyAnswerRow } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
-import { LabelPill } from "../../components/Pill";
+import { LabelPill, Pill } from "../../components/Pill";
 import { ShowMore } from "../../components/ShowMore";
 import {
   borderDefault,
@@ -85,11 +85,16 @@ function AnswerRow({
       {row.kind === "answer" && row.answer !== undefined ? (
         <div className={`mt-2 text-sm ${textPrimaryOnCanvas}`}>
           {(row.answer.selected ?? []).length === 0 ? null : (
-            <div className="flex flex-wrap gap-1.5">
+            // One chip per option picked. An option's label can be a whole sentence, so a chip is
+            // never wider than the row: its words wrap inside it, an unbroken run breaking
+            // anywhere, where a label pill keeps its words on one line.
+            <div className="flex flex-wrap gap-1.5" data-answer-options="">
               {(row.answer.selected ?? []).map((label) => (
-                <LabelPill key={label} selected>
-                  {label}
-                </LabelPill>
+                <Pill className="max-w-full" key={label} tone="selected-label">
+                  <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">
+                    {label}
+                  </span>
+                </Pill>
               ))}
             </div>
           )}

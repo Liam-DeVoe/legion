@@ -34,8 +34,10 @@ export const RowDismissContext = createContext<RowDismiss | undefined>(undefined
  * Inbox by being answered or snoozed.
  *
  * On the short row it shows while the pointer is on the row or something in it holds the focus,
- * and always on the row the reading column is showing (`shown`); the column's own head and the
- * card draw it beside their other controls, where there is room for it.
+ * always on the row the reading column is showing (`shown`), and always on a screen no pointer
+ * hovers over - a phone's - where it would otherwise be a control the reader taps without
+ * seeing; the column's own head and the card draw it beside their other controls, where there
+ * is room for it.
  */
 export function DismissControl({
   shown = false,
@@ -57,7 +59,9 @@ export function DismissControl({
     <button
       aria-label={`${label}: ${line}`}
       className={`min-h-11 shrink-0 text-sm font-medium md:min-h-8 ${linkText} ${linkHoverText} ${
-        shown ? "" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+        shown
+          ? ""
+          : "opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
       }`}
       data-inbox-dismiss={named.id}
       disabled={live}

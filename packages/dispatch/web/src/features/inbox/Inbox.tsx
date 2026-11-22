@@ -18,6 +18,7 @@ import type { InboxRow, MyReplyRow } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
+import { TruncatedText } from "../../components/TruncatedText";
 import { capSearchQuery } from "../../lib/query-param";
 import {
   borderDefault,
@@ -101,16 +102,23 @@ import { useInboxThreadRows } from "./useInboxThreadRows";
 
 /** When an agent replied last on a row that still needs the viewer, that reply is surfaced so
  *  the viewer knows to look before answering. Whose turn it is ("Waiting on you" / "Waiting on
- *  <agent>") is the card's own status line. */
+ *  <agent>") is the card's own status line. The chip is a label pill's colours in a shape that
+ *  may be narrower than its words: it takes at most two fifths of the card head's first line,
+ *  so the issue's key and title keep the rest, and a long agent name ends in an ellipsis
+ *  inside it, the whole of it in the title. */
 function InboxRowChip({ ask }: { ask: InboxRow }): ReactNode {
+  const agentText = useAgentText();
   if (ask.waiting_on === "human" && ask.last_reply?.author.kind === "session") {
-    // One span, so the pill's flex box keeps the space between the name and "replied".
     return (
-      <LabelPill>
-        <span>
+      <span
+        className={`inline-flex min-w-0 max-w-[40%] shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium ${surfaceMutedBg} ${textMutedOnSurfaceMuted}`}
+        data-inbox-reply-chip=""
+      >
+        {/* One span, so the ellipsis has one line of text to end: the name and "replied". */}
+        <TruncatedText title={`${agentText.label(ask.last_reply.author)} replied`}>
           <AgentName actor={ask.last_reply.author} inline /> replied
-        </span>
-      </LabelPill>
+        </TruncatedText>
+      </span>
     );
   }
   return null;
@@ -121,6 +129,10 @@ const BULK_PICKER_SELECTOR = "[data-inbox-bulk-snooze]";
 
 /** The reading column's own scroller: `l` hands it focus and Escape takes it back to the list. */
 const PANE_SCROLLER_SELECTOR = '[data-testid="inbox-pane-scroller"]';
+
+/** The reading view's own Inbox control below 1280 px: it takes the focus as the view opens
+ *  while the view's body has drawn no scroller yet. */
+const READING_BACK_SELECTOR = "[data-inbox-back]";
 
 /** The "Add a note or answer in your own words" disclosure an `AskCard` folds its answer box
  *  behind in its compact variant - the card a decision block hosts, which is what the reading
@@ -254,21 +266,32 @@ function InboxRowShell({
   );
 }
 
-/** What a short row adds to every row layout's props: beside the reading column the row is
- *  selectable, and the one the column shows is drawn as selected. */
+/** What a short row adds to every row layout's props: on the Inbox page the row is selectable,
+ *  and the one the reading column shows is drawn as selected. */
 interface ShortRowProps {
+  /** The reader's pick of this row: beside the reading column it selects the row, and below
+   *  that width it opens the row's reading view in place of the list. */
   onSelect: (id: string) => void;
   /** Whether this is the row the reading column is showing. */
   selected: boolean;
 }
 
 /**
- * The frame both short rows draw in, two lines deep: the kind's icon at the left edge, then
- * what the row is about and when it was last written in; under them the priority tag, an ask's
- * urgency, and what the row says about its owner. Every mark is `shrink-0`, so the title is
- * what shortens and neither the marks nor the key are ever cut.
+ * The frame both short rows draw in, two lines deep, in four named groups in this order:
+ *
+ * - Line one, **What**: the mark checkbox, the kind's icon, what the row is about, and **When**,
+ *   the time it was last written in. The title is the one element that shortens.
+ * - Line two, **Context**: the priority tag, an ask's urgency, and the row's owner, which
+ *   truncates; then **Actions**, the row's own controls (a thread's Copy reference and
+ *   Dismiss), at the right edge.
+ *
+ * Every mark and every control is `shrink-0`, so the title and the owner are what shorten and
+ * neither the marks, the key nor a control is ever cut. A line too narrow for Context at its
+ * smallest and the Actions beside it gives way a whole group at a time: the Actions move to a
+ * line of their own.
  */
 function ShortRowFrame({
+  actions,
   age,
   check,
   group: groupKey,
@@ -280,13 +303,15 @@ function ShortRowFrame({
   selected,
   title,
 }: ShortRowProps & {
+  /** The row's own controls, drawn at the right of line two; undefined for a row with none. */
+  actions?: ReactNode;
   /** When the row was last written in, as its own kind reads a time. */
   age: ReactNode;
   /** The mark checkbox, or the space a row that takes no mark leaves where it would be. */
   check: ReactNode;
   group: string;
   onRelease: (() => void) | undefined;
-  /** The second line below the marks: the row's owner, and whatever it carries beside it. */
+  /** The row's owner, the end of line two's Context group. */
   owner: ReactNode;
   row: InboxListRow;
   section: InboxSection;
@@ -313,18 +338,28 @@ function ShortRowFrame({
             {age}
           </time>
         </div>
-        <div className="flex min-w-0 items-baseline gap-2 pl-6">
-          <RowPriorityTag priority={rowPriority(row)} />
-          <RowUrgencyMark urgency={rowUrgency(row)} />
-          {owner}
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 pl-6">
+          <div
+            className="flex min-w-0 flex-1 basis-40 items-baseline gap-2"
+            data-inbox-row-context=""
+          >
+            <RowPriorityTag priority={rowPriority(row)} />
+            <RowUrgencyMark urgency={rowUrgency(row)} />
+            {owner}
+          </div>
+          {actions === undefined ? null : (
+            <div className="ml-auto flex shrink-0 items-center gap-2" data-inbox-row-actions="">
+              {actions}
+            </div>
+          )}
         </div>
       </div>
     </InboxRowShell>
   );
 }
 
-/** An open question beside the reading column: its first line, how long it has waited, and the
- *  issue or document it belongs to. */
+/** An open question on the Inbox page: its first line, how long it has waited, and the issue or
+ *  document it belongs to. */
 function AskShortRow({
   ask,
   group: groupKey,
@@ -360,9 +395,10 @@ function AskShortRow({
   );
 }
 
-/** A Reply or an Agent row beside the reading column: the thread's subject as a link to the
- *  thread itself, when it was last written in, whose it is, and the **Dismiss** that takes it out
- *  of the list - drawn while the reader's hand is on the row, and always on the selected one. */
+/** A Reply or an Agent row on the Inbox page: the thread's subject as a link to the
+ *  thread itself, when it was last written in, whose it is, and - in the Actions group - its
+ *  Copy reference and the **Dismiss** that takes it out of the list, drawn while the reader's
+ *  hand is on the row, always on the selected one, and always where no pointer hovers. */
 function ThreadShortRow({
   group: groupKey,
   marked,
@@ -378,17 +414,19 @@ function ThreadShortRow({
   const line = useThreadLine(thread);
   return (
     <ShortRowFrame
+      actions={
+        <>
+          {reference === undefined ? null : <CopyRefButton route={reference} />}
+          <DismissControl shown={selected} thread={thread} />
+        </>
+      }
       age={<Timestamp at={rowLastActivityAt(row)} />}
       check={<MarkCheckbox id={rowId(row)} marked={marked} name={line} onMark={onMark} />}
       group={groupKey}
       onRelease={onRelease}
       onSelect={onSelect}
       owner={
-        <>
-          <ThreadOwnerLine className={`truncate text-sm ${textMutedOnCanvas}`} thread={thread} />
-          {reference === undefined ? null : <CopyRefButton route={reference} />}
-          <DismissControl shown={selected} thread={thread} />
-        </>
+        <ThreadOwnerLine className={`truncate text-sm ${textMutedOnCanvas}`} thread={thread} />
       }
       row={row}
       section={section}
@@ -400,8 +438,16 @@ function ThreadShortRow({
   );
 }
 
-/** The row without a reading column beside it: the question's whole card, under the controls
- *  that defer or reroute it. */
+/**
+ * The drawer's row: the question's whole card, under a head of two lines, each a named group:
+ *
+ * - Line one, **Identity**: the mark checkbox, the kind's icon, the issue or document the
+ *   question belongs to (its key whole, its title cut with an ellipsis), and the reply chip,
+ *   which takes at most two fifths of the line and cuts its own words.
+ * - Line two, **Actions**: the urgency, the priority control, "Assign to me" and Snooze, the
+ *   controls that defer or reroute the question. Too narrow a line wraps them as whole
+ *   controls, and a refusal from Snooze or Assign to me is a full-width line inside the group.
+ */
 function InboxCardRow({
   ask,
   assignLive,
@@ -442,24 +488,20 @@ function InboxCardRow({
       section={section}
       selected={false}
     >
-      {/* One line: the issue this question belongs to on the left, the controls that defer or
-          reroute it on the right. It wraps rather than overlapping - a refusal from Snooze or
-          Assign to me is a full-width row inside the right group, so it never draws over the
-          issue key. */}
-      <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
-        <MarkCheckbox id={ask.id} marked={marked} name={name} onMark={onMark} />
-        <RowKindIcon type={rowType(row)} />
-        <div className="flex min-w-0 grow basis-48 items-baseline gap-2">
+      <div className="mb-1.5 flex flex-col gap-1">
+        <div className="flex min-w-0 items-center gap-2" data-inbox-card-identity="">
+          <MarkCheckbox id={ask.id} marked={marked} name={name} onMark={onMark} />
+          <RowKindIcon type={rowType(row)} />
           <InboxOwnerLink ask={ask} rowOwner />
-          {/* The reply chip truncates rather than squeezing the title away. */}
-          <span className="min-w-0 max-w-[40%] shrink truncate">
-            <InboxRowChip ask={ask} />
-          </span>
+          <InboxRowChip ask={ask} />
         </div>
-        {/* `max-w-full` bounds the group to the row: `shrink-0` alone lets a server's own
-            refusal reason - `snoozed_until must be in the future`, or anything longer - set
-            the group's width and widen the whole document past the viewport on a phone. */}
-        <div className="flex max-w-full shrink-0 flex-wrap items-center gap-1">
+        {/* `max-w-full` bounds the group to the row: a server's own refusal reason -
+            `snoozed_until must be in the future`, or anything longer - would otherwise set the
+            group's width and widen the whole document past the viewport on a phone. */}
+        <div
+          className="flex min-w-0 max-w-full flex-wrap items-center gap-1 pl-6"
+          data-inbox-card-actions=""
+        >
           <RowUrgencyMark urgency={askUrgency(ask.urgency)} />
           {ask.issue_key === null ? null : (
             <PriorityControl issueKey={ask.issue_key} priority={issuePriority(ask.priority)} />
@@ -613,8 +655,8 @@ function emptyStateMessage({
  * Escape/j/k/etc. must resolve under the drawer's own `dialog` scope - the modal scope a dialog
  * anywhere on the stack exclusively consults - rather than the standalone page's `inbox` scope,
  * which a dialog's keydown handling never reaches. `pane` is the third: the drawer is a peek at
- * any width, never a two-column reader. `InboxPage`'s unmodified `<Inbox/>` call keeps today's
- * URL-backed behaviour untouched.
+ * any width, a list of cards that selects nothing. `InboxPage`'s unmodified `<Inbox/>` call keeps
+ * today's URL-backed behaviour untouched.
  */
 export interface InboxProps {
   filter?: InboxRoute;
@@ -623,15 +665,17 @@ export interface InboxProps {
    *  grouping, the view, the text typed in the search box - is reported here instead of being
    *  written to the address. */
   onFilterChange?: (next: InboxRoute) => void;
-  /** Whether this Inbox may show its reading column beside the list, which it does from
-   *  `READING_PANE_QUERY` (1280 px). False keeps the card in the row, no selection and nothing
-   *  written to `?item=`, at every width, which is what the drawer is. */
+  /** Whether this Inbox reads one row at a time, which the page does at every width: its rows
+   *  are short rows, and the row the reader picks is read in the reading column beside the list
+   *  from `READING_PANE_QUERY` (1280 px), and below that width in a reading view that takes the
+   *  list's place until the reader goes back. False keeps the card in the row, no selection and
+   *  nothing written to `?item=`, at every width, which is what the drawer is. */
   pane?: boolean;
   /** The box the host scrolls these rows in, where that is neither the window nor the list's
    *  own column: the drawer scrolls them in its `aside`, so the viewport anchor must read and
    *  move that element's `scrollTop` - `window.scrollBy` moves nothing there, and the row the
    *  reader's hand is on jumps by the height of a row removed above it. Ignored while the
-   *  reading pane shows, where the list column is the box that scrolls. */
+   *  reading column shows, where the list column is the box that scrolls. */
   scroller?: RefObject<HTMLElement | null>;
 }
 
@@ -645,10 +689,11 @@ export function Inbox({
   const { search } = useLocation();
   const navigate = useNavigate();
   const filter = filterOverride ?? parseInboxSearch(search);
-  // The reading column shows from 1280 px, and only where the host allows one: below that, and
-  // in the drawer, the Inbox is the list of cards it has always been.
+  // The reading column stands beside the list from 1280 px, on the page alone (`columns`).
+  // Below that width the page draws the same short rows, and a row the reader opens is read in
+  // place of the list; the drawer is the list of cards at every width.
   const wideEnoughForPane = useMediaQuery(READING_PANE_QUERY);
-  const paneShown = pane && wideEnoughForPane;
+  const columns = pane && wideEnoughForPane;
   // One inbox query, shared with the nav badge, the sidebar, the agents page and the margin; the
   // list below is a client-side partition of it, so an answered row leaves every surface at once.
   const inbox = useQuery(inboxQuery());
@@ -925,13 +970,30 @@ export function Inbox({
   const paneSelection = usePaneSelection({
     bulkSnoozing,
     candidates,
+    columns,
     filter,
     listRef,
     openFoldedBand: useCallback(() => openFoldedBand(LATER_GROUP_KEY), [openFoldedBand]),
-    paneShown,
+    pane,
     presented,
     snoozing,
   });
+  /** Whether the keys act on the row the reading column or view is showing rather than on the
+   *  focused row: always beside the list from 1280 px, and below that width while a row's
+   *  reading view stands in the list's place. */
+  const paneShown = columns || (pane && paneSelection.id !== undefined);
+  /** Below 1280 px on the page: whether a row's reading view stands in the list's place. The
+   *  list is the level out of it, so Escape and the view's own Inbox control go back there. */
+  const reading = paneShown && !columns;
+  /** Whether the reading view the reader's last pick opened below 1280 px still has to take
+   *  the focus: the row they picked is hidden with the list, so the commit that draws the view
+   *  hands the focus into it (the layout effect below). */
+  const focusReadingView = useRef(false);
+  /** The reader's own pick of a row - its click, or Enter on it below 1280 px. */
+  const openRow = (id: string) => {
+    if (!columns) focusReadingView.current = true;
+    paneSelection.open(id);
+  };
   // The refetch a recorded answer triggers returns the list the optimistic removal already
   // produced, so it re-renders nothing on its own; release explicitly. The reader's own answer
   // is one of the ways the selection is handed on, and only while it is still the selected
@@ -1083,17 +1145,20 @@ export function Inbox({
    *  second spelling of the way back for the two of them to disagree over. */
   const paneWayBack = (): HTMLElement | null =>
     originRow(paneReturn.current) ?? paneSelection.selectedRow();
-  /** One step of the reader's, in whichever mode the Inbox is in: the selection the column
-   *  follows, or the focus roving the rows. Chosen once, so no binding below asks again. */
+  /** One step of the reader's, in whichever mode the Inbox is in: the selection the column or
+   *  the reading view follows, or the focus roving the rows. Chosen once, so no binding below
+   *  asks again. */
   const stepInMode = paneShown ? paneSelection.step : step;
   /** That step, taken from wherever the reader is standing. From inside the column the focus
    *  comes back to the selected row first: `j` fires in there, a `tabindex=0` section being no
    *  editable target, and a step from an approval to a question the column draws as a card
    *  swaps `ApprovalBody` for `CardBody`, which unmounts the focused scroller and drops the
    *  focus to `document.body` - where neither of Escape's branches holds and the key would do
-   *  nothing. The reader then stands exactly where a click and then `j` leaves them today. */
+   *  nothing. The reader then stands exactly where a click and then `j` leaves them today. A
+   *  reading view below 1280 px has no row in sight to come back to, and Escape there leaves
+   *  the view from anywhere, so the step alone is taken. */
   const move = (delta: 1 | -1) => {
-    if (paneShown && focusInPane()) {
+    if (columns && focusInPane()) {
       paneSelection.selectedRow()?.focus();
     }
     stepInMode(delta);
@@ -1191,8 +1256,15 @@ export function Inbox({
     {
       id: "answer",
       keys: "Enter",
-      label: `Answer the ${acted} ask`,
+      // Below 1280 px with no row open, the focused row holds no answer box: Enter opens its
+      // reading view, the keyboard's way to the pick a click makes, and the box is there.
+      label: pane && !paneShown ? "Open the focused row" : `Answer the ${acted} ask`,
       run: () => {
+        if (pane && !paneShown) {
+          const id = focusedRow()?.dataset.inboxRow;
+          if (id !== undefined) openRow(id);
+          return;
+        }
         // A decision block's compact card folds its answer box behind "Add a note or answer in
         // your own words"; Enter presses that disclosure, and the card lands the focus in the
         // box its own render reveals (`AskCard.tsx`) - the box does not exist in this tick, so
@@ -1214,11 +1286,13 @@ export function Inbox({
       // (`document.body`), where a reader who has pressed no key yet stands. `h` stands down
       // inside an ask card for the same reason (`outsideAskCard`).
       when: () =>
-        paneShown
-          ? (focusedRow() !== null || document.activeElement === document.body) &&
-            (inAnswerHand("[data-ask-answer]") !== null ||
-              inAnswerHand(NOTE_DISCLOSURE_SELECTOR) !== null)
-          : inAnswerHand("[data-ask-answer]") !== null,
+        pane && !paneShown
+          ? focusedRow() !== null
+          : paneShown
+            ? (focusedRow() !== null || document.activeElement === document.body) &&
+              (inAnswerHand("[data-ask-answer]") !== null ||
+                inAnswerHand(NOTE_DISCLOSURE_SELECTOR) !== null)
+            : inAnswerHand("[data-ask-answer]") !== null,
     },
     {
       id: "option",
@@ -1250,8 +1324,15 @@ export function Inbox({
       id: "back",
       inEditable: true,
       keys: "Escape",
-      label: "Back to the row, then clear the focused row",
+      label: reading ? "Back to the list" : "Back to the row, then clear the focused row",
       run: () => {
+        // Below 1280 px the reading view stands in the list's place, so one level out of it,
+        // from anywhere in it, is the list, at the row the reader left (`pane-selection.ts`).
+        // An answer typed and not sent is kept for the question (`answer-drafts.ts`).
+        if (reading) {
+          paneSelection.close();
+          return;
+        }
         // From the reading column, Escape is the way back to the row the reader came from: `l`
         // recorded that row, which is not the selected one whenever `j` moved the selection
         // without moving the focus. Every other way in records nothing, or the row the column
@@ -1276,6 +1357,7 @@ export function Inbox({
       // the selected row is the way out. With only the selected row tested, Escape in a column
       // held open over a hidden row would match no binding and do nothing.
       when: () =>
+        reading ||
         rowAround(document.activeElement) !== null ||
         (paneShown && focusInPane() && paneWayBack() !== null),
     },
@@ -1303,9 +1385,9 @@ export function Inbox({
         }
         paneScroller()?.focus();
       },
-      // One test for all three cases the key does nothing in: below 1280 px and in the drawer
-      // `paneShown` is false (`pane && wideEnoughForPane`), and with no row selected no column
-      // is rendered at all, so `paneRef.current` is null and there is no scroller under it.
+      // One test for all three cases the key does nothing in: in the drawer, and below 1280 px
+      // with no row open, `paneShown` is false, and with no row selected no column is rendered
+      // at all, so `paneRef.current` is null and there is no scroller under it.
       when: () => paneShown && paneScroller() !== null,
     },
     {
@@ -1393,12 +1475,12 @@ export function Inbox({
       // The box is one key away from anywhere on the page, and `f` is not `inEditable`: inside
       // the box itself a `search` input takes typed text (`keymap.ts`'s `TEXT_INPUT_TYPES`), so
       // the registry passes the key through and the reader types an `f` rather than re-focusing
-      // what they are already in.
+      // what they are already in. A reading view below 1280 px hides the box with the list.
       id: "search",
       keys: "f",
       label: "Search asks",
       run: () => searchRef.current?.focus(),
-      when: () => searchRef.current !== null,
+      when: () => searchRef.current !== null && !reading,
     },
     {
       // Escape is one level out, and out of the box is the list: the row the column is showing
@@ -1415,6 +1497,16 @@ export function Inbox({
       when: () => searchRef.current !== null && document.activeElement === searchRef.current,
     },
   ]);
+  // The reader's pick below 1280 px hid the row they picked with the list, so the reading view
+  // takes the focus in the commit that draws it: its scroller, the focus stop `l` moves to beside
+  // the list, or its Inbox control while the view's body has not drawn one.
+  useLayoutEffect(() => {
+    if (!focusReadingView.current || paneRef.current === null) return;
+    focusReadingView.current = false;
+    (paneScroller() ?? paneRef.current.querySelector<HTMLElement>(READING_BACK_SELECTOR))?.focus({
+      preventScroll: true,
+    });
+  });
 
   if (inbox.isPending || whoAmI.isPending) {
     return <LoadingSkeleton label="Loading your inbox" />;
@@ -1594,8 +1686,12 @@ export function Inbox({
     </div>
   );
 
-  // Two columns, the reading column to the right of the list, each scrolling in itself inside
-  // the height the page gives them (`app.tsx` makes the Inbox page fill the viewport here).
+  // Two columns from 1280 px, the reading column to the right of the list, each scrolling in
+  // itself inside the height the page gives them (`app.tsx` makes the Inbox page fill the
+  // viewport here). Below that width, a row the reader opened is read in place of the list
+  // and its header, under the view's own Inbox control, in a box that scrolls in itself for the
+  // same reason (`useInboxFillsViewport`); the list and the header stay mounted, hidden, so the
+  // reader comes back to them as they left them.
   //
   // One root, selection or none: the column is what appears and disappears beside the list,
   // never the list itself. A selection empties for a commit whenever the selected row leaves
@@ -1603,70 +1699,106 @@ export function Inbox({
   // above hands the selection on - and a root that changed shape there would have React
   // unmount the whole list, taking the keyboard's focus, the bulk bar and every row's state
   // with it and mounting a fresh one a commit later.
-  const page = (listColumn: ReactNode, subject: InboxListRow | undefined): ReactNode => (
-    // Every card this list draws - in the column, and in a row below its width - holds its own
-    // hand-on here while the server decides it (`hand-on-live.ts`), the decision block the
-    // column draws through the document page included, which no prop of this list reaches.
-    <AskHandOnLiveContext value={onHandOnLive}>
-      {/* Every thread this list draws - in the column, and in a card below its width - draws its
-          own Dismiss from here (`DismissControl`). */}
-      <RowDismissContext
-        value={{
-          dismiss: (named) => dismissRows([named]),
-          pending: dismissWrite.pending,
-          show,
-        }}
-      >
-        <div className={paneShown ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-4"}>
-          {header}
-          {paneShown ? (
-            // The two columns are a grid of two fractions, so the share the reader dragged the
-            // divider to is exactly the share the pane takes, at any width; the divider is the
-            // column between them and takes its own.
-            //
-            // One row, `minmax(0, 1fr)`: an implicit `auto` row is as tall as the taller column,
-            // so a long document in the pane would make the row - and with it both columns'
-            // boxes - taller than the page, and neither column would scroll in itself. The page
-            // would scroll instead, which is how the pane came to show a document's top however
-            // far down it the reader's section sat.
-            <div
-              className="grid min-h-0 flex-1"
-              ref={columnsRef}
-              style={{
-                gridTemplateColumns:
-                  subject === undefined
-                    ? "minmax(0, 1fr)"
-                    : `minmax(0, ${1 - paneWidth}fr) auto minmax(0, ${paneWidth}fr)`,
-                gridTemplateRows: "minmax(0, 1fr)",
-              }}
-            >
-              {listColumn}
-              {subject === undefined ? null : (
-                <>
-                  <PaneDivider
-                    columns={columnsRef}
-                    onWidthChange={setPaneWidth}
-                    width={paneWidth}
-                  />
-                  {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only reads where the focus has already gone, so the column needs no role of its own. */}
-                  <div className="min-h-0 min-w-0" onBlur={forgetPaneReturn} ref={holdPane}>
-                    <ReadingPane
-                      onAnswered={recordAnswered}
-                      onSnoozeLive={onSnoozeLive}
-                      row={subject}
-                      viewer={viewer}
+  const page = (listColumn: ReactNode, subject: InboxListRow | undefined): ReactNode => {
+    const readingView = !columns && subject !== undefined;
+    return (
+      // Every card this list draws - in the column or the reading view, and in a row of the
+      // drawer - holds its own hand-on here while the server decides it (`hand-on-live.ts`), the
+      // decision block the column draws through the document page included, which no prop of
+      // this list reaches.
+      <AskHandOnLiveContext value={onHandOnLive}>
+        {/* Every thread this list draws - in the column or the reading view, and in a card of
+            the drawer - draws its own Dismiss from here (`DismissControl`). */}
+        <RowDismissContext
+          value={{
+            dismiss: (named) => dismissRows([named]),
+            pending: dismissWrite.pending,
+            show,
+          }}
+        >
+          <div
+            className={columns || readingView ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-4"}
+          >
+            <div hidden={readingView}>{header}</div>
+            {columns ? (
+              // The two columns are a grid of two fractions, so the share the reader dragged the
+              // divider to is exactly the share the pane takes, at any width; the divider is the
+              // column between them and takes its own.
+              //
+              // One row, `minmax(0, 1fr)`: an implicit `auto` row is as tall as the taller
+              // column, so a long document in the pane would make the row - and with it both
+              // columns' boxes - taller than the page, and neither column would scroll in
+              // itself. The page would scroll instead, which is how the pane came to show a
+              // document's top however far down it the reader's section sat.
+              <div
+                className="grid min-h-0 flex-1"
+                ref={columnsRef}
+                style={{
+                  gridTemplateColumns:
+                    subject === undefined
+                      ? "minmax(0, 1fr)"
+                      : `minmax(0, ${1 - paneWidth}fr) auto minmax(0, ${paneWidth}fr)`,
+                  gridTemplateRows: "minmax(0, 1fr)",
+                }}
+              >
+                {listColumn}
+                {subject === undefined ? null : (
+                  <>
+                    <PaneDivider
+                      columns={columnsRef}
+                      onWidthChange={setPaneWidth}
+                      width={paneWidth}
                     />
+                    {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only reads where the focus has already gone, so the column needs no role of its own. */}
+                    <div className="min-h-0 min-w-0" onBlur={forgetPaneReturn} ref={holdPane}>
+                      <ReadingPane
+                        onAnswered={recordAnswered}
+                        onSnoozeLive={onSnoozeLive}
+                        row={subject}
+                        viewer={viewer}
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : (
+              <>
+                <div hidden={readingView}>{listColumn}</div>
+                {readingView ? (
+                  // Two rows, the Inbox control's and `minmax(0, 1fr)` for the view, for the
+                  // reason the columns' grid above has one: the view scrolls in itself.
+                  <div
+                    className="grid min-h-0 min-w-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-2"
+                    data-inbox-reading-row={rowId(subject)}
+                    data-testid="inbox-reading-view"
+                    ref={holdPane}
+                  >
+                    <button
+                      className={`inline-flex min-h-11 items-center gap-1 justify-self-start rounded text-sm font-medium outline-none focus-visible:ring-2 ${focusVisibleRing} ${linkText} ${linkHoverText}`}
+                      data-inbox-back=""
+                      onClick={paneSelection.close}
+                      type="button"
+                    >
+                      <span aria-hidden="true">←</span>
+                      Inbox
+                    </button>
+                    <div className="min-h-0 min-w-0">
+                      <ReadingPane
+                        onAnswered={recordAnswered}
+                        onSnoozeLive={onSnoozeLive}
+                        row={subject}
+                        viewer={viewer}
+                      />
+                    </div>
                   </div>
-                </>
-              )}
-            </div>
-          ) : (
-            listColumn
-          )}
-        </div>
-      </RowDismissContext>
-    </AskHandOnLiveContext>
-  );
+                ) : null}
+              </>
+            )}
+          </div>
+        </RowDismissContext>
+      </AskHandOnLiveContext>
+    );
+  };
 
   if (shown.length === 0 && held === undefined) {
     const emptyMessage = emptyStateMessage({
@@ -1738,20 +1870,20 @@ export function Inbox({
       row,
       section,
     };
-    if (paneShown) {
+    if (pane) {
       return row.kind === "ask" ? (
         <AskShortRow
           {...shared}
           ask={row.ask}
           key={id}
-          onSelect={paneSelection.select}
+          onSelect={openRow}
           selected={id === paneSelection.id}
         />
       ) : (
         <ThreadShortRow
           {...shared}
           key={id}
-          onSelect={paneSelection.select}
+          onSelect={openRow}
           selected={id === paneSelection.id}
           thread={row.thread}
         />
@@ -1789,10 +1921,10 @@ export function Inbox({
   const list = (
     // With the reading column beside it the list scrolls in itself rather than in the window,
     // so the two columns move independently; the anchor is given that same box, so a refetch
-    // keeps the reader's row where it was in it. Without the pane the rows scroll in whatever
+    // keeps the reader's row where it was in it. Without the column the rows scroll in whatever
     // the host gives (the drawer's own `aside`), and in the window when it gives nothing.
     <div
-      className={paneShown ? "min-w-0 flex-1 overflow-y-auto pr-1" : undefined}
+      className={columns ? "min-w-0 flex-1 overflow-y-auto pr-1" : undefined}
       data-testid="inbox-list"
       ref={listScroller}
     >
@@ -1802,7 +1934,7 @@ export function Inbox({
         item={ROW_ATTRIBUTE}
         ref={viewport}
         rootRef={listRef}
-        scroller={paneShown ? listScroller : scroller}
+        scroller={columns ? listScroller : scroller}
       >
         <ul className="space-y-3">
           {drawn.flatMap(({ band, rows: visible }) =>
@@ -1835,8 +1967,8 @@ export function Inbox({
   );
 
   // Nothing to read is nothing to select, so an empty list is the whole Inbox above, as it is
-  // below the reading column's width. The one question that outlives every row is the one the
-  // column is keeping for an unsent answer, and `showing` hands that one back from an empty
-  // list too, so it keeps its column there: the reader's text is in it.
+  // in the drawer. The one question that outlives every row is the one the column or the
+  // reading view is keeping for an unsent answer, and `showing` hands that one back from an
+  // empty list too, so it keeps its column there: the reader's text is in it.
   return page(list, selectedRow);
 }
