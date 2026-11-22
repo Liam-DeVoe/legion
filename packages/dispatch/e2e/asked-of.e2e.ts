@@ -85,11 +85,12 @@ async function handsOff(page: Page): Promise<void> {
 }
 
 /** The issue page's own ask card for an unanchored question, which the page draws on its
- *  Conversation turn; the page is opened on the issue here, so every reader of it starts the
- *  same way. */
+ *  Conversation turn; the page is opened on the Conversation's own address here, so every reader
+ *  of it starts the same way. That is where the tab's click goes as well (`IssueTabs`), and
+ *  opening it there first, on `/issues/KEY`, mounted the Spec tab's document editor on the way
+ *  and kept it mounted, hidden, beside the Conversation for the rest of the row. */
 async function conversationCard(page: Page, issueKey: string, askId: string): Promise<Locator> {
-  await page.goto(`/issues/${issueKey}`);
-  await page.getByRole("tab", { name: "Conversation" }).click();
+  await page.goto(`/issues/${issueKey}/conversation`);
   return page.locator("#issue-conversation-panel").getByTestId(`ask-${askId}`);
 }
 

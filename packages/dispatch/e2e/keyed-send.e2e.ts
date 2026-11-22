@@ -390,12 +390,17 @@ test("two live-view sends pressed during an outage go out in press order, each o
 
 // A comment's @-mention is delivered once even when the page gives up on the comment while
 // Dispatch is still writing it. Dispatch is slow on its own side (the slow-write hook holds the
-// comment 18 s once its key is claimed, before the handler runs), so the page's attempt, silent
+// comment 5 s once its key is claimed, before the handler runs), so the page's attempt, silent
 // all that time, is cut off at the 15 s it waits on one silent attempt (`KEYED_SEND_ATTEMPT_MS`),
 // which its own clock is jumped past inside the hold. The first run still commits the comment and
 // answers; the page's repeat under the same key waits on it and is answered with the comment, and
 // the mention, sent after the first run's answer, reaches the session once.
-// SLOW(>=2s): the hook's 18 s hold is the server's own time, which no page clock can move, and the
+// The hold only has to outlast what comes between the claim and the repeat: the poll for the
+// one attempt, the two reads that find nothing written yet, the jump, and the backoff of a
+// second (`FIRST_BACKOFF_MS`) before the page asks again - well under a second and a half of
+// real time - so the repeat still finds the first run in flight. It was 18 s, which the page's
+// clock no longer needs since that clock is what cuts the attempt off.
+// SLOW(>=2s): the hook's 5 s hold is the server's own time, which no page clock can move, and the
 // row waits out the first run before its repeat is answered. The page's own 15 s cut-off is the
 // one `page.clock` drives, which lands it early in that hold.
 test("a comment the page gives up on while Dispatch still writes it is answered from its key, its @-mention delivered once", async ({
@@ -404,7 +409,7 @@ test("a comment the page gives up on while Dispatch still writes it is answered 
   test.setTimeout(120_000);
   const issueKey = await seedAgents();
   const path = `/api/v1/issues/${issueKey}/comments`;
-  await slowWrites("POST", path, 18_000);
+  await slowWrites("POST", path, 5_000);
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();

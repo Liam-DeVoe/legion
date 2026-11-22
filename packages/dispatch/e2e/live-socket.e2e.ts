@@ -224,9 +224,10 @@ const SILENCE_CHECK_MS = 15_000;
 // It runs in every engine of this spec's projects, since what it proves - that the live socket
 // replaced the long-lived request - is each engine's own connection behaviour. The idle covers
 // the cycle of the socket that took the long-lived request's place: the page's own silence
-// check, the one part of that cycle that opens anything, is fired on each page's clock rather
-// than waited out, while the server's heartbeat (15 s, `defaultStreamHeartbeat`) holds no
-// request open on the page and so needs no real time of the row's.
+// check, the one part of that cycle that opens anything, is fired on each page's clock as the
+// idle begins rather than waited out, so whatever it opens ages through the whole idle, while
+// the server's heartbeat (15 s, `defaultStreamHeartbeat`) holds no request open on the page and
+// so needs no real time of the row's.
 // SLOW(>=2s): real idling is the measurement. The ages below are read in this process, in real
 // wall time, and a connection Dispatch holds open ages whatever the page's timers believe, so no
 // page clock can stand in for the idle itself.
@@ -262,15 +263,15 @@ test("no request to Dispatch stays open while the page idles", async ({ browser 
     for (const pageSockets of sockets) await untilFeedStarts(pageSockets);
     await Promise.all(pending.map(waitForReads));
 
+    // The silence check first, on every page's clock, so whatever it starts - the sign-in check
+    // that jump also fires among them - is a read like any other, which ends well inside the
+    // idle below, and one it held open is as old as the idle by the reading and is the request
+    // this row refuses. Every other page timer of fifteen seconds or less fires in that jump too.
+    for (const page of pages) await page.clock.fastForward(SILENCE_CHECK_MS);
     // The idle itself: five seconds of real time with every page's socket open. A request a page
     // holds open ages on the wall clock whatever that page's timers believe, so no clock jump
     // can stand in for this window - it is the measurement this row is.
     await board.waitForTimeout(IDLE_MS);
-    for (const page of pages) await page.clock.fastForward(SILENCE_CHECK_MS);
-    // Whatever the checks started - the sign-in check that jump also fires among them - is a read
-    // like any other, so a second of real time is more than it takes, and a read still open after
-    // the bound below is the request this row refuses and nothing else.
-    await board.waitForTimeout(1_000);
     const old = pending.flatMap((requests) =>
       [...requests.entries()]
         .filter(([, started]) => Date.now() - started > HELD_OPEN_MS)

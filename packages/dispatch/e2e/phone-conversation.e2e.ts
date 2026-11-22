@@ -54,6 +54,14 @@ async function pauseClock(page: Page): Promise<void> {
 /** One animation frame of the page's own clock, which is the step below. */
 const FRAME_MS = 16;
 
+/** The pace `drawn()` reads the page at: one frame of the page's clock per frame of the wall's.
+ *  The page's clock never runs ahead of real time, so a fetch, React's own task and the
+ *  IntersectionObserver report that a frame starts have the wall time an unfaked page gives
+ *  them, and no step spends page frames waiting on them. `PROBE`'s ladder would rest half a
+ *  second between two frames once its short steps are spent, and a paused page draws nothing in
+ *  that rest: twenty frames of it were nine seconds of wall time in which the page did nothing. */
+const FRAME_STEP = { intervals: [FRAME_MS] };
+
 /**
  * Spends a paused clock a frame at a time until `locator` matches `count` elements.
  *
@@ -78,7 +86,7 @@ async function drawn(locator: Locator, count: number): Promise<void> {
     .poll(async () => {
       await locator.page().clock.runFor(FRAME_MS);
       return locator.count();
-    }, PROBE)
+    }, FRAME_STEP)
     .toBe(count);
 }
 

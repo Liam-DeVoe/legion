@@ -1,3 +1,4 @@
+import { writeFile } from "node:fs/promises";
 import { type AddressInfo, createServer, type Socket } from "node:net";
 
 import { type DispatchEvent, IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
@@ -669,11 +670,14 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
     await page.clock.install();
     await page.goto(`/issues/${issue.key}`);
     await page.getByRole("tab", { name: "Artifacts" }).click();
-    await page.getByLabel("Upload artifact").setInputFiles({
-      buffer: Buffer.alloc(bytes, 7),
-      mimeType: "application/octet-stream",
-      name: "in-flight.bin",
-    });
+    // The body goes in as a file on disk, not as a buffer: a buffer is base64-encoded into the
+    // protocol message and decoded again in the browser, which cost seconds of both processes'
+    // time for 20 MB, where a path hands the browser the file itself. Its name is the one the
+    // test id and the SQL below read, and its type is whatever the browser takes `.bin` for,
+    // which is no `text/markdown`, so the page uploads it as the file it was before.
+    const upload = test.info().outputPath("in-flight.bin");
+    await writeFile(upload, Buffer.alloc(bytes, 7));
+    await page.getByLabel("Upload artifact").setInputFiles(upload);
     if (browserName === "chromium") {
       const throttle = await alice.newCDPSession(page);
       await throttle.send("Network.emulateNetworkConditions", {
@@ -768,7 +772,7 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
     // both windows the product closes are held open at once: the one at the press
     // (`Writes.run`) and the one at the Retry (`Writes.retry`). The delay is paid by each of
     // the three loads, and by the resumed read after the last of them, which the 10 s bound
-    // below absorbs; the row runs in about 19 s against Playwright's 30 s default.
+    // below absorbs; the row runs in 10 to 12 s (2026-11-22) against the suite's 60 s budget.
     //
     // What the hook needs to be true is not in this file: that `kept-files.ts` opens the
     // database by that name and sets its handler by assignment (`request.onsuccess = …`).
@@ -845,7 +849,10 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
     await page.getByRole("button", { exact: true, name: "Upload" }).click();
     const indicator = pendingWrites(page);
     await expect(indicator.getByRole("status")).toHaveText("Saving 1 change…");
-    await expect.poll(() => keys.length).toBe(1);
+    // `keys` is this process's own array, so reading it every 50 ms costs the page nothing: the
+    // attempt goes out a second in, once the kept-files database answers, and the default
+    // ladder would first see it at 1,850 ms.
+    await expect.poll(() => keys.length, { intervals: [50] }).toBe(1);
 
     // The held attempt leaves the write out and kept, so the reloaded page makes it again on its
     // own - and this time Dispatch's verdict refuses it, in the indicator, with Retry.
@@ -859,7 +866,9 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
     // The Retry is the person's new write under a key of its own, and the kept file moves to it.
     answers = "hold";
     await indicator.getByRole("button", { exact: true, name: "Retry" }).click();
-    await expect.poll(() => keys.length).toBe(3);
+    // The same for the Retry's attempt, which goes out only once the kept file has moved to its
+    // new key.
+    await expect.poll(() => keys.length, { intervals: [50] }).toBe(3);
     expect(keys[2]).toEqual(expect.any(String));
     expect(keys[2]).not.toBe(refused);
 

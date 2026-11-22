@@ -557,6 +557,12 @@ test("a press in the document while a comment link is still landing does not end
       await route.continue();
     });
     await page.goto(`/issues/${issue.key}/spec?comment=${comment.id}`);
+    // The held transport keeps the document from drawing, so only a key, a press or HOLD_LIMIT_MS
+    // ends the shell's hold on the margin (web/src/features/shell/content-drawn.ts:95-97).
+    // A lone Shift is that key: the keymap acts on no modifier alone, and no margin is mounted yet
+    // whose card hold could take it for the reader (`useCardHold`), so the press below still
+    // meets an armed hold over an unplaced card, now without the ten seconds of waiting first.
+    await page.keyboard.press("Shift");
 
     const sheet = page.getByTestId("margin-sheet");
     const card = sheet.locator(`[data-margin-item="${comment.id}"]`);

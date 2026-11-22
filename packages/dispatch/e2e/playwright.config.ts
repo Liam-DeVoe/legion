@@ -234,8 +234,8 @@ const testTimeout = 60_000;
 // coreBundle.js:64256-64257). It is the context's default timeout as well (`actionTimeout || 0`,
 // node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/index.js:360), so a
 // `waitForResponse` or `waitForFunction` that names no timeout of its own takes it too. The
-// longest such wait this change read is `replayed()` (e2e/keyed-writes.ts), which answers the
-// 18 s server hold of keyed-send.e2e.ts:411, well inside this.
+// longest such wait this change read is `replayed()` (e2e/keyed-writes.ts), which answered the
+// 18 s server hold of keyed-send.e2e.ts's comment row then, well inside this; it is 5 s now.
 //
 // Derived from the population `testTimeout` above measures, not asserted: over those 320,101
 // passing results of 201 ci.yaml runs the slowest WHOLE row is 29,856 ms, so no single action in
