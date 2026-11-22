@@ -315,10 +315,10 @@ function renderIssuePage(
   })
 ) {
   const runtime = fakeDocumentRuntime({ text: seedText });
-  // Each document connection is told once that it has synced: by the timer below if the page has
-  // opened it by then, else by a row that waits for the connection and then calls
-  // `syncOpenedDocuments` itself. The page opens a document's connection only once that document's
-  // reads have answered, which can be after the timer.
+  // Each document connection is told that it has synced by the row that needs it, which waits for
+  // the connection and then calls `syncOpenedDocuments`: the page opens a document's connection
+  // only once that document's reads have answered, so a timer telling whatever had opened by its
+  // turn would tell a connection or not as the machine's load decided.
   const told = new Set<ConnectionCallbacks>();
   const syncOpenedDocuments = () => {
     for (const callbacks of runtime.callbacks) {
@@ -347,7 +347,6 @@ function renderIssuePage(
       </QueryClientProvider>
     </MemoryRouter>
   );
-  window.setTimeout(syncOpenedDocuments);
   return { ...view, runtime, syncOpenedDocuments };
 }
 
@@ -2450,7 +2449,7 @@ function renderLandingHistory(entries: string[]) {
   });
   const runtime = fakeDocumentRuntime({});
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
-  const view = render(
+  return render(
     <MemoryRouter initialEntries={entries} initialIndex={entries.length - 1}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
@@ -2467,8 +2466,6 @@ function renderLandingHistory(entries: string[]) {
       </QueryClientProvider>
     </MemoryRouter>
   );
-  window.setTimeout(runtime.sync);
-  return view;
 }
 
 test("IssuePage reads an item whose address writes its id whole without resolving anything", async () => {

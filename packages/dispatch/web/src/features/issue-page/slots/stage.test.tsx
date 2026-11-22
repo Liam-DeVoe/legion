@@ -2,7 +2,7 @@ import { expect, jest, test } from "bun:test";
 import { act, render } from "@testing-library/react";
 import { type ReactNode, useEffect, useState } from "react";
 
-import { jump, realClock } from "../../../__tests__/fake-clock";
+import { afterOnFakeClock, jump, realClock } from "../../../__tests__/fake-clock";
 import { CONTROL_LABELS } from "../page-words";
 import { FailedReadLine } from "./failed-read-line";
 import { ViewStage } from "./stage";
@@ -22,8 +22,8 @@ const ANSWERED_AFTER_MS = 20;
 function StandInView(): ReactNode {
   const [read, setRead] = useState(false);
   useEffect(() => {
-    const answered = window.setTimeout(() => setRead(true), ANSWERED_AFTER_MS);
-    return () => window.clearTimeout(answered);
+    const answered = afterOnFakeClock(ANSWERED_AFTER_MS, () => setRead(true));
+    return () => clearTimeout(answered);
   }, []);
   if (!read) return null;
   return (
@@ -86,8 +86,8 @@ test("a view leaves the focus where a control already holds it", async () => {
 function RefusedView(): ReactNode {
   const [refused, setRefused] = useState(false);
   useEffect(() => {
-    const answered = window.setTimeout(() => setRefused(true), ANSWERED_AFTER_MS);
-    return () => window.clearTimeout(answered);
+    const answered = afterOnFakeClock(ANSWERED_AFTER_MS, () => setRefused(true));
+    return () => clearTimeout(answered);
   }, []);
   if (!refused) return null;
   return (

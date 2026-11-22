@@ -1,18 +1,21 @@
 import { afterEach, expect, jest, test } from "bun:test";
 import { render, screen } from "@testing-library/react";
 import { type ReactNode, useEffect, useState } from "react";
-import { realClock } from "./fake-clock";
+import { afterOnFakeClock, realClock } from "./fake-clock";
 
 afterEach(realClock);
 
 /** How long `Later` waits before it draws its node. */
 const LATER_MS = 100;
 
-/** A node that arrives only when a timer fires, which is the whole product this test needs. */
+/** A node that arrives only when a timer fires, which is the whole product this test needs. The
+ *  timer is set with `afterOnFakeClock`, which refuses the real clock: this test proves what a
+ *  Testing Library wait does with the fake clock, so a timer of the real clock would prove
+ *  nothing here. */
 function Later(): ReactNode {
   const [shown, setShown] = useState(false);
   useEffect(() => {
-    const timer = setTimeout(() => setShown(true), LATER_MS);
+    const timer = afterOnFakeClock(LATER_MS, () => setShown(true));
     return () => clearTimeout(timer);
   }, []);
   return <div>{shown ? "later" : "not yet"}</div>;

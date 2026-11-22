@@ -9,27 +9,35 @@ import { afterOnFakeClock, onFakeClock } from "./fake-clock";
 /**
  * R6 of dispatch://INFRA-983: no unit test synchronises on the real clock. A row that waits for a
  * product timer moves the fake clock (`web/src/__tests__/fake-clock.ts`); a wait that must stay on
- * the real clock says why beside it, in the form the kept ones use ("This one stays on the real
- * clock (INFRA-1505)"), and docs/testing.md, "The clock of a unit test", is the rule.
+ * the real clock says why above it, in the words the kept ones use ("This one stays on the real
+ * clock", then the reason), and docs/testing.md, "The clock of a unit test", is the rule.
  *
  * This reads every unit test file and test helper under `web/src` - a `*.test.ts(x)`, a file of a
- * `__tests__` folder, a `*-fixture.ts(x)` or `*-fixtures.ts(x)` helper - for a wait of real time,
- * whatever its delay: a `Bun.sleep`, or a timer that settles a promise. That timer is a
- * `setTimeout`, global or a member (`window.setTimeout`), whose callback is a promise's resolver or
- * a function that calls one, and a resolver is the first parameter of a `new Promise` executor
- * whatever it is called (`r`, `done`), a `resolve` however it is reached (`resolve`,
- * `waited.resolve`), the name a `Promise.withResolvers()` result's `resolve` is taken under, or a
- * name one of those is stored under (`release = r`). The file is read by the TypeScript parser,
- * so a timer is found however its call is spelled or wrapped (inside `act(...)`, across lines),
+ * `__tests__` folder, a `*-fixture.ts(x)` or `*-fixtures.ts(x)` helper - for every call that
+ * starts a wait of real time, whatever its delay, whatever its callback is and whatever wraps the
+ * call: a `setTimeout` or a `setInterval`, global or a member of any object (`window.setTimeout`,
+ * `globalThis.setInterval`); the `setTimeout`, `setInterval` and `scheduler.wait` of
+ * `node:timers` and `node:timers/promises` (or `timers` and `timers/promises`), named, aliased or
+ * reached through a namespace or default import (`t.scheduler.wait`); a `Bun.sleep` or a
+ * `Bun.sleepSync`; and every local name an import gives one of those (`import { setTimeout as
+ * delay }`, `import { sleep as pause } from "bun"`). It follows no callback and no resolver: a
+ * trace of a resolver through the data flow always misses a form, such as a resolver handed to a
+ * helper that calls `setTimeout`, so the call is found where it starts, and so is the timer of a
+ * row that stands in for a product's. A call passes in two ways alone. One is `afterOnFakeClock`
+ * (`fake-clock.ts`), which refuses the real clock itself: a row that stands in for an answer that
+ * takes time to come sets its timer there, and the `setTimeout` inside that helper's own body is
+ * passed by its file and its function's name. The other is a comment within `REASON_WINDOW` lines
+ * above the call that holds the words "stays on the real clock" and after them a reason of at
+ * least `REASON_WORDS` words of letters, on that line or on the comment lines that continue it; a
+ * comment that only mentions the real clock passes nothing. The file is read by the TypeScript
+ * parser, so a call is found however it is spelled or wrapped (inside `act(...)`, across lines),
  * and a comment or a string that spells one is none. A zero-delay timer is a wait of real time
  * too: what has run by its turn - a timer of the product's, a render, a promise of the library's -
  * depends on how loaded the machine is, so a row waits for the condition its step stands for, or
- * moves the fake clock over the product's own zero-delay timer with `tick(0)`. A row that stands
- * in for an answer that takes time to come sets its timer with `afterOnFakeClock`
- * (`fake-clock.ts`), which refuses the real clock itself. The act-rule inputs (`*.fixture.tsx`)
- * are written to break rules and are left out. A file that imports `bun:test` or Testing Library
- * is a test file or a helper whatever its name, and the scan holds itself to reading every such
- * file.
+ * moves the fake clock over the product's own zero-delay timer with `tick(0)`. The act-rule inputs
+ * (`*.fixture.tsx`) are written to break rules and are left out. A file that imports `bun:test` or
+ * Testing Library is a test file or a helper whatever its name, and the scan holds itself to
+ * reading every such file.
  */
 
 const webSource = fileURLToPath(new URL("..", import.meta.url));
@@ -38,7 +46,24 @@ const webSource = fileURLToPath(new URL("..", import.meta.url));
  *  the doc comment of the helper that holds them, a few lines above the timer. */
 const REASON_WINDOW = 12;
 
+/** The words a comment says a wait stays on the real clock in, and how many words of letters, at
+ *  least, the reason after them holds. */
+const MARKER = "stays on the real clock";
+const REASON_WORDS = 3;
+
 const comment = /^\s*(?:\/\/|\/\*|\*|\{\/\*)/;
+
+/** A word of letters: `why`, `can't` and `fake-clock` are one each, `(INFRA-1505)` and `500`
+ *  none. */
+const wordOfLetters = /(?<![\w-])[A-Za-z]+(?:['’-][A-Za-z]+)*(?![\w-])/g;
+
+/** The modules whose `setTimeout`, `setInterval` and `scheduler.wait` wait real time. */
+const timerModules = ["node:timers", "node:timers/promises", "timers", "timers/promises"];
+
+/** The one timer passed by its place: the `setTimeout` in the body of `afterOnFakeClock`, which
+ *  refuses the real clock before it sets it. */
+const fakeClockFile = "__tests__/fake-clock.ts";
+const fakeClockHelper = "afterOnFakeClock";
 
 /** Every `.ts(x)` file under `directory` but the act-rule inputs (`*.fixture.tsx`). */
 function sourceFiles(directory: string): string[] {
@@ -64,119 +89,145 @@ interface RealWait {
   readonly reasoned: boolean;
 }
 
-/** The names `source` binds a promise's resolver to: `resolve`, the first parameter of every
- *  `new Promise` executor whatever it is called, every name a `Promise.withResolvers()` result's
- *  `resolve` is destructured to (`{ resolve: land }`), and every name one of those is stored under
- *  (`release = r`), read again until no name is added. */
-function resolverNames(source: ts.SourceFile): ReadonlySet<string> {
-  const names = new Set(["resolve"]);
-  const visit = (node: ts.Node): void => {
-    if (
-      ts.isNewExpression(node) &&
-      ts.isIdentifier(node.expression) &&
-      node.expression.text === "Promise"
-    ) {
-      const executor = node.arguments?.[0];
-      const first =
-        executor !== undefined &&
-        (ts.isArrowFunction(executor) || ts.isFunctionExpression(executor))
-          ? executor.parameters[0]?.name
-          : undefined;
-      if (first !== undefined && ts.isIdentifier(first)) names.add(first.text);
+/** The names a file's calls start a wait of real time through, by what its imports bind. */
+interface WaitNames {
+  /** Names whose call starts one: `setTimeout`, `setInterval`, and every local name an import
+   *  gives one of them, or `sleep` or `sleepSync` of "bun" (`delay`, `pause`). */
+  readonly calls: Set<string>;
+  /** Names of a timers module whole (`t` of `import * as t from "node:timers/promises"`), whose
+   *  `scheduler.wait` starts one; its `setTimeout` is a member `setTimeout`, found as any is. */
+  readonly timers: Set<string>;
+  /** Names of a timers module's `scheduler`, whose `wait` starts one. */
+  readonly schedulers: Set<string>;
+  /** Names of "bun" whole, `Bun` among them, whose `sleep` and `sleepSync` start one. */
+  readonly buns: Set<string>;
+}
+
+/** The names `source`'s imports give the calls that start a wait of real time. */
+function waitNames(source: ts.SourceFile): WaitNames {
+  const names: WaitNames = {
+    buns: new Set(["Bun"]),
+    calls: new Set(["setTimeout", "setInterval"]),
+    schedulers: new Set(),
+    timers: new Set(),
+  };
+  for (const statement of source.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) {
+      continue;
     }
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isObjectBindingPattern(node.name) &&
-      node.initializer !== undefined &&
-      ts.isCallExpression(node.initializer) &&
-      ts.isPropertyAccessExpression(node.initializer.expression) &&
-      node.initializer.expression.name.text === "withResolvers"
-    ) {
-      for (const element of node.name.elements) {
-        const property = element.propertyName ?? element.name;
-        if (
-          ts.isIdentifier(property) &&
-          property.text === "resolve" &&
-          ts.isIdentifier(element.name)
-        ) {
-          names.add(element.name.text);
-        }
+    const from = statement.moduleSpecifier.text;
+    const timers = timerModules.includes(from);
+    const whole = from === "bun" ? names.buns : timers ? names.timers : undefined;
+    const clause = statement.importClause;
+    if (clause?.name !== undefined) whole?.add(clause.name.text);
+    const bindings = clause?.namedBindings;
+    if (bindings === undefined) continue;
+    if (ts.isNamespaceImport(bindings)) {
+      whole?.add(bindings.name.text);
+      continue;
+    }
+    for (const element of bindings.elements) {
+      const imported = (element.propertyName ?? element.name).text;
+      if (imported === "setTimeout" || imported === "setInterval") {
+        names.calls.add(element.name.text);
+      } else if (from === "bun" && (imported === "sleep" || imported === "sleepSync")) {
+        names.calls.add(element.name.text);
+      } else if (timers && imported === "scheduler") {
+        names.schedulers.add(element.name.text);
       }
     }
-    const stored = ts.isVariableDeclaration(node)
-      ? { name: node.name, value: node.initializer }
-      : ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
-        ? { name: node.left, value: node.right }
-        : undefined;
-    if (
-      stored?.value !== undefined &&
-      ts.isIdentifier(stored.name) &&
-      isResolver(stored.value, names)
-    ) {
-      names.add(stored.name.text);
-    }
-    ts.forEachChild(node, visit);
-  };
-  let read = 0;
-  while (read !== names.size) {
-    read = names.size;
-    visit(source);
   }
   return names;
 }
 
-/** Whether `expression` is a resolver: one of `names`, or a `resolve` member (`waited.resolve`)
- *  other than `Promise.resolve`, which settles no promise of the row's. */
-function isResolver(expression: ts.Expression, names: ReadonlySet<string>): boolean {
-  if (ts.isIdentifier(expression)) return names.has(expression.text);
+/** The object and the name of a member (`window.setTimeout`, `window["setTimeout"]`). */
+function member(expression: ts.Expression): { object: ts.Expression; name: string } | undefined {
+  if (ts.isPropertyAccessExpression(expression)) {
+    return { name: expression.name.text, object: expression.expression };
+  }
+  return ts.isElementAccessExpression(expression) &&
+    ts.isStringLiteralLike(expression.argumentExpression)
+    ? { name: expression.argumentExpression.text, object: expression.expression }
+    : undefined;
+}
+
+function isOneOf(expression: ts.Expression, names: ReadonlySet<string>): boolean {
+  return ts.isIdentifier(expression) && names.has(expression.text);
+}
+
+/** Whether a call of `callee` starts a wait of real time, by the names `names` holds. */
+function startsWait(callee: ts.Expression, names: WaitNames): boolean {
+  if (ts.isIdentifier(callee)) return names.calls.has(callee.text);
+  const reached = member(callee);
+  if (reached === undefined) return false;
+  const { name, object } = reached;
+  if (name === "setTimeout" || name === "setInterval") return true;
+  if (name === "sleep" || name === "sleepSync") {
+    return isOneOf(object, names.buns) || member(object)?.name === "Bun";
+  }
+  if (name !== "wait") return false;
+  const owner = member(object);
   return (
-    ts.isPropertyAccessExpression(expression) &&
-    expression.name.text === "resolve" &&
-    !(ts.isIdentifier(expression.expression) && expression.expression.text === "Promise")
+    isOneOf(object, names.schedulers) ||
+    (owner?.name === "scheduler" && isOneOf(owner.object, names.timers))
   );
 }
 
-/** Whether a timer's `callback` settles a promise: it is a resolver, or a function whose body calls
- *  one (`() => resolve()`, `() => { landed = true; older.resolve(value); }`). */
-function settles(callback: ts.Expression | undefined, names: ReadonlySet<string>): boolean {
-  if (callback === undefined) return false;
-  if (isResolver(callback, names)) return true;
-  if (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) return false;
-  const calls = (node: ts.Node): boolean =>
-    (ts.isCallExpression(node) && isResolver(node.expression, names)) ||
-    (ts.forEachChild(node, calls) ?? false);
-  return calls(callback.body);
+/** Whether `call` is the `setTimeout` in the body of `fake-clock.ts`'s `afterOnFakeClock`, and in
+ *  no function nested in it. */
+function isFakeClockTimer(file: string, call: ts.CallExpression): boolean {
+  const enclosing = ts.findAncestor(call.parent, ts.isFunctionLike);
+  return (
+    file === fakeClockFile &&
+    enclosing !== undefined &&
+    ts.isFunctionDeclaration(enclosing) &&
+    enclosing.name?.text === fakeClockHelper
+  );
 }
 
-/** The waits of real time in `text`, each with whether a comment above it names the real clock. */
+/** Whether a comment within `REASON_WINDOW` lines above line `index` says the wait there stays on
+ *  the real clock and why: a comment line holds `MARKER`, and the rest of that line with the
+ *  comment lines that continue it holds `REASON_WORDS` words of letters or more. */
+function saysWhy(lines: readonly string[], index: number): boolean {
+  for (let at = Math.max(0, index - REASON_WINDOW); at < index; at += 1) {
+    const line = lines[at] ?? "";
+    const marker = line.indexOf(MARKER);
+    if (marker === -1 || !comment.test(line)) continue;
+    let reason = line.slice(marker + MARKER.length);
+    for (let next = at + 1; next < index && !reason.includes("*/"); next += 1) {
+      const continued = lines[next] ?? "";
+      if (!comment.test(continued)) break;
+      reason += ` ${continued}`;
+    }
+    if ((reason.match(wordOfLetters) ?? []).length >= REASON_WORDS) return true;
+  }
+  return false;
+}
+
+/** The calls in `text` that start a wait of real time, each with whether a comment above it says
+ *  why it stays on the real clock. */
 export function realWaits(file: string, text: string): RealWait[] {
   const source = ts.createSourceFile(
     file,
     text,
     ts.ScriptTarget.Latest,
-    false,
+    true,
     file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS
   );
-  const names = resolverNames(source);
+  const names = waitNames(source);
   const lines = text.split("\n");
   const found: RealWait[] = [];
   const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node)) {
-      const callee = node.expression;
-      const sleep =
-        ts.isPropertyAccessExpression(callee) &&
-        callee.name.text === "sleep" &&
-        ts.isIdentifier(callee.expression) &&
-        callee.expression.text === "Bun";
-      // A `setTimeout` is the global or a member of anything (`window.setTimeout`).
-      const timerName = ts.isPropertyAccessExpression(callee) ? callee.name : callee;
-      const timer = ts.isIdentifier(timerName) && timerName.text === "setTimeout";
-      if (sleep || (timer && settles(node.arguments[0], names))) {
-        const index = source.getLineAndCharacterOfPosition(node.getStart(source)).line;
-        const above = lines.slice(Math.max(0, index - REASON_WINDOW), index);
-        const reasoned = above.some((line) => comment.test(line) && /real clock/i.test(line));
-        found.push({ reasoned, site: `${file}:${index + 1}: ${(lines[index] ?? "").trim()}` });
-      }
+    if (
+      ts.isCallExpression(node) &&
+      startsWait(node.expression, names) &&
+      !isFakeClockTimer(file, node)
+    ) {
+      const index = source.getLineAndCharacterOfPosition(node.getStart(source)).line;
+      found.push({
+        reasoned: saysWhy(lines, index),
+        site: `${file}:${index + 1}: ${(lines[index] ?? "").trim()}`,
+      });
     }
     ts.forEachChild(node, visit);
   };
@@ -208,11 +259,17 @@ test("the scan reads every file that imports bun:test or Testing Library", () =>
   expect(unread, "a test helper the scan does not read by its name").toEqual([]);
 });
 
+/** A marker a kept wait could carry: the words, and a reason after them. */
+const MARKED =
+  "// This one stays on the real clock (INFRA-1505): a real long task that no fake clock can stand in for.";
+
+// The reason after the marker words is a sentence: the one word "why." these rows once carried
+// says nothing, and the marker's own row below refuses it.
 test("a wait of real time is found, a zero-delay one too, and its reason is read from the comment above it", () => {
   const bare = ["await act(async () => {", "  setTimeout(waited.resolve, 50);", "});"].join("\n");
-  const kept = ["// This one stays on the real clock (INFRA-1505): why.", bare].join("\n");
+  const kept = [MARKED, bare].join("\n");
   const zero = "setTimeout(resolve, 0);";
-  const zeroKept = ["// This one stays on the real clock (INFRA-1505): why.", zero].join("\n");
+  const zeroKept = [MARKED, zero].join("\n");
   expect(realWaits("bare.test.ts", bare).map((wait) => wait.reasoned)).toEqual([false]);
   expect(realWaits("kept.test.ts", kept).map((wait) => wait.reasoned)).toEqual([true]);
   expect(realWaits("zero.test.ts", zero).map((wait) => wait.reasoned)).toEqual([false]);
@@ -222,10 +279,11 @@ test("a wait of real time is found, a zero-delay one too, and its reason is read
   ]);
 });
 
-// docs/testing.md, "The clock of a unit test", says this scan fails an awaited timer whatever its
-// delay, and that is a claim about every spelling of one: the resolver a `new Promise` hands its
-// executor is as often `r` or `done` as `resolve`, and a timer may call it from an arrow. Each of
-// these waits 50 ms of real time.
+// docs/testing.md, "The clock of a unit test", says this scan fails every timer whatever its delay
+// and whatever its callback. These are the spellings of an awaited timer the scan once found by
+// tracing the resolver a `new Promise` hands its executor, `r` or `done` as often as `resolve`,
+// called from an arrow too; it traces no resolver now, and each is still found once. Each of these
+// waits 50 ms of real time.
 test("an awaited timer is found whatever its resolver is called and however the timer calls it", () => {
   const spellings = [
     "await new Promise((r) => setTimeout(r, 50));",
@@ -235,12 +293,16 @@ test("an awaited timer is found whatever its resolver is called and however the 
   expect(spellings.map((text) => realWaits("spelling.test.ts", text).length)).toEqual([1, 1, 1]);
 });
 
-// The other spellings of a timer that settles a promise, each found once - with no delay, a
-// resolver taken from `Promise.withResolvers` whole or under a name of its own, a member
-// `setTimeout`, inside `act(...)`, a resolver stored under another name, and a function that calls
-// one - and what settles no promise, found not at all: a product timer a row stands in for, a timer
-// whose callback calls `Promise.resolve`, and a timer spelled in a comment or in a string.
-test("a timer that settles a promise is found however it is reached, and one that settles none is not", () => {
+// A timer is found however it is reached and whatever its callback does, each once: with no delay,
+// a resolver taken from `Promise.withResolvers` whole or under a name of its own, a member
+// `setTimeout`, inside `act(...)`, a resolver stored under another name, a function that calls one,
+// and the two this row once listed as found not at all because they settle no promise of the row's:
+// a timer that stands in for a product's (`setShown`) and a timer whose callback calls
+// `Promise.resolve`. Each waits real time all the same, and a row that waits for one waits on how
+// loaded the machine is. A row that stands in for an answer sets its timer with `afterOnFakeClock`,
+// which refuses the real clock and is passed; and only a comment or a string that spells a timer is
+// found not at all.
+test("a timer is found however it is reached and whatever its callback does, and one spelled in a comment or a string is not", () => {
   const found = [
     "await new Promise((resolve) => setTimeout(resolve));",
     "const w = Promise.withResolvers<void>();\nsetTimeout(w.resolve, 50);\nawait w.promise;",
@@ -249,11 +311,12 @@ test("a timer that settles a promise is found however it is reached, and one tha
     "await act(() => new Promise((r) => setTimeout(r, 50)));",
     "let release = () => {};\nconst held = new Promise<void>((r) => {\n  release = r;\n});\nsetTimeout(release, 50);\nawait held;",
     "setTimeout(function () {\n  landed = true;\n  older.resolve(value);\n}, 50);",
-  ];
-  expect(found.map((text) => realWaits("found.test.tsx", text).length)).toEqual(found.map(() => 1));
-  const none = [
     "const timer = setTimeout(() => setShown(true), 50);",
     "setTimeout(() => void Promise.resolve(), 0);",
+  ];
+  expect(found.map((text) => realWaits("found.test.tsx", text).length)).toEqual(found.map(() => 1));
+  expect(realWaits("answer.test.tsx", "afterOnFakeClock(50, () => setShown(true));")).toEqual([]);
+  const none = [
     "// await new Promise((r) => setTimeout(r, 50));",
     'const source = "await new Promise((r) => setTimeout(r, 50));";',
   ];
@@ -274,6 +337,105 @@ test("Bun's sleep imported by name and the promise setTimeout of node:timers/pro
   expect(imported.map((text) => realWaits("imported.test.ts", text).length)).toEqual(
     imported.map(() => 1)
   );
+});
+
+// The scan follows no callback, because a trace of a resolver through the data flow always misses
+// a form: here the resolver `r` is handed to a helper, whose own `setTimeout` waits 50 ms of real
+// time for it. The wait is found where it starts, in the helper, and refused for want of a reason.
+test("a timer is found in the helper a resolver is handed to", () => {
+  const helper = [
+    "function after(ms: number, done: () => void) { setTimeout(done, ms); }",
+    "await new Promise<void>((r) => after(50, r));",
+  ].join("\n");
+  expect(realWaits("helper.test.ts", helper)).toEqual([
+    {
+      reasoned: false,
+      site: "helper.test.ts:1: function after(ms: number, done: () => void) { setTimeout(done, ms); }",
+    },
+  ]);
+});
+
+// Every other call that starts a wait of real time is found once and refused without a reason:
+// the timers of node:timers and its promises, under the bare specifiers too, named, aliased, or
+// reached through a namespace or a default import; Bun's sleeps, the blocking one included, by
+// `Bun` or by an import from "bun"; a `setInterval`; and a `setTimeout` of `globalThis`, of `self`
+// or of a window reached by its key. An import alone binds a name and starts no wait.
+test("every timer of node:timers, its promises and Bun is found, however an import names it", () => {
+  const refused = [
+    'import { setTimeout as delay } from "node:timers/promises";\nawait delay(50);',
+    'import { scheduler } from "node:timers/promises";\nawait scheduler.wait(50);',
+    'import { scheduler as later } from "timers/promises";\nawait later.wait(50);',
+    'import * as timers from "node:timers/promises";\nawait timers.setTimeout(50);',
+    'import * as timers from "node:timers/promises";\nawait timers.scheduler.wait(50);',
+    'import timers from "node:timers";\ntimers.setInterval(run, 50);',
+    'import { setTimeout as later } from "timers";\nlater(run, 50);',
+    'import { setInterval as every } from "node:timers";\nevery(run, 50);',
+    "Bun.sleepSync(50);",
+    'import { sleepSync } from "bun";\nsleepSync(50);',
+    'import { sleepSync as block } from "bun";\nblock(50);',
+    'import * as bun from "bun";\nawait bun.sleep(50);',
+    "setInterval(run, 50);",
+    "globalThis.setTimeout(run, 50);",
+    "self.setInterval(run, 50);",
+    'window["setTimeout"](run, 50);',
+  ];
+  expect(
+    refused.map((text) => realWaits("refused.test.ts", text).map((wait) => wait.reasoned))
+  ).toEqual(refused.map(() => [false]));
+  const imports = [
+    'import { setTimeout as delay } from "node:timers/promises";',
+    'import { scheduler } from "node:timers/promises";',
+    'import { sleep, sleepSync } from "bun";',
+  ];
+  expect(imports.map((text) => realWaits("imports.test.ts", text).length)).toEqual(
+    imports.map(() => 0)
+  );
+});
+
+// A call passes when a comment within `REASON_WINDOW` lines above it holds the words "stays on the
+// real clock" and after them a reason of `REASON_WORDS` words of letters or more, on that line or
+// on the comment lines that continue it. Nothing less passes: a comment that only mentions the
+// real clock, the marker words with no reason or a one-word one, a reason in a comment of its own
+// below a line that is none, the words in a string, or a marker the wait stands too far below.
+test("a wait passes under the marker words and a reason after them, and under nothing less", () => {
+  const reasoned = (above: string): boolean[] =>
+    realWaits("marked.test.ts", `${above}\nsetTimeout(run, 50);`).map((wait) => wait.reasoned);
+  const lines = (count: number): string => Array.from({ length: count }, () => "run();").join("\n");
+  const marked = [
+    MARKED,
+    "// This one stays on the real clock (INFRA-1505)\n// for a long task that no fake clock models.",
+    "/** This one stays on the real clock\n *  (INFRA-1505): the margin corrects a card in a frame. */",
+    `${MARKED}\n${lines(REASON_WINDOW - 1)}`,
+  ];
+  const unmarked = [
+    "// This waits on the real clock for the long task to end.",
+    "// Real clock: a real long task that no fake clock can stand in for.",
+    "// This one stays on the real clock (INFRA-1505).",
+    "// This one stays on the real clock (INFRA-1505): why.",
+    "// This one stays on the real clock (INFRA-1505).\n\n// A real long task that no fake clock can stand in for.",
+    'const note = "This one stays on the real clock: a real long task no fake clock stands in for.";',
+    `${MARKED}\n${lines(REASON_WINDOW)}`,
+  ];
+  expect(marked.map(reasoned)).toEqual(marked.map(() => [true]));
+  expect(unmarked.map(reasoned)).toEqual(unmarked.map(() => [false]));
+});
+
+// A row that stands in for an answer sets its timer with `afterOnFakeClock`, which refuses the real
+// clock, so the scan passes the call with no reason. The `setTimeout` inside that helper passes by
+// its place alone, `afterOnFakeClock`'s own body in `fake-clock.ts`: the same function in another
+// file, another function of that file, and a function nested inside the helper are each found.
+test("afterOnFakeClock passes, and so does the timer in its own body in fake-clock.ts, and no other", () => {
+  expect(realWaits("answer.test.tsx", "afterOnFakeClock(50, run);")).toEqual([]);
+  const helper =
+    "export function afterOnFakeClock(ms: number, fn: () => void) {\n  return setTimeout(fn, ms);\n}";
+  const other =
+    "export function later(ms: number, fn: () => void) {\n  return setTimeout(fn, ms);\n}";
+  const nested =
+    "export function afterOnFakeClock(ms: number, fn: () => void) {\n  queueMicrotask(() => setTimeout(fn, ms));\n}";
+  expect(realWaits("__tests__/fake-clock.ts", helper)).toEqual([]);
+  expect(realWaits("__tests__/other-clock.ts", helper)).toHaveLength(1);
+  expect(realWaits("__tests__/fake-clock.ts", other)).toHaveLength(1);
+  expect(realWaits("__tests__/fake-clock.ts", nested)).toHaveLength(1);
 });
 
 // The timer a row sets for an answer it stands in for (`afterOnFakeClock`) is no wait of real

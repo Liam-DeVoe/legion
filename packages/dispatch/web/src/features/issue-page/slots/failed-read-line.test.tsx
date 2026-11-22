@@ -4,7 +4,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
-import { jump, realClock } from "../../../__tests__/fake-clock";
+import { afterOnFakeClock, jump, realClock } from "../../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../../__tests__/user";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { presetPath } from "../issue-address";
@@ -402,8 +402,8 @@ function RefusedTreeView({ late }: { late: boolean }): ReactNode {
   const [refused, setRefused] = useState(!late);
   useEffect(() => {
     if (!late) return;
-    const failed = window.setTimeout(() => setRefused(true), REFUSED_LATE_MS);
-    return () => window.clearTimeout(failed);
+    const failed = afterOnFakeClock(REFUSED_LATE_MS, () => setRefused(true));
+    return () => clearTimeout(failed);
   }, [late]);
   return (
     <>

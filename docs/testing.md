@@ -306,24 +306,36 @@ What a stubbed row may assert, and what only a real-stack row may:
 The clock of a unit test:
 
 - A unit test never waits on the real clock, unless a comment above the wait says why it stays
-  there in the words "stays on the real clock", as the kept ones do
-  (`web/src/features/margin/Margin.landing.test.tsx`'s `quiet` and its 500 ms long task,
-  `web/src/features/refs/MarkdownBody.test.tsx`'s `nextTask`, and the parse worker stand-in's
-  `tick` in `web/src/features/refs/parse-worker-fixture.ts`), and
-  `web/src/__tests__/real-clock-waits.test.ts` fails an awaited timer or a `Bun.sleep` without one,
-  whatever its delay: it reads each file with the TypeScript parser, and an awaited timer is a
-  `setTimeout`, global or a member such as `window.setTimeout`, whose callback is a promise's
-  resolver or calls one, whatever the resolver is called.
-  A zero-delay timer is such a wait too: what has run by its turn depends on how loaded the machine
-  is, so a row waits for the condition its step stands for, with `waitFor` or an `expect` of what it
-  reads next, or runs the product's own zero-delay timer on the fake clock with `tick(0)`.
-  Apart from those, a row uses no `Bun.sleep`, no awaited `setTimeout` and no wait timed by
-  `performance.now()`, and it asserts no `Date.now()` difference.
+  there, as the kept ones do (`web/src/features/margin/Margin.landing.test.tsx`'s `quiet` and its
+  500 ms long task, `web/src/features/refs/MarkdownBody.test.tsx`'s `nextTask`, and the parse
+  worker stand-in's `tick` and its `ready` in `web/src/features/refs/parse-worker-fixture.ts`).
+  `web/src/__tests__/real-clock-waits.test.ts` reads every unit test file and test helper with the
+  TypeScript parser, and fails every call in them that starts a wait of real time,
+  whatever its delay, its callback or what wraps it:
+  a `setTimeout` or a `setInterval`, global or a member of any object such as `window.setTimeout`;
+  the `setTimeout`, `setInterval` and `scheduler.wait` of `node:timers` and `node:timers/promises`
+  (or `timers` and `timers/promises`), imported by name, under another name, or reached through a
+  namespace or default import;
+  `Bun.sleep` and `Bun.sleepSync`;
+  and `sleep` and `sleepSync` imported from `"bun"` under any name.
+  A call passes in two ways alone.
+  One is `afterOnFakeClock` from `web/src/__tests__/fake-clock.ts`, which refuses the real clock.
+  The other is a comment within 12 lines above the call that holds the words "stays on the real
+  clock" and, after them on that line or on the comment lines that continue it, a reason of at
+  least three words of letters, which an issue key or a number is not.
+  A comment that only mentions the real clock passes nothing.
+  A comment or a string that spells such a call is no call, since the scan reads the parsed file.
+  A zero-delay timer is a wait of real time too: what has run by its turn depends on how loaded the
+  machine is, so a row waits for the condition its step stands for, with `waitFor` or an `expect` of
+  what it reads next, or runs the product's own zero-delay timer on the fake clock with `tick(0)`.
+  Apart from the kept ones, a row uses no `Bun.sleep`, no timer of the real clock and no wait timed
+  by `performance.now()`, and it asserts no `Date.now()` difference.
   A row that waits for a product timer installs the fake clock (`onFakeClock` from
   `web/src/__tests__/fake-clock.ts`, or `jest.useFakeTimers()`) and moves it with `tick` or `jump`
   from that file.
   A row that stands in for an answer that takes time to come, a server's or a sign-in check's, sets
-  its timer with `afterOnFakeClock` from that file, which refuses the real clock.
+  its timer with `afterOnFakeClock` from that file, and so does any other timer a row sets of its
+  own on the fake clock.
   happy-dom runs a zero-delay timer set while another one waits in that one's task, and the fake
   clock holds a timer of the real clock still, so a row installs the fake clock before the product
   sets the zero-delay timer the row runs, at a moment no zero-delay timer of the real clock waits:

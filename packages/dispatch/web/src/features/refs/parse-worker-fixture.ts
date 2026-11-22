@@ -73,6 +73,11 @@ export class FakeParseWorker {
 
   constructor(took: (request: ParseRequest, worker: FakeParseWorker) => void) {
     this.took = took;
+    // The stand-in's `ready`, on a task of its own as a worker's first message comes. This one
+    // stays on the real clock (INFRA-1505) for the rows `tick` above stays there for: they read
+    // what one slice of a paint leaves, whose budget is read from `performance.now()`, which
+    // `jest.useFakeTimers()` freezes, and they step over this task with `flushTasks`. A row on the
+    // fake clock runs it with that clock, as any timer.
     setTimeout(() => {
       this.emit("message", { data: { ready: true } });
     }, 0);

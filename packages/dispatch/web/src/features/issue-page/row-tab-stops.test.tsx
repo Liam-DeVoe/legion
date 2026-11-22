@@ -5,6 +5,7 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
+import { afterOnFakeClock, tick } from "../../__tests__/fake-clock";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { installResizeObserver } from "../../__tests__/scroll-box";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -13,6 +14,7 @@ import { measureNearWords } from "./clamp-fixtures";
 import type { NodeFact } from "./issue-tree";
 import { NodeFacts } from "./NodeFacts";
 import { NoTooltips } from "./NoTooltips";
+import { zeroDelaysOnFakeClock } from "./outline-fixtures";
 import { CONTROL_LABELS } from "./page-words";
 import { RowText, useOutOfTabOrder } from "./RowText";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
@@ -52,11 +54,12 @@ function draw(children: ReactNode) {
   return { ...view, redraw: (inside: ReactNode) => view.rerender(page(inside)) };
 }
 
-/** A link drawn after the first paint, as a reading's link arrives once its target answers. */
+/** A link drawn after the first paint, as a reading's link arrives once its target answers: on the
+ *  fake clock, at zero delay (`afterOnFakeClock`), so the row draws it with `tick(0)`. */
 function LateLink(): ReactNode {
   const [shown, setShown] = useState(false);
   useEffect(() => {
-    const timer = setTimeout(() => setShown(true), 0);
+    const timer = afterOnFakeClock(0, () => setShown(true));
     return () => clearTimeout(timer);
   }, []);
   return shown ? (
@@ -68,29 +71,32 @@ function LateLink(): ReactNode {
 
 test("CutWords keeps its words' controls out of the tab order, and in it with tabStops, a late link included", async () => {
   for (const tabStops of [false, true]) {
-    const view = draw(
-      <CutWords className="" tabStops={tabStops} whole={false}>
-        <p>
-          <a data-early="" href="/issues/CORE-2">
-            CORE-2
-          </a>{" "}
-          <LateLink />
-        </p>
-      </CutWords>
-    );
-    try {
-      const late = await waitFor(() => {
-        const found = view.container.querySelector("[data-late]");
-        expect(found).not.toBeNull();
-        return found;
-      });
-      await waitFor(() => {
-        expect(outOfTabOrder(view.container.querySelector("[data-early]"))).toBe(!tabStops);
-        expect(outOfTabOrder(late)).toBe(!tabStops);
-      });
-    } finally {
-      view.unmount();
-    }
+    await zeroDelaysOnFakeClock(async () => {
+      const view = draw(
+        <CutWords className="" tabStops={tabStops} whole={false}>
+          <p>
+            <a data-early="" href="/issues/CORE-2">
+              CORE-2
+            </a>{" "}
+            <LateLink />
+          </p>
+        </CutWords>
+      );
+      try {
+        await tick(0);
+        const late = await waitFor(() => {
+          const found = view.container.querySelector("[data-late]");
+          expect(found).not.toBeNull();
+          return found;
+        });
+        await waitFor(() => {
+          expect(outOfTabOrder(view.container.querySelector("[data-early]"))).toBe(!tabStops);
+          expect(outOfTabOrder(late)).toBe(!tabStops);
+        });
+      } finally {
+        view.unmount();
+      }
+    });
   }
 });
 

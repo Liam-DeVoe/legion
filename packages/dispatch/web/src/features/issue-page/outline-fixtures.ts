@@ -1,7 +1,7 @@
 import { jest } from "bun:test";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { onFakeClock } from "../../__tests__/fake-clock";
+import { afterOnFakeClock, onFakeClock } from "../../__tests__/fake-clock";
 import type { Comment } from "../../api/types";
 import { KEY } from "./decisions-filter/decisions-fixtures";
 
@@ -24,14 +24,16 @@ import { KEY } from "./decisions-filter/decisions-fixtures";
  * (`BrowserWindow.setTimeout`), and the fake clock holds a timer of the real clock still until the
  * real clock is back. So a timer of the product's set under the fake clock while one of the real
  * clock waited would ride that one: no `tick` would run it, and a row reading what it did not do
- * would pass whatever the product did. This refuses to run `body` then.
+ * would pass whatever the product did. This refuses to run `body` then, which it tells by a
+ * zero-delay timer of its own on the fake clock (`afterOnFakeClock`, whose `setTimeout` is
+ * happy-dom's window's): a move of 0 ms does not run that timer then.
  */
 export function zeroDelaysOnFakeClock(body: () => Promise<void>): Promise<void> {
   return onFakeClock(async () => {
     let held = false;
-    window.setTimeout(() => {
+    afterOnFakeClock(0, () => {
       held = true;
-    }, 0);
+    });
     jest.advanceTimersByTime(0);
     if (!held) {
       throw new Error(
