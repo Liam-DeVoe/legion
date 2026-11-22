@@ -134,7 +134,7 @@ const (
 	// summary names that architect (NewsMember.Architect).
 	NewsYouAnswer NewsState = "you-answer"
 	// NewsWorkUnchanged is a member told nothing because no version it is owed changes anything of
-	// its work: each approved version differs from the version it took in decision blocks alone,
+	// its work: each approved version differs from the version it took in ask blocks alone,
 	// or in nothing at all (record.DesignChanges.WorkUnchanged). One state says both, because the
 	// reconcile raises such a member by one rule (the daemon's settlementOf) whatever mix of the
 	// two its steps hold, so its words must be true of each mix.
@@ -189,7 +189,7 @@ const (
 // as the new version since a version the daemon could not read, with the reason that history
 // could not be read, and the same command. One closing sentence names the rule the role's prompt
 // carries for answering it. A holder whose every item changed nothing of the work
-// (record.DesignChanges.WorkUnchanged: decision blocks alone, or nothing at all) is told only that
+// (record.DesignChanges.WorkUnchanged: ask blocks alone, or nothing at all) is told only that
 // nothing its issue holds changed, and why, with no list and no rule, since there is nothing to
 // answer: that is the one news task of such a version, sent where the opening is owed to it.
 //
@@ -273,11 +273,11 @@ func holderNews(news News) []string {
 
 // nothingChanged is the words that tell a holder an item's new version changed nothing its issue
 // holds (record.DesignChanges.WorkUnchanged), and why: the new version holds the same text as the
-// version its phase took, or differs from it in decision blocks alone. It names no change list:
+// version its phase took, or differs from it in ask blocks alone. It names no change list:
 // such an item has none.
 func nothingChanged(item NewsChange) string {
 	changes := item.Changes
-	why := "differs from it only in decision blocks"
+	why := "differs from it only in ask blocks"
 	if changes.Unchanged {
 		why = fmt.Sprintf("holds the same text as version %d", changes.From)
 	}
@@ -332,7 +332,7 @@ func architectNews(news News) []string {
 			}
 			line := fmt.Sprintf("- The %s document (%s): %s.", item.Step, item.artifact(), pairWords(item, taker))
 			if item.Changes.WorkUnchanged() {
-				why := "Only its decision blocks changed"
+				why := "Only its ask blocks changed"
 				if item.Changes.Unchanged {
 					why = fmt.Sprintf("It holds the same text as version %d", item.Changes.From)
 				}
@@ -407,7 +407,7 @@ func memberWords(member NewsMember) string {
 	case NewsYouAnswer:
 		return fmt.Sprintf("%s. You hold it in accepting, so you answer it yourself: read what changed, then %s.", owes, acceptingAnswer("it"))
 	case NewsWorkUnchanged:
-		return "told nothing: the approved version holds the same text as the one it took, apart from decision blocks."
+		return "told nothing: the approved version holds the same text as the one it took, apart from ask blocks."
 	case NewsNotConcerned:
 		return "told nothing: only the root's checks changed, and they are the root's alone to prove."
 	case NewsAlreadyTaken:
@@ -610,7 +610,7 @@ func blockKind(blockType string) string {
 }
 
 // workUnchanged says whether no item changed anything of the work
-// (record.DesignChanges.WorkUnchanged): each changed decision blocks alone, or nothing at all.
+// (record.DesignChanges.WorkUnchanged): each changed ask blocks alone, or nothing at all.
 func workUnchanged(items []NewsChange) bool {
 	for _, item := range items {
 		if !item.Changes.WorkUnchanged() {

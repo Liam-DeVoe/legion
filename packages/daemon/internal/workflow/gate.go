@@ -995,7 +995,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // which settles every told row of the tree, linger or not, since an opening owed before a close is
 // never told. Each moves the row's opening number, so a task that carried an earlier opening never
 // clears a later one at its confirmation, and an opened message never leaves a holder owed an
-// opening it was told: a later version that changes decision blocks alone then sends that holder
+// opening it was told: a later version that changes ask blocks alone then sends that holder
 // nothing (the daemon's settlementOf).
 //
 // A holder whose message token cannot be built is logged and skipped, and the rest are told. The
@@ -1189,8 +1189,8 @@ func openingDelivery(owed record.TreeNews, told []record.DesignTold, issue strin
 // nothingChangedSince is the sentence that tells a phase holder that nothing its issue holds
 // changed since version took, the version of the step's document its phase took. It is written
 // once, here, for its two senders: the opened role message to a holder owed nothing
-// (openingDelivery), and the news of a version that changes nothing of the work, its decision
-// blocks alone or nothing at all (RenderNews).
+// (openingDelivery), and the news of a version that changes nothing of the work, its ask blocks
+// alone or nothing at all (RenderNews).
 func nothingChangedSince(took int) string {
 	return fmt.Sprintf("Nothing your issue holds changed since version %d, which your phase took.", took)
 }

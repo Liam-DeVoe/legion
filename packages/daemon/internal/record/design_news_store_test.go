@@ -327,8 +327,8 @@ func TestChangeSetsAreRecordedPerPairAndAReadOneIsFinal(t *testing.T) {
 // of the text outside every section with the place Dispatch named it at, before the first section
 // or after a named `##` section, kept in the sections column beside the `##` sections, which carry
 // none. A run recorded with no place, as a Dispatch from before the place names it, reads back with
-// none. The control is a decision-only pair, which is not unchanged. An unchanged set that is
-// unavailable, or decision-only too, is refused before the write, naming the pair.
+// none. The control is an ask-only pair, which is not unchanged. An unchanged set that is
+// unavailable, or ask-only too, is refused before the write, naming the pair.
 func TestAChangeSetKeepsWhetherItIsUnchangedAndWhereEachRunStands(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -358,14 +358,14 @@ func TestAChangeSetKeepsWhetherItIsUnchangedAndWhereEachRunStands(t *testing.T) 
 		must(t, err)
 	})
 	if !got[unchanged.VersionPair].Unchanged || got[decisionOnly.VersionPair].Unchanged {
-		t.Fatalf("unchanged read back = %t for the unchanged pair and %t for the decision-only one, want true and false",
+		t.Fatalf("unchanged read back = %t for the unchanged pair and %t for the ask-only one, want true and false",
 			got[unchanged.VersionPair].Unchanged, got[decisionOnly.VersionPair].Unchanged)
 	}
 	if !reflect.DeepEqual(got[placed.VersionPair].Sections, placed.Sections) {
 		t.Fatalf("the sections read back = %+v, want %+v, each run at its place", got[placed.VersionPair].Sections, placed.Sections)
 	}
 	if !got[unchanged.VersionPair].WorkUnchanged() || !got[decisionOnly.VersionPair].WorkUnchanged() || got[placed.VersionPair].WorkUnchanged() {
-		t.Fatalf("work unchanged = %t, %t, %t for the unchanged, decision-only and placed pairs, want true, true and false",
+		t.Fatalf("work unchanged = %t, %t, %t for the unchanged, ask-only and placed pairs, want true, true and false",
 			got[unchanged.VersionPair].WorkUnchanged(), got[decisionOnly.VersionPair].WorkUnchanged(), got[placed.VersionPair].WorkUnchanged())
 	}
 
