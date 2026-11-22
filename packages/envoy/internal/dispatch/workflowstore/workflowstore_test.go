@@ -145,35 +145,67 @@ func TestTheEndWriteKeepsTheStart(t *testing.T) {
 	}
 }
 
-// An end whose start never arrived — a step that started under the release before, or whose
-// start row is still backing off — makes the node itself, with the start time the daemon holds.
-// The start that arrives after it keeps that start time, fills what the end did not carry, and
-// leaves the result.
+// A report that is empty states nothing, as an absent one: the end that carries one is taken
+// with its other fields, the node holds no report and the log no report tuple and no `reports`
+// relation, so the handoff a later write names is the run's report.
+func TestAnEmptyReportStatesNone(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	id, report := uuid.NewString(), uuid.NewString()
+
+	put(t, pool, startOf(implementer(id), minute(0)), minute(0))
+	end := endOf(implementer(id), ResultPassed, minute(1))
+	end.Report = new("")
+	if answered := put(t, pool, end, minute(1)); answered.Result != ResultPassed || answered.Report != "" {
+		t.Fatalf("the end with an empty report holds result %q report %q, want passed and none", answered.Result, answered.Report)
+	}
+	var relations int
+	if err := pool.QueryRow(context.Background(), `
+		select count(*) from workflow_tuples where from_kind = 'step' and from_id = $1 and kind = 'reports'
+	`, id).Scan(&relations); err != nil {
+		t.Fatalf("count the reports tuples: %v", err)
+	}
+	if tuples := valueTuples(t, pool, id, AttributeReport); tuples != 0 || relations != 0 {
+		t.Errorf("the log holds %d report tuples and %d reports relations after an empty report, want none", tuples, relations)
+	}
+	late := implementer(id)
+	late.Report = new(report)
+	if answered := put(t, pool, late, minute(2)); answered.Report != report {
+		t.Errorf("the later write's report is held as %q, want %s", answered.Report, report)
+	}
+}
+
+// An end whose start has not arrived — a start row still backing off in the daemon's outbox —
+// makes the node itself, with the moment its start wrote, which the daemon's end writes again
+// beside the session and the model it alone names (workflow's endStep). The start that arrives
+// after it carries what the daemon's start writes, the step's identity and that one moment
+// (workflow's startStep), so it changes nothing: the node keeps the end's moment, session and
+// result, and the log gains no tuple.
 func TestAnEndBeforeItsStartMakesTheNode(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	id := uuid.NewString()
 
 	end := endOf(implementer(id), ResultPassed, minute(5))
 	end.StartedAt = new(minute(0))
+	end.Session = new("s1")
+	end.Model = new("anthropic/claude-opus-5")
 	put(t, pool, end, minute(5))
 	if nodes := countNodes(t, pool, id); nodes != 1 {
 		t.Fatalf("the end wrote %d nodes, want the one it makes", nodes)
 	}
+	before := wholeLog(t, pool)
 
-	late := startOf(implementer(id), minute(1))
-	late.Session = new("s1")
-	put(t, pool, late, minute(6))
+	put(t, pool, startOf(implementer(id), minute(0)), minute(6))
 
+	if after := wholeLog(t, pool); !reflect.DeepEqual(after, before) {
+		t.Errorf("the late start moved the log from %d tuples to %d, want no tuple: the end carried every field it writes", len(before), len(after))
+	}
 	steps := issueSteps(t, pool, "LEG-1")
 	if len(steps) != 1 {
 		t.Fatalf("LEG-1 lists %d steps, want the one node both writes wrote: %+v", len(steps), steps)
 	}
 	step := steps[0]
-	if step.StartedAt == nil || !step.StartedAt.Equal(minute(0)) {
-		t.Errorf("started_at reads %v, want the end's %s: the late start does not move it", step.StartedAt, minute(0))
-	}
-	if step.Session != "s1" {
-		t.Errorf("session reads %q, want the late start's s1", step.Session)
+	if step.StartedAt == nil || !step.StartedAt.Equal(minute(0)) || step.Session != "s1" || step.Model != "anthropic/claude-opus-5" {
+		t.Errorf("the step reads started_at %v session %q model %q, want the end's %s, s1 and anthropic/claude-opus-5", step.StartedAt, step.Session, step.Model, minute(0))
 	}
 	if step.Result != ResultPassed || step.EndedAt == nil || !step.EndedAt.Equal(minute(5)) {
 		t.Errorf("the step reads result %q ended %v, want the end's passed at %s", step.Result, step.EndedAt, minute(5))
@@ -365,27 +397,34 @@ func TestALateReportKeepsTheEndedRunsSession(t *testing.T) {
 }
 
 // A write that makes a node names the step's whole identity: its task, kind, place, role and
-// generation. One that leaves any of them out is refused ErrStepInput and writes nothing; the
-// same write with all of them makes the node, which is the control.
+// generation. One that leaves any of them out, or names a task, a kind or a role that is empty,
+// which states nothing, is refused ErrStepInput and writes nothing; the same write with all of
+// them makes the node, which is the control.
 func TestAWriteThatMakesANodeNamesItsIdentity(t *testing.T) {
 	pool := storetest.Open(t).Pool
-	for name, without := range map[string]func(*StepWrite){
-		"kind":       func(write *StepWrite) { write.Kind = nil },
-		"task":       func(write *StepWrite) { write.Task = nil },
-		"step":       func(write *StepWrite) { write.Place = nil },
-		"role":       func(write *StepWrite) { write.Role = nil },
-		"generation": func(write *StepWrite) { write.Generation = nil },
+	for name, missing := range map[string]struct {
+		field  string
+		change func(*StepWrite)
+	}{
+		"no kind":       {"kind", func(write *StepWrite) { write.Kind = nil }},
+		"no task":       {"task", func(write *StepWrite) { write.Task = nil }},
+		"no step":       {"step", func(write *StepWrite) { write.Place = nil }},
+		"no role":       {"role", func(write *StepWrite) { write.Role = nil }},
+		"no generation": {"generation", func(write *StepWrite) { write.Generation = nil }},
+		"an empty kind": {"kind", func(write *StepWrite) { write.Kind = new("") }},
+		"an empty task": {"task", func(write *StepWrite) { write.Task = new("") }},
+		"an empty role": {"role", func(write *StepWrite) { write.Role = new("") }},
 	} {
-		t.Run("no "+name, func(t *testing.T) {
+		t.Run(name, func(t *testing.T) {
 			id := uuid.NewString()
 			write := startOf(implementer(id), minute(0))
-			without(&write)
+			missing.change(&write)
 			_, err := tryPut(pool, write, minute(0))
 			if !errors.Is(err, ErrStepInput) {
-				t.Fatalf("a first write with no %s answered %v, want %v", name, err, ErrStepInput)
+				t.Fatalf("a first write with %s answered %v, want %v", name, err, ErrStepInput)
 			}
-			if !strings.Contains(err.Error(), "does not name its "+name+":") {
-				t.Errorf("the refusal %q does not name the missing %s alone", err, name)
+			if !strings.Contains(err.Error(), "does not name its "+missing.field+":") {
+				t.Errorf("the refusal %q does not name the missing %s alone", err, missing.field)
 			}
 			if nodes := countNodes(t, pool, id); nodes != 0 {
 				t.Errorf("the refused write left %d nodes, want none", nodes)
@@ -752,6 +791,14 @@ func TestAStepWriteRefusesAValueOutsideItsForm(t *testing.T) {
 		"type":       func(write *StepWrite) { write.Type = new("Review") },
 		"generation": func(write *StepWrite) { write.Generation = new(int64(0)) },
 		"issue":      func(write *StepWrite) { write.Issue = "" },
+		// The agent, the session and the model are printable ASCII with no space, at most 128
+		// characters (contracts.StepAgentTextPattern): `dispatch steps` joins a record's fields with
+		// spaces, so a space or a newline in one would shift its columns or forge a line.
+		"model":                func(write *StepWrite) { write.Model = new("first/model with spaces") },
+		"model with a newline": func(write *StepWrite) { write.Model = new("first/model\ndefault 9 step forged") },
+		"model over the bound": func(write *StepWrite) { write.Model = new("first/" + strings.Repeat("m", 123)) },
+		"session":              func(write *StepWrite) { write.Session = new("ses\tone") },
+		"agent":                func(write *StepWrite) { write.Agent = new("legion agent") },
 	} {
 		t.Run(name, func(t *testing.T) {
 			write := startOf(implementer(uuid.NewString()), minute(0))
@@ -768,6 +815,26 @@ func TestAStepWriteRefusesAValueOutsideItsForm(t *testing.T) {
 	}
 	if log := wholeLog(t, pool); len(log) != 0 {
 		t.Errorf("the refused writes left %d tuples, want none", len(log))
+	}
+}
+
+// The control of the agent text rows above: an agent, a session and a model inside the form, the
+// model at its 128-character bound with the punctuation a model id carries, are taken and read
+// back unchanged.
+func TestAStepWriteKeepsAgentTextInsideItsForm(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	write := startOf(implementer(uuid.NewString()), minute(0))
+	model := "openrouter/vendor/model-4.1:beta_" + strings.Repeat("x", 128-len("openrouter/vendor/model-4.1:beta_"))
+	write.Session, write.Model = new("01a1edce-23dd-726e-b804-626dd5bb3957"), new(model)
+	if _, err := tryPut(pool, write, minute(0)); err != nil {
+		t.Fatalf("a write whose agent text is inside its form answered %v, want it taken", err)
+	}
+	steps := issueSteps(t, pool, "LEG-1")
+	if len(steps) != 1 {
+		t.Fatalf("LEG-1 reads %d steps, want 1", len(steps))
+	}
+	if got := steps[0]; got.Agent != *write.Agent || got.Session != *write.Session || got.Model != model {
+		t.Errorf("the step reads agent %q, session %q, model %q; want %q, %q, %q", got.Agent, got.Session, got.Model, *write.Agent, *write.Session, model)
 	}
 }
 

@@ -43,6 +43,12 @@ func All() ([]Migration, error) {
 	return Load(files)
 }
 
+// StepRecordsRollForward is the version of 20261117064152_step_starts_roll_forward.up.sql, the roll
+// forward of a rollback of the release that records each step, whose header carries that
+// release's way back (WayBack): the one spelling of it every test that runs, reads or re-arms that
+// block names.
+const StepRecordsRollForward = 20261117064152
+
 // WayBack is the way back the header of migration version carries, as an operator runs it with
 // the daemon stopped: the header's last paragraph, which is its "-- " comment lines after the last
 // blank "--" line and before the first line that is no comment, the migration's first statement,
@@ -51,9 +57,13 @@ func All() ([]Migration, error) {
 // ";"; a header whose last paragraph is prose, and a version not embedded, are errors, so no caller
 // runs an empty block, or prose, against a store. That test is all this reads: what the block
 // does is held by the test of the migration that runs it, and its text by internal/textcheck,
-// which holds it to the block docs/kubernetes.md gives under the migration's rollback.
-// 20261117023932_outbox_kinds_with_the_plan_record.up.sql and
-// 20261117064152_step_starts_roll_forward.up.sql carry one.
+// which holds it to the block docs/kubernetes.md gives under the migration's rollback. The
+// headers of 20261117023932_outbox_kinds_with_the_plan_record.up.sql, of
+// 20261120012547_set_back_observed_seq.up.sql and of StepRecordsRollForward carry one. The header
+// of 20261120055717_dispatch_issue_value_sequences.up.sql carries another, one statement that
+// docs/kubernetes.md gives too: internal/store's
+// TestTheCopysRefillMarksComeFromTheMigrationAndTheWayBack runs it, and no textcheck holds its
+// text to the guide's.
 func WayBack(version int) (string, error) {
 	all, err := All()
 	if err != nil {

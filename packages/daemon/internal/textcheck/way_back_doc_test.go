@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
 
 // The way back of store migration 20261111225552 stands in the migration's header, which ships
@@ -39,11 +41,12 @@ const (
 	wayBackGuide                 = "docs/kubernetes.md"
 	// wayBackMark is the line that deletes the migration's version row, which no other rollback's
 	// block carries. The version is internal/daemon's phaseEntryMigration, written out because
-	// this file reaches no product package: importing internal/daemon would put the daemon, and
-	// every file that package's own tests read, back in this job's filter, which is what
-	// splitting the check took out. A version that moved cannot pass silently either way: the
-	// header, the guide and the extract all carry it, so a guide whose block names another
-	// version holds no fence this mark finds, which fails loudly.
+	// importing internal/daemon would put the daemon, and every file that package's own tests
+	// read, back in this job's filter, which is what splitting the check took out; the one product
+	// package this file imports, internal/store/migrations, imports no other package of the daemon.
+	// A version that moved cannot pass silently either way: the header, the guide and the extract
+	// all carry it, so a guide whose block names another version holds no fence this mark finds,
+	// which fails loudly.
 	wayBackMark = "delete from schema_version where version = 20261111225552;"
 	// architectEntryWayBackMark is the line that deletes the version row of
 	// 20261114061900_phase_entry_verbatim, the newest of contract 146's four migrations and the
@@ -129,27 +132,56 @@ func assertTheExtractIsTheGuidesBlock(t *testing.T, extract, heading, mark strin
 		t.Fatalf("%s carries nothing under its `#` header: internal/daemon's check of the migration "+
 			"headers has no copy of the guide's block to hold them to", extract)
 	}
-	guide := wayBackBlockOfTheGuide(t, heading, mark, extract)
-	if copied == guide {
+	assertIsTheGuidesBlock(t, heldBlock{Text: copied, Label: "the extract", Name: extract,
+		Why: "the extract is the copy internal/daemon checks the migration headers against, so the guide " +
+			"answers for the migrations only while the two are equal"}, heading, mark)
+}
+
+// headersWayBack is the way back the header of the migration version carries, read by the one
+// reader of it (migrations.WayBack), which internal/store's tests run over a store, so the text a
+// check here holds to the guide is the text those tests run. name names the header in a failure.
+// A migration that is not embedded, and a header with no way back, stop the test by name: a block
+// this cannot find is a block a check would pass while comparing nothing.
+func headersWayBack(t *testing.T, version int, name string) string {
+	t.Helper()
+	block, err := migrations.WayBack(version)
+	if err != nil {
+		t.Fatalf("read the way back %s gives from %s: %v", wayBackGuide, name, err)
+	}
+	return block
+}
+
+// heldBlock is a way back a check holds to the guide's block: Text is the block; Name names where
+// it was read from in a failure, and Label its side of the lines the failure prints; Why says who
+// runs it beside the operator who runs the guide's, which is why the two stay one text. Its fields
+// are named at every use, so no two of its strings can trade places unseen.
+type heldBlock struct {
+	Text, Name, Label, Why string
+}
+
+// assertIsTheGuidesBlock holds held to the fenced block of the guide holding mark under heading,
+// and names each line the two disagree on.
+func assertIsTheGuidesBlock(t *testing.T, held heldBlock, heading, mark string) {
+	t.Helper()
+	guide := wayBackBlockOfTheGuide(t, heading, mark, held.Name)
+	if held.Text == guide {
 		return
 	}
-	t.Errorf("%s and %s's way back disagree:\n%s"+
-		"the extract is the copy internal/daemon checks the migration headers against, so the guide "+
-		"answers for the migrations only while the two are equal; change them in one commit",
-		extract, wayBackGuide, wayBackBlockDifference("the extract", copied, guide))
+	t.Errorf("%s and %s's way back disagree:\n%s%s; change them in one commit",
+		held.Name, wayBackGuide, wayBackBlockDifference(held.Label, held.Text, guide), held.Why)
 }
 
 // wayBackBlockOfTheGuide is a way back as docs/kubernetes.md carries it (wayBackBlockIn): the
-// content of the one fenced block a reader sees holding mark, in the section heading opens. held
-// is the text the check holds the guide's block to, which a failure names: a committed extract, or
-// a migration's header. A guide with no such block stops the test rather than skipping it: an
-// absence here would read exactly like a pass, and what this check guards is the copy an operator
-// runs at a rollback.
-func wayBackBlockOfTheGuide(t *testing.T, heading, mark, held string) string {
+// content of the one fenced block a reader sees holding mark, in the section heading opens. name
+// names, in a failure, where the text the check holds that block to was read from: a committed
+// extract, or a migration's header. A guide with no such block stops the test rather than
+// skipping it: an absence here would read exactly like a pass, and what this check guards is the
+// copy an operator runs at a rollback.
+func wayBackBlockOfTheGuide(t *testing.T, heading, mark, name string) string {
 	t.Helper()
 	block, err := wayBackBlockIn(wayBackGuide, shippedText(t, wayBackGuide), heading, mark)
 	if err != nil {
-		t.Fatalf("%v; that block is the way back an operator runs, and the check holds it to %s", err, held)
+		t.Fatalf("%v; that block is the way back an operator runs, and the check holds it to %s", err, name)
 	}
 	return block
 }
@@ -245,10 +277,11 @@ func fencedBlockHolds(text, mark string) bool {
 
 // The reader takes the way back an operator reads under its heading, and nothing else in its
 // place. The block in its section is taken, past a shell comment of another block there, which
-// opens no section. The same block deleted, moved to the next section, or given a copy before
-// its section or beside it is refused, as is a guide without that heading or with it twice. Each
-// case is a guide as docs/kubernetes.md writes one: the section, the one before it and the one
-// after it.
+// opens no section, and past a heading below the section's level, which stands inside it. The
+// same block deleted, moved to the next section, moved past a heading above the section's level,
+// or given a copy before its section or beside it is refused, as is a guide without that heading
+// or with it twice. Each case is a guide as docs/kubernetes.md writes one: the section, the one
+// before it and the one after it.
 func TestTheWayBackReaderTakesTheOneBlockOfItsSection(t *testing.T) {
 	const (
 		heading = "Rolling back the release that rates each plan"
@@ -257,6 +290,8 @@ func TestTheWayBackReaderTakesTheOneBlockOfItsSection(t *testing.T) {
 		fenced  = "```sql\n" + block + "\n```\n"
 		before  = "#### Rolling back the release that records each step\n\nRun its block first.\n\n"
 		opening = "#### " + heading + "\n\nRun this with the daemon stopped:\n\n"
+		deeper  = "##### The rows of the two kinds\n\nThey are the plans and the ratings.\n\n"
+		above   = "### Rolling back a release\n\nA rollback of any release takes these steps.\n\n"
 		after   = "\nThe header carries this same block.\n\n" +
 			"#### Rolling back the release whose update round ends at its bound\n\nRun its block too.\n"
 		shell = "```sh\n# Stop the daemon first.\nkubectl -n legion scale deployment/legion --replicas=0\n```\n\n"
@@ -264,6 +299,9 @@ func TestTheWayBackReaderTakesTheOneBlockOfItsSection(t *testing.T) {
 	for _, guide := range []struct{ shape, text, refusal string }{
 		{"the block in its section", before + opening + fenced + after, ""},
 		{"the block past a shell comment of another block", before + opening + shell + fenced + after, ""},
+		{"the block past a heading below the section's level", before + opening + deeper + fenced + after, ""},
+		{"the block past a heading above the section's level", before + opening + above + fenced + after,
+			"outside the section"},
 		{"the block deleted", before + opening + after, "no fenced block"},
 		{"the block moved to the next section", before + opening + after + "\n" + fenced, "outside the section"},
 		{"a copy of the block before its section", fenced + "\n" + before + opening + fenced + after,

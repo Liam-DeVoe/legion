@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -50,6 +49,26 @@ func TestListIssuesFiltersStatusesWithoutChangingDispatchOrder(t *testing.T) {
 	}
 	if issues[1].Key != "LEGION-2" || fmt.Sprint(issues[1].Rank) != "c" || issues[1].Parent == nil || *issues[1].Parent != "LEGION-1" || issues[1].HandedOver {
 		t.Fatalf("second filtered issue = %#v, want LEGION-2 with Dispatch rank c under LEGION-1, not handed over (no labels)", issues[1])
+	}
+	for i, want := range [][]string{{"frontend", "Legion"}, {}} {
+		if !reflect.DeepEqual(issues[i].Labels, want) {
+			t.Fatalf("labels of %s = %#v, want %#v as the listing answered them", issues[i].Key, issues[i].Labels, want)
+		}
+	}
+}
+
+// release_children reads a child from the project's listing when Dispatch's detail read of it
+// fails, as the summary made an Issue (api's cachedIssueReader), and the copy of Dispatch's issues
+// takes that Issue as a reading of all five values: the Issue keeps the labels the listing showed,
+// with every other field the listing carries.
+func TestASummaryAsAnIssueKeepsItsLabels(t *testing.T) {
+	parent := "LEGION-1"
+	summary := IssueSummary{Key: "LEGION-2", Title: "child", Status: "todo", Parent: &parent, Rank: "b", Labels: []string{"frontend", "Legion"},
+		HandedOver: true, LastSeq: 7, ResolvedRepo: "acme/widgets", BlockedBy: []string{"LEGION-3"}, ClaimedBy: "session:architect"}
+	want := Issue{Key: "LEGION-2", Title: "child", Status: "todo", Parent: &parent, Rank: "b", Labels: []string{"frontend", "Legion"},
+		HandedOver: true, LastSeq: 7, ResolvedRepo: "acme/widgets", BlockedBy: []string{"LEGION-3"}, Claim: &Claim{Kind: "session", ID: "architect"}}
+	if got := summary.Issue(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the summary as an Issue = %#v, want %#v", got, want)
 	}
 }
 
@@ -118,36 +137,6 @@ func TestListAndDetailCarryTheResolvedRepository(t *testing.T) {
 	}
 	if issue.ResolvedRepo != "acme/gadgets" {
 		t.Fatalf("issue = %#v, want it resolved to acme/gadgets", issue)
-	}
-}
-
-// The repository mapping is every project's (GET /api/v1/settings/repo-projects), each mapping
-// with its project and whether it is that project's default; the daemon keeps its own project's.
-func TestListRepoProjectsReadsEveryMappingWithItsDefault(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/settings/repo-projects" {
-			t.Fatalf("request = %s %s, want GET /api/v1/settings/repo-projects", r.Method, r.URL.Path)
-		}
-		assertBearer(t, r)
-		writeJSON(t, w, []map[string]any{
-			{"repo": "acme/gadgets", "project": "LEGION", "default": false, "created_by": nil, "created_at": "2026-10-16T12:00:00Z"},
-			{"repo": "acme/widgets", "project": "LEGION", "default": true, "created_by": nil, "created_at": "2026-10-16T12:00:00Z"},
-			{"repo": "other/thing", "project": "OTHER", "default": true, "created_by": nil, "created_at": "2026-10-16T12:00:00Z"},
-		})
-	}))
-	defer server.Close()
-
-	mappings, err := New(server.URL, dispatchToken).ListRepoProjects(context.Background())
-	if err != nil {
-		t.Fatalf("list repo projects: %v", err)
-	}
-	want := []RepoProject{
-		{Repo: "acme/gadgets", Project: "LEGION"},
-		{Repo: "acme/widgets", Project: "LEGION", Default: true},
-		{Repo: "other/thing", Project: "OTHER", Default: true},
-	}
-	if !reflect.DeepEqual(mappings, want) {
-		t.Fatalf("mappings = %#v, want %#v", mappings, want)
 	}
 }
 
@@ -369,306 +358,6 @@ func TestGatedStepsPublishSendsTheListUnderTheDaemonSession(t *testing.T) {
 			}
 		})
 	}
-}
-
-// A step record is a PUT on the record's own id under its issue, as the daemon's session of the
-// issue's project, the one session Dispatch's route takes a record from. Dispatch writes each field
-// once and keeps what a write leaves out, so the body names every identity field, an empty type
-// and a place of 0 among them, and leaves out each field the daemon does not know yet.
-func TestPutStepWritesTheRecordUnderTheDaemonSession(t *testing.T) {
-	const id = "0b9e5c2a-7f43-5d1e-9a6b-3c4d5e6f7a8b"
-	started := time.Date(2026, 11, 16, 23, 0, 0, 0, time.UTC)
-	body := putStep(t, id, StepWrite{Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
-		Agent: "legion-leg-leg-1-implementer", Generation: 2, StartedAt: &started})
-	for name, want := range map[string]string{
-		"task": `"default"`, "step": "0", "kind": `"retro"`, "role": `"implementer"`, "type": `""`,
-		"agent": `"legion-leg-leg-1-implementer"`, "generation": "2", "started_at": `"2026-11-16T23:00:00Z"`,
-		"actor": `{"kind":"session","id":"legion-daemon:LEG"}`,
-	} {
-		if got := string(body[name]); got != want {
-			t.Errorf("the body writes %s as %q, want %s", name, got, want)
-		}
-	}
-	for _, name := range []string{"id", "session", "model", "ended_at", "result", "returned_to", "report", "rating", "rating_reason"} {
-		if raw, ok := body[name]; ok {
-			t.Errorf("the body writes %s as %s, want it left out", name, raw)
-		}
-	}
-}
-
-// A write that rates a retro goes to the record's rating route, PUT
-// /api/v1/issues/{key}/steps/{id}/rating, never to the step route: Dispatch ignores a body member
-// it does not declare, so a rating sent to the step route would be answered 200 and dropped. The
-// body is the step write's, with the identity of the retro's run, which makes the record where its
-// start and end have not landed yet, plus the rating and its reason.
-func TestPutStepWritesARatingOnTheRatingRoute(t *testing.T) {
-	const id = "0b9e5c2a-7f43-5d1e-9a6b-3c4d5e6f7a8b"
-	var body map[string]json.RawMessage
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut || r.URL.EscapedPath() != "/api/v1/issues/LEG-1/steps/"+id+"/rating" {
-			t.Fatalf("request = %s %s, want PUT /api/v1/issues/LEG-1/steps/%s/rating", r.Method, r.URL.EscapedPath(), id)
-		}
-		assertBearer(t, r)
-		decodeJSON(t, r, &body)
-		writeJSON(t, w, map[string]any{"id": id, "issue": "LEG-1"})
-	}))
-	defer server.Close()
-
-	write := StepWrite{Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
-		Agent: "legion-leg-leg-1-implementer", Generation: 2, PlanRating: &PlanRating{Rating: 4, Reason: "The plan put the tests after the review."}}
-	if err := New(server.URL, dispatchToken).PutStep(context.Background(), "LEG-1", id, write); err != nil {
-		t.Fatalf("write the rating: %v", err)
-	}
-	for name, want := range map[string]string{
-		"task": `"default"`, "step": "0", "kind": `"retro"`, "role": `"implementer"`, "type": `""`,
-		"agent": `"legion-leg-leg-1-implementer"`, "generation": "2", "rating": "4",
-		"rating_reason": `"The plan put the tests after the review."`, "actor": `{"kind":"session","id":"legion-daemon:LEG"}`,
-	} {
-		if got := string(body[name]); got != want {
-			t.Errorf("the body writes %s as %q, want %s", name, got, want)
-		}
-	}
-	for _, name := range []string{"id", "session", "model", "started_at", "ended_at", "result", "returned_to", "report"} {
-		if raw, ok := body[name]; ok {
-			t.Errorf("the body writes %s as %s, want it left out", name, raw)
-		}
-	}
-}
-
-// A write that names the experiment and the variant of its issue reaches Dispatch as two
-// requests, in this order: the record's own write, on the route it takes without them (the step
-// route, or the rating route for a retro's rating), with neither member; then the variant's write,
-// on the record's experiment route, PUT /api/v1/issues/{key}/steps/{id}/experiment, with the run's
-// identity and the pair alone. Dispatch ignores a body member its route does not declare, so a
-// pair sent on either earlier route would be answered 200 and lost by a Dispatch from before the
-// experiment route, which answers that route its router's NOT_FOUND instead; and the record goes
-// first, so such a Dispatch still takes the record while the variant waits. A write that names no
-// pair is the one request it was, and a record's write that Dispatch does not take ends the write
-// there, so no variant is sent ahead of its record.
-func TestPutStepWritesTheExperimentOnItsOwnRoute(t *testing.T) {
-	const id = "0b9e5c2a-7f43-5d1e-9a6b-3c4d5e6f7a8b"
-	const step = "/api/v1/issues/LEG-1/steps/" + id
-	actor := `{"kind":"session","id":"legion-daemon:LEG"}`
-	started := time.Date(2026, 11, 16, 23, 0, 0, 0, time.UTC)
-	session := "ses-implementer"
-	pair := &StepExperiment{Experiment: "planning", Variant: "b"}
-	start := StepWrite{Task: "default", Step: 2, Kind: "step", Role: "implementer", Type: "implementation",
-		Agent: "legion-leg-leg-1-implementer", Generation: 1, Session: &session, StartedAt: &started}
-	startIdentity := map[string]string{"task": `"default"`, "step": "2", "kind": `"step"`, "role": `"implementer"`,
-		"type": `"implementation"`, "agent": `"legion-leg-leg-1-implementer"`, "generation": "1", "actor": actor}
-	rating := StepWrite{Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
-		Agent: "legion-leg-leg-1-implementer", Generation: 2, PlanRating: &PlanRating{Rating: 4, Reason: "The plan fit the work."}}
-	ratingIdentity := map[string]string{"task": `"default"`, "step": "0", "kind": `"retro"`, "role": `"implementer"`,
-		"type": `""`, "agent": `"legion-leg-leg-1-implementer"`, "generation": "2", "actor": actor}
-	// with is a copy of fields with more added.
-	with := func(fields, more map[string]string) map[string]string {
-		all := maps.Clone(fields)
-		maps.Copy(all, more)
-		return all
-	}
-	named := func(write StepWrite) StepWrite {
-		write.StepExperiment = pair
-		return write
-	}
-	theVariant := map[string]string{"experiment": `"planning"`, "variant": `"b"`}
-	noPair := []string{"id", "experiment", "variant"}
-	onlyThePair := []string{"id", "session", "model", "started_at", "ended_at", "result", "returned_to", "report", "rating", "rating_reason"}
-	type request struct {
-		path    string
-		present map[string]string
-		absent  []string
-	}
-	for _, tc := range []struct {
-		name  string
-		write StepWrite
-		// refused is whether the server answers the record's own write 500.
-		refused bool
-		want    []request
-	}{
-		{
-			name:  "a start that names the pair",
-			write: named(start),
-			want: []request{
-				{path: step, present: with(startIdentity, map[string]string{"session": `"ses-implementer"`, "started_at": `"2026-11-16T23:00:00Z"`}), absent: noPair},
-				{path: step + "/experiment", present: with(startIdentity, theVariant), absent: onlyThePair},
-			},
-		},
-		{
-			name:  "a retro's rating that names the pair",
-			write: named(rating),
-			want: []request{
-				{path: step + "/rating", present: with(ratingIdentity, map[string]string{"rating": "4", "rating_reason": `"The plan fit the work."`}), absent: noPair},
-				{path: step + "/experiment", present: with(ratingIdentity, theVariant), absent: onlyThePair},
-			},
-		},
-		{
-			name:  "a start that names no pair",
-			write: start,
-			want:  []request{{path: step, present: startIdentity, absent: []string{"id", "experiment", "variant", "rating", "rating_reason"}}},
-		},
-		{
-			name:    "a start that names the pair, whose record Dispatch does not take",
-			write:   named(start),
-			refused: true,
-			want:    []request{{path: step, present: startIdentity, absent: noPair}},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var paths []string
-			var bodies []map[string]json.RawMessage
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodPut {
-					t.Errorf("request = %s %s, want a PUT", r.Method, r.URL.EscapedPath())
-				}
-				assertBearer(t, r)
-				var body map[string]json.RawMessage
-				decodeJSON(t, r, &body)
-				paths = append(paths, r.URL.EscapedPath())
-				bodies = append(bodies, body)
-				if tc.refused && r.URL.EscapedPath() == step {
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(http.StatusInternalServerError)
-					_, _ = w.Write([]byte(`{"code":"INTERNAL","error":"the store is down"}`))
-					return
-				}
-				writeJSON(t, w, map[string]any{"id": id, "issue": "LEG-1"})
-			}))
-			defer server.Close()
-
-			err := New(server.URL, dispatchToken).PutStep(context.Background(), "LEG-1", id, tc.write)
-			var refusal *Error
-			if tc.refused && (!errors.As(err, &refusal) || refusal.Status != http.StatusInternalServerError) {
-				t.Fatalf("PutStep = %v, want Dispatch's 500 to the record's write", err)
-			}
-			if !tc.refused && err != nil {
-				t.Fatalf("PutStep = %v, want the write taken", err)
-			}
-			var want []string
-			for _, request := range tc.want {
-				want = append(want, request.path)
-			}
-			if !slices.Equal(paths, want) {
-				t.Fatalf("the write was sent to %q, want %q", paths, want)
-			}
-			for i, request := range tc.want {
-				for name, value := range request.present {
-					if got := string(bodies[i][name]); got != value {
-						t.Errorf("the body sent to %s writes %s as %q, want %s", request.path, name, got, value)
-					}
-				}
-				for _, name := range request.absent {
-					if raw, ok := bodies[i][name]; ok {
-						t.Errorf("the body sent to %s writes %s as %s, want it left out", request.path, name, raw)
-					}
-				}
-			}
-		})
-	}
-}
-
-// The plan of one run of an issue is a PUT on the plan's own id under its issue, as the daemon's
-// session of the issue's project, the one session Dispatch's route takes a plan from. The body
-// names the run, the source and every task with its steps in order; a plan of the source default
-// names no document and no version, which Dispatch refuses on such a plan, so the body leaves both
-// out, and a plan of the source owner names both, under the names Dispatch's route reads.
-func TestPutPlanWritesThePlanUnderTheDaemonSession(t *testing.T) {
-	const id = "5d6e7f80-91a2-5b3c-8d4e-5f6a7b8c9d0e"
-	for _, tc := range []struct {
-		name    string
-		plan    PlanWrite
-		present map[string]string
-		absent  []string
-	}{
-		{
-			name: "the default plan",
-			plan: PlanWrite{Generation: 2, Source: "default",
-				Tasks: []PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}},
-			present: map[string]string{"generation": "2", "source": `"default"`,
-				"tasks": `[{"id":"default","steps":["planner","implementer","tester","reviewer","acceptance:owner"]}]`},
-			absent: []string{"id", "artifact_id", "version"},
-		},
-		{
-			name: "an owner's plan",
-			plan: PlanWrite{Generation: 3, Source: "owner", PlanDocument: &PlanDocument{ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 4},
-				Tasks: []PlanTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}}}},
-			present: map[string]string{"generation": "3", "source": `"owner"`, "artifact_id": `"6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"`,
-				"version": "4", "tasks": `[{"id":"ui","steps":["tester","implementer:ui"]}]`},
-			absent: []string{"id"},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var body map[string]json.RawMessage
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodPut || r.URL.EscapedPath() != "/api/v1/issues/LEG-1/plans/"+id {
-					t.Fatalf("request = %s %s, want PUT /api/v1/issues/LEG-1/plans/%s", r.Method, r.URL.EscapedPath(), id)
-				}
-				assertBearer(t, r)
-				decodeJSON(t, r, &body)
-				writeJSON(t, w, map[string]any{"id": id, "issue": "LEG-1"})
-			}))
-			defer server.Close()
-
-			if err := New(server.URL, dispatchToken).PutPlan(context.Background(), "LEG-1", id, tc.plan); err != nil {
-				t.Fatalf("write the plan: %v", err)
-			}
-			tc.present["actor"] = `{"kind":"session","id":"legion-daemon:LEG"}`
-			for name, want := range tc.present {
-				if got := string(body[name]); got != want {
-					t.Errorf("the body writes %s as %q, want %s", name, got, want)
-				}
-			}
-			for _, name := range tc.absent {
-				if raw, ok := body[name]; ok {
-					t.Errorf("the body writes %s as %s, want it left out", name, raw)
-				}
-			}
-		})
-	}
-}
-
-// The end of a merge that moved back to the retro names each field it knows under the name
-// Dispatch's route reads, the report of the completion that ended it among them: the route ignores
-// a member it does not declare, so a field under another name would be lost with no refusal. Its
-// returned_to is 0, the retro's place, written as a value, where a write that returns nowhere
-// leaves it out (TestPutStepWritesTheRecordUnderTheDaemonSession), so Dispatch can tell the two
-// apart.
-func TestPutStepWritesAnEndUnderTheNamesTheRouteReads(t *testing.T) {
-	const id = "1c2d3e4f-5a6b-5c7d-8e9f-0a1b2c3d4e5f"
-	ended := time.Date(2026, 11, 17, 2, 0, 0, 0, time.UTC)
-	session, model, result, report, retro := "ses-merger", "anthropic/claude-opus-5", "failed", "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", 0
-	body := putStep(t, id, StepWrite{Task: "default", Step: 0, Kind: "merge", Role: "merger", Type: "",
-		Agent: "legion-leg-leg-1-merger", Generation: 1, Session: &session, Model: &model, EndedAt: &ended,
-		Result: &result, ReturnedTo: &retro, Report: &report})
-	for name, want := range map[string]string{
-		"kind": `"merge"`, "step": "0", "session": `"ses-merger"`, "model": `"anthropic/claude-opus-5"`,
-		"ended_at": `"2026-11-17T02:00:00Z"`, "result": `"failed"`, "returned_to": "0",
-		"report": `"6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"`,
-	} {
-		if got, ok := body[name]; !ok || string(got) != want {
-			t.Errorf("the body writes %s as %q (written: %t), want %s", name, got, ok, want)
-		}
-	}
-}
-
-// putStep writes the record id of LEG-1 through the client to Dispatch's step route as a test plays
-// it: a PUT on that record under the daemon's bearer, answered with the record. It returns the body
-// the route read, once the route has answered.
-func putStep(t *testing.T, id string, write StepWrite) map[string]json.RawMessage {
-	t.Helper()
-	var body map[string]json.RawMessage
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut || r.URL.EscapedPath() != "/api/v1/issues/LEG-1/steps/"+id {
-			t.Fatalf("request = %s %s, want PUT /api/v1/issues/LEG-1/steps/%s", r.Method, r.URL.EscapedPath(), id)
-		}
-		assertBearer(t, r)
-		decodeJSON(t, r, &body)
-		writeJSON(t, w, map[string]any{"id": id, "issue": "LEG-1"})
-	}))
-	defer server.Close()
-	if err := New(server.URL, dispatchToken).PutStep(context.Background(), "LEG-1", id, write); err != nil {
-		t.Fatalf("write the step record: %v", err)
-	}
-	return body
 }
 
 func TestPostMessageSendsBodyWithoutAnUnsupportedIdempotencyKey(t *testing.T) {

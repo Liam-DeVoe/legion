@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
@@ -27,28 +28,33 @@ import (
 // its router's NOT_FOUND, which the daemon sends again until Dispatch serves it. All four live in
 // internal/dispatch/workflowstore, the one writer of the nodes and tuples that hold them.
 //
-// The writes are the daemon's and no one else's: a person, an agent's session and the daemon of
-// another project are refused 403 STEP_WRITER, so a record says what that deployment's daemon
-// saw. Like the design gates' publish they append no issue event and notify nobody, since an
-// event would feed the daemon's intake with facts it caused; and they read the issue with no open
-// check, because the merge that closes an issue ends a step of it.
+// Each write names the session of the issue's project's daemon, legion-daemon:<PROJECT>, as its
+// actor, or is refused 403 STEP_WRITER. That holds the session the body names, which a bearer
+// bound to a session cannot make another's (403 ACTOR_SESSION_MISMATCH); a credential that proves
+// no session, such as the shared agent token, a personal agent token or a service account's, can
+// name the daemon's session and write, as the role-holders publish can. Like the design gates'
+// publish the writes append no issue event and notify nobody, since an event would feed the
+// daemon's intake with facts it caused; and they read the issue with no open check, because the
+// merge that closes an issue ends a step of it.
 
-// The refusals of a step write, beside the package's own decode error and 404 ISSUE_NOT_FOUND.
+// The refusals of a step write, beside the package's own decode error and 404 ISSUE_NOT_FOUND,
+// each the code contracts gives it, which the Legion daemon reads to end a row on.
 const (
 	// codeStepInput is a value outside its form, or a first write of a run that does not name
 	// its identity; the message names the field (workflowstore.ErrStepInput).
-	codeStepInput = "STEP_INPUT"
+	codeStepInput = contracts.StepInputCode
 	// codeStepWriter is a writer that is not the session of the issue's project's daemon.
-	codeStepWriter = "STEP_WRITER"
+	codeStepWriter = contracts.StepWriterCode
 	// codeStepOtherIssue is an id whose record is a run of another issue.
-	codeStepOtherIssue = "STEP_OTHER_ISSUE"
+	codeStepOtherIssue = contracts.StepOtherIssueCode
 )
 
 // stepRecordInput is the body PUT /api/v1/issues/{key}/steps/{id} takes: the writer, and each
 // field of the run the write states. A field the body leaves out, or sends null or "", states
 // nothing, so the write leaves it to the write that knows it. A first write of a run names its
 // task, step, kind, role and generation. returned_to 0 is place 0 and states it
-// (workflowstore.StepWrite).
+// (workflowstore.StepWrite). The enum tags are the words of contracts' STEP_KINDS and
+// STEP_RESULTS, which a tag cannot name; TestTheStepRouteNamesContractsWords holds them to those.
 type stepRecordInput struct {
 	Actor      *model.Actor `json:"actor"`
 	Task       *string      `json:"task"`
@@ -108,113 +114,93 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeIssueStep(w, r, input.write(), input.Actor, stepRouteRecord)
+	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a step record")
+	if !ok {
+		return
+	}
+	s.writeIssueStep(w, r, input.write(), actor, key)
 }
 
 // putIssueStepRating writes the rating of a retro's run, with every field of the run the body
 // states, as putIssueStep writes them: the rating and its reason are set once, and the record is
-// made where the retro's start and end have not landed yet. The record must be a retro's.
+// made where the retro's start and end have not landed yet. The record must be a retro's. A body
+// that names no rating is refused once its writer is checked, before the transaction and the
+// issue's lock, as the package refuses a required field it lacks: the store takes a step write
+// with no rating, so this route alone holds one required. A reason the body leaves out is "",
+// which the store refuses as a rating_reason left out, after it has checked the write's other
+// fields and the rating.
 func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 	var input stepRatingInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	write := input.write()
-	write.Rating = input.rating()
-	s.writeIssueStep(w, r, write, input.Actor, stepRouteRating)
-}
-
-// rating is the rating input states as the store's one value: nil where the body names no rating,
-// which the rating route refuses, and else the rating with the reason, "" where the body names
-// none, which the store refuses as a rating_reason left out, after it has checked the write's other
-// fields and the rating.
-func (input stepRatingInput) rating() *workflowstore.StepRating {
+	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a step record")
+	if !ok {
+		return
+	}
 	if input.Rating == nil {
-		return nil
+		writeError(w, codeStepInput, http.StatusBadRequest, fmt.Sprintf(
+			"rating is required: the rating route writes a retro's rating, %d to %d, with its rating_reason", contracts.PlanRatingLeast, contracts.PlanRatingMost))
+		return
 	}
-	rating := &workflowstore.StepRating{Rating: *input.Rating}
+	write := input.write()
+	write.Rating = &workflowstore.StepRating{Rating: *input.Rating}
 	if input.RatingReason != nil {
-		rating.Reason = *input.RatingReason
+		write.Rating.Reason = *input.RatingReason
 	}
-	return rating
+	s.writeIssueStep(w, r, write, actor, key)
 }
 
 // putIssueStepExperiment writes the experiment and the variant of a run's issue, with every field
 // of the run the body states, as putIssueStep writes them: the two are set once, and the record is
-// made where the run's start and end have not landed yet.
+// made where the run's start and end have not landed yet. A body that names neither is refused
+// once its writer is checked, before the transaction and the issue's lock, as the package refuses
+// a required field it lacks: the store takes a step write with no experiment, so this route alone
+// holds the pair required. The one of the two the body leaves out is "", which the store refuses
+// as one stated without the other, after it has checked the write's other fields.
 func (s *server) putIssueStepExperiment(w http.ResponseWriter, r *http.Request) {
 	var input stepExperimentInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	write := input.write()
-	write.Experiment = input.experiment()
-	s.writeIssueStep(w, r, write, input.Actor, stepRouteExperiment)
-}
-
-// experiment is the experiment and the variant input states as the store's one value: nil where
-// the body names neither, which the experiment route refuses, and else the two, "" for the one the
-// body does not name, which the store refuses as one stated without the other.
-func (input stepExperimentInput) experiment() *workflowstore.StepExperiment {
-	if input.Experiment == nil && input.Variant == nil {
-		return nil
-	}
-	drawn := &workflowstore.StepExperiment{}
-	if input.Experiment != nil {
-		drawn.Experiment = *input.Experiment
-	}
-	if input.Variant != nil {
-		drawn.Variant = *input.Variant
-	}
-	return drawn
-}
-
-// stepRoute is which of the three routes of a run's record a write came in on: each takes the
-// step write's fields, and the rating route and the experiment route each require the fields
-// only they declare.
-type stepRoute int
-
-const (
-	stepRouteRecord stepRoute = iota
-	stepRouteRating
-	stepRouteExperiment
-)
-
-// writeIssueStep is the one write of a step record behind the three routes: the writer and the
-// issue are checked, write (its ID, Issue and Project filled here from the path and the issue row)
-// is written, and the record is answered as the read lists it. route refuses a write of the rating
-// route that names no rating, and one of the experiment route that names no experiment.
-func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, supplied *model.Actor, route stepRoute) {
-	actor, key, ok := s.requireIssueDaemon(w, r, supplied, "a step record")
+	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a step record")
 	if !ok {
 		return
 	}
-	// A body refused for its shape is refused before the transaction and the issue's lock, as the
-	// package refuses a required field it lacks.
-	switch {
-	case route == stepRouteRating && write.Rating == nil:
-		writeError(w, codeStepInput, http.StatusBadRequest,
-			"rating is required: the rating route writes a retro's rating, 1 to 5, with its rating_reason")
-		return
-	case route == stepRouteExperiment && write.Experiment == nil:
+	if input.Experiment == nil && input.Variant == nil {
 		writeError(w, codeStepInput, http.StatusBadRequest,
 			"experiment and variant are required: the experiment route writes the experiment and the variant of the run's issue")
 		return
 	}
+	write := input.write()
+	write.Experiment = &workflowstore.StepExperiment{}
+	if input.Experiment != nil {
+		write.Experiment.Experiment = *input.Experiment
+	}
+	if input.Variant != nil {
+		write.Experiment.Variant = *input.Variant
+	}
+	s.writeIssueStep(w, r, write, actor, key)
+}
 
+// writeIssueStep is the one write of a step record behind the three routes, by actor to the issue
+// key, each of which the route has checked (requireIssueDaemon): the issue is read, write (its ID,
+// Issue and Project filled here from the path and the issue row) is written, and the record is
+// answered as the read lists it.
+func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, actor model.Actor, key string) {
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
-	issue, project, ok := s.lockRecordedIssue(w, r, tx, key)
+	project, ok := s.lockRecordedIssue(w, r, tx, key)
 	if !ok {
 		return
 	}
-	write.ID, write.Issue, write.Project = r.PathValue("id"), issue, &project
+	write.ID, write.Issue, write.Project = r.PathValue("id"), key, &project
 	written, err := workflowstore.PutStep(r.Context(), tx, write, actor, time.Now())
 	switch {
 	case errors.Is(err, workflowstore.ErrStepInput):
@@ -230,14 +216,14 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 	// The attempt is the run's place among the issue's runs, which no write stores, so the
 	// answer reads the issue's runs in the write's own transaction, as GET would after it. That
 	// read lists the run: the write made it part of the issue, or found it part of the issue.
-	steps, err := workflowstore.IssueSteps(r.Context(), tx, issue)
+	steps, err := workflowstore.IssueSteps(r.Context(), tx, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	index := slices.IndexFunc(steps, func(step workflowstore.StepRead) bool { return step.ID == written.ID })
 	if index < 0 {
-		s.writeHandlerError(w, fmt.Errorf("the read of %s does not list step %s, which this write holds", issue, written.ID))
+		s.writeHandlerError(w, fmt.Errorf("the read of %s does not list step %s, which this write holds", key, written.ID))
 		return
 	}
 	record := stepRecord(steps[index])
@@ -250,17 +236,15 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 
 // requireIssueDaemon is the prelude of every record write: the caller's actor (requireActor) and
 // the issue key of the path, where the actor is the writer of the records of that issue, the
-// session of its project's Legion daemon by the rule of the daemon's own DaemonSession
-// (packages/daemon/internal/dispatch/client.go), legion-daemon: and the part of the key before
-// its first hyphen. It refuses any other writer 403 STEP_WRITER, naming what record and whose.
+// session of its project's Legion daemon (legionDaemonSessionOf). It refuses any other writer 403
+// STEP_WRITER, naming what record and whose.
 func (s *server) requireIssueDaemon(w http.ResponseWriter, r *http.Request, supplied *model.Actor, record string) (model.Actor, string, bool) {
 	actor, ok := s.requireActor(w, r, supplied)
 	if !ok {
 		return model.Actor{}, "", false
 	}
 	key := r.PathValue("key")
-	project, _, _ := strings.Cut(key, "-")
-	writer := legionDaemonSessionPrefix + project
+	writer := legionDaemonSessionOf(key)
 	if actor.Kind != "session" || actor.ID != writer {
 		writeError(w, codeStepWriter, http.StatusForbidden,
 			fmt.Sprintf("only the session %s writes %s of %s", writer, record, key))
@@ -269,24 +253,32 @@ func (s *server) requireIssueDaemon(w http.ResponseWriter, r *http.Request, supp
 	return actor, key, true
 }
 
-// lockRecordedIssue reads the issue a record is written to, under the key-share lock and with no
-// open check, as the design gates' publish reads it, and answers its key and project. An issue
-// Dispatch does not hold is refused with a code of its own rather than loadIssue's NOT_FOUND: the
-// daemon must tell a Dispatch that holds no such issue from one that does not serve the route,
-// whose router answers NOT_FOUND.
-func (s *server) lockRecordedIssue(w http.ResponseWriter, r *http.Request, tx pgx.Tx, key string) (string, string, bool) {
-	var issue, project string
+// lockRecordedIssue takes the owner lock of the issue key a record is written to, shared, then
+// reads the issue in a statement of its own and answers its project: a record write waits for the
+// issue's writer that holds the owner and holds off the next one, and two record writes do not
+// wait on each other. The store's write (workflowstore's putNode) then locks the record's own row,
+// which only it writes, so the two are always taken in this order. The read has no open check, so
+// the merge that closes an issue still records its step. An issue Dispatch does not hold is
+// refused with a code of its own rather than loadIssue's NOT_FOUND: the daemon must tell a
+// Dispatch that holds no such issue from one that does not serve the route, whose router answers
+// NOT_FOUND.
+func (s *server) lockRecordedIssue(w http.ResponseWriter, r *http.Request, tx pgx.Tx, key string) (string, bool) {
+	if err := store.LockOwnersShared(r.Context(), tx, store.IssueOwner(key)); err != nil {
+		s.writeHandlerError(w, err)
+		return "", false
+	}
+	var project string
 	if err := tx.QueryRow(r.Context(), `
-		select key, project_key from issues where key = $1 for key share
-	`, key).Scan(&issue, &project); err != nil {
+		select project_key from issues where key = $1
+	`, key).Scan(&project); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", key))
-			return "", "", false
+			return "", false
 		}
 		s.writeHandlerError(w, err)
-		return "", "", false
+		return "", false
 	}
-	return issue, project, true
+	return project, true
 }
 
 // listIssueSteps is every run of every step of one issue, task by task in the order of each

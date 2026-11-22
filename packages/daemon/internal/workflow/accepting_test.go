@@ -29,15 +29,16 @@ func seedAccepting(t *testing.T, pool *pgxpool.Pool) {
 		Decision: &record.ReviewDecision{State: "approved", Head: "head"}})
 }
 
-// R2: the reviewer's approval moves the issue into accepting and starts nobody, though accepting
-// is a phase phase.RoleFor answers the architect for. The board already reads needs_review, so no
-// status is written; the tree's architect is already live, so no worker is started, no architect
-// phases row is written and no entry is raised (a start is what raises one); the reviewer's
-// phase-finished is the architect's cue to accept.
+// R2: the reviewer's approval moves the issue into accepting and starts no worker, though
+// accepting is a phase phase.RoleFor answers the architect for. The board already reads
+// needs_review, so no status is written; the architect that owns the issue is already live, so no
+// worker is started, no architect phases row is written and no entry is raised (a start is what
+// raises one); the reviewer's phase-finished is the architect's cue to accept.
 func TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", HandoffRecord: "review-1", HandoffVersion: 1, Summary: "looks right"})
+	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne, CheckedHead: headOne, Failing: []string{}})
 
 	applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil),
@@ -73,7 +74,8 @@ func TestSignOffIsRefusedOutsideAccepting(t *testing.T) {
 		t.Run(string(at), func(t *testing.T) {
 			pool := migratedPool(t)
 			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: at, Generation: 1, Status: PhaseStatus(at), Rank: "U"})
-			result, err := intake.ApplyFact(context.Background(), pool, "api", "signoff", intake.SignOff{Issue: "LEGION-208"}, testEngine(config.DesignGateRootIssues, nil), admissionStub{})
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			result, err := intake.ApplyFact(context.Background(), pool, "api", "signoff", rootsSignOff(t, pool, engine, "LEGION-208"), engine, admissionStub{})
 			if err != nil || result.Refusal == nil || result.Refusal.Status != 409 || result.Refusal.Code != "SIGNOFF_OUTSIDE_ACCEPTING" {
 				t.Fatalf("sign-off in %s = %+v, %v; want 409 SIGNOFF_OUTSIDE_ACCEPTING", at, result.Refusal, err)
 			}
@@ -93,7 +95,8 @@ func TestSignOffIsRefusedOutsideAccepting(t *testing.T) {
 func TestSignOffInAcceptingStartsRetro(t *testing.T) {
 	pool := migratedPool(t)
 	seedAccepting(t, pool)
-	applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil), intake.SignOff{Issue: "LEGION-208"})
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	applyRefusingNothing(t, pool, engine, rootsSignOff(t, pool, engine, "LEGION-208"))
 	assertPhase(t, pool, phase.Retro)
 	var status string
 	if err := pool.QueryRow(context.Background(), "select status from issues where key = 'LEGION-208'").Scan(&status); err != nil || status != "retro" {
@@ -136,10 +139,10 @@ func TestTheArchitectsCompletionInAcceptingIsRefused(t *testing.T) {
 	}
 }
 
-// The tree architect's send-back from accepting to implementing or testing is a backward move it
-// requests: that phase's role is started with the reason, and the implementer is counted a pass,
-// as every move back into an earlier phase counts one. The review rounds are untouched, since no
-// review requested changes. The move writes no architect phase row.
+// The send-back from accepting to implementing or testing, by the architect that owns the issue, is
+// a backward move it requests: that phase's role is started with the reason, and the implementer
+// is counted a pass, as every move back into an earlier phase counts one. The review rounds are
+// untouched, since no review requested changes. The move writes no architect phase row.
 func TestTheArchitectsBackwardMoveFromAcceptingStartsThePhaseAndCountsAPass(t *testing.T) {
 	for _, tc := range []struct {
 		to     phase.Phase
@@ -152,12 +155,23 @@ func TestTheArchitectsBackwardMoveFromAcceptingStartsThePhaseAndCountsAPass(t *t
 		t.Run(string(tc.to), func(t *testing.T) {
 			pool := migratedPool(t)
 			seedAccepting(t, pool)
-			applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil),
-				intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleArchitect, To: tc.to, Reason: "the evidence does not cover the migration"})
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			applyRefusingNothing(t, pool, engine, rootsMoveBack(t, pool, engine, "LEGION-208", tc.to, "the evidence does not cover the migration"))
 			assertPhase(t, pool, tc.to)
 			var status string
 			if err := pool.QueryRow(context.Background(), "select status from issues where key = 'LEGION-208'").Scan(&status); err != nil || status != tc.status {
 				t.Fatalf("status = %q, %v; want %s", status, err, tc.status)
+			}
+			// A backward move reaches the daemon's API and no Dispatch record, so its status write
+			// posts who asked and why on the issue before the status changes.
+			var posted string
+			if err := pool.QueryRow(context.Background(),
+				"select coalesce(payload->>'reason', '') from outbox where kind = 'dispatch_status' and issue = 'LEGION-208'").Scan(&posted); err != nil {
+				t.Fatalf("read the status write: %v", err)
+			}
+			if want := "Legion moved this issue from accepting back to " + string(tc.to) +
+				" at the architect's request: the evidence does not cover the migration."; posted != want {
+				t.Fatalf("the status write posts %q on the issue, want %q", posted, want)
 			}
 			task := startTask(t, pool, tc.role)
 			for _, want := range []string{"Phase: " + string(tc.to) + ".", "Reason: the evidence does not cover the migration.", "Pull request: #42."} {
@@ -208,9 +222,12 @@ func TestArchitectUnchangedByABackwardMoveFromAdmitted(t *testing.T) {
 			pool := migratedPool(t)
 			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 				Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U"})
-			result, err := intake.ApplyFact(context.Background(), pool, "api", string(requester)+"-backward",
-				intake.BackwardMove{Issue: "LEGION-208", Requester: requester, To: phase.Planning, Reason: "replan"},
-				testEngine(config.DesignGateRootIssues, nil), admissionStub{})
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			move := intake.BackwardMove{Issue: "LEGION-208", Requester: requester, To: phase.Planning, Reason: "replan"}
+			if requester == claim.RoleArchitect {
+				move = rootsMoveBack(t, pool, engine, "LEGION-208", phase.Planning, "replan")
+			}
+			result, err := intake.ApplyFact(context.Background(), pool, "api", string(requester)+"-backward", move, engine, admissionStub{})
 			if err != nil || refusalCode(result) != "BACKWARD_REFUSED" {
 				t.Fatalf("the %s's move = %+v, %v; want BACKWARD_REFUSED", requester, result.Refusal, err)
 			}
@@ -283,7 +300,8 @@ func TestSignOffIsAcceptedWhenNothingBeneathIsInTheWorkflow(t *testing.T) {
 			pool := migratedPool(t)
 			seedAccepting(t, pool)
 			tc.seed(t, pool)
-			applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil), intake.SignOff{Issue: "LEGION-208"})
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			applyRefusingNothing(t, pool, engine, rootsSignOff(t, pool, engine, "LEGION-208"))
 			assertPhase(t, pool, phase.Retro)
 		})
 	}
@@ -297,7 +315,8 @@ func TestSignOffOnAChildIsAcceptedWhileItsRootRuns(t *testing.T) {
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleReviewer, Claim: "review-claim", HandoffCommit: "review-1", Summary: "reviewed",
 		Decision: &record.ReviewDecision{State: "approved", Head: "head"}})
 
-	applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil), intake.SignOff{Issue: "LEGION-209"})
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	applyRefusingNothing(t, pool, engine, rootsSignOff(t, pool, engine, "LEGION-209"))
 
 	if got := issueAt(t, pool, "LEGION-209"); got != phase.Retro {
 		t.Fatalf("the child is in phase %s, want retro", got)

@@ -8,16 +8,19 @@
 //
 // The Legion daemon writes a run twice, at its start and at its end, under one id, and the two
 // writes can arrive in either order, or more than once; the rating of a retro is a third write of
-// the retro's run, in any order with the other two. So a write never refuses for its order: it
-// sets each field the node does not hold yet, leaves each field it holds, but returned_to, which
-// only the write that sets the result sets, and makes the node when none exists (PutStep,
-// PutPlan). The read of an issue (IssueSteps) answers each run with its attempt, which no write
-// stores, and the read of a project (ProjectPlans) answers each of its finished issues with its
-// plan, its ratings, its time and its count of failed steps.
+// the retro's run, in any order with the other two. It writes a run's plan under one id too, when
+// the work starts and again at each later version of the owner's plan that Legion takes. So a
+// write never refuses for its order, and makes the node when none exists. A run's write sets each
+// field the node does not hold yet, but returned_to, which only the write that sets the result
+// sets, and leaves each field it holds (PutStep). A plan's source, document, version and tasks are
+// one fact, which a write of a higher version replaces whole and any other write leaves (PutPlan).
+// The read of an issue (IssueSteps) answers each run with its attempt, which no write stores, and
+// the read of a project (ProjectPlans) answers each of its finished issues with its plan, its
+// ratings, its time and its count of failed steps.
 //
-// The vocabulary is the node and tuple store's, which legion/INFRA-1149 is to add and this tree
-// does not hold yet, as internal/dispatch/prioritystore's is: the rows copy into that store's
-// tables column for column the day it lands.
+// The vocabulary is the graph's node and tuple store's, which this tree does not hold yet, as
+// internal/dispatch/prioritystore's is: the rows copy into that store's tables column for column
+// the day it lands.
 package workflowstore
 
 import (
@@ -26,6 +29,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // The kinds and the supertags of the two nodes this store writes, a step's run and a plan, and the
@@ -38,8 +43,8 @@ const (
 	KindHandoff = "handoff"
 )
 
-// KindValue is the ToKind of an attribute tuple: its ToID holds the value itself rather than an
-// address.
+// KindValue is the to_kind of an attribute tuple (tuple.toKind): its to_id (tuple.toID) holds the
+// value itself rather than an address.
 const KindValue = "value"
 
 // The two relations a node states. RelationPartOf is written once, by the write that makes the
@@ -57,25 +62,26 @@ const (
 	StateLive         = "live"
 )
 
-// NoEvent is the SourceEvent of every row this store writes: a step write appends no event, since
+// NoEvent is the source_event of every row this store writes: a step write appends no event, since
 // an event would feed the daemon's intake with facts it caused. `events.id` is a bigserial, so no
 // event ever carries 0.
 const NoEvent int64 = 0
 
 // The three kinds of a run. StepKindStep is a step a plan names, at its place from 1; the retro and
 // the merge are acts of Legion that no plan names, so their place is 0 and their kind tells them
-// apart.
+// apart. Each is the one word contracts gives it, which the Legion daemon reads too.
 const (
-	StepKindStep  = "step"
-	StepKindRetro = "retro"
-	StepKindMerge = "merge"
+	StepKindStep  = contracts.StepKindStep
+	StepKindRetro = contracts.StepKindRetro
+	StepKindMerge = contracts.StepKindMerge
 )
 
-// The three results of a run that ended. A run that still runs has none.
+// The three results of a run that ended, each the word contracts gives it. A run that still runs
+// has none.
 const (
-	ResultPassed  = "passed"
-	ResultFailed  = "failed"
-	ResultStopped = "stopped"
+	ResultPassed  = contracts.StepResultPassed
+	ResultFailed  = contracts.StepResultFailed
+	ResultStopped = contracts.StepResultStopped
 )
 
 // The attributes of a step, each the name of its value tuples and of its key in the node row's
@@ -107,9 +113,8 @@ const (
 )
 
 // The attributes of a plan beside its issue, its project and its generation: its source, the
-// owner's document and version it was read from (both held empty for the source default, so no
-// later write gives a default plan a document), and its tasks, whose value tuple holds them as
-// JSON text.
+// owner's document and version it was read from (both empty for the source default, whose version
+// 0 an owner's later version replaces), and its tasks, whose value tuple holds them as JSON text.
 const (
 	AttributeSource     = "source"
 	AttributeArtifactID = "artifact_id"
@@ -118,23 +123,19 @@ const (
 )
 
 // The two sources of a plan: the owner's document, or the default steps of an issue whose owner
-// gave none.
+// gave none, or whose experiment's group takes none from its owner.
 const (
 	PlanSourceDefault = "default"
 	PlanSourceOwner   = "owner"
 )
 
-// RatingReasonMost is the most a rating's reason holds, counted in Unicode code points as the
-// daemon counts it when the retro's completion carries the reason, so every reason the daemon
-// takes is one Dispatch takes.
-const RatingReasonMost = 2000
-
 // The refusals a caller maps to an answer of its own. They are the only ones: a write is never
-// refused for its order or for a field the node already holds.
+// refused for its order or for stating again a field the node already holds.
 var (
-	// ErrStepInput is a value outside its form, or a write that would make a node and does not
-	// name the step's identity: its task, kind, step, role and generation. The error's text names
-	// the field and the rule.
+	// ErrStepInput is a value outside its form, a write that would make a node and does not name
+	// the step's identity (its task, kind, step, role and generation), or a type or a rating that
+	// the kind the write names or the kind the node holds does not take (typeOfKind,
+	// ratingOfKind). The error's text names the field and the rule.
 	ErrStepInput = errors.New("step input")
 	// ErrStepOtherIssue is a write of an id whose node is part of another issue.
 	ErrStepOtherIssue = errors.New("the step is a step of another issue")
@@ -225,13 +226,14 @@ type PlanDocument struct {
 }
 
 // PlanWrite is one write of a plan: the id and the issue it writes, and each field it states. A
-// plan write names its generation, its source and its tasks, and an owner's plan its document; the
-// project is set once, never required.
+// plan write names its generation, its source and its tasks, and an owner's plan its document; a
+// Document left zero states none, as a default plan's does. The project is set once, never
+// required.
 type PlanWrite struct {
 	ID, Issue       string
 	Project, Source *string
 	Generation      *int64
-	Document        *PlanDocument
+	Document        PlanDocument
 	Tasks           []PlanTask
 }
 
@@ -260,9 +262,10 @@ type Rating struct {
 	EndedAt *time.Time
 }
 
-// Window bounds the close of the issues a read of a project lists to [Since, Until), each nil for
-// no bound. It is one value so a read cannot take the two bounds in the wrong order. A bound need
-// not be a whole microsecond: the read rounds each up to the next one (microsecondCeiling), which
+// Window is a span of time, [Since, Until), each nil for no bound: ProjectPlans bounds the close of
+// the issues it lists by it, and the API's window parser answers one for a route's two bounds. It
+// is one value so a reader cannot take the two bounds in the wrong order. A bound need not be a
+// whole microsecond: ProjectPlans rounds each up to the next one (store.MicrosecondCeiling), which
 // keeps its meaning against a close PostgreSQL holds to the microsecond.
 type Window struct {
 	Since, Until *time.Time

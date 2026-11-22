@@ -13,38 +13,29 @@ import (
 )
 
 // nulText is a string whose second character is a NUL (U+0000), which PostgreSQL's text and jsonb
-// cannot hold: a statement that stores it fails.
+// cannot hold: the daemon's store keeps U+FFFD in its place.
 const nulText = "a\x00b"
 
 // nulError is the decoder's error for a string at place whose NUL is its at-th character, counted
 // from 1 in code points.
 func nulError(place string, at int) string {
-	return fmt.Sprintf("%s holds a NUL character (U+0000) at character %d, which the daemon cannot store", place, at)
+	return fmt.Sprintf("%s holds a NUL character (U+0000) at character %d, which the daemon API refuses rather than store it as U+FFFD", place, at)
 }
 
-// The decoder of every request body refuses a string holding a NUL character wherever it stands:
-// a member at the top, a member of a nested object, an element of an array, an element of an
-// array inside an array and a member of an array's object, in strict mode and in lenient. It reads
-// every string the body writes, not the value a decoder keeps: a repeated member's earlier copy is
-// refused whatever the later one holds, since a later null leaves a string field as the earlier
-// copy set it and a later object merges into a struct field, so the route would act on the NUL. The
-// refusal names the string's place in the body and where in it the NUL stands, counted in code
-// points, and never the string. Lenient mode reads every string the body holds, a member it ignores
-// and a member's name among them, the name written with the six characters \u0000 so the refusal
-// carries no NUL. The controls are taken in both modes: the same members with no NUL, repeated
-// members holding none, and a string holding the six characters \u0000 as text.
+// The decoder of every request body refuses a string holding a NUL character, in strict mode and
+// in lenient, with the daemon's own refusal: the string's place in the body, as Dispatch's walk
+// finds it (dispatchbody.NulInJSON, whose own test holds every place it reads), and where in the
+// string the NUL stands, counted in code points as the daemon's caps count, never the string
+// itself. A character past the Basic Multilingual Plane counts once, where Dispatch's UTF-16 count
+// would count two. Lenient mode reads a member it ignores, and a member's name, the name written
+// with the six characters \u0000 so the refusal carries no NUL. The control is the same body with
+// no NUL, taken in both modes.
 func TestTheBodyDecoderRefusesAStringHoldingANul(t *testing.T) {
 	type task struct {
 		Text string `json:"text"`
 	}
 	type body struct {
-		PlanReason string `json:"planReason"`
-		Plan       struct {
-			Source string `json:"source"`
-		} `json:"plan"`
-		Labels []string   `json:"labels"`
-		Tasks  []task     `json:"tasks"`
-		Grid   [][]string `json:"grid"`
+		Tasks []task `json:"tasks"`
 	}
 	decode := func(raw string, strict bool) error {
 		var into body
@@ -57,15 +48,7 @@ func TestTheBodyDecoderRefusesAStringHoldingANul(t *testing.T) {
 		at                int
 		lenientOnly       bool
 	}{
-		{name: "a top-level member", body: `{"planReason":"fit\u0000"}`, place: "planReason", at: 4},
-		{name: "a nested object's member", body: `{"plan":{"source":"own\u0000er"}}`, place: "plan.source", at: 4},
-		{name: "an array element", body: `{"labels":["ok","b\u0000"]}`, place: "labels[1]", at: 2},
-		{name: "a member of an array's object", body: `{"tasks":[{"text":"a"},{"text":"é\u0000"}]}`, place: "tasks[1].text", at: 2},
-		{name: "an element of an array in an array", body: `{"grid":[["ok"],["ok","é\u0000"]]}`, place: "grid[1][1]", at: 2},
-		{name: "a member a later null repeats", body: `{"planReason":"fit\u0000","planReason":null}`, place: "planReason", at: 4},
-		{name: "a member a later string repeats", body: `{"planReason":"fit\u0000","planReason":"fit"}`, place: "planReason", at: 4},
-		{name: "an object a later one repeats", body: `{"plan":{"source":"own\u0000er"},"plan":{}}`, place: "plan.source", at: 4},
-		{name: "a member the route does not read", body: `{"ignored":"x\u0000"}`, place: "ignored", at: 2, lenientOnly: true},
+		{name: "a member of an array's object", body: `{"tasks":[{"text":"a"},{"text":"\ud83d\ude00\u0000"}]}`, place: "tasks[1].text", at: 2},
 		{name: "a member's name", body: `{"a\u0000b":"x"}`, place: `a\u0000b`, at: 2, lenientOnly: true},
 	} {
 		for _, strict := range []bool{true, false} {
@@ -84,15 +67,9 @@ func TestTheBodyDecoderRefusesAStringHoldingANul(t *testing.T) {
 		}
 	}
 
-	for _, taken := range []string{
-		`{"planReason":"fit","plan":{"source":"owner"},"labels":["ok","b"],"tasks":[{"text":"a"},{"text":"é"}],"grid":[["ok"],["b"]]}`,
-		`{"planReason":"fit\\u0000"}`,
-		`{"planReason":"fit\\u0000","planReason":null,"plan":{"source":"owner"},"plan":{},"grid":[["ok","b"]]}`,
-	} {
-		for _, strict := range []bool{true, false} {
-			if err := decode(taken, strict); err != nil {
-				t.Fatalf("decode %s, strict %t = %v, want it taken", taken, strict, err)
-			}
+	for _, strict := range []bool{true, false} {
+		if err := decode(`{"tasks":[{"text":"a"},{"text":"\ud83d\ude00"}]}`, strict); err != nil {
+			t.Fatalf("decode the body with no NUL, strict %t = %v, want it taken", strict, err)
 		}
 	}
 }
@@ -100,8 +77,9 @@ func TestTheBodyDecoderRefusesAStringHoldingANul(t *testing.T) {
 // A completion whose summary holds a NUL character is refused as input naming summary, before
 // GitHub is read, with nothing recorded and the issue where it was, so the agent sends it again
 // corrected and that is taken. The workflow decides the fact here, writing the summary on the
-// implementer's phase row as the whole daemon does, which is where PostgreSQL refused it and the
-// completion was answered 500 FACT_APPLY_FAILED, naming no field.
+// implementer's phase row as the whole daemon does: a summary holding a NUL that reached that
+// write would be stored with U+FFFD in its place and the completion answered 200, so the agent
+// would never learn that its summary was not kept as written.
 func TestACompletionSummaryWithANulIsRefusedAsInput(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h := newWorkflowHandoffHarness(t, github, io.Discard)
@@ -163,13 +141,13 @@ func TestACompletionHidesNoNulBehindARepeatedMember(t *testing.T) {
 
 // Every route of the daemon's API that reads a JSON body refuses a NUL character in a string of
 // it, 400 naming the string's place, and no route answers such a body with a 5xx. The walk is over
-// the patterns the server's own mux mounted (routeMux), the table's (routes), the catch-all's and
-// any route's mounted beside them, so a route added without a row here fails the test until its
-// row says what it reads: a string member of its body, which carries the NUL; a body of no string
-// member, whose strict decoder refuses the member the NUL rides before it reads a string; or no
-// body, when its answer must be no decoder refusal at all, which would mean it reads the body after
-// all. A pattern that names no method (the catch-all) is sent a POST, and a route whose pattern
-// names a claim is sent a claim of its own, launched for it.
+// the server's own table (routes), which NewServer mounts whole and alone, the catch-all among
+// them, so a route added without a row here fails the test until its row says what it reads: a
+// string member of its body, which carries the NUL; a body of no string member, whose strict
+// decoder refuses the member the NUL rides before it reads a string; or no body, when its answer
+// must be no decoder refusal at all, which would mean it reads the body after all. A pattern that
+// names no method (the catch-all) is sent a POST, and a route whose pattern names a claim is sent
+// a claim of its own, launched for it.
 func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 	h, _ := newStaleHarness(t) // newHarness serving the state route too
 	type nulRow struct {
@@ -184,10 +162,11 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 	noString := nulRow{unread, `json: unknown field "note"`}
 	noBody := nulRow{unread, ""}
 	rows := map[string]nulRow{
-		"/":                    noBody,
-		"GET /legion/v1/state": noBody,
-		"GET /healthz":         noBody,
-		"GET /readyz":          noBody,
+		"/":                                  noBody,
+		"GET /legion/v1/state":               noBody,
+		"GET /legion/v1/issues/{key}/record": noBody,
+		"GET /healthz":                       noBody,
+		"GET /readyz":                        noBody,
 
 		"POST /legion/v1/claims/register":                        reads("bootToken"),
 		"POST /legion/v1/claims/ready":                           reads("sessionId"),
@@ -203,13 +182,17 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/issues/status":                          reads("status"),
 		"POST /legion/v1/claims/fresh-session":                   reads("issue"),
 		"POST /legion/v1/claims/compact":                         reads("issue"),
+		"POST /legion/v1/project/pause":                          reads("reason"),
+		"POST /legion/v1/project/resume":                         reads("grantId"),
 		"POST /legion/v1/gates/register":                         reads("artifactId"),
+		"POST /legion/v1/plans/register":                         reads("artifactId"),
+		"POST /legion/v1/tasks/stop":                             reads("task"),
 		"POST /legion/v1/waves/release":                          {map[string]any{"issues": []string{nulText}}, nulError("issues[0]", 2)},
 		"POST /legion/v1/phase/backward":                         reads("reason"),
 		"POST /legion/v1/phase/retry":                            reads("issue"),
 		"POST /legion/v1/signoff":                                reads("issue"),
 		"POST /legion/v1/roots/close":                            reads("reason"),
-		"POST /legion/v1/children/park":                          reads("issue"),
+		"POST /legion/v1/children/park":                          noBody,
 		"POST /legion/v1/children/rerun":                         reads("issue"),
 		"POST /legion/v1/operator/claims":                        reads("tree"),
 		"GET /legion/v1/operator/claims":                         noBody,
@@ -220,11 +203,19 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/operator/claims/{token}/retry":          noString,
 		"POST /legion/v1/operator/claims/{token}/compact":        noBody,
 		"POST /legion/v1/operator/claims/{token}/forget-session": reads("session"),
+		"POST /legion/v1/operator/claims/{token}/release-names":  noBody,
 		"POST /legion/v1/operator/claims/{token}/close":          noBody,
+		"POST /legion/v1/operator/project/pause":                 reads("reason"),
+		"POST /legion/v1/operator/project/resume":                noString,
 	}
 
+	served := (&server{}).routes()
+	if len(served) == 0 {
+		t.Fatal("the server's table holds no route: the test read nothing")
+	}
 	walked := map[string]bool{}
-	for i, pattern := range mountedPatterns(t, h.handler) {
+	for i, route := range served {
+		pattern := route.pattern
 		walked[pattern] = true
 		row, ok := rows[pattern]
 		if !ok {
@@ -258,23 +249,4 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 			t.Errorf("the row for %s names no route the server mounts", pattern)
 		}
 	}
-}
-
-// mountedPatterns is every pattern the handler NewServer built serves, in the order it mounted
-// them, read off its mux (routeMux) rather than off the table, so a route mounted beside the table
-// is among them.
-func mountedPatterns(t *testing.T, handler http.Handler) []string {
-	t.Helper()
-	tracking, ok := handler.(transactionTracking)
-	if !ok {
-		t.Fatalf("the server's handler is %T, want trackTransactions' over the API's mux", handler)
-	}
-	mux, ok := tracking.next.(*routeMux)
-	if !ok {
-		t.Fatalf("the server's mux is %T, want the routeMux NewServer mounts every route on", tracking.next)
-	}
-	if len(mux.patterns) == 0 {
-		t.Fatal("the server's mux records no pattern: this walk would prove nothing")
-	}
-	return mux.patterns
 }

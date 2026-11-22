@@ -17,33 +17,54 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// stepWordForm is one step of a plan's task: a role, or a role and a key (`acceptance:owner`),
-// each a lowercase letter, then lowercase letters, digits and hyphens.
-var stepWordForm = regexp.MustCompile(`^[a-z][a-z0-9-]*(:[a-z][a-z0-9-]*)?$`)
+// stepKeyForm is the key of a plan's step after its role (`acceptance:owner`): a lowercase letter,
+// then lowercase letters, digits and hyphens. The role before it is a step record's role
+// (roleForm), since every run of the step is a record of that role.
+var stepKeyForm = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 var planSources = []string{PlanSourceDefault, PlanSourceOwner}
 
+// planFact is the one fact of a plan that a later version replaces whole: its source, its
+// document, its version and its tasks.
+var planFact = []string{AttributeSource, AttributeArtifactID, AttributeVersion, AttributeTasks}
+
 // PutPlan writes the plan of one run of an issue inside the caller's transaction and answers its
-// node as it stands after the write. The Legion daemon writes it when the run's work starts, and
-// again where it sends the same plan again; each field is set once, so a write that runs again
-// changes nothing, and a later write of other tasks under the same id leaves the first.
+// node as it stands after the write. The Legion daemon writes it under one id for the run, when
+// the run's work starts and again at each later version of the owner's plan that Legion takes.
+// The plan's source, its document, its version and its tasks are one fact (planFact): a write of
+// a version above the one the node holds replaces all four in one write, and a write at or below
+// it leaves all four, so a write that arrives late, twice or out of order changes nothing. A plan
+// of the source default has no version and counts as version 0, so an owner's version 1 replaces
+// it and it replaces nothing. The issue, the project and the generation are each set once, by the
+// first write that states them, and the node's first writer stays its maker.
 //
 // Every write names the plan's generation, its source and its tasks, and an owner's plan its
-// document and version, or it is refused ErrPlanInput and writes nothing; a default plan holds its
-// document and version empty, so a later owner's write of its id gives it neither. The write that
-// makes the node states its `part_of` relation to the issue; an id whose node is part of another
-// issue is refused ErrPlanOtherIssue.
+// document and version, or it is refused ErrPlanInput and writes nothing; so a write that replaces
+// the fact states all four of it. A default plan holds its document and version empty, so a write
+// at or below its version 0 gives it neither, and an owner's write, whose version is 1 or more,
+// replaces the default's fact whole. The write that makes the node states its `part_of` relation
+// to the issue; an id whose node is part of another issue is refused ErrPlanOtherIssue.
 func PutPlan(ctx context.Context, tx pgx.Tx, write PlanWrite, actor model.Actor, at time.Time) (Plan, error) {
 	id, stated, err := write.attributes()
 	if err != nil {
 		return Plan{}, err
 	}
-	writer, err := json.Marshal(actor)
-	if err != nil {
-		return Plan{}, fmt.Errorf("encode the writer of plan %s: %w", id, err)
-	}
+	// A default plan states no document, so its version reads 0 (PlanWrite.Document).
+	version := write.Document.Version
 	written, err := putNode(ctx, tx, nodeWrite{
-		kind: KindPlan, id: id, issue: write.Issue, stated: stated, makes: true, writer: writer, at: at,
+		kind: KindPlan, id: id, issue: write.Issue, stated: stated, makes: true, actor: actor, at: at,
+		replaces: func(held map[string]json.RawMessage) ([]string, error) {
+			heldVersion := 0
+			if raw, holds := held[AttributeVersion]; holds {
+				if err := json.Unmarshal(raw, &heldVersion); err != nil {
+					return nil, fmt.Errorf("decode the version of plan %s: %w", id, err)
+				}
+			}
+			if version > heldVersion {
+				return planFact, nil
+			}
+			return nil, nil
+		},
 	})
 	var other *nodeOfAnotherIssue
 	switch {
@@ -60,11 +81,11 @@ func PutPlan(ctx context.Context, tx pgx.Tx, write PlanWrite, actor model.Actor,
 func (write PlanWrite) attributes() (string, []attribute, error) {
 	parsed, err := uuid.Parse(write.ID)
 	if err != nil {
-		return "", nil, planInputError("id %q is not a uuid: a plan's id is the uuid the daemon derives for the issue's run", write.ID)
+		return "", nil, refusal(ErrPlanInput, "id %q is not a uuid: a plan's id is the uuid the daemon derives for the issue's run", write.ID)
 	}
 	id := parsed.String()
 	if strings.TrimSpace(write.Issue) == "" {
-		return "", nil, planInputError("issue is required: the key of the issue plan %s is part of", id)
+		return "", nil, refusal(ErrPlanInput, "issue is required: the key of the issue plan %s is part of", id)
 	}
 	stated := []attribute{{AttributeIssue, write.Issue, write.Issue}}
 	if write.Project != nil && *write.Project != "" {
@@ -72,53 +93,47 @@ func (write PlanWrite) attributes() (string, []attribute, error) {
 	}
 
 	if write.Generation == nil {
-		return "", nil, planInputError("generation is required: the run of the issue the plan is of")
+		return "", nil, refusal(ErrPlanInput, "generation is required: the run of the issue the plan is of")
 	}
 	if generation := *write.Generation; generation < 1 {
-		return "", nil, planInputError("generation %d is no run of an issue: an issue's generation counts from 1", generation)
+		return "", nil, refusal(ErrPlanInput, "generation %d is no run of an issue: an issue's generation counts from 1", generation)
 	}
 	stated = append(stated, attribute{AttributeGeneration, *write.Generation, strconv.FormatInt(*write.Generation, 10)})
 
 	if write.Source == nil || *write.Source == "" {
-		return "", nil, planInputError("source is required: one of %s", strings.Join(planSources, ", "))
+		return "", nil, refusal(ErrPlanInput, "source is required: one of %s", strings.Join(planSources, ", "))
 	}
 	source := *write.Source
 	if !slices.Contains(planSources, source) {
-		return "", nil, planInputError("source %q is not a source of a plan: one of %s", source, strings.Join(planSources, ", "))
+		return "", nil, refusal(ErrPlanInput, "source %q is not a source of a plan: one of %s", source, strings.Join(planSources, ", "))
 	}
 	stated = append(stated, attribute{AttributeSource, source, source})
 
-	// A document's half that is "" or 0 states nothing, as a write's empty field does.
-	var document PlanDocument
-	if write.Document != nil {
-		document = *write.Document
-	}
+	document := write.Document
 	switch source {
 	case PlanSourceDefault:
 		if document.ArtifactID != "" {
-			return "", nil, planInputError("artifact_id names the document an owner gave, and a plan of source %s has none", source)
+			return "", nil, refusal(ErrPlanInput, "artifact_id names the document an owner gave, and a plan of source %s has none", source)
 		}
 		if document.Version != 0 {
-			return "", nil, planInputError("version names the version of the document an owner gave, and a plan of source %s has none", source)
+			return "", nil, refusal(ErrPlanInput, "version names the version of the document an owner gave, and a plan of source %s has none", source)
 		}
-		// A default plan holds its document and version empty, so a later write of the same id
-		// that names a document finds both held and sets neither.
 		stated = append(stated,
 			attribute{AttributeArtifactID, "", ""},
 			attribute{AttributeVersion, int64(0), "0"})
 	case PlanSourceOwner:
 		if document.ArtifactID == "" {
-			return "", nil, planInputError("artifact_id is required of a plan of source %s: the document its owner gave", source)
+			return "", nil, refusal(ErrPlanInput, "artifact_id is required of a plan of source %s: the document its owner gave", source)
 		}
 		artifact, err := uuid.Parse(document.ArtifactID)
 		if err != nil {
-			return "", nil, planInputError("artifact_id %q is not a uuid: it is the id of the document the owner gave", document.ArtifactID)
+			return "", nil, refusal(ErrPlanInput, "artifact_id %q is not a uuid: it is the id of the document the owner gave", document.ArtifactID)
 		}
 		if document.Version == 0 {
-			return "", nil, planInputError("version is required of a plan of source %s: the version of the document Legion took", source)
+			return "", nil, refusal(ErrPlanInput, "version is required of a plan of source %s: the version of the document Legion took", source)
 		}
 		if document.Version < 1 {
-			return "", nil, planInputError("version %d is no version of a document: versions count from 1", document.Version)
+			return "", nil, refusal(ErrPlanInput, "version %d is no version of a document: versions count from 1", document.Version)
 		}
 		canonical := artifact.String()
 		stated = append(stated,
@@ -127,26 +142,30 @@ func (write PlanWrite) attributes() (string, []attribute, error) {
 	}
 
 	if write.Tasks == nil {
-		return "", nil, planInputError("tasks is required: a list of tasks, each {id, steps}")
+		return "", nil, refusal(ErrPlanInput, "tasks is required: a list of tasks, each {id, steps}")
 	}
 	if len(write.Tasks) == 0 {
-		return "", nil, planInputError("tasks is empty: a plan has at least one task")
+		return "", nil, refusal(ErrPlanInput, "tasks is empty: a plan has at least one task")
 	}
 	named := map[string]bool{}
 	for _, task := range write.Tasks {
 		if !taskForm.MatchString(task.ID) {
-			return "", nil, planInputError("task %q is not a task id: lowercase letters, digits and hyphens, starting with a letter or a digit, at most 64", task.ID)
+			return "", nil, refusal(ErrPlanInput, "task %q is not a task id: %s", task.ID, taskRule)
 		}
 		if named[task.ID] {
-			return "", nil, planInputError("task %s is named twice: a task's id is unique in its plan", task.ID)
+			return "", nil, refusal(ErrPlanInput, "task %s is named twice: a task's id is unique in its plan", task.ID)
 		}
 		named[task.ID] = true
 		if len(task.Steps) == 0 {
-			return "", nil, planInputError("steps of task %s are empty: a task has at least one step", task.ID)
+			return "", nil, refusal(ErrPlanInput, "steps of task %s are empty: a task has at least one step", task.ID)
 		}
 		for _, step := range task.Steps {
-			if !stepWordForm.MatchString(step) {
-				return "", nil, planInputError("steps of task %s hold %q, which is no step: a role or role:key, each a lowercase letter, then lowercase letters, digits and hyphens", task.ID, step)
+			role, key, keyed := strings.Cut(step, ":")
+			if !roleForm.MatchString(role) {
+				return "", nil, refusal(ErrPlanInput, "steps of task %s hold %q, whose role %q is not a role: %s, as a step record's role", task.ID, step, role, roleRule)
+			}
+			if keyed && !stepKeyForm.MatchString(key) {
+				return "", nil, refusal(ErrPlanInput, "steps of task %s hold %q, whose key %q is not a key: a lowercase letter, then lowercase letters, digits and hyphens", task.ID, step, key)
 			}
 		}
 	}
@@ -156,10 +175,6 @@ func (write PlanWrite) attributes() (string, []attribute, error) {
 	}
 	stated = append(stated, attribute{AttributeTasks, json.RawMessage(text), string(text)})
 	return id, stated, nil
-}
-
-func planInputError(format string, args ...any) error {
-	return fmt.Errorf("%w: %s", ErrPlanInput, fmt.Sprintf(format, args...))
 }
 
 // planAttributes is the node row's attributes as a plan reads them.

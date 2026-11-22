@@ -21,7 +21,7 @@ import (
 
 // A member held at admitted is handed over whatever becomes, during the linger, of the ancestor
 // that held it. The tree is the spec's own: a root R waiting for its children, a child C whose
-// own reviewed head the daemon has accepted, and a grandchild G a person moved to todo under C,
+// head the daemon has accepted, and a grandchild G a person moved to todo under C,
 // which the daemon recorded at admitted and told C's architect starts once C has closed
 // (record.HeldUnderAccepted). A person closes R by hand, and the tree lingers.
 //
@@ -190,8 +190,8 @@ func TestAClosedTreeKeepsOnlyTheMembersThatLeftTheWorkflow(t *testing.T) {
 func seedMirrorChild(t *testing.T, pool *pgxpool.Pool, key, status, parent string) {
 	t.Helper()
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutDispatchIssue(t.Context(), tx, record.DispatchIssueRow{
-			Key: key, Project: "LEGION", Status: status, Seq: 1, Parent: parent})
+		return record.NewStore().PutDispatchIssue(t.Context(), tx, record.DispatchReading{Key: key, Project: "LEGION", Seq: 1,
+			Status: record.Carry(status), Parent: record.Carry(parent), Blockers: record.Carry[[]string](nil)})
 	})
 }
 

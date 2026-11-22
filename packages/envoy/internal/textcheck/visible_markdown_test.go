@@ -16,18 +16,20 @@ import (
 // item's marker, which the page ends with its item, or a paragraph that ends at a heading), the
 // reading hides more than the page does, so a check refuses what a reader may see and never reads
 // what a reader cannot. A fenced block, from a line opening "```" to the next, shows its lines as
-// written, a "<!--" among them, and a fence inside a comment opens nothing. A check reads a guide
-// through this before it selects a line, so that a comment opened before that line still hides it.
+// written, a "<!--" among them, and a fence inside a comment, or inside a block that a tag opens,
+// opens nothing. A check reads a guide through this before it selects a line, so that a comment
+// opened before that line still hides it.
 // It is the daemon's reader of the same name (packages/daemon/internal/textcheck/visible_markdown_test.go),
 // written again because a test package of one module cannot import a test file of another; its
-// test below holds the same cases.
+// test below holds the same cases, and TestVisibleMarkdownIsTheDaemonsReader holds the two files
+// the same Go, comments aside.
 func visibleMarkdown(text string) string {
 	lines := strings.Split(text, "\n")
 	fenced, commented, html := false, false, false
 	// i is moved past the lines of a comment inside a paragraph as well as by the loop.
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
-		if !commented && strings.HasPrefix(line, "```") {
+		if !commented && !html && strings.HasPrefix(line, "```") {
 			fenced = !fenced
 			continue
 		}
@@ -122,7 +124,8 @@ func inlineCommentEnd(lines []string, i int, after string) (end int, rest string
 // opened on a line of its own, after a list item's marker, or inside a line of a block that a tag
 // opens, and never closed, hides the rest of the text. A "<!--" inside a line that its paragraph
 // never closes is text the page shows, and so is a "<!--" inside a fenced block, so the lines after
-// either stay as written.
+// either stay as written. A fence inside a block that a tag opens is a line of that block and opens
+// no fenced block, so a comment it is followed by hides as the block's would.
 func TestVisibleMarkdownShowsWhatTheRenderedPageShows(t *testing.T) {
 	for _, text := range []struct{ shape, written, shown string }{
 		{"a comment around a fenced block",
@@ -158,6 +161,9 @@ func TestVisibleMarkdownShowsWhatTheRenderedPageShows(t *testing.T) {
 		{"a comment's opening inside a fenced block",
 			"```html\n<!--\n```\nShown.",
 			"```html\n<!--\n```\nShown."},
+		{"a fence inside a block that a tag opens, which opens no fenced block",
+			"<div>\n```\n<!-- hidden\nhidden too.",
+			"<div>\n```\n\n"},
 	} {
 		if shown := visibleMarkdown(text.written); shown != text.shown {
 			t.Errorf("%s: the page shows %q, want %q", text.shape, shown, text.shown)

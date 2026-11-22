@@ -11,10 +11,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -43,10 +45,11 @@ func stepWrites(t *testing.T, pool *pgxpool.Pool, issue string) []record.StepRec
 }
 
 // stepRun is one write of a step record as these tests name it: a start (end "") or an end with
-// its result, of kind and step of the task default, in generation, under the count of starts its
-// run's id is computed from (workflow.StepID).
+// its result, of kind and step of its task, the task default unless of names another, in
+// generation, under the count of starts its run's id is computed from (workflow.StepID).
 type stepRun struct {
 	end        string
+	task       string
 	kind       string
 	step       int
 	generation uint64
@@ -54,11 +57,17 @@ type stepRun struct {
 }
 
 func start(kind string, step int, generation uint64, starts int64) stepRun {
-	return stepRun{kind: kind, step: step, generation: generation, starts: starts}
+	return stepRun{task: "default", kind: kind, step: step, generation: generation, starts: starts}
 }
 
 func end(result, kind string, step int, generation uint64, starts int64) stepRun {
-	return stepRun{end: result, kind: kind, step: step, generation: generation, starts: starts}
+	return stepRun{end: result, task: "default", kind: kind, step: step, generation: generation, starts: starts}
+}
+
+// of is r written in task, a task of an owner's plan.
+func (r stepRun) of(task string) stepRun {
+	r.task = task
+	return r
 }
 
 // assertStepWrites fails unless key's step record rows are exactly want, in order.
@@ -86,7 +95,7 @@ func assertStepWrites(t *testing.T, pool *pgxpool.Pool, key string, want ...step
 		if g.Result != nil {
 			result = *g.Result
 		}
-		if g.ID != workflow.StepID(key, w.generation, record.StepPlace{Task: "default", Kind: w.kind, Place: w.step}, w.starts) || g.Kind != w.kind || g.Step != w.step ||
+		if g.ID != workflow.StepID(key, w.generation, record.StepPlace{Task: w.task, Kind: w.kind, Place: w.step}, w.starts) || g.Task != w.task || g.Kind != w.kind || g.Step != w.step ||
 			g.Generation != w.generation || (g.EndedAt != nil) != (w.end != "") || result != w.end {
 			fail(fmt.Sprintf("row %d is not %+v", i, w))
 		}
@@ -94,13 +103,19 @@ func assertStepWrites(t *testing.T, pool *pgxpool.Pool, key string, want ...step
 }
 
 // countStart writes the start of the step key stands in, as the transition or the promotion that
-// started it would have (workflow.Engine.StartStepRecord): its count raised and its start queued.
+// started it would have (workflow.Engine.StartStepRecord), in a fact of its own: its count raised
+// and its start queued.
 func countStart(t *testing.T, pool *pgxpool.Pool, engine intake.Handler, key string) {
 	t.Helper()
 	stored := issue(t, pool, key)
+	workflowEngine := engine.(*workflow.Engine)
+	ctx := workflowEngine.OpenFact(context.Background())
 	inTx(t, pool, func(tx pgx.Tx) {
-		if err := engine.(*workflow.Engine).StartStepRecord(context.Background(), tx, stored); err != nil {
+		if err := workflowEngine.StartStepRecord(ctx, tx, stored); err != nil {
 			t.Fatalf("start the step of %s: %v", key, err)
+		}
+		if err := workflowEngine.SettleFact(ctx, tx); err != nil {
+			t.Fatalf("settle the start of %s: %v", key, err)
 		}
 	})
 }
@@ -141,9 +156,28 @@ func seedAwaitingPullRequest(t *testing.T, pool *pgxpool.Pool) {
 	})
 }
 
-// A member's linger ends its step (the workflow's beginLinger), and the hand-over at the close of
-// that linger re-admits it, whose readmit ends the run it leaves: one run, two writes that end it.
-// The daemon's own store keeps the mark of the first end, so readmit writes no second end, and the
+// awaitingFirstRead is when the first read conflictReadOfAwaiting records found head-5
+// conflicting: two minutes before fixedNow. A second read's row names it
+// (record.ConflictConfirm.FirstReadAt), and so does the fact the row applies at its end.
+var awaitingFirstRead = fixedNow.Add(-2 * time.Minute)
+
+// conflictReadOfAwaiting gives the member in merging its open pull request #5 onto main with a
+// first read that found head-5 conflicting at awaitingFirstRead, the state a second read of that
+// head applies on (dispatch://INFRA-4374 R2). Its arguments are a row's arrange's.
+func conflictReadOfAwaiting(t *testing.T, pool *pgxpool.Pool, _ *Admission, _ intake.Handler) {
+	t.Helper()
+	inTx(t, pool, func(tx pgx.Tx) {
+		if err := record.NewStore().PutPullRequest(context.Background(), tx, record.PullRequest{Issue: awaiting, Repo: "acme/widgets", Number: 5,
+			Branch: "legion/LEGION-5", Base: "main", HeadSHA: "head-5", Generation: 1, State: record.PullRequestOpen, Failing: []string{},
+			ConflictRead: &record.ConflictRead{Head: "head-5", Base: "main", At: awaitingFirstRead}}); err != nil {
+			t.Fatalf("seed the pull request of %s with its first conflicting read: %v", awaiting, err)
+		}
+	})
+}
+
+// A member's linger ends its step (the settle of the fact that lingers its tree), and the hand-over
+// at the close of that linger re-admits it, which raises its generation: the settle of that fact
+// finds the run ended already, by the mark the store keeps, and writes no second end, and the
 // promotion of the new root starts its new generation's step.
 func TestAHandedOverMemberWhoseLingerEndedItsStepGetsNoSecondEnd(t *testing.T) {
 	pool, admission, engine := seedFinishingTree(t)
@@ -209,7 +243,7 @@ func TestALingeringMemberThatNeverMergesEndsItsMergeStepOnce(t *testing.T) {
 }
 
 // The linger leaves a member's merge step open, and only one of three writes ends it before any
-// new start of it (B3-1): the promotion of the tree admitted again, which starts the member's merger
+// new start of it: the promotion of the tree admitted again, which starts the member's merger
 // again; the merge, landing between the root's readmit and that promotion; or the hand-over at the
 // linger's close, where readmit ends it and the promotion of the new root ends nothing more.
 func TestAReadmittedTreeEndsTheOpenMergeStepBeforeItStartsTheMemberAgain(t *testing.T) {
@@ -253,35 +287,102 @@ func TestAReadmittedTreeEndsTheOpenMergeStepBeforeItStartsTheMemberAgain(t *test
 		handOverAtTheLingersEnd(t, pool, admission, engine, awaiting)
 		assertStepWrites(t, pool, awaiting, start("merge", 0, 1, 1), end("stopped", "merge", 0, 1, 1), start("merge", 0, 2, 2))
 	})
+	// The member is held from merging when the linger closes: the hand-over raises its generation
+	// and the promotion starts no worker of a held member, so the promotion's own start
+	// (workflow.Engine.StartStepRecord) opens the new generation's merge, after it ends the run of
+	// the generation before, which the linger left open. Its merge then ends that new run passed.
+	t.Run("a hand-over of a member held from merging", func(t *testing.T) {
+		pool, admission, engine := seedFinishingTree(t)
+		seedAwaitingPullRequest(t, pool)
+		held := issue(t, pool, awaiting)
+		held.Phase, held.Hold = phase.Held, &record.Hold{From: phase.Merging, Reason: record.HoldEscalated}
+		putIssue(t, pool, held)
+		countStart(t, pool, engine, awaiting)
+		closeFinishingTree(t, pool, admission, engine)
+		handOverAtTheLingersEnd(t, pool, admission, engine, awaiting)
+		if got := issue(t, pool, awaiting); got.Generation != 2 {
+			t.Fatalf("the handed-over member stands at generation %d, want 2", got.Generation)
+		}
+		if result, err := intake.ApplyFact(context.Background(), pool, "github", "merged-5", intake.PullRequestMerged{Repo: "acme/widgets", Number: 5, MergeSHA: "merge-5"}, engine, admission); err != nil || result.Refusal != nil {
+			t.Fatalf("merge %s = %+v, %v", awaiting, result.Refusal, err)
+		}
+		assertStepWrites(t, pool, awaiting, start("merge", 0, 1, 1), end("stopped", "merge", 0, 1, 1), start("merge", 0, 2, 2), end("passed", "merge", 0, 2, 2))
+	})
+}
+
+// putOwnArchitect records the claim of the accepting member's own architect in state, suspended by
+// by, as the claim store holds it: idle while it holds its role, suspended once the outbox has run
+// its tree's close or an operator suspended it.
+func putOwnArchitect(t *testing.T, pool *pgxpool.Pool, state supervise.ClaimState, by supervise.SuspendSource) {
+	t.Helper()
+	project, err := claim.ProjectToken(testProject)
+	if err != nil {
+		t.Fatalf("project token: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
+		values ($1, $2, $3, $4, 'architect', 1, 'ses_own', '/sessions/ses_own.jsonl', $5, 0, 0, 0, 0, $6)
+		on conflict (token) do update set state = excluded.state, suspended_by = excluded.suspended_by`,
+		string(architectToken(t, inAccepting)), project, finishedRoot, inAccepting, string(state), string(by)); err != nil {
+		t.Fatalf("record the architect claim of %s in state %s: %v", inAccepting, state, err)
+	}
 }
 
 // A tree admitted again starts each member's step again: the linger ended each member's run
 // stopped, and the promotion starts a new run of the same place, another record. A member whose
 // phase worker the promotion starts gets it from that start (workflow.Engine.StartPromotedWorker);
-// a member in accepting, whose role is the tree's architect, and one held from testing, whose hold
-// starts no worker, get it from the promotion's own start (workflow.Engine.StartStepRecord). The
-// member in accepting is its tree's work: each write of its record names the tree's architect,
-// never an architect of the member's own.
+// a member in accepting, whose role is an architect, and one held from testing, whose hold starts
+// no worker, get it from the promotion's own start (workflow.Engine.StartStepRecord).
+//
+// The member in accepting is the work of the architect that owns it: its own, which held its role
+// when the run began and which the tree's close then suspended. The promotion queues a start of it
+// in the transaction that starts the new run, and once that start runs the member's own architect
+// owns it again, so each write of its record names that architect. The control is the operator's
+// suspension, which no start wakes before the operator's resume: the new run names the tree's
+// architect, which owns the member until then.
 func TestATreeAdmittedAgainStartsEachMemberAgain(t *testing.T) {
-	pool, admission, engine := seedFinishingTree(t)
-	members := []struct {
-		key  string
-		kind string
-		step int
-	}{{planning, "step", 1}, {heldTesting, "step", 3}, {inAccepting, "step", 5}, {inRetro, "retro", 0}}
-	for _, member := range members {
-		countStart(t, pool, engine, member.key)
-	}
-	closeFinishingTree(t, pool, admission, engine)
-	reopenFinishingTree(t, pool, admission, engine)
-	for _, member := range members {
-		assertStepWrites(t, pool, member.key, start(member.kind, member.step, 1, 1), end("stopped", member.kind, member.step, 1, 1), start(member.kind, member.step, 1, 2))
-	}
-	assertStepWrites(t, pool, unstarted)
-	architect, own := architectToken(t, finishedRoot), architectToken(t, inAccepting)
-	for _, w := range stepWrites(t, pool, inAccepting) {
-		if w.Agent != string(architect) || w.Agent == string(own) {
-			t.Fatalf("a write of %s's acceptance names agent %q, want the tree's architect %s, not its own %s", inAccepting, w.Agent, architect, own)
-		}
+	tree, own := architectToken(t, finishedRoot), architectToken(t, inAccepting)
+	for _, tc := range []struct {
+		name string
+		by   supervise.SuspendSource
+		// again is the agent of the accepting member's new run.
+		again claim.Token
+	}{
+		{name: "the tree's close suspended the member's own architect", by: supervise.SuspendedByDaemon, again: own},
+		{name: "control: the operator suspended the member's own architect", by: supervise.SuspendedByOperator, again: tree},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool, admission, engine := seedFinishingTree(t)
+			putOwnArchitect(t, pool, supervise.StateIdle, "")
+			members := []struct {
+				key  string
+				kind string
+				step int
+			}{{planning, "step", 1}, {heldTesting, "step", 3}, {inAccepting, "step", 5}, {inRetro, "retro", 0}}
+			for _, member := range members {
+				countStart(t, pool, engine, member.key)
+			}
+			closeFinishingTree(t, pool, admission, engine)
+			putOwnArchitect(t, pool, supervise.StateSuspended, tc.by)
+			reopenFinishingTree(t, pool, admission, engine)
+			for _, member := range members {
+				assertStepWrites(t, pool, member.key, start(member.kind, member.step, 1, 1), end("stopped", member.kind, member.step, 1, 1), start(member.kind, member.step, 1, 2))
+			}
+			assertStepWrites(t, pool, unstarted)
+			// The promotion's start of the member's own architect names its phase and carries no
+			// task, a row effects leaves out, so it is counted here.
+			var queued int
+			if err := pool.QueryRow(context.Background(), `select count(*) from outbox where kind = $1 and issue = $2
+				and payload->>'op' = 'start' and payload->>'role' = 'architect' and payload->>'phase' = $3`,
+				string(record.OutboxKindSupervise), inAccepting, string(phase.Accepting)).Scan(&queued); err != nil || queued != 1 {
+				t.Fatalf("the promotion queued %d starts of %s's own architect in accepting (%v), want one", queued, inAccepting, err)
+			}
+			writes := stepWrites(t, pool, inAccepting)
+			for i, want := range []claim.Token{own, own, tc.again} {
+				if writes[i].Agent != string(want) {
+					t.Fatalf("write %d of %s's acceptance names agent %q, want %s (the tree's is %s, its own %s)", i, inAccepting, writes[i].Agent, want, tree, own)
+				}
+			}
+		})
 	}
 }

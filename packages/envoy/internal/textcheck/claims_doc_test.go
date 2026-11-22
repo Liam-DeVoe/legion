@@ -11,11 +11,11 @@ import (
 )
 
 // The claim list under "The Dispatch identity the broker can issue" in docs/kubernetes.md is what
-// a resource server writes its authorization against, and internal/broker/oauth holds the claims
+// a resource server writes its authorization against, and internal/cipher/oauth holds the claims
 // an exchanged token carries to it. That comparison is in two halves, because a test that reads
 // the guide puts the guide in its job's filter — a declared read applies to every compiled source
 // file of a run — and a documentation-only edit would then start the whole envoy Go lane. The
-// product half compares the exchange with internal/broker/oauth/claims_doc_extract.txt, a copy of
+// product half compares the exchange with internal/cipher/oauth/claims_doc_extract.txt, a copy of
 // the list committed beside it; this half holds that copy to the guide's own bullets. Neither
 // half alone is the guarantee: together they are the one the single test used to give.
 //
@@ -39,7 +39,7 @@ const (
 	claimsDocSeparator = " — "
 	// claimsExtract is the committed copy, read from the package it is about. The guide is at the
 	// repository root, four directories above this one.
-	claimsExtract   = "../broker/oauth/claims_doc_extract.txt"
+	claimsExtract   = "../cipher/oauth/claims_doc_extract.txt"
 	kubernetesGuide = "../../../../docs/kubernetes.md"
 )
 
@@ -62,7 +62,7 @@ func TestTheClaimExtractIsTheGuidesClaimList(t *testing.T) {
 		t.Fatalf("%s and docs/kubernetes.md's claim list disagree:\n"+
 			"  the extract: %s\n"+
 			"  the guide:   %s\n"+
-			"the extract is the copy internal/broker/oauth checks the exchange against, so the "+
+			"the extract is the copy internal/cipher/oauth checks the exchange against, so the "+
 			"guide answers for the code only while the two are equal; change them in one commit",
 			claimsExtract, strings.Join(extracted, ", "), strings.Join(documented, ", "))
 	}
@@ -104,7 +104,7 @@ var errCommented = errors.New("the text as written and as the rendered page show
 // (claimListNames of the text as written and of visibleMarkdown's): a list the two read
 // differently, or that one of them cannot read, is refused for the comment (errCommented), naming
 // what each reading gives. Where both fail alike, the written one answers, so a page whose
-// comments stand outside the list fails as it always did.
+// comments stand outside the list fails with the written reading's error alone.
 func claimListOfThePage(doc string) ([]string, error) {
 	written, writtenErr := claimListNames(doc)
 	shown, shownErr := claimListNames(visibleMarkdown(doc))
@@ -219,7 +219,7 @@ func TestClaimListNamesReadsTightAndBlankSeparatedLists(t *testing.T) {
 // comment. A comment inside a claim's prose, a "<!--" inside a fenced block above the list, a
 // "<!--" inside a line that its paragraph never closes, which the page shows as text, and a comment
 // after the list, where both readings have ended it, change nothing it reads; a guide with no list
-// fails in both readings alike, with the refusal it always gave.
+// fails in both readings alike, with the written reading's refusal.
 func TestTheClaimListIsReadWhereAReaderSeesIt(t *testing.T) {
 	const (
 		prose = "An issued token carries these claims and no others:\n\n"

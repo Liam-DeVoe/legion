@@ -150,9 +150,10 @@ func sectionHeadingIn(text, heading string) error {
 	return bothReadings(headingOf(text, heading), headingOf(visibleMarkdown(text), heading))
 }
 
-// headingOf holds one reading of a page: it has one line of `#` marks, a space and heading outside a
-// fenced block, from a line opening "```" to the next, where a `#` line is a shell comment and no
-// heading. A reading with none or with more than one is refused (errNotOneSection).
+// headingOf holds one reading of a page: it has one heading line (markdownHeading) whose words are
+// heading, outside a fenced block, from a line opening "```" to the next, where a `#` line is a
+// shell comment and no heading. A reading with none or with more than one is refused
+// (errNotOneSection).
 func headingOf(text, heading string) error {
 	fenced := false
 	headings := 0
@@ -161,7 +162,7 @@ func headingOf(text, heading string) error {
 			fenced = !fenced
 			continue
 		}
-		if !fenced && strings.HasPrefix(line, "#") && strings.TrimLeft(line, "#") == " "+heading {
+		if match := markdownHeading.FindStringSubmatch(line); !fenced && match != nil && match[2] == heading {
 			headings++
 		}
 	}

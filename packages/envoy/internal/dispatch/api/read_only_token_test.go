@@ -507,7 +507,7 @@ func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 	issueKey := decodeBody[struct {
 		Key string `json:"key"`
 	}](t, issue).Key
-	putStepOK(t, rig.handler, issueKey, "6f1d2c3b-4a59-4e7d-8c6b-5a4f3e2d1c0b", implementerStart(daemonSession(project)))
+	putStepOK(t, rig.handler, issueKey, "6f1d2c3b-4a59-4e7d-8c6b-5a4f3e2d1c0b", implementerStart(daemonSessionOf(project)))
 	marked.take()
 	request = caller.presenting(t, http.MethodGet, "/api/v1/issues/"+issueKey+"/steps", token, nil)
 	request = request.WithContext(context.WithValue(request.Context(), countedRead{}, true))
@@ -522,7 +522,7 @@ func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 	if closed := rig.asPerson(t, http.MethodPatch, "/api/v1/issues/"+issueKey, map[string]any{"status": "done"}); closed.Code != http.StatusOK {
 		t.Fatalf("close %s: status=%d body=%s", issueKey, closed.Code, closed.Body.String())
 	}
-	putPlanRecordOK(t, rig.handler, issueKey, "0c4b2f7e-3d1a-4b8c-9e6f-1a2b3c4d5e6f", defaultPlanBody(daemonSession(project), 1))
+	putPlanRecordOK(t, rig.handler, issueKey, "0c4b2f7e-3d1a-4b8c-9e6f-1a2b3c4d5e6f", defaultPlanBody(daemonSessionOf(project), 1))
 	marked.take()
 	request = caller.presenting(t, http.MethodGet, "/api/v1/projects/"+project+"/plans", token, nil)
 	request = request.WithContext(context.WithValue(request.Context(), countedRead{}, true))

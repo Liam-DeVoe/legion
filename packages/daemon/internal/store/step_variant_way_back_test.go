@@ -25,9 +25,10 @@ import (
 // guide alone.
 const stepVariantWayBackExtract = "step_variant_way_back_extract.txt"
 
-// stepVariantWayBack is the block the extract carries: everything under its run of `#` lines. A
-// copy with nothing under its header stops the test by name: a block this cannot find is a block
-// it would pass while running nothing.
+// stepVariantWayBack is the block the extract carries: everything under its run of `#` lines, with
+// rollingBackProject where the operator writes the key of the project that rolls back. A copy with
+// nothing under its header stops the test by name: a block this cannot find is a block it would
+// pass while running nothing.
 func stepVariantWayBack(t *testing.T) string {
 	t.Helper()
 	text, err := os.ReadFile(stepVariantWayBackExtract)
@@ -44,11 +45,18 @@ func stepVariantWayBack(t *testing.T) string {
 	return body
 }
 
-// stepRecordBeforeTheVariant is record.StepRecord as the release that rates each plan declares
-// it, the release this rollback goes back to: every field of this release's shape but
-// StepExperiment. It is a copy because that release's type is not in the tree. That release
-// decodes a step_record row strictly (record.DecodeOutboxPayload, DisallowUnknownFields), so a row
-// this shape refuses is a row it fails at every attempt.
+// stepVariantWayBackFor is the block as an operator who rolls project back runs it: with project's
+// key in place of rollingBackProject.
+func stepVariantWayBackFor(t *testing.T, project string) string {
+	t.Helper()
+	return strings.ReplaceAll(stepVariantWayBack(t), rollingBackProject, project)
+}
+
+// stepRecordBeforeTheVariant is record.StepRecord as the release before this one declares it, the
+// release this rollback goes back to: every field of this release's shape but StepExperiment. It
+// is a copy because that release's type is not in the tree. That release decodes a step_record row
+// strictly (record.DecodeOutboxPayload, DisallowUnknownFields), so a row this shape refuses is a
+// row it fails at every attempt.
 type stepRecordBeforeTheVariant struct {
 	stepRecordBeforeTheRating
 	*record.PlanRating
@@ -113,11 +121,20 @@ func stepVariantWayBackRows() []stepVariantQueued {
 	}
 }
 
-// stepVariantWayBackProblems runs block over stepVariantWayBackRows on a store of its own, as one
-// exec (the simple protocol a psql run uses), and answers each way the rows it leaves fall short:
-// a row deleted, a step record the release before still refuses, a row that this release's
-// decoder reads other than as it was queued with its variant taken out, and a waiting row whose
-// retry state moved.
+// The issue of the project that rolls back, and the issue of another project on the same database
+// whose daemon stays on this release.
+const (
+	stepVariantRollingBack = "LEGION-311"
+	stepVariantStaying     = "OTHER-7"
+)
+
+// stepVariantWayBackProblems runs block over stepVariantWayBackRows, queued once under each of the
+// two issues, on a store of its own, as one exec (the simple protocol a psql run uses), and
+// answers each way the rows it leaves fall short. Of the issue that rolls back: a row deleted, a
+// step record the release before still refuses, a row that this release's decoder reads other
+// than as it was queued with its variant taken out, and a waiting row whose retry state moved. Of
+// the issue that stays: a row deleted, or read other than as it was queued, its variant kept, or
+// whose retry state moved, since its daemon still owes Dispatch that variant.
 func stepVariantWayBackProblems(t *testing.T, block string) []string {
 	t.Helper()
 	ctx := context.Background()
@@ -125,24 +142,30 @@ func stepVariantWayBackProblems(t *testing.T, block string) []string {
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	const issue = "LEGION-311"
 	queuedAt := time.Date(2026, 11, 17, 20, 0, 0, 0, time.UTC)
 	retryAt := time.Now().Add(time.Hour).UTC().Truncate(time.Microsecond)
-	retryError := "write the step record of LEGION-311: NOT_FOUND (404): no route for PUT /api/v1/issues/LEGION-311/…/experiment"
+	retryError := func(issue string) string {
+		return "write the variant of the step record of " + issue + ": NOT_FOUND (404): no route for PUT /api/v1/issues/" + issue + "/…/experiment"
+	}
 	queued := stepVariantWayBackRows()
-	ids := make([]int64, len(queued))
-	for i, q := range queued {
-		row, err := record.NewOutboxRow(issue, q.payload, queuedAt)
-		if err != nil {
-			t.Fatalf("queue %s: %v", q.name, err)
-		}
-		attempts, nextAt, lastError := 0, row.NextAt, ""
-		if q.waiting {
-			attempts, nextAt, lastError = 3, retryAt, retryError
-		}
-		if err := store.Pool().QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
-			values ($1, $2, $3, $4, $5, $6) returning id`, string(row.Kind), row.Issue, row.Payload, attempts, nextAt, lastError).Scan(&ids[i]); err != nil {
-			t.Fatalf("insert %s: %v", q.name, err)
+	issues := []string{stepVariantRollingBack, stepVariantStaying}
+	ids := map[string][]int64{}
+	for _, issue := range issues {
+		for _, q := range queued {
+			row, err := record.NewOutboxRow(issue, q.payload, queuedAt)
+			if err != nil {
+				t.Fatalf("queue %s of %s: %v", q.name, issue, err)
+			}
+			attempts, nextAt, lastError := 0, row.NextAt, ""
+			if q.waiting {
+				attempts, nextAt, lastError = 3, retryAt, retryError(issue)
+			}
+			var id int64
+			if err := store.Pool().QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+				values ($1, $2, $3, $4, $5, $6) returning id`, string(row.Kind), row.Issue, row.Payload, attempts, nextAt, lastError).Scan(&id); err != nil {
+				t.Fatalf("insert %s of %s: %v", q.name, issue, err)
+			}
+			ids[issue] = append(ids[issue], id)
 		}
 	}
 	if strings.TrimSpace(block) != "" {
@@ -152,53 +175,62 @@ func stepVariantWayBackProblems(t *testing.T, block string) []string {
 	}
 
 	var problems []string
-	for i, q := range queued {
-		var row record.OutboxRow
-		var kind string
-		var attempts int
-		var nextAt time.Time
-		var lastError string
-		err := store.Pool().QueryRow(ctx, `select id, kind, issue, payload, attempts, next_at, last_error from outbox where id = $1`,
-			ids[i]).Scan(&row.ID, &kind, &row.Issue, &row.Payload, &attempts, &nextAt, &lastError)
-		if err != nil {
-			problems = append(problems, fmt.Sprintf("%s (row %d) is gone after the way back: %v", q.name, ids[i], err))
-			continue
-		}
-		row.Kind = record.OutboxKind(kind)
-		want := q.payload
-		if write, isStep := want.(record.StepRecord); isStep {
-			if err := decodedBeforeTheVariant(row.Payload); err != nil {
-				problems = append(problems, fmt.Sprintf("the release before refuses %s after the way back, and retries it at every attempt: %v", q.name, err))
+	for _, issue := range issues {
+		rollsBack := issue == stepVariantRollingBack
+		for i, q := range queued {
+			id := ids[issue][i]
+			var row record.OutboxRow
+			var kind string
+			var attempts int
+			var nextAt time.Time
+			var lastError string
+			err := store.Pool().QueryRow(ctx, `select id, kind, issue, payload, attempts, next_at, last_error from outbox where id = $1`,
+				id).Scan(&row.ID, &kind, &row.Issue, &row.Payload, &attempts, &nextAt, &lastError)
+			if err != nil {
+				problems = append(problems, fmt.Sprintf("%s of %s (row %d) is gone after the way back: %v", q.name, issue, id, err))
+				continue
 			}
-			write.StepExperiment = nil
-			want = write
-		}
-		decoded, err := record.DecodeOutboxPayload(row)
-		switch {
-		case err != nil:
-			problems = append(problems, fmt.Sprintf("this release's decode of %s after the way back: %v", q.name, err))
-		case !reflect.DeepEqual(decoded, want):
-			problems = append(problems, fmt.Sprintf("%s reads %#v after the way back, want %#v: the row as it was queued, its variant taken out", q.name, decoded, want))
-		}
-		if q.waiting && (attempts != 3 || !nextAt.Equal(retryAt) || lastError != retryError) {
-			problems = append(problems, fmt.Sprintf("%s waits to retry after the way back with %d attempts, at %s, after %q; want its 3, %s and %q as they were",
-				q.name, attempts, nextAt.UTC(), lastError, retryAt, retryError))
+			row.Kind = record.OutboxKind(kind)
+			want := q.payload
+			if write, isStep := want.(record.StepRecord); isStep && rollsBack {
+				if err := decodedBeforeTheVariant(row.Payload); err != nil {
+					problems = append(problems, fmt.Sprintf("the release before refuses %s of %s after the way back, and retries it at every attempt: %v", q.name, issue, err))
+				}
+				write.StepExperiment = nil
+				want = write
+			}
+			decoded, err := record.DecodeOutboxPayload(row)
+			switch {
+			case err != nil:
+				problems = append(problems, fmt.Sprintf("this release's decode of %s of %s after the way back: %v", q.name, issue, err))
+			case !reflect.DeepEqual(decoded, want) && rollsBack:
+				problems = append(problems, fmt.Sprintf("%s of %s reads %#v after the way back, want %#v: the row as it was queued, its variant taken out", q.name, issue, decoded, want))
+			case !reflect.DeepEqual(decoded, want):
+				problems = append(problems, fmt.Sprintf("%s of %s reads %#v after the way back, want %#v: the row as it was queued, its variant kept for its daemon, which stays on this release", q.name, issue, decoded, want))
+			}
+			if q.waiting && (attempts != 3 || !nextAt.Equal(retryAt) || lastError != retryError(issue)) {
+				problems = append(problems, fmt.Sprintf("%s of %s waits to retry after the way back with %d attempts, at %s, after %q; want its 3, %s and %q as they were",
+					q.name, issue, attempts, nextAt.UTC(), lastError, retryAt, retryError(issue)))
+			}
 		}
 	}
 	return problems
 }
 
 // The way back of the release that names the variant on each step record takes the experiment and
-// the variant out of each queued step_record row, and nothing else: every row stays, with its
-// retry state, each step record then takes the strict decode of the release before, the release
-// that rates each plan, and this release reads each row as it was queued but for its variant. The
-// block is the guide's, as the extract beside this file copies it.
+// the variant out of each queued step_record row of the project that rolls back, and nothing else:
+// every row stays, with its retry state, each of that project's step records then takes the strict
+// decode of the release before, and this release reads each row as it was queued but for its
+// variant. Another project's daemon on the same database stays on this release and still owes its
+// variants to Dispatch, so its rows stand as they were queued, variant and all. The block is the
+// guide's, as the extract beside this file copies it, run for LEGION as an operator runs it.
 //
-// The control comes first: the release before refuses each queued row that names the variant and
+// The controls come first: the release before refuses each queued row that names the variant and
 // takes the one that names none, so this test sees the rows the way back exists for. Then the
 // block runs again once for each of its statements, with that statement taken out, and each such
 // run must leave a row short: a statement this test could drop without failing is one it does not
-// check.
+// check. Last, the block runs with the project's predicate cut out, and must strip the other
+// project's rows: so the predicate is what keeps them.
 //
 // What this cannot show is the earlier daemon running: its binary is not here, so its decode is the
 // copy above (stepRecordBeforeTheVariant).
@@ -208,7 +240,7 @@ func TestTheStepVariantWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 		if !isStep {
 			continue
 		}
-		row, err := record.NewOutboxRow("LEGION-311", q.payload, time.Now())
+		row, err := record.NewOutboxRow(stepVariantRollingBack, q.payload, time.Now())
 		if err != nil {
 			t.Fatalf("queue %s: %v", q.name, err)
 		}
@@ -218,7 +250,7 @@ func TestTheStepVariantWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 		}
 	}
 
-	block := stepVariantWayBack(t)
+	block := stepVariantWayBackFor(t, "LEGION")
 	if problems := stepVariantWayBackProblems(t, block); len(problems) > 0 {
 		t.Fatalf("after the way back:\n%s", strings.Join(problems, "\n"))
 	}
@@ -232,5 +264,17 @@ func TestTheStepVariantWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 			t.Errorf("the way back without its statement %d leaves the rows as the whole block does, so this test does not check it:\n%s",
 				i+1, statement)
 		}
+	}
+
+	raw := stepVariantWayBack(t)
+	if scoped := strings.Count(raw, projectScope); scoped != 1 {
+		t.Fatalf("the way back scopes %d statements to the project that rolls back (%q), want its one:\n%s", scoped, projectScope, raw)
+	}
+	unscoped := strings.ReplaceAll(raw, projectScope, "")
+	if problems := stepVariantWayBackProblems(t, unscoped); !slices.ContainsFunc(problems, func(problem string) bool {
+		return strings.Contains(problem, "of "+stepVariantStaying+" reads")
+	}) {
+		t.Errorf("the control, the way back with no project predicate, leaves %s's rows as they were queued (problems %q); "+
+			"want them stripped, or this test cannot see a block that strips another project's rows", stepVariantStaying, problems)
 	}
 }

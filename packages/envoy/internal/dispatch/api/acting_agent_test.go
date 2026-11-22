@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -157,9 +156,7 @@ func TestABrokerTokensAnswerActsAsTheSessionTheBrokerProved(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-dev-box-token-that-answers"
-	says := liveNamedToken(caller.jkt)
-	says.ProjectScope, says.Projects = brokertoken.ProjectScopePerson, nil
-	rig.broker.Says(token, says)
+	rig.broker.Says(token, personScopedTokenAnswer(caller.jkt))
 
 	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{
 		"key": "BRK", "name": "Broker",
@@ -190,8 +187,86 @@ func TestABrokerTokensAnswerActsAsTheSessionTheBrokerProved(t *testing.T) {
 	if answer.Act == nil || answer.Act.Session != brokerTestSession || answer.Act.TokenID != "" {
 		t.Fatalf("the stored answer's act = %+v, want the session the broker proved and no token row", answer.Act)
 	}
-	if !slices.Equal(answer.Act.Scopes, []string{model.ScopePerson, model.ScopeApprove}) {
-		t.Fatalf("the stored answer's act scopes = %v, want both", answer.Act.Scopes)
+	// The act records the scopes the credential held, and a broker token holds person alone,
+	// never approve (brokerTokenActor).
+	if !slices.Equal(answer.Act.Scopes, []string{model.ScopePerson}) {
+		t.Fatalf("the stored answer's act scopes = %v, want person alone", answer.Act.Scopes)
+	}
+}
+
+// An act's session is proven only where the credential proved it. A personal token proves its
+// person and no session, so the session its caller names, through ?session= or the body, is
+// recorded without session_proven; a broker-issued token proved its own session, so its act
+// carries session_proven whether the caller names that session again or not. The answer's actor
+// is the person either way, and proven either way: every credential that holds the person scope
+// proves whom it acts for.
+func TestAnActsSessionIsProvenOnlyWhereTheCredentialProvedIt(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const brokerToken = "a-dev-box-token-whose-session-is-proven"
+	rig.broker.Says(brokerToken, personScopedTokenAnswer(caller.jkt))
+	fixture := seedProject(t, rig, brokerTestProject, "Broker")
+	personal := mintPersonalToken(t, rig.handler, brokerTestPerson, actingTokenName, nil)
+	presenting := func(t *testing.T, askID, query string, body map[string]any) *httptest.ResponseRecorder {
+		body["expected_edited_at"] = nil
+		return rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+askID+"/answer"+query, brokerToken, body))
+	}
+
+	for _, answer := range []struct {
+		name          string
+		send          func(t *testing.T, askID string, body map[string]any) *httptest.ResponseRecorder
+		session       string
+		sessionProven bool
+	}{
+		{"a personal token naming its session in ?session=", func(t *testing.T, askID string, body map[string]any) *httptest.ResponseRecorder {
+			return answerAsToken(t, rig.handler, askID, personal.Token, actingSession, body)
+		}, actingSession, false},
+		{"a personal token naming its session in the body", func(t *testing.T, askID string, body map[string]any) *httptest.ResponseRecorder {
+			body["actor"] = map[string]any{"kind": "session", "id": actingSession}
+			return answerAsToken(t, rig.handler, askID, personal.Token, "", body)
+		}, actingSession, false},
+		// A forged body: its actor says proven and names an act whose session_proven is true.
+		// Both are fields the strict decode takes, so the answer is written; the act still
+		// records the session the body named as not proven, which a handler that copied the
+		// body's act or mark would fail.
+		{"a personal token whose body says its session is proven", func(t *testing.T, askID string, body map[string]any) *httptest.ResponseRecorder {
+			body["actor"] = map[string]any{
+				"kind": "session", "id": actingSession, "proven": true,
+				"act": map[string]any{"session": actingSession, "session_proven": true},
+			}
+			return answerAsToken(t, rig.handler, askID, personal.Token, "", body)
+		}, actingSession, false},
+		{"a broker-issued token naming no session", func(t *testing.T, askID string, body map[string]any) *httptest.ResponseRecorder {
+			return presenting(t, askID, "", body)
+		}, brokerTestSession, true},
+		{"a broker-issued token naming its own session in ?session=", func(t *testing.T, askID string, body map[string]any) *httptest.ResponseRecorder {
+			return presenting(t, askID, "?session="+brokerTestSession, body)
+		}, brokerTestSession, true},
+		{"a broker-issued token naming its own session in the body", func(t *testing.T, askID string, body map[string]any) *httptest.ResponseRecorder {
+			body["actor"] = map[string]any{"kind": "session", "id": brokerTestSession}
+			return presenting(t, askID, "", body)
+		}, brokerTestSession, true},
+	} {
+		t.Run(answer.name, func(t *testing.T) {
+			askID := openAskAs(t, rig.handler, fixture.issue, "session-asking", "Which option for "+answer.name+"?")
+			answered := answer.send(t, askID, map[string]any{"selected": []string{"Yes"}})
+			if answered.Code != http.StatusOK {
+				t.Fatalf("answer: status=%d body=%s", answered.Code, answered.Body.String())
+			}
+			event := latestAskEventActor(t, rig.database, askID, "ask.answered")
+			requirePersonActor(t, "the ask.answered event's", event, brokerTestPerson)
+			if !event.Proven {
+				t.Fatalf("the ask.answered event's actor = %+v, want its person proven", event)
+			}
+			for what, act := range map[string]*model.ActorAct{
+				"the ask.answered event's act": event.Act,
+				"the stored answer's act":      storedAskAnswer(t, rig.database, askID).Act,
+			} {
+				if act == nil || act.Session != answer.session || act.SessionProven != answer.sessionProven {
+					t.Fatalf("%s = %+v, want session %q with session_proven %t", what, act, answer.session, answer.sessionProven)
+				}
+			}
+		})
 	}
 }
 
@@ -233,9 +308,7 @@ func TestABodyActorNamingAnotherSessionThanTheCredentialProvedIsRefused(t *testi
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-dev-box-token-whose-body-lies"
-	says := liveNamedToken(caller.jkt)
-	says.ProjectScope, says.Projects = brokertoken.ProjectScopePerson, nil
-	rig.broker.Says(token, says)
+	rig.broker.Says(token, personScopedTokenAnswer(caller.jkt))
 	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{
 		"key": brokerTestProject, "name": "Broker",
 	}); created.Code != http.StatusCreated {
@@ -453,7 +526,9 @@ func TestACommentUnderAPersonalTokenIsStillTheSessionsOwnWrite(t *testing.T) {
 
 // A machine login's decision writes no Dispatch event - the broker records it - so the agent that
 // decided for its person is named on Dispatch's own access-log line: the session the caller named,
-// and otherwise the token, by its owner, with the credential beside it either way.
+// and otherwise the token, by its owner, with the credential beside it either way. The decision
+// Dispatch relays names the token's owner as the approver, which the broker takes on Dispatch's
+// word (credential_requests.go).
 func TestAMachineLoginDecisionNamesTheActingAgentOnItsAccessLogLine(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -481,6 +556,9 @@ func TestAMachineLoginDecisionNamesTheActingAgentOnItsAccessLogLine(t *testing.T
 			if approved.Code != http.StatusOK {
 				t.Fatalf("approve a machine login with a personal token: status=%d body=%s", approved.Code, approved.Body.String())
 			}
+			if want := `{"approver":"alice","code":"123456"}`; broker.lastBody != want {
+				t.Fatalf("the approve sent the secrets broker %s, want %s: the token's owner is the approver", broker.lastBody, want)
+			}
 			lines := accessLines(t, logged)
 			if len(lines) != 1 {
 				t.Fatalf("the approve wrote %d access-log lines:\n%s", len(lines), strings.Join(lines, "\n"))
@@ -495,51 +573,75 @@ func TestAMachineLoginDecisionNamesTheActingAgentOnItsAccessLogLine(t *testing.T
 }
 
 // Answering an approval request approves the document it names, so it needs the approve scope
-// beside the person scope the route's own row declares, and a token narrowed to person alone is
-// refused exactly as the gate refuses it - the code, the scope named and the challenge header.
-// That token answers any other kind of ask, so it is the ask's kind alone that refuses.
+// beside the person scope the route's own row declares. Two credentials hold person alone: a
+// personal token its person narrowed, and a broker-issued token acting for its person, which never
+// holds approve (brokerTokenActor). Each passes the row's gate and is refused inside the answer
+// (answerAsk) exactly as the gate refuses it - the code, the scope named and the challenge header -
+// with the request left open. Each answers any other kind of ask, so it is the ask's kind alone
+// that refuses.
 func TestAnsweringAnApprovalAskNeedsTheApproveScope(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
-	issue := createInteractionIssue(t, handler, "ACT", "Approving needs approve", "A spec")
-	narrow := mintPersonalToken(t, handler, "alice", "planner", []string{model.ScopePerson})
+	for _, credential := range []struct {
+		name string
+		// holding readies the credential on rig and answers what sending an ask's answer under it
+		// answers: the ask's id and the answer's body.
+		holding func(t *testing.T, rig *brokerTokenRig) func(askID string, body map[string]any) *httptest.ResponseRecorder
+	}{
+		{"a personal token narrowed to person", func(t *testing.T, rig *brokerTokenRig) func(string, map[string]any) *httptest.ResponseRecorder {
+			narrow := mintPersonalToken(t, rig.handler, brokerTestPerson, "planner", []string{model.ScopePerson})
+			return func(askID string, body map[string]any) *httptest.ResponseRecorder {
+				return answerAsToken(t, rig.handler, askID, narrow.Token, actingSession, body)
+			}
+		}},
+		{"a broker-issued token acting for its person", func(t *testing.T, rig *brokerTokenRig) func(string, map[string]any) *httptest.ResponseRecorder {
+			caller := newBrokerCaller(t)
+			const token = "a-dev-box-token-that-would-answer-an-approval"
+			rig.broker.Says(token, personScopedTokenAnswer(caller.jkt))
+			return func(askID string, body map[string]any) *httptest.ResponseRecorder {
+				body["expected_edited_at"] = nil
+				return rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+askID+"/answer", token, body))
+			}
+		}},
+	} {
+		t.Run(credential.name, func(t *testing.T) {
+			rig := newBrokerTokenRig(t)
+			answer := credential.holding(t, rig)
+			issue := createInteractionIssue(t, rig.handler, "ACT", "Approving needs approve", "A spec")
 
-	requested := sessionRequest(t, handler, http.MethodPost,
-		"/api/v1/artifacts/"+issue.PrimaryArtifactID+"/approval-requests", map[string]any{"actor": sessionActor()})
-	if requested.Code != http.StatusCreated {
-		t.Fatalf("request approval: status=%d body=%s", requested.Code, requested.Body.String())
-	}
-	approvalAsk := decodeBody[struct {
-		Ask struct {
-			ID string `json:"id"`
-		} `json:"ask"`
-	}](t, requested).Ask.ID
+			requested := sessionRequest(t, rig.handler, http.MethodPost,
+				"/api/v1/artifacts/"+issue.PrimaryArtifactID+"/approval-requests", map[string]any{"actor": sessionActor()})
+			if requested.Code != http.StatusCreated {
+				t.Fatalf("request approval: status=%d body=%s", requested.Code, requested.Body.String())
+			}
+			approvalAsk := decodeBody[struct {
+				Ask struct {
+					ID string `json:"id"`
+				} `json:"ask"`
+			}](t, requested).Ask.ID
 
-	refused := answerAsToken(t, handler, approvalAsk, narrow.Token, actingSession, map[string]any{
-		"selected": []string{docs.ApprovalOptionApprove},
-	})
-	if refused.Code != http.StatusForbidden {
-		t.Fatalf("answer an approval ask without approve: status=%d body=%s, want 403", refused.Code, refused.Body.String())
-	}
-	body := decodeBody[refusalAnswer](t, refused)
-	if body.Code != codeScopeRequired || !strings.Contains(body.Error, model.ScopeApprove) {
-		t.Fatalf("the refusal = %+v, want %s naming the approve scope", body, codeScopeRequired)
-	}
-	if got, want := refused.Header().Get("WWW-Authenticate"), insufficientScopeChallenge(model.ScopeApprove); got != want {
-		t.Fatalf("the refusal's challenge = %q, want %q", got, want)
-	}
-	var state string
-	if err := database.Pool.QueryRow(context.Background(), `select state from asks where id = $1`, approvalAsk).Scan(&state); err != nil {
-		t.Fatalf("read the approval ask's state: %v", err)
-	}
-	if state != "open" {
-		t.Fatalf("the approval ask is %q after the refusal, want it still open", state)
-	}
+			refused := answer(approvalAsk, map[string]any{"selected": []string{docs.ApprovalOptionApprove}})
+			if refused.Code != http.StatusForbidden {
+				t.Fatalf("answer an approval ask without approve: status=%d body=%s, want 403", refused.Code, refused.Body.String())
+			}
+			body := decodeBody[refusalAnswer](t, refused)
+			if body.Code != codeScopeRequired || !strings.Contains(body.Error, model.ScopeApprove) {
+				t.Fatalf("the refusal = %+v, want %s naming the approve scope", body, codeScopeRequired)
+			}
+			if got, want := refused.Header().Get("WWW-Authenticate"), insufficientScopeChallenge(model.ScopeApprove); got != want {
+				t.Fatalf("the refusal's challenge = %q, want %q", got, want)
+			}
+			var state string
+			if err := rig.database.Pool.QueryRow(context.Background(), `select state from asks where id = $1`, approvalAsk).Scan(&state); err != nil {
+				t.Fatalf("read the approval ask's state: %v", err)
+			}
+			if state != "open" {
+				t.Fatalf("the approval ask is %q after the refusal, want it still open", state)
+			}
 
-	question := openAskAs(t, handler, issue.Key, "session-asking", "Which option?")
-	if answered := answerAsToken(t, handler, question, narrow.Token, actingSession, map[string]any{
-		"selected": []string{"Yes"},
-	}); answered.Code != http.StatusOK {
-		t.Fatalf("answer an ordinary question with the same token: status=%d body=%s", answered.Code, answered.Body.String())
+			question := openAskAs(t, rig.handler, issue.Key, "session-asking", "Which option?")
+			if answered := answer(question, map[string]any{"selected": []string{"Yes"}}); answered.Code != http.StatusOK {
+				t.Fatalf("answer an ordinary question with the same credential: status=%d body=%s", answered.Code, answered.Body.String())
+			}
+		})
 	}
 }
 
