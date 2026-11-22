@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 	"github.com/sjawhar/envoy/internal/dispatch/specstore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // The import of an approved level (D9) writes each component of the level's table, and each
@@ -454,6 +455,167 @@ func TestImportLevelOpensOneRepairChild(t *testing.T) {
 			t.Errorf("the import run again names the child issue %v, want %s", again.RepairIssue, child)
 		}
 	})
+}
+
+// holdTheClearOfAHold is a trigger that holds each statement stating a hold of the approved spec
+// gone - the node write's update of the hold's row, which an approval of a change request runs in
+// its write phase under the lock of the approved spec (specstore.Apply) - on the advisory key
+// clearOfAHoldKey, which a transaction of the test takes first.
+const holdTheClearOfAHold = `
+	create function test_hold_the_clear_of_a_hold() returns trigger language plpgsql as $$
+	begin
+		perform pg_advisory_xact_lock(hashtext('test: the clear of a hold'));
+		return new;
+	end $$;
+	create trigger test_hold_the_clear_of_a_hold before update on graph_nodes for each row
+		when (new.kind = 'spec_import_hold' and new.state = 'gone')
+		execute function test_hold_the_clear_of_a_hold();`
+
+// clearOfAHoldKey is the statement that takes the key holdTheClearOfAHold's trigger waits on.
+const clearOfAHoldKey = `select pg_advisory_xact_lock(hashtext('test: the clear of a hold'))`
+
+// TestImportLevelRepairChildListsTheHoldsOpenWhenItIsCreated: an approval of a change request that
+// clears a hold while the import opens the repair child of its holds leaves exactly one child,
+// listing exactly the holds still open when it is created (D9). The create that opens the child
+// reads the holds again under the lock of the approved spec, which the approval holds until it
+// commits, so it waits for the approval and finds that hold cleared.
+//
+// A transaction of the test holds the project's owner lock, so the import's create waits there,
+// after the import's own transaction committed the holds a-bill-has-no-owner and
+// an-unowned-bill-is-flagged. The approval of the change request that supplies a-bill-has-no-owner's
+// kind then takes the lock of the approved spec, and a second transaction of the test holds it
+// inside its write phase, at the statement that states that hold gone (holdTheClearOfAHold). The
+// first transaction lets the create go on; once the import has answered, or two backends wait
+// behind the second transaction, the second lets the approval go on and commit.
+func TestImportLevelRepairChildListsTheHoldsOpenWhenItIsCreated(t *testing.T) {
+	ctx := context.Background()
+	rig := newLevelRig(t, "Level one of the fixture", levelFixture)
+	notes := rig.upload(t, "notes.md", levelNotesFixture)
+	rig.approveLevel(t)
+	rig.approveDocument(t, notes.ID)
+	// The change request and its approval request each take the project's owner lock, so both are
+	// written before the race.
+	supplied := rig.issue(t, "The kind of a held statement", specRepo,
+		":::requirement{#a-bill-has-no-owner kind=\"behavior\" about=\"billing\"}\nA bill has no owner of its own.\n:::\n", "")
+	rig.request(t, supplied, false)
+	if _, err := rig.database.Pool.Exec(ctx, holdTheClearOfAHold); err != nil {
+		t.Fatalf("install the trigger that holds the clear of a hold: %v", err)
+	}
+	importRequest := rig.importRequest(t, "notes.md")
+	approvalRequest := httptest.NewRequest(http.MethodPost, "/api/v1/artifacts/"+supplied.PrimaryArtifactID+"/reviews",
+		strings.NewReader(`{"state":"approved"}`))
+	approvalRequest.Header.Set("Content-Type", "application/json")
+	approvalRequest.Header.Set("X-Dispatch-User", "alice")
+
+	// The two transactions the race is held by, each rolled back at the end where the test has not
+	// let go of it already.
+	owner, err := rig.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that holds the project's owner lock: %v", err)
+	}
+	t.Cleanup(func() { _ = owner.Rollback(context.Background()) })
+	clearing, err := rig.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that holds the clear of a hold: %v", err)
+	}
+	t.Cleanup(func() { _ = clearing.Rollback(context.Background()) })
+	// The backends waiting behind each transaction, directly or behind an earlier waiter.
+	behindOwner := func() int { return storetest.WaitForLockWaiters(t, owner, 0, 0) }
+	behindClearing := func() int { return storetest.WaitForLockWaiters(t, clearing, 0, 0) }
+	poll := func(what string, until func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(30 * time.Second)
+		for !until() {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: not within 30s", what)
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+	serve := func(request *http.Request) <-chan *httptest.ResponseRecorder {
+		answered := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			response := httptest.NewRecorder()
+			rig.handler.ServeHTTP(response, request)
+			answered <- response
+		}()
+		return answered
+	}
+	answer := func(what string, answered <-chan *httptest.ResponseRecorder) *httptest.ResponseRecorder {
+		t.Helper()
+		select {
+		case response := <-answered:
+			return response
+		case <-time.After(30 * time.Second):
+			t.Fatalf("%s answered nothing within 30s", what)
+			return nil
+		}
+	}
+
+	if err := store.LockOwner(ctx, owner, store.ProjectOwner("CORE")); err != nil {
+		t.Fatalf("hold the owner lock of CORE: %v", err)
+	}
+	imports := serve(importRequest)
+	var imported *httptest.ResponseRecorder
+	importAnswered := func() bool {
+		if imported == nil {
+			select {
+			case imported = <-imports:
+			default:
+			}
+		}
+		return imported != nil
+	}
+	poll("the import's create queues behind the project's owner lock", func() bool {
+		if importAnswered() {
+			t.Fatalf("the import answered status=%d body=%s before its create queued behind the project's owner lock", imported.Code, imported.Body.String())
+		}
+		return behindOwner() >= 1
+	})
+
+	if _, err := clearing.Exec(ctx, clearOfAHoldKey); err != nil {
+		t.Fatalf("take the key the clear of a hold waits on: %v", err)
+	}
+	approvals := serve(approvalRequest)
+	poll("the approval queues behind the clear of its hold", func() bool {
+		select {
+		case response := <-approvals:
+			t.Fatalf("the approval answered status=%d body=%s before it queued behind the clear of its hold", response.Code, response.Body.String())
+		default:
+		}
+		return behindClearing() >= 1
+	})
+	if err := owner.Rollback(ctx); err != nil {
+		t.Fatalf("let go of the owner lock of CORE: %v", err)
+	}
+	poll("the import answers, or its create queues behind the approval", func() bool {
+		return importAnswered() || behindClearing() >= 2
+	})
+	if err := clearing.Commit(ctx); err != nil {
+		t.Fatalf("let go of the clear of a hold: %v", err)
+	}
+	if approved := answer("the approval", approvals); approved.Code != http.StatusCreated {
+		t.Fatalf("the approval of %s: status=%d body=%s, want 201", supplied.Key, approved.Code, approved.Body.String())
+	}
+	if imported == nil {
+		imported = answer("the import", imports)
+	}
+	if imported.Code != http.StatusOK {
+		t.Fatalf("the import of %s: status=%d body=%s, want 200", rig.level.Key, imported.Code, imported.Body.String())
+	}
+
+	rig.requireVersions(t, specRepo, "a-bill-has-no-owner", "A bill has no owner of its own.")
+	child := rig.requireOneRepairChild(t, []string{"an-unowned-bill-is-flagged"})
+	if named := decodeBody[levelImport](t, imported).RepairIssue; named == nil || *named != child {
+		t.Errorf("the import names the child issue %v, want %s", named, child)
+	}
+	read := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/issues/"+child, nil, "alice")
+	if read.Code != http.StatusOK {
+		t.Fatalf("read the child issue %s: status=%d body=%s", child, read.Code, read.Body.String())
+	}
+	if spec := artifactTextOf(t, rig.handler, decodeBody[model.Issue](t, read).PrimaryArtifactID); strings.Contains(spec, "`a-bill-has-no-owner`") {
+		t.Errorf("the spec of the child issue %s lists the hold of a-bill-has-no-owner, which the approval cleared before the child was created:\n%s", child, spec)
+	}
 }
 
 // The pinned fixture of level one (testdata/level-one): level.md is version 10 of the level
