@@ -21,7 +21,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
-	"github.com/sjawhar/envoy/internal/dispatch/grapherase"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/seedcorpus"
@@ -29,9 +28,9 @@ import (
 )
 
 // This file holds the writers TestEveryGraphKindHasOneWriter drives (one_writer_test.go), grouped by
-// the package whose writers each group runs: the API's routes, the document service, the erase,
-// the reference rebuild and the architecture importer over the rig's own database, and the
-// backfill, the seed and the test corpus over databases of their own.
+// the package whose writers each group runs: the API's routes, the document service, the reference
+// rebuild and the architecture importer over the rig's own database, and the backfill, the seed and
+// the test corpus over databases of their own.
 
 // oneWriterState is what the cases leave for the cases after them.
 type oneWriterState struct {
@@ -597,52 +596,13 @@ func documentCases(state *oneWriterState, next func() int) []writerCase {
 	}}
 }
 
-// rigPackageCases are the writers of the erase, the reference rebuild and the architecture
-// importer over the rig's own database.
+// rigPackageCases are the writers of the reference rebuild and the architecture importer over the
+// rig's own database.
 func rigPackageCases(state *oneWriterState, next func() int) []writerCase {
 	ctx := context.Background()
-	var erasedComment, erasedBlock, rebuilt string
+	var rebuilt string
 	var importer *architecture.Importer
-	erase := func(database *store.Store, kind, id string) error {
-		url := database.Pool.Config().ConnString()
-		listing, err := grapherase.Erase(ctx, url, kind, id, "", 10*time.Millisecond)
-		if err != nil {
-			return err
-		}
-		if len(listing.Blockers) > 0 {
-			return fmt.Errorf("the erase of %s %s is blocked by %v", kind, id, listing.Blockers)
-		}
-		erasure, err := grapherase.Erase(ctx, url, kind, id, listing.Digest, 10*time.Millisecond)
-		if err != nil {
-			return err
-		}
-		if !erasure.Applied {
-			return fmt.Errorf("the erase of %s %s applied nothing", kind, id)
-		}
-		return nil
-	}
 	return []writerCase{{
-		name: "the erase of a comment", tables: []string{"comments"}, process: "internal/dispatch/grapherase/",
-		ready: func(t *testing.T, r *oneWriterRig, _ *store.Store) {
-			erasedComment = decoded[model.Comment](t, r.request(t, http.MethodPost, "/api/v1/issues/"+state.issue+"/comments",
-				map[string]any{"body": "A remark the erase takes."}, "alice", http.StatusCreated)).ID
-		},
-		drive: func(t *testing.T, r *oneWriterRig, database *store.Store) error {
-			return erase(database, "comment", erasedComment)
-		},
-	}, {
-		name: "the erase of a block a version held", tables: []string{"document_blocks", "artifact_versions"}, process: "internal/dispatch/grapherase/",
-		ready: func(t *testing.T, r *oneWriterRig, database *store.Store) {
-			// The paragraph cites the issue, so its block holds a link the erase deletes too.
-			document := r.uploaded(t, "erased.md", ":::callout{#holder}\nWords the erase takes, citing dispatch://"+state.issue+".\n:::\n")
-			if err := database.Pool.QueryRow(ctx, `select node_id from document_blocks where artifact_id = $1::uuid and type = 'paragraph'`, document).Scan(&erasedBlock); err != nil {
-				t.Fatalf("read the node of the paragraph of erased.md: %v", err)
-			}
-		},
-		drive: func(t *testing.T, r *oneWriterRig, database *store.Store) error {
-			return erase(database, "block", erasedBlock)
-		},
-	}, {
 		name: "the rebuild of every reference", tables: []string{"refs"},
 		ready: func(t *testing.T, r *oneWriterRig, database *store.Store) {
 			rebuilt = r.uploaded(t, "rebuilt.md", "# Rebuilt\n\nCites dispatch://"+state.issue+".\n")

@@ -197,9 +197,6 @@ var runtimeProjectionWrites = map[string][]string{
 	// A version's refresh of the anchors on its document, over asks and comments. It sets the
 	// anchor column alone, which the store states of a comment and not of an ask.
 	"internal/dispatch/docs/anchor_refresh.go#refreshAnchors: update": {"comments"},
-	// The erase: the rows whose foreign key into a projection row is required, then the node's
-	// projection rows (graphstore.ProjectedTables).
-	"internal/dispatch/grapherase/erase.go#apply: delete from": {"block_refs", "comments", "document_blocks"},
 	// The block index of a comment, a message and an ask, over the item's own tables, none of
 	// them a projection.
 	"internal/dispatch/refs/item_blocks.go#queueRecordIndexed: update":   nil,
@@ -218,6 +215,13 @@ var runtimeProjectionWrites = map[string][]string{
 	"internal/pgmigrate/identity.go#writeFixes: update":  nil,
 	"internal/pgmigrate/identity.go#Record: insert into": nil,
 }
+
+// cutPackage is the package dispatch://INFRA-1149's cut (5a51d205) deletes; the package ships in
+// dispatch://INFRA-5290 instead. This line stacks on dispatch://INFRA-1253's head, which still
+// holds the package, so the scan finds its writers, and no case drives them: each still fails, and
+// its failure says it leaves with the cut. This clause goes once the cut is merged, since the
+// package is gone then.
+const cutPackage = "internal/dispatch/grapherase/"
 
 // runtimeWriteHead matches a literal that ends where a write's table begins, the expression after
 // it in a concatenation naming that table, and formattedWriteHead a format whose verb names it.
@@ -435,6 +439,10 @@ func readSourceWriters(t *testing.T, projections map[string]*projection) sourceI
 		file, name, _ := strings.Cut(function, "#")
 		tables, listed := runtimeProjectionWrites[site]
 		if !listed {
+			if strings.HasPrefix(file, cutPackage) {
+				t.Errorf("%s builds the table it writes at runtime, and no case drives it: it leaves with dispatch://INFRA-1149's cut (5a51d205), which deletes %s", site, cutPackage)
+				continue
+			}
 			t.Errorf("%s builds the table it writes at runtime, and runtimeProjectionWrites does not say which projections it can reach", site)
 			continue
 		}
@@ -968,8 +976,7 @@ type writerCase struct {
 	// projection row it wrote, and the census must read no difference it did not read before.
 	batches bool
 	// process is the directory of the module, from packages/envoy, whose writers the case's run
-	// stands for where they run in a process or on a connection the tracer does not see: the seed,
-	// and the erase's own connection.
+	// stands for where they run in a process or on a connection the tracer does not see: the seed.
 	process string
 	// drives are the writers, by their inventory key, whose statement names its table with a
 	// runtime value, so neither a stack nor a statement's text names them: the case drives each,
@@ -1517,8 +1524,9 @@ func drivenBy(writer sourceWriter, runs map[string]caseRun) (string, string) {
 }
 
 // requireEverySourceWriterDriven prints, for each writer the scan of the sources found, the case
-// that drove it, and fails on one no case drove. It prints the writes the store need not hold, and
-// the test-support packages it read past.
+// that drove it, and fails on one no case drove, and on each of cutPackage's, naming it as leaving
+// with that cut. It prints the writes the store need not hold, and the test-support packages it
+// read past.
 func requireEverySourceWriterDriven(t *testing.T, sources sourceInventory, runs map[string]caseRun) {
 	t.Logf("the scan read %d Go files of packages/envoy and found %d writes of a projection the store must hold, %d it need not, and %d whose table a runtime value names",
 		sources.files, len(sources.writers), len(sources.unheld), len(sources.runtime))
@@ -1533,6 +1541,11 @@ func requireEverySourceWriterDriven(t *testing.T, sources sourceInventory, runs 
 	}
 	undriven := 0
 	for _, writer := range sources.writers {
+		if strings.HasPrefix(writer.file, cutPackage) {
+			undriven++
+			t.Errorf("no case drives %s (%s %s, %s:%d): it leaves with dispatch://INFRA-1149's cut (5a51d205), which deletes %s", writer.key, writer.verb, writer.table, writer.file, writer.line, cutPackage)
+			continue
+		}
 		name, how := drivenBy(writer, runs)
 		if name == "" {
 			undriven++

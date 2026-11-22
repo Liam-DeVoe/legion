@@ -108,8 +108,8 @@
 //     her comment that bob answered; and one it does not draw, the thread of an open ask on an open
 //     issue assigned to her, in which she wrote and bob wrote after. This head (user_threads rows).
 //
-// dispatch://INFRA-1149's head (6e4051ea) holds 22 commits this head does not, each a fix of the
-// erase or a commit of main: no bullet needs a kind or a relation only it adds.
+// dispatch://INFRA-1149's head (6e4051ea) holds 22 commits this head does not, and none of them
+// adds a kind or a relation a bullet needs.
 //
 // Beside the seeded issue the corpus holds the two copied issues, replayed from the captures
 // acme-1115.json and acme-1042.json by the agent session that wrote them: each spec, each section

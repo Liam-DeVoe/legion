@@ -50,15 +50,14 @@ import (
 // tables. Dropping the trigger takes artifact_versions' ACCESS EXCLUSIVE lock, which waits for
 // every transaction that has read or written that table to end and holds every later one off
 // until this transaction commits, so the drops come last, where that hold is short. That lock is
-// also what keeps a removal or an erase of a document from failing over the drop: each deletes the
+// also what keeps a document's removal from failing over the drop: the removal deletes the
 // document's versions before it reads whether document_search stands and clears the document's
-// rows from it (api's artifactRemovalClears, grapherase's restateSearch; grapherase's readSearch
-// reads the versions first), so one that read the table standing ends before the drop, and one
-// that reaches artifact_versions after the drop reads the table gone. Each drop is `if exists`, so
-// a database where some of the objects went by other hands loses the rest at the next boot,
-// rather than failing at every boot. The windows go only where their owner is a converted
-// document's own artifact id: a window of a document that is still its own room, or of an issue
-// room, is the current owner's, which meaning search reads, and stays.
+// rows from it (api's artifactRemovalClears), so one that read the table standing ends before the
+// drop, and one that reaches artifact_versions after the drop reads the table gone. Each drop is
+// `if exists`, so a database where some of the objects went by other hands loses the rest at the
+// next boot, rather than failing at every boot. The windows go only where their owner is a
+// converted document's own artifact id: a window of a document that is still its own room, or of
+// an issue room, is the current owner's, which meaning search reads, and stays.
 var SearchIndexRetirement = Retirement{
 	Name: "the old search index and its old windows",
 	Kinds: []string{
