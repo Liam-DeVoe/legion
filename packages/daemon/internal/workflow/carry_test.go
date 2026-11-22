@@ -479,6 +479,65 @@ func TestAHeadThatMovesPastReviewAsksEachReviewStepsAgent(t *testing.T) {
 	})
 }
 
+// askStands is workflow.VerdictAskStands of agent on LEGION-208 as the store holds it now.
+func askStands(t *testing.T, pool *pgxpool.Pool, agent claim.Token) bool {
+	t.Helper()
+	var stands bool
+	seedRecord(t, pool, func(tx pgx.Tx) (err error) {
+		_, stands, err = VerdictAskStands(t.Context(), record.NewStore(), tx, "LEGION-208", agent)
+		return err
+	})
+	return stands
+}
+
+// Spec R5: the ask of a verdict past review stands for the agent of a review step of the task that
+// has passed, the reviewer's aside, while that agent owes its verdict at the pull request's current
+// head: the daemon's role-message executor holds a role message to it while the ask stands, waking
+// a released claim (internal/daemon's outbox.roleMessage). In retro, after a push to headTwo, the
+// architect that ran the owner's acceptance, whose verdict names headOne, owes one; the reviewer,
+// asked by the merge-forward review under a rule of its own, and any other claim do not. Its verdict
+// at headTwo ends the ask, and a push to headThree raises it again. A pull request that closed ends
+// it, and so does an issue in accepting, whose acceptance is the step it stands in and has not
+// passed. The negative control is the reader without the read of the step's last verdict (every
+// passed step's agent owing one): the case after the architect's verdict at headTwo fails.
+func TestAnAskPastReviewStandsWhileTheStepsAgentOwesItsVerdict(t *testing.T) {
+	t.Run("in retro, until the agent's verdict at the current head", func(t *testing.T) {
+		pool := seedPastReview(t, phase.Retro, "retro")
+		for _, tc := range []struct {
+			agent claim.Token
+			want  bool
+		}{{architectClaim, true}, {reviewClaim, false}, {"legion-legion-legion-209-architect", false}, {"", false}} {
+			if got := askStands(t, pool, tc.agent); got != tc.want {
+				t.Fatalf("the ask of %q stands = %t at %s, want %t", tc.agent, got, headTwo, tc.want)
+			}
+		}
+		engine := testEngine(config.DesignGateRootIssues, nil)
+		applyRefusingNothing(t, pool, engine, ownerVerdict("approve", headTwo))
+		if askStands(t, pool, architectClaim) {
+			t.Fatalf("the ask of %s stands after its verdict at %s, want it ended", architectClaim, headTwo)
+		}
+		applyRefusingNothing(t, pool, engine, intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208",
+			Base: "main", Before: headTwo, HeadSHA: headThree})
+		if !askStands(t, pool, architectClaim) {
+			t.Fatalf("the ask of %s does not stand after the push to %s, want it raised again", architectClaim, headThree)
+		}
+	})
+	t.Run("a closed pull request ends it", func(t *testing.T) {
+		pool := seedPastReview(t, phase.Merging, "retro")
+		seedPR(t, pool, record.PullRequest{State: record.PullRequestClosed, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42,
+			Branch: "legion/LEGION-208", Base: "main", HeadSHA: headTwo, Failing: []string{}})
+		if askStands(t, pool, architectClaim) {
+			t.Fatalf("the ask of %s stands on a closed pull request, want none", architectClaim)
+		}
+	})
+	t.Run("in accepting the acceptance has not passed", func(t *testing.T) {
+		pool := seedPastReview(t, phase.Accepting, "needs_review")
+		if askStands(t, pool, architectClaim) {
+			t.Fatalf("the ask of %s stands in accepting, want none: its acceptance is the step the issue stands in", architectClaim)
+		}
+	})
+}
+
 // Spec R5: the merger merges a head that moved past review only once legion-verdict at that head
 // is success. So the merger started in merging is told so whenever the head it starts at is not
 // the head of the reviewer's last verdict, a push of any kind having moved it there, and that the

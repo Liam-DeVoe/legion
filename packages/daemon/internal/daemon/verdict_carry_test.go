@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/verdict"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // pushedTo is a push that moves pull request 86 from one head to another: GitHub moves its head,
@@ -251,4 +252,98 @@ func TestAHeadThatMovesPastReviewAsksTheRecordedReviewer(t *testing.T) {
 			})
 		}
 	})
+}
+
+// R5, "The verdict past review", with the architect's claim released before the push: an idle
+// release (workflow's IdleRelease) leaves every claim of an idle pod released, the architect that
+// ran the owner's acceptance among them. LEGION-208 stands in retro on the default steps, its
+// reviewer's step and its owner's acceptance passed at sha-1, and a push moves its pull request to
+// sha-2. The push asks the architect, the agent the acceptance step's record names, for its verdict
+// at sha-2 by a role message to its claim. That message is the one way the owner hears of the push,
+// and with the default steps legion-verdict at sha-2 waits on the owner's verdict there, so the row
+// is held for the released claim: its first attempt wakes the claim (one recorded wake) and
+// publishes nothing, and its next attempt, once the woken session holds its role, delivers the ask
+// to the architect's topic once. The negative control is roleMessage at 8bafec63091, which ends the
+// row before any publish as a message to a released role "not worth a wake": the row is gone after
+// its first attempt, nothing is woken, and the owner is never asked.
+func TestAHeadThatMovesPastReviewAsksAReleasedOwner(t *testing.T) {
+	publisher := &holderPublisher{}
+	runner, sup, pool := runnerIn(t, phase.Retro, "retro", publisher, quietLogger())
+	holdSlot(t, pool, "LEGION-208")
+	architect := mustClaimToken(t, "LEGION-208", claim.RoleArchitect)
+	reviewer := mustClaimToken(t, "LEGION-208", claim.RoleReviewer)
+	inStore(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		records := record.NewStore()
+		if err := records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
+			Number: 86, Branch: "legion/LEGION-208", Base: "main", HeadSHA: "sha-1", HeadUpdatedAt: time.Now(), Failing: []string{},
+			CheckRuns: []record.AttemptRun{}}); err != nil {
+			return err
+		}
+		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewer,
+			HandoffCommit: "sha-1", HandoffRecord: "review-1", HandoffVersion: 1, Summary: "reviewed",
+			Decision: &record.ReviewDecision{State: "approved", Body: "reviewed", Head: "sha-1"}}); err != nil {
+			return err
+		}
+		for place, agent := range map[int]claim.Token{reviewerStep: reviewer, acceptanceStep: architect} {
+			at := record.StepPlace{Task: planwords.DefaultTask, Kind: record.PlaceStep, Place: place}
+			started := time.Date(2026, 11, 21, 5, place, 0, 0, time.UTC)
+			if _, err := records.RaiseStepStarts(ctx, tx, "LEGION-208", at, func(int64) record.StepRecord {
+				return record.StepRecord{Task: at.Task, Step: at.Place, Kind: at.Kind, Agent: string(agent), StartedAt: &started}
+			}); err != nil {
+				return err
+			}
+			if _, _, err := records.EndStepStart(ctx, tx, "LEGION-208", at); err != nil {
+				return err
+			}
+		}
+		_, err := store.RecordVerdictTx(ctx, tx, store.Verdict{Repository: widgets, Number: 86, Head: "sha-1", Issue: "LEGION-208",
+			Task: planwords.DefaultTask, Step: acceptanceStep, Verdict: verdict.ReviewerApprove, Session: string(architect), RecordedAt: recordedAt})
+		return err
+	})
+	machine := releasedClaim(t, sup, claim.RoleArchitect)
+	topic := architectTopic(t, "LEGION-208")
+	publisher.setAbsent(topic)
+
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
+	applyFact(t, pool, "test", "push-sha-2", intake.PullRequestSynchronized{Repo: "acme/widgets", Number: 86, Branch: "legion/LEGION-208",
+		Base: "main", Before: "sha-1", HeadSHA: "sha-2"}, engine)
+	asks := roleMessageRows(t, pool, "LEGION-208")
+	if len(asks) != 1 {
+		t.Fatalf("the push queued %d role messages for LEGION-208, want the one ask of the owner: this test proves nothing without it", len(asks))
+	}
+	var ask record.RoleMessage
+	if err := json.Unmarshal(asks[0].Payload, &ask); err != nil || ask.Role != string(architect) || !strings.Contains(ask.Body, "the new head is sha-2") {
+		t.Fatalf("the push's role message = %+v (%v), want the ask of %s for its verdict at sha-2", ask, err, architect)
+	}
+
+	toArchitect := func() []outboxPublish {
+		_, delivered := publisher.snapshot()
+		return slices.DeleteFunc(delivered, func(p outboxPublish) bool { return p.topic != topic })
+	}
+	drainAt(t, runner, 0, "the ask's first attempt")
+	if left := len(roleMessageRows(t, pool, "LEGION-208")); left != 1 {
+		t.Fatalf("role messages of LEGION-208 left after the ask's first attempt = %d, want the ask held for the released owner: it ended undelivered", left)
+	}
+	if held := machine.Claim(); held.Released() {
+		t.Fatalf("the architect is %s by %s after the ask's first attempt, want the ask to have woken it", held.State, held.SuspendedBy)
+	}
+	if wakes := podResumes(t, pool, "LEGION-208"); wakes != 1 {
+		t.Fatalf("recorded wakes = %d, want the one the ask took", wakes)
+	}
+	if got := toArchitect(); len(got) != 0 {
+		t.Fatalf("the first attempt delivered %+v to the architect, want nothing before its woken session holds its role", got)
+	}
+
+	// The woken session holds its role now.
+	publisher.setAbsent()
+	drainAt(t, runner, 2*time.Minute, "the ask's attempt once the woken session holds its role")
+	if got := toArchitect(); len(got) != 1 || got[0].message != ask.Body || got[0].key != record.OutboxKey(asks[0].ID) {
+		t.Fatalf("delivered to the architect %+v, want the ask once under its row's key", got)
+	}
+	if left := len(roleMessageRows(t, pool, "LEGION-208")); left != 0 {
+		t.Fatalf("role messages of LEGION-208 left after the delivery = %d, want none", left)
+	}
+	if wakes := podResumes(t, pool, "LEGION-208"); wakes != 1 {
+		t.Fatalf("recorded wakes = %d after the delivery, want still the one", wakes)
+	}
 }

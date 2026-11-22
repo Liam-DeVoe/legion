@@ -1353,17 +1353,21 @@ func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemov
 // recipient can read the pull request's checks on GitHub for itself.
 //
 // A role whose claim is released is told nothing either, and is not woken for the message: the
-// row finishes without a publish. The message's three senders in the workflow - tellChecks (a CI
+// row finishes without a publish. The informing senders in the workflow - tellChecks (a CI
 // settlement), tellGateMoved (a design gate's move) and tellStuckMergeState (an approved round
 // stuck on its merge state) - only inform; before a release stopped its session cleanly, such a
 // message to a released role was dropped all the same once that session expired; and a wake for
 // each would start a pod for every CI settlement and every gate move, once per released role.
 // Published, the message would meet a released role as one nobody holds: the listener answers
 // holder_lapsed, or unclaimed once the reaper has freed the claim, and raises the role's wake
-// beside either, so the pod would come back for a message the row had already dropped. The one
-// exception is a row a project's pause held for a role a pause stopped: without the pause the role
-// would have had the message, so the row is published to the role after the resume, and that
-// publish wakes it (internal/daemon's outbox.roleMessage, R4 of dispatch://INFRA-3759).
+// beside either, so the pod would come back for a message the row had already dropped. There are
+// two exceptions. A row a project's pause held for a role a pause stopped: without the pause the
+// role would have had the message, so the row is published to the role after the resume, and that
+// publish wakes it (internal/daemon's outbox.roleMessage, R4 of dispatch://INFRA-3759). And a row
+// to the agent of a review step that owes its verdict past review (workflow.VerdictAskStands),
+// which the workflow's ask of that verdict after a push (workflow's askReviewSteps) writes: the
+// ask is the one way the agent hears of the push, so the row wakes a released claim and waits
+// until a session holds its role (internal/daemon's outbox.roleMessage and deliverHeld).
 type RoleMessage struct {
 	Role string `json:"role"`
 	Body string `json:"body"`

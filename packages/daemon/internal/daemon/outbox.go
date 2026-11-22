@@ -2006,6 +2006,14 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // and wakes the role on. An outbox with no supervisor (a test's), or a role no machine of this
 // daemon holds, publishes as before.
 //
+// A row to the agent of a review step that owes its verdict past review (workflow.VerdictAskStands)
+// is delivered held instead (verdictAskHeld): the ask that agent's step record names it for, after
+// a push past review, is the one way the agent hears of the push, and with the default steps
+// legion-verdict at the new head waits on that verdict (spec R5, "The verdict past review"). So a
+// released claim is woken for it and the row waits until a session holds the role, as a merge
+// forward's message is held (deliverHeld). The row stays a role message, a kind and a payload
+// every release reads (spec R15); a release before this one ends it as any other role message.
+//
 // A row a project's pause held (record.OutboxRow.HeldByPause) is ended neither for its released
 // claim nor for its role having no live holder while it is owed to its role (R4 of
 // dispatch://INFRA-3759): a pause, not a release, took the session the message was for
@@ -2046,6 +2054,10 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 				return r.parkedWait(turn, fmt.Sprintf("%s's role message for %s, owed to the role since pause %d stopped it, waits for the role's launch, which the wake pacing holds until %s",
 					row.Issue, payload.Role, stopped, turn.UTC().Format(time.RFC3339)))
 			}
+		} else if asked, err := r.verdictAskHeld(ctx, row, payload, held); err != nil {
+			return err
+		} else if asked != nil {
+			return r.deliverHeld(ctx, row, *asked)
 		} else if held.Released() {
 			r.log.Info("outbox role message finished undelivered: its role's pod is released, and the message is not worth a wake",
 				"row", row.ID, "issue", row.Issue, "role", payload.Role)
@@ -2090,6 +2102,35 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 		return fmt.Errorf("publish %s's message to role %s: %w", row.Issue, payload.Role, err)
 	}
 	return nil
+}
+
+// verdictAskHeld is the held delivery of role message row to the claim held, a claim this daemon
+// supervises, while that claim is the agent of a review step of the row's issue that owes its
+// verdict past review (workflow.VerdictAskStands, read in one transaction at each attempt), and nil
+// otherwise: the row then takes roleMessage's own path. A claim this daemon does not supervise has
+// the zero view and is read as before, with no read of the record, and so is every claim of an
+// outbox with no database (a test's), as an outbox with no supervisor is.
+func (r *outbox) verdictAskHeld(ctx context.Context, row record.OutboxRow, payload record.RoleMessage, held supervise.ClaimView) (*heldMessage, error) {
+	if held.Issue == "" || r.pool == nil {
+		return nil, nil
+	}
+	agent := claim.Token(payload.Role)
+	var issue *record.Issue
+	var stands bool
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		issue, stands, err = workflow.VerdictAskStands(ctx, r.records, tx, row.Issue, agent)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("read whether %s owes its verdict past review on %s: %w", agent, row.Issue, err)
+	}
+	if !stands {
+		return nil, nil
+	}
+	return &heldMessage{issue: *issue, token: agent, role: held.Role, what: "the ask of a verdict past review of " + row.Issue,
+		message: payload.Body, attributes: []any{"row", row.ID, "issue", row.Issue, "role", payload.Role},
+		claimEnded: "outbox role message finished undelivered: it asks a verdict past review of a claim that has failed or retired",
+		delivered:  "outbox role message delivered: the ask of a verdict past review"}, nil
 }
 
 // heldMessageOwed is the held role message's debt, and the one statement of it (R4 of
