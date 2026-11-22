@@ -13,7 +13,9 @@ import (
 // settle deletes a mark in the transaction that appends the mark's events, so each event the
 // tester's results caused has a serial at or below the answer. A mark that waits for its retry
 // after a failed read of GitHub is not due, so an outage does not hold the handoff: its state
-// reads read_failed, which a reader waits on. Past fenceWait it refuses with 503
+// reads read_failed, which Legion's daemon judges conclusive and not yes: its testing move sends
+// the issue back to implementing naming that check, so a read that fails while the tester's
+// results settle costs the issue a round. Past fenceWait it refuses with 503
 // CHECK_STATES_UNSETTLED, and the caller writes the handoff again.
 func (s *server) awaitCheckStatesSettled(ctx context.Context, issue string) (serial int64, err error) {
 	pool, err := s.readyPool()
