@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -273,6 +274,34 @@ func TestProbeLogsNoCredentialOfTheEnvoyURL(t *testing.T) {
 	newTestProber(withUser(served, quotedUserinfo), "", &log).Probe(context.Background(), "ses_ctl")
 	if user, password, ok := (&http.Request{Header: http.Header{"Authorization": {l.bearer}}}).BasicAuth(); !ok || user+":"+password != quotedUserinfo {
 		t.Errorf("with no bearer token the lookup carried Authorization %q, want envoy_url's userinfo as Basic auth", l.bearer)
+	}
+}
+
+// An envoy_url with userinfo whose host resolves and whose port is closed: the dial's error names
+// the resolved address and the port (`dial tcp 127.0.0.1:<port>: connect: connection refused`), and
+// the port can be a password's digits, so the line writes it as the mark, as it writes the host.
+// The password is made up.
+func TestProbeLogsNoPortOfAnEnvoyURLWithUserinfo(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var log bytes.Buffer
+	envoyURL := "http://legion:" + "madeuphead0123" + "@127.0.0.1:" + port
+	if got := newTestProber(envoyURL, "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != Unknown {
+		t.Fatalf("Probe = %s, want unknown", got)
+	}
+	if !strings.Contains(log.String(), "connect: connection refused") {
+		t.Fatalf("the log %q holds no refused dial", log.String())
+	}
+	for _, part := range []string{":" + port, "madeuphead"} {
+		if strings.Contains(log.String(), part) {
+			t.Errorf("the log %q holds %q", log.String(), part)
+		}
 	}
 }
 
