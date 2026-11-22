@@ -2751,11 +2751,11 @@ func (e *Engine) phaseRow(ctx context.Context, tx pgx.Tx, issue string, role cla
 	return row, nil
 }
 
-// issueForBranch is the issue whose branch (claim.IssueBranch) branch is, when it is recorded on
-// repo, as its record keeps GitHub's spelling (record.Issue.GitHubRepo), compared as
-// sameRepository compares two names — without case, as GitHub compares names, and a configured
-// rename's two names as one repository: a pull request on legion/<KEY> in another repository is
-// never <KEY>'s.
+// issueForBranch is the issue whose branch branch is (claim.BranchIssue: its own, legion/<KEY>, or
+// a task's, legion/<KEY>.<slug>), when it is recorded on repo, as its record keeps GitHub's
+// spelling (record.Issue.GitHubRepo), compared as sameRepository compares two names — without
+// case, as GitHub compares names, and a configured rename's two names as one repository: a pull
+// request on legion/<KEY> in another repository is never <KEY>'s.
 func (e *Engine) issueForBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*record.Issue, error) {
 	key, ok := claim.BranchIssue(branch)
 	if !ok {
