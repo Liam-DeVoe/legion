@@ -224,7 +224,7 @@ which passed. The browser step over them, in seconds:
   all           672    380    486  531
 
 By the rule in this file's head, that maximum, 531 s, shard (2) of run 44917245139 (job
-136888588252), would give the browser step 531 x 1.15 = 611 s -> 11 min. The step carries 12,
+136888588252), would give the browser step 531 x 1.15 = 611 s -> 11 min. The step carries 16,
 from the larger maximum of this pull request's rows (below).
 The step grows with the suite, not with its rows getting slower: run 44423948511 of 2026-11-18
 ran 1,453 rows (363, 363, 364 and 363 a leg) and run 44909149810 at 67659e611c ran 1,600 (400 a
@@ -280,11 +280,15 @@ digest each pinned, are the reading.
 
 This pull request's rows are not in that census: the shared search, sort and filter controls'
 rows of dispatch://INFRA-3135 (e2e/table-controls.e2e.ts and the rows beside them) run in this
-job too. At that pull request's head da0804df, with main aef6a73545 merged, full-lane run
-44892576846 took 425, 422, 443 and 607 s over the four legs' browser steps, so the browser
-step's maximum is 607 s, and 607 x 1.15 = 698 s -> 12 min, the budget the step carries. Its
-earlier heads measured 593 s (full-lane run 44740043506) and 486 s. Main's 531 s is read again
-here once the census holds these rows.
+job too, and so do its generated landing rows (e2e/focus-landing.e2e.ts, 16 a project in
+Chromium, Firefox and WebKit). At that pull request's head 08dd2b41, with main 143b57a76c
+merged, full-lane run 45010081248 took 399, 548, 437 and 808 s over the four legs' browser
+steps, so the browser step's maximum is 808 s, and 808 x 1.15 = 929 s -> 16 min, the budget the
+step carries. Shard 4 holds the tail of the listing, the Firefox and WebKit rows: of its 3,010 s
+of rows, the landing rows took 572 s. Its earlier heads measured 607 s (da0804df, full-lane run
+44892576846, before main's 143b57a76c and the landing rows) and 593 s (run 44740043506); at
+5b8a3463 shard 4 reached 12 minutes with 132 of its 441 rows to run (run 45007913349). Main's
+531 s is read again here once the census holds these rows.
 
 THE TWO NETWORK READS, AT A BUSY HOUR. The sum before this census read the binaries download at 5 s and the
 image pull, `Initialize containers`, at 45 s, from quiet runs, and on 2026-11-18 a leg of
@@ -301,8 +305,8 @@ it is built again. So the download now carries a budget of its own and a second 
 and the pull is counted at that 355 s, above the census's 176 s: no step holds it, so no step
 budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
 seconds" in that log) answers a failed read, not a slow one. The job's budget is the
-browser step's 720 s, the two download attempts' 120 s each, and the steps without a
-budget at the census's 565 s: 1,525 s, 25 min 25 s, rounded up to the 26 minutes
+browser step's 960 s, the two download attempts' 120 s each, and the steps without a
+budget at the census's 565 s: 1,765 s, 29 min 25 s, rounded up to the 30 minutes
 of the shard job's `timeout-minutes`. The browser step's own budget still fires before the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
@@ -467,10 +471,10 @@ $RUNNER_TEMP beside the stacks' own run directory: a file this step wrote into t
 checkout would leave it dirty afterwards. The blob report goes beside the list
 reporter's output, so a green run reports what it ran too.
 
-The step's budget, `timeout-minutes: 12`, is the 12 minutes the job's head derives by the rule from this
-step's maximum, 607 s, which the shared controls' rows of dispatch://INFRA-3135 set with the rows
-main has added since: 607 x 1.15 = 698 s. Main's own full-lane runs of 2026-11-18 to 2026-11-21,
-whose maximum is 531 s, would give 11 minutes; the job's head gives the census's query and why the
+The step's budget, `timeout-minutes: 16`, is the 16 minutes the job's head derives by the rule from this
+step's maximum, 808 s, which the shared controls' rows of dispatch://INFRA-3135 and its landing
+rows set with the rows main has added since: 808 x 1.15 = 929 s. Main's own full-lane runs of
+2026-11-18 to 2026-11-21, whose maximum is 531 s, would give 11 minutes; the job's head gives the census's query and why the
 budget is read again as the suite grows.
 
 ## Why the file store's address is set on the step and not in the environment
