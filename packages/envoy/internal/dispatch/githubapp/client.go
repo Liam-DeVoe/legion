@@ -101,7 +101,8 @@ const RequestTimeout = 20 * time.Second
 const limitRecordTimeout = 5 * time.Second
 
 // limitRecordContext is the context a limit GitHub answered is written to the shared ledger
-// under: the caller's values without its deadline or its cancel, bounded by limitRecordTimeout.
+// under: the caller's values without its deadline or its cancel, bounded by limitRecordTimeout on
+// the client's limitClock, the real clock in a deployment.
 // GitHub's answer is a fact about the App's budget whatever time its caller has left. A caller
 // out of time -- a CI reconcile pass at its own bound -- would otherwise cut the write off, and
 // every process would go on asking GitHub inside the limit GitHub had just named.
@@ -111,8 +112,8 @@ const limitRecordTimeout = 5 * time.Second
 // its key, the write marks that key committed, as ratelimit's Record says. An attempt that has
 // lost its key, past api's keyedHandlerLimit, has the mark refused, and the write of the limit
 // with it.
-func limitRecordContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), limitRecordTimeout)
+func (c *Client) limitRecordContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return c.limitClock.WithTimeout(context.WithoutCancel(ctx), limitRecordTimeout)
 }
 
 // ResponseTooLargeError reports a response that did not fit inside a caller's configured limit.
@@ -318,8 +319,11 @@ func WithHTTPClient(httpClient *http.Client) Option {
 
 // WithRateLimitClock sets the clock the client reads a rate-limited answer's wait against
 // (rateLimitAt): the moment GitHub names, a Retry-After date or x-ratelimit-reset, less the
-// clock's reading. Without it the client reads clock.Real(), which is what a deployment does; a
-// test passes the fake its stand-in for GitHub stamps those moments from, so the wait is exact.
+// clock's reading. The write of that limit to the shared ledger is bounded on it too
+// (limitRecordContext). Without it the client reads clock.Real(), which is what a deployment
+// does; a test passes a clock whose moment is the one its stand-in for GitHub stamps those
+// moments from, so the wait is exact, and on which the write's bound falls only where the test
+// moves it.
 func WithRateLimitClock(c clock.Clock) Option {
 	return func(client *Client) { client.limitClock = c }
 }
@@ -342,13 +346,15 @@ type Client struct {
 	now  func() time.Time
 	// limits is the shared rate limits request obeys and records; nil is no shared limit.
 	limits Limits
-	// limitClock is the clock a rate-limited answer's wait is read against (limitNow):
+	// limitClock is the clock a rate-limited answer's wait is read against (limitNow), and the
+	// clock the write of that limit to the shared ledger is bounded on (limitRecordContext):
 	// clock.Real() unless WithRateLimitClock replaces it. It is apart from now, which signs the
 	// App's JWT (appJWT) and ages the token and installation caches (token, ttlCache), so that a
-	// test's fake moves the wait and nothing else: the token cache compares now with the expiry
-	// GitHub answered, which cireconcile's stand-in for GitHub stamps on the wall clock and not on
-	// its fake, and an installation cache entry lapses installationsCacheTTL after its fetch, a
-	// span cireconcile's recheck row moves its fake past when it moves it by AbsentAppRecheck.
+	// test's fake moves the wait and the write's bound and nothing else: the token cache compares
+	// now with the expiry GitHub answered, which cireconcile's stand-in for GitHub stamps on the
+	// wall clock and not on its fake, and an installation cache entry lapses installationsCacheTTL
+	// after its fetch, a span cireconcile's recheck row moves its fake past when it moves it by
+	// AbsentAppRecheck.
 	limitClock clock.Clock
 	// requestTimeout bounds each API call the client sends (send): RequestTimeout unless
 	// WithRequestTimeout replaces it.
@@ -817,7 +823,7 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 // secondary limit falls back to GraphQLScope: holding the App's queries is less than GitHub asks
 // for, and it is all this client knows to hold.
 func (c *Client) recordGraphQLLimit(ctx context.Context, installation string, limited *RateLimitError, secondary bool) {
-	record, cancel := limitRecordContext(ctx)
+	record, cancel := c.limitRecordContext(ctx)
 	defer cancel()
 	if secondary && installation != "" {
 		limited.Scope = installation
@@ -967,7 +973,7 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 	noteFailure(ctx, limitNoted(method, target, limited))
 	if c.limits != nil && scope != "" {
 		// Recorded past the caller's own end: see limitRecordContext.
-		record, cancel := limitRecordContext(ctx)
+		record, cancel := c.limitRecordContext(ctx)
 		err := c.limits.Record(record, scope, limited.Wait)
 		cancel()
 		if err != nil {

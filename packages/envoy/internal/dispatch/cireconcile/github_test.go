@@ -40,6 +40,10 @@ type fakeGitHub struct {
 	// clock is the passes' own clock (harness.clock), which a query's answer moves on by the
 	// time GitHub takes over it (everyQueryTakes) and which stamps each query's start and end.
 	clock *clocktest.Fake
+	// recordClock is the clock the stand-in's client bounds each write of a limit GitHub answered
+	// on (githubapp's limitRecordTimeout; limitClock): a fake of its own, which only a row that
+	// holds the shared ledger against that write moves.
+	recordClock *clocktest.Fake
 	// held names each request the stand-in holds back (hold, holdQuery), and each write the
 	// harness's bucket holds (holdWriteUntilTheBoundFalls), as it is held: what a test waits on
 	// before it moves the clock to the pass's bound (passCutByItsBound).
@@ -149,15 +153,16 @@ const (
 func newFakeGitHub(t *testing.T, clock *clocktest.Fake) *fakeGitHub {
 	t.Helper()
 	f := &fakeGitHub{
-		t:         t,
-		mux:       http.NewServeMux(),
-		clock:     clock,
-		installID: 1,
-		repos:     map[string]fakeRepository{},
-		pulls:     map[string][]fakePull{},
-		runs:      map[string][]object{},
-		suites:    map[string][]object{},
-		statuses:  map[string][]object{},
+		t:           t,
+		mux:         http.NewServeMux(),
+		clock:       clock,
+		recordClock: clocktest.New(clock.Now()),
+		installID:   1,
+		repos:       map[string]fakeRepository{},
+		pulls:       map[string][]fakePull{},
+		runs:        map[string][]object{},
+		suites:      map[string][]object{},
+		statuses:    map[string][]object{},
 		// The permissions the installation lookup below answers, with metadata, which GitHub
 		// gives every token: no Commit statuses, so a pass reads no status unless a test grants
 		// one (setTokenPermissions).
@@ -422,12 +427,15 @@ func queryNumber(values url.Values, name string, fallback int) int {
 }
 
 // client is a githubapp.Client on a throwaway key, pointed at this stand-in, obeying and
-// recording the shared rate limits as every Dispatch process's client does.
+// recording the shared rate limits as every Dispatch process's client does. It reads a limit's
+// wait against the passes' clock and bounds the limit's write on recordClock (limitClock), and
+// its own bound on each call is past any run (requestTimeoutPastTheRun).
 func (f *fakeGitHub) client(limits githubapp.Limits) *githubapp.Client {
 	f.t.Helper()
 	_, text := githubapptest.Key(f.t)
 	base := githubtest.Server(f.t, githubtest.Spec{Handle: f.serve})
-	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.cireconcile", PEM: text}, base, githubapp.WithLimits(limits), githubapp.WithRateLimitClock(f.clock))
+	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.cireconcile", PEM: text}, base, githubapp.WithLimits(limits),
+		githubapp.WithRateLimitClock(limitClock{Fake: f.recordClock, passes: f.clock}), githubapp.WithRequestTimeout(requestTimeoutPastTheRun))
 	if err != nil {
 		f.t.Fatalf("new client: %v", err)
 	}
@@ -436,6 +444,30 @@ func (f *fakeGitHub) client(limits githubapp.Limits) *githubapp.Client {
 	}
 	return client
 }
+
+// requestTimeoutPastTheRun is the client's own bound on each call it sends
+// (githubapp.WithRequestTimeout): past any run, so a call the stand-in holds (hold, holdQuery)
+// ends only where the test moves the passes' clock to the pass's bound or a caller's deadline, or
+// where the caller cancels it. At githubapp.RequestTimeout (20 s) of the wall clock, a held call
+// would end on its own whenever the test's move came later than that, and the pass would read
+// the end as the head's own failure (cutShort) and go on past the hold.
+const requestTimeoutPastTheRun = 24 * time.Hour
+
+// limitClock is the clock the stand-in's client reads a limit GitHub answered against and bounds
+// the write of that limit to the shared ledger on (githubapp.WithRateLimitClock). Its moment is
+// passes', the clock the stand-in stamps a limit's reset on, so the wait the client reads is the
+// reset less that moment, exactly. Its deadlines are the embedded Fake's, recordClock, so the
+// write's bound (githubapp's limitRecordTimeout, five seconds) falls only where a row that holds
+// the ledger moves recordClock. On passes it would fall at every move a row makes past it while
+// the write is in flight -- to a wait the pass armed, or to the pass's own bound -- and end a write
+// the row never held: a limit GitHub answered as the pass's bound fell would then not reach the
+// ledger (TestALimitAnsweredAsTheBoundFallsIsALimit).
+type limitClock struct {
+	*clocktest.Fake
+	passes *clocktest.Fake
+}
+
+func (c limitClock) Now() time.Time { return c.passes.Now() }
 
 // setRepository makes GET /repos/{name} answer with fullName and id. name is the owner/repo a
 // request names it by, which a renamed repository has two of.

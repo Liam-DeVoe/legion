@@ -2,6 +2,7 @@ package cireconcile
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -77,30 +78,39 @@ func starveFirstPass(t *testing.T, h *harness) {
 }
 
 // passThroughItsWaitsToTheHold runs one pass on ctx and moves the clock to each wait it arms
-// between two reads of GitHub, as passThroughItsWaits does, until the pass waits on the request
-// GitHub holds at path (fakeGitHub.hold): the stand-in has been asked path more times than before
-// the pass, and the clock holds no wait of the pass's but deadlines. deadlines are the moments
-// that are no wait of the pass's - its own bound, and a caller's deadline - which the clock is
-// never moved to here. It returns the pass's end, which the caller brings by moving the clock to
-// one of the deadlines.
+// between two reads of GitHub, as passThroughItsWaits does, until the pass waits on what the test
+// holds at the request to path: the stand-in has been asked path more times than before the pass,
+// and the clock holds no wait of the pass's but deadlines. What the test holds there is GitHub's
+// answer (fakeGitHub.hold), or the write of the limit GitHub answered with to the ledger the test
+// holds against writes; between the request and either, the pass arms no wait on the clock.
+// deadlines are the moments that are no wait of the pass's - its own bound, and a caller's
+// deadline - which the clock is never moved to here. It returns the pass's end, which the caller
+// brings by moving the clock to one of the deadlines.
 func (h *harness) passThroughItsWaitsToTheHold(ctx context.Context, path string, deadlines ...time.Time) <-chan struct{} {
 	h.t.Helper()
 	asked := h.github.countPath(path)
 	ended := h.startPass(ctx)
 	for {
-		waits := testwait.Until(h.t, "the pass to arm a wait beside its deadlines, or to wait on the request GitHub holds at "+path, func() ([]time.Time, bool) {
+		var waits []time.Time
+		testwait.Until(h.t, "the pass to arm a wait beside its deadlines, or to wait on what the test holds at "+path, func() (string, bool) {
 			select {
 			case <-ended:
-				h.t.Fatalf("the pass ended before it reached the request GitHub holds at %s", path)
+				h.t.Fatalf("the pass ended before it reached what the test holds at %s", path)
 			default:
 			}
-			var waits []time.Time
-			for _, at := range h.clock.Armed() {
+			armed := h.clock.Armed()
+			var armedWaits []time.Time
+			for _, at := range armed {
 				if !slices.ContainsFunc(deadlines, at.Equal) {
-					waits = append(waits, at)
+					armedWaits = append(armedWaits, at)
 				}
 			}
-			return waits, len(waits) > 0 || h.github.countPath(path) > asked
+			sent := h.github.countPath(path) - asked
+			if len(armedWaits) == 0 && sent == 0 {
+				return fmt.Sprintf("armed %v beside the deadlines %v, and no request to %s since the pass began", armed, deadlines, path), false
+			}
+			waits = armedWaits
+			return fmt.Sprintf("waits %v armed, %d requests to %s since the pass began", armedWaits, sent, path), true
 		})
 		if len(waits) == 0 {
 			return ended
@@ -273,11 +283,14 @@ func TestACallersDeadlineLeavesThePaceAsItWas(t *testing.T) {
 // A rate limit GitHub answers as the pass's own bound falls, before the pass has reached a head,
 // leaves the floor as it was: the limit ended that pass, not its pace. GitHub answers the first
 // head's check runs with an exhausted limit, and the client writes that limit to the shared
-// ledger on a context of its own, which waits out githubapp's limitRecordTimeout while this test
-// holds the ledger against writes. The test moves the passes' clock to the pass's bound once that
-// write waits on the ledger's lock, which the database's own lock table shows, so the bound falls
-// during the write, after the limit's answer has come; the pass after it paces itself by the work
-// the Reconciler holds.
+// ledger on a context of its own, bounded by githubapp's limitRecordTimeout on the clock the
+// stand-in's client bounds that write on (fakeGitHub.recordClock), while this test holds the
+// ledger against writes. Once that write waits on the ledger's lock, which the database's own lock
+// table shows, the test moves the passes' clock to the pass's bound, so the bound falls during the
+// write, after the limit's answer has come, and then moves the write's clock to the write's own
+// bound, which ends the write with the limit unwritten. Both moves are the test's, so the write
+// waits on the lock however long the test takes to see it there. The pass after it paces itself
+// by the work the Reconciler holds.
 func TestALimitGitHubAnswersAsTheBoundFallsLeavesThePaceAsItWas(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.mapRepository(rowRepository)
@@ -299,26 +312,31 @@ func TestALimitGitHubAnswersAsTheBoundFallsLeavesThePaceAsItWas(t *testing.T) {
 	}
 	h.github.rateLimitNext(runsOf(head(7)))
 	bound := h.clock.Now().Add(Interval)
-	ended := h.startPass(h.ctx)
-	testwait.Until(t, "the record of GitHub's limit to wait on the ledger's lock, the pass's waits moved past", func() (int, bool) {
+	ended := h.passThroughItsWaitsToTheHold(h.ctx, runsOf(head(7)), bound)
+	// The stand-in has answered the first head's check runs with the limit, and the pass arms no
+	// wait on the passes' clock from there to the write, so the clock stays where it is while the
+	// test waits for the write on the lock.
+	testwait.Until(t, "the record of GitHub's limit to wait on the ledger's lock", func() (string, bool) {
+		select {
+		case <-ended:
+			t.Fatalf("the pass ended before the record of GitHub's limit waited on the ledger's lock: %v", h.passLine())
+		default:
+		}
 		var waiting int
 		if err := h.pool.QueryRow(h.ctx, `
 			select count(*) from pg_locks
 			where not granted and relation = 'github_rate_limits'::regclass`).Scan(&waiting); err != nil {
 			t.Fatalf("read the waits on the rate-limit ledger: %v", err)
 		}
-		if waiting == 0 {
-			for _, at := range h.clock.Armed() {
-				if !at.Equal(bound) {
-					h.clock.Set(at)
-					break
-				}
-			}
-		}
-		return waiting, waiting > 0
+		return fmt.Sprintf("%d writes waiting on the lock of github_rate_limits", waiting), waiting > 0
 	})
 	h.clock.Set(bound)
-	testwait.Receive(t, "the pass to end once its bound fell during the limit's record", ended)
+	records := h.github.recordClock.AwaitArmed(t, "the bound of the record of GitHub's limit", 1)
+	if len(records) != 1 {
+		t.Fatalf("the clock the record of GitHub's limit is bounded on holds %v, want that record's bound alone", records)
+	}
+	h.github.recordClock.Set(records[0])
+	testwait.Receive(t, "the pass to end once its bound fell during the limit's record, and the record's own bound after it", ended)
 	if err := ledger.Rollback(h.ctx); err != nil {
 		t.Fatalf("let the rate-limit ledger go: %v", err)
 	}
@@ -326,9 +344,13 @@ func TestALimitGitHubAnswersAsTheBoundFallsLeavesThePaceAsItWas(t *testing.T) {
 		t.Fatalf("the pass reads rate_limited %v and %v heads reached, want GitHub's limit to end it before it reached a head: nothing here is tested: %v",
 			line["rate_limited"], line["heads"], line)
 	}
+	// The limit's record gave up at its own bound, where the test moved the record's clock, so the
+	// ledger holds no limit and the next pass reads GitHub.
+	scope := githubapp.InstallationScope(h.github.installationID())
+	if _, found, err := h.reconciler.Limits.Get(h.ctx, scope); err != nil || found {
+		t.Fatalf("the ledger holds a limit under %s (found %v, %v) once the record of GitHub's limit reached its own bound, want none: nothing here is tested", scope, found, err)
+	}
 
-	// The limit's record waited out its own bound, so the ledger holds no limit and this pass
-	// reads GitHub.
 	h.passThroughItsWaits()
 
 	line := h.passLine()
