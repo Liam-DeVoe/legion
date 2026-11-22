@@ -16,6 +16,7 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
 import { authorText, pageChrome } from "./page-structure";
@@ -131,7 +132,11 @@ export function DecisionActions({
   tabStops?: boolean;
 }): ReactNode {
   const issueKey = document?.issue_key ?? "";
-  const decisions = useQuery({ ...issueDecisionsQuery(issueKey), enabled: issueKey !== "" });
+  const decisions = useQuery({
+    ...issueDecisionsQuery(issueKey),
+    enabled: issueKey !== "",
+    ...EVENT_FRESH,
+  });
   const decision = (decisions.data?.decisions ?? []).find((row) => row.ref === nodeReference);
   if (decision === undefined || document === undefined || isClosed) return null;
   return (
