@@ -168,6 +168,36 @@ func readHeldTypedBlock(t *testing.T, database *store.Store, address string) hel
 	return held
 }
 
+// blockRows is what the block index holds of one block: its document_blocks row, each column of
+// it, and its document_block_texts rows, each version with the md5 of its text.
+type blockRows struct {
+	changed                                                                       int
+	typ, sum, excerpt, changedAt, createdAt, nodeKind, nodeAddress, parent, texts string
+}
+
+func (rows blockRows) String() string {
+	return fmt.Sprintf("changed_version %d, document_block_texts at [%s], type %s, text_sha256 %s, excerpt %.40q, changed_at %s, created_at %s, node %s %s, parent_block_id %q",
+		rows.changed, rows.texts, rows.typ, rows.sum, rows.excerpt, rows.changedAt, rows.createdAt, rows.nodeKind, rows.nodeAddress, rows.parent)
+}
+
+// readBlockRows reads blockRows of the block node address, failing t unless the index holds a
+// document_blocks row of it.
+func readBlockRows(t *testing.T, database *store.Store, address string) blockRows {
+	t.Helper()
+	var rows blockRows
+	if err := database.Pool.QueryRow(context.Background(), `
+		select d.changed_version, d.type, d.text_sha256, d.excerpt, d.changed_at::text, d.created_at::text,
+		       coalesce(d.node_kind, ''), coalesce(d.node_address, ''), coalesce(d.parent_block_id, ''),
+		       coalesce((select string_agg(x.version || ' ' || coalesce(md5(x.text), 'null'), ', ' order by x.version)
+		                 from document_block_texts x where x.artifact_id = d.artifact_id and x.block_id = d.block_id), '')
+		from document_blocks d where d.node_id = $1
+	`, address).Scan(&rows.changed, &rows.typ, &rows.sum, &rows.excerpt, &rows.changedAt, &rows.createdAt,
+		&rows.nodeKind, &rows.nodeAddress, &rows.parent, &rows.texts); err != nil {
+		t.Fatalf("read the document_blocks row and the document_block_texts rows of %s: %v", address, err)
+	}
+	return rows
+}
+
 // requireWrittenAtOnce fails t unless the store holds each of blocks as the write that accepted
 // its version writes it, with no block-index reconciliation run: its
 // node live, one text value opening with its block's line, one part_of, its document_blocks row of
