@@ -620,7 +620,7 @@ func (b *goldenBuild) architectStarts(r goldenRendering) {
 		}}
 	add("gate-standing", workflow.ArchitectStart{Root: root, Gate: standing},
 		goldenWant("shape", texts.ShapeGateStanding, "phase", phase.Admitted, "decompose", false,
-			"first_act", []string{workflow.FirstActClaim, workflow.FirstActCarryGate}, "first_phase_waits_for", []string{workflow.WaitsForGate},
+			"first_act", []string{workflow.FirstActClaim, workflow.FirstActCarryGate, workflow.FirstActTakeUpTree}, "first_phase_waits_for", []string{workflow.WaitsForGate},
 			"gated", "decisions,spec",
 			"gates[0].step", "decisions", "gates[0].document", "dispatch://"+key+"/artifact/"+dispatch.DecisionsSlug,
 			"gates[0].version", version, "gates[0].state", texts.GateChangesRequested,

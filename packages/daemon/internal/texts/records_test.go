@@ -434,7 +434,7 @@ func TestTheSentencesR8KeepsRenderWordForWord(t *testing.T) {
 	}
 
 	for _, open := range []bool{true, false} {
-		resume := RootResumeRecord{TaskHead: TaskHead{Kind: RootResume, Issue: "INFRA-3348"}, Act: ActApproved, GateOpen: open, GateArmed: true}
+		resume := RootResumeRecord{TaskHead: TaskHead{Kind: RootResume, Issue: "INFRA-3348"}, Act: ActApproved, GateOpen: new(open), GateArmed: new(true)}
 		text, err := Render(resume)
 		if err != nil {
 			t.Fatal(err)

@@ -19,7 +19,7 @@ The task also names the generation the tree is open at (`generation`) and the ph
 - `decompose`: file every child of the decomposition.
 - `request_approval`: request the approval of each document that the deployment gates.
 - `register_gate`: register each step of the design gate.
-- `resume_phase`: resume the tree from the phase that the hand-over carried the root in with.
+- `resume_phase`: resume the tree from the phase the root stands in (`phase`): the phase the hand-over carried it in with, or one of that run that it has moved on to since.
 - `carry_gate`: carry the design gate on from where it stands.
 - `take_up_tree`: take the tree up from where it stands.
 

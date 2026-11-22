@@ -679,7 +679,9 @@ func gateInQuestion(steps []record.DesignStep, gates map[record.DesignStep]recor
 // a newer version superseded, or a gate closed again since, is said as it is: the document (stepRef)
 // wherever the step has a gate, whatever the act, as main named it in each sentence of the gate
 // ("Your <doc> is not approved at version N", "the approval request for <doc> version N", "When the
-// <doc> is ready"), its latest version, whether the gate is open and whether it is armed. An open
+// <doc> is ready"), its latest version, whether the gate is open and whether it is armed. A step
+// with no gate row (gateInQuestion's nil, a question asked before any step was registered) names
+// no gate state, as main's resume wrote no gate sentence for it (`case gate == nil`). An open
 // gate keeps texts.DesignApprovedWake word for word, since the daemon sends no design-approved
 // notice to a root waiting on a person (applyArtifact, gateRegistered), so this resume is that
 // root's design-approved wake. A wait the gates.design: off rule answered (gateOffAnswer) says so
@@ -697,9 +699,10 @@ func RootResume(key string, waiting record.Awaiting, step record.DesignStep, gat
 ) texts.RootResumeRecord {
 	gateOpen := gate != nil && classify.DesignGateOpen(*gate)
 	gateClosed := gate != nil && !gateOpen
-	task := texts.RootResumeRecord{TaskHead: texts.TaskHead{Kind: texts.RootResume, Issue: key}, GateOpen: gateOpen, GateArmed: armed}
+	task := texts.RootResumeRecord{TaskHead: texts.TaskHead{Kind: texts.RootResume, Issue: key}}
 	if gate != nil {
 		task.Document, task.DocumentVersion = stepRef(key, step), gate.LatestVersion
+		task.GateOpen, task.GateArmed = &gateOpen, &armed
 	}
 	switch waiting.AnsweredBy {
 	case record.AnsweredByApproval:

@@ -214,9 +214,9 @@ func resumeRecordOf(t *testing.T, waiting record.Awaiting, step record.DesignSte
 	got := RootResume("LEGION-208", waiting, step, gate, []string{gateArtifactOf(gate)}, asks, armed)
 	text := resumeTask("LEGION-208", waiting, step, gate, []string{gateArtifactOf(gate)}, asks, armed)
 	readTaskOf(t, text)
-	if strings.Contains(text, texts.DesignApprovedWake) != got.GateOpen {
+	if open := got.GateOpen != nil && *got.GateOpen; strings.Contains(text, texts.DesignApprovedWake) != open {
 		t.Fatalf("the resume task %q carries the design-approved wake %t, want it exactly where the gate is open (%t)",
-			text, !got.GateOpen, got.GateOpen)
+			text, !open, open)
 	}
 	return got
 }
@@ -247,7 +247,7 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 			step:    record.DesignStepSpec,
 			gate:    &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: &version},
 			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActAsk, Ask: "dispatch://LEGION-208/ask/ask-q", Document: "dispatch://LEGION-208/spec",
-				DocumentVersion: 3, GateOpen: true, GateArmed: true, WithPerson: still, WaitingOnYou: yours},
+				DocumentVersion: 3, GateOpen: new(true), GateArmed: new(true), WithPerson: still, WaitingOnYou: yours},
 		},
 		{
 			// A deployment that gates the decisions step first stands on that step, not on the
@@ -258,7 +258,7 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 			gate: &record.DesignGate{Issue: "LEGION-208", Step: record.DesignStepDecisions, ArtifactID: "artifact-decisions",
 				LatestVersion: 3, ApprovedVersion: &version},
 			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActApproved, Document: "dispatch://LEGION-208/artifact/" + dispatch.DecisionsSlug,
-				Version: 3, DocumentVersion: 3, GateOpen: true, GateArmed: true, WithPerson: still, WaitingOnYou: yours},
+				Version: 3, DocumentVersion: 3, GateOpen: new(true), GateArmed: new(true), WithPerson: still, WaitingOnYou: yours},
 		},
 		{
 			// Round 2, adversarial P2-1 and outside-whole P2-1: no design-approved notice reaches
@@ -268,7 +268,7 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 			step:    record.DesignStepSpec,
 			gate:    &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: &version},
 			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActApproved, Document: "dispatch://LEGION-208/spec", Version: 3,
-				DocumentVersion: 3, GateOpen: true, GateArmed: true, WithPerson: still, WaitingOnYou: yours},
+				DocumentVersion: 3, GateOpen: new(true), GateArmed: new(true), WithPerson: still, WaitingOnYou: yours},
 		},
 		{
 			name:    "a changes request with the gate closed",
@@ -276,7 +276,7 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 			step:    record.DesignStepSpec,
 			gate:    &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 4},
 			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActChangesRequested, Document: "dispatch://LEGION-208/spec", Version: 4,
-				DocumentVersion: 4, GateArmed: true, WithPerson: still, WaitingOnYou: yours, Reason: &texts.Words{Text: "say more"}},
+				DocumentVersion: 4, GateOpen: new(false), GateArmed: new(true), WithPerson: still, WaitingOnYou: yours, Reason: &texts.Words{Text: "say more"}},
 		},
 		{
 			// Round 2, adversarial P3-2: the person approved the version after asking for changes,
@@ -286,15 +286,18 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 			step:    record.DesignStepSpec,
 			gate:    &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: &version},
 			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActChangesRequested, Document: "dispatch://LEGION-208/spec", Version: 3,
-				DocumentVersion: 3, GateOpen: true, GateArmed: true, WithPerson: still, WaitingOnYou: yours, Reason: &texts.Words{Text: "split it"}},
+				DocumentVersion: 3, GateOpen: new(true), GateArmed: new(true), WithPerson: still, WaitingOnYou: yours, Reason: &texts.Words{Text: "split it"}},
 		},
 		{
+			// A question asked before any step of the gate was registered has no gate row
+			// (gateInQuestion), so the task names no gate state, as main's resume wrote no gate
+			// sentence for it.
 			name:    "a question nobody will answer any more",
 			waiting: record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByClosed, AnsweredDetail: "a session of your tree"},
 			step:    record.DesignStepSpec,
 			gate:    nil,
 			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActClosed, Ask: "dispatch://LEGION-208/ask/ask-q",
-				ClosedBy: "a session of your tree", GateArmed: true, WithPerson: still, WaitingOnYou: yours},
+				ClosedBy: "a session of your tree", WithPerson: still, WaitingOnYou: yours},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -312,7 +315,8 @@ func TestTheResumeTaskUnderNoDesignGateAdvisesNoApproval(t *testing.T) {
 	waiting := record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByAsk, AnsweredDetail: "ask-q"}
 	gate := &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2}
 	got := resumeRecordOf(t, waiting, record.DesignStepSpec, gate, nil, false)
-	want := texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActAsk, Ask: "dispatch://LEGION-208/ask/ask-q", Document: "dispatch://LEGION-208/spec", DocumentVersion: 2}
+	want := texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActAsk, Ask: "dispatch://LEGION-208/ask/ask-q", Document: "dispatch://LEGION-208/spec", DocumentVersion: 2,
+		GateOpen: new(false), GateArmed: new(false)}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("resume task\n%+v\nwant\n%+v: the gate is neither open nor armed", got, want)
 	}
@@ -335,7 +339,7 @@ func TestTheResumeTaskOfAGateWait(t *testing.T) {
 			waiting: record.Awaiting{GateVersion: 5, Artifact: "artifact-208", AnsweredAt: &answered, AnsweredBy: record.AnsweredByVersion, AnsweredDetail: "version 5"},
 			asks:    []record.RootAsk{{Issue: "LEGION-208", Ask: "ask-approval", Kind: record.AskApproval, Artifact: "artifact-208", Open: true, WaitingOn: "agent", Seq: 9}},
 			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActVersion, Document: "dispatch://LEGION-208/spec", Version: 5,
-				DocumentVersion: 5, GateArmed: true, WaitingOnYou: []string{"dispatch://LEGION-208/ask/ask-approval"}, RequestOpen: true},
+				DocumentVersion: 5, GateOpen: new(false), GateArmed: new(true), WaitingOnYou: []string{"dispatch://LEGION-208/ask/ask-approval"}, RequestOpen: true},
 		},
 		{
 			name:    "a person's answer of a question, the request still with the person",
@@ -343,14 +347,14 @@ func TestTheResumeTaskOfAGateWait(t *testing.T) {
 			asks: []record.RootAsk{{Issue: "LEGION-208", Ask: "ask-approval", Kind: record.AskApproval, Artifact: "artifact-208", Open: true, WaitingOn: "human", Seq: 9},
 				{Issue: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, ByTree: true, Seq: 10}},
 			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActAsk, Ask: "dispatch://LEGION-208/ask/ask-q", Document: "dispatch://LEGION-208/spec",
-				DocumentVersion: 5, GateArmed: true, ApprovalRequest: 5, RequestOpen: true},
+				DocumentVersion: 5, GateOpen: new(false), GateArmed: new(true), ApprovalRequest: 5, RequestOpen: true},
 		},
 		{
 			name:    "a changes request that closed the request",
 			waiting: record.Awaiting{Ask: "ask-approval", AnsweredAt: &answered, AnsweredBy: record.AnsweredByChanges, AnsweredDetail: "version 5: \"say more\""},
 			asks:    []record.RootAsk{{Issue: "LEGION-208", Ask: "ask-approval", Kind: record.AskApproval, Artifact: "artifact-208", Seq: 11, ClosedSeq: 11, ClosedBy: record.ClosedByPerson}},
 			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActChangesRequested, Document: "dispatch://LEGION-208/spec", Version: 5,
-				DocumentVersion: 5, GateArmed: true, Reason: &texts.Words{Text: "say more"}},
+				DocumentVersion: 5, GateOpen: new(false), GateArmed: new(true), Reason: &texts.Words{Text: "say more"}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

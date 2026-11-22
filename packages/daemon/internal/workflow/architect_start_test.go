@@ -161,7 +161,7 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 				Gates: []texts.ArchitectGate{
 					{Step: "decisions", Document: stepRef("LEGION-208", record.DesignStepDecisions), Version: 3, State: texts.GateChangesRequested},
 					{Step: "criteria", Document: stepRef("LEGION-208", record.DesignStepCriteria), State: texts.GateUnregistered}},
-				Gated: []string{"decisions", "criteria"}, FirstAct: []string{FirstActClaim, FirstActCarryGate}, FirstPhaseWaitsFor: []string{WaitsForGate}},
+				Gated: []string{"decisions", "criteria"}, FirstAct: []string{FirstActClaim, FirstActCarryGate, FirstActTakeUpTree}, FirstPhaseWaitsFor: []string{WaitsForGate}},
 		},
 		{
 			name: "a root whose registered step no person has answered",
@@ -169,7 +169,7 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 				record.DesignStepSpec: {Issue: "LEGION-208", Step: record.DesignStepSpec, LatestVersion: 4, ApprovedVersion: new(2)}}}},
 			want: texts.ArchitectStartRecord{TaskHead: startHead, Shape: texts.ShapeGateStanding, Generation: 2, Phase: phase.Admitted,
 				Gates: []texts.ArchitectGate{{Step: "spec", Document: "dispatch://LEGION-208/spec", Version: 4, State: texts.GateUnanswered}},
-				Gated: []string{"spec"}, FirstAct: []string{FirstActClaim, FirstActCarryGate}, FirstPhaseWaitsFor: []string{WaitsForGate}},
+				Gated: []string{"spec"}, FirstAct: []string{FirstActClaim, FirstActCarryGate, FirstActTakeUpTree}, FirstPhaseWaitsFor: []string{WaitsForGate}},
 		},
 		{
 			name: "a root holding a row under a deployment that gates no step, so its gate is open",

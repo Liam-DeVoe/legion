@@ -179,12 +179,19 @@ type PRBlockedRecord struct {
 
 // PRMergedRecord is the notice that an issue's pull request merged (workflow's merged and
 // closeMergedTelling): the pull request, the phase the issue stood in where it was not merging,
-// and each issue the close waits for.
+// and each issue the close waits for. A notice whose close waits (WaitingFor) tells the architect
+// to end a child, so it keeps, word for word as main's notice gave them, the two texts
+// dispatch://INFRA-3178's R6 has such a notice say, which R8 of dispatch://INFRA-3686 keeps:
+// record.StatusNotTakenYet (StatusNotTakenYet) and the eight things of record.EndChildRule
+// (EndChildRule). A notice of a merge that closed the issue or found it out of merging tells the
+// architect to end nothing and carries neither.
 type PRMergedRecord struct {
 	NoticeHead
-	PullRequest string      `json:"pull_request"`
-	Phase       phase.Phase `json:"phase,omitempty"`
-	WaitingFor  []string    `json:"waiting_for,omitempty"`
+	PullRequest       string      `json:"pull_request"`
+	Phase             phase.Phase `json:"phase,omitempty"`
+	WaitingFor        []string    `json:"waiting_for,omitempty"`
+	StatusNotTakenYet string      `json:"status_not_taken_yet,omitempty"`
+	EndChildRule      string      `json:"end_child_rule,omitempty"`
 }
 
 // PRClosedUnmergedRecord is the notice that an issue's pull request closed without merging
@@ -344,10 +351,14 @@ type ChildStatusRecord struct {
 }
 
 // ChildrenFirstRecord is the notice that a parent's own first phase waits for its open children
-// (workflow's ChildrenFirstNotice): every open child.
+// (workflow's ChildrenFirstNotice): every open child, and, since the notice tells the architect
+// how a child leaves, the eight things of record.EndChildRule word for word as main's notice gave
+// them (EndChildRule), which dispatch://INFRA-3178's R6 has such a notice say and R8 of
+// dispatch://INFRA-3686 keeps.
 type ChildrenFirstRecord struct {
 	NoticeHead
-	Children []OpenChildFacts `json:"children"`
+	Children     []OpenChildFacts `json:"children"`
+	EndChildRule string           `json:"end_child_rule"`
 }
 
 // OpenChildFacts is one open child of a children-first notice: its key, the Dispatch status it

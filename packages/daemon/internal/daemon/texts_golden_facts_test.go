@@ -3,6 +3,7 @@ package daemon
 import (
 	"strings"
 
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
@@ -398,12 +399,21 @@ var goldenKept = []goldenKeptOf{
 			return []string{"this resume is your design-approved wake"}
 		}},
 	{kind: texts.PodWake, variants: []string{"role-message"}, what: "the facts of the role-message wake: how long Envoy keeps a role message, the field a kept card shows, " +
-		"that a kept card can come before the task, that Envoy tells the sender of a drop, the setting of a message that is not kept, and that its sender sends it again",
+		"that a kept card can come before the task, that a kept card whose hour ended before the session came back does not reach it, that Envoy tells the sender of a drop, " +
+		"the setting of a message that is not kept, and that its sender sends it again",
 		keptBy: "dispatch://INFRA-2846's R7",
-		keys:   []string{"topic", "kept_for", "kept_card_field", "kept_card_may_come_first", "sender_told_of_drop", "not_kept_with", "sender_sends_again"},
+		keys: []string{"topic", "kept_for", "kept_card_field", "kept_card_may_come_first", "expired_does_not_reach", "sender_told_of_drop", "not_kept_with",
+			"sender_sends_again"},
 		values: func(map[string]string) map[string]string {
 			return map[string]string{"topic": "", "kept_for": "1h0m0s", "kept_card_field": "kept_at", "kept_card_may_come_first": "true",
-				"sender_told_of_drop": "true", "not_kept_with": "keep: false", "sender_sends_again": "true"}
+				"expired_does_not_reach": "true", "sender_told_of_drop": "true", "not_kept_with": "keep: false", "sender_sends_again": "true"}
+		}},
+	{kind: texts.PodWake, variants: []string{"agent-message"}, what: "the facts of the agent-message wake: a message that Envoy or Dispatch stored for the session reaches it in this session, " +
+		"and a direct Envoy message that Envoy refused reaches it when its sender sends it again",
+		keptBy: "dispatch://INFRA-3686's R8 (a fact that it has the text give stays as a field) and dispatch://INFRA-3360's R3",
+		keys:   []string{"stored_reaches_session", "refused_sender_sends_again"},
+		values: func(map[string]string) map[string]string {
+			return map[string]string{"stored_reaches_session": "true", "refused_sender_sends_again": "true"}
 		}},
 	{kind: texts.UpdateAsk, what: "the round's id, the push instruction, the moment the round ends, that every role's answer brings it forward only when no turn or background work runs and no answer delays it, " +
 		"that only the role's own push keeps its work, and what goes with the pod (the push check and its rescue branch are on no daemon at this head)",
@@ -440,18 +450,19 @@ var goldenKept = []goldenKeptOf{
 		values: func(map[string]string) map[string]string {
 			return map[string]string{"launcher_lookup": "failed", "resumed_by_id": "false"}
 		}},
-	{kind: texts.CheckLook, what: "the rule of every look's verdict, the last among them: a requirement only the deploy can show that the look observes as not met is a fail, as main's task said on every look",
-		keptBy: "dispatch://INFRA-3686's R8 (a fact that it has the text give stays as a field) and dispatch://INFRA-4533's R1, which states dispatch://INFRA-904's R7",
-		keys:   []string{"not_met_requirement"},
+	{kind: texts.CheckLook, what: "the rule of every look's verdict, the last among them: a requirement only the deploy can show that the look observes as not met is a fail, " +
+		"and one still unobserved at the last look is a fail, as main's task said on every look",
+		keptBy: "dispatch://INFRA-3686's R8 (a fact that it has the text give stays as a field) and dispatch://INFRA-4533's R1, which states dispatch://INFRA-904's R7, " +
+			"and whose R3 holds it for the task of each look before the last (the architect's ruling)",
+		keys: []string{"not_met_requirement", "unobserved_requirement"},
 		values: func(map[string]string) map[string]string {
-			return map[string]string{"not_met_requirement": "fail"}
+			return map[string]string{"not_met_requirement": "fail", "unobserved_requirement": "fail"}
 		}},
-	{kind: texts.CheckLook, variants: []string{"bound-last"}, what: "the rule of the last look's verdict beside last: true: a requirement only the deploy can show that is still unobserved there is a fail, " +
-		"and its pending is only for an issue with no such requirement",
+	{kind: texts.CheckLook, variants: []string{"bound-last"}, what: "the rest of the rule of the last look's verdict beside last: true: its pending is only for an issue with no such requirement",
 		keptBy: "dispatch://INFRA-3686's R8 (a fact that it has the text give stays as a field) and dispatch://INFRA-4533's R1, which states dispatch://INFRA-904's R7",
-		keys:   []string{"unobserved_requirement", "pending"},
+		keys:   []string{"pending"},
 		values: func(map[string]string) map[string]string {
-			return map[string]string{"unobserved_requirement": "fail", "pending": "only_with_no_deploy_only_requirement"}
+			return map[string]string{"pending": "only_with_no_deploy_only_requirement"}
 		}},
 	{kind: texts.CheckLook, variants: []string{"bound-last"}, what: "the last of R7's rules beside last: true: a last look that nobody reported gives no verdict, and the daemon closes the check as not run, " +
 		"as main's last-look task said (This last look's pending carries no wake_at and closes the check as not run)",
@@ -476,6 +487,24 @@ var goldenKept = []goldenKeptOf{
 		keys:   []string{"ends_round"},
 		values: func(want map[string]string) map[string]string {
 			return map[string]string{"ends_round": want["ends_round"]}
+		}},
+	{kind: texts.PRMerged, variants: []string{"waiting"}, what: "the sentence on a status the daemon has not taken yet, word for word as main's notice of a close that waits gave it (record.StatusNotTakenYet)",
+		keptBy: "dispatch://INFRA-3178's R6, which R8 of dispatch://INFRA-3686 keeps (the architect's ruling)",
+		keys:   []string{"status_not_taken_yet"},
+		values: func(map[string]string) map[string]string {
+			return map[string]string{"status_not_taken_yet": record.StatusNotTakenYet}
+		}},
+	{kind: texts.PRMerged, variants: []string{"waiting"}, what: "the eight things a text that tells an architect to end a child says, word for word as main's notice of a close that waits gave them (record.EndChildRule)",
+		keptBy: "dispatch://INFRA-3178's R6, which R8 of dispatch://INFRA-3686 keeps (the architect's ruling)",
+		keys:   []string{"end_child_rule"},
+		values: func(map[string]string) map[string]string {
+			return map[string]string{"end_child_rule": record.EndChildRule}
+		}},
+	{kind: texts.ChildrenFirst, what: "the eight things a text that tells an architect to end a child says, word for word as main's notice gave them (record.EndChildRule)",
+		keptBy: "dispatch://INFRA-3178's R6, which R8 of dispatch://INFRA-3686 keeps (the architect's ruling)",
+		keys:   []string{"end_child_rule"},
+		values: func(map[string]string) map[string]string {
+			return map[string]string{"end_child_rule": record.EndChildRule}
 		}},
 	{kind: texts.HookPrompt, what: "the hook's words as they are written, after its Legion hook first line and before the facts as key: value lines",
 		keptBy: "dispatch://INFRA-2551's R3, R5 and R7",

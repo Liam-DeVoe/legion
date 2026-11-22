@@ -437,10 +437,17 @@ func (e *Engine) closeMergedTelling(ctx context.Context, tx pgx.Tx, issue record
 
 // PRMergedNotice is the pr-merged notice of issue whose pull request pr merged: the pull request,
 // the phase the issue stood in where it was not merging (at, empty where it was), and each issue
-// the close waits for (waiting, nil where the merge closed the issue or it was not merging).
+// the close waits for (waiting, nil where the merge closed the issue or it was not merging). A
+// notice whose close waits tells the architect how a child leaves without its own merge, as main's
+// waitingForTree did: it keeps record.StatusNotTakenYet and record.EndChildRule word for word,
+// which dispatch://INFRA-3178's R6 has such a notice say (R8 of dispatch://INFRA-3686).
 func PRMergedNotice(issue string, pr record.PullRequest, at phase.Phase, waiting []string) texts.PRMergedRecord {
-	return texts.PRMergedRecord{NoticeHead: texts.NoticeHead{Kind: texts.PRMerged, Issue: issue}, PullRequest: pullRequestRef(pr), Phase: at,
+	merged := texts.PRMergedRecord{NoticeHead: texts.NoticeHead{Kind: texts.PRMerged, Issue: issue}, PullRequest: pullRequestRef(pr), Phase: at,
 		WaitingFor: waiting}
+	if len(waiting) > 0 {
+		merged.StatusNotTakenYet, merged.EndChildRule = record.StatusNotTakenYet, record.EndChildRule
+	}
+	return merged
 }
 
 // closeMerged closes issue, which awaits its merge in merging (or is held from merging, a hold the

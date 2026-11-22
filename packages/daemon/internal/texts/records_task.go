@@ -107,10 +107,12 @@ type PhaseResumeRecord struct {
 //
 // The gate of the step in question now, wherever that step has a gate, whatever the act: its
 // document as a dispatch:// link (Document), its latest version, whether it is open, and whether
-// the design gate is armed. A document an approval, a changes request or a version answered the
-// wait on is that document too. LaterChangesVersion is a changes request made after the wait began
-// that did not answer it, made on that document, whose reason goes in the later_reason block with
-// its author and time.
+// the design gate is armed. A step with no gate, as a question asked before any step of the gate
+// was registered has, names none of these: GateOpen and GateArmed are nil, and the task states no
+// gate state, as main's resume wrote no gate sentence for it. A document an approval, a changes
+// request or a version answered the wait on is that document too. LaterChangesVersion is a changes
+// request made after the wait began that did not answer it, made on that document, whose reason
+// goes in the later_reason block with its author and time.
 //
 // What is still with the person: the asks (dispatch:// links), and ApprovalRequest, the version of
 // the document whose approval request is with the person. What waits on the architect: the asks
@@ -133,8 +135,8 @@ type RootResumeRecord struct {
 	Options             []string  `json:"options,omitempty"`
 	DispatchWords       string    `json:"dispatch_words,omitempty"`
 	DocumentVersion     int       `json:"document_version,omitempty"`
-	GateOpen            bool      `json:"gate_open"`
-	GateArmed           bool      `json:"gate_armed"`
+	GateOpen            *bool     `json:"gate_open,omitempty"`
+	GateArmed           *bool     `json:"gate_armed,omitempty"`
 	LaterChangesVersion int       `json:"later_changes_version,omitempty"`
 	WithPerson          []string  `json:"with_person,omitempty"`
 	ApprovalRequest     int       `json:"approval_request,omitempty"`
@@ -149,7 +151,7 @@ type RootResumeRecord struct {
 
 // Kept is DesignApprovedWake where the design gate is open at the resume.
 func (r RootResumeRecord) Kept() []string {
-	if !r.GateOpen {
+	if r.GateOpen == nil || !*r.GateOpen {
 		return nil
 	}
 	return []string{DesignApprovedWake}
@@ -166,16 +168,18 @@ const (
 // The rule of a look's verdict, in the terms of dispatch://INFRA-904's R7, which
 // dispatch://INFRA-4533's R1 has every look's task state: a requirement of the issue that only the
 // deploy can show and that a look observes as not met is a fail, on every look, the last among them
-// (CheckLookRecord.NotMetRequirement); one that is still unobserved at the last look is a fail too
+// (CheckLookRecord.NotMetRequirement); one that is still unobserved at the last look is a fail too,
+// which every look states, as main's task said it on every look ("or still unobserved when no look
+// follows this one ... is a defect") and as INFRA-4533's R3 holds it for each look before the last
 // (CheckLookRecord.UnobservedRequirement); the last look's pending is only for an issue with no
 // such requirement (CheckLookRecord.Pending); and a last look that nobody reported gives no verdict,
 // and the daemon closes the check as not run, which is no pass (CheckLookRecord.Unreported, R7's
 // second sentence).
 const (
-	LookNotMetRequirement         = "fail"
-	LastLookUnobservedRequirement = "fail"
-	LastLookPending               = "only_with_no_deploy_only_requirement"
-	LastLookUnreported            = "not_run"
+	LookNotMetRequirement     = "fail"
+	LookUnobservedRequirement = "fail"
+	LastLookPending           = "only_with_no_deploy_only_requirement"
+	LastLookUnreported        = "not_run"
 )
 
 // CheckLookRecord is the task of a look of a closed issue's production check (workflow's
@@ -184,8 +188,8 @@ const (
 //
 // The fields: the look, what woke it (one of the WokenBy words), the cause of a retried look
 // that nobody reported, whether it is the last look, the rule of every look's verdict
-// (NotMetRequirement, LookNotMetRequirement) and, beside it on the last look alone, the rule of
-// that look's verdict (UnobservedRequirement, Pending and Unreported, the LastLook words), the pull
+// (NotMetRequirement and UnobservedRequirement, the Look words) and, beside it on the last look
+// alone, the rest of that look's rule (Pending and Unreported, the LastLook words), the pull
 // request, the merge commit (absent where the record holds none), and the check's bound with the
 // time of the last look. The bound is in whole days (BoundDays) where it is whole days, and
 // otherwise in hours (BoundHours), a decimal as production_check_hours takes one, since a bound of
@@ -329,33 +333,41 @@ type KeptDecision struct {
 // that a skipped check ran nothing on the head (each_skipped_check, CheckConclusion), the count of
 // the checks and statuses that passed and the command that lists them. A message to the role's
 // topic names the topic and the facts dispatch://INFRA-2846's R7 requires: how long Envoy keeps a
-// role message, the field a kept card shows, that a kept card can come before this task, that
-// Envoy tells the sender when it drops one, the setting a message that is not kept is sent with,
-// and that its sender sends it again. A message to the session names the session. The backstop
-// names the role it was armed for. A wake of another word gives its detail.
+// role message, the field a kept card shows, that a kept card can come before this task, that a
+// kept card whose time ended before the session came back does not reach it (ExpiredDoesNotReach),
+// that Envoy tells the sender when it drops one, the setting a message that is not kept is sent
+// with, and that its sender sends it again. A message to the session names the session and the
+// facts dispatch://INFRA-3360's R3 has the woken role's task give: a message that Envoy or
+// Dispatch stored for the session reaches it in this session (StoredReachesSession), and a direct
+// Envoy message that Envoy refused reaches it only when its sender sends it again
+// (RefusedSenderSendsAgain). The backstop names the role it was armed for. A wake of another word
+// gives its detail.
 type PodWakeRecord struct {
 	TaskHead
-	Wake                 string            `json:"wake"`
-	PullRequest          string            `json:"pull_request,omitempty"`
-	Head                 string            `json:"head,omitempty"`
-	Phase                phase.Phase       `json:"phase,omitempty"`
-	NotPassed            []CheckConclusion `json:"not_passed,omitempty"`
-	Skipped              []string          `json:"skipped,omitempty"`
-	EachSkippedCheck     string            `json:"each_skipped_check,omitempty"`
-	NotPassedStatuses    []StatusState     `json:"not_passed_statuses,omitempty"`
-	Passed               *int              `json:"passed,omitempty"`
-	ListPassed           string            `json:"list_passed,omitempty"`
-	Topic                string            `json:"topic,omitempty"`
-	KeptFor              string            `json:"kept_for,omitempty"`
-	KeptCardField        string            `json:"kept_card_field,omitempty"`
-	KeptCardMayComeFirst bool              `json:"kept_card_may_come_first,omitempty"`
-	SenderToldOfDrop     bool              `json:"sender_told_of_drop,omitempty"`
-	NotKeptWith          string            `json:"not_kept_with,omitempty"`
-	SenderSendsAgain     bool              `json:"sender_sends_again,omitempty"`
-	Session              string            `json:"session,omitempty"`
-	ArmedFor             string            `json:"armed_for,omitempty"`
-	Detail               string            `json:"detail,omitempty"`
-	StoppedBy            string            `json:"stopped_by"`
+	Wake                    string            `json:"wake"`
+	PullRequest             string            `json:"pull_request,omitempty"`
+	Head                    string            `json:"head,omitempty"`
+	Phase                   phase.Phase       `json:"phase,omitempty"`
+	NotPassed               []CheckConclusion `json:"not_passed,omitempty"`
+	Skipped                 []string          `json:"skipped,omitempty"`
+	EachSkippedCheck        string            `json:"each_skipped_check,omitempty"`
+	NotPassedStatuses       []StatusState     `json:"not_passed_statuses,omitempty"`
+	Passed                  *int              `json:"passed,omitempty"`
+	ListPassed              string            `json:"list_passed,omitempty"`
+	Topic                   string            `json:"topic,omitempty"`
+	KeptFor                 string            `json:"kept_for,omitempty"`
+	KeptCardField           string            `json:"kept_card_field,omitempty"`
+	KeptCardMayComeFirst    bool              `json:"kept_card_may_come_first,omitempty"`
+	ExpiredDoesNotReach     bool              `json:"expired_does_not_reach,omitempty"`
+	SenderToldOfDrop        bool              `json:"sender_told_of_drop,omitempty"`
+	NotKeptWith             string            `json:"not_kept_with,omitempty"`
+	SenderSendsAgain        bool              `json:"sender_sends_again,omitempty"`
+	Session                 string            `json:"session,omitempty"`
+	StoredReachesSession    bool              `json:"stored_reaches_session,omitempty"`
+	RefusedSenderSendsAgain bool              `json:"refused_sender_sends_again,omitempty"`
+	ArmedFor                string            `json:"armed_for,omitempty"`
+	Detail                  string            `json:"detail,omitempty"`
+	StoppedBy               string            `json:"stopped_by"`
 }
 
 // The words of what stopped the session a wake brings back (PodWakeRecord.StoppedBy).

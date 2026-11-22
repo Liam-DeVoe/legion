@@ -552,6 +552,11 @@ type Notice struct {
 	WaitingFor  []string `json:"waiting_for,omitempty"`
 	Repo        string   `json:"repo,omitempty"`
 	Branch      string   `json:"branch,omitempty"`
+	// The two texts dispatch://INFRA-3178's R6 has each notice that tells an architect to end a
+	// child say, word for word (StatusNotTakenYet and EndChildRule, this package's constants): a
+	// pr-merged notice whose close waits carries both, and a children-first notice the second.
+	StatusNotTakenYet string `json:"status_not_taken_yet,omitempty"`
+	EndChildRule      string `json:"end_child_rule,omitempty"`
 	// What Dispatch refused, and its answer (message-refused): its length, the daemon's sentence
 	// its first line opens with where that line goes on with another author's words (the backward
 	// move it states, or that it is the architect's close before the first phase), and that

@@ -76,27 +76,30 @@ func TestTheCheckTaskNamesWhatWokeItsOwnLook(t *testing.T) {
 }
 
 // The look names its facts: the look, whether it is the last, the rule of every look's verdict
-// (not_met_requirement) and, on the last alone, the rest of that rule (unobserved_requirement and
-// pending, dispatch://INFRA-4533 R1) and that a last look nobody reported closes the check as not
-// run (unreported, R7's second sentence), the pull request, the merge commit (none where the record
-// holds none, which the reader then reads from GitHub), and the check's bound in whole days with
-// the time of the look at that bound.
+// (not_met_requirement and unobserved_requirement, dispatch://INFRA-4533 R1, whose R3 holds R7 for
+// the task of each look before the last too) and, on the last alone, the rest of that rule
+// (pending) and that a last look nobody reported closes the check as not run (unreported, R7's
+// second sentence), the pull request, the merge commit (none where the record holds none, which
+// the reader then reads from GitHub), and the check's bound in whole days with the time of the
+// look at that bound.
 func TestTheCheckTaskNamesTheFactsOfItsLook(t *testing.T) {
 	look, _ := checkTaskFor(wakeBound, boundText(14*24*time.Hour)+" since the issue closed", true)
 	want := texts.CheckLookRecord{Issue: "LEGION-208", Title: "A production check", Kind: texts.CheckLook, Look: 2, WokenBy: texts.WokenByBound,
-		Last: true, NotMetRequirement: texts.LookNotMetRequirement, UnobservedRequirement: texts.LastLookUnobservedRequirement, Pending: texts.LastLookPending,
+		Last: true, NotMetRequirement: texts.LookNotMetRequirement, UnobservedRequirement: texts.LookUnobservedRequirement, Pending: texts.LastLookPending,
 		Unreported: texts.LastLookUnreported, PullRequest: "sjawhar/legion#43", MergeCommit: "merge-43", BoundDays: 14, LastLook: checkOpened.Add(14 * 24 * time.Hour).UTC()}
 	if !reflect.DeepEqual(look, want) {
 		t.Fatalf("the bound's look = %+v, want %+v", look, want)
 	}
 	for _, tc := range checkTaskWakes {
 		before, task := checkTaskFor(tc.cause, tc.detail, false)
-		if before.UnobservedRequirement != "" || before.Pending != "" || before.Unreported != "" ||
-			strings.Contains(task, "unobserved_requirement") || readTaskOf(t, task).fields["pending"] != "" || readTaskOf(t, task).fields["unreported"] != "" {
-			t.Fatalf("a look before the last, woken by %s, = %+v, want no rule of the last look's verdict, which only the last look states:\n%s", tc.name, before, task)
+		if before.Pending != "" || before.Unreported != "" || readTaskOf(t, task).fields["pending"] != "" || readTaskOf(t, task).fields["unreported"] != "" {
+			t.Fatalf("a look before the last, woken by %s, = %+v, want no pending or unreported rule, which only the last look states:\n%s", tc.name, before, task)
 		}
-		if read := readTaskOf(t, task); before.NotMetRequirement != texts.LookNotMetRequirement || read.fields["not_met_requirement"] != texts.LookNotMetRequirement {
-			t.Fatalf("a look before the last, woken by %s, = %+v, want the rule of every look's verdict (not_met_requirement: %s):\n%s", tc.name, before, texts.LookNotMetRequirement, task)
+		read := readTaskOf(t, task)
+		if before.NotMetRequirement != texts.LookNotMetRequirement || read.fields["not_met_requirement"] != texts.LookNotMetRequirement ||
+			before.UnobservedRequirement != texts.LookUnobservedRequirement || read.fields["unobserved_requirement"] != texts.LookUnobservedRequirement {
+			t.Fatalf("a look before the last, woken by %s, = %+v, want the rule of every look's verdict (not_met_requirement: %s, unobserved_requirement: %s):\n%s",
+				tc.name, before, texts.LookNotMetRequirement, texts.LookUnobservedRequirement, task)
 		}
 	}
 	issue := record.Issue{Key: "LEGION-208", Title: "A production check"}

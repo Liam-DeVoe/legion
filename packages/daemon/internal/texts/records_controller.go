@@ -186,11 +186,20 @@ func (u UpdateRound) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
+// SuspendedByPause is what an update-stalled notice's suspended_by says of a claim that a
+// project's pause stopped and still owes a launch (the daemon's podHolds.owes): the round asks it
+// once its agent is ready and waits for it, where it passes over a claim the daemon's idle release
+// suspended. The claim's own source is released for both (supervise.SuspendedByReleased), so this
+// word is the notice's, read from the pause's hold of the pod.
+const SuspendedByPause = "pause"
+
 // UpdateWaiting is one claim an update-stalled notice lists (record.UpdateWaiting is this type):
 // its token, its role, its state, whether it answered, and, for a suspended claim, who suspended
-// it (a supervise.SuspendSource word: operator for the operator's suspension, which only the
+// it: a supervise.SuspendSource word (operator for the operator's suspension, which only the
 // operator's resume ends, released for the daemon's idle release of its pod, and daemon, exit or
-// unknown for a suspension of the daemon's own).
+// unknown for a suspension of the daemon's own), or SuspendedByPause for a claim a project's pause
+// stopped and still owes a launch. A claim not suspended yet names operator too where its machine
+// holds the operator's suspension for its agent's turn or launch (supervise.Claim.SuspensionHeld).
 type UpdateWaiting struct {
 	Claim       string     `json:"claim"`
 	Role        claim.Role `json:"role,omitempty"`
@@ -241,12 +250,13 @@ type TreeMember struct {
 // admission and its entry's last raise. Each arm names its bound, apart from a claim-unreachable
 // arm whose relaunch is failing, which waits on no bound.
 //
-// Where an arm counted its bound from a moment later than the one it names, because a project's
-// pause held its architect, the notice states that moment (CountedFrom), what it is (a
-// CountedFrom word: the end of the project's latest pause, the let-out of the architect's launch
-// that pause held, or the first confirmation of the entry's task by a turn of the architect) and
-// the pause it is of (PauseID, none for a confirmation). A slow-before-gate arm that counted from
-// a confirmation names the entry confirmed (Entry).
+// Where an arm counted its bound from a moment later than the one it names, the notice states
+// that moment (CountedFrom), what it is (a CountedFrom word: the end of the project's latest pause
+// that held its architect, the let-out of the architect's launch that pause held, or the first
+// confirmation of the entry's task by a turn of the architect, which a slow-before-gate arm counts
+// from whether or not a pause came first) and the pause it is of (PauseID, none for a
+// confirmation). A slow-before-gate arm that counted from a confirmation names the entry
+// confirmed (Entry).
 type ArchitectStalledRecord struct {
 	NoticeHead
 	Role             claim.Role  `json:"role,omitempty"`

@@ -2747,11 +2747,13 @@ This release adds fields to the payloads that its outbox queues:
 
 - A session-forgotten notice carries `launcher_lookup` and `resumed_by_id`, which say why the session was forgotten.
 
-- An architect-stalled notice whose count a project's pause moved carries `counted_from`, `counted_from_event` and `pause_id`, and a project-paused notice carries `words`, which names its pause's reason.
+- An architect-stalled notice that counted its bound from a moment later than the one its arm names carries `counted_from` and `counted_from_event`, with `pause_id` where a project's pause moved that moment, and a project-paused notice carries `words`, which names its pause's reason.
 
 - A phase-finished notice of a role's own move back carries `moved_back`.
 
-- An update-stalled notice names who suspended each suspended claim that it lists (`update.waiting[].suspended_by`).
+- An update-stalled notice names who suspended each suspended claim that it lists (`update.waiting[].suspended_by`), `pause` for a claim a project's pause stopped and still owes a launch.
+
+- A pr-merged notice whose close waits carries `status_not_taken_yet` and `end_child_rule`, and a children-first notice carries `end_child_rule`: the sentence on a status the daemon has not taken yet and the rules for ending a child, word for word.
 
 - A child-release-stalled notice of a repository the daemon let go says of each child whether Dispatch's listing still holds it (`let_go[].listed`).
 

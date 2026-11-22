@@ -12,7 +12,9 @@ import (
 // such cycle. A cycle holds the child for an issue that is waiting for the child: the daemon names
 // it and acts no further, since taking the link off decides what the work depends on, which is a
 // person's decision, and dropping a Dispatch link of its own accord would lose a fact nobody asked
-// it to lose.
+// it to lose. The notice tells the architect how a child leaves, so it keeps record.EndChildRule
+// word for word, as main's notice did, which dispatch://INFRA-3178's R6 has such a notice say (R8
+// of dispatch://INFRA-3686).
 //
 // It is told once per issue and run of its tree — the mark's key is the issue, its tree and that
 // tree's root generation (admit's tellChildrenFirst) — so a child filed later during one wait
@@ -23,5 +25,6 @@ func ChildrenFirstNotice(wait record.ChildWait) texts.ChildrenFirstRecord {
 	for _, child := range wait.Open {
 		children = append(children, texts.OpenChildFacts{Key: child.Key, Status: child.Status, Released: child.Released, Cycle: child.Cycle})
 	}
-	return texts.ChildrenFirstRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildrenFirst, Issue: wait.Parent}, Children: children}
+	return texts.ChildrenFirstRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildrenFirst, Issue: wait.Parent}, Children: children,
+		EndChildRule: record.EndChildRule}
 }

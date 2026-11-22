@@ -148,12 +148,15 @@ const roleMessageKeep = time.Hour
 // settlement (SettlementWake). detail is the role token a message was published to
 // (pods.WakeRoleMessage), named as its topic with the facts dispatch://INFRA-2846's R7 requires: how
 // long Envoy keeps a role message, that a kept message reaches the session as a card that shows
-// kept_at, possibly before this task, that Envoy tells its sender when it drops one, and that a
-// message sent with keep: false is not kept and its sender sends it again. It is the session a
-// message was sent to (pods.WakeAgentMessage), the role a backstop was armed for
-// (pods.WakeBackstop), and what any other wake was about. R6 asks for exactly one such task or
-// message per wake, and the outbox row that carries it is written in the wake's own transaction,
-// so a wake that commits has its task and one that does not has neither.
+// kept_at, possibly before this task, unless its hour ended before the session came back, that
+// Envoy tells its sender when it drops one, and that a message sent with keep: false is not kept
+// and its sender sends it again. It is the session a message was sent to (pods.WakeAgentMessage),
+// named with the facts dispatch://INFRA-3360's R3 puts in this task: a message that Envoy or
+// Dispatch stored for the session reaches it in this session, and a direct Envoy message that
+// Envoy refused reaches it when its sender sends it again. It is the role a backstop was armed
+// for (pods.WakeBackstop), and what any other wake was about. R6 asks for exactly one such task
+// or message per wake, and the outbox row that carries it is written in the wake's own
+// transaction, so a wake that commits has its task and one that does not has neither.
 //
 // What stopped the session (stopped_by) is the wake's to name once it has read it
 // (wakeReleased, decision 16 of dispatch://INFRA-3759): an idle release, which took the pod, or a
@@ -171,9 +174,10 @@ func PodWake(issue, kind, detail string) texts.PodWakeRecord {
 	switch kind {
 	case pods.WakeRoleMessage:
 		wake.Topic, wake.KeptFor, wake.KeptCardField = notify.RoleTopicPrefix+detail, roleMessageKeep.String(), "kept_at"
-		wake.KeptCardMayComeFirst, wake.SenderToldOfDrop, wake.NotKeptWith, wake.SenderSendsAgain = true, true, "keep: false", true
+		wake.KeptCardMayComeFirst, wake.ExpiredDoesNotReach = true, true
+		wake.SenderToldOfDrop, wake.NotKeptWith, wake.SenderSendsAgain = true, "keep: false", true
 	case pods.WakeAgentMessage:
-		wake.Session = detail
+		wake.Session, wake.StoredReachesSession, wake.RefusedSenderSendsAgain = detail, true, true
 	case pods.WakeBackstop:
 		wake.ArmedFor = detail
 	default:

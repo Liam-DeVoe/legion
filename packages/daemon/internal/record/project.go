@@ -64,10 +64,11 @@ func OutOfWorkflow(status string) bool {
 // its production check. And a read back after each move finds a move that the daemon set back.
 //
 // It lives here because two packages send it, and api does not import workflow: workflow's
-// refusals over children still in the workflow, and api's refusals of close_root on a child and
-// of the removed child route. The notices over children carry facts alone, and the architect
-// prompts carry the same rules whole (prompts/go/architect-common.md), with a step-table row for
-// each notice whose sentence carried them on main (internal/daemon's goldenSteps). The legion
+// refusals over children still in the workflow and its notices that tell an architect to end a
+// child, which keep it word for word as R8 of dispatch://INFRA-3686 keeps INFRA-3178's R6
+// (PRMergedNotice of a close that waits, and ChildrenFirstNotice; internal/daemon's goldenKept
+// holds each to it), and api's refusals of close_root on a child and of the removed child route.
+// The architect prompts carry the same rules whole (prompts/go/architect-common.md). The legion
 // tool's description carries these words (packages/pi-legion/src/tools.ts), and these tests hold
 // the copies together: TestTheEndChildRuleGolden in internal/api writes this constant and
 // StatusNotTakenYet to packages/contracts/fixtures/daemon-api/end-child-rule.json, and
@@ -91,8 +92,9 @@ const EndChildRule = "End a child with your own status write in Dispatch. " +
 	"When the daemon set the move back, write it again."
 
 // StatusNotTakenYet is the sentence that each refusal over children still in the workflow adds:
-// sign_off's and close_root's (workflow's endChildrenFirst). The pr-merged notice carries facts
-// alone, and the architect prompts give this sentence for it (prompts/go/architect-common.md).
+// sign_off's and close_root's (workflow's endChildrenFirst). The pr-merged notice of a close that
+// waits keeps it word for word too, as main's did (workflow's PRMergedNotice), and the architect
+// prompts give it as well (prompts/go/architect-common.md).
 // The daemon reads the architect's status write on a child from that write's Dispatch event, and
 // the event consumer can deliver the event after the architect calls again. Until then the record
 // holds the child in the workflow and the refusal names it, so the architect waits for

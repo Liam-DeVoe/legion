@@ -649,7 +649,8 @@ func TestAGateWaitIsDecidedOnceTheGateIsSwitchedOff(t *testing.T) {
 				&record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3}, []string{"artifact-208"}, nil, false)
 			readTaskOf(t, resumeTask("LEGION-208", *got.Awaiting, record.DesignStepSpec,
 				&record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3}, []string{"artifact-208"}, nil, false))
-			if got2.Act != texts.ActApproved || got2.Version != 3 || got2.DocumentVersion != 3 || got2.GateOpen || got2.GateArmed {
+			if got2.Act != texts.ActApproved || got2.Version != 3 || got2.DocumentVersion != 3 || got2.GateOpen == nil || *got2.GateOpen ||
+				got2.GateArmed == nil || *got2.GateArmed {
 				t.Errorf("resume task = %+v, want the wait answered at version 3 with the gate closed and not armed", got2)
 			}
 		})
@@ -689,7 +690,8 @@ func TestAGateWaitTheGateOffAnsweredClaimsNoApprovalOnceTheGateIsOnAgain(t *test
 	}
 	task := RootResume("LEGION-208", *got.Awaiting, record.DesignStepSpec, &gate, []string{"artifact-208"}, nil, true)
 	readTaskOf(t, resumeTask("LEGION-208", *got.Awaiting, record.DesignStepSpec, &gate, []string{"artifact-208"}, nil, true))
-	if task.Act != texts.ActApproved || !task.GateOffAtAnswer || task.Version != 3 || task.DocumentVersion != 3 || task.GateOpen || !task.GateArmed {
+	if task.Act != texts.ActApproved || !task.GateOffAtAnswer || task.Version != 3 || task.DocumentVersion != 3 || task.GateOpen == nil || *task.GateOpen ||
+		task.GateArmed == nil || !*task.GateArmed {
 		t.Errorf("resume task = %+v, want the wait answered with the gate off at version 3, the gate armed and closed now: no person approved the spec", task)
 	}
 }

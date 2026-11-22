@@ -141,12 +141,15 @@ const retryOfLook = "the retry of a look nobody reported: "
 // where it is whole days, and otherwise in hours, as main's boundText named it in hours or less:
 // cut to whole days it would name no bound the check has, or none at all. Every look states the
 // rule of its verdict as dispatch://INFRA-4533's R1 has it state dispatch://INFRA-904's R7, as
-// main's task said it on every look: a requirement only the deploy can show that the look observes
-// as not met is a fail (not_met_requirement). The last look also states, in three fields beside it
-// and last, that such a requirement still unobserved there is a fail (unobserved_requirement),
-// that its pending is only for an issue with no such requirement (pending), and that a last look
-// nobody reported closes the check as not run (unreported), R7's second sentence, which main's
-// last look said of its pending ("closes the check as not run").
+// main's task said it on every look ("a requirement observed as not met, or still unobserved when
+// no look follows this one, whether or not production carries the merge, is a defect"): a
+// requirement only the deploy can show that the look observes as not met is a fail
+// (not_met_requirement), and one still unobserved at the last look is a fail
+// (unobserved_requirement), which INFRA-4533's R3 holds for the task of each look before the last
+// too. The last look also states, in two fields beside them and last, that its pending is only for
+// an issue with no such requirement (pending), and that a last look nobody reported closes the
+// check as not run (unreported), R7's second sentence, which main's last look said of its pending
+// ("closes the check as not run").
 //
 // What woke it is the cause (texts.WokenByMerge and the others): the merge that opened the check
 // (wakeMerge), its bound (wakeBound), or a check_wake row (wakeNamed), whose reason is either the
@@ -158,10 +161,10 @@ const retryOfLook = "the retry of a look nobody reported: "
 // — are the checking role's prompt's, which also says what the fields of the rule name.
 func CheckLook(issue record.Issue, check record.ProductionCheck, cause, detail string, last bool) texts.CheckLookRecord {
 	look := texts.CheckLookRecord{Issue: issue.Key, Title: issue.Title, Kind: texts.CheckLook, Look: check.Looks, Last: last,
-		NotMetRequirement: texts.LookNotMetRequirement, PullRequest: texts.PullRequestRef(check.Repo, check.Number), MergeCommit: check.MergeSHA}
+		NotMetRequirement: texts.LookNotMetRequirement, UnobservedRequirement: texts.LookUnobservedRequirement,
+		PullRequest: texts.PullRequestRef(check.Repo, check.Number), MergeCommit: check.MergeSHA}
 	if last {
-		look.UnobservedRequirement, look.Pending = texts.LastLookUnobservedRequirement, texts.LastLookPending
-		look.Unreported = texts.LastLookUnreported
+		look.Pending, look.Unreported = texts.LastLookPending, texts.LastLookUnreported
 	}
 	if bound := check.BoundAt.Sub(check.OpenedAt); bound > 0 {
 		look.LastLook = check.BoundAt.UTC()

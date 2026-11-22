@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 
@@ -12,7 +11,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/texts"
 )
@@ -205,9 +203,9 @@ func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldAtAdmitted(t *testing.T) {
 // architect wrote counts only once the daemon has taken it, because the Dispatch event that carries
 // it can reach the daemon after the architect calls again. The children-first notice ends a child,
 // released or not, by the same write. Each row holds only that much of the wording. The pr-merged
-// and children-first notices are records whose facts are fields and whose steps are the
-// architect's prompt's (dispatch://INFRA-3686), so their rows read what that prompt says of them:
-// the rules for ending a child and the notice's own paragraph (architectPromptOn).
+// and children-first notices are records whose facts are fields (dispatch://INFRA-3686), and each
+// keeps those texts word for word as fields of its own, as R8 keeps INFRA-3178's R6 (the
+// architect's ruling), so their rows read the notice as the outbox carries it.
 func TestTheRefusalsOverChildrenInTheWorkflowNameTheStatusWrite(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -241,16 +239,21 @@ func TestTheRefusalsOverChildrenInTheWorkflowNameTheStatusWrite(t *testing.T) {
 			for _, notice := range architectNotices(t, rig.pool) {
 				if notice.Kind == "pr-merged" {
 					if notice.Reason != "" {
-						t.Fatalf("the pr-merged notice carries the reason %q, want its facts as fields and its steps in the architect's prompt", notice.Reason)
+						t.Fatalf("the pr-merged notice carries the reason %q, want its facts as fields", notice.Reason)
 					}
-					return architectPromptOn(t, "A `pr-merged` notice")
+					return notice.StatusNotTakenYet + " " + notice.EndChildRule
 				}
 			}
 			t.Fatalf("no pr-merged notice after a merge that waits for LEGION-209")
 			return ""
 		}},
 		{"children-first", false, func(t *testing.T) string {
-			return architectPromptOn(t, "A `children-first` notice")
+			notice, err := record.NoticeOf(ChildrenFirstNotice(record.ChildWait{Parent: "LEGION-208",
+				Open: []record.OpenChild{{Key: "LEGION-209", Status: "todo", Released: true}}}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return notice.EndChildRule
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -266,31 +269,4 @@ func TestTheRefusalsOverChildrenInTheWorkflowNameTheStatusWrite(t *testing.T) {
 			}
 		})
 	}
-}
-
-// architectPromptOn is what the architects' common prompt part (go/architect-common.md) says of a
-// notice whose steps are the prompt's: the paragraph that opens the rules for ending a child, the
-// numbered list of those rules, and the paragraph of the notice, which opens with opening.
-func architectPromptOn(t *testing.T, opening string) string {
-	t.Helper()
-	composer, err := prompts.New(t.TempDir())
-	if err != nil {
-		t.Fatalf("compose the shipped prompts: %v", err)
-	}
-	body, err := os.ReadFile(composer.Part("architect-common.md"))
-	if err != nil {
-		t.Fatalf("read the architects' common prompt part: %v", err)
-	}
-	var said []string
-	for _, paragraph := range strings.Split(string(body), "\n\n") {
-		paragraph = strings.TrimSpace(paragraph)
-		if strings.HasPrefix(paragraph, "You end a child") || strings.HasPrefix(paragraph, "1. ") || strings.HasPrefix(paragraph, opening) {
-			said = append(said, paragraph)
-		}
-	}
-	if len(said) != 3 {
-		t.Fatalf("the architects' common prompt part holds %d of the paragraph that opens the rules for ending a child, their list and the paragraph opening %q, want the three",
-			len(said), opening)
-	}
-	return strings.Join(said, "\n\n")
 }

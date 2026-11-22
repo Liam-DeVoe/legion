@@ -608,9 +608,10 @@ func seedMergedRootUnder(t *testing.T, role claim.Role, children ...record.Issue
 
 // assertWaitNotice checks that the architect was told the close waits exactly once: one pr-merged
 // notice, naming the pull request and waiting, the keys the close is waiting for, with no reason,
-// since the steps main's sentence gave (a status the daemon has not taken yet, the rule that ends
-// a child) are the architect's prompt's. The architect's other notices — a child's close or its
-// move out of the workflow among them — are not this one's business.
+// and keeping word for word the two texts main's sentence gave (a status the daemon has not taken
+// yet, record.StatusNotTakenYet, and the rule that ends a child, record.EndChildRule), as R8 keeps
+// dispatch://INFRA-3178's R6. The architect's other notices — a child's close or its move out of
+// the workflow among them — are not this one's business.
 func assertWaitNotice(t *testing.T, pool *pgxpool.Pool, waiting string) {
 	t.Helper()
 	var got []record.Notice
@@ -619,8 +620,9 @@ func assertWaitNotice(t *testing.T, pool *pgxpool.Pool, waiting string) {
 			got = append(got, notice)
 		}
 	}
-	if len(got) != 1 || strings.Join(got[0].WaitingFor, ", ") != waiting || got[0].PullRequest == "" || got[0].Reason != "" {
-		t.Fatalf("pr-merged notices = %+v, want one naming its pull request and waiting for %s", got, waiting)
+	if len(got) != 1 || strings.Join(got[0].WaitingFor, ", ") != waiting || got[0].PullRequest == "" || got[0].Reason != "" ||
+		got[0].StatusNotTakenYet != record.StatusNotTakenYet || got[0].EndChildRule != record.EndChildRule {
+		t.Fatalf("pr-merged notices = %+v, want one naming its pull request and waiting for %s, with the sentence on a status not taken yet and the rule that ends a child word for word", got, waiting)
 	}
 }
 

@@ -599,7 +599,8 @@ func TestWakeTaskNamesItsWake(t *testing.T) {
 		want         texts.PodWakeRecord
 	}{
 		{kind: pods.WakeAgentMessage, detail: "session-1",
-			want: texts.PodWakeRecord{TaskHead: texts.TaskHead{Kind: texts.PodWake, Issue: "LEGION-208"}, Wake: pods.WakeAgentMessage, Session: "session-1"}},
+			want: texts.PodWakeRecord{TaskHead: texts.TaskHead{Kind: texts.PodWake, Issue: "LEGION-208"}, Wake: pods.WakeAgentMessage, Session: "session-1",
+				StoredReachesSession: true, RefusedSenderSendsAgain: true}},
 		{kind: pods.WakeBackstop, detail: "implementer",
 			want: texts.PodWakeRecord{TaskHead: texts.TaskHead{Kind: texts.PodWake, Issue: "LEGION-208"}, Wake: pods.WakeBackstop, ArmedFor: "implementer"}},
 		{kind: "other", detail: "what it was about",
@@ -787,14 +788,14 @@ func TestAWakeOfARoleThePauseStoppedLastIsToldThePauseStoppedIt(t *testing.T) {
 // A role message wake tells the woken role what Envoy kept for it (dispatch://INFRA-2846/spec
 // R7), each as a field: the role topic the message was published to, that Envoy keeps a role
 // message for one hour, that a kept message reaches the woken session as a card that shows
-// kept_at, possibly before the wake's task, that Envoy tells its sender when it drops one, and that
-// a message sent with keep: false is not kept, so its sender sends it again. The task states the
-// same fields whether an idle release or a project's pause stopped the session, and stopped_by
-// names which.
+// kept_at, possibly before the wake's task, unless its hour ended before the session came back,
+// that Envoy tells its sender when it drops one, and that a message sent with keep: false is not
+// kept, so its sender sends it again. The task states the same fields whether an idle release or
+// a project's pause stopped the session, and stopped_by names which.
 func TestTheRoleMessageWakeTaskSaysWhatWasKept(t *testing.T) {
 	want := texts.PodWakeRecord{TaskHead: texts.TaskHead{Kind: texts.PodWake, Issue: "LEGION-208"}, Wake: pods.WakeRoleMessage,
 		Topic: notify.RoleTopicPrefix + "legion-LEGION-208-implementer", KeptFor: time.Hour.String(), KeptCardField: "kept_at",
-		KeptCardMayComeFirst: true, SenderToldOfDrop: true, NotKeptWith: "keep: false", SenderSendsAgain: true}
+		KeptCardMayComeFirst: true, ExpiredDoesNotReach: true, SenderToldOfDrop: true, NotKeptWith: "keep: false", SenderSendsAgain: true}
 	if got := PodWake("LEGION-208", pods.WakeRoleMessage, "legion-LEGION-208-implementer"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the role message wake = %+v, want %+v", got, want)
 	}

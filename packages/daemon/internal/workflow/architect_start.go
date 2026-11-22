@@ -377,12 +377,14 @@ func carriedPhase(task *texts.ArchitectStartRecord, start ArchitectStart) {
 }
 
 // gateStandingShape is the task of a root that holds design gate rows while its gate is not open:
-// where its gate stands, step by step, and then the tree taken up from there, while its own first
-// phase waits for the gate. A spec is registered under those rows already, so the task asks for no
-// decomposition.
+// where its gate stands, step by step, and then the tree taken up from there (take_up_tree, after
+// carry_gate, as main's task said and dispatch://INFRA-2614's R3 has it: "a root that holds design
+// gate rows is told where its gate stands and to take the tree up from there"), while its own
+// first phase waits for the gate. A spec is registered under those rows already, so the task asks
+// for no decomposition.
 func gateStandingShape(task *texts.ArchitectStartRecord, start ArchitectStart) {
 	task.Shape, task.Gates, task.Gated = texts.ShapeGateStanding, gateSteps(start.Root.Key, start.Gate), gatedNames(start.Gate.Steps)
-	task.FirstAct = []string{FirstActClaim, FirstActCarryGate}
+	task.FirstAct = []string{FirstActClaim, FirstActCarryGate, FirstActTakeUpTree}
 	task.FirstPhaseWaitsFor = []string{WaitsForGate}
 }
 

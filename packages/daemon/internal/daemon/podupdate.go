@@ -2222,16 +2222,18 @@ func (s *supervision) roundGroup(group []supervise.Claim, mask bool) []supervise
 // past the bound no answer holds the round, so the list says what each role said rather than
 // whom the round waits for. The list names a claim the daemon suspended too, whether or not the
 // round asks it and waits for it (roundAsks, roundClock.passesOver): the controller reads every
-// role of the pod, each with its state. It is never empty while the group holds such a claim,
-// which the store requires of the notice (record.UpdateStalled). A group with no such claim is
-// told nothing: there is no role to name. A round that group already records as told is told
-// nothing again and read no further.
+// role of the pod, each with its state, and a claim a project's pause stopped and still keeps
+// apart from an idle release's (pauseStopped). It is never empty while the group holds such a
+// claim, which the store requires of the notice (record.UpdateStalled). A group with no such
+// claim is told nothing: there is no role to name. A round that group already records as told is
+// told nothing again and read no further.
 func (s *supervision) tellLateRound(ctx context.Context, issue string, group []supervise.Claim, round, pod, reasons, holds, refusal string, clock roundClock) {
 	if !clock.pastBound(group, round) || roundTold(group, round) {
 		return
 	}
 	told := s.noticeGroup(group)
-	waiting := waitingOf(round, noticeClaims(told))
+	listed := noticeClaims(told)
+	waiting := pauseStopped(waitingOf(round, listed), listed, round, clock.holds)
 	if len(waiting) == 0 {
 		return
 	}
@@ -3459,7 +3461,11 @@ func holdsUnansweredAsk(c supervise.Claim, round string) bool {
 // a suspended one with who suspended it (supervise.Claim.SuspendedBy), so the notice of an
 // operator's hold names the claims the operator must resume (suspended_by: operator) apart from
 // those the daemon suspended, an idle release's among them (main's operatorHoldReason named the
-// former alone).
+// former alone). An operator's suspension that the claim's machine holds for its agent's turn or
+// launch (supervise.Claim.SuspensionHeld) is named so too, on a claim not suspended yet: main's
+// heldByOperator counted it (supervise.Claim.RuleHolds), and the round waits for that operator as
+// it waits for one whose suspension has landed, while the claim's own SuspendedBy stays empty
+// until the suspension lands.
 //
 // Every late-round notice lists every claim noticeClaims keeps with this mark (tellLateRound,
 // tellPodlessRound), a claim the daemon suspended included. So the list is never empty while the
@@ -3468,12 +3474,38 @@ func holdsUnansweredAsk(c supervise.Claim, round string) bool {
 // whom to prompt: the daemon replaces the pod at the bound whether or not a role answers, and the
 // notice is told only for what holds the round past that. The mark is the round's own: an answer
 // a claim gave to another round says nothing here.
+//
+// A claim that a project's pause stopped is suspended released, as an idle release's is, and the
+// claim alone does not tell the two apart; tellLateRound marks it from the round's pause holds
+// (pauseStopped).
 func waitingOf(round string, claims []supervise.Claim) []record.UpdateWaiting {
 	waiting := make([]record.UpdateWaiting, len(claims))
 	for i, c := range claims {
+		suspendedBy := c.SuspendedBy
+		if c.SuspensionHeld && c.SuspensionHeldBy == supervise.SuspendedByOperator {
+			suspendedBy = supervise.SuspendedByOperator
+		}
 		waiting[i] = record.UpdateWaiting{
 			Claim: string(c.Token), Role: c.Role, State: string(c.State),
-			Answered: answered(c, round), SuspendedBy: string(c.SuspendedBy),
+			Answered: answered(c, round), SuspendedBy: string(suspendedBy),
+		}
+	}
+	return waiting
+}
+
+// pauseStopped marks, in waiting (waitingOf over claims, in the same order), each claim that a
+// project's pause stopped and still owes a launch (suspended released, podHolds.owes) with
+// suspended_by: pause (texts.SuspendedByPause) in place of released. A pause's stop suspends a
+// claim released, as the daemon's idle release does (supervise's pauseStopDue), but the round
+// treats the two apart: it waits for the claim the pause keeps and passes over the idle one
+// (roundClock.passesOver), and a podless round past its bound is told for the former alone
+// (tellPodlessRound). Named alike, the claim the notice exists for would read as one the round
+// passes over. A claim the pause owes that is no longer suspended (one launching into the pod)
+// keeps its own mark: nothing suspends it now.
+func pauseStopped(waiting []record.UpdateWaiting, claims []supervise.Claim, round string, holds podHolds) []record.UpdateWaiting {
+	for i, c := range claims {
+		if c.Released() && holds.owes(c, round) {
+			waiting[i].SuspendedBy = texts.SuspendedByPause
 		}
 	}
 	return waiting

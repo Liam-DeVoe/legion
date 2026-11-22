@@ -91,6 +91,7 @@ A changes request asks you to revise the document as the person asks in its reas
 A changes request made after the wait began that did not answer it (`later_changes_version`, with its reason in the `later_reason` block) asks the same revision.
 A newer version that handed the approval request back to you (`act: version`) asks you to read that version and the request's thread.
 Where nothing is with the person, nothing waits on you and the gate is open, continue the tree's work.
+A resume that names no `gate_open` is of a step with no gate yet, such as a question asked before any step of the design gate was registered: where nothing is with the person and nothing waits on you, continue the tree's work.
 Your root holds its admission slot throughout, since a root in `awaiting_person` keeps the one the
 daemon gave it ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)), so that resume takes no slot
 and comes however full the cap is. An answered root stands in the admission line until the pass
