@@ -385,7 +385,7 @@ func TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI(t *testing.T) 
 	directGet := "$JS.API.DIRECT.GET.KV_" + bus.InterestBucket + ".$KV." + bus.InterestBucket + "."
 
 	listenerConn, _ := grantedConnection(t, uri, listenerSeed)
-	listenerJS, err := listenerConn.JetStream(natsgo.MaxWait(3 * time.Second))
+	listenerJS, err := listenerConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	interests, err := listenerJS.KeyValue(bus.InterestBucket)
 	require.NoError(t, err)
