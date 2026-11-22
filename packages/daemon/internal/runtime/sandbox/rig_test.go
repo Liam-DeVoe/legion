@@ -1486,13 +1486,13 @@ func sandboxLocator(token claim.Token, uid string) runtime.Locator {
 }
 
 // isMergePatch is whether a Sandbox patch body is a JSON merge patch, an object, rather than a JSON
-// patch, an array of operations: a role's address record (recordAddresses) or the suspension that
+// patch, an array of operations: a slot's address record (recordAddresses) or the suspension that
 // names a displaced pod (displacing, suspendAnnotating).
 func isMergePatch(body string) bool {
 	return strings.HasPrefix(strings.TrimSpace(body), "{")
 }
 
-// addressRecordPatch is whether a Sandbox patch body is a role's address record alone: a merge
+// addressRecordPatch is whether a Sandbox patch body is a slot's address record alone: a merge
 // patch of metadata, which changes nothing of the pod.
 func addressRecordPatch(body string) bool {
 	var patch struct {

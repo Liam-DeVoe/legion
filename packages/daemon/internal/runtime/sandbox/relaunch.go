@@ -413,9 +413,9 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			"sandbox %s's pod %s: its launcher has not said in its hello that it can look a session up by its id, so it was sent nothing: %w",
 			loc.Sandbox.Name, loc.Sandbox.PodUID, runtime.ErrSessionLookupUnavailable))
 	}
-	// A launcher still running an earlier generation of this role runs a process the supervisor has
-	// already given up on: it is stopped before the new generation starts, so two generations of a
-	// role never run side by side.
+	// A launcher still running an earlier generation of this claim's slot runs a process the
+	// supervisor has already given up on: it is stopped before the new generation starts, so two
+	// generations of a slot, one agent's, never run side by side.
 	if state, connected := r.launchers.state(spec.Claim, string(pod.UID)); connected && state.Child != nil && state.Child.Generation < spec.Generation {
 		stale := state.Child.Generation
 		if err := r.launchers.stop(starting, spec.Claim, string(pod.UID), r.stopFrame(stale)); err != nil {

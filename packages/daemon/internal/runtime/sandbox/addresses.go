@@ -22,25 +22,27 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// A role process's addresses are fixed when it is launched, and a daemon restarted with its key
+// A slot's process's addresses are fixed when it is launched, and a daemon restarted with its key
 // changed hands other ones (handedAddresses): the worker stream is fixed for the issue pod's life,
 // in the pod's one container's launcher command, and the other five for one generation's life, in the
 // start command the launcher keeps to itself. So the stream is read from the pod spec, and each
-// role's five are recorded on the issue Sandbox when the daemon starts a generation, one annotation
-// per role, which a later daemon reads from its informer cache (evaluate).
+// slot's five are recorded on the issue Sandbox when the daemon starts a generation, one annotation
+// per slot, the slot being the name of the claim's agent whatever role its step is on (slotOf), so
+// a re-roled claim's record never overwrites the record of that role's own claim. A later daemon
+// reads the records from its informer cache (evaluate).
 //
 // A record names each address without its credentials — its scheme, host and port, `xxxxx@` when it
 // carries userinfo, never its path, query or fragment — and holds the sha256 of its whole value,
 // which is what is compared. The raw values travel only in the start command, so a URL's
 // credentials never land in a cluster object.
 
-// addressesAnnotation is the Sandbox annotation that records the addresses role's running
-// generation was started with.
+// addressesAnnotation is the Sandbox annotation that records the addresses the running generation
+// of slot role (the agent's name, slotOf) was started with.
 func addressesAnnotation(role claim.Role) string {
 	return "legion.dev/addresses-" + string(role)
 }
 
-// addressRecord is one role generation's recorded addresses.
+// addressRecord is one slot generation's recorded addresses.
 type addressRecord struct {
 	Generation uint64            `json:"generation"`
 	Addresses  []recordedAddress `json:"addresses"`
@@ -110,9 +112,9 @@ func (r *Runtime) recordFor(role claim.Role, generation uint64, enrolled bool) (
 	return string(encoded), nil
 }
 
-// recordAddresses records on s, the issue Sandbox as read, the addresses a generation of role
-// started now with the enrollment decision enrolled is handed: a merge patch of role's one
-// annotation, so the other roles' records stand.
+// recordAddresses records on s, the issue Sandbox as read, the addresses a generation in slot role
+// (the claim's agent's name, slotOf) started now with the enrollment decision enrolled is handed: a
+// merge patch of that slot's one annotation, so the other slots' records stand.
 // The patch carries s's uid, which the API server refuses to change on a live object, so a Sandbox
 // deleted and recreated in between is never written. It runs before the generation's start command
 // is sent, so a generation that runs has its record.
@@ -153,12 +155,13 @@ func describeMoved(moved []movedAddress) string {
 	return strings.Join(named, "; ")
 }
 
-// movedEnvironment compares role's recorded generation with the addresses a generation launched
-// now in pod, the live pod that generation runs in, is handed, one movedAddress for each that
-// moved, its held name the record's. The pod is what decides the broker: a generation in a pod
+// movedEnvironment compares the recorded generation of slot role (slotOf) with the addresses a
+// generation launched now in pod, the live pod that generation runs in, is handed, one
+// movedAddress for each that moved, its held name the record's. The pod is what decides the
+// broker: a generation in a pod
 // that carries no enrollment is handed no broker URL now, as it was handed none when it started
 // (Runtime.enrollsIn), so moving the broker's URL leaves such a generation alive and its pod to
-// its update round. A Sandbox with no record of role, or a record of another generation, has
+// its update round. A Sandbox with no record of the slot, or a record of another generation, has
 // nothing to compare: a generation started before records existed is never read as stale for want
 // of one. A record that cannot be read is an error, which proves nothing about the generation's
 // addresses: evaluate reads it as stale, and the relaunch that follows writes a fresh one.
