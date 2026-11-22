@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
 // verification-results.sh's release_before_of_head: the release before the change, which
@@ -11,7 +11,13 @@ import { scriptFunctions } from "./script-functions";
 const releaseBeforeOfHead = scriptFunctions(join(import.meta.dir, "..", "verification-results.sh"))(
   "release_before_of_head"
 );
-const dir = temporaryDirectory("verification-results-release-before-test");
+// The fixture's eight git repositories hold about 380 entries at once (250 files), made and removed
+// inside a hook's 5 s: on a disk other programs share, the removal outran that bound (a run on a
+// loaded box timed out in its afterAll), so the directory is on a tmpfs where one is (memoryRoot),
+// with room for four runs at once.
+const dir = temporaryDirectory("verification-results-release-before-test", {
+  root: memoryRoot({ need: 4 * 2 ** 20 }),
+});
 // git with no configuration of the machine's, so a fixture reads the same on every runner.
 const gitEnv = {
   PATH: process.env.PATH ?? "/usr/bin:/bin",
