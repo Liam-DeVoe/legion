@@ -182,7 +182,7 @@ test("a summary of two sentences draws two bullets and says nothing about the th
 });
 
 // The head reads the summary's reading and never the node's text, which is the stored excerpt,
-// so a summary node whose reading the batched reference read has not sent yet draws nothing of
+// so a summary node whose reading the tree read has not sent yet draws nothing of
 // that text - and, being a summary all the same, never says that the spec has none.
 test("a summary node whose reading has not come says nothing", () => {
   const { lines, unmount } = bullets({

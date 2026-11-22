@@ -1208,9 +1208,9 @@ test("with the Spec view's slot filled, a spec item's address lands on the item 
   }
 });
 
-// The names reads are the page's tree's, read last, once no read the tree is built from is still
-// out, and the Spec view draws from them too: the issue's three sentences, and the name of every
-// reference a plain line cites. A refused names read says so in its own line, after the lines of
+// The names read is the page's tree's, read last, once no read the tree is built from is still
+// out, and the Spec view draws from it too: the name of every reference the issue's three
+// sentences and a plain line cite. A refused names read says so in its own line, after the lines of
 // the view's own reads, as the outline draws it last, and its Retry asks the names again. The
 // stage is the page's own with the Spec view's slot as filled, which reads the tree and passes
 // the names' line on to the body; with that line dropped, "In short" stood as a bare heading and
