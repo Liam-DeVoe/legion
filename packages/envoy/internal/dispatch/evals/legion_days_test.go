@@ -141,7 +141,7 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 		ProjectKey: "EVAL", EvalID: EvalID("EVAL", SlugDeployFrequency), DeployRepo: "acme/web", Listed: true,
 		DayPart: measures.DayPart{Series: "deploys", Day: day, N: 1, Sum: new(1.0)},
 	}}, Members: []Member{{Family: KindDelivery, DeployRepo: "acme/web", RowKey: RunMember("acme/web", 7), Repo: "acme/web"}}}
-	if err := r.registry.WriteProjectDay(ctx, delivery, testBuild); err != nil {
+	if err := r.registry.writeDeliveryDay(ctx, delivery, testBuild, true); err != nil {
 		t.Fatalf("write the day's delivery row: %v", err)
 	}
 
@@ -314,7 +314,7 @@ func TestTheZeroLegionDayIsTheBuildersDayWithNoInput(t *testing.T) {
 	refused := ProjectDay{Project: "EVAL", Day: day, Rows: []DayRow{{
 		ProjectKey: "EVAL", EvalID: EvalID("EVAL", SlugDeployFrequency), Listed: true, DayPart: measures.DayPart{Series: "deploys", Day: day},
 	}}}
-	if err := r.registry.WriteLegionProjectDay(t.Context(), refused, testBuild); err == nil {
+	if err := r.registry.writeLegionDay(t.Context(), refused, testBuild, true); err == nil {
 		t.Errorf("the Legion write took a deploy-frequency row, want it refused")
 	}
 	if got := r.count(t, `select count(*) from eval_days`); got != 0 {

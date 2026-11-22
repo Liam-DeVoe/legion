@@ -104,7 +104,7 @@ const (
 // SeriesUnownedP0 is unowned-p0's one series: the open P0 issues with no owner, folded by `last`.
 const SeriesUnownedP0 = "issues"
 
-// deliveryDaySlugs is every eval a delivery day's rows are of, and so every eval WriteProjectDay
+// deliveryDaySlugs is every eval a delivery day's rows are of, and so every eval writeDeliveryDay
 // writes the rows of that a day no longer holds as zero rows: neither change-fail-rate nor
 // failed-deploy-recovery, which get no rows, nor unowned-p0, which WriteUnownedP0Day writes.
 var deliveryDaySlugs = []string{
@@ -775,24 +775,19 @@ func (d DeliveryDay) buildFamilies(project, repo string, rows familyRows, every 
 	return built
 }
 
-// WriteProjectDay writes day as its project's delivery and CI rows of its day, in one transaction:
-// each row with `insert … on conflict … do update … where (…) is distinct from (…)`, so a row
-// whose every value is what it holds is left as it is (and logs no change, migration
+// writeDeliveryDay writes day as its project's delivery and CI rows of its day, in one
+// transaction: each row with `insert … on conflict … do update … where (…) is distinct from (…)`,
+// so a row whose every value is what it holds is left as it is (and logs no change, migration
 // 20261117100014), recording builtBy, the running build, as the build that wrote it; then it
 // writes each of the project's rows of that day of the delivery and CI evals (deliveryDaySlugs)
 // that day does not hold, such as a repository whose last row moved to another day or project, as
 // a zero row (zeroStaleDays). It records day's members in eval_day_members on its day, and deletes
 // the members of the project's delivery and CI families recorded on that day that day does not
-// hold, so each item's row there says where it was last counted; and it folds again the stored
-// figures of the days whose rows it moved, where builtBy writes them (figures.go). A row of another
-// project, another day or another eval, and an item of another family, is refused before anything
-// is written.
-func (s *Store) WriteProjectDay(ctx context.Context, day ProjectDay, builtBy string) error {
-	return s.writeDeliveryDay(ctx, day, builtBy, true)
-}
-
-// writeDeliveryDay is WriteProjectDay, folding the stored figures of the days whose rows it moved
-// where figures is set, as the refresher's write of a day outside a walk does (writeProjectDay).
+// hold, so each item's row there says where it was last counted; and, where figures is set, as
+// the refresher's write of a day outside a walk sets it, it folds again the stored figures of the
+// days whose rows it moved, where builtBy writes them (figures.go). A row of another project,
+// another day or another eval, and an item of another family, is refused before anything is
+// written.
 func (s *Store) writeDeliveryDay(ctx context.Context, day ProjectDay, builtBy string, figures bool) error {
 	return s.writeProjectDay(ctx, "delivery", day, deliveryDaySlugs, deliveryDayFamilies, builtBy, figures)
 }

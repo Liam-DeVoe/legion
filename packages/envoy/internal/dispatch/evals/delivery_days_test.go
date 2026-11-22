@@ -518,7 +518,7 @@ func TestTheUnownedP0RowIsTheCountAtItsLastWrite(t *testing.T) {
 // hash or merge anti-join. standingPartsQuery's generic plan also matches each reading to its keys
 // by their day, as a hash or merge join on it or an index condition, rather than testing each
 // reading against every key of its series. The day is past work_mem, as one of INFRA's is: 80,000
-// items across 40 deploy repositories and 80,000 rows written through WriteProjectDay, and 80,000
+// items across 40 deploy repositories and 80,000 rows written through writeDeliveryDay, and 80,000
 // readings of a logged eval on the same day, the three tables analyzed. Each statement is
 // explained with the arrays a second write of the day sends, one item, one row and one reading
 // fewer than stored, in a transaction prepared as its write prepares it, and then with literals
@@ -549,7 +549,7 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 			DayPart: measures.DayPart{Series: "deploys", Day: day, N: 1, Sum: new(1.0)},
 		}
 	}
-	if err := r.registry.WriteProjectDay(ctx, ProjectDay{Project: "EVAL", Day: day, Rows: rows, Members: members}, testBuild); err != nil {
+	if err := r.registry.writeDeliveryDay(ctx, ProjectDay{Project: "EVAL", Day: day, Rows: rows, Members: members}, testBuild, true); err != nil {
 		t.Fatalf("write a day of %d items and %d rows: %v", items, items, err)
 	}
 	// The readings: the write that registers the logged eval, and the day's other readings
@@ -686,7 +686,7 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 	}
 
 	// The second write itself, which leaves one item fewer and makes one row zero.
-	if err := r.registry.WriteProjectDay(ctx, ProjectDay{Project: "EVAL", Day: day, Rows: kept, Members: again}, testBuild); err != nil {
+	if err := r.registry.writeDeliveryDay(ctx, ProjectDay{Project: "EVAL", Day: day, Rows: kept, Members: again}, testBuild, true); err != nil {
 		t.Fatalf("write the day again with one item and one row fewer: %v", err)
 	}
 	if held := r.count(t, `select count(*) from eval_day_members where project_key = 'EVAL'`); held != items-1 {

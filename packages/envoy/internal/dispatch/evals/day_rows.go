@@ -18,8 +18,8 @@ import (
 
 // The computed day rows' write (dispatch://INFRA-2916, R12), shared by every family of computed
 // evals: one project's rows of one UTC day and the items they counted (ProjectDay), written in one
-// transaction (writeProjectDay) for the delivery and CI evals (WriteProjectDay, delivery_days.go)
-// and for the Legion evals (WriteLegionProjectDay, legion_days.go), and the statements that write
+// transaction (writeProjectDay) for the delivery and CI evals (writeDeliveryDay, delivery_days.go)
+// and for the Legion evals (writeLegionDay, legion_days.go), and the statements that write
 // the rows themselves (upsertDays, zeroStaleDays, insertMissingDays), which the unowned-p0 write
 // (WriteUnownedP0Day) writes its row through too.
 
@@ -37,8 +37,8 @@ type Member struct {
 	ShippedBy  string
 }
 
-// ProjectDay is one project's computed rows of one UTC day, as WriteProjectDay and
-// WriteLegionProjectDay write them: the day rows (their built_by is the write's, and their
+// ProjectDay is one project's computed rows of one UTC day, as writeDeliveryDay and
+// writeLegionDay write them: the day rows (their built_by is the write's, and their
 // updated_at its moment where a value moved) and the items they counted; and Gaps, the zero rows
 // of the later days the day leaves with no row where it moves an eval's first input day earlier
 // (refresh.gapsBehind), which the write inserts where a day holds no row of their key, in its own
@@ -71,7 +71,7 @@ func (p ProjectDay) WithZeros(zeros []DayRow) ProjectDay {
 
 // writeProjectDay is the write of one project's computed rows of one day: day's rows of the evals
 // slugs name, of every deploy repository the day holds rows of, and its members of families,
-// written as WriteProjectDay says. The stale rows it zeroes are those of slugs alone and the stale
+// written as writeDeliveryDay says. The stale rows it zeroes are those of slugs alone and the stale
 // members it deletes those of families alone, so the delivery and the Legion writes of one day
 // leave each other's rows and members as they are. A row of an eval keyed by the deploy repository
 // names the repository it is computed as if it were it, and every other row none (deploy_repos.go).
