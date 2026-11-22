@@ -546,9 +546,11 @@ func scanIssue(row scanner) (*Issue, error) {
 	return &issue, nil
 }
 
+// Phases is every phases row of issue: one row for each step a role ran of the issue's plan, and
+// for an issue with no plan rows one row for each role, in the order of role, task and place.
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
 	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head, step_task, step_place from phases
-		where issue = $1 order by role`, issue)
+		where issue = $1 order by role, step_task, step_place`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
 	}
@@ -603,6 +605,8 @@ func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string)
 	return entries, nil
 }
 
+// PutPhase writes phase as the row of its issue, role and step (StepTask, StepPlace): a role that
+// stands at two steps of a task has a row for each.
 func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error {
 	var decision []byte
 	if phase.Decision != nil {
@@ -630,7 +634,7 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff,
 		decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head, step_task, step_place)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
-		on conflict (issue, role) do update set claim = excluded.claim,
+		on conflict (issue, role, step_task, step_place) do update set claim = excluded.claim,
 		handoff_commit = excluded.handoff_commit, pass = excluded.pass,
 		handoff_record = excluded.handoff_record, handoff_version = excluded.handoff_version,
 		rounds = excluded.rounds, conflict_rounds = excluded.conflict_rounds, backward_moves = excluded.backward_moves,
@@ -1479,6 +1483,12 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		"update pull_requests set " +
 			"head_run = null, planned_red = false, checked_head = '', failing = '[]'::jsonb, cancelled = '[]'::jsonb, " +
 			"check_runs = '[]'::jsonb, statuses = '[]'::jsonb, merge_forward = null where " + where,
+		// A role that stood at two steps has a row for each, and the clear below gives every row of
+		// the role the same step, ('', 0), so the rows of one role fold first into the one whose
+		// entry is the highest: the number the claim's next entry rises from, which is never reset.
+		// The other rows are the last generation's steps, whose reports go with the generation.
+		"delete from phases p where " + where + " and exists (select 1 from phases q where q.issue = p.issue and q.role = p.role " +
+			"and (q.entry, q.step_task, q.step_place) > (p.entry, p.step_task, p.step_place))",
 		// The entry's task goes with the run, and the entry itself stays where it stands: the
 		// number is never reset, so a worker still holding the old entry's task is behind the row
 		// rather than level with it, and the re-admitted tree's promotion raises the entry again
