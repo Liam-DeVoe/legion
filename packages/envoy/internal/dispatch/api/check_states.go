@@ -241,7 +241,7 @@ func (c *checkStatesSettler) settleRound(ctx context.Context, issue string) (mor
 		if err != nil {
 			return false, err
 		}
-		answer, held, err := c.server.answerIssueChecks(ctx, issue, noCommitNamed, nil, former)
+		answer, held, err := c.server.answerIssueChecks(ctx, issue, noCommitNamed, nil, formerHeadsApart(former, heads))
 		if err != nil {
 			return false, fmt.Errorf("compute the checks of %s: %w", issue, err)
 		}
@@ -283,12 +283,13 @@ func dueMarksOf(ctx context.Context, pool *store.Pool, issue string) ([]int64, i
 // formerHeadsOf is each former head of an open pull request of issue, heads being the pull
 // requests delivery.HeadsAttributedTo answers: each head that pull request left while it was open
 // (pull_request_former_heads, which each write of pull_request_heads keeps in its own
-// transaction), but its current head and a head an open pull request heads now. Each former head
-// is the open pull request's row moved back to that commit, so the computation reads it as it
-// reads an open head (answerIssueChecks) and an event there names the open pull requests that were
-// at it. A closed or merged pull request keeps no former head, so publish deletes the rows of a
-// head no open pull request is or was at, as it deletes those of an open head whose pull request
-// closed.
+// transaction), but its current head. Each former head is the open pull request's row moved back to
+// that commit: at a commit an open pull request of its repository heads now, it names its pull
+// request among that open head's (checkStatesAtHeads), and else the computation reads it as it
+// reads an open head (formerHeadsApart, answerIssueChecks), and an event there names the open pull
+// requests that were at it. A closed or merged pull request keeps no former head, so publish
+// deletes the rows of a head no open pull request is or was at, as it deletes those of an open
+// head whose pull request closed.
 //
 // The head whose read of GitHub's check runs started longest ago comes first, a head no read
 // started at before any (check_states.ci_read_at, which publish moves for each former head whose
@@ -324,14 +325,12 @@ func formerHeadsOf(ctx context.Context, pool *store.Pool, issue string, heads []
 		if err := rows.Scan(&repo, &number, &sha); err != nil {
 			return nil, fmt.Errorf("read the former heads of %s: %w", issue, err)
 		}
-		if slices.ContainsFunc(heads, func(head delivery.AttributedHead) bool {
-			return head.Open && head.Repo == repo && head.HeadSHA == sha
-		}) {
-			continue
-		}
 		at := slices.IndexFunc(heads, func(head delivery.AttributedHead) bool {
 			return head.Open && head.Repo == repo && head.Number == number
 		})
+		if heads[at].HeadSHA == sha {
+			continue
+		}
 		head := heads[at]
 		head.HeadSHA = sha
 		former = append(former, head)
@@ -340,6 +339,22 @@ func formerHeadsOf(ctx context.Context, pool *store.Pool, issue string, heads []
 		return nil, fmt.Errorf("read the former heads of %s: %w", issue, err)
 	}
 	return former, nil
+}
+
+// formerHeadsApart is each of former, formerHeadsOf's, at a commit of a repository no open head of
+// heads names, which the computation reads as a head of its own (answerIssueChecks). A former head
+// at an open head's commit is that open head, with one state, computed once: it adds its pull
+// request to the pull requests that head's events name and nothing to the computation.
+func formerHeadsApart(former, heads []delivery.AttributedHead) []delivery.AttributedHead {
+	var apart []delivery.AttributedHead
+	for _, head := range former {
+		if !slices.ContainsFunc(heads, func(open delivery.AttributedHead) bool {
+			return open.Open && open.Repo == head.Repo && open.HeadSHA == head.HeadSHA
+		}) {
+			apart = append(apart, head)
+		}
+	}
+	return apart
 }
 
 // headStates is what the settler computed at one head of an issue, open or former: the head's
@@ -368,11 +383,11 @@ type checkStateAt struct {
 
 // checkStatesAtHeads is the states of issue at each of its open heads and its former heads: heads
 // are the pull requests delivery.HeadsAttributedTo answers, former formerHeadsOf's, and answer is
-// answerIssueChecks's, given the same former heads. Two open pull requests at one commit of one
-// repository are one head with one state, and so are two that were at one commit. The state of a
-// check at a head is its subject whose basis is that head's pull request and commit. readFailed
-// says whether a state reads read_failed: a check CI proves whose check runs GitHub could not be
-// read there.
+// answerIssueChecks's, given those of former apart from the open heads (formerHeadsApart). The open
+// pull requests that are or were at one commit of one repository are one head with one state,
+// whose events name each of them, whichever is at it now. The state of a check at a head is its
+// subject whose basis is one of that head's pull requests and its commit. readFailed says whether
+// a state reads read_failed: a check CI proves whose check runs GitHub could not be read there.
 //
 // The heads are read apart from the computation's own read of them, so a head that moved between
 // the two reads is a head the computation holds no subject of. That is an error, which keeps every

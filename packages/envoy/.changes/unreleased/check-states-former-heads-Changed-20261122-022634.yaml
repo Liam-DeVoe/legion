@@ -22,6 +22,8 @@ body: |-
     The result a former head's run derives counts at that former head alone, never among the
     check's results, so the state published at an open head is computed from the results
     `GET /api/v1/issues/{key}/results` computes it from, and a former head's run never changes it.
+    An event at a head names each open pull request at it and each open pull request that was at
+    it, whichever is at it now.
     `GET /api/v1/issues/{key}/results` answers as before.
     `TestAFormerHeadOfAnOpenPullRequestKeepsItsStates` writes the events of its two cases to
     `packages/contracts/fixtures/dispatch-events/check-states-after-a-move.json`

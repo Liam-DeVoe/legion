@@ -327,7 +327,7 @@ func publishedRow(t *testing.T, database *store.Store, issue, repo, head, check 
 
 // computedSubject is the state a fresh computation of the settler's gives check at head of the
 // rig's issue, at an open head or a former one: its subject there in answerIssueChecks's answer,
-// given the issue's former heads (formerHeadsOf).
+// given the issue's former heads apart from its open heads (formerHeadsOf, formerHeadsApart).
 func computedSubject(t *testing.T, rig *checkStatesRig, check, head string) model.PassStandsSubject {
 	t.Helper()
 	ctx := store.WithTransactionTracking(t.Context())
@@ -339,7 +339,7 @@ func computedSubject(t *testing.T, rig *checkStatesRig, check, head string) mode
 	if err != nil {
 		t.Fatalf("read the former heads of %s: %v", rig.issue, err)
 	}
-	answer, _, err := rig.served.answerIssueChecks(ctx, rig.issue, noCommitNamed, nil, former)
+	answer, _, err := rig.served.answerIssueChecks(ctx, rig.issue, noCommitNamed, nil, formerHeadsApart(former, heads))
 	if err != nil {
 		t.Fatalf("compute the checks of %s: %v", rig.issue, err)
 	}
