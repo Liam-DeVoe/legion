@@ -200,8 +200,9 @@ func (n *sweepCount) report(t *testing.T, in sweepInput, moved []string, failure
 
 // sweepAgainst derives each input of base, the base name, in the reader's process p and compares its
 // states with those of the base, as the process reads it: an input that moves a state toward true
-// fails the test, unless the input has a right to it, by the judgment (movesBeyond), which it calls
-// for each input that reads another state than the base, with no right and with the input's right.
+// fails the test, unless the input has a right to it, by the judgment (judgeAnswer), which it hands,
+// for each input that reads another state than the base, the base's states and the input's as the
+// process reads them and the input's right, in one call, unchanged.
 // The floor's digest holds the key of the base's line, the bytes that the process read of it
 // (sweepCount.judged), so a base that a writer or code of the sweep changed, whose change the sweep
 // would read both as its input's and as its want's, fails by the base's name. A right with allowed
@@ -254,11 +255,7 @@ func sweepAgainst(t *testing.T, reader *readerProcess, name string, base fstest.
 				n.same++
 			}
 		default:
-			toward, err := movesBeyond(whole, got, false, nil)
-			beyond := toward
-			if err == nil && in.right != "" {
-				beyond, err = movesBeyond(whole, got, true, in.allowed)
-			}
+			toward, beyond, err := judgeAnswer(whole, got, in.right, in.allowed)
 			switch {
 			case err != nil:
 				t.Errorf("%s: %v", in.what, err)
