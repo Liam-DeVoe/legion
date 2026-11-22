@@ -9,7 +9,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go"
@@ -66,45 +65,6 @@ func (r *readFailure) Unwrap() error { return r.err }
 // selection record is missing (missingRecord).
 var errCheckpointWithoutRecord = errors.New("intake: a durable consumer has a checkpoint and no selection record")
 
-// errStoreConverted is the refusal of the fixed names on a database the operator's convert has
-// marked converted (refuseConvertedStore).
-var errStoreConverted = errors.New("intake_consumers says this database's durable consumers were converted to fresh names (cutover done), and legion.yaml's consumer_names is fixed: set consumer_names: fresh, since a converted store must not run the fixed names")
-
-// refuseConvertedStore refuses the fixed names on a database whose sentinel the operator's convert
-// has marked converted (cutover "done"), at the boot and after each reconnect of the daemon's
-// connection (Consumers.rereadMarker): its durables are fresh names now, and creating the fixed
-// ones again would run the race the cutover removed. What says there is no marker is
-// today's code, which opens the fixed names: no table, no sentinel, a sentinel before any cutover,
-// and one a rollback wrote ("rolled_back", which restored the fixed names). A read that says
-// nothing either way is made again, from a quarter second doubling to five, until it answers or
-// ctx ends, and then its error is returned: no connection, a timeout, a sentinel that is not the
-// project's own (consumernames.ErrMalformedSentinel), and a read the database refuses
-// (insufficient_privilege, SQLSTATE 42501), since a login that may not read the table says nothing
-// of what the table holds. The boot ends on that error, and the watch beside Run reads again at its
-// next look (Consumers.watchMarker). The fixed names never open on a marker the daemon did not read.
-func refuseConvertedStore(ctx context.Context, pool Pool, project string) error {
-	store, err := daemonStore(pool, project)
-	if err != nil {
-		return err
-	}
-	wait := markerReadWait
-	for {
-		state, err := store.State(ctx)
-		switch {
-		case err == nil && state.Cutover == consumernames.CutoverDone:
-			return errStoreConverted
-		case err == nil, errors.Is(err, consumernames.ErrNoStore), errors.Is(err, consumernames.ErrNoSentinel):
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("read the cutover marker of intake_consumers, which the fixed names never start without: %w", err)
-		case <-time.After(wait):
-		}
-		wait = min(2*wait, markerReadWaitMost)
-	}
-}
-
 // daemonStore is project's selection store on pool: the rows of the family daemon/<project>
 // (consumernames.DaemonFamily), which no other project's daemon reads. A project no store keeps is
 // refused, naming it.
@@ -115,12 +75,6 @@ func daemonStore(pool Pool, project string) (*consumernames.PGStore, error) {
 	}
 	return consumernames.NewPGStore(family, pool)
 }
-
-// The waits between reads of the cutover marker that did not answer (refuseConvertedStore).
-const (
-	markerReadWait     = 250 * time.Millisecond
-	markerReadWaitMost = 5 * time.Second
-)
 
 // durableNames is the daemon's side of the protocol for its three durables on fresh names.
 //
@@ -266,6 +220,10 @@ func (d *durableNames) keep(logical, current string) {
 		}
 	}
 }
+
+// watch has nothing to watch beside Run: the fresh names read no cutover marker once open, since
+// a store converted to them is the one they run on.
+func (d *durableNames) watch(context.Context) error { return nil }
 
 // close closes every generation's connection.
 func (d *durableNames) close() {

@@ -14,10 +14,10 @@
 // its own family's rows, so one project's cutover leaves another's daemon as it was.
 //
 //   - `fixed`, the default: the three names are the consumers' own names, opened as the daemon has
-//     always opened them (openConsumer). The daemon reads its family's cutover marker at its boot and
-//     again after every reconnect of its NATS connection (Consumers.rereadMarker,
-//     Consumers.watchMarker), and stops once the marker reads `done`: a converted store must not run
-//     the fixed names.
+//     always opened them (openConsumer, fixed_names.go). The daemon reads its family's cutover
+//     marker at its boot and again after every reconnect of its NATS connection
+//     (fixedNaming.rereadMarker, fixedNaming.watch), and stops once the marker reads `done`: a
+//     converted store must not run the fixed names.
 //   - `fresh`: the three names are logical names. Each creation of a durable is a physical name of
 //     its own, <logical>~<nuid>, never made twice, carrying the metadata envoy.logical=<logical>,
 //     and the logical name's record (consumernames.PGStore) selects the one the daemon reads
