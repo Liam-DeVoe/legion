@@ -6,9 +6,11 @@ import {
   useContext,
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
 } from "react";
+import { useLocation } from "react-router-dom";
 
 import { ApiError } from "../../../api/client";
 import {
@@ -20,16 +22,23 @@ import {
   pageRowAct,
 } from "../../../theme/classes";
 import { storeAddressReference } from "../../refs/store-address";
+import { dialogOpen } from "../../shell/useDialog";
 import type { TreeNode } from "../issue-tree";
 import { authorText, pageChrome } from "../page-structure";
 import { LENS_ANSWERS, LENS_WORDS, type NodeType } from "../page-words";
 import { storeKindWord } from "../tree-drafts";
-import { lensKindsQuery, type StandingAddress, useInvokeLens } from "./lens-reads";
+import {
+  lensKindsQuery,
+  lensPlaceOf,
+  type StandingAddress,
+  useInvokeLens,
+  useStandingAddress,
+} from "./lens-reads";
 
 /**
  * What a focused row needs to offer the Lens act: the issue the page is on, whether the
  * address's preset is the outline, the one place the act is drawn, and where the reader stands
- * now, which a pick's answer reads as it lands. `TreeRows.tsx` provides it from the address; a
+ * now, which a pick's answer reads as it lands. `TreeRows.tsx` provides it (`useLensAct`); a
  * route that names no issue provides none, and `LensMenu` then draws no act.
  */
 export interface LensAct {
@@ -39,6 +48,27 @@ export interface LensAct {
 }
 
 export const LensActContext = createContext<LensAct | undefined>(undefined);
+
+/**
+ * The Lens act a focused row offers, as `TreeRows.tsx` provides it to its rows: the issue the
+ * address names and whether its preset is the outline, read as the page's slots read their
+ * address (`lensPlaceOf`), and where the reader stands now. A route that names no issue offers
+ * no act. One value while the address stands, so no row draws again.
+ */
+export function useLensAct(): LensAct | undefined {
+  const { pathname, search } = useLocation();
+  const place = lensPlaceOf(pathname, search);
+  const issueKey = place?.issueKey;
+  const outline = place?.outline === true;
+  // Where the reader stands now, which a pick's answer reads as it lands, kept for as long as
+  // the caller is drawn: the rows, not the menu that made the pick, which goes with its row's
+  // focus.
+  const standing = useStandingAddress();
+  return useMemo(
+    () => (issueKey === undefined ? undefined : { issueKey, outline, standing }),
+    [issueKey, outline, standing]
+  );
+}
 
 /** Whether the invoke route takes a node of each kind: a block of one of the issue's documents,
  *  an ask, a comment, a message, a lens, a finding, a risk and a constraint. Every kind is
@@ -172,7 +202,8 @@ function ActAndMenu({
   // which takes no focus - and leaves the focus to the press. Escape is read in the capture
   // phase, as `IssuePresets.tsx`'s menu reads it, so it is marked before any other listener of
   // the page's: the tree's own Escape passes a marked key by (`keymap.ts`). A dialog over the
-  // page takes its own presses and its own Escape.
+  // page takes its own presses and its own Escape, wherever the focus is: whether one is open is
+  // `useDialog`'s registry's answer (`dialogOpen()`), as `IssuePresets.tsx`'s menu asks it.
   useEffect(() => {
     if (!open) return;
     const inDialog = (target: EventTarget | null) =>
@@ -187,7 +218,7 @@ function ActAndMenu({
     };
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape" || inDialog(event.target)) return;
-      if (document.querySelector('[role="dialog"][aria-modal="true"]') !== null) return;
+      if (dialogOpen()) return;
       event.preventDefault();
       focusRow(control.current);
       setOpen(false);
@@ -229,7 +260,9 @@ function ActAndMenu({
   // React handler of the row or the tree reads keys. A key held with Control, Meta or Alt is no
   // key of the tree (the keymap matches those modifiers exactly), so the browser keeps its own
   // shortcuts, zoom and reload among them. Tab closes the menu: the focus goes back to the act
-  // first, so Tab moves on from the act, as from the row's other controls.
+  // first, so Tab moves on from the act, as from the row's other controls. Escape is the capture
+  // listener's above, which marks it as it closes the menu, or leaves it, unmarked, to a dialog
+  // open over the page, in the frame after it opens too, while the focus is still in the menu.
   const walk = (event: KeyboardEvent<HTMLElement>) => {
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     if (event.key === "Tab") {
@@ -237,6 +270,7 @@ function ActAndMenu({
       setOpen(false);
       return;
     }
+    if (event.key === "Escape") return;
     event.preventDefault();
     const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')];
     const at = event.target instanceof HTMLElement ? items.indexOf(event.target) : -1;

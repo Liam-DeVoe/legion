@@ -8,6 +8,7 @@ import { type ReactNode, useState } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
 import { answerRequests } from "../../../__tests__/network";
+import { pageKindBullet, pageKindTag } from "../../../theme/classes";
 import { node } from "../decisions-filter/decisions-fixtures";
 import { drawnLine, firstLineOf, type TreeNode } from "../issue-tree";
 import { NodeRow } from "../NodeRow";
@@ -27,8 +28,8 @@ import { kindWords, type LensFacts, type LensPlace } from "./lens-drafts";
 import { lensChainQuery } from "./lens-reads";
 
 /**
- * What a lens's row draws of its chain, and the lines a lens, a risk, a constrained statement and
- * a constraint draw under their words.
+ * What a lens's row draws of its chain, the lines a lens, a risk, a constrained statement and a
+ * constraint draw under their words, and the colour their rows are drawn in.
  *
  * The chain is read through the page's own client (`lens-reads.ts`, `api.getLenses`), answered at
  * `fetch` by the suite's network (`answerRequests`), so a request the row sends is one the test
@@ -713,4 +714,50 @@ describe("the lines under a row", () => {
       "prevented_by_nothing",
     ]);
   });
+});
+
+/** The tone, as `pageKindBullet` and `pageKindTag` name it, that `drawn`'s row draws its bullet
+ *  and its tag in. */
+function tonesDrawn(drawn: TreeNode) {
+  const view = renderOnIssue(<LensRow drawn={drawn} />);
+  try {
+    const dot = view.container.querySelector("[data-node-bullet] i");
+    const tag = view.container.querySelector("[data-node-margin] [data-node-tag]");
+    return {
+      bullet:
+        Object.entries(pageKindBullet).find(([, drawnAs]) =>
+          dot?.classList.contains(drawnAs)
+        )?.[0] ?? null,
+      tag:
+        Object.entries(pageKindTag).find(([, drawnAs]) => tag?.classList.contains(drawnAs))?.[0] ??
+        null,
+    };
+  } finally {
+    view.unmount();
+  }
+}
+
+// The spec's Design: a constraint's row draws its bullet and its tag in a statement's colour,
+// though it is no block of the spec and so never `isStatement`; a lens, a finding and a risk
+// draw theirs in the lenses' own.
+test("a constraint's row takes a statement's colour, and a lens's, a finding's and a risk's the lenses'", () => {
+  const constraint = node({
+    id: "constraint/9a1b",
+    lens: facts({ reference: "ISO/IEC 27001 A.8.10" }),
+    reference: ISSUE_CONSTRAINT,
+    text: "Information deletion",
+    type: "constraint",
+  });
+  expect(tonesDrawn(constraint), "the constraint").toEqual({
+    bullet: "statement",
+    tag: "statement",
+  });
+  const finding = node({
+    id: "lens/2222#b-f1",
+    text: "The store keeps no expiry",
+    type: "finding",
+  });
+  for (const drawn of [premortem(), finding, risk({})]) {
+    expect(tonesDrawn(drawn), `the ${drawn.type}`).toEqual({ bullet: "lens", tag: "lens" });
+  }
 });

@@ -20,6 +20,8 @@ import { userOnFakeClock } from "../../../__tests__/user";
 import { issueTreeKey } from "../../../api/queries";
 import { trackQueryFetches } from "../../../api/query-refresh";
 import { buildDispatchReference } from "../../refs/routes";
+import { KeymapProvider } from "../../shell/KeymapProvider";
+import { useDialog } from "../../shell/useDialog";
 import { SEND_DEADLINE_MS } from "../../writes/keyed-write";
 import { writesOf } from "../../writes/write-store";
 import { node, READER_ACTOR } from "../decisions-filter/decisions-fixtures";
@@ -960,6 +962,88 @@ test("Escape gives the focus back", async () => {
     expect(lensAct(view), "the act went with the menu").toBe(control);
   } finally {
     out.resolve();
+    view.unmount();
+  }
+});
+
+/** Opens the dialog `DialogOverTheRows` draws, once it is drawn. */
+interface DialogOpener {
+  open: (() => void) | undefined;
+}
+
+/** A dialog over the rows that `useDialog` holds open once `opener` opens it, with words a
+ *  press can land on and a control it puts the focus on. It names itself no `aria-modal`, so
+ *  only `useDialog`'s registry says that it is open. */
+function DialogOverTheRows({ opener }: { opener: DialogOpener }): ReactNode {
+  const [open, setOpen] = useState(false);
+  opener.open = () => setOpen(true);
+  const dialog = useDialog<HTMLDivElement>({ onClose: () => setOpen(false), open });
+  return open ? (
+    <div aria-label="Over the rows" ref={dialog.containerRef} role="dialog">
+      <p>The dialog's words</p>
+      <button type="button">in the dialog</button>
+    </div>
+  ) : null;
+}
+
+// A dialog open over the menu takes its own Escape wherever the focus is, whether or not the
+// dialog names itself modal: whether one is open is `useDialog`'s registry's answer
+// (`dialogOpen()`), as `IssuePresets.tsx`'s menu asks it. The focus is still on the menu's kind
+// in the frame after the dialog opens, before the dialog moves it in, and on the page after a
+// press on the dialog's words. The menu under the dialog stays open, and leaves the key's
+// default alone.
+test("Escape with a dialog open over the menu closes the dialog alone", async () => {
+  const user = userEvent.setup();
+  answerCatalogue(() => Response.json(schema(CATALOGUE)));
+  const opener: DialogOpener = { open: undefined };
+  const prevented: boolean[] = [];
+  const record = (event: KeyboardEvent) => {
+    if (event.key === "Escape") prevented.push(event.defaultPrevented);
+  };
+  window.addEventListener("keydown", record);
+  const view = renderAt(
+    <KeymapProvider>
+      <Rows nodes={[statement]} />
+      <DialogOverTheRows opener={opener} />
+    </KeymapProvider>
+  );
+  const dialog = () => view.queryByRole("dialog", { name: "Over the rows" });
+  const escapeClosesTheDialog = async (where: string) => {
+    await user.keyboard("{Escape}");
+    expect(dialog(), `Escape ${where} left the dialog open`).toBeNull();
+    expect(menuOf(view), `Escape ${where} closed the menu under the dialog`).not.toBeNull();
+  };
+  try {
+    await user.click(await focusedAct(view));
+    const [first] = await drawnItems(view);
+    expect(document.activeElement, "the menu's first kind took no focus").toBe(first);
+
+    // The dialog moves the focus into itself a frame after it opens; with that frame held, the
+    // Escape lands on the menu's kind.
+    const frames = jest.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+    try {
+      act(() => opener.open?.());
+      expect(dialog(), "the dialog did not open").not.toBeNull();
+      expect(document.activeElement, "the dialog took the focus in its first frame").toBe(first);
+      await escapeClosesTheDialog("on the menu's kind");
+    } finally {
+      frames.mockRestore();
+    }
+
+    act(() => opener.open?.());
+    await waitFor(() =>
+      expect(document.activeElement, "the dialog took no focus").toBe(
+        view.getByRole("button", { name: "in the dialog" })
+      )
+    );
+    await user.click(view.getByText("The dialog's words"));
+    expect(document.activeElement, "the press on the dialog's words kept the focus").toBe(
+      document.body
+    );
+    await escapeClosesTheDialog("on the page");
+    expect(prevented, "the menu prevented the dialog's Escape").toEqual([false, false]);
+  } finally {
+    window.removeEventListener("keydown", record);
     view.unmount();
   }
 });

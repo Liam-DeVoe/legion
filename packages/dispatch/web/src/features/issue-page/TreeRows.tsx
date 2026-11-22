@@ -1,7 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
 import type { CSSProperties, ReactNode } from "react";
-import { useMemo } from "react";
-import { useLocation } from "react-router-dom";
 
 import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
@@ -11,8 +9,7 @@ import { EVENT_FRESH } from "../refs/reference-target";
 import { useDocumentAdmissions } from "./document-admission";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
-import { LensActContext } from "./lenses/LensMenu";
-import { lensPlaceOf, useStandingAddress } from "./lenses/lens-reads";
+import { LensActContext, useLensAct } from "./lenses/LensMenu";
 import { NodeRow } from "./NodeRow";
 import type { ThreadMark } from "./outline-thread-read";
 import { authorText, pageChrome } from "./page-structure";
@@ -94,20 +91,8 @@ export function TreeRows({
   // What each document's room last admitted the page to, read once for every row: a row of a
   // document its room admitted read-only takes no typing (`nodeEditable`).
   const admissions = useDocumentAdmissions();
-  // The Lens act a focused row offers: the issue the address names and whether its preset is
-  // the outline, read as the page's slots read their address. A route that names no issue
-  // offers no act. One value while the address stands, so no row draws again.
-  const { pathname, search } = useLocation();
-  const place = lensPlaceOf(pathname, search);
-  const issueKey = place?.issueKey;
-  const outline = place?.outline === true;
-  // Where the reader stands now, which a pick's answer reads as it lands, kept for as long as
-  // the rows are drawn: the menu that made the pick goes with its row's focus.
-  const standing = useStandingAddress();
-  const lensAct = useMemo(
-    () => (issueKey === undefined ? undefined : { issueKey, outline, standing }),
-    [issueKey, outline, standing]
-  );
+  // The Lens act a focused row offers, one value while the address stands (`useLensAct`).
+  const lensAct = useLensAct();
   return (
     <>
       <LensActContext.Provider value={lensAct}>

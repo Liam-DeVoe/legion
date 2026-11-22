@@ -48,7 +48,7 @@ import {
 import { LensChain } from "./lenses/LensChain";
 import { LensLines } from "./lenses/LensLines";
 import { LensMenu } from "./lenses/LensMenu";
-import { kindWords } from "./lenses/lens-drafts";
+import { lensChipWords } from "./lenses/lens-drafts";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
@@ -623,7 +623,10 @@ function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind):
       return "agent";
     case "plan_task":
       return "step";
+    // A constraint, a standard or a measurement the issue's statements are held to, takes a
+    // statement's colour, though it is no block of the spec and so never `isStatement`.
     case "constraint":
+      return "statement";
     case "requirement":
       // Only the spec's own requirement is a statement (`isStatement`); one of any other
       // document is a block and nothing more, in a block's colour (decision 246).
@@ -773,7 +776,7 @@ export function RowMargin({
                 {node.lens?.kind === undefined ? (
                   <span {...pageChrome}>{NODE_TYPE_NAMES[node.type]}</span>
                 ) : (
-                  <span {...authorText}>{chipWords(kindWords(node.lens.kind))}</span>
+                  <span {...authorText}>{lensChipWords(node.lens.kind).words}</span>
                 )}
               </>
             )}
