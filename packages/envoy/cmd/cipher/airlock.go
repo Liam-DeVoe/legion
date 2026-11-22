@@ -536,7 +536,11 @@ func airlockProxyURL(release *AirlockRelease) (string, error) {
 // AGENT_SECRETS_URL in the child's environment on purpose (sessionIdentityVars), so a nested
 // `agent-secrets` call reaches the broker as this same session. Without this entry that nested
 // call would go to the broker through the proxy, and the proxy refuses a private address — which
-// a broker reached over a tailnet or inside a cluster always is.
+// a broker reached over a tailnet or inside a cluster always is. It is held to the bound hosts as
+// every other entry is: a broker host that is a bound host, or a parent domain or a subdomain of
+// one, is left out, since kept it would send that bound host's requests straight out with a
+// placeholder in them; the nested call then goes to the proxy, which refuses it, and no request of
+// a bound host leaves without the proxy.
 func airlockNoProxy(environ []string, release *AirlockRelease) string {
 	inherited := envValue(environ, "no_proxy")
 	if inherited == "" {
@@ -565,7 +569,7 @@ func airlockNoProxy(environ []string, release *AirlockRelease) string {
 			entries = append(entries, entry)
 		}
 	}
-	if host := brokerHostname(envValue(environ, "AGENT_SECRETS_URL")); host != "" {
+	if host := brokerHostname(envValue(environ, "AGENT_SECRETS_URL")); host != "" && !overlapsBoundHost(host, bound) {
 		entries = append(entries, host)
 	}
 

@@ -136,8 +136,11 @@ function outcomeCode(error: unknown): string {
  * prints `{"write_outcome_unknown": <code>}` and exits 1, as the write is not confirmed: the
  * result may be stored, and a second run is safe, since Dispatch keeps each result. A tunnel the
  * airlock proxy refused prints `AIRLOCK_TUNNEL_REFUSED: …` with its status, and an answer the proxy
- * gave itself prints its `Airlock-Code` and its words, each saying that nothing reached Dispatch,
- * and exits 1. A call Dispatch's check of the run's token turns away before anything is stored
+ * gave itself before the write left it (`Airlock-Forwarded: false`) prints its `Airlock-Code` and
+ * its words, each saying that nothing reached Dispatch, and exits 1. An answer the proxy gave
+ * itself after the write may have left it (`Airlock-Forwarded: unknown`) is asked again under the
+ * same key, as a reset is, and ends `{"write_outcome_unknown": <code>}` with exit 1 if no answer
+ * settles it. A call Dispatch's check of the run's token turns away before anything is stored
  * (`notNow`) is asked again inside the call's one bound (`ResultBound`), and ends with the last
  * such answer, its code named, and exit 1. No credential reaches what it prints: the proxy's and
  * Dispatch's words name none, and the placeholder is named by its variable.

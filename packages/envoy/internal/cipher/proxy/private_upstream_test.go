@@ -217,8 +217,11 @@ func (r *rig) writeResult() (*http.Response, string, error) {
 
 // writeRefusedAtConnect fails t unless the allowed write is refused at its CONNECT: the command's
 // client gets the proxy's 403, the proxy's refusal line names the destination's bound host, the
-// code ADDRESS_REFUSED and a reason holding want, and nothing is dialled or reaches Dispatch.
-func writeRefusedAtConnect(t *testing.T, r *rig, standIn *dispatchStandIn, want string) {
+// code ADDRESS_REFUSED and a reason holding want, and nothing is dialled or reaches Dispatch. What
+// the command reads names the rule and never the destination's in-cluster name or the address it
+// resolved to (at): the refusal line's reason, which is the command's answer, holds neither, and
+// the broker's line of the dial that did not happen holds both.
+func writeRefusedAtConnect(t *testing.T, r *rig, standIn *dispatchStandIn, at netip.Addr, want string) {
 	t.Helper()
 	answer, body, err := r.writeResult()
 	if err == nil {
@@ -235,6 +238,17 @@ func writeRefusedAtConnect(t *testing.T, r *rig, standIn *dispatchStandIn, want 
 	reason, _ := line["reason"].(string)
 	if line["status"] != int64(http.StatusForbidden) || line["code"] != codeAddressRefused || line["method"] != http.MethodConnect || line["host"] != privateHost || !strings.Contains(reason, want) {
 		t.Fatalf("the refusal line reads %v; want 403 %s of the CONNECT to %s with a reason naming %q", line, codeAddressRefused, privateHost, want)
+	}
+	if strings.Contains(reason, privateName) || strings.Contains(reason, at.String()) || !strings.Contains(reason, "BROKER_AIRLOCK_PRIVATE_UPSTREAM") {
+		t.Fatalf("the command is told %q; want the rule (BROKER_AIRLOCK_PRIVATE_UPSTREAM) and neither the destination %s nor its address %s", reason, privateName, at)
+	}
+	failures := r.logs.dialFailures()
+	if len(failures) == 0 {
+		t.Fatal("the proxy logged no dial that did not happen")
+	}
+	detail, _ := failures[len(failures)-1].fields["reason"].(string)
+	if !strings.Contains(detail, privateName) || !strings.Contains(detail, at.String()) || !strings.Contains(detail, want) {
+		t.Fatalf("the broker's line of the refused dial reads %q; want the destination %s, its address %s and %q", detail, privateName, at, want)
 	}
 	if dialed := r.dialedAddresses(); len(dialed) != 0 {
 		t.Fatalf("the proxy dialled %v; want nothing", dialed)
@@ -351,8 +365,9 @@ func TestThePrivateUpstreamTakesTheBoundRouteAlone(t *testing.T) {
 // BROKER_AIRLOCK_CLUSTER_RANGES, and nothing is dialled: the exception holds only for an address
 // every other request is refused.
 func TestAnUpstreamTheGeneralRuleWouldDialIsRefused(t *testing.T) {
-	r, standIn := newPrivateRig(t, netip.MustParseAddr(clusterIPs[0]), nil)
-	writeRefusedAtConnect(t, r, standIn, "which this proxy would also tunnel to: list its range in BROKER_AIRLOCK_CLUSTER_RANGES")
+	at := netip.MustParseAddr(clusterIPs[0])
+	r, standIn := newPrivateRig(t, at, nil)
+	writeRefusedAtConnect(t, r, standIn, at, "which this proxy would also tunnel to: list its range in BROKER_AIRLOCK_CLUSTER_RANGES")
 }
 
 // TestAnUpstreamOnLoopbackOrLinkLocalIsRefused: a destination whose name resolves to a loopback or
@@ -361,7 +376,62 @@ func TestAnUpstreamTheGeneralRuleWouldDialIsRefused(t *testing.T) {
 // are no destination.
 func TestAnUpstreamOnLoopbackOrLinkLocalIsRefused(t *testing.T) {
 	for _, addr := range []string{"127.0.0.1", "169.254.169.254", "fe80::1"} {
-		r, standIn := newPrivateRig(t, netip.MustParseAddr(addr), []netip.Prefix{serviceRange})
-		writeRefusedAtConnect(t, r, standIn, "a loopback or link-local address, which the airlock never dials")
+		at := netip.MustParseAddr(addr)
+		r, standIn := newPrivateRig(t, at, []netip.Prefix{serviceRange})
+		writeRefusedAtConnect(t, r, standIn, at, "a loopback or link-local address, which the airlock never dials")
 	}
+}
+
+// TestAnUpstreamAtACloudMetadataServerIsRefused: a destination whose name resolves to a cloud
+// metadata server's IPv6 address - fd20:ce::254, Google Compute Engine's, or fd00:ec2::254, Amazon
+// EC2's (netaddr.DestinationRefusal) - is refused and nothing is dialled, although each is a
+// unique-local address, private, which every other request is refused and the exception would
+// otherwise take: the node's metadata server is no destination, as 169.254.169.254 is none.
+func TestAnUpstreamAtACloudMetadataServerIsRefused(t *testing.T) {
+	for _, addr := range []string{"fd20:ce::254", "fd00:ec2::254"} {
+		at := netip.MustParseAddr(addr)
+		r, standIn := newPrivateRig(t, at, []netip.Prefix{serviceRange})
+		writeRefusedAtConnect(t, r, standIn, at, "a cloud metadata server's address, which the airlock never dials")
+	}
+}
+
+// TestAnUnreachableUpstreamIsNotNamedToTheCommand: a destination at an address the proxy may dial,
+// where nothing answers, fails the write 502 UPSTREAM_UNREACHABLE, whose words name the rule and
+// neither the destination's in-cluster name nor its address, while the broker's line of the call
+// it could not carry names the address. Control: the same rig with the stand-in answering stores
+// the write.
+func TestAnUnreachableUpstreamIsNotNamedToTheCommand(t *testing.T) {
+	r, standIn := newPrivateRig(t, privateAddress, []netip.Prefix{serviceRange})
+	if answer, body, err := r.writeResult(); err != nil || answer.StatusCode != http.StatusCreated || len(standIn.writes()) != 1 {
+		t.Fatalf("control: the write to an answering destination = %v %v %q; want 201", answer, err, body)
+	}
+	r, _ = newPrivateRig(t, privateAddress, []netip.Prefix{serviceRange})
+	// The destination's address now dials a port nothing listens on.
+	r.dialTo[net.JoinHostPort(privateAddress.String(), privatePort)] = closedAddress(t)
+	answer, body, err := r.writeResult()
+	if err != nil || answer.StatusCode != http.StatusBadGateway || answer.Header.Get("Airlock-Code") != codeUpstream {
+		t.Fatalf("the write to a destination where nothing answers = %v %v %q; want 502 %s", answer, err, body, codeUpstream)
+	}
+	if strings.Contains(body, privateName) || strings.Contains(body, privateAddress.String()) || !strings.Contains(body, "BROKER_AIRLOCK_PRIVATE_UPSTREAM") {
+		t.Fatalf("the command reads %q; want the rule (BROKER_AIRLOCK_PRIVATE_UPSTREAM) and neither %s nor %s", body, privateName, privateAddress)
+	}
+	lines := r.logs.lines(upstreamMessage)
+	if len(lines) == 0 {
+		t.Fatal("the proxy logged no call it could not carry")
+	}
+	if detail, _ := lines[len(lines)-1].fields["error"].(string); detail == "" {
+		t.Fatalf("the broker's line of the call it could not carry holds no error: %v", lines[len(lines)-1].fields)
+	}
+}
+
+// closedAddress is a loopback address and port nothing listens on: a listener's, closed.
+func closedAddress(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := listener.Addr().String()
+	listener.Close()
+	return addr
 }

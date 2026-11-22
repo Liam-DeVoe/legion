@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,15 +15,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
-
-	"authelia.com/provider/oauth2"
-	"authelia.com/provider/oauth2/handler/rfc9449"
-	"authelia.com/provider/oauth2/token/jose"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/dpopproof/dpopprooftest"
 )
 
 // The grant the stand-in broker answers: its placeholder, its id and the one host its entry binds.
@@ -65,24 +60,6 @@ func startResultBroker(t *testing.T, status int, answer map[string]any) *resultB
 	}))
 	t.Cleanup(b.Close)
 	return b
-}
-
-// tradeProofRefusal is why proof is not a DPoP proof that a broker's token endpoint at tokenURL
-// takes for the trade, or "" when it is one: RFC 9449's own parser reads it (its typ, its one
-// signature by the public key it carries, and its claims), and its htm, htu and iat are those of a
-// POST to tokenURL signed within the last minute. The key is made in the command's memory and
-// never leaves it, so the test cannot name it.
-func tradeProofRefusal(proof, tokenURL string) string {
-	parsed, err := rfc9449.ParseProof(proof, []jose.SignatureAlgorithm{jose.ES256})
-	switch {
-	case err != nil:
-		return oauth2.ErrorToRFC6749Error(err).HintField
-	case parsed.Method != http.MethodPost || parsed.URL != tokenURL:
-		return fmt.Sprintf("its htm %q and htu %q are not POST and %q", parsed.Method, parsed.URL, tokenURL)
-	case time.Since(parsed.IssuedAt) > time.Minute || time.Until(parsed.IssuedAt) > time.Second:
-		return fmt.Sprintf("its iat %s is not within the last minute", parsed.IssuedAt)
-	}
-	return ""
 }
 
 // placeholderGrant is the token endpoint's answer to a result entry's run (C8), with an airlock
@@ -178,7 +155,8 @@ func TestResultGrantRunsTheCommandWithThePlaceholderAndTheProxy(t *testing.T) {
 		forms[0].Get("subject_token") != "the-runs-oidc-token" || forms[0].Get("subject_token_type") != oauthwire.SubjectTokenTypeGitHub {
 		t.Fatalf("the broker's token endpoint got %v; want one trade of the run's token for the placeholder type", forms)
 	}
-	if why := tradeProofRefusal(proofs[0], broker.URL+cipherclient.TokenPath); why != "" {
+	// The key is made in the command's memory and never leaves it, so the test cannot name it.
+	if why, _ := dpopprooftest.TradeRefusal(proofs[0], broker.URL+cipherclient.TokenPath); why != "" {
 		t.Fatalf("the trade's DPoP proof %q is not one the token endpoint takes: %s", proofs[0], why)
 	}
 	if got, _ := childVar(stdout, oauthwire.AirlockResultsName); got != resultPlaceholder {

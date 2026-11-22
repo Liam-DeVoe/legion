@@ -103,6 +103,29 @@ func TestAirlockNoProxyKeepsTheBoundHostsOnTheProxy(t *testing.T) {
 			wantEntries: []string{"broker.internal.example"},
 			wantGone:    []string{"broker.internal.example:8443"},
 		},
+		{
+			// The broker's host is held to the bound hosts as any entry is: a parent domain of a
+			// bound host, the bound host itself on another port, and a host under a bound "*."
+			// name each leave the list, so the bound host's requests stay on the proxy.
+			name:     "a broker host that is a parent domain of a bound host",
+			environ:  []string{"AGENT_SECRETS_URL=https://example.com"},
+			wantGone: []string{"example.com"},
+		},
+		{
+			name:     "a broker host that is a bound host on another port",
+			environ:  []string{"AGENT_SECRETS_URL=https://api.example.com:8443"},
+			wantGone: []string{"api.example.com"},
+		},
+		{
+			name:     "a broker host under a bound *. name",
+			environ:  []string{"AGENT_SECRETS_URL=https://secrets.cdn.example.com"},
+			wantGone: []string{"secrets.cdn.example.com"},
+		},
+		{
+			name:        "control: a sibling broker host stays",
+			environ:     []string{"AGENT_SECRETS_URL=https://secrets.example.com"},
+			wantEntries: []string{"secrets.example.com"},
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			got := airlockNoProxy(row.environ, release)

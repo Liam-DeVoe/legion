@@ -2,9 +2,10 @@
 // run trades its token for a placeholder (result_grant_test.go), and a write carrying the
 // placeholder through the broker's proxy port reaches a TLS stand-in for Dispatch with the run's
 // results token, which the broker pod minted for itself, and a DPoP proof of that pod's own key.
-// The stand-in is reached as ci-results-stack.ts reaches Dispatch's: BROKER_AIRLOCK_TEST_RESOLVE
-// names where the bound host is, BROKER_AIRLOCK_TEST_DIAL_ALLOW lets the proxy dial that loopback
-// address, and BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE trusts its certificate.
+// The stand-in is the broker's private destination (resultsUpstream, whose URL names the bound host
+// itself): BROKER_AIRLOCK_TEST_RESOLVE names where that host is, BROKER_AIRLOCK_TEST_DIAL_ALLOW lets
+// the proxy dial that loopback address, and BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE trusts its
+// certificate.
 package main
 
 import (
@@ -68,8 +69,8 @@ func startResultsDispatch(t *testing.T) *resultsDispatch {
 	return &resultsDispatch{service: service, caFile: caFile}
 }
 
-// env is what sends the bound host's requests to this stand-in: its loopback address and port,
-// the one dial the proxy may make there, and the authority its certificate is signed by.
+// env is what sends the private destination's requests to this stand-in: its loopback address and
+// port, the one dial the proxy may make there, and the authority its certificate is signed by.
 func (d *resultsDispatch) env() []string {
 	return []string{
 		"BROKER_AIRLOCK_TEST_RESOLVE=" + resultsBoundHost + "=" + d.service.Addr(),

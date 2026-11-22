@@ -317,7 +317,9 @@ approval is used. A refused, expired or lost grant never changes to a session's 
 
 The child's `NO_PROXY` keeps none of its fixed entries that covers a host the grant binds:
 Dispatch's tailnet name is under `.ts.net`, so with Dispatch bound `.ts.net` leaves the list
-and Dispatch's writes reach the proxy, while the broker's own name stays. See
+and Dispatch's writes reach the proxy, while the broker's own name stays. The broker's own name
+is held to the bound hosts the same way: a broker host that is a bound host, a parent domain of
+one or a name under one is left out, so that bound host's writes still reach the proxy. See
 [`ci-results.md`](../../../envoy-client/docs/ci-results.md) for the job and broker settings.
 
 ## Install

@@ -28,14 +28,23 @@ const resultsBoundHost = "dispatch.ci-results.test"
 const resultsRules = `{"secrets": [{"name": "DISPATCH_RESULTS_TOKEN", "hosts": ["` + resultsBoundHost + `"], "headers": ["Authorization"],
 	"allow": [{"method": "POST", "pathPrefix": "/api/v1/projects/"}, {"method": "POST", "pathPrefix": "/api/v1/issues/"}], "kind": "dpop"}]}`
 
+// resultsUpstream is the private destination resultsBoundHost's requests go to, as
+// BROKER_AIRLOCK_PRIVATE_UPSTREAM names it: the broker starts with the entry DISPATCH_RESULTS_TOKEN
+// only beside the destination of its one host (config.AirlockResultRules). The URL names the bound
+// host itself, so a test that writes sends the destination's requests where
+// BROKER_AIRLOCK_TEST_RESOLVE puts that host (resultsDispatch.env), over TLS checked against its
+// stand-in's certificate; a test that only trades a token dials nothing.
+const resultsUpstream = "BROKER_AIRLOCK_PRIVATE_UPSTREAM=" + resultsBoundHost + "=https://" + resultsBoundHost
+
 // resultsExchangeEnv is exchangeEnv with the result entry of resultsWorkflow and the airlock its
-// grants need: the rules file above, the proxy, its certificate authority and a port of its own.
+// grants need: the rules file above, its private destination, the proxy, its certificate authority
+// and a port of its own.
 func resultsExchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Issuer, accessSeconds int) []string {
 	t.Helper()
 	env := append(exchangeEnv(t, databaseURL, cluster, github, accessSeconds), airlockEnv(t)...)
 	return append(env,
 		"BROKER_EXCHANGE_RESULT_WORKFLOWS="+exchangeRepository+"="+resultsWorkflow+"=refs/heads/*="+project+"="+person,
-		"BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t, resultsRules))
+		"BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t, resultsRules), resultsUpstream)
 }
 
 // askedForThePlaceholder is form asking for the airlock placeholder.

@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,12 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"authelia.com/provider/oauth2"
-	"authelia.com/provider/oauth2/handler/rfc9449"
-	"authelia.com/provider/oauth2/token/jose"
-
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/dpopproof/dpopprooftest"
 )
 
 // placeholderBroker is a broker's token endpoint that records each trade's form and whether it
@@ -63,24 +59,14 @@ func placeholderClient(t *testing.T, broker string) *Client {
 }
 
 // tradeProofRefusal is why proof is not a DPoP proof that a broker's token endpoint at tokenURL
-// takes for a trade signed with key, or "" when it is one: RFC 9449's own parser reads it (its typ,
-// its one signature by the public key it carries, and its claims), that key is key, and its htm,
-// htu and iat are those of a POST to tokenURL signed within the last minute.
+// takes for a trade signed with key, or "" when it is one: dpopprooftest.TradeRefusal's checks,
+// and the key the proof carries and is signed by is key.
 func tradeProofRefusal(proof, tokenURL string, key *ecdsa.PublicKey) string {
-	parsed, err := rfc9449.ParseProof(proof, []jose.SignatureAlgorithm{jose.ES256})
-	if err != nil {
-		return oauth2.ErrorToRFC6749Error(err).HintField
-	}
-	signer, _ := parsed.JWK.Key.(*ecdsa.PublicKey)
-	switch {
-	case signer == nil || !signer.Equal(key):
+	why, signer := dpopprooftest.TradeRefusal(proof, tokenURL)
+	if why == "" && (signer == nil || !signer.Equal(key)) {
 		return "it is signed by a key other than the client's"
-	case parsed.Method != http.MethodPost || parsed.URL != tokenURL:
-		return fmt.Sprintf("its htm %q and htu %q are not POST and %q", parsed.Method, parsed.URL, tokenURL)
-	case time.Since(parsed.IssuedAt) > time.Minute || time.Until(parsed.IssuedAt) > time.Second:
-		return fmt.Sprintf("its iat %s is not within the last minute", parsed.IssuedAt)
 	}
-	return ""
+	return why
 }
 
 // c8Answer is the token endpoint's answer to a result entry's run asking for the placeholder.

@@ -232,16 +232,13 @@ func main() {
 	// operator believes are in force. The file is read once; a change to it rolls the pods.
 	rules, err := readAirlockRules(cfg.AirlockRulesFile)
 	fatal(err)
-	// A broker with result entries starts only with the rules entry their grants are held to
-	// (config.ResultEntryRules): without it a run's placeholder would open nothing, or every route
-	// of Dispatch's host.
-	if len(cfg.ExchangeResultWorkflows) > 0 {
-		fatal(config.ResultEntryRules(rules))
-	}
-	// And a broker with a private destination starts only when exactly one entry binds its host,
-	// of kind dpop with an allow list, carried in Authorization alone (config.PrivateUpstreamRules):
-	// that one entry's allowed requests are all that reach the destination.
-	fatal(config.PrivateUpstreamRules(rules, cfg.AirlockPrivateUpstream))
+	// The results capability, checked on every broker whatever its result entries
+	// (config.AirlockResultRules): every broker with an airlock port serves every result grant of
+	// the database it shares, so a pod with no result entry of its own still sends a run's token
+	// to the host DISPATCH_RESULTS_TOKEN binds. The entry binds one exact host, the private
+	// destination's, and no other entry binds that host or is of kind dpop; result entries need
+	// the entry, and a destination needs the entry to bind its host.
+	fatal(config.AirlockResultRules(rules, cfg.AirlockPrivateUpstream, len(cfg.ExchangeResultWorkflows) > 0))
 	// And the proxy's certificate authority, built in the same breath and refused the same way:
 	// the key beside the certificate, which the proxy port signs each bound host's certificate
 	// with, and the certificate itself, which every release of a name the rules hold back hands
