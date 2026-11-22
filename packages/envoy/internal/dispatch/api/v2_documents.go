@@ -305,7 +305,8 @@ func (s *server) v2DocumentRows() []routeRow {
 				"with advice. 409 PRECONDITION_FAILED {code, error, current, mismatches} for a precondition the document no " +
 				"longer meets, 409 EDIT_LOST_TO_CONCURRENT_CHANGE {code, error, lost_ops or suggestion, participants} for text " +
 				"a concurrent change removed first, 409 TARGET_AMBIGUOUS {code, error, candidates} for a quote found in several " +
-				"places, 409 ISSUE_CLOSED, 400 INVALID_OP, 400 NOT_DOCUMENT, 404 ARTIFACT_NOT_FOUND.",
+				"places, 409 ISSUE_CLOSED, 400 INVALID_OP, 400 REPLACE_FIELDS for a replace that names no with or carries a " +
+				"member a replace does not take (it takes find, with and occurrence), 400 NOT_DOCUMENT, 404 ARTIFACT_NOT_FOUND.",
 			Handler:  s.editArtifactV2,
 			Resource: "edits", Kind: kindCollection,
 			Body: requestBody{Kind: bodyJSON, Type: editArtifactInput{}},
@@ -1099,12 +1100,13 @@ func (s *server) createArtifactCommentV2(w http.ResponseWriter, r *http.Request)
 }
 
 // editArtifactV2 answers POST /api/v2/artifacts/{id}/edits: the edit POST
-// /api/v1/artifacts/{id}/edits applies (applyEdits), which reads the artifact first.
+// /api/v1/artifacts/{id}/edits applies (applyEdits), which refuses a replace by the members the
+// body's bytes name and then reads the artifact.
 func (s *server) editArtifactV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	s.applyEdits(w, r, v2Body[editArtifactInput](r))
+	s.applyEdits(w, r, v2Body[editArtifactInput](r), v2BodyBytes(r))
 }
 
 // createArtifactPlanReviewV2 answers POST /api/v2/artifacts/{id}/plan-reviews: the plan review POST

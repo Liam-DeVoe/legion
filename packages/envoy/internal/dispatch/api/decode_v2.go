@@ -180,6 +180,9 @@ type v2Request struct {
 	// members are a JSON body's top-level members as the request sent them, by name: what an
 	// authority rule on a body member reads.
 	members map[string]json.RawMessage
+	// raw is a JSON body's bytes as the request sent them: what a handler reads that the decoded
+	// value cannot say, such as whether a replace named its with (replaceFieldsRefusal).
+	raw []byte
 	// file is an upload's file part; nil for an upload sent as JSON and for every other body.
 	file *uploadFile
 }
@@ -235,6 +238,17 @@ func v2BodyArm(r *http.Request) any {
 		panic(fmt.Sprintf("v2BodyArm: the decoder read no body of %s %s: only a route it reads that declares one has one", r.Method, r.Pattern))
 	}
 	return decoded.body
+}
+
+// v2BodyBytes is the JSON body of a request to a route the decoder reads, as the request sent its
+// bytes: nil for an optional body sent empty and for an upload. It panics, as v2BodyArm does, on a
+// route whose body the decoder has not read.
+func v2BodyBytes(r *http.Request) []byte {
+	decoded, ok := decodedV2(r)
+	if !ok || !decoded.bodyRead {
+		panic(fmt.Sprintf("v2BodyBytes: the decoder read no body of %s %s", r.Method, r.Pattern))
+	}
+	return decoded.raw
 }
 
 // v2Upload is the file part of an upload to a route the decoder reads, and nil for an upload sent
@@ -990,6 +1004,7 @@ func (d *v2Decoder) readJSON(r *http.Request, decoded *v2Request) error {
 	if json.Unmarshal(data, &members) == nil {
 		decoded.members = members
 	}
+	decoded.raw = data
 	decoded.body = value.Elem().Interface()
 	return nil
 }

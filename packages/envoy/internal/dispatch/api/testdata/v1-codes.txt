@@ -291,6 +291,7 @@ PLAN_OTHER_ISSUE 409 # #4488, each retro rates the plan its issue ran
 QUEUED_ON_BUS 404 # #4088, a message to a session the listener knows nothing about is queued
 READ_ONLY_TOKEN 403 # #4113, mint a read-only Dispatch token and serve it on the read list alone
 REFERENCES_TIMEOUT 503 # #4554, an issue's reference closure walk runs under a 2 s statement_timeout
+REPLACE_FIELDS 400 # #4610, a doc-edit replace with no with, or a member it does not take, is refused
 ROLE_HOLDER_FORBIDDEN 403 # #4228, the Legion daemon publishes the session of each role of an issue
 SEARCH_COVERAGE_TIMEOUT 503 # #4378, the search coverage route reads two indexes under a 10 s bound
 STEP_INPUT 400 # #4400, record each phase of an issue as a step

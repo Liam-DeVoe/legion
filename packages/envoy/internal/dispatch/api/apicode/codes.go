@@ -355,6 +355,7 @@ var (
 	RankInput                      = both("RANK_INPUT", http.StatusBadRequest)
 	ReasonRequired                 = both("REASON_REQUIRED", http.StatusBadRequest)
 	ReferencesTimeout              = both("REFERENCES_TIMEOUT", http.StatusServiceUnavailable)
+	ReplaceFields                  = both("REPLACE_FIELDS", http.StatusBadRequest)
 	ReplyForbidden                 = both("REPLY_FORBIDDEN", http.StatusForbidden)
 	RequestBodyUnreadable          = both("REQUEST_BODY_UNREADABLE", http.StatusBadRequest)
 	RequestTooLarge                = both("REQUEST_TOO_LARGE", http.StatusRequestEntityTooLarge)
