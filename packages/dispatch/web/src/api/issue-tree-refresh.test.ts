@@ -6,7 +6,7 @@ import {
   treeAnswer,
   treeNode,
 } from "../features/issue-page/tree-read/tree-fixtures";
-import { viewKey } from "../features/issue-page/tree-read/tree-read";
+import { type TreeAnswer, viewKey } from "../features/issue-page/tree-read/tree-read";
 import { eventRefreshTargets } from "./event-refresh";
 import { issueTreeKey } from "./queries";
 import { refreshQueries } from "./query-refresh";
@@ -750,4 +750,105 @@ test("a grandchild's document version marks nothing of its grandparent's that no
       name
     ).toEqual({ outline: false, verification: false });
   }
+});
+
+/** The parent CORE-1's requirement, which a check of its child serves once the child writes one. */
+const PARENT_REQUIREMENT = treeNode("r1", "requirement", "CORE-1", {
+  in: "spec",
+  text: "Every child is drawn.",
+});
+
+/** The parent CORE-1's answers before its child CORE-2 holds a check serving its requirement: its
+ *  outline with the child's node, as given, and its Spec, Verification and Plan views, which hold
+ *  no node of the child. */
+function parentBeforeTheCheck(client: QueryClient, outline: TreeAnswer | undefined) {
+  const requirement = PARENT_REQUIREMENT;
+  if (outline !== undefined) client.setQueryData(issueTreeKey("CORE-1"), outline);
+  const views = {
+    plan: treeAnswer([treeNode("t1", "plan_task", "CORE-1", { in: "plan", role: "query" })], [], {
+      view: "plan",
+    }),
+    spec: treeAnswer([{ ...requirement, role: "query" }], [], { view: "spec" }),
+    verification: treeAnswer([{ ...requirement, role: "context" }], [], { view: "verification" }),
+  };
+  for (const [view, answer] of Object.entries(views)) {
+    client.setQueryData(viewKey("CORE-1", view as keyof typeof views), answer);
+  }
+  const marks = () => ({
+    outline: client.getQueryState(issueTreeKey("CORE-1"))?.isInvalidated === true,
+    plan: client.getQueryState(viewKey("CORE-1", "plan"))?.isInvalidated === true,
+    spec: client.getQueryState(viewKey("CORE-1", "spec"))?.isInvalidated === true,
+    verification: client.getQueryState(viewKey("CORE-1", "verification"))?.isInvalidated === true,
+  });
+  return { marks };
+}
+
+const EVERY_ANSWER = { outline: true, plan: true, spec: true, verification: true };
+
+// The outline's refetch is out - the child was just moved under the parent - when the child's
+// document version lands. The outline is judged on its response, which holds the child's node,
+// and is read again; its views must be marked with it, whatever the outline held before the
+// refetch, or the Verification view leaves out the child's new check while its filter is on.
+test("a view is marked with its outline where the outline's refetch is out and its response holds what the event moves", async () => {
+  const client = new QueryClient();
+  const requirement = PARENT_REQUIREMENT;
+  const { marks } = parentBeforeTheCheck(
+    client,
+    treeAnswer([treeNode("CORE-1", "issue", null), requirement])
+  );
+  const response = Promise.withResolvers<unknown>();
+  const read = client.fetchQuery({
+    queryFn: () => response.promise,
+    queryKey: issueTreeKey("CORE-1"),
+    staleTime: 0,
+  });
+  const version = eventOf("artifact.version", { artifact_id: "artifact-2", number: 2 }, "CORE-2");
+  refreshQueries(client, eventRefreshTargets(version, "alice"));
+  response.resolve(
+    treeAnswer([
+      treeNode("CORE-1", "issue", null),
+      requirement,
+      treeNode("CORE-2", "issue", "CORE-1", { ...CHILD, text: "Draw each child" }),
+    ])
+  );
+  await read;
+  expect(marks(), "the parent's outline and every view, after the outline's response").toEqual(
+    EVERY_ANSWER
+  );
+});
+
+// A child stands where its part_of names a node of its parent - a requirement here - so the
+// parent's held outline holds the grandchild's node under the parent's block, not under the
+// parent's issue node. The page places the grandchild under that tree's issue all the same, so
+// the grandchild's document version reaches the grandparent's outline and views.
+test("a grandchild's document version marks its grandparent's outline and views where its parent's held outline holds its node under the parent's block", () => {
+  const client = new QueryClient();
+  const { marks } = parentBeforeTheCheck(
+    client,
+    treeAnswer([
+      treeNode("CORE-1", "issue", null),
+      treeNode("CORE-2", "issue", "CORE-1", { ...CHILD, text: "Draw each child" }),
+    ])
+  );
+  const statement: IssueTreeParent = {
+    first_line: "Each grandchild is drawn.",
+    id: "CORE-2/spec#cr1",
+    kind: "block",
+    supertag: "requirement",
+  };
+  client.setQueryData(
+    issueTreeKey("CORE-2"),
+    treeAnswer([
+      treeNode("CORE-2", "issue", null),
+      treeNode("cr1", "requirement", "CORE-2", { in: "spec" }),
+      treeNode("CORE-3", "issue", statement, {
+        issue: "CORE-3",
+        read_only: true,
+        text: "Draw each grandchild",
+      }),
+    ])
+  );
+  const version = eventOf("artifact.version", { artifact_id: "artifact-3", number: 2 }, "CORE-3");
+  refreshQueries(client, eventRefreshTargets(version, "alice"));
+  expect(marks(), "the grandparent's outline and every view").toEqual(EVERY_ANSWER);
 });
