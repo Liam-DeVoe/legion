@@ -1593,8 +1593,8 @@ These arrive as messages on the Dispatch issue:
 An issue that stays in `testing`, `reviewing`, `accepting`, `retro` or `merging` while its head
 conflicts with its base is waiting on the daemon's merge forward or on nothing at all. The daemon
 reads the pull request's mergeability twice, at least a minute apart, and acts only on a conflict
-both reads report, and only when the next step needs a mergeable head: the issue stands past its
-review, a check the base requires has no green result on the head, the base requires a current
+both reads report, and only when the next step needs a mergeable head: the issue stands in
+`accepting`, `retro` or `merging`, a check the base requires has no green result on the head, the base requires a current
 branch, or the daemon could not read the base's rules. Its log says which: `workflow: a conflict
 read waits for a second read` for a first read, `workflow: a second read did not confirm the
 conflict` for a read GitHub took back or a second read whose attempts all answered no state (the
@@ -1610,7 +1610,7 @@ names both heads. A completion of the phase the issue stands in that names a hea
 forward replaced, the head an earlier merge forward replaced included, or that names no head once
 a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is
 made again at the new head; a completion of a phase the issue has already left is recorded as
-before. Past review, where the task has a reviewer step, the reviewer is asked to read the merge
+before. In `accepting`, `retro` or `merging`, where the task has a reviewer step, the reviewer is asked to read the merge
 and approve the new head. A red check sends nothing back from anywhere.
 
 The pull request's state as the daemon sees it:
