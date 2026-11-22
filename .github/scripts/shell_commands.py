@@ -17,7 +17,9 @@ and backticks open a command of their own, inside a double-quoted string too, an
 resumes at the close; an unquoted `;`, `&`, `|`, `(`, `)` or newline ends a command, and a
 redirection's target (`>/dev/null`, `>> "$GITHUB_OUTPUT"`, `2>&1`) is not one of its words. Each
 command sheds its leading `VAR=value` assignments and the keywords that precede a command (if,
-then, for, do, time, exec, env, `{`, `}`, …), and the first word left is the command; an
+then, for, do, time, exec, env, `{`, `}`, …) or wrap one (`ci_log_guard` and `ci_log_guard_stderr`,
+.github/scripts/ci-log-guard.sh's, which run the words after them), and the first word left is the
+command; an
 interpreter there (one of INTERPRETERS: bash, sh, dash, zsh, source, `.`) is looked through, past
 its flags and the option name an `-o`, `+o`, `-O` or `+O` takes, to the word after it (`bash -o
 pipefail scripts/x.sh` runs `scripts/x.sh`), and the script string behind its `-c`, like the words
@@ -32,6 +34,9 @@ ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 SKIP_WORDS = {
     "if", "then", "else", "elif", "fi", "do", "done", "while", "until", "for", "in",
     "time", "exec", "env", "!", "{", "}", "case", "esac",
+    # .github/scripts/ci-log-guard.sh's wrappers, and the copy a credentialed release step defines
+    # inline: each runs the words after it as a command, so that command is the one a rule reads.
+    "ci_log_guard", "ci_log_guard_stderr",
 }
 # Transparent in command position: the command is the word after the interpreter and its flags (an
 # `-o`, `+o`, `-O` or `+O`, alone or ending a cluster such as `-eo`, takes the next word as the

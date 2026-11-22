@@ -1833,7 +1833,9 @@ if re.search(UNIT_TEST_PATTERN, f"/{BACKEND_COUNT_AGENT_SECRETS}"):
     raise ValueError(f"the backend count's tests of {BACKEND_COUNT_AGENT_SECRETS} are skipped by the unit step, "
                      f"whose `grep -Ev` takes that package out, so the -skip below skips nothing; name the step "
                      f"that runs that package now and move the skip to it")
-UNIT_TEST_SCRIPT = (f"go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | "
+# pipefail, because the step pipes the whole pipeline into ci-log-guard.sh's block
+# (`{ …; } 2>&1 | ci_log_guard cat`), whose cat would otherwise give the pipeline's status.
+UNIT_TEST_SCRIPT = (f"set -o pipefail\ngo list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | "
                     f"xargs go test -count=1 -timeout {UNIT_TEST_TIMEOUT} "
                     f"-skip {names_pattern(WEB_FIXTURE_TESTS + BACKEND_COUNT_TESTS[BACKEND_COUNT_AGENT_SECRETS])}")
 
@@ -2219,7 +2221,7 @@ BROWSER_EMBEDDER_CONNECTIONS_STEP = "Read the connections the embedder stack's P
 TWO_BUILDS_CONNECTIONS_STEP = "Read the connections the two-build stack's Postgres must allow"
 BROWSER_CONNECTIONS_SCRIPT = """\
 connections=$(go run ./internal/dispatch/store/cmd/connections)
-[[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+[[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number" >&2; exit 1; }
 echo "connections=$connections" >> "$GITHUB_OUTPUT\""""
 BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)"
 BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
@@ -2556,6 +2558,20 @@ SCRIPT_TEST_GATES = [
     harness("disk_watch_test", "Test the machine watch", f"{SCRIPTS}/disk_watch.test.sh", [
         (f"{SCRIPTS}/disk_watch.py", "the module under test"),
     ]),
+    harness("ci_log_guard_test", "Test the log guard that keeps a server's text from becoming a workflow command",
+            f"{SCRIPTS}/ci-log-guard.test.sh", [
+        (f"{SCRIPTS}/ci-log-guard.sh", "the library under test"),
+        (".github/workflows/release.yaml", "the harness reads its npm publish steps' inline guard out of it"),
+        (".github/workflows/release-envoy-listener.yaml", "the harness reads its Determine latest step's inline guard out of it"),
+    ]),
+    harness("check_log_guard_test", "Test the check that every network command a step runs is guarded",
+            f"{SCRIPTS}/check-log-guard.test.sh", [
+        (f"{SCRIPTS}/check-log-guard.sh", "the script under test, symlinked into every fixture"),
+        (f"{SCRIPTS}/shell_commands.py", "the command scanner the check imports, symlinked in beside it"),
+        (".github/log-guard-allow.tsv", "the harness runs the check over a copy of this repository's .github"),
+        (".github/workflows/**", "the harness runs the check over a copy of this repository's .github"),
+        (".github/actions/**", "the harness runs the check over a copy of this repository's .github"),
+    ]),
     # The one harness of the job that is not under .github/scripts and sources no test-lib.sh.
     harness("priorities_seed_check_test", "Test the priorities seed check (a stand-in Dispatch)",
             "scripts/priorities-seed-check.test.sh", [
@@ -2570,6 +2586,8 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh's derived function imports this table to derive the plain step's -run lists"),
         (".github/workflows/ci-job-typecheck.yaml", "check-ci-filters.test.sh runs its darwin vet step's own run text "
                                                     "over a module with a negated tag"),
+        (f"{SCRIPTS}/ci-log-guard.sh", "that run text sources it, and the harness links it into the fixture; a case "
+                                       "reads a step guarded by it"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
         (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh's fixture function)"),

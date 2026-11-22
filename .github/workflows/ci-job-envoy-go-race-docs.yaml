@@ -88,7 +88,9 @@ jobs:
       # because the job restores the Go build cache above, and a cached pass must not stand in
       # for a run.
       - name: Race-test the document service
-        run: RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/
+        run: |
+          . ../../.github/scripts/ci-log-guard.sh
+          RACE_MEM_LIMIT_KB=8388608 ci_log_guard ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

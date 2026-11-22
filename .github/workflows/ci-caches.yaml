@@ -159,7 +159,9 @@ jobs:
       # the step builds them in about two minutes (run 43990864191).
       - name: Build what typecheck builds of the daemon module
         if: steps.go-daemon.outputs.cache-hit != 'true'
-        run: go vet -tags e2e ./...
+        run: |
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go vet -tags e2e ./...
         working-directory: packages/daemon
 
       # What daemon-go builds: the test binary of every package, and the race build of the five
@@ -175,8 +177,9 @@ jobs:
       - name: Build what daemon-go builds of the daemon module
         if: steps.go-daemon.outputs.cache-hit != 'true' && runner.arch == 'X64'
         run: |
-          go test -c -o /dev/null ./...
-          go test -c -o /dev/null -race ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/ ./internal/intake/ ./internal/shimwire/
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go test -c -o /dev/null ./...
+          ci_log_guard go test -c -o /dev/null -race ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/ ./internal/intake/ ./internal/shimwire/
         working-directory: packages/daemon
 
       - if: steps.go-daemon.outputs.cache-hit != 'true'
@@ -282,7 +285,9 @@ jobs:
       # builds them in under three minutes (run 43990864191).
       - name: Build the listener and natsd of the envoy module
         if: steps.go-envoy.outputs.cache-hit != 'true'
-        run: go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd
+        run: |
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd
         working-directory: packages/envoy
 
       - if: steps.go-envoy.outputs.cache-hit != 'true'
@@ -310,8 +315,9 @@ jobs:
       - name: Build the test binary of every package of the envoy module
         if: steps.go-envoy-test.outputs.cache-hit != 'true'
         run: |
-          go test -c -o /dev/null ./...
-          go test -c -o /dev/null -tags natslive ./internal/testnats/
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go test -c -o /dev/null ./...
+          ci_log_guard go test -c -o /dev/null -tags natslive ./internal/testnats/
         working-directory: packages/envoy
 
       - if: steps.go-envoy-test.outputs.cache-hit != 'true'
@@ -441,17 +447,18 @@ jobs:
       - name: Build what envoy-infra-go builds
         if: steps.go-envoy-infra.outputs.cache-hit != 'true'
         run: |
+          . ../../../.github/scripts/ci-log-guard.sh
           flags=$(python3 ../../../.github/scripts/go_build_tags.py . darwin arm64)
-          go vet -tags pulumilive,natslive ./...
+          ci_log_guard go vet -tags pulumilive,natslive ./...
           while IFS= read -r flag; do
-            GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
+            GOOS=darwin GOARCH=arm64 ci_log_guard go vet "$flag" ./...
           done <<< "$flags"
           if [ "$RUNNER_ARCH" = ARM64 ]; then
             scripts/race-unit.sh compile
           else
-            go test -c -o /dev/null ./...
+            ci_log_guard go test -c -o /dev/null ./...
           fi
-          go test -c -o /dev/null -tags natslive ./core/ ./seed/ ./gcp/
+          ci_log_guard go test -c -o /dev/null -tags natslive ./core/ ./seed/ ./gcp/
         working-directory: packages/envoy/infra
 
       - if: steps.go-envoy-infra.outputs.cache-hit != 'true'

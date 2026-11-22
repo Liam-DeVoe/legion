@@ -236,6 +236,14 @@ on:
         description: "ci.yaml's needs.changes.outputs.disk_watch_test: disk_watch.test.sh and what it tests."
         type: string
         required: true
+      ci_log_guard_test:
+        description: "ci.yaml's needs.changes.outputs.ci_log_guard_test: ci-log-guard.test.sh and what it tests."
+        type: string
+        required: true
+      check_log_guard_test:
+        description: "ci.yaml's needs.changes.outputs.check_log_guard_test: check-log-guard.test.sh and what it tests."
+        type: string
+        required: true
       priorities_seed_check_test:
         description: >-
           ci.yaml's needs.changes.outputs.priorities_seed_check_test:
@@ -515,6 +523,17 @@ jobs:
       - name: Test the race memory sampler
         if: inputs.changes-result != 'success' || inputs.race_memory_test == 'true'
         run: .github/scripts/race_memory.test.sh
+
+      # The stop-commands block every guarded network command's output goes through, read by a
+      # parser of the runner's rules, and the copy the release steps that hold credentials define
+      # inline, read out of their workflows.
+      - name: Test the log guard that keeps a server's text from becoming a workflow command
+        if: inputs.changes-result != 'success' || inputs.ci_log_guard_test == 'true'
+        run: .github/scripts/ci-log-guard.test.sh
+
+      - name: Test the check that every network command a step runs is guarded
+        if: inputs.changes-result != 'success' || inputs.check_log_guard_test == 'true'
+        run: .github/scripts/check-log-guard.test.sh
 
       # The machine watch's falling-least case watches a tmpfs it mounts in an unprivileged user
       # and mount namespace, so that no other writer moves the free space it reads, and it fails

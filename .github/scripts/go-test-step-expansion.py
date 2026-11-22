@@ -147,7 +147,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from ci_filter_coverage import called_workflows, script_lines, step_workdir
+from ci_filter_coverage import called_workflows, script_lines, step_workdir, unguarded
 
 ROOT = Path(__file__).resolve().parents[2]
 # Repository-relative, as the documents below are keyed and as every message names them.
@@ -410,7 +410,7 @@ AUDITED_SCRIPTS = {
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
                 "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
         },
-        sha256="668c7223b926bbad0066b0866b8f308f7c08db55ae4db167ea33bf8769401e6d",
+        sha256="7fe0921b56f25cdb5865a619ae3bc7f40490b666a3c47892943186b1b0482550",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
@@ -424,7 +424,7 @@ AUDITED_SCRIPTS = {
                 f"go test -json -count=1 -timeout 5m -run '^({'|'.join(BACKEND_COUNT_TESTS)})$' "
                 "./cmd/cipher/ ./internal/cipher/api/",
         },
-        sha256="bea62eaf32791a70c86e0350053bda35bae7dfa81685ad3338022849f0587a0e",
+        sha256="4110a77a6aa8f5cf5304b2b1b8093b4d6b75ae085e68b9b32d7764e649fcbd2c",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
@@ -548,12 +548,13 @@ def steps_of(found: dict) -> list[Step]:
     """Every step of those documents whose run: holds a `go test` and whose directory is one of
     the three modules. The directory and the comment-free lines are read with
     check-ci-filters.sh's own helpers (ci_filter_coverage.step_workdir, script_lines), so this
-    tool and the gate agree on what a step runs and where."""
+    tool and the gate agree on what a step runs and where, and the run: through the gate's reader
+    of .github/scripts/ci-log-guard.sh (unguarded), whose wrapper changes no test a command runs."""
     steps = []
     for path, document in found.items():
         for job, body in (document.get("jobs") or {}).items():
             for index, step in enumerate((body or {}).get("steps", []) or []):
-                script = step.get("run")
+                script = unguarded(step.get("run") or "")
                 if not script:
                     continue
                 workdir = step_workdir(document, body, step)

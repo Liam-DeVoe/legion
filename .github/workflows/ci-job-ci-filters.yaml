@@ -48,6 +48,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: .github/scripts/check-workflow-files.sh
 
+      # Every network client a step runs goes through .github/scripts/ci-log-guard.sh or is on
+      # .github/log-guard-allow.tsv with its reason, so a server's reply in the log stays text.
+      - name: Check every network command a step runs is guarded or allowed with its reason
+        if: ${{ !cancelled() }}
+        run: .github/scripts/check-log-guard.sh
+
       # actionlint 1.7.12, the copy .github/ci-images.yaml's actionlint row names, with
       # .github/actionlint.yaml; its shellcheck reads each inline run: body at warning severity.
       - name: Check every workflow file with actionlint

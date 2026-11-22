@@ -78,10 +78,14 @@ jobs:
       # host shapes a rules file may hold, which no seed decodes to, through both validations; and
       # a host-less entry carrying guidance, a field the generator never writes.
       - name: Compare the Go airlock with the model over the seed corpus
-        run: go test -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelReadsAHostlessEntryWithGuidance)$' ./internal/cipher/proxyrules/
+        run: |
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go test -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelReadsAHostlessEntryWithGuidance)$' ./internal/cipher/proxyrules/
         working-directory: packages/envoy
       - name: Fuzz the Go airlock against the model
-        run: go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/cipher/proxyrules/
+        run: |
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/cipher/proxyrules/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

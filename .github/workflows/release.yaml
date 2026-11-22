@@ -716,10 +716,24 @@ jobs:
           VERSION: ${{ needs.pi_envoy_build.outputs.version }}
           STEM: ${{ steps.pi_envoy_handed.outputs.stem }}
         run: |
+          # The stop-commands block of .github/scripts/ci-log-guard.sh, written inline because this
+          # job holds the release credentials and runs no script of this repository
+          # (.github/scripts/check-release-credentials.sh): the same format, a fresh token from
+          # /dev/urandom, both markers on stderr, the end marker on a line of its own after the
+          # command exits. The registry's reply that npm copies to the log stays text.
+          ci_log_guard_stderr() {
+            local t s=0
+            t=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+            [ "${#t}" -eq 32 ] || return 1
+            printf '::stop-commands::%s\n' "$t" >&2
+            "$@" || s=$?
+            printf '\n::%s::\n' "$t" >&2
+            return "$s"
+          }
           if npm view "$(jq -r .name package.json)@$VERSION" version >/dev/null 2>&1; then
             echo "npm already has $VERSION; skipping publish"
           else
-            npm publish "$RUNNER_TEMP/pi-envoy-tarball/$STEM.tgz" --access public --provenance
+            ci_log_guard_stderr npm publish "$RUNNER_TEMP/pi-envoy-tarball/$STEM.tgz" --access public --provenance >&2
           fi
         working-directory: packages/pi-envoy
 
@@ -803,10 +817,24 @@ jobs:
           VERSION: ${{ needs.pi_legion_build.outputs.version }}
           STEM: ${{ steps.pi_legion_handed.outputs.stem }}
         run: |
+          # The stop-commands block of .github/scripts/ci-log-guard.sh, written inline because this
+          # job holds the release credentials and runs no script of this repository
+          # (.github/scripts/check-release-credentials.sh): the same format, a fresh token from
+          # /dev/urandom, both markers on stderr, the end marker on a line of its own after the
+          # command exits. The registry's reply that npm copies to the log stays text.
+          ci_log_guard_stderr() {
+            local t s=0
+            t=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+            [ "${#t}" -eq 32 ] || return 1
+            printf '::stop-commands::%s\n' "$t" >&2
+            "$@" || s=$?
+            printf '\n::%s::\n' "$t" >&2
+            return "$s"
+          }
           if npm view "$(jq -r .name package.json)@$VERSION" version >/dev/null 2>&1; then
             echo "npm already has $VERSION; skipping publish"
           else
-            npm publish "$RUNNER_TEMP/pi-legion-tarball/$STEM.tgz" --access public --provenance
+            ci_log_guard_stderr npm publish "$RUNNER_TEMP/pi-legion-tarball/$STEM.tgz" --access public --provenance >&2
           fi
         working-directory: packages/pi-legion
 
@@ -889,10 +917,24 @@ jobs:
           VERSION: ${{ needs.claude_envoy_build.outputs.version }}
           STEM: ${{ steps.claude_envoy_handed.outputs.stem }}
         run: |
+          # The stop-commands block of .github/scripts/ci-log-guard.sh, written inline because this
+          # job holds the release credentials and runs no script of this repository
+          # (.github/scripts/check-release-credentials.sh): the same format, a fresh token from
+          # /dev/urandom, both markers on stderr, the end marker on a line of its own after the
+          # command exits. The registry's reply that npm copies to the log stays text.
+          ci_log_guard_stderr() {
+            local t s=0
+            t=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+            [ "${#t}" -eq 32 ] || return 1
+            printf '::stop-commands::%s\n' "$t" >&2
+            "$@" || s=$?
+            printf '\n::%s::\n' "$t" >&2
+            return "$s"
+          }
           if npm view "$(jq -r .name package.json)@$VERSION" version >/dev/null 2>&1; then
             echo "npm already has $VERSION; skipping publish"
           else
-            npm publish "$RUNNER_TEMP/claude-envoy-tarball/$STEM.tgz" --access public --provenance
+            ci_log_guard_stderr npm publish "$RUNNER_TEMP/claude-envoy-tarball/$STEM.tgz" --access public --provenance >&2
           fi
         working-directory: packages/claude-envoy
 

@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# Tests for check-log-guard.sh: a network client a step runs outside ci-log-guard.sh fails by name
+# unless .github/log-guard-allow.tsv names it with a reason; a routed one passes; a row naming no
+# command, or giving no reason, fails; and a tree with no workflow fails rather than passes.
+#
+# The first two cases run over a copy of this repository's own .github: unplanted it passes, and
+# with one unguarded step planted it fails naming that step. The rest run over fixture trees.
+#
+# Run from anywhere: .github/scripts/check-log-guard.test.sh
+# CI runs it in ci.yaml's test job.
+set -euo pipefail
+shopt -s inherit_errexit
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+# shellcheck source=.github/scripts/test-lib.sh
+source "$script_dir/test-lib.sh"
+
+# run_check <root>: runs the check in <root>, leaving its output in $out and its exit in $status.
+run_check() {
+  status=0
+  out=$("$1/.github/scripts/check-log-guard.sh" 2>&1) || status=$?
+}
+
+# fixture <name> <workflow run: body> [<allow rows>]: a tree holding the check, one workflow whose
+# one step runs the body, and an allow list of the rows given.
+fixture() {
+  local root="$work/$1"
+  mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/.github/actions"
+  ln -s "$script_dir/check-log-guard.sh" "$root/.github/scripts/check-log-guard.sh"
+  ln -s "$script_dir/shell_commands.py" "$root/.github/scripts/shell_commands.py"
+  {
+    printf 'on: push\njobs:\n  app:\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Fetch\n        run: |\n'
+    # shellcheck disable=SC2001 # every line of a multi-line body
+    sed 's/^/          /' <<<"$2"
+  } >"$root/.github/workflows/app.yaml"
+  printf '# rows\n%s' "${3:-}" >"$root/.github/log-guard-allow.tsv"
+  echo "$root"
+}
+
+echo "case: this repository's own tree passes, and an unguarded step planted in it fails by name"
+repo=$(cd "$script_dir/../.." && pwd)
+mkdir -p "$work/repo"
+cp -r "$repo/.github" "$work/repo/"
+run_check "$work/repo"
+check "the tree as it is passes" "$(is "$status" 0)"
+check "and says how many commands it read" "$(contains "$out" 'unguarded network commands, every one on')"
+cat >>"$work/repo/.github/workflows/ci-job-test.yaml" <<'YAML'
+  planted:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Planted test step
+        run: go test ./...
+YAML
+run_check "$work/repo"
+check "a planted go test outside the guard fails" "$(is "$status" 1)"
+check "naming the file, the job, the step and the command" \
+  "$(contains "$out" '::error file=.github/workflows/ci-job-test.yaml::job planted step "Planted test step" runs .go test ./....')"
+
+echo "case: each routed form passes"
+root=$(fixture routed "$(cat <<'SH'
+. .github/scripts/ci-log-guard.sh
+ci_log_guard go test ./...
+GOOS=darwin ci_log_guard go vet ./...
+v=$(ci_log_guard_stderr gh api repos/o/r)
+set -o pipefail
+{ go list ./... | xargs go test; } 2>&1 | ci_log_guard cat
+bun install --frozen-lockfile
+git status
+echo "go test is what runs"
+# curl https://example.com
+SH
+)")
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "and reads no command as unguarded" "$(contains "$out" ' 0 unguarded network commands')"
+
+echo "case: each unguarded form fails by name"
+root=$(fixture unrouted "$(cat <<'SH'
+GOOS=linux go build ./cmd/x
+v=$(gh api repos/o/r)
+sudo apt-get install -y zsh
+bunx playwright install chromium
+git fetch origin main
+sh -c 'curl -sS https://example.com'
+docker pull ghcr.io/o/i
+SH
+)")
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+for found in 'go build ./cmd/x' 'gh api repos/o/r' 'sudo apt-get install -y zsh' 'bunx playwright install chromium' \
+  'git fetch origin main' 'curl -sS https://example.com' 'docker pull ghcr.io/o/i'; do
+  check "names \`$found\`" "$(contains "$out" "step \"Fetch\" runs \`$found\`")"
+done
+check "and counts seven problems" "$(contains "$out" '^::error::check-log-guard: 7 problem(s)$')"
+
+echo "case: a row with its reason allows its command, and only that one"
+root=$(fixture allowed 'docker pull ghcr.io/o/i' \
+  "$(printf '.github/workflows/app.yaml\tapp\tFetch\tdocker\tthe image is pulled by digest and its text was probed')")
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+
+echo "case: a row with no reason fails"
+root=$(fixture no-reason 'docker pull ghcr.io/o/i' "$(printf '.github/workflows/app.yaml\tapp\tFetch\tdocker\t')")
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the row" "$(contains "$out" 'row 2 is not file, job, step, client and a reason')"
+
+echo "case: a row naming no unguarded command fails"
+root=$(fixture stale 'ci_log_guard docker pull ghcr.io/o/i' \
+  "$(printf '.github/workflows/app.yaml\tapp\tFetch\tdocker\tpulled by digest')")
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the row and the step" "$(contains "$out" 'row 2 names job app step "Fetch" of .github/workflows/app.yaml running docker unguarded, and no such step does')"
+
+echo "case: a tree with no workflow fails rather than passes"
+root=$(fixture empty 'true')
+rm "$root/.github/workflows/app.yaml"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "saying it checked nothing" "$(contains "$out" 'read no workflow file and no composite action')"
+
+summary "check-log-guard.sh"

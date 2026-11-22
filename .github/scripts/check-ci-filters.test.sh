@@ -2115,6 +2115,30 @@ check "names the file, the step, the gate and both lines" \
 check "and still reads the step as its runs, not as everything" \
   "$(is "$(contains "$out" '::error file=mod/other/other.go::')" false)"
 
+# .github/scripts/ci-log-guard.sh's wrapper changes nothing a go command compiles, so a guarded step
+# reads as the commands behind it: its pin holds, its runs' closure is what it reads, and the file
+# it sources is a read of its job, named when its filter misses it.
+echo "case: a step that sources ci-log-guard.sh and runs its go command under the wrapper reads as its pin"
+root=$(fixture exact-step-guarded)
+exact_step_table "$root"
+replace "$root/.github/workflows/ci.yaml" $'        run: |\n          for pkg' \
+  $'        run: |\n          . ../.github/scripts/ci-log-guard.sh\n          for pkg'
+replace "$root/.github/workflows/ci.yaml" 'go test -count=1 "$pkg"' 'ci_log_guard go test -count=1 "$pkg"'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the guard as a read of the job its filter misses" \
+  "$(contains "$out" '::error file=.github/scripts/ci-log-guard.sh::app reads .github/scripts/ci-log-guard.sh, which its filter app does not match, so a change to it skips the job: job app runs a step that sources it')"
+check "and as nothing else: the step is on its pin" "$(is "$(contains "$out" 'is off the script and directory')" false)"
+ln -s "$script_dir/ci-log-guard.sh" "$root/.github/scripts/ci-log-guard.sh"
+replace "$root/.github/ci-filters.yaml" "  - 'fixtures/**'" $'  - \'fixtures/**\'\n  - \'.github/scripts/ci-log-guard.sh\''
+run_check "$root"
+check "passes once its filter reads the guard" "$(is "$status" 0)"
+check "and counts the runs' closure and the guard" "$(contains "$out" '^report: app: 8 files, 0 uncovered (filter app)$')"
+replace "$root/.github/workflows/ci.yaml" 'ci_log_guard go test -count=1 "$pkg"' 'ci_log_guard go test -count=2 "$pkg"'
+run_check "$root"
+check "still holds the command behind the wrapper to the pin" \
+  "$(contains "$out" 'its line 2 reads `  go test -count=2 ".pkg"` where the pinned text.s reads `  go test -count=1 ".pkg"`')"
+
 echo "case: a step pinned whole that runs in another directory is refused, naming both"
 root=$(fixture exact-step-moved)
 exact_step_table "$root"
@@ -2885,6 +2909,8 @@ jobs = yaml.safe_load(open(sys.argv[1]))["jobs"].values()
 step = next(s for j in jobs for s in j["steps"] if s.get("name", "").startswith("Vet the Go daemon for darwin"))
 open(sys.argv[2], "w").write(step["run"])
 PY
+# The step sources ci-log-guard.sh from the module's ../../.github/scripts, as packages/daemon's does.
+ln -s "$script_dir/ci-log-guard.sh" "$root/.github/scripts/ci-log-guard.sh"
 status=0
 loop=$(cd "$root/deep/module" && GOWORK=off bash -e "$root/step.sh" 2>&1) || status=$?
 check "fails" "$(is "$status" 1)"

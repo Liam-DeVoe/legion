@@ -122,13 +122,83 @@ def read_repository_text(path: Path) -> str:
 def load_repository_yaml(path: Path):
     """Parse a repository YAML file, retaining its path if the parser refuses it. A mapping that
     holds one key twice is refused (UniqueKeyLoader), as js-yaml and GitHub's workflow parser
-    refuse it, rather than read as its last copy."""
+    refuse it, rather than read as its last copy. A workflow's or a composite action's steps come
+    back read through the log guard (unguard_steps)."""
     try:
-        return yaml.load(read_repository_text(path), Loader=UniqueKeyLoader)
+        document = yaml.load(read_repository_text(path), Loader=UniqueKeyLoader)
     except RepositoryInputError:
         raise
     except yaml.YAMLError as exc:
         raise RepositoryInputError(repository_path(path), exc) from exc
+    unguard_steps(repository_path(path) if path.is_absolute() else str(path), document)
+    return document
+
+
+# .github/scripts/ci-log-guard.sh, which a step runs a network command under so that a server's
+# text the command copies to the log cannot become a workflow command: `ci_log_guard CMD` and
+# `ci_log_guard_stderr CMD` run CMD, and `{ CMD; } 2>&1 | ci_log_guard cat` runs CMD's pipeline,
+# each with its output inside a stop-commands block, and none changes what CMD compiles, reads or
+# runs. So every rule here reads a step as the commands behind the wrapper: load_repository_yaml
+# takes the wrapper, and the line that sources it, out of each step's run: (unguarded). The file
+# itself stays a read: of each job whose steps source it (GUARDED_JOBS), and of each gate that reads
+# a script that sources it (log_guard_read).
+LOG_GUARD = ".github/scripts/ci-log-guard.sh"
+LOG_GUARD_SOURCE = re.compile(r"\.[ \t]+(?:\.\./)*\.github/scripts/ci-log-guard\.sh")
+LOG_GUARD_GROUP = re.compile(r"\{[ \t]*(.*);[ \t]*\}[ \t]*2>&1[ \t]*\|[ \t]*ci_log_guard[ \t]+cat")
+LOG_GUARD_WORD = re.compile(r"(?<![\w-])ci_log_guard(?:_stderr)?[ \t]+")
+# A line of a script that sources the guard, in any form: `. <path>/ci-log-guard.sh`.
+LOG_GUARD_SCRIPT_SOURCE = re.compile(r"(?m)^[ \t]*\.[ \t].*ci-log-guard\.sh")
+# (workflow or action path, job id) of each job a step of which sources the guard.
+GUARDED_JOBS: set = set()
+
+
+def unguarded(script: str) -> str:
+    """A run: script with the log guard taken out: its source line dropped, `ci_log_guard` and
+    `ci_log_guard_stderr` dropped before the command they run, and a guarded pipeline group read as
+    its pipeline. Every other line is kept byte for byte."""
+    lines = []
+    for line in script.split("\n"):
+        body = line.strip(" \t")
+        if LOG_GUARD_SOURCE.fullmatch(body):
+            continue
+        group = LOG_GUARD_GROUP.fullmatch(body)
+        if group or LOG_GUARD_WORD.search(body):
+            line = line[:len(line) - len(line.lstrip(" \t"))] + LOG_GUARD_WORD.sub("", group.group(1) if group else body)
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def unguard_steps(path: str, document) -> None:
+    """Read every step of a workflow or a composite action through the log guard, in place, and
+    note each job a step of which sources it."""
+    if not isinstance(document, dict) or not path.startswith((".github/workflows/", ".github/actions/")):
+        return
+    holders = [(name, job) for name, job in (document.get("jobs") or {}).items() if isinstance(job, dict)]
+    if isinstance(document.get("runs"), dict):
+        holders.append(("", document["runs"]))
+    for name, holder in holders:
+        for step in holder.get("steps") or []:
+            if isinstance(step, dict) and isinstance(step.get("run"), str):
+                if any(LOG_GUARD_SOURCE.fullmatch(line.strip(" \t")) for line in step["run"].split("\n")):
+                    GUARDED_JOBS.add((path, name))
+                step["run"] = unguarded(step["run"])
+
+
+_SOURCES_LOG_GUARD: dict = {}
+
+
+def log_guard_read(g, reason: dict, guarded_owners: set) -> str:
+    """Why a gate reads LOG_GUARD, or '': its job runs a step that sources it, or a script the gate
+    reads sources it."""
+    if g.job in guarded_owners:
+        return f"job {g.job} runs a step that sources it"
+    for f in sorted(f for f in reason if f.endswith(".sh")):
+        if f not in _SOURCES_LOG_GUARD:
+            path = REPO / f
+            _SOURCES_LOG_GUARD[f] = path.is_file() and bool(LOG_GUARD_SCRIPT_SOURCE.search(path.read_text()))
+        if _SOURCES_LOG_GUARD[f]:
+            return f"{f}, which gate {g.filter} reads, sources it"
+    return ""
 
 
 def load_repository_yaml_text(path: str, text: str):
@@ -1628,7 +1698,7 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
                 problems.append(error(r.source, f"{r.source} no longer holds `{r.text}`, the go command "
                                                 f"gate {g.filter} lists; update or remove the Run"))
                 continue
-            source_text = read_repository_text(REPO / r.source)
+            source_text = unguarded(read_repository_text(REPO / r.source))
             if squash(r.text) not in squash(source_text):
                 problems.append(error(r.source, f"{r.source} no longer holds `{r.text}`, the go command "
                                                 f"gate {g.filter} lists; update or remove the Run"))
@@ -2835,6 +2905,7 @@ def check() -> int:
     # computed a second time.
     gate_files: dict = defaultdict(GateFiles)
     fallback = None  # module_trees_and_go_files(files), once a gate needs it
+    guarded_owners = {own for own, path, name, _, _ in step_holders(documents) if (path, name) in GUARDED_JOBS}
     for g in data.GATES:
         if g.filter not in filters:
             continue
@@ -2857,6 +2928,9 @@ def check() -> int:
         for glob, why in whys.items():
             for f in expander.expand(glob):
                 reason.setdefault(f, why[0])
+        guard_why = log_guard_read(g, reason, guarded_owners)
+        if guard_why:
+            reason.setdefault(LOG_GUARD, guard_why)
         # An unreduced command counts as reading every Go file of the repository and every file
         # under a Go module's directory, and fails naming the command when its filter misses one.
         held = []

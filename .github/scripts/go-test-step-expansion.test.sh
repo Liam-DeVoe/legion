@@ -88,11 +88,11 @@ check "a wrapper with no go command behind it is left in place" \
   "$(is "$(command_of '../../.github/scripts/race_memory.py --help')" "../../.github/scripts/race_memory.py --help")"
 check "a bare assignment is left in place" "$(is "$(command_of 'NAME=value')" "NAME=value")"
 
-echo "case: the two steps whose lines this harness exists for are read as ci.yaml writes them"
+echo "case: the two steps whose lines this harness exists for are read as ci.yaml writes them, through ci-log-guard.sh's reader"
 for file in .github/workflows/ci-job-envoy-go-race-docs.yaml .github/workflows/ci-job-envoy-go-docs-finalizers.yaml; do
   found=$(py 'import pathlib, yaml
 document = yaml.safe_load(pathlib.Path(ex.ROOT / sys.argv[1]).read_text())
-lines = [step["run"].strip()
+lines = [ex.unguarded(step["run"]).strip()
          for job in document["jobs"].values() for step in job["steps"] if "run" in step]
 print(sum(1 for line in lines
           for words, _ in [ex.go_command(line)]

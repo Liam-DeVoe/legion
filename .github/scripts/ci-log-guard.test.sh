@@ -13,16 +13,23 @@
 #   - `::stop-commands::<token>` stops every command until a line that parses as the command
 #     `<token>` (src/Runner.Worker/ActionCommandManager.cs:86-124).
 # The runner keeps one stop state for the step and handles the two streams in an order nobody
-# promises, so the parser reads each log in three orders, and a case passes only when all three
+# promises, so the parser reads each log in four orders, and a case passes only when all four
 # agree: each stream with a stop state of its own ("per-stream", where a block on one stream
 # covers nothing on the other), all of standard error and then all of standard output under one
-# state ("stderr-first", what one batch of ProcessInvoker.cs:417-440 does), and the reverse
-# ("stdout-first").
+# state ("stderr-first", what one batch of ProcessInvoker.cs:417-440 does), the reverse
+# ("stdout-first"), and standard output read while standard error's first block is open
+# ("stdout-in-block", the order that drops a step's own command written on stdout beside a block).
 #
 # The controls: the same stand-in client run with no guard shows every planted command in every
-# order, so the parser can see each form; and a stand-in guard that writes its markers on standard
+# order, so the parser can see each form; a stand-in guard that writes its markers on standard
 # output, around a client writing on standard error, shows the client's commands, so the parser
-# can see a block on the wrong stream.
+# can see a block on the wrong stream; and a step's own warning written on standard output beside
+# a block is dropped in the stdout-in-block order, so the parser can see that loss.
+#
+# The four release steps that hold credentials define the guard inline (they run no script of
+# this repository): each one's run: text is read out of its workflow, its definition driven with
+# the stand-in client as the library is, and each npm publish step run whole against a stand-in
+# npm; the control is the same text with the inline guard taken out.
 #
 # Run from anywhere: .github/scripts/ci-log-guard.test.sh
 # CI runs it in ci.yaml's test job.
@@ -145,6 +152,18 @@ for order, first, second in (("stderr-first", "stderr", "stdout"), ("stdout-firs
         for line in streams[stream]:
             st.feed(order, stream, line, out)
     st.end(order, first + "+" + second, out)
+# stdout-in-block: standard error up to its first stop, then all of standard output, then the rest
+# of standard error, all under one state. A batch hands the parser its standard error lines first
+# (ProcessInvoker.cs:417-440), so a stdout line written beside a block can reach it while the block
+# is open; the runner's own reader dropped a step's own `::warning::` written on stdout just after
+# a block in 32 of 50 runs. A step's own command beside a block survives this order only on stderr.
+stops = [i for i, line in enumerate(streams["stderr"]) if (parse(line, REGISTERED) or ("",))[0] == "stop-commands"]
+cut = stops[0] + 1 if stops else len(streams["stderr"])
+st = State()
+for stream, lines in (("stderr", streams["stderr"][:cut]), ("stdout", streams["stdout"]), ("stderr", streams["stderr"][cut:])):
+    for line in lines:
+        st.feed("stdout-in-block", stream, line, out)
+st.end("stdout-in-block", "stderr+stdout", out)
 print("\n".join(out))
 PY
 
@@ -189,7 +208,7 @@ echo "Controls: the parser sees what the runner would act on"
 for attempt in 0 7; do
   step "bare-$attempt" "'$work/client' $attempt"
   got=$(parse "$work/bare-$attempt.out" "$work/bare-$attempt.err")
-  for order in per-stream stderr-first stdout-first; do
+  for order in per-stream stderr-first stdout-first stdout-in-block; do
     for s in out err; do
       for form in cr tab space legacy; do
         check "no guard, exit $attempt, $order: the parser sees planted-$s-$form" \
@@ -228,7 +247,7 @@ for attempt in 0 7; do
     "$(is "$(count "$got" planted)" 0)"
   check "guard, exit $attempt: no block is left stopped" \
     "$(is "$(count "$got" STOPPED-AT-END)" 0)"
-  for order in per-stream stderr-first stdout-first; do
+  for order in per-stream stderr-first stdout-first stdout-in-block; do
     check "guard, exit $attempt, $order: the step's own warning before the block works" \
       "$(is "$(count "$got" "^$order	stderr	warning	own-before\$")" 1)"
     check "guard, exit $attempt, $order: the step's own warning after the block works" \
@@ -281,6 +300,23 @@ for order in per-stream stderr-first stdout-first; do
 done
 lib=$real_lib
 
+# A step's own warning written on standard output just after a block, where the runner's own
+# reader dropped it in 32 of 50 runs: the stdout-in-block order drops it, and the same warning on
+# standard error survives every order.
+step own-on-stdout "
+  ci_log_guard '$work/client' 0
+  echo '::warning::own-on-stdout'
+  echo '::warning::own-on-stderr' >&2"
+got=$(parse "$work/own-on-stdout.out" "$work/own-on-stdout.err")
+check "control: an own warning on stdout beside a block is dropped in the stdout-in-block order" \
+  "$(is "$(count "$got" "^stdout-in-block	stdout	warning	own-on-stdout\$")" 0)"
+check "control: and the per-stream order still sees it, so the order is what drops it" \
+  "$(is "$(count "$got" "^per-stream	stdout	warning	own-on-stdout\$")" 1)"
+for order in per-stream stderr-first stdout-first stdout-in-block; do
+  check "the same own warning on stderr beside a block works, $order" \
+    "$(is "$(count "$got" "^$order	stderr	warning	own-on-stderr\$")" 1)"
+done
+
 echo
 echo "ci_log_guard_stderr: a captured stdout is a value with no marker in it"
 
@@ -306,6 +342,112 @@ done
 step value-file "ci_log_guard_stderr '$work/client' 0 >'$work/value-file.value'"
 check "stderr guard to a file: the file holds no marker" \
   "$(is "$(grep -c -e 'stop-commands' -e '^::[0-9a-f]\{32\}::$' "$work/value-file.value" || true)" 0)"
+
+echo
+echo "The inline guard of the release steps that hold credentials"
+
+# Each step of the two release workflows that defines ci_log_guard_stderr inline, read out of the
+# workflow as GitHub hands it to bash: its run: text in inline.<n>.run, the definition alone in
+# inline.<n>.def, and the text with the guard taken out (the definition dropped, each call left
+# as the bare command) in inline.<n>.bare. One line per step: <n>, file, step name, and whether it
+# is an npm publish step.
+repo=$(cd "$script_dir/../.." && pwd)
+mapfile -t inline < <(python3 - "$repo" "$work" <<'PY'
+import pathlib
+import re
+import sys
+
+import yaml
+
+repo, work = sys.argv[1:3]
+n = 0
+for rel in (".github/workflows/release.yaml", ".github/workflows/release-envoy-listener.yaml"):
+    for job in (yaml.safe_load(pathlib.Path(repo, rel).read_text()).get("jobs") or {}).values():
+        for step in job.get("steps") or []:
+            run = step.get("run") or ""
+            lines = run.split("\n")
+            starts = [i for i, line in enumerate(lines) if line.strip() == "ci_log_guard_stderr() {"]
+            if not starts:
+                continue
+            start = starts[0]
+            end = next(i for i in range(start, len(lines)) if lines[i].strip() == "}")
+            n += 1
+            pathlib.Path(work, f"inline.{n}.run").write_text(run)
+            pathlib.Path(work, f"inline.{n}.def").write_text("\n".join(lines[start:end + 1]) + "\n")
+            bare = lines[:start] + lines[end + 1:]
+            bare = [re.sub(r"\bci_log_guard_stderr ", "", line) for line in bare]
+            pathlib.Path(work, f"inline.{n}.bare").write_text("\n".join(bare))
+            publish = "npm publish" in run
+            print(f"{n}\t{rel}\t{step.get('name')}\t{'publish' if publish else 'other'}")
+PY
+)
+check "the reader finds the four release steps that define the guard inline" "$(is "${#inline[@]}" 4)"
+
+# A stand-in npm for a whole publish step: `npm view` finds no published version, and `npm publish`
+# answers as a registry's 4xx would have it print, planting each form on both streams, and exits
+# with $NPM_EXIT.
+mkdir -p "$work/npm-bin" "$work/package"
+cat > "$work/npm-bin/npm" <<SH
+#!/usr/bin/env bash
+case "\$1" in
+  view) exit 1 ;;
+  publish) exec '$work/client' "\${NPM_EXIT:-0}" ;;
+esac
+echo "unexpected npm \$*" >&2
+exit 2
+SH
+chmod +x "$work/npm-bin/npm"
+echo '{"name": "@example/plugin"}' >"$work/package/package.json"
+
+# publish_step <name> <script>: runs a publish step's text as the runner does (bash -e, in the
+# package's directory, the step's env set), npm the stand-in.
+publish_step() {
+  local name=$1 script=$2 status=0
+  (cd "$work/package" && PATH="$work/npm-bin:$PATH" VERSION=1.2.3 STEM=example RUNNER_TEMP="$work" \
+    bash -e "$script") >"$work/$name.out" 2>"$work/$name.err" || status=$?
+  echo "$status" >"$work/$name.status"
+}
+
+real_lib=$lib
+for row in "${inline[@]}"; do
+  IFS=$'\t' read -r n file name kind <<<"$row"
+  lib="$work/inline.$n.def"
+  for attempt in 0 7; do
+    step "inline-$n-$attempt" "
+      ci_log_guard_stderr '$work/client' $attempt >&2 && rc=0 || rc=\$?
+      echo '::warning::own-after' >&2
+      exit \$rc"
+    got=$(parse "$work/inline-$n-$attempt.out" "$work/inline-$n-$attempt.err")
+    check "$file \"$name\", its inline guard, exit $attempt: no planted command in any order" \
+      "$(is "$(count "$got" planted)" 0)"
+    check "$file \"$name\", its inline guard, exit $attempt: the step's own warning after it works" \
+      "$(is "$(count "$got" "^stdout-in-block	stderr	warning	own-after\$")" 1)"
+    check "$file \"$name\", its inline guard, exit $attempt: the command's exit status comes back" \
+      "$(is "$(cat "$work/inline-$n-$attempt.status")" "$attempt")"
+  done
+  if [ "$kind" = publish ]; then
+    for attempt in 0 1; do
+      NPM_EXIT=$attempt publish_step "publish-$n-$attempt" "$work/inline.$n.run"
+      got=$(parse "$work/publish-$n-$attempt.out" "$work/publish-$n-$attempt.err")
+      check "$file \"$name\" run whole, npm publish exits $attempt: no planted command in any order" \
+        "$(is "$(count "$got" planted)" 0)"
+      check "$file \"$name\" run whole, npm publish exits $attempt: the step exits with npm's status" \
+        "$(is "$(cat "$work/publish-$n-$attempt.status")" "$attempt")"
+    done
+    NPM_EXIT=0 publish_step "publish-$n-bare" "$work/inline.$n.bare"
+    got=$(parse "$work/publish-$n-bare.out" "$work/publish-$n-bare.err")
+    check "control: $file \"$name\" with its inline guard taken out lets all 8 planted commands through" \
+      "$(is "$(count "$got" "^per-stream	std...	warning	planted-")" 8)"
+  fi
+done
+# The control for a definition: the same call with the guard taken out of the function.
+printf 'ci_log_guard_stderr() { "$@"; }\n' >"$work/no-guard.def"
+lib="$work/no-guard.def"
+step inline-bare "ci_log_guard_stderr '$work/client' 0 >&2"
+got=$(parse "$work/inline-bare.out" "$work/inline-bare.err")
+check "control: the inline call with no guard in its function lets the 8 planted commands through" \
+  "$(is "$(count "$got" "^per-stream	std...	warning	planted-")" 8)"
+lib=$real_lib
 
 echo
 echo "The pieces"
