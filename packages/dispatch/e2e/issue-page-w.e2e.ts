@@ -19,6 +19,7 @@ import {
   DESKTOP,
   type DrawnRow,
   drawnRows,
+  expectOpeningLanded,
   focusRow,
   focusThePage,
   nodeRow,
@@ -73,15 +74,15 @@ import { assertPageFits } from "./unclipped";
  *
  * Each row turns the new page on for alice with `phase` (`e2e/issue-page.ts`), seeds
  * `seedWholeIssue` (`e2e/issue-layout-seed.ts`) and, on it, `seedLenses`, opens the page with
- * `gotoIssue`, and reads it through the readers of `e2e/issue-page-g.ts` and of
- * `e2e/issue-page-w.ts`. A `@phone` row reads 1440 px on `chromium` and 390 px on `iphone`
- * (`rowSize`).
+ * `gotoIssue`, and reads it through the readers of `e2e/issue-page-g.ts`, of `e2e/issue-page-w.ts`
+ * and, for a row's own words, `e2e/issue-page-j.ts`'s `ownWords`. A `@phone` row reads 1440 px on
+ * `chromium` and 390 px on `iphone` (`rowSize`).
  *
  * Every node a row names, it names by the id the page's own tree read gave it
- * (`e2e/issue-page-t.ts`'s `treeAnswerOf`, read through `lensReadIds`), and every row it reads,
+ * (`e2e/issue-page-t-tree.ts`'s `treeAnswerOf`, read through `lensReadIds`), and every row it reads,
  * by the id the page drew it under for that read id (`drawnIdOf`): no row builds an id.
  *
- * Each row checks its gates first, each with `owedUnless` (`e2e/issue-page-t.ts`), and skips
+ * Each row checks its gates first, each with `owedUnless` (`e2e/issue-page-t-tree.ts`), and skips
  * where the server change a gate probes for is not on the base, with an `owed` annotation naming
  * what it waits on; it never passes then, so a row that could not run is never read as a pass.
  * Every row waits on the server serving the tree read, which `treeReadGate` reads as the read's
@@ -153,15 +154,20 @@ function kindNamed(kinds: readonly LensKind[], kind: string): LensKind {
   return found;
 }
 
-/** The id the page draws the node `readId` names under, once it draws it: each poll first opens
- *  every branch a fold left shut, which ends with the focus on no row. It fails with `message`,
- *  by default that the page draws no row for `what`. */
+/** The id the page draws the node `readId` names under, once it draws it: a row drawn now is
+ *  its answer, and while none is, each poll first opens every branch a fold left shut, which
+ *  ends with the focus on no row. A row a chip's Enter landed on keeps the focus the landing gave
+ *  it (`focusThePage`), so a row already drawn is read without opening anything. It fails with
+ *  `message`, by default that the page draws no row for `what`. */
 async function drawnId(
   page: Page,
   readId: string,
   what: string,
   message = `the page draws no row for ${what}`
 ): Promise<string> {
+  // A row the page draws stays drawn until a fold shuts it, which nothing here presses.
+  const drawn = await drawnIdOf(page, readId);
+  if (drawn !== null) return drawn;
   await expect
     .poll(
       async () => {
@@ -270,16 +276,37 @@ async function newLens(
 }
 
 /**
+ * Opens the outline at the address of the node `readId` names and waits until its landing has
+ * put the focus on that row. The landing takes the focus back whenever nothing holds it until the
+ * reader's first act (`IssueTree.tsx`), so this acts as a reader with a Shift, which no key of
+ * the page binds, and the row may then leave the focus for the page itself.
+ */
+async function landOn(page: Page, plain: string, readId: string, what: string): Promise<void> {
+  await gotoIssue(page, `${plain}?node=${encodeURIComponent(readId)}`);
+  await expect
+    .poll(() => focusedRowReadId(page), {
+      message: `the address of ${what} does not land on its row`,
+      timeout: 30_000,
+    })
+    .toBe(readId);
+  await page.keyboard.press("Shift");
+}
+
+/**
  * Invokes the catalogue's first kind on the node `target` names through its row's menu, as a
  * reader does - the focus on the row, `f` to the Lens act, Enter, Enter on the first kind - and
- * reads the new lens's row: focused, and under the row of `target`.
+ * reads the new lens's row: focused, and under the row of `target`. The row is reached by its own
+ * address under `plain` (`landOn`): below 1024 px the outline a landing roots at its node's
+ * parent, the last invocation's included, may draw no row for `target`.
  */
 async function invokeThroughMenu(
   page: Page,
   tree: TreeAnswerWatch,
+  plain: string,
   target: string,
   what: string
 ): Promise<void> {
+  await landOn(page, plain, target, `the ${what}`);
   const held = await heldAnswer(tree, "the tree read");
   expect(
     (held.nodes ?? []).some((node) => node.id === target),
@@ -298,6 +325,9 @@ async function invokeThroughMenu(
       message: `the lens invoked on the ${what} does not hold the focus`,
     })
     .toBe(lens);
+  // The focus is the landing's on the new lens's address, which takes it back whenever nothing
+  // holds it until the reader acts (`IssueTree.tsx`): a Shift, which no key of the page binds.
+  await page.keyboard.press("Shift");
   expect(
     await drawnParentOf(page, lens),
     `the lens invoked on the ${what} does not stand under it`
@@ -367,6 +397,7 @@ test("lenses are drawn under their node with the chain that triggered them @phon
     const tree = treeAnswerOf(page);
     const traffic = watchApiRequests(page);
     await gotoIssue(page, plain);
+    await expectOpeningLanded(page);
     const answer = await heldAnswer(tree, `the tree read of ${key}`);
     const ids = lensReadIds(answer, key, lenses);
     expect(
@@ -502,13 +533,15 @@ test("lenses are drawn under their node with the chain that triggered them @phon
       lineReading(riskALines, "early_warning"),
       "risk A does not read Early warning: with its words"
     ).toEqual({ label: LENS_WORDS.early_warning, targets: [], words: lenses.riskA.early_warning });
-    const checkText = answer.nodes?.find((node) => node.id === ids.check1)?.text ?? "";
+    // The chip names check 1 by the line its own row draws, not by its stored source.
+    const checkRow = rowOf(await drawnRows(page), await drawnId(page, ids.check1, "check 1"));
+    const checkLine = checkRow?.firstLine ?? checkRow?.words ?? "";
     expect(
       lineReading(riskALines, "prevented_by"),
       "risk A does not read Prevented by with check 1's chip"
     ).toEqual({
       label: LENS_WORDS.prevented_by,
-      targets: [{ node: ids.check1, words: chipWords(checkText) }],
+      targets: [{ node: ids.check1, words: chipWords(checkLine) }],
       words: "",
     });
     expect(
@@ -531,12 +564,20 @@ test("lenses are drawn under their node with the chain that triggered them @phon
     // (6) The pre-mortem's chain: one press reads it, and it draws the trade-off analysis, then
     // the pre-mortem, each with the first line the outline draws for statement 1, which both
     // stand under: the one line statement 1's own row draws while its branch is folded and no row
-    // holds the focus.
-    await nodeRow(page, statementOne)
-      .first()
-      .getByRole("button", { exact: true, name: CONTROL_LABELS.fold })
-      .first()
-      .click();
+    // holds the focus. Below 1024 px the outline an address names a node of is rooted at that
+    // node's parent (`IssueTree.tsx`'s `on`), so after check 1's chip statement 1 has no row: its
+    // own address draws its row at both widths, and the pre-mortem's address draws the
+    // pre-mortem's.
+    await landOn(page, plain, ids.statements[0] ?? "", "statement 1");
+    // The landing has drawn the tree its address opens, and only a reader's press moves a fold
+    // after it: open from 1024 px up, where the outline draws three levels, shut below.
+    if (rowOf(await drawnRows(page), statementOne)?.expanded === "true") {
+      await nodeRow(page, statementOne)
+        .first()
+        .getByRole("button", { exact: true, name: CONTROL_LABELS.fold })
+        .first()
+        .click();
+    }
     await focusThePage(page);
     await expect
       .poll(async () => rowOf(await drawnRows(page), statementOne)?.firstLine ?? null, {
@@ -544,8 +585,7 @@ test("lenses are drawn under their node with the chain that triggered them @phon
       })
       .not.toBeNull();
     const statementLine = rowOf(await drawnRows(page), statementOne)?.firstLine;
-    await unfoldEveryBranch(page);
-    await focusRow(page, preMortem);
+    await landOn(page, plain, ids.preMortem, "the pre-mortem");
     await pressFTo(
       page,
       lensShowChain(preMortemRow),
@@ -600,6 +640,7 @@ test("lenses are drawn under their node with the chain that triggered them @phon
       .toBe(ids.riskB);
     await gotoIssue(page, plain);
     await expectLoadSettled(traffic);
+    await expectOpeningLanded(page);
     const plainFocus = await focusedRowReadId(page);
     const plainRows = (await drawnRows(page)).map((row) => row.id);
     await gotoIssue(page, `${plain}?node=${crypto.randomUUID()}`);
@@ -647,6 +688,7 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
     await page.setViewportSize(size);
     const tree = treeAnswerOf(page);
     await gotoIssue(page, plain);
+    await expectOpeningLanded(page);
     const answer = await heldAnswer(tree, `the tree read of ${key}`);
     const ids = lensReadIds(answer, key, lenses);
     const kinds = await lensCatalogue();
@@ -752,19 +794,23 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
       rowOf(await drawnRows(page), madeId ?? "")?.author,
       "the lens invoked on statement 2 does not name alice"
     ).toBe(READER);
+    // The reload opens the landing's address, `?node=` with the new lens: the page focuses its
+    // row with the path to it open, so statement 2's lenses are drawn with nothing unfolded.
     await page.reload();
     await issueRead(page);
-    // The tree the reload draws arrives after its column: each poll opens every branch a fold
-    // left shut and reads statement 2's lenses as they are drawn then.
+    await expect
+      .poll(() => focusedRowReadId(page), {
+        message: "after a reload the landing does not focus the lens invoked on statement 2",
+        timeout: 30_000,
+      })
+      .toBe(made);
     await expect
       .poll(
-        async () => {
-          await unfoldEveryBranch(page);
-          return childrenOf(await drawnRows(page), statementTwo)
+        async () =>
+          childrenOf(await drawnRows(page), statementTwo)
             .filter((child) => child.type === "lens")
             .map((child) => child.id)
-            .at(-1);
-        },
+            .at(-1),
         {
           message: "after a reload the lens invoked on statement 2 is not its last lens",
           timeout: 30_000,
@@ -781,15 +827,19 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
     // Each kind of node the route takes by its address takes the act: an open question, a
     // comment, a message, a lens, a risk and a constraint.
     await gotoIssue(page, plain);
+    await expectOpeningLanded(page);
+    // The open question is an ask block of the spec: its node is the one holding that block.
+    const question = answer.nodes?.find((node) => node.block_id === whole.openQuestion.blockId);
+    if (question === undefined) throw new Error(`the tree read of ${key} holds no open question`);
     for (const [target, what] of [
-      [whole.openQuestion.askId, "open question"],
+      [question.id, "open question"],
       [whole.comments.threads[0] ?? "", "comment"],
       [whole.messages.root, "message"],
       [ids.tradeOff, "trade-off analysis"],
       [ids.riskA, "risk A"],
       [ids.standard, "standard constraint"],
     ] as const) {
-      await invokeThroughMenu(page, tree, target, what);
+      await invokeThroughMenu(page, tree, plain, target, what);
     }
 
     // A catalogue read the server refuses at every attempt: the menu says the kinds could not be
@@ -799,6 +849,7 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
     };
     await page.route(CATALOGUE_READ, refuseCatalogue);
     await gotoIssue(page, plain);
+    await expectOpeningLanded(page);
     const refused = await focusRow(
       page,
       await drawnId(page, ids.statements[1] ?? "", "statement 2")
@@ -883,9 +934,11 @@ test("a finding's own row invokes a lens @owed", async ({ browser }) => {
     owedUnless(await convertedGate(page, key));
     owedUnless(await findingGate(page, key, lenses));
     const tree = treeAnswerOf(page);
-    await gotoIssue(page, presetPath(key, "conversation"));
+    const plain = presetPath(key, "conversation");
+    await gotoIssue(page, plain);
+    await expectOpeningLanded(page);
     const answer = await heldAnswer(tree, `the tree read of ${key}`);
-    await invokeThroughMenu(page, tree, lensReadIds(answer, key, lenses).finding, "finding");
+    await invokeThroughMenu(page, tree, plain, lensReadIds(answer, key, lenses).finding, "finding");
   });
 });
 
@@ -915,6 +968,7 @@ test("the first load adds no request for lenses and reads a chain only at a pres
     const traffic = watchApiRequests(page);
     await gotoIssue(page, presetPath(key, "conversation"));
     await expectLoadSettled(traffic);
+    await expectOpeningLanded(page);
     const answer = await heldAnswer(tree, `the tree read of ${key}`);
     expect(
       traffic.byRoute(),
@@ -1048,6 +1102,7 @@ test("a constraint stands under the issue and a statement names it @phone", asyn
     await page.setViewportSize(size);
     const tree = treeAnswerOf(page);
     await gotoIssue(page, plain);
+    await expectOpeningLanded(page);
     const answer = await heldAnswer(tree, `the tree read of ${key}`);
     const ids = lensReadIds(answer, key, lenses);
 
