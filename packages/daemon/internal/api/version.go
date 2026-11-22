@@ -3019,7 +3019,7 @@ package api
 // 2026-11-21T12:31:48Z, found 205 declared by no other, so this entry kept 205. Read the base's own
 // number and every open pull request again at every forward merge rather than from this line.)
 //
-// 206: a phase completion carries no verdict. `POST /legion/v1/handoff/complete`
+// 221: a phase completion carries no verdict. `POST /legion/v1/handoff/complete`
 // (`api.HandoffCompleteRequest`, contracts' `LegionHandoffCompleteRequest`) keeps `verdict` for a
 // production check's report alone: a phase completion that names one from a plugin at this
 // contract or a later one is refused 400 `VERDICT_NOT_TAKEN`, "a phase completion carries no
@@ -3052,14 +3052,19 @@ package api
 // one at 205 is, and its records in `contract-shapes.json` and `request-shapes.json` are 205's
 // under its own number. `VERDICT_NOT_TAKEN` and `TESTED_HEAD_REQUIRED` are values of the
 // refusal's `code`, which no reader enumerates.
-// (This entry takes 206, above main's 202: a reading of `const DaemonAPIVersion` at
+// (This entry took 206 at first, above main's 202: a reading of `const DaemonAPIVersion` at
 // refs/pull/<n>/head for each of the 358 open pull requests of cybermonklabs/legion, made on
-// 2026-11-21 at 07:29Z, found 203, 204, 205, 207, 208 and 209 declared, and none declaring 206.)
-const DaemonAPIVersion = 206
+// 2026-11-21 at 07:29Z, found 203, 204, 205, 207, 208 and 209 declared, and none declaring 206.
+// The forward merge of 2026-11-22 that brought in 2feade15 brought main's 205 (the entry above).
+// A reading of every open pull request at that merge, which ended at 2026-11-22T10:01:29Z, found
+// 206 (#3712), 207 to 220 and 223 and 224 declared, so this entry moved to 221, the lowest number
+// above main's 205 that no other open pull request declares. Read the base's own number and every
+// open pull request again at every forward merge rather than from this line.)
+const DaemonAPIVersion = 221
 
 // CheckStatesContract is the daemon contract at which a phase completion carries no verdict (the
-// entry of 206 above): a plugin at it or above has its completion naming one refused
+// entry of 221 above): a plugin at it or above has its completion naming one refused
 // VERDICT_NOT_TAKEN, and a tester's plugin below it has its verdict ignored, so a worker mid-turn
 // across the upgrade still completes and Dispatch's check states decide its phase. A later bump
 // of DaemonAPIVersion leaves it where it is.
-const CheckStatesContract = 206
+const CheckStatesContract = 221
