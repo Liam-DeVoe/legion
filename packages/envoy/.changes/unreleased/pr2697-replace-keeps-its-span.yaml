@@ -4,26 +4,35 @@ body: |-
   link or code span the replaced text lies wholly inside: replacing `said` in `**Sami said bold**`
   gives `**Sami answered bold**`, where the span was split and its edges written as character
   references (`**Sami&#32;**&#97;nswered`), and replacing a span's whole text keeps its mark, where
-  it was dropped. A `find` that spells the span's markup over all of the span's text it covers
-  (`**Sami bold**`) lets `with` decide that formatting, and one that spells it over part of that
-  text (`a **b** c` over `**a b c**`) keeps the span; one that matched the text as written spells
-  none, so `2*3*4` in `*a 2\*3\*4 b*` stays in the italic. A `replace` whose `find` crosses a
-  span's edge, covering text inside it and text outside it (`wrote this`, where only `this` is a
-  link), is refused with `400 FIND_CROSSES_SPAN` naming the span, and nothing is written, where the
-  link went with its URL and a span cut to end on a space was written with character references:
-  narrow the `find` to the span's inside, or spell the whole span's markup in it. Each span is
-  weighed alone, so a `find` that spells one link's markup and covers a second link
-  (`wrote [this](https://a.example/1) and that`) is refused naming `that`. A `find` names text to
-  change, so a `replace`'s or a `delete`'s spells each link with the URL and title it has: one that
-  writes a link's text under another URL or title (`wrote [this](https://wrong.example/9) today`,
-  or that link alone, `[this](https://wrong.example/9)`) is refused with `400 FIND_CROSSES_SPAN`
-  naming the link, with its own URL and title in the markup to spell, where each was taken with no
-  word that the link had changed. So is one that spells only part of a link's text as another
-  link, or a bare link as a link to another URL. An `insert`'s or a `move`'s quote anchor names a
-  place, not text to change, so it finds its block whatever URL or title it spells a link with, as
-  it did, and the link stays as the document holds it. A bare URL or a bare `www.` link is its own
-  markup, so a `find` that covers the whole of it spells it: `docs at https://example.com/x` was
-  refused with that same `find` as the markup to spell.
+  it was dropped. A `find` that spells the span's own markup over all of the span's text it covers
+  lets `with` decide that formatting over that text, whether it covers the whole span
+  (`**Sami bold**`) or runs past its edge (`**old** now` over `**Sami said bold** now`,
+  `wrote [one](https://a.example/1)` over `wrote [one two](https://a.example/1)`), the rest of the
+  span keeping its mark, a link its URL and title - unless the part of a bold or italic span it
+  keeps would end or start on a space beside the written text, which markdown cannot write
+  (`**bold** now` there leaves `Sami said `), and that `find` is refused; one that spells it over
+  part of that text (`a **b** c` over `**a b c**`) keeps the span; one that matched the text as
+  written spells none, so `2*3*4` in `*a 2\*3\*4 b*` stays in the italic. A `replace` whose `find`
+  crosses a span's edge without that spelling, covering text inside it and text outside it
+  (`wrote this`, where only `this` is a link), is refused with `400 FIND_CROSSES_SPAN` naming the
+  span, and nothing is written, where the link went with its URL and a span cut to end on a space
+  was written with character references. Each span is weighed alone, so a `find` that spells one
+  link's markup and covers a second link (`wrote [this](https://a.example/1) and that`) is refused
+  naming `that`. A `find` names text to change, so a `replace`'s or a `delete`'s spells each link
+  with the URL and title it has: one that writes a link's text under another URL or title
+  (`wrote [this](https://wrong.example/9) today`, or that link alone,
+  `[this](https://wrong.example/9)`) is refused with `400 FIND_CROSSES_SPAN` naming the link,
+  where each was taken with no word that the link had changed. So is one that spells only part of
+  a link's text as another link, or a bare link as a link to another URL. Each refusal names the
+  finds that cover the very text the `find` named and are taken there, to send in its place, each
+  with the `occurrence` at which it matches that text: the same text with each span written with
+  its markup, a link under its own URL and title (`wrote [this](https://example.com/Sami)` for
+  `wrote this`), and for a `find` over part of a link it spells as another that text with no link
+  markup. Where none is taken, it says to move the space out of the bold or italic span, for a
+  struck span to replace the text inside it and the text outside it in two operations, and
+  otherwise to read the document again. A bare URL or a bare `www.` link is its own markup, so a
+  `find` that covers the whole of it spells it: `docs at https://example.com/x` was refused with
+  that same `find` as the markup to spell.
 
   The rule has two limits. No `find` spells strikethrough's markup, so a `find` crossing a struck
   span's edge is narrowed to its inside, and the text outside it replaced in an operation of its

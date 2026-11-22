@@ -228,6 +228,23 @@ func (f *QuoteFinder) FindSpelling(quote string, occurrence, near *int) (Range, 
 	return match.Range, f.text.spelling(match), nil
 }
 
+// OccurrenceOf is the occurrence that resolves quote to r as FindSpelling resolves it, the index
+// of r among the quote's matches, and how many matches the quote has; found is false where none
+// of them is r. An edit's finder counts only matches inside one textblock (cascade), as
+// FindSpelling does.
+func (f *QuoteFinder) OccurrenceOf(quote string, r Range) (occurrence, matches int, found bool) {
+	all, err := f.matches(quote)
+	if err != nil {
+		return 0, 0, false
+	}
+	for index, match := range all {
+		if match.Range == r {
+			return index, len(all), true
+		}
+	}
+	return 0, len(all), false
+}
+
 // FindWritten is Find over the matchers that read a quote as written - exactly, then with its
 // whitespace normalized (writtenCascade) - and not as markdown: a quote that opens with a list
 // item's marker selects an item where it matches no text as written (FindListItem), and the

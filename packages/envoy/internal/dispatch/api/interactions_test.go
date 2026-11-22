@@ -2258,7 +2258,7 @@ func TestDocumentEditRefusalsReachTheResponseNamingTheirOperation(t *testing.T) 
 			},
 			status: http.StatusBadRequest,
 			code:   "FIND_CROSSES_SPAN",
-			wants:  []string{"operation 1", `"wrote this"`, `link "this"`, `"[this](https://example.com/Sami)"`},
+			wants:  []string{"operation 1", `"wrote this"`, `link "this"`, `"wrote [this](https://example.com/Sami)"`},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
