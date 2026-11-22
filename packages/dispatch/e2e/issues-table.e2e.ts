@@ -374,6 +374,71 @@ test("with a refused change pending, New epic from these and Clear selection sti
   }
 });
 
+// The row above, at every width the suite runs. On a desktop the selection bar and Pending
+// changes both sit at the bottom of the window, so the panel has to stand above the bar; on a
+// phone the bar sits at the top instead. At each width, every control of the bar and the panel's
+// own Retry and Discard must take a press. A trial press only checks that the control would take
+// it and presses nothing, so no dialog opens between one control and the next.
+test("with a refused change pending, every control of the selection bar and of Pending changes takes a press @phone", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const epic = await createIssue({ project: "CORE", title: "Parser rollout" });
+  await patchIssue(epic.key, { labels: ["epic"] });
+  const refused = await createIssue({ project: "CORE", parent: epic.key, title: "Refused move" });
+  const other = await createIssue({ project: "CORE", title: "Ship the parser" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.route(`**/api/v1/issues/${refused.key}`, async (route) => {
+      if (route.request().method() === "PATCH")
+        await route.fulfill({ status: 403, json: { error: "Move refused" } });
+      else await route.continue();
+    });
+    await page.goto("/projects/CORE/issues");
+    const select = (key: string) =>
+      page.getByRole("checkbox", { name: `Select ${key}`, exact: true });
+    const bar = page.getByRole("toolbar");
+    const pending = page.getByRole("region", { name: "Pending changes" });
+    await select(refused.key).check();
+    await bar.getByRole("button", { name: "Take out of epic" }).click();
+    await expect(pending).toContainText(refused.key);
+    await select(refused.key).setChecked(false);
+    await select(other.key).check();
+    // Move takes a press only once an epic is picked, and picking one sends nothing.
+    const epics = bar.getByRole("combobox", { name: "Move to epic" });
+    await epics.selectOption(epic.key);
+    const buttons = bar.getByRole("button");
+    await expect(buttons).toHaveText([
+      /^Select all \d+ matching$/,
+      "Start next",
+      "Move",
+      "Take out of epic",
+      "New epic from these",
+      "Clear selection",
+    ]);
+    const controls = [
+      ...(await buttons.all()),
+      epics,
+      pending.getByRole("button", { name: "Retry", exact: true }),
+      pending.getByRole("button", { name: "Discard", exact: true }),
+    ];
+    const own = page.viewportSize();
+    if (!own) throw new Error("The project gave the page no viewport");
+    const desktops = [
+      { width: 1600, height: 1000 },
+      { width: 1920, height: 1080 },
+    ];
+    for (const size of own.width >= 1024 ? [own, ...desktops] : [own]) {
+      await page.setViewportSize(size);
+      // A press that another element takes fails here, as in the row above.
+      for (const control of controls) await control.click({ trial: true, timeout: 5_000 });
+    }
+  } finally {
+    await context.close();
+  }
+});
+
 test("a live insertion above a vertically and horizontally scrolled reader keeps their row in place", async ({
   browser,
 }) => {

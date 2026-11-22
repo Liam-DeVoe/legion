@@ -1,8 +1,9 @@
 import { type RefObject, useLayoutEffect } from "react";
 
-/** How far up from the screen's bottom edge the highest composer fixed at the foot of the screen
- *  reaches, on the document element, so the shell's floating status sits above it. Unset while no
- *  composer is fixed there. */
+/** How far up from the screen's bottom edge the highest control fixed at the foot of the screen
+ *  reaches - a docked composer, or the issues table's selection bar from the `sm` width up
+ *  (`IssueTableSelection`) - on the document element, so the shell's floating status sits above
+ *  it. Unset while no such control is fixed there. */
 export const FOOT_COMPOSER_INSET_PROPERTY = "--foot-composer-inset";
 
 /** How far up from the screen's bottom edge the shell's status corner - the pending-writes
