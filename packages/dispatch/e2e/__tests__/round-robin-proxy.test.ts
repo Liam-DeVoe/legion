@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -671,63 +671,103 @@ async function withSquat<T>(body: () => Promise<T>): Promise<{ result: T; squatt
   }
 }
 
+/** Whether this host shows each process's environment at `/proc/<pid>/environ`, as Linux does.
+ *  The port row reads the proxy's environment there, so on a host without it that row skips, and
+ *  this says so once. */
+const procEnviron = existsSync("/proc/self/environ");
+if (!procEnviron) {
+  console.warn(
+    `Skipped the proxy's port row "a proxy started as this file starts it" in ${import.meta.path}. ` +
+      "This host has no /proc/<pid>/environ, from which that row reads the proxy's environment."
+  );
+}
+
 describe("the proxy's port", () => {
-  test("control: the squat takes a port a server of this process stopped, and answers there", async () => {
-    const { result, squatted } = await withSquat(async () => {
-      const server = Bun.serve({
-        hostname: "127.0.0.1",
-        port: 0,
-        fetch: () => new Response("own"),
+  test(
+    "control: the squat takes a port a server of this process stopped, and answers there",
+    async () => {
+      const { result, squatted } = await withSquat(async () => {
+        const server = Bun.serve({
+          hostname: "127.0.0.1",
+          port: 0,
+          fetch: () => new Response("own"),
+        });
+        const port = Number(server.port);
+        server.stop(true);
+        return { port, answer: await (await Bun.fetch(`http://127.0.0.1:${port}/`)).text() };
       });
-      const port = Number(server.port);
-      server.stop(true);
-      return { port, answer: await (await Bun.fetch(`http://127.0.0.1:${port}/`)).text() };
-    });
-    expect({ squatted, answer: result.answer }).toEqual({
-      squatted: [result.port],
-      answer: "squatter",
-    });
-  });
-
-  test("the squat's wait is held by the clock: on a port that takes connections and never answers, it gives up within 15 s", () => {
-    // The kernel takes each connection into this listener's queue while the wait blocks this
-    // file's event loop, so every read connects and then hears nothing until its 1 s passes.
-    const holder = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-    const began = performance.now();
-    let thrown = "";
-    try {
-      squat(holder.port);
-    } catch (error) {
-      thrown = String(error);
-    } finally {
-      holder.stop(true);
+      expect({ squatted, answer: result.answer }).toEqual({
+        squatted: [result.port],
+        answer: "squatter",
+      });
+    },
+    {
+      // It drives one squat, a synchronous wait its own clock ends within 11 s, which Bun's 5 s
+      // default of a plain `bun test` would cut short; 20 s leaves that wait room under load.
+      timeout: 20_000,
     }
-    const seconds = (performance.now() - began) / 1000;
-    expect({ thrown, withinTheCap: seconds < 15, seconds }).toEqual({
-      thrown: `Error: the squatter did not take port ${holder.port}`,
-      withinTheCap: true,
-      seconds: expect.any(Number),
-    });
-  });
+  );
 
-  test("a proxy started as this file starts it answers as itself under the squat, and is given no port: it binds its own, so none is chosen here and given back", async () => {
-    const { result, squatted } = await withSquat(async () => {
-      const started = startProxy();
+  test(
+    "the squat's wait is held by the clock: on a port that takes connections and never answers, it gives up within 15 s",
+    () => {
+      // The kernel takes each connection into this listener's queue while the wait blocks this
+      // file's event loop, so every read connects and then hears nothing until its 1 s passes.
+      const holder = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+      const began = performance.now();
+      let thrown = "";
       try {
-        const answer = await Bun.fetch(`${await started.origin}/_proxy/requests`);
-        // The environment the proxy runs with, as the kernel holds it: a port handed to it by any
-        // means a squat of this process's servers cannot see would show here.
-        const handed = readFileSync(`/proc/${started.proxy.pid}/environ`, "utf8")
-          .split("\0")
-          .filter((entry) => entry.startsWith("DISPATCH_E2E_PORT="));
-        return { status: answer.status, body: await answer.text(), handed };
+        squat(holder.port);
       } catch (error) {
-        return { thrown: String(error) };
+        thrown = String(error);
       } finally {
-        started.proxy.kill();
-        await started.proxy.exited;
+        holder.stop(true);
       }
-    });
-    expect({ ...result, squatted }).toEqual({ status: 200, body: "[]", handed: [], squatted: [] });
-  });
+      const seconds = (performance.now() - began) / 1000;
+      expect({ thrown, withinTheCap: seconds < 15, seconds }).toEqual({
+        thrown: `Error: the squatter did not take port ${holder.port}`,
+        withinTheCap: true,
+        seconds: expect.any(Number),
+      });
+    },
+    {
+      // It drives one squat against a port that never answers, which the squat's own clock ends
+      // within 11 s by design; 20 s is past the 15 s it asserts, so the assertion fails first.
+      timeout: 20_000,
+    }
+  );
+
+  test.skipIf(!procEnviron)(
+    "a proxy started as this file starts it answers as itself under the squat, and is given no port: it binds its own, so none is chosen here and given back",
+    async () => {
+      const { result, squatted } = await withSquat(async () => {
+        const started = startProxy();
+        try {
+          const answer = await Bun.fetch(`${await started.origin}/_proxy/requests`);
+          // The environment the proxy runs with, as the kernel holds it: a port handed to it by
+          // any means a squat of this process's servers cannot see would show here.
+          const handed = readFileSync(`/proc/${started.proxy.pid}/environ`, "utf8")
+            .split("\0")
+            .filter((entry) => entry.startsWith("DISPATCH_E2E_PORT="));
+          return { status: answer.status, body: await answer.text(), handed };
+        } catch (error) {
+          return { thrown: String(error) };
+        } finally {
+          started.proxy.kill();
+          await started.proxy.exited;
+        }
+      });
+      expect({ ...result, squatted }).toEqual({
+        status: 200,
+        body: "[]",
+        handed: [],
+        squatted: [],
+      });
+    },
+    {
+      // It drives a proxy's start, a `bun` process that must log its line, and at most one squat,
+      // which its own clock ends within 11 s; 30 s holds both on a loaded box.
+      timeout: 30_000,
+    }
+  );
 });

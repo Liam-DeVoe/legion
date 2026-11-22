@@ -494,6 +494,17 @@ async function withSquat<T>(body: () => Promise<T>): Promise<{ result: T; squatt
   }
 }
 
+/** Whether this host shows each process's environment at `/proc/<pid>/environ`, as Linux does.
+ *  The prepared-run row reads the stand-in Dispatch's settings there, so on a host without it that
+ *  row skips, and this says so once. */
+const procEnviron = existsSync("/proc/self/environ");
+if (!procEnviron) {
+  console.warn(
+    `Skipped the prepared-run row "a prepared run's origin serves its own stand-in Dispatch under the squat" in ${import.meta.path}. ` +
+      "This host has no /proc/<pid>/environ, from which that row reads the stand-in Dispatch's settings."
+  );
+}
+
 describe.skipIf(skipWithout("bash", "curl", "git", "bun"))(
   "the stand-in Dispatch's port and readiness",
   () => {
@@ -587,7 +598,7 @@ describe.skipIf(skipWithout("bash", "curl", "git", "bun"))(
       }
     );
 
-    test(
+    test.skipIf(!procEnviron)(
       "a prepared run's origin serves its own stand-in Dispatch under the squat, and the stand-in is given no port: no port of it is one this process chose and closed",
       async () => {
         const { result, squatted } = await withSquat(async () => {
