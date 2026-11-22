@@ -13,6 +13,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 
 - A bounded wait is the module's `internal/testwait`.
   `Eventually` is the wait a test usually wants, a minute or the binary's own deadline less a second, at `Poll`, the package's own pace, failing with what it waited for; `WithinPolling` takes a bound and a pace of its own; `Holds` answers rather than fails, for a caller whose failure text is its own diagnostic dump or is built at give-up; and `Bounded` is that deadline clamp alone, for a wait that keeps a loop or a margin of its own, as the idle rig's do.
+  `Remaining` is what is left of the binary's deadline less 30 s, for a hang guard that is not the test's subject, such as the acknowledgement window of a consumer whose window also bounds each store read a handling makes, and a wait for those acknowledgements (`packages/daemon/internal/intake`): a fixed bound there, a minute say, lets the machine decide whether a store read of 61 s is cut.
   `Receive`, in both modules, waits for one receive from a channel, such as the answer of a call the test started, and sets no span of its own: it gives up 30 s before the binary's deadline, writes why to stderr at once and then fails the test, so a call that waits for ever fails by name, even without `-v`, and a call that is merely slow passes.
   A row whose verdict is what a call answers, a refusal or a replaced file, waits for it with `Receive`.
   A loop that is not a wait-for keeps its body: one that runs its check for a whole span rather than stopping at the first success, one that sends or serves on a tick, one that drives a stand-in process's own main loop, and one that retries a compare-and-set.
@@ -50,7 +51,9 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 - A listener a client dials — a test NATS server, a relay, proxy or fake in front of one — listens on `testport.ListenLoopback()` in `packages/envoy` and on `testnats.ListenLoopback()` in `packages/daemon`: a port the kernel chooses at a loopback address of its own, one of `127.0.0.0/8` chosen at random on Linux (`LoopbackIP`), and `127.0.0.1` elsewhere.
   A client a test leaves behind keeps dialing its server's address (a bus client reconnects forever), and the kernel or Docker gives a freed port to the next listener that asks, in the same test binary or in another one `go test` runs beside it; on `127.0.0.1` that listener's test takes the stranger's connections for its own.
   So does every server `packages/envoy/internal/testnats` and `packages/daemon/internal/testnats` start: an in-process server's relay and nats-server's own client, monitoring and route listeners, and a container's published client port (the daemon's containers' monitoring port too), so a leftover client cannot reach it, whichever port it gets.
-  So do the `nats-server` processes `packages/envoy/infra/gcp`'s natslive tests run as the clustered hub's pods: each test's servers listen at one such address (`-a`), with their ports reserved there (`reservePortsOn`).
+  So do the `nats-server` processes `packages/envoy/infra/gcp`'s natslive tests run as the clustered hub's pods, the route tests' servers and rogues among them: each test's servers listen at one such address (`-a`), with their ports reserved there (`reservePortsOn`).
+  Of those, the route check's staged hub (`clusteredhub_routecheck_fixture_live_test.go`) keeps each server's route port, and each peer's, on the `127.0.0.x` address the rows name it by, `127.0.0.1` being the pods' IP: the check takes a route connection from a pod IP as the hub's own, and a route from `127.0.0.1` reads as from `127.0.0.1` on any loopback (the Linux kernel's sources every loopback connection from `127.0.0.1` whatever `127/8` address it dials; gVisor's sources it from the address dialed). Their client and monitoring ports are at addresses of their own, and a test checks that a client at `127.0.0.1` reaches none of them (`requireNoStrayReaches`).
+  A stray client can still dial such a route port: a reservation stops a second bind, not a dial. The check reads nothing of it: it skips a route connection from a pod IP, and counts a pod IP's refused route login only when the mesh is split (`infra/routes/log.go`, `routeConnections`). The route check's first row has a stray log in at each server's route port and requires the check to stay clean.
   A port another process binds, such as the host side of a port Docker publishes, is chosen by the kernel on that address (`testport.LoopbackPorts`): Docker asked for port 0 picks from its own record of what it has published there, and in envoy-infra-go it picked a port already held. The probe is released before the bind, so a start a taken port refuses (`testport.AddressInUse`) is tried again on a fresh address and port.
   Four listeners stay where they were, each for its own reason.
   `internal/testnats/cmd/natsd`, the standalone server of the scripts and the TypeScript stacks, stays on `127.0.0.1`: no Go test runs it.
@@ -800,15 +803,18 @@ Two kinds of row keep an exact count.
   acknowledgement makes. The window is a hang guard then, and not a bet on timing: a redelivery
   the count would see needs the whole window to pass before that acknowledgement reaches the
   server. `TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction`
-  (`packages/daemon/internal/intake/no_transaction_test.go`) sets `spec.AckWait = time.Minute`
-  over a handler whose own work is about `consumerSpec`'s 200 ms on a loaded runner. The margin
-  is what this carve-out rests on: that work, and the acknowledgement's trip to the server, which
-  the campaign of dispatch://INFRA-1113 measured at 516.8 ms at its largest, come to about 717 ms
-  together, a factor of about 80 below a minute. The progress keeper is no part of
-  it. At a minute its period is 20 s (`spec.AckWait/3` in `consume.go`) and that handler
-  acknowledges in about 200 ms, so the keeper never reports for that message at all. The
-  carve-out ends where the margin closes, and a reader finds that out by measuring the handler's
-  work and the acknowledgement's trip again, not by reading this sentence.
+  (`packages/daemon/internal/intake/no_transaction_test.go`) sets `spec.AckWait` to
+  `testwait.Remaining(t)`, what is left of the test binary's deadline less 30 s, over a
+  handler whose own work is about `consumerSpec`'s 200 ms on a loaded runner. The margin is what
+  this carve-out rests on: that work, and the acknowledgement's trip to the server, which the
+  campaign of dispatch://INFRA-1113 measured at 516.8 ms at its largest, come to about 717 ms
+  together, far below the window. The window is no fixed span, because the same window bounds the
+  handler's store reads, and a fixed one, a minute say, cuts a read of 61 s and lets the machine
+  decide the count. The progress keeper is no part of it. Its period is a third of the window
+  (`spec.AckWait/3` in `consume.go`) and that handler acknowledges in about 200 ms, so the keeper
+  never reports for that message at all. The carve-out ends where the margin closes, and a reader
+  finds that out by measuring the handler's work and the acknowledgement's trip again, not by
+  reading this sentence.
 - A row whose subject is the broker's own delivery behaviour must count deliveries, because the
   count is what it proves. Such a row needs a window above the measured distribution of the first
   report of the progress keeper, the goroutine that reports a running handler in progress so that
