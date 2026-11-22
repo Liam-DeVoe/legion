@@ -273,7 +273,9 @@ func TestGhRepoGitConfigRefusalNamesWhatHandsTheTokenOn(t *testing.T) {
 // behind a script that answers --show-scope as git 2.25 does. The real one is the first compiled
 // git on PATH (fixturegit.CompiledGit), never a wrapper script: the test's PATH holds the old git
 // alone, so a wrapper that finds its git on PATH would find the old git again and run itself until
-// the read's bound killed it.
+// the read's bound killed it. The read's bound, ghGitReadBound, is this binary's deadline here
+// (boundByTheDeadline): at a box load of about 1,100 that script and the git it runs took past the
+// product's 30 s, which the rows read as a refusal.
 func TestGhRepoGitConfigRefusalWithNoGitOrAnOldGit(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on this machine")
