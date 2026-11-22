@@ -353,6 +353,38 @@ func TestAReadAfterTheChildExitedTakesWhatThePipeHeldAndNoMore(t *testing.T) {
 	}
 }
 
+// A read waiting on the pipe ends when its context ends, with os.ErrDeadlineExceeded, whatever
+// the child does: here no child and no Wait, only a pipe the test owns whose write end stays open
+// and holds nothing, so nothing but the context's end (endWithContext) can end the read. A read
+// with no such end would wait until the test closed the pipe; the ten seconds are only the bound
+// on that failure.
+func TestAReadEndsWhenItsContextEnds(t *testing.T) {
+	out, in, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	defer in.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	stop := endWithContext(ctx, out)
+	defer stop()
+	reader := &pipeReader{ctx: ctx, file: out}
+	read := make(chan error, 1)
+	go func() {
+		_, err := reader.Read(make([]byte, 16))
+		read <- err
+	}()
+	cancel()
+	select {
+	case err := <-read:
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("the read answered %v, want os.ErrDeadlineExceeded", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the read did not end when its context ended: nothing set the pipe's read deadline")
+	}
+}
+
 // A read after the child's exit that finds the pipe empty, or at its end, before it has read the
 // bytes it counted fails rather than ending as if it had read them all, so the push is refused.
 // One reader of the pipe cannot cause it: here the test takes some of the counted bytes from the
