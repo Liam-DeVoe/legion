@@ -66,7 +66,7 @@ import {
   viewCount,
   viewNodeIds,
 } from "./issue-page-t-tree";
-import { decisionsViewServedGate, idReadsOf } from "./issue-page-u";
+import { decisionsViewServedGate, idReadsOf, sessionTitleGate } from "./issue-page-u";
 import { expect, type Page, test } from "./test";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 
@@ -106,14 +106,17 @@ import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic
  * `@owed`: each runs for real once its gates are on the base. Each clause a later gate holds is a
  * row of its own, titled its row's title and the clause and tagged `@owed`, which checks that gate
  * the same way and asserts the clause once it is met: row 1's decision clauses, for each seed that
- * holds a decision (`decisionNodesGate`); row 2's Decisions, row 3's Decisions and row 4's Keep
- * on the server's answer to the tree read's `view=decisions`, read before Decisions is pressed
- * (`decisionsViewServedGate`), so a press that sends no view read fails the row; and row 3's
- * decision lines and row 4's Keep on the page drawing the decisions from the tree read's nodes.
+ * holds a decision (`decisionNodesGate`); row 1's author of an agent's decision, drawn by the
+ * title its session stamped, for each such seed too, on the tree read answering that title on a
+ * session node (`sessionTitleGate`), which row 1 itself leaves out (`ReadingsPart`); row 2's
+ * Decisions, row 3's Decisions and row 4's Keep on the server's answer to the tree read's
+ * `view=decisions`, read before Decisions is pressed (`decisionsViewServedGate`), so a press that
+ * sends no view read fails the row; and row 3's decision lines and row 4's Keep on the page
+ * drawing the decisions from the tree read's nodes.
  */
 
 /** The seeds whose rows the fixture records a decision row of: row 1's decision clauses read
- *  them (`decisionNodesGate`). */
+ *  them (`decisionNodesGate`), and so does its author of an agent's decision (`sessionTitleGate`). */
 const DECISION_SEEDS = new Set(
   SEEDS.flatMap(([name]) =>
     fixtureSeed(name).rows.some((row) => row.kind.type === "decision") ? [name] : []
@@ -320,7 +323,8 @@ function firstRowOutOfPlace(
   return undefined;
 }
 
-/** What row 1 compares of a row with the fixture: every reading but its place. */
+/** What row 1 compares of a row with the fixture: every reading but its place, each in the part
+ *  of it a comparison takes (`ReadingsPart`). */
 const READINGS = [
   "words",
   "kind",
@@ -356,28 +360,103 @@ function rowName(row: KeyedRow): string {
   return `${row.key} under ${row.parentKey ?? "the issue"}`;
 }
 
+/** What a part of the readings gives for a reading it does not take (`ReadingsPart`). */
+const LEFT_OUT = Symbol("left out");
+
 /**
- * How `readings` differ from the fixture's rows `recorded`, each row matched by its key (and, for
- * a node drawn under two parents, by its parent's key first): every reading but its place, and
- * the place too for a row the fixture places (`placedByFixture`); then each time against its
- * source in this run. Once the seeds' decisions are nodes (`nodes`, `decisionNodesGate`), the two
- * differences the check names are allowed: the section that restates a person's answer is no
- * row, and the answered question's row carries its `shaped` ties as chips beside the fixture's.
+ * The part of each row's readings one comparison with the fixture takes (`differences`). Part U
+ * draws an agent's decision by its decider, the session the far end of its node's `decided_by`
+ * tuple names (`sessionDecided`): by the registry's title, else by the title the tree read
+ * answers that session stamped, which it answers only from INFRA-1253's spec v168 on
+ * (`sessionTitleGate`), else as an agent nothing names; the fixture recorded the stamped title.
+ * Row 1 takes every reading but that author, on the row's line and in its body
+ * (`BESIDE_STAMPED_TITLE`), and its `@owed` row that author alone (`STAMPED_TITLE`).
+ */
+interface ReadingsPart {
+  /** What the part takes of reading `field` of a row, `value` as one side reads it, where the row
+   *  is an agent's decision (`agent`) or not: all of it, a part of it, or `LEFT_OUT`. */
+  readonly reading: (field: keyof KeyedRow, value: unknown, agent: boolean) => unknown;
+  /** Whether it takes the rows themselves: a drawn row the fixture does not hold, a row of the
+   *  fixture the page does not draw, and each drawn time against its source. */
+  readonly rows: boolean;
+}
+
+/** Row 1's part: every reading of every row, and the rows themselves, but the author of an
+ *  agent's decision, on its line and in its body. */
+const BESIDE_STAMPED_TITLE: ReadingsPart = {
+  reading: (field, value, agent) => {
+    if (!agent) return value;
+    if (field === "author") return LEFT_OUT;
+    // A body read without its `author`; a body not read (null) as it is.
+    return field === "body" && typeof value === "object" && value !== null
+      ? Object.fromEntries(Object.entries(value).filter(([name]) => name !== "author"))
+      : value;
+  },
+  rows: true,
+};
+
+/** Row 1's `@owed` part: the author of an agent's decision alone, on its line and in its body. */
+const STAMPED_TITLE: ReadingsPart = {
+  reading: (field, value, agent) => {
+    if (!agent) return LEFT_OUT;
+    if (field === "author") return value;
+    if (field !== "body") return LEFT_OUT;
+    // A body read's `author`; null for a body not read.
+    return typeof value === "object" && value !== null && "author" in value ? value.author : null;
+  },
+  rows: false,
+};
+
+/** The rows of the decisions a session decided, by the id each row carries (`idOf`): each
+ *  decision node of `answer` whose `decided_by` tuple ends at a session, the decider part U draws
+ *  the decision by (`tree-drafts.ts`' `deciderOf`). */
+function sessionDecided(answer: IssueTreeRead, idOf: (readId: string) => string): Set<string> {
+  const nodes = new Map((answer.nodes ?? []).map((node) => [node.id, node]));
+  return new Set(
+    (answer.tuples ?? []).flatMap((tuple) =>
+      tuple.kind === "decided_by" &&
+      tuple.to.kind === "session" &&
+      nodes.get(tuple.from.id)?.supertag === "decision"
+        ? [idOf(tuple.from.id)]
+        : []
+    )
+  );
+}
+
+/** What one comparison with the fixture found: each difference, and how many of the rows it
+ *  matched it took a reading of. */
+interface Comparison {
+  readonly compared: number;
+  readonly found: readonly string[];
+}
+
+/**
+ * How `readings` differ from the fixture's rows `recorded` in the part of them `part` takes, each
+ * row matched by its key (and, for a node drawn under two parents, by its parent's key first):
+ * every reading but its place, and the place too for a row the fixture places
+ * (`placedByFixture`); then, where `part` takes the rows themselves, each row one side holds and
+ * the other does not, and each time against its source in this run. Once the seeds' decisions are
+ * nodes (`nodes`, `decisionNodesGate`), the two differences the check names are allowed: the
+ * section that restates a person's answer is no row, and the answered question's row carries its
+ * `shaped` ties as chips beside the fixture's.
  */
 function differences(
   where: string,
   readings: readonly RowReading[],
   recorded: readonly KeyedRow[],
   outline: OutlineRead,
-  nodes: boolean
-): string[] {
+  nodes: boolean,
+  part: ReadingsPart
+): Comparison {
   const idOf = treeIdOf(outline.answer, outline.reads);
   const held = heldNodes(outline.answer, idOf);
   const placed = placedByFixture(readings, held);
+  const agents = sessionDecided(outline.answer, idOf);
   const drawn = keyedRows(readings, outline.keys);
   const unmatched = new Map<string, KeyedRow[]>();
   for (const row of recorded) unmatched.set(row.key, [...(unmatched.get(row.key) ?? []), row]);
   const found: string[] = [];
+  let compared = 0;
   for (const [index, row] of drawn.entries()) {
     const candidates = unmatched.get(row.key) ?? [];
     const at = Math.max(
@@ -386,21 +465,27 @@ function differences(
     );
     const match = candidates[at];
     if (match === undefined) {
-      found.push(`${where}, ${rowName(row)} is a row the fixture does not hold`);
+      if (part.rows) found.push(`${where}, ${rowName(row)} is a row the fixture does not hold`);
       continue;
     }
     candidates.splice(at, 1);
-    const fields: readonly (keyof KeyedRow)[] = placed.has(index)
-      ? [...READINGS, ...PLACE]
-      : READINGS;
+    const id = readings[index]?.id ?? null;
+    const agent = row.kind.type === "decision" && id !== null && agents.has(id);
+    const fields = (placed.has(index) ? [...READINGS, ...PLACE] : READINGS).filter(
+      (field) => part.reading(field, match[field], agent) !== LEFT_OUT
+    );
+    if (fields.length > 0) compared += 1;
     for (const field of fields) {
-      const theirs = match[field];
-      const mine =
+      const theirs = part.reading(field, match[field], agent);
+      const mine = part.reading(
+        field,
         field === "chips" && nodes && row.kind.type === "ask" && row.state?.token === "answered"
           ? row.chips.filter((chip) =>
               match.chips.some((kept) => canonical(kept) === canonical(chip))
             )
-          : row[field];
+          : row[field],
+        agent
+      );
       if (canonical(mine) !== canonical(theirs)) {
         found.push(
           `${where}, ${rowName(row)} draws its ${field} as ${canonical(mine)}, and the fixture ` +
@@ -409,13 +494,30 @@ function differences(
       }
     }
   }
+  if (!part.rows) return { compared, found };
   for (const rows of unmatched.values()) {
     for (const row of rows) {
       if (nodes && restatesAnAnswer(row, recorded)) continue;
       found.push(`${where}, ${rowName(row)} is a row of the fixture the page does not draw`);
     }
   }
-  return [...found, ...timeDifferences(where, readings, drawn, held)];
+  return { compared, found: [...found, ...timeDifferences(where, readings, drawn, held)] };
+}
+
+/** Row 1's comparison of one seed's outline with the fixture's record of seed `name`, as the
+ *  page opens and with every branch open (`differences`), in the part of each row's readings
+ *  `part` takes. */
+function outlineDifferences(outline: OutlineRead, name: string, part: ReadingsPart): Comparison {
+  const recorded = fixtureSeed(name);
+  const nodes = decisionsAreNodes(outline.answer, outline.decisions);
+  const comparisons = [
+    differences("as the page opens", outline.opened, recorded.opened, outline, nodes, part),
+    differences("with every branch open", outline.rows, recorded.rows, outline, nodes, part),
+  ];
+  return {
+    compared: comparisons.reduce((sum, one) => sum + one.compared, 0),
+    found: comparisons.flatMap((one) => one.found),
+  };
 }
 
 /** Each drawn time that is not its source's in this run, as the page's short day: a node's
@@ -520,7 +622,8 @@ function expectDecisionsFromNodes(outline: OutlineRead, recorded: SeedFixture): 
 
 for (const [name, seed] of SEEDS) {
   const title = `the outline drawn from the tree read holds the rows the reads drew: ${name}`;
-  // c-same-rows on one seed.
+  // c-same-rows on one seed, but the author of an agent's decision, which is the `@owed` row's
+  // below (`ReadingsPart`).
   // SLOW(>=2s): a whole seeded issue, read as it opens and again with every branch opened and
   // every row's body read in turn, each reading taken twice until it holds still.
   test(title, async ({ browser }) => {
@@ -534,13 +637,8 @@ for (const [name, seed] of SEEDS) {
           firstRowOutOfPlace("with every branch open", outline.rows, outline),
         "each row stands under the parent the tree read answers"
       ).toBeUndefined();
-      const recorded = fixtureSeed(name);
-      const nodes = decisionsAreNodes(outline.answer, outline.decisions);
       expect(
-        [
-          ...differences("as the page opens", outline.opened, recorded.opened, outline, nodes),
-          ...differences("with every branch open", outline.rows, recorded.rows, outline, nodes),
-        ],
+        outlineDifferences(outline, name, BESIDE_STAMPED_TITLE).found,
         "each row reads as the reads drew it"
       ).toEqual([]);
     });
@@ -558,6 +656,29 @@ for (const [name, seed] of SEEDS) {
         const outline = await readOutline(page, seeded, { bodies: false });
         owedUnless(decisionNodesGate(outline.answer, outline.decisions));
         expectDecisionsFromNodes(outline, fixtureSeed(name));
+      });
+    });
+
+    // c-same-rows' author of an agent's decision on one seed, owed on `sessionTitleGate`: the
+    // title its session stamped, on its row's line and in its body, as the fixture recorded it.
+    // SLOW(>=2s): a whole seeded issue, read as it opens and again with every branch opened and
+    // every row's body read in turn, each reading taken twice until it holds still.
+    test(`${title}, an agent's decision by the title its session stamped @owed`, async ({
+      browser,
+    }) => {
+      test.setTimeout(SAME_ROWS_MS);
+      await phase(browser, seed, async (page, seeded) => {
+        owedUnless(await treeReadGate(page, seeded.key));
+        owedUnless(await convertedGate(page, seeded.key));
+        owedUnless(await sessionTitleGate(seeded.key));
+        const outline = await readOutline(page, seeded);
+        const { compared, found } = outlineDifferences(outline, name, STAMPED_TITLE);
+        expect(
+          compared,
+          `no row the page draws of ${name} is an agent's decision the fixture holds, so the ` +
+            "row would compare nothing"
+        ).toBeGreaterThan(0);
+        expect(found, "each agent's decision draws the title its session stamped").toEqual([]);
       });
     });
   }

@@ -38,8 +38,9 @@ import type { ApiRequests } from "./traffic";
  *   an import cycle. The `treePath` there is a copy of the one `e2e/issue-page-t-tree.ts` holds,
  *   which that file does not export. Here, `viewNodesOf` is the nodes one view of the tree
  *   answers, `heldDecisionsRead` the decisions read that the gate on the seeds written as
- *   decision nodes (`decisionNodesGate`) reads, and `decisionsViewServedGate` the gate on the
- *   server serving the tree read's Decisions view.
+ *   decision nodes (`decisionNodesGate`) reads, `decisionsViewServedGate` the gate on the
+ *   server serving the tree read's Decisions view, and `sessionTitleGate` the gate on the tree
+ *   read answering the title a session stamped on its session node.
  * - **How a row names a node.** `decisionRowId` is the id a decision node's row carries (the
  *   `<slug>#b-<block id>`), `blockRowId` the id the row of a seed's block carries, a decision's
  *   or a statement's, by that block's node in a tree read, `askRowId` an ask's (its block's node
@@ -88,6 +89,27 @@ export async function decisionsViewServedGate(page: Page, key: string): Promise<
     owed:
       "owed until the server serves the tree read's Decisions view on this branch's base: the " +
       `tree read answers ${response.status()} to view=decisions here; ${OWED_BY}`,
+  };
+}
+
+/** The title each session stamped, on the session nodes the tree read answers, which the page
+ *  names an agent's decision by where the registry does not list its decider (`AgentName.tsx`'s
+ *  `drawnSessionName`), and which INFRA-1253's spec v168 puts on every session node the read
+ *  answers. It is met where a context node tagged `session` of issue `key`'s tree read, every
+ *  page its cursor names read as alice (`readTree`), carries a title that is not empty: by the
+ *  server's answer, never by a flag. */
+export async function sessionTitleGate(key: string): Promise<Gate> {
+  const sessions = ((await readTree(key, null)).nodes ?? []).filter(
+    (node) => node.role === "context" && node.supertag === "session"
+  );
+  return {
+    met: sessions.some(
+      (node) => "title" in node && typeof node.title === "string" && node.title.trim() !== ""
+    ),
+    owed:
+      "owed until the tree read answers on each session node the title its session stamped " +
+      `(INFRA-1253's spec v168) on this branch's base: of the ${sessions.length} session ` +
+      `nodes ${key}'s tree read answers as context here, none carries a title; ${OWED_BY}`,
   };
 }
 
