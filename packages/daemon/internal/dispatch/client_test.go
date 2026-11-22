@@ -1057,7 +1057,7 @@ func clientWrites() []clientWrite {
 			call: func(ctx context.Context, client *HTTPClient) error {
 				return client.PutDesignGates(ctx, "OTHER-7", []DesignGateDocument{{Step: "spec", ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"}})
 			},
-			body: `{"gates":[{"step":"spec","artifact_id":"6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"}],"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+			body: `{"gates":[{"step":"spec","artifact_id":"6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b","holds":null}],"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
 		},
 		{
 			method: "PutRoleHolders", route: "PUT /api/v1/issues/OTHER-7/role-holders",
@@ -1182,7 +1182,7 @@ func TestEveryWriteNamesTheSessionItsClientWritesAs(t *testing.T) {
 // the two lists hold is a method the client has.
 func TestEveryMethodOfTheClientIsAReadOrAWriteOfTheTable(t *testing.T) {
 	reads := []string{"ListIssues", "GetIssue", "WebhookAppInstalled", "ArtifactSlugs", "EventsAfter", "MessageBodiesSince",
-		"Approval", "Handoff", "Whoami"}
+		"Approval", "ApprovedVersionBefore", "ArtifactChanges", "Handoff", "Whoami"}
 	listed := map[string]string{}
 	for _, read := range reads {
 		listed[read] = "the list of reads"
