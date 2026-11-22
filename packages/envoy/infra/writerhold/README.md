@@ -191,8 +191,10 @@ decides, not the journal.
 - The broker refuses `released` after a `held` row of a hold that has not ended, a row lost
   mid-hold. With `--hold ID` the row then comes back `held` with its id, and the hold's way out
   works as before: set's rerun, `hold abort` after a stop, or `hold release` with nothing changed.
-  With no `--hold` the refusal names `--hold` and the route's answer, and no row is written; the
-  route's 400 names no hold id, so neither can the refusal.
+  With no `--hold` the refusal says the broker refused a released restore while a hold is held,
+  names the route's answer, and says the hold's id is the one `hold prepare` and `hold set` printed:
+  the route's 400 carries no hold id, no route lists the log, and `hold status` reads the lost row
+  first. No row is written.
 - After any other entry the row comes back `released`: with the hold's id when `--hold` names a hold
   that has not ended (a row lost in `prepare`, before `hold set`'s move, after an abort from
   `prepare`, or before the hold's journal was written), and the output says whether the hold's

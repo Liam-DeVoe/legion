@@ -373,8 +373,10 @@ func restore(ctx context.Context, records *holdrecord.Client, o options, stdout 
 	row, gen, err := restoreAt(ctx, records, natsgrant.OperatorPhaseReleased, holdID, o.reason)
 	if errors.As(err, &refused) && refused.Code == "bad_transition" {
 		if holdID == "" {
-			// The route's 400 names no hold id for this code, so the line can name only its answer.
-			return refusef(StepPreflight, "the log's latest entry is a held row, so the row was lost mid-hold and is not restored released (%v): restore it with `hold restore --hold <its hold id>`", err)
+			// The route's 400 names no hold id for this code, and no route lists the log, so the
+			// line names where the held hold's id was printed: the prepare and set that began it.
+			// `hold status` reads the row first, so it shows nothing while the row is lost.
+			return refusef(StepPreflight, "the broker refused a released restore while a hold is held (%v): the log's latest entry is a held row of a hold that has not ended, so the row was lost mid-hold; the hold's id is the one `hold prepare` and `hold set` printed when they began it; restore the row with `hold restore --hold <that id>`, which brings it back held", err)
 		}
 		// The route's log holds a held row of this hold, which has not ended: the row was lost
 		// mid-hold, and comes back held at the gen the route named for the released one.
