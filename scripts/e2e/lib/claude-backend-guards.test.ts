@@ -45,17 +45,21 @@ function tool(name: string): string {
 // with `claude-bridge` as its first argument: bash runs the script of that name from its working
 // directory, which starts its second argument as its child and waits on it, as the bridge waits on
 // Claude Code, under the name CLAUDE_ARGV0 gives it when that is set (`exec -a`, as a wrapper or
-// another argv[0] gives the real Claude Code), or after holding its own fork a second when
-// CLAUDE_FORK_HOLD is set, as the real bridge's child is the bridge until it execs. `pane-shim` runs
-// the rest of its arguments, after its `--`, as its child, as a pane's `legion worker-shim` runs the
-// bridge.
+// another argv[0] gives the real Claude Code), or as its own fork first when CLAUDE_STAGES is set,
+// as the real bridge's child is the bridge until it execs. `pane-shim` runs the rest of its
+// arguments, after its `--`, as its child, as a pane's `legion worker-shim` runs the bridge.
+//
+// CLAUDE_STAGES names the file a row's poll writes each stage it was refused in, one executable a
+// line. A stage (the bridge's fork, then each wrapper) stays itself until that file names its own
+// executable, and only then execs the next: the row reads the fact that its poll saw the stage,
+// not a hold a slow poll can outlast. A poll that never sees one ends at the row's own bound.
 const work = join(dir, "work");
 // The run's claude is a copy of sleep, under a directory whose name holds a space. Beside it: a
 // chain of two wrapper scripts, as a devbox's dotfiles shim is one, the first run by bash and the
-// second by sh, each running two seconds as only itself before it execs the next, the last a copy
-// of sleep elsewhere; a Claude Code that is a copy of bash, which runs the cwd's script `600` (the
-// bridge hands it that argument) and so runs an Oh My Pi tool below itself; and that Oh My Pi, a
-// copy of sleep.
+// second by sh, each running as only itself until CLAUDE_STAGES names it before it execs the next,
+// the last a copy of sleep elsewhere; a Claude Code that is a copy of bash, which runs the cwd's
+// script `600` (the bridge hands it that argument) and so runs an Oh My Pi tool below itself; and
+// that Oh My Pi, a copy of sleep.
 const claudeDir = join(dir, "bin with space");
 const claude = join(claudeDir, "claude");
 const wrapper = join(claudeDir, "claude-wrapper");
@@ -74,17 +78,24 @@ beforeAll(() => {
   copyFileSync(tool("sleep"), wrapped);
   copyFileSync(tool("sleep"), ompTool);
   copyFileSync(tool("bash"), claudeWithTool);
-  writeFileSync(wrapper, `#!${tool("bash")}\nsleep 2\nexec ${JSON.stringify(wrapper2)} "$@"\n`, {
-    mode: 0o755,
-  });
-  writeFileSync(wrapper2, `#!${tool("sh")}\nsleep 2\nexec ${JSON.stringify(wrapped)} "$@"\n`, {
+  // Each stage waits on the fact that the poll saw it (CLAUDE_STAGES, above), by its own executable.
+  // PID is read into `self` before the substitution: inside `$(…)`, $BASHPID is the substitution's
+  // own child, which has become readlink by the time it reads /proc.
+  const seen = (pid: string) =>
+    `self=${pid}\nstage=$(readlink /proc/$self/exe)\nuntil grep -qxF -- "$stage" "$CLAUDE_STAGES" 2>/dev/null; do sleep 0.02; done\n`;
+  writeFileSync(
+    wrapper,
+    `#!${tool("bash")}\n${seen("$$")}exec ${JSON.stringify(wrapper2)} "$@"\n`,
+    { mode: 0o755 }
+  );
+  writeFileSync(wrapper2, `#!${tool("sh")}\n${seen("$$")}exec ${JSON.stringify(wrapped)} "$@"\n`, {
     mode: 0o755,
   });
   mkdirSync(cwd);
   writeFileSync(join(cwd, "worker-shim"), '"$2" 600\n:\n');
   writeFileSync(
     join(cwd, "claude-bridge"),
-    'if [ -n "$CLAUDE_FORK_HOLD" ]; then (sleep 1; exec "$2" 600)\n' +
+    `if [ -n "$CLAUDE_STAGES" ]; then (${seen("$BASHPID").replace(/\n/g, "; ")}exec "$2" 600)\n` +
       'elif [ -n "$CLAUDE_ARGV0" ]; then (exec -a "$CLAUDE_ARGV0" "$2" 600)\n' +
       'else "$2" 600; fi\n:\n'
   );
@@ -254,10 +265,12 @@ printf 'argv[0] %s\\n' "$(tr '\\0' '\\n' <"/proc/$below/cmdline" | sed -n 1p)"`;
     () => {
       // Each poll before the last exec must answer nothing: the child is first the bridge's own fork,
       // then the first wrapper's bash, then the second wrapper's sh, and none of them is Claude Code.
-      const r = run(`export CLAUDE_FORK_HOLD=1
+      // Each stage holds until the poll has written it to the stages file (CLAUDE_STAGES), so every
+      // stage is seen however long a poll takes.
+      const r = run(`export CLAUDE_STAGES="$scratch/stages"
+: >"$CLAUDE_STAGES"
 claude_bin=${JSON.stringify(wrapper)} claude_exe=$(realpath -e -- ${JSON.stringify(wrapped)})
 spawn bash -c '"$@"; :' pane "$work/legion" pane-shim -- "$work/legion" claude-bridge -- "$claude_bin"
-: >"$scratch/stages"
 found=
 SECONDS=0
 while [ "$SECONDS" -lt 60 ]; do
