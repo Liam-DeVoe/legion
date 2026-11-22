@@ -314,17 +314,27 @@ The clock of a unit test:
   of rows that check what a frame of the page did not do, such as
   `web/src/features/issue-page/IssueTree.test.tsx`'s `nextFrame`.
   `web/src/__tests__/real-clock-waits.test.ts` reads every unit test file and test helper with the
-  TypeScript parser, and fails every call in them that starts a wait of real time,
-  whatever its delay, its callback or what wraps it:
+  TypeScript parser, and fails every call in them that reaches a wait of real time by a name,
+  whatever its delay or its callback:
   a `setTimeout`, a `setInterval`, a `setImmediate` or a `requestAnimationFrame`, global or a
-  member of any object such as `window.setTimeout` or `window.requestAnimationFrame`;
+  member of any object such as `window.setTimeout` or `window.requestAnimationFrame`, by its name
+  or by a key, a string literal or a `const` of the file bound to one (`globalThis[key]`);
   the `setTimeout`, `setInterval`, `setImmediate` and `scheduler.wait` of `node:timers` and
   `node:timers/promises` (or `timers` and `timers/promises`), imported by name, under another name,
-  or reached through a namespace or default import;
+  or reached through a namespace or default import, through the `promises` of `node:timers`, or
+  through the namespace a dynamic import's `then` hands its callback;
   `Bun.sleep` and `Bun.sleepSync`;
   `sleep` and `sleepSync` imported from `"bun"` under any name;
+  the `call` and the `apply` of one of these;
   and any name, destructure or `bind` that one of these is given, or a reference to one that the
   file hands on: an argument, a value it stores, returns or exports.
+  The scan does not follow a holder of waits handed to another function or stored inside a value,
+  and a wait reached only through one: a holder is `Bun`, `globalThis`, `window`, or a timers
+  module or namespace, as in `nap(Bun)` and `{ bun: Bun }`.
+  An exported holder is found where the file exports it, since an export is no value handed to a
+  function.
+  The act-rule inputs (`*.fixture.tsx`, which the scan's `sourceFiles` skips by name) are left out,
+  since they are written to break rules.
   A call, or a reference handed on, passes in two ways alone.
   One is `afterOnFakeClock` from `web/src/__tests__/fake-clock.ts`, which refuses the real clock.
   The other is the marker comment directly above the statement holding the wait, with no blank

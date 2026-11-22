@@ -14,40 +14,46 @@ import { afterOnFakeClock, onFakeClock } from "./fake-clock";
  *
  * This reads every unit test file and test helper under `web/src` - a `*.test.ts(x)`, a file of a
  * `__tests__` folder, a `*-fixture.ts(x)` or `*-fixtures.ts(x)` helper - for every call that
- * starts a wait of real time, whatever its delay, whatever its callback is and whatever wraps the
- * call: a `setTimeout`, a `setInterval`, a `setImmediate` or a `requestAnimationFrame`, global or
- * a member of any object (`window.setTimeout`, `globalThis.setInterval`,
- * `window.requestAnimationFrame`); the `setTimeout`, `setInterval`, `setImmediate` and
- * `scheduler.wait` of `node:timers` and `node:timers/promises` (or `timers` and
- * `timers/promises`), named, aliased or reached through a namespace or default import
- * (`t.scheduler.wait`); a `Bun.sleep` or a `Bun.sleepSync`; and every local name an import gives
- * one of those (`import { setTimeout as delay }`, `import { setImmediate as nextTurn }`,
- * `import { sleep as pause } from "bun"`). The architect ruled that this list is not narrowed by
- * how a wait is spelled (dispatch://INFRA-983), so a wait is found under every name, destructure
- * or `bind` it is given, and where it is handed on: a declaration or an assignment whose value is
- * one of those, a member of one, another such name, or a choice of one (`const later =
- * setTimeout`, `options.wait ?? setTimeout`), a parameter's default, and a destructure, renamed,
- * nested or with a default, from `Bun`, from "bun" or a timers module bound whole, by an import,
- * an `import(…)` or a `require(…)` (`const { sleep } = Bun`, `const { setTimeout: delay } = await
- * import("node:timers/promises")`), and of a `setTimeout` from any object; such a module bound
- * whole by `import(…)` or `require(…)`, whose members count as a namespace import's do; the
+ * reaches a wait of real time by a name, whatever its delay and whatever its callback is: a
+ * `setTimeout`, a `setInterval`, a `setImmediate` or a `requestAnimationFrame`, global or a member
+ * of any object (`window.setTimeout`, `globalThis.setInterval`, `window.requestAnimationFrame`),
+ * by its name or by a key, a string literal or a `const` of the file bound to one
+ * (`globalThis[key]`); the `setTimeout`, `setInterval`, `setImmediate` and `scheduler.wait` of
+ * `node:timers` and `node:timers/promises` (or `timers` and `timers/promises`), named, aliased or
+ * reached through a namespace or default import (`t.scheduler.wait`), through the `promises` of
+ * `node:timers` (`timers.promises.scheduler.wait`), or through the namespace a dynamic import's
+ * `then` hands its callback (`import("bun").then((m) => m.sleep(50))`); a `Bun.sleep` or a
+ * `Bun.sleepSync`; and every local name an import gives one of those (`import { setTimeout as
+ * delay }`, `import { setImmediate as nextTurn }`, `import { sleep as pause } from "bun"`). By the
+ * architect's k11 ruling (dispatch://INFRA-983), the scan finds every spelling that reaches a wait
+ * by a name, and states one exact boundary, below. So a wait is found under every name,
+ * destructure or `bind` it is given, and where it is handed on: a declaration or an assignment
+ * whose value is one of those, a member of one, another such name, or a choice of one (`const
+ * later = setTimeout`, `options.wait ?? setTimeout`), a parameter's default, and a destructure,
+ * renamed, nested or with a default, from `Bun`, from "bun" or a timers module bound whole, by an
+ * import, an `import(…)` or a `require(…)` (`const { sleep } = Bun`, `const { setTimeout: delay }
+ * = await import("node:timers/promises")`), and of a `setTimeout` from any object; such a module
+ * bound whole by `import(…)` or `require(…)`, whose members count as a namespace import's do; the
  * `call` and the `apply` of a wait, and its `bind`, whose answer is such a name; and every
  * reference to a wait that the file hands on out of its view, which whatever it reaches may start:
  * passed to another call or a `new` (`[50].map(Bun.sleep)`, `act(setTimeout)`), stored in an
  * object, an array, a member, a class's field or a JSX prop, returned, thrown, yielded, or
  * exported (`export const pause = Bun.sleep`, `export { setTimeout as later }`), each found at
- * the reference as a call is (`placeOf`). `Bun`, a timers module and a scheduler hold waits that
- * a file importing one calls under names the scan does not know, so each is found where the file
- * exports it. The names are read in a fixed-point pass over the whole file, so an alias of an
- * alias is one, and so is one bound below its call; a name is an alias in the whole file once any
- * binding makes it one. A wait the scan sees all of starts none: one called (found as the call),
- * a member of it read (`setTimeout.length`), one read or compared (`typeof setTimeout`,
- * `globalThis.setTimeout === window.setTimeout`, a condition, the object `spyOn` takes, a wait
- * handed to one of `readers` such as `Object.hasOwn(setTimeout, "clock")`), one written to, one
- * named in a type, and one bound to a name the scan follows. It follows no callback and no
- * resolver: a trace of a resolver through the data flow always misses a form, such as a resolver
- * handed to a helper that calls `setTimeout`, so the call is found where it starts, and so is the
- * timer of a row that stands in for a product's. A call, and a reference handed on, passes in two
+ * the reference as a call is (`placeOf`). The scan does not follow a holder of waits handed to
+ * another function or stored inside a value, and a wait reached only through one: a holder is
+ * `Bun`, `globalThis`, `window`, or a timers module or namespace, as in `nap(Bun)` and
+ * `{ bun: Bun }`. An exported holder is found where the file exports it, since an export is no
+ * value handed to a function. The names are read in a fixed-point pass over the whole file, so an
+ * alias of an alias is one, and so is one bound below its call; a name is an alias in the whole
+ * file once any binding makes it one. A wait the scan sees all of starts none: one called (found
+ * as the call), a member of it read (`setTimeout.length`), one read or compared (`typeof
+ * setTimeout`, `globalThis.setTimeout === window.setTimeout`, a condition, the object `spyOn`
+ * takes, a wait handed to one of `readers` such as `Object.hasOwn(setTimeout, "clock")`), one
+ * written to, one named in a type, and one bound to a name the scan follows. It follows no
+ * resolver, and no callback but the one a dynamic import's `then` hands its namespace: a trace of
+ * a resolver through the data flow always misses a form, such as a resolver handed to a helper
+ * that calls `setTimeout`, so the call is found where it starts, and so is the timer of a row that
+ * stands in for a product's. A call, and a reference handed on, passes in two
  * ways alone. One is `afterOnFakeClock` (`fake-clock.ts`), which refuses the real clock itself: a
  * row that stands in for an answer that takes time to come sets its timer there, and the
  * `setTimeout` inside that helper's own body is passed by its file and its function's name. The
@@ -73,9 +79,10 @@ import { afterOnFakeClock, onFakeClock } from "./fake-clock";
  * `jest.advanceTimersByTime` runs neither, so a row waits for what the frame or the turn brings,
  * and a wait that has nothing else to wait for says why it stays. The scan reads a test's own
  * calls: a product function the row tests that sets a timer itself is the product's code, not a
- * wait of the row's. The act-rule inputs (`*.fixture.tsx`) are written to break rules and are left
- * out. A file that imports `bun:test` or Testing Library is a test file or a helper whatever its
- * name, and the scan holds itself to reading every such file.
+ * wait of the row's. The act-rule inputs (`*.fixture.tsx`, which the scan's `sourceFiles` skips by
+ * name) are left out, since they are written to break rules. A file that imports `bun:test` or
+ * Testing Library is a test file or a helper whatever its name, and the scan holds itself to
+ * reading every such file.
  */
 
 const webSource = fileURLToPath(new URL("..", import.meta.url));
@@ -146,8 +153,8 @@ interface RealWait {
 
 /** What a name or an expression stands for, as far as a wait goes: a function whose call starts
  *  one (`wait`); "bun" whole, `Bun` among it, whose `sleep` and `sleepSync` are waits (`bun`); a
- *  timers module whole, whose `scheduler` is one (`timers`); and a timers module's `scheduler`,
- *  whose `wait` is a wait (`scheduler`). */
+ *  timers module whole, whose `scheduler` is one and whose `promises` is another (`timers`); and a
+ *  timers module's `scheduler`, whose `wait` is a wait (`scheduler`). */
 type Kind = "wait" | "bun" | "timers" | "scheduler";
 
 const kinds: readonly Kind[] = ["wait", "bun", "timers", "scheduler"];
@@ -156,8 +163,11 @@ const kinds: readonly Kind[] = ["wait", "bun", "timers", "scheduler"];
 type Is = (kind: Kind) => boolean;
 
 /** The names that stand for each kind in a file: the global ones (`setTimeout`, `Bun`), and every
- *  name a binding anywhere in the file gives one of those (`waitNames`). */
-type WaitNames = Record<Kind, Set<string>>;
+ *  name a binding anywhere in the file gives one of those (`waitNames`); and `strings`, the
+ *  strings each `const` of the file is bound to, by its name, which a member's key may be. */
+type WaitNames = Record<Kind, Set<string>> & {
+  readonly strings: ReadonlyMap<string, readonly string[]>;
+};
 
 /** The operators whose value is one of their operands: `??`, `||` and `&&`. */
 const choices: ReadonlySet<ts.SyntaxKind> = new Set([
@@ -174,15 +184,26 @@ const assignments: ReadonlySet<ts.SyntaxKind> = new Set([
   ts.SyntaxKind.AmpersandAmpersandEqualsToken,
 ]);
 
-/** The object and the name of a member (`window.setTimeout`, `window["setTimeout"]`). */
-function member(expression: ts.Expression): { object: ts.Expression; name: string } | undefined {
+const noStrings: ReadonlyMap<string, readonly string[]> = new Map();
+
+/** The object of a member and each name it may have: `window.setTimeout`, `window["setTimeout"]`,
+ *  and `globalThis[key]` with a name for each string a `const key` of the file is bound to
+ *  (`strings`), so a member reached by a constant key is read as the one it names. */
+function member(
+  expression: ts.Expression,
+  strings: ReadonlyMap<string, readonly string[]> = noStrings
+): { object: ts.Expression; keys: readonly string[] } | undefined {
   if (ts.isPropertyAccessExpression(expression)) {
-    return { name: expression.name.text, object: expression.expression };
+    return { keys: [expression.name.text], object: expression.expression };
   }
-  return ts.isElementAccessExpression(expression) &&
-    ts.isStringLiteralLike(expression.argumentExpression)
-    ? { name: expression.argumentExpression.text, object: expression.expression }
-    : undefined;
+  if (!ts.isElementAccessExpression(expression)) return undefined;
+  const key = expression.argumentExpression;
+  const keys = ts.isStringLiteralLike(key)
+    ? [key.text]
+    : ts.isIdentifier(key)
+      ? (strings.get(key.text) ?? [])
+      : [];
+  return keys.length === 0 ? undefined : { keys, object: expression.expression };
 }
 
 /** What the module `from` is whole: a timers module, "bun", or neither. */
@@ -193,12 +214,13 @@ function moduleIs(from: string): Is {
 
 /** What the member `name` of something `object` says stands for: a member of `waitCalls` of any
  *  object is a wait, and so is `sleep` or `sleepSync` of "bun" and `wait` of a scheduler; `Bun`
- *  of any object is "bun", and `scheduler` of a timers module is a scheduler. */
+ *  of any object is "bun", `scheduler` of a timers module is a scheduler, and `promises` of one
+ *  (`node:timers`' own `promises`) is a timers module. */
 function memberIs(object: Is, name: string): Is {
   return (kind) => {
     if (kind === "bun") return name === "Bun";
     if (kind === "scheduler") return name === "scheduler" && object("timers");
-    if (kind === "timers") return false;
+    if (kind === "timers") return name === "promises" && object("timers");
     return (
       waitCalls.has(name) ||
       ((name === "sleep" || name === "sleepSync") && object("bun")) ||
@@ -254,10 +276,10 @@ function is(expression: ts.Expression, kind: Kind, names: WaitNames): boolean {
     if (from !== undefined) return moduleIs(from)(kind);
     return kind === "wait" && methodOfWait(bare.expression, ["bind"], names);
   }
-  const reached = member(bare);
-  return (
-    reached !== undefined && memberIs((each) => is(reached.object, each, names), reached.name)(kind)
-  );
+  const reached = member(bare, names.strings);
+  if (reached === undefined) return false;
+  const object: Is = (each) => is(reached.object, each, names);
+  return reached.keys.some((key) => memberIs(object, key)(kind));
 }
 
 /** Whether `expression` is one of the methods `methods` names of a wait (`setTimeout.bind`,
@@ -267,10 +289,9 @@ function methodOfWait(
   methods: readonly string[],
   names: WaitNames
 ): boolean {
-  const reached = member(unwrapped(expression));
-  return (
-    reached !== undefined && methods.includes(reached.name) && is(reached.object, "wait", names)
-  );
+  const reached = member(unwrapped(expression), names.strings);
+  if (reached === undefined) return false;
+  return reached.keys.some((key) => methods.includes(key)) && is(reached.object, "wait", names);
 }
 
 /** A place a file binds a name, or the names of a destructure, to what `source` says. */
@@ -380,11 +401,46 @@ function bindings(file: ts.SourceFile, names: WaitNames): Binding[] {
       found.push({ source: standsFor(node.initializer), target: node.name });
     } else if (ts.isBinaryExpression(node) && assignments.has(node.operatorToken.kind)) {
       found.push({ source: standsFor(node.right), target: node.left });
+    } else if (ts.isCallExpression(node)) {
+      // A `then` of a promise of a module, `import("bun").then((m) => …)`, hands its callback's
+      // first parameter that module whole.
+      const reached = member(unwrapped(node.expression), names.strings);
+      const [handler] = node.arguments;
+      const parameter =
+        handler !== undefined && (ts.isArrowFunction(handler) || ts.isFunctionExpression(handler))
+          ? handler.parameters[0]
+          : undefined;
+      if (reached?.keys.includes("then") && parameter !== undefined) {
+        const module: Is = (kind) => kind !== "wait" && is(reached.object, kind, names);
+        found.push({ source: module, target: parameter.name });
+      }
     }
     ts.forEachChild(node, visit);
   };
   visit(file);
   return found;
+}
+
+/** The strings each `const` of `file` is bound to, by its name (`const key = "setTimeout"`): a
+ *  name bound to two in two scopes has both. */
+function constantStrings(file: ts.SourceFile): Map<string, string[]> {
+  const strings = new Map<string, string[]>();
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer !== undefined &&
+      (ts.getCombinedNodeFlags(node) & ts.NodeFlags.Const) !== 0
+    ) {
+      const value = unwrapped(node.initializer);
+      if (ts.isStringLiteralLike(value)) {
+        strings.set(node.name.text, [...(strings.get(node.name.text) ?? []), value.text]);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return strings;
 }
 
 /** The names that stand for each kind in `file`: the global ones, and every name a binding gives
@@ -395,6 +451,7 @@ function waitNames(file: ts.SourceFile): WaitNames {
   const names: WaitNames = {
     bun: new Set(["Bun"]),
     scheduler: new Set(),
+    strings: constantStrings(file),
     timers: new Set(),
     wait: new Set(waitCalls),
   };
@@ -417,12 +474,10 @@ function startsWait(callee: ts.Expression, names: WaitNames): boolean {
 function readsArguments(call: ts.CallExpression): boolean {
   const callee = unwrapped(call.expression);
   const reached = member(callee);
-  if ((ts.isIdentifier(callee) ? callee.text : reached?.name) === "spyOn") return true;
-  return (
-    reached !== undefined &&
-    ts.isIdentifier(reached.object) &&
-    readers[reached.object.text]?.includes(reached.name) === true
-  );
+  if ((ts.isIdentifier(callee) ? callee.text : reached?.keys[0]) === "spyOn") return true;
+  if (reached === undefined || !ts.isIdentifier(reached.object)) return false;
+  const methods = readers[reached.object.text] ?? [];
+  return reached.keys.some((key) => methods.includes(key));
 }
 
 /** Whether `node` is written to: the left side of an assignment, or of a `for … of` or a
@@ -869,13 +924,12 @@ function refusedAndKept(texts: readonly string[]): void {
   ).toEqual(texts.map(() => [true]));
 }
 
-// docs/testing.md, "The clock of a unit test", says this scan fails every call that starts a wait
-// of real time, whatever wraps it, and the architect ruled that the sentence is not narrowed. A
-// reader found five spellings, each waiting 50 ms, that the scan did not find: Bun's sleep
-// destructured from `Bun`, a `setTimeout` under a name of the row's own, the promise `setTimeout`
-// destructured from a dynamic `import` and from a `require` of node:timers/promises, and a
-// `setTimeout` called through its `call`. Each is found once, at the line of its call, and passes
-// under the marker.
+// docs/testing.md, "The clock of a unit test", lists the calls this scan finds by a name, among
+// them every name and destructure a wait is given and every `call` of one. A reader found five
+// spellings, each waiting 50 ms, that the scan did not find: Bun's sleep destructured from `Bun`,
+// a `setTimeout` under a name of the row's own, the promise `setTimeout` destructured from a
+// dynamic `import` and from a `require` of node:timers/promises, and a `setTimeout` called
+// through its `call`. Each is found once, at the line of its call, and passes under the marker.
 test("the five spellings a reader found are each found at the line of their call", () => {
   const spellings = [
     "const { sleep } = Bun;\nawait sleep(50);",
@@ -954,16 +1008,26 @@ test("the scheduler of node:timers' promises and a namespace a dynamic import ha
   ]);
 });
 
-// The same section says the scan fails every call that starts a wait of real time, whatever wraps
-// it, and the comment above the five spellings' row records that the sentence is not narrowed.
-// `Bun` handed to a helper, `Bun` stored in an object, and a timer of `globalThis` reached by a
-// key held in a constant each wait 50 ms of real time, and the scan found none of them at
-// 54a60643 (INFRA-983, tester round 4).
-test("Bun handed on or stored, and a timer reached by a constant key, start waits", () => {
+// The same section says the scan reads a member of `globalThis`, `window` or `self` by its key, a
+// string literal or a `const` of the file bound to one. A timer of `globalThis` reached by a key
+// held in a constant waits 50 ms of real time, and the scan did not find it at 54a60643
+// (INFRA-983, tester round 4).
+test("a timer of globalThis reached by a constant key starts a wait", () => {
+  refusedAndKept(['const key = "setTimeout";\nawait new Promise((r) => globalThis[key](r, 50));']);
+});
+
+// A constant key reads the member it names of `window`, of `self` and of any other object, as a
+// string literal does: a `const` bound to a string, one bound `as const` or to a template with no
+// substitution, and a name that two scopes bind to two strings, which may be either. A method of a
+// wait is read by one too.
+test("a constant key of window, self or any object reads the member it names", () => {
   refusedAndKept([
-    "function nap(b: typeof Bun) {\n  return b.sleep(50);\n}\nawait nap(Bun);",
-    "const helpers = { bun: Bun };\nawait helpers.bun.sleep(50);",
-    'const key = "setTimeout";\nawait new Promise((r) => globalThis[key](r, 50));',
+    'const key = "requestAnimationFrame";\nwindow[key](run);',
+    'const key = "setImmediate" as const;\nself[key](run);',
+    "const key = `setInterval`;\nglobalThis[key](run, 50);",
+    'const method = "sleep";\nawait Bun[method](50);',
+    'function focusOn() {\n  const key = "focus";\n}\nconst key = "setTimeout";\nwindow[key](run, 50);',
+    'const call = "call";\nsetTimeout[call](window, run, 50);',
   ]);
 });
 
@@ -1060,9 +1124,9 @@ test("a wait stored, given as a JSX prop, returned, thrown, yielded or exported 
 
 // What the scan sees all of hands nothing on: a member of a wait read (`setTimeout.length`), an
 // assignment that writes to one, a declaration or a destructure the scan follows, a condition, a
-// `void`, a `!`, a comparison and a `case`, a type (`typeof setTimeout` there), and a value of the
-// row's own stored, returned or exported. `Bun` handed to anything but an export is no wait: its
-// waits are found where they are reached.
+// `void`, a `!`, a comparison and a `case`, a type (`typeof setTimeout` there), a value of the
+// row's own stored, returned or exported, and `Bun` handed to `spyOn`, which reads the object
+// whose member it replaces.
 test("a wait read, compared, written to, bound or named in a type hands nothing on", () => {
   const none = [
     "const arity = setTimeout.length;",
