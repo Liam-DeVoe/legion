@@ -494,13 +494,17 @@ current; retired: ...`. A stop names what the run left.
 
 `convert --hold ID <hold flags> <store flags>`, in a `cutover` hold. [What blocks
 `convert`](#what-blocks-convert) lists its refusals. It saves its set, then converts each name of
-it. A record with an open operation is settled first. A record that already selects a fresh name
-is left as it is, its fixed name retired and deleted if the stream still holds it. A name whose
-fixed name is present is reserved with start S, the lowest of the fixed name's ack floor + 1, the
-start Dispatch's hold token saved (`duty_holds` row `delivery-intake-<durable>`) and any start the
-record holds, clamped as a creator clamps a start past the stream's end. Then the fixed name is
-deleted and the fresh name created at S with the fixed name's configuration (the inactive
-threshold `prepare` read, not the raised one) and published as the record's current. A name whose
+it. A record with an open operation is settled first; an open replace of the fixed name whose fresh
+name never landed has the fixed name deleted before a fresh name is created at its saved start, so
+no logical name holds two consumer slots. A record that already selects a fresh name is left as it
+is, its fixed name deleted (never retired) if the stream still holds it. A name whose fixed name is
+present is reserved with start S, the lowest of the fixed name's ack floor + 1, the start
+Dispatch's hold token saved (`duty_holds` row `delivery-intake-<durable>`) and any start the record
+holds, clamped as a creator clamps a start past the stream's end; the reserved record names the
+fixed name only as its open replace's old name, with no current. Then the fixed name is deleted
+and the fresh name created at S with the fixed name's configuration (the inactive threshold
+`prepare` read, not the raised one) and published as the record's current. A failed delete of the
+fixed name stops `convert`, the fixed name retired nowhere. A name whose
 fixed name is gone gets a record with no current, starting at the lowest of the cohort's floor + 1,
 the hold token's start and the record's start. It lists again until a listing holds no fixed name,
 then writes each family's broker cutover row `done` and its store's marker `done`: the bucket's

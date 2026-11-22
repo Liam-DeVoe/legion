@@ -3,11 +3,16 @@ package consumernames
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/infra/writerhold/holdtest"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/holdrecord"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // convertRig is a stack whose notification stream the operator made under a streams-update hold
@@ -562,7 +568,9 @@ func TestConvertRerunAfterTheDeleteCreatesTheFreshNameFromTheSavedSet(t *testing
 		logical := strings.TrimPrefix(f.Name, "s-")
 		candidate := selection.FreshName(sessionFreshPrefix)
 		crashed[logical] = candidate
-		_, err := store.Write(ctx, logical, selection.Record{Current: f.Name, Start: 2,
+		// The record as convert writes it before F's delete: F as the replace's old name alone, with
+		// no current (convertRule.convertName).
+		_, err := store.Write(ctx, logical, selection.Record{Start: 2,
 			Op: &selection.Op{Kind: selection.OpReplace, Old: f.Name, Candidate: candidate, ReservedAt: time.Now()}}, 0)
 		require.NoError(t, err)
 		require.NoError(t, deleteConsumer(ctx, nc, notifications, f.Name))
@@ -735,4 +743,273 @@ func TestConvertNamesDispatchsMigrationForAStoreWithNoTable(t *testing.T) {
 	reason := stopped("--dispatch-database-file", "dispatch.url")
 	require.Contains(t, reason, migration, "the refusal does not name Dispatch's migration")
 	require.NotContains(t, reason, "give --dispatch-database-file", "the refusal names a flag the operator gave")
+}
+
+// convertConsumerSubject is the JetStream API subject of verb (CREATE or DELETE) for consumer name
+// of the notification stream, in the one form convert sends (writeConsumer, deleteConsumer).
+func convertConsumerSubject(verb, name string) string {
+	return "$JS.API.CONSUMER." + verb + "." + notifications + "." + name
+}
+
+// convertWire dials a run's connections as nats.go does and reads every JetStream API subject the
+// run sends on them, in the order it sends them (sent). When cutAt names a subject, the first write
+// that sends it ends the run (cut, the run's ctx's cancel) and closes its connection before the
+// subject is sent, and every later dial is refused: the run killed right before that request, so
+// no copy of it reaches the hub on a reconnect.
+type convertWire struct {
+	cutAt string
+	cut   func()
+	done  atomic.Bool
+
+	mu       sync.Mutex
+	subjects []string
+}
+
+// convertWireAPI is a JetStream API request's PUB line, or a headered HPUB's, by its subject.
+var convertWireAPI = regexp.MustCompile(`H?PUB (\$JS\.API\.\S+) `)
+
+func (w *convertWire) Dial(network, address string) (net.Conn, error) {
+	if w.done.Load() {
+		return nil, errors.New("the killed run dials no more")
+	}
+	conn, err := (&net.Dialer{Timeout: 10 * time.Second}).Dial(network, address)
+	if err != nil {
+		return nil, err
+	}
+	return &convertWireConn{Conn: conn, w: w}, nil
+}
+
+// sent is every JetStream API subject the run sent, in its order.
+func (w *convertWire) sent() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.Clone(w.subjects)
+}
+
+type convertWireConn struct {
+	net.Conn
+	w *convertWire
+}
+
+func (c *convertWireConn) Write(p []byte) (int, error) {
+	if c.w.done.Load() {
+		_ = c.Conn.Close()
+		return 0, net.ErrClosed
+	}
+	var subjects []string
+	for _, match := range convertWireAPI.FindAllSubmatch(p, -1) {
+		subject := string(match[1])
+		if c.w.cutAt != "" && subject == c.w.cutAt && c.w.done.CompareAndSwap(false, true) {
+			c.w.cut()
+			_ = c.Conn.Close()
+			return 0, net.ErrClosed
+		}
+		subjects = append(subjects, subject)
+	}
+	c.w.mu.Lock()
+	c.w.subjects = append(c.w.subjects, subjects...)
+	c.w.mu.Unlock()
+	return c.Conn.Write(p)
+}
+
+// convertOnWire runs convert --hold id as rig.run does, on connections of w's, the run ended at
+// w's cut.
+func (rig *convertRig) convertOnWire(id string, w *convertWire) (int, string, string) {
+	rig.t.Helper()
+	run, kill := context.WithCancel(context.Background())
+	defer kill()
+	w.cut = kill
+	e := rig.e
+	e.connect = func(context.Context, options) (*nats.Conn, error) {
+		return nats.Connect(rig.s.Cluster.URL(), append(rig.s.OperatorCredential(), nats.SetCustomDialer(w), nats.Name("envoy-infra consumer-names"),
+			nats.MaxReconnects(-1), nats.ReconnectWait(100*time.Millisecond), nats.Timeout(10*time.Second))...)
+	}
+	// The held re-read's report admits no connection but the command's and the auth service's,
+	// which rig.run sees to; this run is the test's own.
+	rig.closeOperators()
+	return createBucketRun(rig.t, run, e, actionConvert, "--hold", id)
+}
+
+// convertKilledBeforeTheDelete runs convert --hold id killed right before it sends the delete of
+// fixed (convertWire), requires the run cut there with nothing written after its intent, and
+// answers logical's record as the kill left it.
+func (rig *convertRig) convertKilledBeforeTheDelete(id, fixed, logical string) selection.Record {
+	rig.t.Helper()
+	wire := &convertWire{cutAt: convertConsumerSubject("DELETE", fixed)}
+	code, _, stderr := rig.convertOnWire(id, wire)
+	require.True(rig.t, wire.done.Load(), "the run was never cut at its delete of %s\n%s", fixed, stderr)
+	require.NotZero(rig.t, code, stderr)
+	require.Equal(rig.t, "intent", rig.lastEntry(id, actionConvert).State, "the killed run wrote an entry after its intent")
+	require.NotNil(rig.t, rig.consumer(fixed), "the killed run deleted %s", fixed)
+	return rig.record(familySession, logical)
+}
+
+// A convert killed after its record write and before its delete of F (its connection cut right
+// before it sends F's delete and its run ended, convertWire) leaves K's record naming F only as the
+// open replace's old name, with no current: plan §3 step 2 writes op = {replace, old F, candidate
+// N} and start = S alone, and the selection package refuses a record whose current is the fixed
+// name (consumernames Names.Check). The record passes the fence every reader of a record applies
+// (checkRecordFence), F is still on the stream, and convert's rerun settles the open replace (Step
+// 0) and completes: K's record selects a fresh name at F's floor + 1 with the killed run's
+// candidate retired, and no fixed name is left. Control: the convert that wrote F as the record's
+// current while its conversion was open (the convert.go before this rule), whose record the fence
+// refuses, naming its current. It fails when an open conversion's record names F anywhere but as
+// the replace's old name, or the rerun does not complete the conversion.
+func TestAConvertKilledBeforeItsDeleteOfFLeavesARecordTheFencePasses(t *testing.T) {
+	rig := newConvertRig(t, 0)
+	ctx := context.Background()
+	const fixed, subject = "s-ses_kill", "notifications.agent.ses_kill"
+	seqs := rig.publish(subject, 4)
+	rig.fixed(fixed, subject, 0)
+	consumer, err := rig.writer.Consumer(ctx, notifications, fixed)
+	require.NoError(t, err)
+	require.NoError(t, rig.ackUpTo(consumer, seqs[1]))
+	id, _ := rig.heldForConvert()
+	m, ok := classify(fixed)
+	require.True(t, ok)
+
+	record := rig.convertKilledBeforeTheDelete(id, fixed, m.Logical)
+	require.NoError(t, checkRecordFence(familySession, m.Logical, record), "the open conversion's record fails the fence")
+	require.NotNil(t, record.Op, "the killed run left no open operation")
+	require.Equal(t, selection.OpReplace, record.Op.Kind)
+	require.Equal(t, fixed, record.Op.Old, "the open replace's old name")
+	require.Empty(t, record.Current, "the open conversion's record has a current")
+	require.Equal(t, seqs[1]+1, record.Start, "the open conversion's start is not F's floor + 1")
+	killed := record.Op.Candidate
+
+	code, _, stderr := rig.run(actionConvert, "--hold", id)
+	require.Zero(t, code, stderr)
+	record = rig.record(familySession, m.Logical)
+	rig.requireFresh(m, record, seqs[1]+1)
+	require.NotEqual(t, killed, record.Current, "the rerun reused the killed run's candidate")
+	require.Equal(t, []string{killed}, record.Retired, "the rerun's record retires the killed run's candidate alone")
+	require.Empty(t, rig.fixedNames(), "a fixed name is left after the rerun")
+}
+
+// An open replace {old F, candidate N} with N absent and F present, as a convert killed after its
+// record write and before its delete of F leaves it (convertKilledBeforeTheDelete), on
+// ENVOY_NOTIFICATIONS at a full max_consumers that F's slot fills: convert's rerun settles it (Step
+// 0, convertRule.settle) by deleting F before it reserves and creates a fresh N′ (plan §3 step 2:
+// F goes first, so no logical name ever holds two slots and no cap update is needed). The rerun's
+// own API subjects, read on its connection (convertWire), send F's delete before any create, and
+// one create, N′'s, which the server takes: no create is refused at the cap, no stream update is
+// sent, and max_consumers is unchanged. Control: the settle that created N′ first and deleted F
+// only at publish (the convert.go before this rule), whose first create at the full cap the server
+// refuses (err_code 10026), so its launch retires each refused candidate and deletes F only
+// then. It fails when a candidate's create comes before F's delete, a create is refused, or the cap
+// changes.
+func TestConvertsSettleDeletesTheFixedNameBeforeItCreatesTheCandidateAtAFullCap(t *testing.T) {
+	rig := newConvertRig(t, 1)
+	ctx := context.Background()
+	const fixed, subject = "s-ses_cap", "notifications.agent.ses_cap"
+	seqs := rig.publish(subject, 4)
+	rig.fixed(fixed, subject, 0)
+	consumer, err := rig.writer.Consumer(ctx, notifications, fixed)
+	require.NoError(t, err)
+	require.NoError(t, rig.ackUpTo(consumer, seqs[1]))
+	id, _ := rig.heldForConvert()
+	m, ok := classify(fixed)
+	require.True(t, ok)
+
+	record := rig.convertKilledBeforeTheDelete(id, fixed, m.Logical)
+	require.NotNil(t, record.Op, "the killed run left no open operation")
+	require.Equal(t, fixed, record.Op.Old)
+	absent := record.Op.Candidate
+	require.Nil(t, rig.consumer(absent), "the killed run created its candidate")
+
+	spy := &convertWire{}
+	code, _, stderr := rig.convertOnWire(id, spy)
+	require.Zero(t, code, stderr)
+	record = rig.record(familySession, m.Logical)
+	rig.requireFresh(m, record, seqs[1]+1)
+	var order []string
+	for _, s := range spy.sent() {
+		require.NotEqual(t, "$JS.API.STREAM.UPDATE."+notifications, s, "the rerun updated the stream")
+		if strings.HasPrefix(s, "$JS.API.CONSUMER.CREATE."+notifications+".") || strings.HasPrefix(s, "$JS.API.CONSUMER.DELETE."+notifications+".") {
+			order = append(order, s)
+		}
+	}
+	require.Equal(t, []string{convertConsumerSubject("DELETE", fixed), convertConsumerSubject("CREATE", record.Current)}, order,
+		"the rerun's creates and deletes on %s, in the order it sent them", notifications)
+	require.Equal(t, []string{absent}, record.Retired, "the rerun retired a candidate besides the killed run's")
+	nc, _ := rig.operator()
+	stream, err := streamInfo(ctx, nc, notifications)
+	require.NoError(t, err)
+	require.Equal(t, 1, stream.Config.MaxConsumers, "the stream's max_consumers changed")
+	require.Empty(t, rig.fixedNames(), "a fixed name is left after the rerun")
+}
+
+// convert stops for K on a failed delete of K's fixed name F, as it stops on a failed read of F's
+// info: its stop entry names F, K's record and the refused subject, and records what convert's
+// runs left (its saved set, never unchanged); F stays on the stream, and K's record never retires
+// F (the selection package refuses a record that names F anywhere but as an open replace's old
+// name, consumernames Names.Check). The failed delete is the server's own: on a hub of the test's
+// own (grantsNewRig), the operator user holds the held grant without the entries that admit F's
+// delete subject, so the server refuses that delete, and no other subject of the run, with a
+// permissions violation. Two states: convert's own conversion of F, its record written before the
+// delete, and a record converted already whose F is still listed. Control: the convert that
+// retired F before deleting it (the convert.go before the selection library owned the record),
+// whose stop leaves F among the retired names of the record converted already. It fails when a
+// failed delete of F leaves F retired, a record the fence refuses, or no stop.
+func TestConvertStopsOnAFailedDeleteOfTheFixedNameAndNeverRetiresIt(t *testing.T) {
+	fixed := sessionFixedPrefix + "ses_grant"
+	refused := convertConsumerSubject("DELETE", fixed)
+	grant := natsgrant.Operator(natsgrant.OperatorPhaseHeld)
+	grant.Publish = slices.DeleteFunc(slices.Clone(grant.Publish), func(entry string) bool { return grantsAdmits(entry, refused) })
+	m, ok := classify(fixed)
+	require.True(t, ok)
+	for _, c := range []struct {
+		name      string
+		converted bool
+	}{
+		{"convert's own conversion of F", false},
+		{"a record converted already", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			g := grantsNewRig(t, 3, grant)
+			id := g.hold(holdrecord.WorkflowCutover, natsgrant.OperatorPhaseHeld)
+			g.notifications(3)
+			g.fixed()
+			value, err := json.Marshal(prepareCohort{Boundary: 1, Members: []prepareCohortMember{{Family: familySession, Logical: m.Logical, Fixed: fixed}}})
+			require.NoError(t, err)
+			_, err = g.records.PutRecord(ctx, id, prepareCohortKind, prepareCohortKey, 0, value)
+			require.NoError(t, err)
+			grantsSessionBucket(g, id)
+			store := selection.NewKVStore(selection.ConnRequester{Conn: g.hub.admin})
+			if c.converted {
+				// The fresh name as convert creates it from F, and the record convert's publish
+				// writes, with F still listed: a convert ended before its delete of F.
+				info, err := consumerInfo(ctx, g.hub.admin, notifications, fixed)
+				require.NoError(t, err)
+				fresh := selection.FreshName(m.Prefix)
+				_, err = writeConsumer(ctx, g.hub.admin, notifications, convertConsumerConfig(info.Config, fresh, 1, m), actionCreateConsumer)
+				require.NoError(t, err)
+				_, err = store.Write(ctx, m.Logical, selection.Record{Current: fresh, Start: 1}, 0)
+				require.NoError(t, err)
+			}
+
+			code, _, stderr := createBucketRun(t, ctx, g.env(), actionConvert, "--hold", id)
+			require.Equal(t, 1, code, stderr)
+			require.Contains(t, stderr, `Permissions Violation for Publish to "`+refused+`"`, "the run's error names no refused delete of F")
+			var stop holdrecord.Operation
+			for _, op := range readJournal(t, g.records, id).Ops {
+				if op.Command == actionConvert {
+					stop = op
+				}
+			}
+			require.Equal(t, "stop", stop.State, "convert's last entry after the failed delete")
+			require.Contains(t, stop.Outputs["reason"], "delete "+fixed+", ", "the stop names no delete of F")
+			require.Contains(t, stop.Outputs["reason"], m.Logical+"'s record", "the stop names no record of K")
+			require.Contains(t, stop.Outputs["reason"], refused, "the stop names no refused subject")
+			require.Contains(t, stop.Outputs[stopLeftKey], "convert's saved set of 1 fixed names under hold "+id, "the stop records no saved set")
+			info, err := consumerInfo(ctx, g.hub.admin, notifications, fixed)
+			require.NoError(t, err)
+			require.NotNil(t, info, "F is gone after its refused delete")
+			record, _, err := store.Read(ctx, m.Logical)
+			require.NoError(t, err, "K's record")
+			require.NotContains(t, record.Retired, fixed, "K's record retires F")
+			require.NoError(t, checkRecordFence(familySession, m.Logical, record), "K's record fails the fence")
+		})
+	}
 }

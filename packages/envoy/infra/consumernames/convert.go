@@ -593,9 +593,11 @@ func convertOwner() string {
 //     a stray, which convert deletes itself: no record retires the logical's fixed name (retire).
 //   - With F present: the start S is the lowest of F's ack floor + 1, Dispatch's hold-token start
 //     and any start the record holds, with today's clamp (clampStart). The record is written
-//     op = {replace, old F, candidate N} and start = S, then F is deleted, then N is created at S
-//     with F's configuration and the member's metadata, then published: F goes first, so no
-//     logical name holds two slots and no cap update is needed.
+//     op = {replace, old F, candidate N} and start = S, with no current: F is named only as the
+//     replace's old name, since the selection package refuses a record whose current is a fixed
+//     name (consumernames Names.Check), and a current F that a rollback left (restore) is cleared.
+//     Then F is deleted, then N is created at S with F's configuration and the member's metadata,
+//     then published: F goes first, so no logical name holds two slots and no cap update is needed.
 //   - With F gone: the record is written with no current and start = the lowest of the cohort's
 //     floor + 1, the hold token's start and the record's start, with today's clamp; with none of
 //     them, there is no safe start.
@@ -638,6 +640,9 @@ func (c convertRule) convertName(ctx context.Context, r *run, nc *nats.Conn, nam
 		if err != nil {
 			return false, nil, unknownf(err, "the info of %s", name.Fixed)
 		}
+		// A current that is F is a rollback's (restore writes its target as the current), which
+		// convert converts again; convert's own open conversion names F only as its replace's old
+		// name, and is settled above.
 		if record.Current != "" && record.Current != name.Fixed {
 			// Converted already. F is no name the record selects or may retire, as the selection
 			// package's own replace never retires the fixed name and deletes it itself; convert
@@ -693,7 +698,7 @@ func (c convertRule) convertName(ctx context.Context, r *run, nc *nats.Conn, nam
 			config = &info.Config
 		}
 		next := convertClone(record)
-		next.Current = name.Fixed
+		next.Current = ""
 		next.Start = clampStart(slices.Min(starts), stream.State)
 		next.Op = &selection.Op{Kind: selection.OpReplace, Owner: convertOwner(), Old: name.Fixed,
 			Candidate: selection.FreshName(m.Prefix), ReservedAt: r.now()}
@@ -724,9 +729,10 @@ func (c convertRule) convertName(ctx context.Context, r *run, nc *nats.Conn, nam
 //
 //   - replace (old O, candidate N, start S): N present is published, O retired (unless it is the
 //     fixed name, which no record retires) and deleted; N absent, once the operation is
-//     convertSettleAge old, is retired and a fresh N′ created at S from the saved configuration,
-//     then published. A replace with no start destroyed nothing: its candidate is retired and the
-//     operation cleared.
+//     convertSettleAge old: O, when it is the logical's fixed name F, is deleted first (plan §3
+//     step 2: F goes first, so no logical name holds two slots and no cap update is needed), then
+//     N is retired and a fresh N′ created at S from the saved configuration, then published. A
+//     replace with no start destroyed nothing: its candidate is retired and the operation cleared.
 //   - create (candidate N): N present is published; N absent is retired and the operation cleared,
 //     its start kept.
 //   - delete (old O): O's floor is recorded as the start unless it was, O deleted, the current
@@ -789,6 +795,14 @@ func (c convertRule) settle(ctx context.Context, r *run, nc *nats.Conn, st famil
 				m.Logical, op.Old, record.Start, op.Candidate, op.Old)
 		}
 		config = &old.Config
+	}
+	// F goes first: the saved start S is no later than F's floor + 1 and F's configuration is read
+	// above, so its delete loses nothing, and the fresh candidate's create then needs no slot of
+	// F's. A failed delete stops convert with the operation open and F retired nowhere.
+	if op.Old == m.Fixed {
+		if err := deleteOwned(ctx, nc, m, op.Old); err != nil {
+			return fmt.Errorf("delete %s, the old name of %s's open replace at its saved start %d: %w", op.Old, m.Logical, record.Start, err)
+		}
 	}
 	next, revision, err := c.rereserve(ctx, r, st, m, record, revision)
 	if err != nil {
