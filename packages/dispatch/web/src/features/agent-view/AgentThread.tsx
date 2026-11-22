@@ -17,7 +17,7 @@ import { type ReactNode, type RefObject, useEffect, useId, useMemo, useRef, useS
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { RefusableButton } from "../../components/RefusableButton";
 import { TruncatedText } from "../../components/TruncatedText";
-import { useFootClearance, useFootInset } from "../../hooks/useFootInset";
+import { useFootInset } from "../../hooks/useFootInset";
 import {
   borderDefault,
   calloutDangerBorder,
@@ -489,12 +489,6 @@ export function AgentThread({
   useFootInset(composerRef, front, "page");
   const jumpRef = useRef<HTMLButtonElement>(null);
   useFootInset(jumpRef, front && !follow.atEnd, "page");
-  // The transcript is a scroller of the foot (`hooks/useFootInset.ts` says what that is) in the
-  // view in front: its bottom padding lets its last content scroll clear of the foot's floats. A
-  // ref made afresh from each node the viewport is, so the hook binds to the one the boundary
-  // renders after a reset, as the follow hook does.
-  const viewportRef = useMemo(() => ({ current: viewport }), [viewport]);
-  useFootClearance(viewportRef, front);
   return (
     <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
       <ErrorBoundary region="this conversation" resetKey={resetKey}>
@@ -533,7 +527,7 @@ export function AgentThread({
               as a scroll event nothing can tell from the reader's own. */}
           <ThreadPrimitive.Viewport
             autoScroll={false}
-            className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1 pb-[var(--foot-clearance,0px)] pl-1 [overflow-anchor:none]"
+            className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1 pl-1 [overflow-anchor:none]"
             data-testid="agent-thread"
             ref={setViewport}
             scrollToBottomOnInitialize={false}
