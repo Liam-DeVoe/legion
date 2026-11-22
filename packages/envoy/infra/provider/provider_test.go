@@ -83,7 +83,8 @@ func TestSchemaTypes(t *testing.T) {
 		"envoy-infra:host:Watchdog", "envoy-infra:host:Adopt",
 		"envoy-infra:aws:Authorization", "envoy-infra:aws:User", "envoy-infra:nats:Rules", "envoy-infra:nats:AuthCallout",
 		"envoy-infra:gcp:NatsUser", "envoy-infra:gcp:Permissions", "envoy-infra:gcp:HubListener", "envoy-infra:gcp:SessionUser",
-		"envoy-infra:gcp:ClusteredHubTailnet", "envoy-infra:gcp:ClusteredHubListener", "envoy-infra:gcp:DispatchCluster",
+		"envoy-infra:gcp:ClusteredHubTailnet", "envoy-infra:gcp:ClusteredHubListener", "envoy-infra:gcp:ClusteredHubRouteAuthorization",
+		"envoy-infra:gcp:DispatchCluster",
 	}, slices.Collect(maps.Keys(s.Types)))
 	// One callout type for every NATS component, the AWS one's authorization and the hubs', so a
 	// consumer running both writes it alike; core refuses a callout without its issuer, its xkey or
@@ -177,7 +178,7 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 		"kubeconfig", "namespace", "name", "serviceName", "natsImage", "reloaderImage", "exporterImage",
 		"natsReplicas", "streamMaxBytes", "maxFileStoreGb", "diskSizeGb", "storageClassName", "natsCpu", "natsMemory",
 		"priorityClassName", "clientNamespaces", "monitorNamespaces", "metricsNamespaces", "users", "sessionUser",
-		"authCallout", "privateProjects", "listener", "tailnet", "tailnetAuthKey",
+		"authCallout", "privateProjects", "routeAuthorization", "listener", "tailnet", "tailnetAuthKey",
 	}, slices.Collect(maps.Keys(hub.InputProperties)))
 	require.ElementsMatch(t, []string{
 		"kubeconfig", "namespace", "name", "serviceName", "natsImage", "reloaderImage", "exporterImage", "clientNamespaces",
@@ -209,8 +210,22 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 	require.ElementsMatch(t, []string{
 		"image", "machineId", "nkey", "seedSecretName", "seedSecretKey", "clientNamespaces", "allowedHosts",
 		"oidcIssuer", "oidcAudience", "oidcAccounts", "senderMessagesPerMinute", "senderMessageBurst", "cpu", "memory",
+		"consumerNames", "replaceUnderHold",
 	}, slices.Collect(maps.Keys(listener.Properties)))
 	require.ElementsMatch(t, []string{"image", "nkey", "seedSecretName", "seedSecretKey"}, listener.Required)
+	// The consumer-name mode and the writer hold's update rule: a plain string and a plain boolean,
+	// optional, which a consumer's stack values give.
+	require.Equal(t, "string", listener.Properties["consumerNames"].Type)
+	require.Equal(t, "boolean", listener.Properties["replaceUnderHold"].Type)
+	// The route credential is a Secret's name and key, never a value, so no property of it is a
+	// secret and the schema holds no password field.
+	require.Equal(t, "#/types/envoy-infra:gcp:ClusteredHubRouteAuthorization", hub.InputProperties["routeAuthorization"].Ref)
+	route := s.Types["envoy-infra:gcp:ClusteredHubRouteAuthorization"]
+	require.ElementsMatch(t, []string{"secretName", "secretKey", "stage"}, slices.Collect(maps.Keys(route.Properties)))
+	require.ElementsMatch(t, []string{"secretName", "secretKey", "stage"}, route.Required)
+	for name, in := range route.Properties {
+		require.False(t, in.Secret, "routeAuthorization.%s is no secret", name)
+	}
 
 	require.ElementsMatch(t, []string{"serviceUrl", "podSelector", "statefulSetName", "tailnetNatsUrl", "tailnetEnvoyUrl"},
 		slices.Collect(maps.Keys(hub.Properties)))
@@ -240,13 +255,13 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 		"azureChatScope", "azureChatTokensPerMinute", "azureClientId", "azureEmbedDeployment",
 		"azureEmbedEndpoint", "azureEmbedKeySecret", "azureEmbedTokensPerMinute", "azureFederationAudience",
 		"azureTenantId", "chatEndpoint", "chatModel", "chatTokenSecret", "cloudSqlProxyImage", "clusterOnly",
-		"databaseAvailabilityType", "databaseTier", "databaseVersion", "databaseWaitsFor", "deletionProtection",
+		"consumerNames", "databaseAvailabilityType", "databaseTier", "databaseVersion", "databaseWaitsFor", "deletionProtection",
 		"envoyImage", "existingCluster", "existingDatabaseInstance", "existingNamespace",
 		"frontDoorPdbMinAvailable", "frontDoorReplicas", "frontDoorToolsImage", "hostname", "iapAudience",
 		"listenerPdbMinAvailable", "listenerReplicas", "loadBalancerSourceRanges", "namespace", "natsInCluster",
 		"natsReplicas", "natsSeedSecret", "natsUrl", "networkEndpointGroupName", "oidcAudience", "oidcIssuer",
 		"outsideOrigin", "pprofPort", "priorityClassName", "proxyCpu", "proxyEphemeralStorage", "proxyMemory",
-		"publicOrigin", "region", "regionalNetwork", "replicas", "senderMessageBurst", "senderMessagesPerMinute",
+		"publicOrigin", "region", "regionalNetwork", "replaceUnderHold", "replicas", "senderMessageBurst", "senderMessagesPerMinute",
 		"signInClientId", "signInClientSecret", "signInDomain", "signInOutside", "signInPasskey",
 		"signInWorkspaceDomains", "signingKeyGenerations", "streamMaxBytes", "tags", "tailnetAuthKey",
 		"tailnetDnsName", "tailscaleImage",
@@ -267,6 +282,13 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 		"azureChatEndpoint", "azureChatDeployment", "azureChatApiVersion", "azureChatScope",
 		"azureChatTokensPerMinute", "chatEndpoint", "chatModel", "chatTokenSecret",
 	} {
+		require.NotContains(t, dispatch.RequiredInputs, input)
+	}
+	// The consumer-name mode and the writer hold's update rule, as gcp:ClusteredHubListener takes
+	// them: optional plain values (the secret-flag loop holds that neither is a secret).
+	require.Equal(t, "string", dispatch.InputProperties["consumerNames"].Type)
+	require.Equal(t, "boolean", dispatch.InputProperties["replaceUnderHold"].Type)
+	for _, input := range []string{"consumerNames", "replaceUnderHold"} {
 		require.NotContains(t, dispatch.RequiredInputs, input)
 	}
 	// The profiler's port is an optional plain integer.
