@@ -166,9 +166,7 @@ func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
 		}
 	}
 	hooks := openAPIHookRoutes()
-	if len(hooks) != 16 {
-		t.Fatalf("the table mounts %d test hooks with Deps.TestHooksEnabled, want 16", len(hooks))
-	}
+	requireRouteNames(t, "the test hooks the table mounts with Deps.TestHooksEnabled (openAPIHookRoutes)", hooks, testHookRoutes)
 	for name := range hooks {
 		if !marked[name] {
 			t.Errorf("%s is a test hook and its operation carries no x-test-hook", name)
@@ -177,6 +175,57 @@ func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
 	for name := range marked {
 		if !hooks[name] {
 			t.Errorf("%s carries x-test-hook and is no test hook", name)
+		}
+	}
+}
+
+// A status that answers a richer refusal (routeShape.Refusals) is answered with writeError's plain
+// body too, by the same handler: an issue PATCH answers 409 ISSUE_CHANGED and ISSUE_CLOSED beside
+// 409 FOREIGN_CHILD_OPEN. The default answer covers only the statuses the document does not name,
+// so such a status must name the plain body itself, beside the rich one, and must not require a
+// body to match exactly one of them, since the rich body carries code and error as well.
+func TestARefusalStatusAlsoAnswersThePlainErrorBody(t *testing.T) {
+	tree, _ := readOpenAPITree(t)
+	paths, _ := tree.(map[string]any)["paths"].(map[string]any)
+	plain := openAPISchemaPrefix + "ErrorBody"
+	checked := 0
+	for name, shape := range routeShapes {
+		method, pattern, _ := strings.Cut(name, " ")
+		for _, refusal := range shape.Refusals {
+			status := fmt.Sprint(refusal.Status)
+			operation, _ := paths[pattern].(map[string]any)[strings.ToLower(method)].(map[string]any)
+			response, _ := operation["responses"].(map[string]any)[status].(map[string]any)
+			schema, _ := response["content"].(map[string]any)["application/json"].(map[string]any)["schema"].(map[string]any)
+			alternatives, isAnyOf := schema["anyOf"].([]any)
+			if !isAnyOf {
+				t.Errorf("%s answers %s with %v, want an anyOf that holds %s beside its rich refusal", name, status, schema, plain)
+				continue
+			}
+			refs := make([]string, 0, len(alternatives))
+			for _, alternative := range alternatives {
+				if ref, isRef := alternative.(map[string]any)["$ref"].(string); isRef {
+					refs = append(refs, ref)
+				}
+			}
+			if !slices.Contains(refs, plain) || len(refs) < 2 {
+				t.Errorf("%s answers %s with %v, want %s beside its rich refusal", name, status, refs, plain)
+			}
+			checked++
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no route declares a refusal, so this test read nothing")
+	}
+	// The issue PATCH's 409 is the case that showed it: its rich body and the plain one.
+	patch, _ := paths["/api/v1/issues/{key}"].(map[string]any)["patch"].(map[string]any)
+	conflict, _ := patch["responses"].(map[string]any)["409"].(map[string]any)
+	encoded, err := json.Marshal(conflict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{openAPISchemaPrefix + "ForeignChildOpenError", plain} {
+		if !strings.Contains(string(encoded), `"`+want+`"`) {
+			t.Errorf("PATCH /api/v1/issues/{key} answers 409 with %s, which does not name %s", encoded, want)
 		}
 	}
 }

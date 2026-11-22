@@ -24,9 +24,23 @@ type Retirement struct {
 	SupersededApproval *model.SupersededApproval
 }
 
-// ErrDocumentRetired refuses the retirement of a document already retired: it is retired once,
-// with one document.retired event.
+// ErrDocumentRetired refuses what a retired document no longer takes: a second retirement of it
+// (it is retired once, with one document.retired event), and a live write into it, which its
+// owner's lock reads it retired under (joinLiveWrite, RetiredDocumentError).
 var ErrDocumentRetired = errors.New("docs: the document is retired already")
+
+// RetiredDocumentError is a live write refused because its document is retired (joinLiveWrite):
+// the document's id, name and slug, which api's 409 DOCUMENT_RETIRED names, as it names them for a
+// write it refuses itself. It is ErrDocumentRetired.
+type RetiredDocumentError struct {
+	ID, Name, Slug string
+}
+
+func (e *RetiredDocumentError) Error() string {
+	return fmt.Sprintf("docs: document %s (%s) is retired and takes no new text", e.ID, e.Slug)
+}
+
+func (e *RetiredDocumentError) Unwrap() error { return ErrDocumentRetired }
 
 // errRetirementReason refuses a retirement that says not why: the reason is the event's record of
 // it, and the only one.

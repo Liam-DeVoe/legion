@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	gws "github.com/gorilla/websocket"
@@ -51,5 +52,61 @@ func TestASocketToARetiredDocumentIsRefused(t *testing.T) {
 	body, _ := io.ReadAll(response.Body)
 	if response.StatusCode != http.StatusConflict || !strings.Contains(string(body), "DOCUMENT_RETIRED") {
 		t.Fatalf("a socket to the retired document answers %d %q, want 409 DOCUMENT_RETIRED", response.StatusCode, body)
+	}
+}
+
+// A retirement that commits while a socket takes its room and loads the document, after the
+// socket's first read found the document standing, refuses that socket too, 409 DOCUMENT_RETIRED
+// and no room of the document loaded: the socket reads the retirement again once its room is
+// reserved and it is held, the last step before ygo loads the room (ServeHTTP, refuseRetired).
+// The retirement commits in that gap through the service's hook (afterSocketIssueRead, which runs
+// once the room is reserved), and the close of the document's rooms its commit announces
+// (documentRemoved) runs there too and finds no room to close, since ygo has loaded none yet. A
+// socket that read the retirement only before it reserved its room would open a room of the
+// retired document, which takes its typing and which nothing then closes.
+func TestASocketWhoseDocumentIsRetiredAsItTakesItsRoomIsRefused(t *testing.T) {
+	service, artifactID := newTestService(t)
+	server := newTestServer(t, service)
+	var retired atomic.Bool
+	service.afterSocketIssueRead = func(room string) {
+		if room != artifactID || retired.Swap(true) {
+			return
+		}
+		ctx := context.Background()
+		tx, err := service.store.Pool.Begin(ctx)
+		if err != nil {
+			t.Errorf("begin the retirement: %v", err)
+			return
+		}
+		defer tx.Rollback(ctx)
+		if _, err := RetireDocument(ctx, tx, artifactID, model.Actor{Kind: "user", ID: "alice"}, "The test retires it."); err != nil {
+			t.Errorf("retire the document: %v", err)
+			return
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Errorf("commit the retirement: %v", err)
+			return
+		}
+		service.documentRemoved(ctx, artifactID)
+	}
+
+	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/doc/" + artifactID
+	socket, response, err := gws.DefaultDialer.Dial(url, http.Header{"X-Dispatch-User": []string{"alice"}})
+	if !retired.Load() {
+		t.Fatal("the socket's admission never reached the hook that retires its document, so nothing here is tested")
+	}
+	if err == nil {
+		_ = socket.Close()
+		t.Fatalf("a socket whose document %s was retired as it took its room connected, want it refused", artifactID)
+	}
+	if response == nil {
+		t.Fatalf("a socket whose document was retired as it took its room failed with no answer: %v", err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusConflict || !strings.Contains(string(body), "DOCUMENT_RETIRED") {
+		t.Fatalf("a socket whose document was retired as it took its room answers %d %q, want 409 DOCUMENT_RETIRED", response.StatusCode, body)
+	}
+	if service.srv.GetDoc(artifactID) != nil {
+		t.Errorf("a room of the retired document %s is loaded once its socket was refused", artifactID)
 	}
 }

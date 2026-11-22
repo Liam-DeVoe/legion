@@ -2445,7 +2445,7 @@ func (s *Service) captureLiveTextAndAuthors(ctx context.Context, room string, ac
 	if fromStore {
 		capture = capture.withoutInflight(actor)
 	}
-	if tree, err = storableVersionTree(ctx, tx, tree); err != nil {
+	if tree, err = storableVersionTree(ctx, tx, room, tree); err != nil {
 		return renderedTree{}, authorCapture{}, err
 	}
 	markdown, offsets, err := documentMarkdownWithOffsets(tree)
@@ -2455,33 +2455,58 @@ func (s *Service) captureLiveTextAndAuthors(ctx context.Context, room string, ac
 	return renderedTree{tree: tree, markdown: markdown, offsets: offsets, head: &stored}, capture, nil
 }
 
-// storableVersionTree is tree, the document a version write takes without settling it first
-// (NamedVersion, SnapshotVersion and so the edit route's version, captureLiveTextAndAuthors and
-// captureWrite), as a version stores it: once the fleet is one build (anotherBuildServes), each
-// ask block holding the answer's words or selection, or an open state, which no version written
-// then holds (withoutUnkeptAskAttributes), has them taken off, as the document's next settlement
-// takes them off the live tree (askReadableWrite), and keeps the state of an ask that is not open,
-// the answerer and time and a copy's provenance as the live tree holds them, which every write of
-// an ask's state keeps in step with it (keptAskState: KeepAskBlockInStep, WriteIssueAskStates,
-// settlement). Each
+// storableVersionTree is tree, the document artifactID a version write takes without settling it
+// first (NamedVersion, SnapshotVersion and so the edit route's version, captureLiveTextAndAuthors
+// and captureWrite), as a version stores it: once the fleet is one build (anotherBuildServes), each
+// ask block that has an ask (askBlocksWithAnAsk) and holds the answer's words or selection, or an
+// open state, which no version written then holds (withoutUnkeptAskAttributes), has them taken
+// off, as the document's next settlement takes them off the live tree (askReadableWrite), and
+// keeps the state of an ask that is not open, the answerer and time and a copy's provenance as the
+// live tree holds them, which every write of an ask's state keeps in step with it (keptAskState:
+// KeepAskBlockInStep, WriteIssueAskStates, settlement). Each ask block that has no ask row and is
+// no copy of an ask has every attribute a version can store taken off
+// (withoutStoredAskAttributes), as settlement takes them off it (unindexedAskResolution): it keeps
+// none of the eight (R10), whatever state its live tree gives it, the state="resolved" a closed
+// issue's settlement or the close's sweep wrote while another build served among them. Each
 // container on the way to such a block and each such block is a fresh node, and tree itself is
 // left as it is. It is tree where no ask block holds one, and where another build serves, whose
 // pages read the attributes, which settlement keeps in step with each ask meanwhile. The fleet is
-// read only for a tree holding one.
+// read only for a tree holding one, and the rows and copies its blocks have only for a tree
+// holding what a version keeps of an ask (holdsKeptAskAttribute): every other attribute a version
+// can store is one withoutUnkeptAskAttributes takes off whatever ask a block has.
 //
 // kept for one release: stored-ask-state
-func storableVersionTree(ctx context.Context, tx pgx.Tx, tree *pmdoc.Node) (*pmdoc.Node, error) {
+func storableVersionTree(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node) (*pmdoc.Node, error) {
+	kept := false
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		kept = node.Type == "ask" && holdsKeptAskAttribute(node)
+		return !kept
+	})
+	var withAsk map[string]bool
+	if kept {
+		twoBuilds, err := anotherBuildServes(ctx, tx)
+		if err != nil || twoBuilds {
+			return tree, err
+		}
+		if withAsk, err = askBlocksWithAnAsk(ctx, tx, artifactID, tree); err != nil {
+			return tree, err
+		}
+	}
 	stripped := withAskBlocks(tree, func(node *pmdoc.Node) (*pmdoc.Node, bool) {
 		taken := attributesOf(node)
-		if !withoutUnkeptAskAttributes(taken) {
+		strip := withoutUnkeptAskAttributes
+		if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); kept && !withAsk[id] {
+			strip = withoutStoredAskAttributes
+		}
+		if !strip(taken) {
 			return node, false
 		}
 		copied := *node
 		copied.Attrs = taken.Attrs
 		return &copied, true
 	})
-	if stripped == tree {
-		return tree, nil
+	if stripped == tree || kept {
+		return stripped, nil
 	}
 	twoBuilds, err := anotherBuildServes(ctx, tx)
 	if err != nil || twoBuilds {
@@ -2530,7 +2555,7 @@ func (s *Service) captureWrite(ctx context.Context, tx pgx.Tx, room string, writ
 		capture = capture.withoutInflight(actor)
 	}
 	if rendering, reused := s.reuseRendering(write, fork, "capture"); reused {
-		tree, err := storableVersionTree(ctx, tx, rendering.tree)
+		tree, err := storableVersionTree(ctx, tx, room, rendering.tree)
 		if err != nil || tree == rendering.tree {
 			return rendering, capture, err
 		}
@@ -2544,7 +2569,7 @@ func (s *Service) captureWrite(ctx context.Context, tx pgx.Tx, room string, writ
 	if err != nil {
 		return renderedTree{}, authorCapture{}, err
 	}
-	tree, err := storableVersionTree(ctx, tx, valid.Node())
+	tree, err := storableVersionTree(ctx, tx, room, valid.Node())
 	if err != nil {
 		return renderedTree{}, authorCapture{}, err
 	}

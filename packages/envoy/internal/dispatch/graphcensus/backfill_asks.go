@@ -424,6 +424,8 @@ var askPasses = []func(context.Context, *store.Store) (KindBackfill, error){back
 // asks and the ask_followers rows that name no node, each in committed batches of backfillBatch.
 // It answers what each pass did; an error stops it where it stands, and every batch committed
 // before it stays.
+//
+// kept for one release: decisions-step
 func BackfillAsks(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
 	done, err := backfillObjectNodes(ctx, database)
 	if err != nil {
@@ -445,6 +447,8 @@ func BackfillAsks(ctx context.Context, database *store.Store) ([]KindBackfill, e
 // anti-join of issues, artifacts, asks and messages to graph_nodes, then asks and ask_followers,
 // which no index keys on a null marker. The decisions step reads it only where another build can
 // have written such a row (docs' decision step, probe).
+//
+// kept for one release: decisions-step
 func AsksOwed(ctx context.Context, q graphstore.Queryer) (bool, error) {
 	for _, kind := range objectKinds {
 		var owed bool

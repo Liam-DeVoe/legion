@@ -33,6 +33,22 @@ const previousCLISpec = "# Decided asks\n\nThe service ships behind a flag.\n\n"
 // line writes it.
 var eightAskAttributes = regexp.MustCompile(` (state|answered_by|answered_at|selected|answer|invalid|copied_from|copied_from_document)="`)
 
+// previousCLIAskOpener is the opening line of an ask block, at any depth and under any quote or
+// list prefix, and previousCLIAskAttribute one of the eight server-owned attributes on it with its
+// value, which holds no raw quote (the renderer writes one as a reference).
+var (
+	previousCLIAskOpener    = regexp.MustCompile(`(?m)^[> \t-]*:{3,}ask\{[^\n]*$`)
+	previousCLIAskAttribute = regexp.MustCompile(` (state|answered_by|answered_at|selected|answer|invalid|copied_from|copied_from_document)="[^"]*"`)
+)
+
+// withoutTheEightAskAttributes is markdown with the eight server-owned attributes taken off every
+// ask block's opening line, and every other byte as it is.
+func withoutTheEightAskAttributes(markdown string) string {
+	return previousCLIAskOpener.ReplaceAllStringFunc(markdown, func(line string) string {
+		return previousCLIAskAttribute.ReplaceAllString(line, "")
+	})
+}
+
 // The previous build writes the spec and a person answers its first ask there; the previous build
 // stops and leaves the fleet; through this build an agent changes one word of the spec's prose,
 // the spec's first accepted write on a fleet of one build, and once it has settled a person answers
@@ -40,7 +56,8 @@ var eightAskAttributes = regexp.MustCompile(` (state|answered_by|answered_at|sel
 // previous build's CLI then requests approval of the spec against this build's server and is
 // refused nothing, and the spec's latest version, which the answer, the decline and the resolve
 // wrote, keeps on each ask's opening line the state its node holds, and the answerer and time
-// where answered, and nothing more; the live text serves none of the eight.
+// where answered, and nothing more; the live text serves that version, character for character,
+// with none of the eight.
 func TestThePreviousReleasesCLIRequestsApprovalOverDecidedAsksOnceTheFleetIsOneBuild(t *testing.T) {
 	ctx := context.Background()
 	builds := newTwoBuilds(t)
@@ -138,8 +155,15 @@ func TestThePreviousReleasesCLIRequestsApprovalOverDecidedAsksOnceTheFleetIsOneB
 			}
 		}
 	}
-	if text := current.documentText(t, spec); eightAskAttributes.MatchString(text) {
+	text := current.documentText(t, spec)
+	if eightAskAttributes.MatchString(text) {
 		t.Errorf("GET /api/v1/artifacts/%s/text serves a server-owned ask attribute:\n%s", spec, text)
+	}
+	// It serves the same spec: the version's stored text with the eight taken off, character for
+	// character.
+	if want := withoutTheEightAskAttributes(markdown); text != want {
+		t.Errorf("GET /api/v1/artifacts/%s/text serves\n%s\nwant the spec's version %d with none of the eight server-owned ask attributes, character for character:\n%s",
+			spec, text, number, want)
 	}
 	t.Logf("the previous build's CLI requested approval:\n%s\nthe spec's version %d:\n%s", requested, number, markdown)
 }

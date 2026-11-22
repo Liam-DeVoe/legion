@@ -39,9 +39,13 @@ import (
 
 // DecisionStepActor is the actor the decisions step's third phase writes as: the versions it
 // writes, their events, and the facts it appends.
+//
+// kept for one release: decisions-step
 var DecisionStepActor = model.Actor{Kind: "system", ID: "dispatch-decisions-step"}
 
 // DecisionIssue is what the third phase did for one issue, or, under a dry run, would have done.
+//
+// kept for one release: decisions-step
 type DecisionIssue struct {
 	Issue string
 	// Restored is each ask block the restore wrote into the spec, in answer-time order: each
@@ -80,6 +84,8 @@ type DecisionIssue struct {
 // stands at now, with whether that block took a new id. Read is, for an ask of the main shape,
 // what the restore read of the version that left its block out of the spec (restoreReadNoPerson,
 // restoreReadNeverHeld, restoreReadNoAuthors), and "" for an ask the restore moves.
+//
+// kept for one release: decisions-step
 type RestoredAsk struct {
 	Ask, Shape, From, To, Read string
 	NewID                      bool
@@ -96,6 +102,8 @@ const (
 
 // DeclinedAsk is one answered ask the restore declined to return to its spec: its id, the person
 // who removed its block, and the spec's version that left the block out, which is that person's.
+//
+// kept for one release: decisions-step
 type DeclinedAsk struct {
 	Ask, Person string
 	Version     int
@@ -104,6 +112,8 @@ type DeclinedAsk struct {
 // DecisionSupersededApproval is an approval the phase superseded: the document's address, the
 // approval, and the asks the restore wrote whose versions superseded it, each as the ask's node
 // (dispatch://KEY/ask/<id>) and its block's address.
+//
+// kept for one release: decisions-step
 type DecisionSupersededApproval struct {
 	Document string
 	Approval model.SupersededApproval
@@ -113,11 +123,15 @@ type DecisionSupersededApproval struct {
 
 // issueDocument is one document of an issue the phase writes: its id, its ref_key (the store's
 // address of it), its reference (dispatch://…) and its name.
+//
+// kept for one release: decisions-step
 type issueDocument struct {
 	id, refKey, address, name string
 }
 
 // readIssueDocument reads the issue's document query answers, by id, in tx.
+//
+// kept for one release: decisions-step
 func readIssueDocument(ctx context.Context, tx pgx.Tx, query string, args ...any) (issueDocument, bool, error) {
 	document, err := scanIssueDocument(tx.QueryRow(ctx, query, args...))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -130,6 +144,8 @@ func readIssueDocument(ctx context.Context, tx pgx.Tx, query string, args ...any
 }
 
 // scanIssueDocument scans one row of issueDocumentColumns.
+//
+// kept for one release: decisions-step
 func scanIssueDocument(row pgx.Row) (issueDocument, error) {
 	var document issueDocument
 	var issueKey, session *string
@@ -143,6 +159,8 @@ func scanIssueDocument(row pgx.Row) (issueDocument, error) {
 }
 
 // issueDocumentColumns are the columns scanIssueDocument scans, off artifacts a.
+//
+// kept for one release: decisions-step
 const issueDocumentColumns = `a.id::text, a.ref_key, a.issue_key, coalesce(a.project_key, ''), a.session_id, a.slug, a.kind, a.is_primary, a.name`
 
 // restoredBlock is one ask block the restore writes into the spec: the work the finder read
@@ -157,6 +175,8 @@ const issueDocumentColumns = `a.id::text, a.ref_key, a.issue_key, coalesce(a.pro
 // main shape the block as the spec's last version holding it held it (held, removalOf), the spec
 // blocks it shaped, the readings it holds, and, for the main shape, what the restore read of the
 // version that left the block out (RestoredAsk.Read).
+//
+// kept for one release: decisions-step
 type restoredBlock struct {
 	work     graphcensus.RestoreWork
 	row      model.Ask
@@ -174,6 +194,8 @@ type restoredBlock struct {
 // declinedAsk is one answered ask the restore declines to return (removalOf): the person who
 // removed its block, the spec's version that left it out, that version's time and the event that
 // recorded it, under which the pass states the removal (writeFacts).
+//
+// kept for one release: decisions-step
 type declinedAsk struct {
 	ask, person string
 	version     int
@@ -182,13 +204,18 @@ type declinedAsk struct {
 }
 
 // address is the block's address in the spec once restored.
+//
+// kept for one release: decisions-step
 func (r *restoredBlock) address(spec issueDocument) string {
 	return refs.BlockAddress(spec.refKey, r.id)
 }
 
 // sectionFate is what becomes of one section of the decisions document.
+//
+// kept for one release: decisions-step
 type sectionFate int
 
+// kept for one release: decisions-step
 const (
 	// fateUntouched is a section this pass does not convert: one a restore alone leaves for the
 	// conversion.
@@ -217,6 +244,8 @@ const (
 // under `## Replaced`, the answered ask that decision settles (its from_ask), the block it becomes
 // (fateDecision: the decision, under decisionID), the author of its newest version, and the Keep a
 // person recorded on its heading.
+//
+// kept for one release: decisions-step
 type convertedSection struct {
 	section    decisionSection
 	fate       sectionFate
@@ -239,6 +268,8 @@ type convertedSection struct {
 // are written by: a row derived from an earlier write carries that write's actor, and so its
 // Proven mark (model.Actor.Proven). A Keep no such event names that person for is the person alone,
 // with no mark, since nothing read says a credential proved them.
+//
+// kept for one release: decisions-step
 type sectionKeep struct {
 	keptBy  string
 	keeper  model.Actor
@@ -247,6 +278,8 @@ type sectionKeep struct {
 }
 
 // issueRestore is the third phase's work on one issue, in the transaction it holds.
+//
+// kept for one release: decisions-step
 type issueRestore struct {
 	service   *Service
 	tx        pgx.Tx
@@ -311,12 +344,16 @@ type issueRestore struct {
 
 // presentEdits is what this pass writes into the answered ask blocks one document holds already:
 // the spec blocks each one shaped and the readings it takes, by block id.
+//
+// kept for one release: decisions-step
 type presentEdits struct {
 	shaped   map[string][]string
 	readings map[string][]*pmdoc.Node
 }
 
 // presentIn is the edits this pass writes into document's answered ask blocks.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) presentIn(document string) *presentEdits {
 	edits := r.present[document]
 	if edits == nil {
@@ -333,6 +370,8 @@ func (r *issueRestore) presentIn(document string) *presentEdits {
 // no section and no ask block. It writes nothing that it does not report, and its caller commits
 // or rolls back: a pass that would take a section out of the decisions document without writing
 // the reading it became fails (refuseUnwrittenReadings).
+//
+// kept for one release: decisions-step
 func (s *Service) restoreIssueDecisions(ctx context.Context, tx pgx.Tx, issue string, work []graphcensus.RestoreWork, convert bool) (DecisionIssue, error) {
 	result := DecisionIssue{Issue: issue}
 	// The step's own write, which alone the restore's and the conversion's carry cases reach
@@ -435,6 +474,8 @@ func (s *Service) restoreIssueDecisions(ctx context.Context, tx pgx.Tx, issue st
 // on row and node (answered), which of them a person removed from the document its row names
 // (removed: their node's newest removed_by asserts), every document of the issue that stands, and
 // the blocks their block indexes hold: every block of the spec, and every ask block of each.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) readState(ctx context.Context) error {
 	rows, err := r.tx.Query(ctx, `
 		select `+AskColumns+` from asks a
@@ -555,6 +596,8 @@ func (r *issueRestore) readState(ctx context.Context) error {
 // block (writeFacts). The person test is the main shape's alone: a block of the decisions
 // document moves whoever put it there, since that document retires and the block has nowhere
 // else to stand.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) planRestores(ctx context.Context, work []graphcensus.RestoreWork) error {
 	for _, item := range work {
 		row, held := r.rows[item.Ask]
@@ -628,6 +671,8 @@ func (r *issueRestore) planRestores(ctx context.Context, work []graphcensus.Rest
 // spec's ask, which has no ask of its own - joins that block instead: no block is written, since
 // under a fresh id the spec's next settlement would open it as a new ask beside the one it copies,
 // and its address takes its one moved_to to the spec's block, which answers the live ask.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) planDocumentMoves(ctx context.Context) error {
 	for _, id := range slices.Sorted(maps.Keys(r.askBlocks[r.decisions.id])) {
 		if r.movesBlock(id) {
@@ -661,6 +706,8 @@ func (r *issueRestore) planDocumentMoves(ctx context.Context) error {
 // movesBlock reports whether a restore of this pass takes the decisions document's block id
 // already: a move of the second shape, or a returning ask whose copy the document holds under
 // that id, which no row of the document names (planSections).
+//
+// kept for one release: decisions-step
 func (r *issueRestore) movesBlock(id string) bool {
 	for _, restore := range r.restores {
 		if restore.work.BlockID == id && (restore.work.Shape == graphcensus.RestoreMoves || !r.ownedByDecisions(id)) {
@@ -671,6 +718,8 @@ func (r *issueRestore) movesBlock(id string) bool {
 }
 
 // decisionsRow is the row of the ask of the issue that names block id of the decisions document.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) decisionsRow(id string) (model.Ask, bool) {
 	for _, row := range r.rows {
 		if row.BlockArtifactID != nil && *row.BlockArtifactID == r.decisions.id && row.BlockID != nil && *row.BlockID == id {
@@ -685,6 +734,8 @@ func (r *issueRestore) decisionsRow(id string) (model.Ask, bool) {
 // that recorded it (versionEventID), which the decline records on the ask's node. Otherwise it
 // answers what it read and the block as the newest version holding it held it, and the ask is
 // restored.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) removalOf(ctx context.Context, ask, blockID string) (*declinedAsk, string, *pmdoc.Node, error) {
 	removal, err := readSpecRemoval(ctx, r.tx, r.issue, r.spec.id, r.rows[ask], blockID)
 	if err != nil {
@@ -852,6 +903,8 @@ func askBlockIn(tree *pmdoc.Node, id string) *pmdoc.Node {
 // block id, which asks_block_id_unique keeps to one row: an ask a person declined or a settlement
 // retracted keeps its row naming the block it left, so the restored ask takes a fresh id there as
 // it does where a live block of the spec holds the id (R6).
+//
+// kept for one release: decisions-step
 func (r *issueRestore) specRowHolds(id, ask string) bool {
 	for _, row := range r.rows {
 		if row.ID != ask && row.BlockArtifactID != nil && *row.BlockArtifactID == r.spec.id && row.BlockID != nil && *row.BlockID == id {
@@ -862,6 +915,8 @@ func (r *issueRestore) specRowHolds(id, ask string) bool {
 }
 
 // answeredAt is when ask was answered, the zero time for an ask its row holds no answer of.
+//
+// kept for one release: decisions-step
 func answeredAt(ask model.Ask) time.Time {
 	if ask.Answer == nil {
 		return time.Time{}
@@ -870,6 +925,8 @@ func answeredAt(ask model.Ask) time.Time {
 }
 
 // freshBlockID is a block id no document of the issue holds, as a block or as an ask's row.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) freshBlockID(ctx context.Context) (string, error) {
 	for {
 		id := uuid.NewString()
@@ -892,6 +949,8 @@ func (r *issueRestore) freshBlockID(ctx context.Context) (string, error) {
 // written, so the spec's write reads the ask it holds as the spec's own (refuseReadingsWithoutAnswers,
 // the typed-node pass) and the decisions document's no longer names it. A block no row names has
 // none to point.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) moveRows(ctx context.Context) error {
 	for _, restore := range r.restores {
 		if restore.rowless || *restore.row.BlockID == restore.id && *restore.row.BlockArtifactID == r.spec.id {
@@ -908,6 +967,8 @@ func (r *issueRestore) moveRows(ctx context.Context) error {
 }
 
 // restoreOf is the restore of ask, nil where this pass restores none.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) restoreOf(ask string) *restoredBlock {
 	for _, restore := range r.restores {
 		if !restore.rowless && restore.row.ID == ask {
@@ -922,6 +983,8 @@ func (r *issueRestore) restoreOf(ask string) *restoredBlock {
 // that document's block index holds the block as an ask block (R9: the ask's "restored or present"
 // block). The decisions document is none of them: an ask its row names there is the restore's,
 // which moves it into the spec whatever its state.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) askBlockOf(ask string) (issueDocument, string, bool) {
 	if restore := r.restoreOf(ask); restore != nil {
 		return r.spec, restore.id, true
@@ -941,16 +1004,26 @@ func (r *issueRestore) askBlockOf(ask string) (issueDocument, string, bool) {
 // writeDecisionsDocument writes the decisions document: it takes out of it each ask block the
 // restore moves (shape (b), and a copy of an ask of the main shape that the document holds) and
 // each section the pass converts, as this pass reads the document's sections (planSections), and
-// writes its version. It records whether the document still holds an ask block once those are
-// taken out (decisionsHoldAsks), which keeps it from its retirement. It answers the event of that
-// version, NoEvent where it wrote none.
+// writes its version. On a fleet of one build the same write takes every attribute a version can
+// store off each ask block the document keeps that has no ask row and is no copy of an ask
+// (withoutAsklessAskAttributes), so its version holds none of the eight there (R10). It records
+// whether the document still holds an ask block once those are taken out (decisionsHoldAsks),
+// which keeps it from its retirement. It answers the event of that version, NoEvent where it
+// wrote none.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) writeDecisionsDocument(ctx context.Context) (int64, error) {
+	// kept for one release: roll-window-attributes
+	twoBuilds, err := anotherBuildServes(ctx, r.tx)
+	if err != nil {
+		return graphstore.NoEvent, err
+	}
 	var drop map[string]bool
 	dropped := func(node *pmdoc.Node) bool {
 		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
 		return drop[id]
 	}
-	err := r.service.applyLive(ctx, r.decisions.id, DecisionStepActor, func(doc *crdt.Doc, current pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
+	err = r.service.applyLive(ctx, r.decisions.id, DecisionStepActor, func(doc *crdt.Doc, current pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
 		tree := current.Node()
 		if tree == nil {
 			return fmt.Errorf("the decisions document of %s is outside the Proof schema, so the decisions step cannot read its sections", r.issue)
@@ -965,12 +1038,23 @@ func (r *issueRestore) writeDecisionsDocument(ctx context.Context) (int64, error
 		if len(drop) == 0 {
 			return nil
 		}
+		// kept for one release: stored-ask-state
+		var withAsk map[string]bool
+		if !twoBuilds {
+			if withAsk, err = askBlocksWithAnAsk(ctx, r.tx, r.decisions.id, tree); err != nil {
+				return err
+			}
+		}
 		_, err = rewriteLive(doc, nil, func(live *pmdoc.Node) bool {
 			next, took := withoutBlocks(live, dropped)
 			if !took {
 				return false
 			}
 			live.Children = next.Children
+			// kept for one release: stored-ask-state
+			if !twoBuilds {
+				withoutAsklessAskAttributes(live, withAsk)
+			}
 			return true
 		})
 		return err
@@ -986,6 +1070,8 @@ func (r *issueRestore) writeDecisionsDocument(ctx context.Context) (int64, error
 
 // ownedByDecisions reports whether an ask names a block of the decisions document under id as its
 // own: an ask this pass moves out of it, or one whose row names that document.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) ownedByDecisions(id string) bool {
 	for _, restore := range r.restores {
 		if restore.work.Shape == graphcensus.RestoreMoves && restore.work.BlockID == id {
@@ -999,6 +1085,8 @@ func (r *issueRestore) ownedByDecisions(id string) bool {
 // planSections reads tree, the decisions document as its live write holds it, into what this
 // pass does with it, and answers the block ids the document loses: each ask block the restore
 // moves into the spec, and every block of each section the pass converts.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) planSections(ctx context.Context, tree *pmdoc.Node) (map[string]bool, error) {
 	drop := map[string]bool{}
 	movedBy := map[string]*restoredBlock{}
@@ -1117,6 +1205,8 @@ func (r *issueRestore) planSections(ctx context.Context, tree *pmdoc.Node) (map[
 // holding nothing but its heading, and it writes no decision, since only the conversion's case
 // carries an approval across one (conversionCase); it still gives a restored answered ask the
 // links of every section that restates it, as R6 says.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) planSection(ctx context.Context, converted *convertedSection, ties sectionTies, movedBy map[string]*restoredBlock) error {
 	section := converted.section
 	moving := func(node *pmdoc.Node) bool {
@@ -1192,6 +1282,8 @@ func (r *issueRestore) planSection(ctx context.Context, converted *convertedSect
 // planRestating decides what becomes of converted, a section about one answered ask, ask, that no
 // rule before the reading rule took (planSection), and whose body, the blocks that move taken out,
 // is body.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) planRestating(ctx context.Context, converted *convertedSection, ask string, body []*pmdoc.Node, unplaced unplacedSection) error {
 	document, blockID, stands := r.askBlockOf(ask)
 	if !stands {
@@ -1247,6 +1339,8 @@ func (r *issueRestore) planRestating(ctx context.Context, converted *convertedSe
 // under that ask and gives the ask none of the section's links, and its heading moves to the
 // decision, not to the ask (writeFacts). A restore alone writes no decision, and leaves the section
 // to the conversion.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) planReplaced(ctx context.Context, converted *convertedSection, answered []string, body []*pmdoc.Node, held bool) error {
 	if !r.convert {
 		converted.fate = r.leftUnlessRestoring(held)
@@ -1262,6 +1356,8 @@ func (r *issueRestore) planReplaced(ctx context.Context, converted *convertedSec
 // asks it is about - the asks whose blocks it held and the answered asks it cites - whether it held
 // an ask block, which moved into the spec, and the asks each block of the decisions document cites
 // (sectionTies.asks).
+//
+// kept for one release: decisions-step
 type unplacedSection struct {
 	cause    string
 	asks     []string
@@ -1270,6 +1366,8 @@ type unplacedSection struct {
 }
 
 // Why the conversion could not place a section under one ask (unplacedReason).
+//
+// kept for one release: decisions-step
 const (
 	unplacedAsks    = "it cites more than one answered ask"
 	unplacedNoBlock = "the answered ask it cites has its block in no document of the issue"
@@ -1278,6 +1376,8 @@ const (
 
 // unplacedReason is the uncertainty_reason of the decision a section becomes that the conversion
 // could not place under one ask for cause.
+//
+// kept for one release: decisions-step
 func unplacedReason(cause string) string {
 	return "The conversion of the decisions document could not place this section under one ask: " + cause +
 		". It waits for a person's review."
@@ -1286,6 +1386,8 @@ func unplacedReason(cause string) string {
 // planUnplaced makes converted, a section the conversion could not place under one ask, a decision
 // that waits for a person's review (planDecision). A restore alone writes no decision, and leaves
 // the section to the conversion.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) planUnplaced(ctx context.Context, converted *convertedSection, body []*pmdoc.Node, unplaced unplacedSection) error {
 	if !r.convert {
 		converted.fate = r.leftUnlessRestoring(unplaced.held)
@@ -1296,6 +1398,8 @@ func (r *issueRestore) planUnplaced(ctx context.Context, converted *convertedSec
 
 // leftUnlessRestoring is fateLeft for a section the conversion reads, and fateUntouched for one a
 // restore alone reads and that held no block it moves.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) leftUnlessRestoring(holds bool) sectionFate {
 	if !r.convert && !holds {
 		return fateUntouched
@@ -1319,6 +1423,8 @@ func (r *issueRestore) leftUnlessRestoring(holds bool) sectionFate {
 // (sectionVersion), whose text stays in that version once the document retires. An ask block the
 // section held is no such part: it stands in the spec. Where no version holds the section yet, the
 // section is left for the next pass.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) planDecision(ctx context.Context, converted *convertedSection, body []*pmdoc.Node, unplaced *unplacedSection) error {
 	section := converted.section
 	id := section.headingID()
@@ -1380,6 +1486,8 @@ func (r *issueRestore) planDecision(ctx context.Context, converted *convertedSec
 }
 
 // decisionNode is a decision block of attrs holding heading and then words.
+//
+// kept for one release: decisions-step
 func decisionNode(attrs pmdoc.Attrs, heading *pmdoc.Node, words []*pmdoc.Node) *pmdoc.Node {
 	return &pmdoc.Node{Type: decisionType, Attrs: attrs, Children: append([]*pmdoc.Node{heading}, words...)}
 }
@@ -1387,6 +1495,8 @@ func decisionNode(attrs pmdoc.Attrs, heading *pmdoc.Node, words []*pmdoc.Node) *
 // holdableWords is words without each block a decision block of attrs cannot hold after heading,
 // as the document's own markdown pipeline reads one (parsedTypedBlock), and whether it left one
 // out.
+//
+// kept for one release: decisions-step
 func holdableWords(attrs pmdoc.Attrs, heading *pmdoc.Node, words []*pmdoc.Node) ([]*pmdoc.Node, bool) {
 	var kept []*pmdoc.Node
 	for _, block := range words {
@@ -1398,6 +1508,8 @@ func holdableWords(attrs pmdoc.Attrs, heading *pmdoc.Node, words []*pmdoc.Node) 
 }
 
 // textParagraph is a paragraph holding words as plain text.
+//
+// kept for one release: decisions-step
 func textParagraph(words string) *pmdoc.Node {
 	return &pmdoc.Node{Type: "paragraph", Attrs: pmdoc.Attrs{}, Children: []*pmdoc.Node{{Type: "text", Text: words}}}
 }
@@ -1406,6 +1518,8 @@ func textParagraph(words string) *pmdoc.Node {
 // section's heading and the blocks of words do not cite, as the decisions document's block index
 // read their citations (unplacedSection.mentions): an ask whose block the section held, and one
 // cited only in a block the decision leaves out.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) uncitedAsks(section decisionSection, words []*pmdoc.Node, unplaced unplacedSection) []string {
 	cited := map[string]bool{}
 	cite := func(id string) {
@@ -1434,6 +1548,8 @@ func (r *issueRestore) uncitedAsks(section decisionSection, words []*pmdoc.Node,
 // sectionVersion is the decisions document's last version that holds section, as its block index
 // reads it: the version the index stands at where it holds the section's heading, and 0 where the
 // index holds no such version.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) sectionVersion(section decisionSection) int {
 	if _, held := r.indexedBlocks[section.headingID()]; !held || section.headingID() == "" {
 		return 0
@@ -1442,6 +1558,8 @@ func (r *issueRestore) sectionVersion(section decisionSection) int {
 }
 
 // restoreHolds reports whether a block this pass restores takes id.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) restoreHolds(id string) bool {
 	for _, restore := range r.restores {
 		if restore.id == id {
@@ -1453,6 +1571,8 @@ func (r *issueRestore) restoreHolds(id string) bool {
 
 // specPointers is the `shaped` value naming each spec block of ids, as a `block[]` attribute
 // writes it (pmdoc.ParseBlockPointerValue): canonical block references, each once.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) specPointers(ids []string) []string {
 	pointers := make([]string, 0, len(ids))
 	for _, id := range ids {
@@ -1462,6 +1582,8 @@ func (r *issueRestore) specPointers(ids []string) []string {
 }
 
 // appendUnique appends each of values to list that it does not hold yet.
+//
+// kept for one release: decisions-step
 func appendUnique(list []string, values ...string) []string {
 	for _, value := range values {
 		if !slices.Contains(list, value) {
@@ -1474,6 +1596,8 @@ func appendUnique(list []string, values ...string) []string {
 // plainAnswer reports whether body is ask's answer and nothing more (R9's plain-answer rule): its
 // text, and the answer's, are the same once whitespace is collapsed and case folded. The answer is
 // the person's words, or, where they wrote none, the options they chose.
+//
+// kept for one release: decisions-step
 func plainAnswer(body []*pmdoc.Node, ask model.Ask) bool {
 	if ask.Answer == nil {
 		return false
@@ -1492,11 +1616,15 @@ func plainAnswer(body []*pmdoc.Node, ask model.Ask) bool {
 
 // normalizedWords is value with its whitespace collapsed to single spaces, trimmed, and its case
 // folded.
+//
+// kept for one release: decisions-step
 func normalizedWords(value string) string {
 	return strings.ToLower(strings.Join(strings.Fields(value), " "))
 }
 
 // allParagraphs reports whether every block of body is a paragraph, which is all a reading holds.
+//
+// kept for one release: decisions-step
 func allParagraphs(body []*pmdoc.Node) bool {
 	for _, block := range body {
 		if block.Type != "paragraph" {
@@ -1509,6 +1637,8 @@ func allParagraphs(body []*pmdoc.Node) bool {
 // readingOf is a reading block holding body's paragraphs, under a fresh block id, as the document's
 // own markdown pipeline makes it. A reading stands only at the end of a decision or an ask, so it is
 // parsed at the end of a decision that holds it and nothing else of weight, and taken out of it.
+//
+// kept for one release: decisions-step
 func readingOf(body []*pmdoc.Node) (*pmdoc.Node, error) {
 	reading := &pmdoc.Node{
 		Type: readingType, Attrs: pmdoc.Attrs{pmdoc.BlockIDAttr: uuid.NewString()}, Children: slices.Clone(body),
@@ -1528,12 +1658,16 @@ func readingOf(body []*pmdoc.Node) (*pmdoc.Node, error) {
 }
 
 // readingType is the type of an agent's reading block.
+//
+// kept for one release: decisions-step
 const readingType = "reading"
 
 // parsedTypedBlock is node, a typed block of typ built here, as the document's own markdown
 // pipeline makes it (parsedBlockBody): rendered and read back, so it carries the attributes and
 // the inner block ids a parse gives rather than ones a hand-built node invents, with its own id,
 // which its markdown writes, kept.
+//
+// kept for one release: decisions-step
 func parsedTypedBlock(node *pmdoc.Node, typ string) (*pmdoc.Node, error) {
 	parsed, refusal, err := parsedBlockBody([]*pmdoc.Node{node}, pmdoc.NewWriteBudget())
 	if err != nil {
@@ -1554,6 +1688,8 @@ func parsedTypedBlock(node *pmdoc.Node, typ string) (*pmdoc.Node, error) {
 // the section (indexedBlocks, refs.BlockChanges), as the Decisions read of the release before dated
 // a section. A section whose blocks the index records no change of, or whose version names no
 // author, has none.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) sectionAuthors(ctx context.Context, sections []decisionSection) ([]model.Actor, error) {
 	changes := r.indexedBlocks
 	versions := make([]int, len(sections))
@@ -1603,6 +1739,8 @@ func (r *issueRestore) sectionAuthors(ctx context.Context, sections []decisionSe
 // its last block (decisionread.TextSum), which the Keep posts back. Each carries the actor of the
 // newest decision.kept the issue holds for its heading, the event Keep appended in the transaction
 // that wrote the row (sectionKeep.keeper).
+//
+// kept for one release: decisions-step
 func (r *issueRestore) sectionKeeps(ctx context.Context, tree *pmdoc.Node, sections []decisionSection) (map[string]*sectionKeep, error) {
 	rows, err := r.tx.Query(ctx, `
 		select k.block_id, k.text_sha256, k.kept_by, k.kept_at, kept.actor
@@ -1675,9 +1813,12 @@ func (r *issueRestore) sectionKeeps(ctx context.Context, tree *pmdoc.Node, secti
 // it. It records the pointer line it took out (pointerLine) and whether it added the heading
 // (headingAdded), which its version's mark names. On a fleet of one build - which the phase runs
 // on alone - the same write cuts every ask block of the spec to the attributes a version keeps
-// (writePresent), as the first accepted write of the document does (R10), and gives each restored
-// answered ask's block those of its row (keptAskState). It answers the event of the version it
-// wrote, NoEvent where the spec did not change.
+// (writePresent), as the first accepted write of the document does (R10), a block that has no ask
+// row and is no copy of an ask to none of them, and gives each restored answered ask's block
+// those of its row (keptAskState). It answers the event of the version it wrote, NoEvent where the
+// spec did not change.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
 	// kept for one release: roll-window-attributes
 	twoBuilds, err := anotherBuildServes(ctx, r.tx)
@@ -1736,6 +1877,14 @@ func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
 		if current.Node() == nil {
 			return fmt.Errorf("the spec of %s is outside the Proof schema, so the decisions step cannot write into it", r.issue)
 		}
+		// kept for one release: stored-ask-state
+		var withAsk map[string]bool
+		if !twoBuilds {
+			var err error
+			if withAsk, err = askBlocksWithAnAsk(ctx, r.tx, r.spec.id, current.Node()); err != nil {
+				return err
+			}
+		}
 		_, err := rewriteLive(doc, nil, func(live *pmdoc.Node) bool {
 			for _, block := range added {
 				id, _ := block.Attrs[pmdoc.BlockIDAttr].(string)
@@ -1744,7 +1893,7 @@ func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
 					return false
 				}
 			}
-			changed := r.writePresent(r.spec.id, live, r.present[r.spec.id], twoBuilds)
+			changed := r.writePresent(r.spec.id, live, r.present[r.spec.id], twoBuilds, withAsk)
 			pointerLine, headingAdded = "", false
 			if len(added) > 0 {
 				headingAdded = !hasDecisionsPart(live)
@@ -1787,6 +1936,8 @@ func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
 // step's, which proves nobody, so the block carries its section's author forward as a stamp's
 // rename carries an ask block's (liveWrite.carriedAskAuthors). A section whose author is unknown
 // credits nobody, and its node takes no author.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) creditSectionAuthors(ctx context.Context, document string) {
 	write := ledgerFrom(ctx).liveWriteFor(document)
 	if write == nil {
@@ -1811,14 +1962,18 @@ func (r *issueRestore) creditSectionAuthors(ctx context.Context, document string
 // writePresent writes edits - the shaped pointers and the readings the conversion gives the
 // answered ask blocks a document holds already - into live, the tree of document as its live
 // write holds it, and, on a fleet of one build (twoBuilds false), takes the answer's words and
-// selection, which no version then holds, off every ask block of it (withoutUnkeptAskAttributes),
-// leaving the state, answerer, time and a copy's provenance settlement keeps in step with each ask.
-// It records each pointer it gave a block that
+// selection, which no version then holds, off every ask block of it that has an ask (withAsk,
+// askBlocksWithAnAsk: withoutUnkeptAskAttributes), leaving the state, answerer, time and a copy's
+// provenance settlement keeps in step with each ask, and every attribute a version can store off
+// each other ask block, which has no ask row and is no copy of an ask and keeps none of the eight
+// (R10, withoutStoredAskAttributes). It records each pointer it gave a block that
 // the block did not hold (shapedAdded), which the version's mark names, and each reading it wrote
 // (readingsWritten), and reports whether it changed the tree. It visits every ask block of the
 // tree: pmdoc.Walk stops at the first node its visit answers false for, so the visit answers true
 // at an ask block too, and the blocks after the first are written as well.
-func (r *issueRestore) writePresent(document string, live *pmdoc.Node, edits *presentEdits, twoBuilds bool) bool {
+//
+// kept for one release: decisions-step
+func (r *issueRestore) writePresent(document string, live *pmdoc.Node, edits *presentEdits, twoBuilds bool, withAsk map[string]bool) bool {
 	changed := false
 	added := map[string][]string{}
 	written := map[string]bool{}
@@ -1852,13 +2007,37 @@ func (r *issueRestore) writePresent(document string, live *pmdoc.Node, edits *pr
 			}
 		}
 		// kept for one release: stored-ask-state
-		if !twoBuilds && withoutUnkeptAskAttributes(node) {
-			changed = true
+		if !twoBuilds {
+			strip := withoutUnkeptAskAttributes
+			if !withAsk[id] {
+				strip = withoutStoredAskAttributes
+			}
+			if strip(node) {
+				changed = true
+			}
 		}
 		return true
 	})
 	r.shapedAdded[document] = added
 	r.readingsWritten[document] = written
+	return changed
+}
+
+// withoutAsklessAskAttributes takes every attribute a version can store off each ask block of tree
+// that withAsk does not name (askBlocksWithAnAsk) - one that has no ask row and is no copy of an
+// ask, which keeps none of the eight (R10) - and reports whether it changed one.
+//
+// kept for one release: stored-ask-state
+func withoutAsklessAskAttributes(tree *pmdoc.Node, withAsk map[string]bool) bool {
+	changed := false
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		if node.Type == "ask" {
+			if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); !withAsk[id] && withoutStoredAskAttributes(node) {
+				changed = true
+			}
+		}
+		return true
+	})
 	return changed
 }
 
@@ -1868,6 +2047,8 @@ func (r *issueRestore) writePresent(document string, live *pmdoc.Node, edits *pr
 // would state from its heading names a block that holds none of its words. The failure rolls the
 // issue's transaction back, so the section stays where it stood, and no moved_to names it. A
 // reading of an ask the pass restores is in the block restoredAskBlock builds, which holds it.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) refuseUnwrittenReadings() error {
 	for _, converted := range r.sections {
 		if converted.fate != fateReading || r.restoreOf(converted.ask) != nil {
@@ -1886,6 +2067,8 @@ func (r *issueRestore) refuseUnwrittenReadings() error {
 // answered ask block a converted section restated, the shaped pointers and the readings the
 // conversion gives that block (writePresent), and its version, in document id order. R9 gives a
 // section's links and reading to the ask's present block wherever it stands in the issue.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) writePresentDocuments(ctx context.Context) error {
 	// kept for one release: roll-window-attributes
 	twoBuilds, err := anotherBuildServes(ctx, r.tx)
@@ -1902,8 +2085,16 @@ func (r *issueRestore) writePresentDocuments(ctx context.Context) error {
 			if current.Node() == nil {
 				return fmt.Errorf("%s is outside the Proof schema, so the decisions step cannot write into it", document.address)
 			}
+			// kept for one release: stored-ask-state
+			var withAsk map[string]bool
+			if !twoBuilds {
+				var err error
+				if withAsk, err = askBlocksWithAnAsk(ctx, r.tx, id, current.Node()); err != nil {
+					return err
+				}
+			}
 			_, err := rewriteLive(doc, nil, func(live *pmdoc.Node) bool {
-				return r.writePresent(id, live, edits, twoBuilds)
+				return r.writePresent(id, live, edits, twoBuilds, withAsk)
 			})
 			return err
 		})
@@ -1926,6 +2117,8 @@ func (r *issueRestore) writePresentDocuments(ctx context.Context) error {
 }
 
 // blockIDHeld reports whether tree holds a block under id.
+//
+// kept for one release: decisions-step
 func blockIDHeld(tree *pmdoc.Node, id string) bool {
 	held := false
 	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
@@ -1942,6 +2135,8 @@ func blockIDHeld(tree *pmdoc.Node, id string) bool {
 // other block of the part kept, and after its last block where it holds none; and, where the
 // document holds no such part, at its end under a `## Decisions` heading added for them. It
 // answers nil for the pointer line where it took none out.
+//
+// kept for one release: decisions-step
 func withDecisionsPartBlocks(children, blocks []*pmdoc.Node, pointer func(*pmdoc.Node) bool) ([]*pmdoc.Node, *pmdoc.Node) {
 	start, end := decisionsPart(&pmdoc.Node{Type: "doc", Children: children})
 	if start < 0 {
@@ -1978,6 +2173,8 @@ func withDecisionsPartBlocks(children, blocks []*pmdoc.Node, pointer func(*pmdoc
 // the block's own and the spec blocks the sections that restate it link (restoredPointers), and it
 // holds the readings the block of the decisions document held and the ones the conversion writes.
 // It reads back as the row's wording, or is refused.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) restoredAskBlock(ctx context.Context, restore *restoredBlock, twoBuilds bool, nodes map[string]askNodeAnswer) (*pmdoc.Node, error) {
 	decided := model.NewAskEditPrevious(restore.row)
 	attrs := pmdoc.Attrs{pmdoc.BlockIDAttr: restore.id, "urgency": decided.Urgency, "multiple": decided.Multiple}
@@ -2035,6 +2232,8 @@ func (r *issueRestore) restoredAskBlock(ctx context.Context, restore *restoredBl
 // askBlockFrom is the ask block of attrs holding content and then readings, as the document's own
 // markdown pipeline makes it (parsedTypedBlock), and whether it asks what decided does
 // (askBlock.asks).
+//
+// kept for one release: decisions-step
 func askBlockFrom(attrs pmdoc.Attrs, content, readings []*pmdoc.Node, decided model.AskEditPrevious) (*pmdoc.Node, bool, error) {
 	children := append(slices.Clone(content), readings...)
 	block, err := parsedTypedBlock(&pmdoc.Node{Type: "ask", Attrs: maps.Clone(attrs), Children: children}, "ask")
@@ -2049,6 +2248,8 @@ func askBlockFrom(attrs pmdoc.Attrs, content, readings []*pmdoc.Node, decided mo
 // intact": the pointers the block held - as the spec last held it (held) and as the decisions
 // document holds it (moved) - each as it reads once the pass is written (movedPointers), then the
 // spec blocks the sections that restate its ask link (specPointers), each once.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) restoredPointers(ctx context.Context, restore *restoredBlock) ([]string, error) {
 	var pointers []string
 	for _, block := range []*pmdoc.Node{restore.held, restore.moved} {
@@ -2066,6 +2267,8 @@ func (r *issueRestore) restoredPointers(ctx context.Context, restore *restoredBl
 
 // movedPointers is pointers, the `shaped` values of a block the restore moves, each as it reads
 // once the pass is written (movedPointer), without each that then names no block.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) movedPointers(ctx context.Context, pointers []string) ([]string, error) {
 	moved := make([]string, 0, len(pointers))
 	for _, pointer := range pointers {
@@ -2089,6 +2292,8 @@ func (r *issueRestore) movedPointers(ctx context.Context, pointers []string) ([]
 // value names. One to a block the document no longer holds names the block its moved_to tuples
 // reach (graphstore.MovedTo), and none where they reach no block. Every other pointer, one to a
 // block the decisions document still holds among them, reads as it is.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) movedPointer(ctx context.Context, pointer string) (string, bool, error) {
 	if r.decisions == nil {
 		return pointer, true, nil
@@ -2120,6 +2325,8 @@ func (r *issueRestore) movedPointer(ctx context.Context, pointer string) (string
 // address of its block id, named as a `shaped` value names it ("" for a section's heading whose
 // moved_to reaches an ask, or a block of a converted section that no moved_to leaves), and whether
 // this pass takes that block out of the document at all (decisionsDropped).
+//
+// kept for one release: decisions-step
 func (r *issueRestore) passMove(address, id string) (string, bool) {
 	for _, restore := range r.restores {
 		if restore.from == address {
@@ -2142,6 +2349,8 @@ func (r *issueRestore) passMove(address, id string) (string, bool) {
 
 // blockPointer is the `shaped` value naming the block at address, a store address
 // (refs.BlockAddress), and whether address is one of a document of the issue that stands.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) blockPointer(address string) (string, bool) {
 	refKey, id, found := strings.Cut(address, "#")
 	if !found {
@@ -2162,6 +2371,8 @@ func (r *issueRestore) blockPointer(address string) (string, bool) {
 // server-owned attributes (withoutStoredAskAttributes): no ask's state stands behind them, and the
 // settlement after the write opens its ask and writes that state. No row holds its question to
 // build it from, and none names it to rebind.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) movedBlockOf(ctx context.Context, restore *restoredBlock, twoBuilds bool) (*pmdoc.Node, error) {
 	node := &pmdoc.Node{Type: "ask", Attrs: maps.Clone(restore.moved.Attrs), Children: restore.moved.Children}
 	node.Attrs[pmdoc.BlockIDAttr] = restore.id
@@ -2191,6 +2402,8 @@ func (r *issueRestore) movedBlockOf(ctx context.Context, restore *restoredBlock,
 // event, under which the version's block index states its facts (graphstore.Caused) and its
 // references are stamped, as every version a route writes is. It records the version's number in
 // *number and answers the event, NoEvent where no version was written.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) writeVersion(ctx context.Context, document issueDocument, number *int) (int64, error) {
 	written, err := r.service.SnapshotVersion(withDecisionStepWrite(ctx, r.stepCasesFor(document.id)), document.id, DecisionStepActor)
 	if err != nil {
@@ -2223,6 +2436,8 @@ func (r *issueRestore) writeVersion(ctx context.Context, document issueDocument,
 // `## Decisions` heading where it added one and the pointer line it took out; for any document,
 // the `shaped` pointers it gave the answered ask blocks the document held already. The restore's
 // and the conversion's carry cases take out only those.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) stepCasesFor(document string) decisionStepCases {
 	steps := decisionStepCases{restore: true, conversion: r.convert, shaped: r.shapedAdded[document]}
 	if document != r.spec.id {
@@ -2257,6 +2472,8 @@ func (r *issueRestore) stepCasesFor(document string) decisionStepCases {
 // answered ask the restore declined to return (removalOf), it appends one removed_by from the
 // ask's node to the person who removed its block, with that person's node, under the event that
 // recorded the person's version and at its time, so the finder leaves the ask out from then on.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) writeFacts(ctx context.Context, cause int64) error {
 	var nodes []graphstore.Node
 	var tuples []graphstore.Tuple
@@ -2366,6 +2583,8 @@ func (r *issueRestore) writeFacts(ctx context.Context, cause int64) error {
 // sumOr is the sum the Keep's projection row holds once its decision is a node: the decision's own
 // text sum where the Keep was of the section as it stands, and nothing it can match otherwise -
 // the empty sum, which no decision's text has - so the decision reads waiting for review.
+//
+// kept for one release: decisions-step
 func (keep *sectionKeep) sumOr(sum string) string {
 	if keep.matches {
 		return sum
@@ -2391,6 +2610,8 @@ func newestApproval(ctx context.Context, tx pgx.Tx, artifactID string) (*model.S
 // that version, each as its node and its block; and the decisions document's approval, which
 // stood at its latest version and which the version the pass wrote of it superseded, with the
 // asks it moved out.
+//
+// kept for one release: decisions-step
 func (r *issueRestore) reportApprovals(ctx context.Context, spec, decisions *model.SupersededApproval) error {
 	askRefs := make([]string, 0, len(r.restores))
 	nodes := make([]string, 0, len(r.restores))
