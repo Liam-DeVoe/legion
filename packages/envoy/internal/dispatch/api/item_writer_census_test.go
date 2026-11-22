@@ -205,6 +205,12 @@ var itemRowWriters = map[string]map[string]string{
 		"queueStamp": "the source's owner lock, which every caller holds before its write phase; " +
 			"its tables are refs and the item block-ref tables, no item row",
 	},
+	// The test corpus loader's one statement of its own (decision 5 of dispatch://INFRA-1098's
+	// plan): it nests a reply under another reply, which no route writes, in a transaction it
+	// opens after the issue's owner lock.
+	"internal/dispatch/seedcorpus/nest.go": {
+		"nestReplies": "the issue's owner lock, which it takes first in the transaction it opens (store.LockOwner)",
+	},
 	"internal/pgmigrate/identity.go": {
 		"Record":     versionTableException,
 		"writeFixes": versionTableException,
@@ -404,6 +410,11 @@ var itemRowLockNoRow = map[string]map[string]string{
 		"queueBlocks":          itemRowCallersTransaction,
 		"queueRecordIndexed":   itemRowCallersTransaction,
 		"queueStateLock":       itemRowCallersTransaction,
+	},
+	"internal/dispatch/seedcorpus/nest.go": {
+		"nestReplies": "the test corpus loader's nesting of replies, which cmd/dispatch-corpus and the corpus's Go " +
+			"tests run: package seedcorpus imports api, so a row of the lock table, which this package's tests " +
+			"hold, could not call it without an import cycle; its owner lock is the census entry's",
 	},
 	"internal/dispatch/refs/refs.go": {"queueStamp": itemRowCallersTransaction},
 

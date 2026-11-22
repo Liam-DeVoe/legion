@@ -739,6 +739,11 @@ var indexPasses = map[string]string{
 	// The seed's comments: their nodes, their author's person node and each comment's
 	// authored_by tuple, all drawn from the plan before any row is written (commentStoreWrite).
 	"cmd/dispatch-seed/write_items.go#writeComments": "the seed's own plan",
+	// The test corpus loader's nesting of a reply under another reply (decision 5 of
+	// dispatch://INFRA-1098's plan): it moves comments.reply_to of comments the comment route wrote,
+	// as the loader's own list names them, a column no tuple projects at this head, reading neither
+	// side of a projection to mend the other.
+	"seedcorpus/nest.go#nestReplies": "the test corpus loader's own list of the replies it nests and the comments each goes under",
 	// The seed's issues, asks and messages: each one's node, in its project, drawn from the plan
 	// before the batch writes its rows.
 	"cmd/dispatch-seed/write_core.go#writeIssues":     "the seed's own plan",
