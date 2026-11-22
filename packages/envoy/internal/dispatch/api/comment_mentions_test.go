@@ -13,10 +13,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 type commentMentionRead struct {
@@ -844,97 +845,20 @@ func TestCallbackReplyUnderAnAskJoinsTheAskThread(t *testing.T) {
 	}
 }
 
-// routeMover moves an issue's delivery route while a comment's resolution of that route is in
-// flight, which is the fixture's own act rather than any lookup's work. It keeps the move
-// clear of the lookup in both directions.
-//
-// Nothing it runs is bound to a lookup request's context. A comment's creation bounds every
-// listener lookup it makes at mentionLookupTimeout (250 ms, comment_delivery.go) and is
-// answered without a lookup that missed it, so a move on the request's context is cancelled
-// the moment its update has to wait - behind another transaction's row lock, or behind a
-// loaded runner's scheduler - and then the route the locked row carries never moves at all,
-// which is the one thing these cases are about. The test's own context bounds it instead.
-//
-// It also runs on one connection, taken before the comment request: a move is a statement on a
-// warm connection rather than a pool acquisition that may first have to open one.
-//
-// What a case cannot leave to timing is that its move lands before the comment's transaction
-// reads the route under the issue row's lock, because a move the transaction read past proves
-// nothing. prepare settles that with the lock itself rather than with a clock: it writes the
-// new route and holds the write open, so the transaction's own "for no key update" read of
-// that row waits for release, however late the lookup reached this listener and whether or not
-// Dispatch was still waiting for its answer.
-type routeMover struct {
-	t    *testing.T
-	conn *pgxpool.Conn
-	// held is the prepared move: the open transaction holding the issue row, or nil.
-	held pgx.Tx
-}
-
-func newRouteMover(t *testing.T, database *store.Store) *routeMover {
-	t.Helper()
-	conn, err := database.Pool.Acquire(t.Context())
-	if err != nil {
-		t.Fatalf("take the connection the route moves run on: %v", err)
-	}
-	// A prepared move nothing releases would hold the issue row for as long as the test ran,
-	// and the comment's transaction would wait on it rather than fail. Postgres ends it
-	// instead, and the case fails on the assertion it is about.
-	if _, err := conn.Exec(t.Context(), `set idle_in_transaction_session_timeout = '30s'`); err != nil {
-		t.Fatalf("bound a prepared route move: %v", err)
-	}
-	mover := &routeMover{t: t, conn: conn}
-	t.Cleanup(func() {
-		if mover.held != nil {
-			_ = mover.held.Rollback(context.Background())
-		}
-		conn.Release()
-	})
-	return mover
-}
-
-// prepare writes route on the issue and holds that write open, taking the issue row's lock
-// before the comment request is made; release lets it land.
-func (m *routeMover) prepare(issueKey, route string) {
-	m.t.Helper()
-	held, err := m.conn.Begin(m.t.Context())
-	if err != nil {
-		m.t.Fatalf("open the move of %s to %s: %v", issueKey, route, err)
-	}
-	if _, err := held.Exec(m.t.Context(), `
-		update issues set route = $2 where key = $1
-	`, issueKey, route); err != nil {
-		m.t.Fatalf("write the move of %s to %s: %v", issueKey, route, err)
-	}
-	m.held = held
-}
-
-// release lands the prepared move, from inside the lookup handler whose route it is moving.
-func (m *routeMover) release() {
-	held := m.held
-	m.held = nil
-	if err := held.Commit(m.t.Context()); err != nil {
-		m.t.Errorf("land the prepared route move: %v", err)
-	}
-}
-
-// move writes route on the issue in one statement, for a case that moves the route again on a
-// later lookup and so cannot hold the row across the comment's earlier rounds: the transaction
-// would wait for a release that only the next lookup makes, and that lookup only comes once
-// the round it is waiting on has ended.
-func (m *routeMover) move(issueKey, route string) {
-	if _, err := m.conn.Exec(m.t.Context(), `
-		update issues set route = $2 where key = $1
-	`, issueKey, route); err != nil {
-		m.t.Errorf("move the route of %s to %s mid-resolution: %v", issueKey, route, err)
-	}
-}
-
 // The issue's route is resolved through the Envoy listener before the comment's transaction
-// opens, so the route can move while that lookup is in flight. The locked issue row is the
-// authority: a resolution it contradicts is taken again against the route the lock found, and
-// a route that keeps moving is a conflict rather than a comment whose route suppression was
-// decided from a route the issue no longer has.
+// opens, so the route can move between that resolution and the transaction's read of the issue
+// under its owner lock. The locked issue row is the authority: a resolution it contradicts is taken
+// again against the route the lock found, and a route that keeps moving is a conflict rather than
+// a comment whose route suppression was decided from a route the issue no longer has.
+//
+// Each move is a route change as a PATCH makes one: the issue's owner lock and the route written,
+// in a transaction of the test's own on the test's context, committed only once the comment's
+// write waits behind that lock (storetest.WaitForQueuedBehind, on the one connection the comment
+// runs on). So the comment resolved the route before the move and reads it after the move however
+// slow the machine is. The listener only answers. A move it made itself, inside the lookup, ran
+// on that lookup's request context, which ends when Dispatch stops waiting for the lookup
+// (mentionLookupTimeout, 250 ms): a write slower than that was cancelled, and one that started
+// later than that raced the comment's locked read.
 //
 // Serial: the suppression it reads measures a span. That suppression is decided from the
 // redo's resolution of the locked route, and Dispatch takes that resolution only from a lookup
@@ -942,26 +866,25 @@ func (m *routeMover) move(issueKey, route string) {
 // up on pins no session and suppresses nothing. This listener is one more goroutine of this
 // process, so a parallel neighbour's work is measured with it - measured on this pod, a bare
 // loopback lookup under two busy loops on two cores misses that bound about once in sixty. The
-// moves themselves are off the clock (routeMover) and the bound is the product's, so what is
-// left is this measurement, and it runs with the machine to itself.
+// moves themselves are off the clock (the route changes above) and the bound is the product's,
+// so what is left is this measurement, and it runs with the machine to itself.
 func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
-	var database *store.Store
-	var mover *routeMover
-	lookups := []string{}
-	const movedRoute = "role:auditor"
+	ctx := t.Context()
+	var lookupsMu sync.Mutex
+	var lookups []string
+	readLookups := func() []string {
+		lookupsMu.Lock()
+		defer lookupsMu.Unlock()
+		return slices.Clone(lookups)
+	}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["btw","steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/v1/roles/"):
 			role := strings.TrimPrefix(r.URL.Path, "/v1/roles/")
+			lookupsMu.Lock()
 			lookups = append(lookups, role)
-			// The route moves while Dispatch is asking the listener who holds the old
-			// one, and the comment's transaction waits on that move's lock whatever
-			// this lookup does. One move: the redo's own lookup finds the route the
-			// locked row carries and touches no database at all.
-			if len(lookups) == 1 {
-				mover.release()
-			}
+			lookupsMu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"role": role, "holder": "s1", "title": "planner", "capabilities": []string{"btw", "steer"},
 			})
@@ -976,11 +899,10 @@ func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	var handler http.Handler
 	// The seeded spec's settlement locks the very issue row these moves take, and one that
 	// fired inside a resolution would hold the move behind it (testServerOptions.settle). It
 	// decides nothing here, so it is kept out of the way for the whole test.
-	handler, database, _ = newTestServer(t, testServerOptions{envoyURL: listener.URL, settle: time.Hour})
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "Route moves mid-resolution", "before")
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
 		"route": "role:reviewer",
@@ -988,53 +910,120 @@ func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 	if patched.Code != http.StatusOK {
 		t.Fatalf("set route: status=%d body=%s", patched.Code, patched.Body.String())
 	}
-	mover = newRouteMover(t, database)
-	// One move, landed at the first lookup: the redo resolves the route the locked row carries.
-	mover.prepare(issue.Key, movedRoute)
-	created := postMentionedComment(t, handler, issue.Key, map[string]any{
-		"body": "Mentioning the session the new route holds.", "mentions": []map[string]any{{"target": "session:s1"}},
-	})
+	// beginRouteChange opens a route change's transaction; takeLock takes the issue's owner lock in
+	// it, and moveRoute writes the route it moves to.
+	beginRouteChange := func() pgx.Tx {
+		change, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin a route change: %v", err)
+		}
+		t.Cleanup(func() { _ = change.Rollback(context.Background()) })
+		return change
+	}
+	takeLock := func(change pgx.Tx) error {
+		return store.LockOwner(ctx, change, store.IssueOwner(issue.Key))
+	}
+	moveRoute := func(change pgx.Tx, route string) error {
+		_, err := change.Exec(ctx, `update issues set route = $2 where key = $1`, issue.Key, route)
+		return err
+	}
+	// queuedBehind returns once the comment's backend waits behind the route change, and fails the
+	// row when the comment answers first: it never read the route under its lock after the move.
+	queuedBehind := func(change pgx.Tx, callPID uint32, answered <-chan *httptest.ResponseRecorder, what string) {
+		t.Helper()
+		within := testwait.Bounded(t, 24*time.Hour, 30*time.Second)
+		if response, early := storetest.WaitForQueuedBehind(t, change, callPID, answered, within); early {
+			t.Fatalf("%s answered %d before its write waited behind the route change: %s", what, response.Code, response.Body.String())
+		}
+	}
+
+	// One move: the redo resolves the route the locked row actually carries.
+	callHandler, callPID := oneConnectionHandler(t, deps)
+	change := beginRouteChange()
+	if err := takeLock(change); err != nil {
+		t.Fatalf("take the issue's owner lock for the route change: %v", err)
+	}
+	if err := moveRoute(change, "role:auditor"); err != nil {
+		t.Fatalf("move the route to role:auditor: %v", err)
+	}
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		answered <- postMentionedComment(t, callHandler, issue.Key, map[string]any{
+			"body": "Mentioning the session the new route holds.", "mentions": []map[string]any{{"target": "session:s1"}},
+		})
+	}()
+	queuedBehind(change, callPID, answered, "the comment across one route move")
+	if err := change.Commit(ctx); err != nil {
+		t.Fatalf("commit the move to role:auditor: %v", err)
+	}
+	created := testwait.Receive(t, "the answer of the comment across one route move", answered)
 	if created.Code != http.StatusCreated {
 		t.Fatalf("comment across one route move: status=%d body=%s", created.Code, created.Body.String())
 	}
 	settledCommentDeliveries(t, database, decodeMentionedComment(t, created).ID)
-	if len(lookups) != 2 || lookups[0] != "reviewer" || lookups[1] != "auditor" {
-		t.Fatalf("route lookups = %#v, want the stale reviewer then the locked auditor", lookups)
+	if got := readLookups(); !slices.Equal(got, []string{"reviewer", "auditor"}) {
+		t.Fatalf("route lookups = %#v, want the stale reviewer then the locked auditor", got)
 	}
 	events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
 	if events.Code != http.StatusOK || !strings.Contains(events.Body.String(), `"suppressed_route":"role:auditor"`) {
 		t.Fatalf("suppression after the route moved: status=%d body=%s", events.Code, events.Body.String())
 	}
 
-	// A route that keeps moving is refused rather than decided from a stale resolution.
+	// A route that keeps moving is refused rather than decided from a stale resolution: each of the
+	// two resolutions finds the route moved under the lock. The second change asks for the lock
+	// once the comment's first write waits for it, so that write is granted it first and reads the
+	// first move, and the second change then holds the lock while the comment resolves again.
+	lookupsMu.Lock()
 	lookups = nil
-	moved := 0
-	listener.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.HasPrefix(r.URL.Path, "/v1/roles/"):
-			role := strings.TrimPrefix(r.URL.Path, "/v1/roles/")
-			lookups = append(lookups, role)
-			moved++
-			mover.move(issue.Key, fmt.Sprintf("role:moved-%d", moved))
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"role": role, "holder": "s1", "title": "planner", "capabilities": []string{"btw", "steer"},
-			})
-		case r.URL.Path == "/v1/registry/s1":
-			writeSessionRecord(t, w, sessions, "s1")
-		case r.URL.Path == "/v1/sessions":
-			_, _ = w.Write([]byte(sessions))
-		default:
-			w.WriteHeader(http.StatusNotFound)
+	lookupsMu.Unlock()
+	callHandler, callPID = oneConnectionHandler(t, deps)
+	first := beginRouteChange()
+	if err := takeLock(first); err != nil {
+		t.Fatalf("take the issue's owner lock for the first move: %v", err)
+	}
+	if err := moveRoute(first, "role:moved-1"); err != nil {
+		t.Fatalf("move the route to role:moved-1: %v", err)
+	}
+	refused := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		refused <- postMentionedComment(t, callHandler, issue.Key, map[string]any{
+			"body": "The route will not hold still.", "mentions": []map[string]any{{"target": "session:s1"}},
+		})
+	}()
+	queuedBehind(first, callPID, refused, "the comment's first resolution")
+	second := beginRouteChange()
+	secondPID := second.Conn().PgConn().PID()
+	secondMoved := make(chan error, 1)
+	go func() {
+		err := takeLock(second)
+		if err == nil {
+			err = moveRoute(second, "role:moved-2")
 		}
+		secondMoved <- err
+	}()
+	testwait.Until(t, "the second route change to queue behind the comment's first write", func() (string, bool) {
+		queued, err := storetest.QueuedBehind(ctx, first, secondPID)
+		if err != nil {
+			return err.Error(), false
+		}
+		return fmt.Sprintf("backend %d queued: %t", secondPID, queued), queued
 	})
-	conflict := postMentionedComment(t, handler, issue.Key, map[string]any{
-		"body": "The route will not hold still.", "mentions": []map[string]any{{"target": "session:s1"}},
-	})
+	if err := first.Commit(ctx); err != nil {
+		t.Fatalf("commit the move to role:moved-1: %v", err)
+	}
+	if err := testwait.Receive(t, "the second route change's lock and move to role:moved-2", secondMoved); err != nil {
+		t.Fatalf("move the route to role:moved-2: %v", err)
+	}
+	queuedBehind(second, callPID, refused, "the comment's second resolution")
+	if err := second.Commit(ctx); err != nil {
+		t.Fatalf("commit the move to role:moved-2: %v", err)
+	}
+	conflict := testwait.Receive(t, "the answer of the comment across a moving route", refused)
 	if conflict.Code != http.StatusConflict || !strings.Contains(conflict.Body.String(), "ROUTE_CHANGED") {
 		t.Fatalf("comment across a moving route: status=%d body=%s", conflict.Code, conflict.Body.String())
 	}
-	if len(lookups) != 2 {
-		t.Fatalf("route lookups = %#v, want the resolution taken exactly twice before the conflict", lookups)
+	if got := readLookups(); !slices.Equal(got, []string{"auditor", "moved-1"}) {
+		t.Fatalf("route lookups = %#v, want the resolution taken exactly twice before the conflict: auditor, then the first move's moved-1", got)
 	}
 }
 
