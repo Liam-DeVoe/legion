@@ -54,8 +54,9 @@ func holdsFragmentSQL(alias string) string {
 
 // issueDocumentIDs lists the documents of the issue $1 that hold a fragment (holdsFragmentSQL), the
 // tree of an issue room among them, in id order: the order WriteIssueAskStates writes them in, each
-// in its own fragment.
-var issueDocumentIDs = `select a.id::text from artifacts a where a.issue_key = $1 and ` + holdsFragmentSQL("a") + ` order by a.id`
+// in its own fragment. A retired document is left out: it takes no new text (RetireDocument), so no
+// close, reopen or repair writes into it, and a live write into it is refused (joinLiveWrite).
+var issueDocumentIDs = `select a.id::text from artifacts a where a.issue_key = $1 and ` + holdsFragmentSQL("a") + ` and a.retired_at is null order by a.id`
 
 // issueRoomIDs lists the rooms the documents of the issue $1 are edited in (refs.DocumentRoomSQL),
 // each once, in id order: the order SettleIssueDocuments settles them in, an issue room's

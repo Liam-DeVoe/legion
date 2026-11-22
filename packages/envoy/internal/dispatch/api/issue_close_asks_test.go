@@ -854,6 +854,75 @@ func TestEachCloseAndReopenWithdrawsAndRestoresOnce(t *testing.T) {
 	}
 }
 
+// A retired document takes no new text (docs.RetireDocument), so the close and the reopen write
+// their asks' states into every document of the issue but a retired one (docs'
+// issueDocumentIDs): a retired document refuses every live write, under its owner's lock
+// (joinLiveWrite), and a write into it would refuse the close or the reopen with it. An issue born
+// converted, holding an ask block in its spec and a plain ask, has a document retired - a fragment
+// of the issue's room, and a document that is its own room - and still closes, withdrawing both
+// asks, with the spec's live tree showing the block resolved, and reopens, restoring both, with the
+// block holding no state again.
+func TestClosingAnIssueWithARetiredDocumentWithdrawsItsAsksAndReopeningRestoresThem(t *testing.T) {
+	for _, test := range []struct {
+		name, document string
+		inRoom         bool
+	}{
+		{"a document of the issue's room", "verification.md", true},
+		{"a document that is its own room", "notes.md", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			var documents *docs.Service
+			handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+				documents = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
+				t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+				return documents
+			})
+			issue := createInteractionIssue(t, handler, "TEST", "Closing beside a retired document", closeDecision)
+			awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, "close-decision", "Ship it?")
+			asks := []string{requireBlockAsk(t, handler, issue.Key, issue.PrimaryArtifactID, "close-decision"), createSessionAsk(t, handler, issue.Key, "Which region?")}
+			retired := uploadIssueDocument(t, handler, issue.Key, test.document, "Kept as it stood.\n")
+			var specRoom, retiredRoom *string
+			if err := database.Pool.QueryRow(ctx, `
+				select (select room::text from document_rooms where artifact_id = $1), (select room::text from document_rooms where artifact_id = $2)`,
+				issue.PrimaryArtifactID, retired.ID).Scan(&specRoom, &retiredRoom); err != nil {
+				t.Fatalf("read the rooms of the spec and of %s: %v", test.document, err)
+			}
+			if specRoom == nil {
+				t.Fatalf("the spec %s holds no document_rooms row, want the issue born converted", issue.PrimaryArtifactID)
+			}
+			if inRoom := retiredRoom != nil && *retiredRoom == *specRoom; inRoom != test.inRoom {
+				t.Fatalf("%s is edited in room %v, the spec in %s: a fragment of the issue's room is %t, want %t",
+					test.document, retiredRoom, *specRoom, inRoom, test.inRoom)
+			}
+			retireTestDocument(t, database, retired.ID)
+
+			closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice")
+			if closed.Code != http.StatusOK {
+				t.Fatalf("close beside the retired %s: status=%d body=%s", test.document, closed.Code, closed.Body.String())
+			}
+			closedBy := latestEventActor(t, database, issue.Key, "issue.closed")
+			for _, ask := range asks {
+				requireWithdrawn(t, handler, issue.Key, ask, closedBy)
+			}
+			requireLiveText(t, handler, issue.PrimaryArtifactID, `#close-decision state="resolved"`)
+			requireLiveTree(t, documents, issue.PrimaryArtifactID, `#close-decision urgency="med" multiple="false" state="resolved"`)
+
+			reopened := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice")
+			if reopened.Code != http.StatusOK {
+				t.Fatalf("reopen beside the retired %s: status=%d body=%s", test.document, reopened.Code, reopened.Body.String())
+			}
+			for _, ask := range asks {
+				if got := readBlockAsk(t, handler, ask); got.State != "open" || got.Resolution != nil {
+					t.Fatalf("ask %s after the reopen = %s %#v, want open with no record", ask, got.State, got.Resolution)
+				}
+			}
+			requireLiveText(t, handler, issue.PrimaryArtifactID, `#close-decision state="open"`)
+			requireLiveTree(t, documents, issue.PrimaryArtifactID, `#close-decision urgency="med" multiple="false"}`)
+		})
+	}
+}
+
 // requireWithdrawn fails t unless ask reads as withdrawn by the close of issue, made by closedBy.
 func requireWithdrawn(t *testing.T, handler http.Handler, issue, ask string, closedBy model.Actor) {
 	t.Helper()
