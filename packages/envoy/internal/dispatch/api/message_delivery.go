@@ -1433,7 +1433,7 @@ func (s *server) insertSessionReply(
 	// its record's thread pass alone (inboxwrite.Write.Unstored).
 	event, err := s.appendEventThen(ctx, tx, messageEvent(reply, "message.answered", actor, payload), func(b *store.WriteBatch) error {
 		if reply.IssueKey != nil {
-			refs.QueueStamp(b, "message", reply.ID)
+			refs.QueueStamp(b, graphstore.KindMessage, reply.ID)
 		}
 		graphstore.QueueCaused(b, stored.written, graphstore.LatestEvent)
 		// What the reply's body is in the store, under the same event (planPendingItem).

@@ -110,7 +110,7 @@ func TestEveryReadStateWriteIsATupleFromThePerson(t *testing.T) {
 
 		// A dismissal through a moment the thread's read mark has passed marks nothing read, so it
 		// states the dismissal alone; and a write of alice's own whose moment her read mark has
-		// passed leaves her row's mark, and its tuple, as they were (inboxwrite.Record's keepRow).
+		// passed leaves her row's mark, and its tuple, as they were (inboxwrite.Record's queueKeepRow).
 		threads, threadsDatabase := newTestHandlerWithStore(t)
 		issue := createInteractionIssue(t, threads, "RSNM", "Marks that move nothing", "A spec")
 		thread := createThreadComment(t, threads, issue.Key, map[string]any{"body": "Ship on Friday?"}, "alice")

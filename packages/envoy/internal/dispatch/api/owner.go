@@ -180,13 +180,14 @@ func pooledOwnerRead(q queryer) ownerRead {
 	}
 }
 
-// ownerStatus is the refusal table an owner gets, spelled once for both the check that decides
-// and the one that only spares work: an owner naming neither an issue nor a document, or a
-// document that does not exist. It answers an issue owner's status and whether that issue is
-// open - a project document is always open - and leaves refusing a closed issue to each write
-// that does. The check that decides reads under the owner's lock (lockedOwnerRead), the one made
-// before any transaction opens reads through the pool (pooledOwnerRead); the two differ in read
-// alone, so both refuse exactly the same.
+// ownerStatus is the refusal table an owner gets, for both the check that decides and the one that
+// only spares work: an owner naming neither an issue nor a document, or a document that does not
+// exist. It answers an issue owner's status and whether that issue is open - a project document
+// is always open - and leaves refusing a closed issue to each write that does. The check that
+// decides reads under the owner's lock (lockedOwnerRead), the one made before any transaction
+// opens reads through the pool (pooledOwnerRead); the two differ in read alone, so both refuse
+// exactly the same. requireOpenOwnerStatusHoldingDefault refuses the same owners over two
+// statements of its own, which also read the project an ask on the owner falls through to.
 func ownerStatus(ctx context.Context, owner owner, read ownerRead) (*string, bool, error) {
 	if (owner.IssueKey == nil) == (owner.ArtifactID == nil) {
 		return nil, false, ownerInvalid()

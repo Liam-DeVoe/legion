@@ -127,7 +127,7 @@ func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if previous == nil || !previous.Equal(*stored) {
-		mark := personMark(actor, graphstore.TupleSnoozed, graphstore.KindAsk, *ask, *stored, true, graphstore.NoEvent)
+		mark := personMark(actor, graphstore.TupleSnoozed, graphstore.KindAsk, *ask, *stored, true, graphstore.LatestEvent)
 		if !s.announceAskSnooze(w, r, tx, actor, askID, at, mark) {
 			return
 		}
@@ -172,24 +172,23 @@ func (s *server) deleteAskSnooze(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if !s.announceAskSnooze(w, r, tx, actor, askID, at, personMark(actor, graphstore.TupleSnoozed, graphstore.KindAsk, ask, at, false, graphstore.NoEvent)) {
+	if !s.announceAskSnooze(w, r, tx, actor, askID, at, personMark(actor, graphstore.TupleSnoozed, graphstore.KindAsk, ask, at, false, graphstore.LatestEvent)) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // announceAskSnooze appends the snooze's event in tx, and mark, the snoozed tuple or its
-// retraction the write states, under that event (graphstore.QueueFromPerson), in one batch whose
-// person node is made at at, the transaction's now(); the failure point between the snooze's row
-// and the mark (failpoint.AskSnooze) is decided before the batch is sent and queued between the
-// two. It then commits and publishes the event, and answers false after writing the error
-// response when any step fails.
+// retraction the write states, caused by graphstore.LatestEvent, under that event
+// (graphstore.QueueFromPerson), in one batch whose person node is made at at, the transaction's
+// now(); the failure point between the snooze's row and the mark (failpoint.AskSnooze) is decided
+// before the batch is sent and queued between the two. It then commits and publishes the event,
+// and answers false after writing the error response when any step fails.
 func (s *server) announceAskSnooze(
 	w http.ResponseWriter, r *http.Request, tx pgx.Tx, actor model.Actor, askID string, at time.Time, mark graphstore.Tuple,
 ) bool {
 	event, err := s.askSnoozeEvent(r.Context(), tx, actor, askID)
 	if err == nil {
-		mark.SourceEvent = graphstore.LatestEvent
 		fails := failpoint.Planned(r.Context(), failpoint.AskSnooze)
 		event, err = s.appendEventThen(r.Context(), tx, event, func(b *store.WriteBatch) error {
 			failpoint.Queue(b, fails)

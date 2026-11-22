@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -579,8 +580,11 @@ var mentionDeliveryQuery = `
 // settled or not: a row settled published or skipped that copy once, so the event's own publish
 // skips the destination for good (mentionDeliveries.held). In the same statement, and so in no
 // round trip of its own, it lists, marked true, each session a mentions tuple out of each comment's
-// node points at (mentionDeliveries.mentioned), keyed by that node: a mention is appended once and
-// never retracted, so an asserted tuple is one that stands.
+// node has asserted (mentionDeliveries.mentioned), keyed by that node. It reads every asserted row
+// rather than the relation as it stands: an edit that drops a session:<id> from the comment's body
+// retracts that citation (refs.PlanItemReplace), and the session stays listed, since the attempt
+// the mention recorded, which no edit removes, still decides that session's copy. A session a
+// later edit names is listed once that edit's tuples are written.
 const mentionFallbackHoldsQuery = `
 	select comment_id::text, destination, false
 	from comment_fallback_copies
@@ -588,8 +592,8 @@ const mentionFallbackHoldsQuery = `
 	union all
 	select distinct t.from_id, t.to_id, true
 	from graph_tuples t
-	where t.from_kind = 'comment' and t.from_id = any($1::text[]) and t.kind = 'mentions'
-	  and t.to_kind = 'session' and t.asserted
+	where t.from_kind = '` + graphstore.KindComment + `' and t.from_id = any($1::text[]) and t.kind = '` + graphstore.TupleMentions + `'
+	  and t.to_kind = '` + graphstore.KindSession + `' and t.asserted
 `
 
 // fallbackChoice is which of one comment's attempts names the dedupe key each of its keys'

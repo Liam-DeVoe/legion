@@ -351,13 +351,13 @@ func mentionReached(event model.Event) (comment, session string, ok bool) {
 }
 
 // sessionsInARole are the sessions the mention receipts among events reached, the attempts the
-// listener took (mentionReached), that the store already holds in a role (graphstore.ClaimedRole,
-// the one rule a message to a session reads its page by too). A session that claimed a role
-// carries no page of its own (deliveredGraph), and the batch that records a receipt commonly
-// resolves no role, so its own resolution cannot say. The reads run under the statement gate the
-// batch's other statements take (lanes.statement), and a read that fails fails the record: a page
-// written or left out on a guess would stand for good, while a record that fails leaves its events
-// to be read and recorded again.
+// listener took (mentionReached), that the store already holds in a role (graphstore.ClaimedRoles,
+// the one rule a message to a session reads its page by too, of every such session in one
+// statement). A session that claimed a role carries no page of its own (deliveredGraph), and the
+// batch that records a receipt commonly resolves no role, so its own resolution cannot say. The
+// read runs under the statement gate the batch's other statements take (lanes.statement), and a
+// read that fails fails the record: a page written or left out on a guess would stand for good,
+// while a record that fails leaves its events to be read and recorded again.
 func sessionsInARole(ctx context.Context, deps Deps, events []*batchEvent) (map[string]struct{}, error) {
 	var sessions []string
 	for _, event := range events {
@@ -368,20 +368,17 @@ func sessionsInARole(ctx context.Context, deps Deps, events []*batchEvent) (map[
 	if len(sessions) == 0 {
 		return nil, nil
 	}
-	inARole := map[string]struct{}{}
+	var roles map[string]string
 	if err := deps.lanes.statement(func() error {
-		for _, session := range sessions {
-			_, claimed, err := graphstore.ClaimedRole(ctx, deps.Store.Pool, session)
-			if err != nil {
-				return err
-			}
-			if claimed {
-				inARole[session] = struct{}{}
-			}
-		}
-		return nil
+		var err error
+		roles, err = graphstore.ClaimedRoles(ctx, deps.Store.Pool, sessions)
+		return err
 	}); err != nil {
 		return nil, fmt.Errorf("read whether the sessions a mention reached claimed a role: %w", err)
+	}
+	inARole := make(map[string]struct{}, len(roles))
+	for session := range roles {
+		inARole[session] = struct{}{}
 	}
 	return inARole, nil
 }

@@ -606,7 +606,7 @@ func (s *server) markInboxReadThreads(
 			var marks []graphstore.Tuple
 			for _, thread := range projects.threads[project] {
 				marks = append(marks, personMark(actor, graphstore.TupleReadThrough, thread.kind, thread.id,
-					thread.readThrough, true, graphstore.NoEvent))
+					thread.readThrough, true, graphstore.LatestEvent))
 			}
 			events = append(events, inboxEvent{
 				event: projectOwner(project).event(
@@ -632,8 +632,8 @@ func (s *server) markInboxReadThreads(
 // inboxEvent is one event a write route over these rows appends, with the marks it causes: the
 // tuples from the caller's person node of what the route wrote that the event announces - each
 // Reply thread's for its project's event, each Agent thread's and reply's for its session's
-// (api/read_marks.go). Their source_event is the event's own, which commitInboxMarks fills once it
-// has appended it.
+// (api/read_marks.go). Their source_event is graphstore.LatestEvent: the event commitInboxMarks
+// appends right before it queues them.
 type inboxEvent struct {
 	event model.Event
 	marks []graphstore.Tuple
@@ -675,12 +675,7 @@ func (s *server) commitInboxMarks(
 			if index == 0 {
 				failpoint.Queue(b, fails)
 			}
-			marks := make([]graphstore.Tuple, len(event.marks))
-			for position, mark := range event.marks {
-				mark.SourceEvent = graphstore.LatestEvent
-				marks[position] = mark
-			}
-			graphstore.QueueFromPerson(b, at, marks)
+			graphstore.QueueFromPerson(b, at, event.marks)
 		}
 		return nil
 	}); err != nil {
@@ -931,7 +926,7 @@ func (s *server) markInboxReadAgentReplies(
 			return written, fmt.Errorf("scan a marked agent reply: %w", err)
 		}
 		written.marks[session] = append(written.marks[session],
-			personMark(actor, graphstore.TupleReplyRead, graphstore.KindMessage, reply, at, true, graphstore.NoEvent))
+			personMark(actor, graphstore.TupleReplyRead, graphstore.KindMessage, reply, at, true, graphstore.LatestEvent))
 		roots[read.roots[reply]] = struct{}{}
 	}
 	rows.Close()

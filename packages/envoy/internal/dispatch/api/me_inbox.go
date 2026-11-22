@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
+	"maps"
 	"net/http"
 	"regexp"
 	"slices"
@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -200,13 +201,7 @@ func parseMeInboxCursor(raw, state string) (*meInboxCursor, error) {
 // the route holds its query to what it declares.
 func parseMeInboxRequest(r *http.Request) (meInboxRequest, error) {
 	query := r.URL.Query()
-	for _, key := range slices.Sorted(func(yield func(string) bool) {
-		for key := range query {
-			if !yield(key) {
-				return
-			}
-		}
-	}) {
+	for _, key := range slices.Sorted(maps.Keys(query)) {
 		switch {
 		case slices.Contains(meInboxQueryKeys, key):
 		case slices.Contains(meInboxIdentityKeys, key):
@@ -232,17 +227,9 @@ func parseMeInboxRequest(r *http.Request) (meInboxRequest, error) {
 			}
 		}
 	}
-	if value, present, valid := parseQueryInt(query, "limit", 1, myAnswersMaxLimit); present {
-		if !valid {
-			return meInboxRequest{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "limit must be one integer from 1 to %d", myAnswersMaxLimit)
-		}
-		request.limit = &value
-	}
-	if value, present, valid := parseQueryInt(query, "offset", 0, math.MaxInt); present {
-		if !valid {
-			return meInboxRequest{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "offset must be one non-negative integer")
-		}
-		request.offset = value
+	var err error
+	if request.limit, request.offset, err = parseLimitOffset(query); err != nil {
+		return meInboxRequest{}, err
 	}
 	if raw := strings.TrimSpace(query.Get("cursor")); raw != "" {
 		cursor, err := parseMeInboxCursor(raw, request.state)
@@ -427,13 +414,14 @@ func writeMeInboxAnswer(w http.ResponseWriter, response meInboxResponse) {
 	entries := response.Entries
 	response.Entries = []meInboxEntry{}
 	envelope, err := json.Marshal(response)
-	if err != nil {
-		response.Entries = entries
-		WriteJSON(w, http.StatusOK, response)
-		return
-	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+	if err != nil {
+		// What WriteJSON answers for a body it cannot encode: the status, no body, and the failure
+		// logged. The whole response holds the envelope that failed, so it would fail as well.
+		slog.Warn("dispatch: write json failed", "error", err)
+		return
+	}
 	out := bufio.NewWriterSize(w, 64<<10)
 	// The envelope ends with its empty entries, `[]}`, so the entries go between its last two bytes.
 	_, err = out.Write(envelope[:len(envelope)-2])
@@ -771,7 +759,7 @@ func (read *meInboxRead) assemble(row *meInboxRow) error {
 }
 
 // readPage reads what the statement read once for the page (meInboxPageReads) into read: the Ask
-// rows as listInbox reads them (scanAskRead) with the details loadAskDetails reads, each thread's
+// rows as listInbox reads them (scanOpenAskRow) with the details loadAskDetails reads, each thread's
 // replies with the targets each names, its attempts and its named block (hydrateCommentSideTables),
 // the rewordings and followers; the Reply rows (scanMyReplyRow), each whose newest write by
 // somebody else is its ask's answer with that answer as the ask's node holds it (answerReply); each
@@ -1211,7 +1199,7 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	` + meInboxKindSkip("kinds_in", "to") + `,
 	` + meInboxKindSkip("kinds_out", "from") + `,
 	page_rows(node_kind, node_id, page, moment, agent_session, agent) as (` +
-		meInboxPageRows(shape, meInboxIssue, meInboxArtifact) + `
+		meInboxPageRows(shape) + `
 	),` + pageNodes + `
 	walked(near_kind, near_id, kind, direction, at) as (
 		select stated.from_kind, stated.from_id, k.kind, '` + meInboxInbound + `', stated.at
@@ -1387,7 +1375,8 @@ func meInboxKindSkip(name, end string) string {
 // (13.6 ms of that plan's 21.6 for the person whose history is empty, against 0.4 ms in the plan
 // of their own arguments). The node's test probes the ask's node, so it reads only the asks that
 // wait on the person, which are materialized before it as the open asks are before them.
-func meInboxPageRows(shape meInboxShape, issue, artifact string) string {
+func meInboxPageRows(shape meInboxShape) string {
+	issue, artifact := meInboxIssue, meInboxArtifact
 	state := shape.state
 	if state == "" {
 		state = myRepliesStateInbox
@@ -1405,8 +1394,8 @@ func meInboxPageRows(shape meInboxShape, issue, artifact string) string {
 			meInboxDismissedCut("u.kind", "u.thread_id", "u.dismissed_at")+`
 		) u`, `u.dismissed_at`
 		agents, agentMoment = myAgentDismissedRootsHead+
-			meInboxDismissedCut(`'`+graphstore.KindMessage+`'`, "d.message_id", "d.dismissed_at")+`
-	)`, `listed.dismissed_at`
+			meInboxDismissedCut(`'`+graphstore.KindMessage+`'`, "d.message_id", "d.dismissed_at")+
+			myAgentDismissedRootsEnd, `listed.dismissed_at`
 	}
 	arms := []string{`
 		select u.kind, u.thread_id::text, '` + meInboxPageThread + `', ` + threadMoment + `, null::text, null::record
@@ -1422,7 +1411,7 @@ func meInboxPageRows(shape meInboxShape, issue, artifact string) string {
 		select '`+graphstore.KindAsk+`', a.id::text, '`+meInboxPageAsk+`', coalesce(lr.created_at, a.created_at), null::text, null::record
 		from (
 			with open_asks as materialized (
-				select id, created_at, issue_key, artifact_id, asked_of, state, node_kind from asks where state = 'open'
+				select id, created_at, issue_key, artifact_id, asked_of, state, node_kind from asks where state = '`+asks.StateOpen+`'
 			), waiting as materialized (
 				select a.id, a.created_at, a.state, a.node_kind
 				from open_asks a`+askedOfPersonJoins+`
@@ -1621,7 +1610,7 @@ func meInboxPageReads(args *meInboxArgs, slots meInboxSlots) (meInboxReads, erro
 			union all
 			select choice.value->>field.name
 			from asks a
-			cross join lateral jsonb_array_elements(case when jsonb_typeof(a.options) = 'array' then a.options else '[]'::jsonb end) choice
+			cross join lateral jsonb_array_elements(a.options) choice
 			cross join (values ('label'), ('description')) field(name)
 			where a.id = any(`+askIDs+`::uuid[])
 			union all

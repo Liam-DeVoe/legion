@@ -267,7 +267,7 @@ func (s *server) createComment(w http.ResponseWriter, r *http.Request) {
 }
 
 // commentRecovery is the recovery point a keyed comment commits with itself
-// (bindRequestKeyRecovery): the comment, whose mentions deliver it.
+// (queueRequestKeyRecovery): the comment, whose mentions deliver it.
 type commentRecovery struct {
 	CommentID string `json:"comment_id"`
 }
@@ -1012,10 +1012,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		s.writeHandlerError(w, err)
 		return
 	}
-	stored.statePointers(graphstore.CommentPointers{
-		ReplyTo: deref(input.ReplyTo), AskID: deref(input.AskID),
-		Answers: deref(threadTarget.Answers), RepliesToBlock: deref(threadTarget.ReplyBlock.nodeID()),
-	})
+	stored.statePointers(threadTarget.pointers())
 	if !stored.unprojected {
 		if err := ledger.Queue(func(b *store.WriteBatch) error {
 			graphstore.QueueNodes(b, stored.written)
@@ -1218,18 +1215,15 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// user_threads_comment, so its thread_logins, which its event's insert reads after the
 	// comment's own insert, name the row its writer is about to hold beside the ones the thread
 	// holds. Its record names the node its head pointer names, whose tuple is queued and not
-	// written (commentRepliesTo), and reaches each person its text newly mentions. A comment whose
-	// pointers are no tuples is recorded as the trigger body would have recorded it, its thread's
-	// rows moved and left to the backfill and no tuple stated (inboxwrite.Write.Unstored).
-	inbox := commentRepliesTo(inboxwrite.Comment(comment.ID, actor, comment.CreatedAt, owner.IssueKey, owner.ArtifactID, project).ReachesMentioned(indexed), input.AskID, input.ReplyTo)
+	// written, and reaches each person its text newly mentions; a comment whose pointers are no
+	// tuples is recorded as the trigger body would have recorded it, its thread's rows moved and
+	// left to the backfill and no tuple stated (commentStoreWrite.inbox).
+	inbox := stored.inbox(inboxwrite.Comment(comment.ID, actor, comment.CreatedAt, owner.IssueKey, owner.ArtifactID, project), threadTarget, indexed)
 	if heldMembers != nil {
 		if inbox, err = inbox.Members(heldMembers); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-	}
-	if !stored.pointersStored {
-		inbox = inbox.Unstored()
 	}
 	logins := events.ThreadLoginsOf(commentThread(comment), inbox.KeptLogins()...)
 	events := []*model.Event{}
@@ -1407,6 +1401,16 @@ func commentHead(askID, replyTo *string) (kind, id string, replies bool) {
 		return graphstore.KindComment, *replyTo, true
 	}
 	return "", "", false
+}
+
+// pointers is what a comment the target heads holds of what it answers, as its node states it
+// (graphstore.CommentPointers): the head of its thread, the ask it is on, the comment it answers
+// and the block of that comment it names.
+func (t commentThreadTarget) pointers() graphstore.CommentPointers {
+	return graphstore.CommentPointers{
+		ReplyTo: deref(t.ReplyTo), AskID: deref(t.AskID),
+		Answers: deref(t.Answers), RepliesToBlock: deref(t.ReplyBlock.nodeID()),
+	}
 }
 
 // commentMentionFacts is indexed, what a comment's index states of the identities its body names
@@ -1594,6 +1598,20 @@ func (w commentStoreWrite) scope() refs.ItemScope {
 		return refs.ItemScope{}
 	}
 	return refs.WrittenItem(w.written.Nodes[0])
+}
+
+// inbox is written, a comment's write in its thread (inboxwrite.Comment), as inboxwrite.PlanRecord
+// records it once the comment's pointers are planned (statePointers): reaching each person
+// indexed, what its index states, newly mentions; naming the node its head pointer names, the
+// head of thread, whose tuple is queued and not written (commentRepliesTo); and, where this write
+// states no pointer, recorded as the trigger body would have recorded it
+// (inboxwrite.Write.Unstored), as messageStoreWrite.inbox records a message.
+func (w commentStoreWrite) inbox(written inboxwrite.Write, thread commentThreadTarget, indexed graphstore.Uncaused) inboxwrite.Write {
+	written = commentRepliesTo(written.ReachesMentioned(indexed), thread.AskID, thread.ReplyTo)
+	if !w.pointersStored {
+		written = written.Unstored()
+	}
+	return written
 }
 
 // artifactAddresses are the addresses the graph names the given artifacts by, their ref_keys,

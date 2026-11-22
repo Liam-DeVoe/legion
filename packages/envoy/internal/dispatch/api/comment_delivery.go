@@ -1286,7 +1286,7 @@ type commentReplyPlan struct {
 	// written after its event.
 	stored commentStoreWrite
 	// inbox is the reply's write in its thread and recording its record there, queued after its
-	// event (inboxwrite.PlanRecord), for a reply whose pointers are stated.
+	// event (inboxwrite.PlanRecord).
 	inbox     inboxwrite.Write
 	recording inboxwrite.Recording
 }
@@ -1326,7 +1326,17 @@ func (s *server) planCommentReply(
 		}
 		plan.replyBlock = block.replyBlock(issueKey, project, slug)
 	}
-	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, clock_timestamp()`).Scan(&plan.id, &plan.createdAt); err != nil {
+	// The reply's id and created_at, reserved here, and, as createCommentFor reads them beside its
+	// clock, the members of the thread its head is the root of (inboxwrite.MembersColumn), which
+	// its record then reads no second time (inboxwrite.Write.Members): nothing below writes before
+	// the record is planned, and every writer of those rows and tuples waits at the owner lock this
+	// plan is made under.
+	members, membersArgs := `null::jsonb`, []any(nil)
+	if kind, id, replies := commentHead(plan.thread.AskID, plan.thread.ReplyTo); replies {
+		members, membersArgs = inboxwrite.MembersColumn(1, kind, id)
+	}
+	var heldMembers []byte
+	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, clock_timestamp(), `+members, membersArgs...).Scan(&plan.id, &plan.createdAt, &heldMembers); err != nil {
 		return plan, err
 	}
 	// The reply carries no anchor - a callback reply names none - and belongs to whatever the
@@ -1340,10 +1350,7 @@ func (s *server) planCommentReply(
 	}
 	// What the reply answers is stated beside its node, as the comment route states a reply's
 	// (statePointers), and its row says so in its own insert (tuples_stored).
-	plan.stored.statePointers(graphstore.CommentPointers{
-		ReplyTo: deref(plan.thread.ReplyTo), AskID: deref(plan.thread.AskID),
-		Answers: deref(plan.thread.Answers), RepliesToBlock: deref(plan.thread.ReplyBlock.nodeID()),
-	})
+	plan.stored.statePointers(plan.thread.pointers())
 	plan.changes, plan.write, plan.indexed, err = s.planPendingItem(ctx, tx, who, refs.ItemComment, plan.id, body, refs.PendingSource{
 		IssueKey: comment.IssueKey, ArtifactID: comment.ArtifactID, ReplyTo: plan.thread.ReplyTo, AskID: plan.thread.AskID,
 	}, plan.stored.scope(), plan.createdAt, true)
@@ -1351,14 +1358,12 @@ func (s *server) planCommentReply(
 		return plan, err
 	}
 	// The reply's thread in the Inbox, recorded once its event is in, as a comment's is
-	// (createCommentFor): its record names the node its head pointer names, whose tuple is queued
-	// and not written (commentRepliesTo), and reaches each person its text newly mentions; a reply
-	// whose pointers are no tuples is recorded as the trigger body would have recorded it
-	// (inboxwrite.Write.Unstored).
-	plan.inbox = commentRepliesTo(inboxwrite.Comment(plan.id, who, plan.createdAt, comment.IssueKey, comment.ArtifactID, replyProject).ReachesMentioned(plan.indexed),
-		plan.thread.AskID, plan.thread.ReplyTo)
-	if !plan.stored.pointersStored {
-		plan.inbox = plan.inbox.Unstored()
+	// (createCommentFor, commentStoreWrite.inbox), with the members read above.
+	plan.inbox = plan.stored.inbox(inboxwrite.Comment(plan.id, who, plan.createdAt, comment.IssueKey, comment.ArtifactID, replyProject), plan.thread, plan.indexed)
+	if heldMembers != nil {
+		if plan.inbox, err = plan.inbox.Members(heldMembers); err != nil {
+			return plan, err
+		}
 	}
 	plan.recording, err = inboxwrite.PlanRecord(ctx, tx, plan.inbox)
 	return plan, err

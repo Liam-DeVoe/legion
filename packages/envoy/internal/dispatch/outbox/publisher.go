@@ -1143,9 +1143,10 @@ func (d *destinations) addSession(sessionID, label, id string) {
 }
 
 // addWorkingSession adds the subject of a session the owner's own work names - the session its
-// route names and the session that claims it - as addSession does, except that its copy reads
-// whether an attempt of the comment that names no session yet, and whose role this read could
-// name no holder for, is live, beside its own attempts (destinations.workingSessionHold,
+// route names, the session that claims it, and each session a new comment's mentions name
+// (mentionDeliveries.mentioned) - as addSession does, except that its copy reads whether an
+// attempt of the comment that names no session yet, and whose role this read could name no
+// holder for, is live, beside its own attempts (destinations.workingSessionHold,
 // unpinnedRoleMentions.liveUnnamed).
 //
 // While such an attempt is live their copies wait, in the event's list and marked, so that none

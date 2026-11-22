@@ -163,12 +163,12 @@ func (s *server) queueItemReferences(ctx context.Context, tx pgx.Tx, ledger *doc
 // those fields and only for a body that names a question block (refs.NewPendingDocument,
 // refs.PendingDocument), since no read of that row can answer it yet.
 //
-// Every route that writes a comment or an issue message plans through this one call, in one of
-// three shapes: the one whose insert is queued on a ledger and whose index is queued beside it
+// Every route that writes a comment or a message plans through this one call, in one of three
+// shapes: the one whose insert is queued on a ledger and whose index is queued beside it
 // (queueItemReferences), the one whose insert is queued on a batch it runs itself
-// (createStoredMessage), and the two delivery replies, which have not made the insert at all
-// when they plan and run the planned step where they make their write (planCommentReply,
-// planMessageReply).
+// (createStoredMessage, and each copy of a broadcast, planBroadcastCopy), and the two delivery
+// replies, which have not made the insert at all when they plan and run the planned step where
+// they make their write (planCommentReply, planMessageReply).
 func (s *server) planPendingItem(
 	ctx context.Context, tx pgx.Tx, writer model.Actor, kind refs.ItemKind, itemID, body string,
 	source refs.PendingSource, scope refs.ItemScope, at time.Time, cites bool,
@@ -198,19 +198,20 @@ func (s *server) queueEditedItemReferences(ctx context.Context, tx pgx.Tx, ledge
 // edges stay; nil for a first write) move, and returns those counts with the step that writes
 // both, for the route to run where it makes the write: queued on its ledger
 // (queueItemReferences), on the batch of a transaction that runs its write phase itself
-// (createStoredMessage), or as a batch of its own beside the statements of a route that writes
-// as it goes (store.RunWrite, the two delivery replies). The reconciliation is queued after the
-// index, so it settles the item's row of the forms queue after both deletes
-// (refs.Replacement.SettlingForms), and the excerpt of each block is cut in the plan, against this
-// server's deployment (refs.PlanItemIndex). It answers what the index and the citations state in
-// the node and tuple store - the block nodes, their part_of and links, and the item's mentions -
-// which the route queues under the event it appends (graphstore.QueueCaused).
+// (createStoredMessage, writeBroadcast's copies), in the batch that inserts the row of a route
+// that writes as it goes (store.RunWrite, a session's reply to a message, insertSessionReply), or
+// as a batch of its own beside such a route's statements (the comment reply, replyComment). The
+// reconciliation is queued after the index, so it settles the item's row of the forms queue after
+// both deletes (refs.Replacement.SettlingForms), and the excerpt of each block is cut in the plan,
+// against this server's deployment (refs.PlanItemIndex). It answers what the index and the
+// citations state in the node and tuple store - the block nodes, their part_of and links, and the
+// item's mentions - which the route queues under the event it appends (graphstore.QueueCaused).
 //
 // Every read it makes runs under the context it is given, which its caller derives from the
 // ledger the write queues on (queueItemReferences, docs.Ledger.ReadContext), so a mention of a
 // row this transaction has queued resolves to that row (refs.Pending). A transaction that runs
 // its own write phase has queued no row and reads under the context it holds
-// (createStoredMessage, planCommentReply, planMessageReply).
+// (createStoredMessage, planBroadcastCopy, planCommentReply, planMessageReply).
 //
 // document is what the route hands over for an item whose row this transaction has not written,
 // so that no read of it can answer: the document its `#id`s resolve against

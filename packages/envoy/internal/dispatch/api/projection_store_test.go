@@ -1799,8 +1799,9 @@ func messageProjectionWriter(t *testing.T, run *projectionRun) projectionWriter 
 		name:  "the message write",
 		table: "messages",
 		write: func(ctx context.Context, tx pgx.Tx) error {
+			at := time.Now().UTC()
 			stored, err := planMessageNode(ctx, tx, graphstore.MessageRow{ID: messageID, IssueKey: run.issue},
-				model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(), nil)
+				model.Actor{Kind: "user", ID: "alice"}, at, nil)
 			if err != nil {
 				return err
 			}
@@ -1810,7 +1811,7 @@ func messageProjectionWriter(t *testing.T, run *projectionRun) projectionWriter 
 				b.Queue("", `
 					insert into messages (id, issue_key, author, body, created_at, node_kind, node_address)
 					values ($1::uuid, $2, '{"kind":"user","id":"alice"}', 'A watched message.', $3, $4, $5)
-				`, messageID, run.issue, stored.at, nodeKind, nodeAddress)
+				`, messageID, run.issue, at, nodeKind, nodeAddress)
 				graphstore.QueueCaused(b, stored.written, graphstore.NoEvent)
 				return nil
 			})

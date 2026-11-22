@@ -975,13 +975,6 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 		// pins: without either, the client is told to continue and the answer waits on its body.
 		handler = s.drainBeforeAnswer(route.Method, route.Pattern, handler)
 	}
-	// The access-log line is outermost, so it records what every layer answered - a keyed
-	// replay, a refused login, an early answer the drain held - and the caller the first of
-	// them resolved. Compression sits just inside it, with nothing between them but the answers
-	// read's timing below, so every one of those answers is compressed for a caller that takes
-	// gzip and the line counts the bytes that went on the wire. The two websockets register
-	// mounts beside the table carry no compressed answer: the upgrade is not a body, and the
-	// frames after it are the socket's (compressAnswers).
 	if s.failBetween != nil {
 		// Every request carries the fail-between set, so the writer it reaches finds whether a
 		// test armed it (failpoint.Between); a server without test hooks carries none.
@@ -990,6 +983,13 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 			inner(w, r.WithContext(failpoint.With(r.Context(), armed)))
 		}
 	}
+	// The access-log line is outermost, so it records what every layer answered - a keyed
+	// replay, a refused login, an early answer the drain held - and the caller the first of
+	// them resolved. Compression sits just inside it, with nothing between them but the answers
+	// read's timing below, so every one of those answers is compressed for a caller that takes
+	// gzip and the line counts the bytes that went on the wire. The two websockets register
+	// mounts beside the table carry no compressed answer: the upgrade is not a body, and the
+	// frames after it are the socket's (compressAnswers).
 	served := compressAnswers(s.decideBrokerToken(trackTransactions(handler)))
 	if route.Method+" "+route.Pattern == sessionAnswersRoute && s.deps.AnswersLatency != nil {
 		// Just inside the access-log line, so the time of an answers read the keyword fill

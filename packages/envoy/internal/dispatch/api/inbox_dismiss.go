@@ -417,14 +417,14 @@ func (plan inboxDismissPlan) agentFits(actor model.Actor) []any {
 func (plan inboxDismissPlan) threadMarks(actor model.Actor, thread inboxMarkedThread) []graphstore.Tuple {
 	if plan.restore {
 		return []graphstore.Tuple{
-			personMark(actor, graphstore.TupleDismissed, thread.kind, thread.id, thread.at, false, graphstore.NoEvent),
+			personMark(actor, graphstore.TupleDismissed, thread.kind, thread.id, thread.at, false, graphstore.LatestEvent),
 		}
 	}
 	marks := []graphstore.Tuple{
-		personMark(actor, graphstore.TupleDismissed, thread.kind, thread.id, thread.at, true, graphstore.NoEvent),
+		personMark(actor, graphstore.TupleDismissed, thread.kind, thread.id, thread.at, true, graphstore.LatestEvent),
 	}
 	if thread.readMoved {
-		marks = append(marks, personMark(actor, graphstore.TupleReadThrough, thread.kind, thread.id, thread.readThrough, true, graphstore.NoEvent))
+		marks = append(marks, personMark(actor, graphstore.TupleReadThrough, thread.kind, thread.id, thread.readThrough, true, graphstore.LatestEvent))
 	}
 	return marks
 }
@@ -433,7 +433,7 @@ func (plan inboxDismissPlan) threadMarks(actor model.Actor, thread inboxMarkedTh
 // root message at the dismissal it wrote, or the retraction of the dismissal at the moment of the
 // restore that deleted it.
 func (plan inboxDismissPlan) agentMark(actor model.Actor, root string, at time.Time) graphstore.Tuple {
-	return personMark(actor, graphstore.TupleDismissed, graphstore.KindMessage, root, at, !plan.restore, graphstore.NoEvent)
+	return personMark(actor, graphstore.TupleDismissed, graphstore.KindMessage, root, at, !plan.restore, graphstore.LatestEvent)
 }
 
 // inboxDismissSeenOf lines what the page drew up with the rows a read answered, which is the

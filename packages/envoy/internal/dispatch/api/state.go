@@ -447,7 +447,7 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		marks = append(marks, personMark(actor, graphstore.TupleCleared, graphstore.KindSession, sessionID, cleared, true, graphstore.NoEvent))
+		marks = append(marks, personMark(actor, graphstore.TupleCleared, graphstore.KindSession, sessionID, cleared, true, graphstore.LatestEvent))
 	}
 	if readThrough != nil {
 		// The mark only moves forward, and its tuple is stated only where the upsert moved it: a
@@ -467,7 +467,7 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		`, model.CanonicalLogin(actor.ID), sessionID, *readThrough, sessionFits).Scan(&read, &at)
 		switch {
 		case err == nil:
-			marks = append(marks, personMark(actor, graphstore.TupleReadThrough, graphstore.KindSession, sessionID, read, true, graphstore.NoEvent))
+			marks = append(marks, personMark(actor, graphstore.TupleReadThrough, graphstore.KindSession, sessionID, read, true, graphstore.LatestEvent))
 		case !errors.Is(err, pgx.ErrNoRows):
 			s.writeHandlerError(w, err)
 			return
@@ -542,7 +542,7 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		read, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.Tuple, error) {
 			var reply string
 			err := row.Scan(&reply, &at)
-			return personMark(actor, graphstore.TupleReplyRead, graphstore.KindMessage, reply, at, true, graphstore.NoEvent), err
+			return personMark(actor, graphstore.TupleReplyRead, graphstore.KindMessage, reply, at, true, graphstore.LatestEvent), err
 		})
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -588,9 +588,6 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// The event, then the marks it causes under it, in one batch, with the failure point
 		// between the rows written above and the marks (failpoint.AgentState).
-		for index := range marks {
-			marks[index].SourceEvent = graphstore.LatestEvent
-		}
 		fails := failpoint.Planned(r.Context(), failpoint.AgentState)
 		event, err := s.appendEventThen(r.Context(), tx, userAgentStateEvent(actor, sessionID), func(b *store.WriteBatch) error {
 			failpoint.Queue(b, fails)
@@ -666,7 +663,7 @@ func prunedAgentReplies(
 			return nil, err
 		}
 		pruned[session] = append(pruned[session],
-			personMark(actor, graphstore.TupleReplyRead, graphstore.KindMessage, reply, at, false, graphstore.NoEvent))
+			personMark(actor, graphstore.TupleReplyRead, graphstore.KindMessage, reply, at, false, graphstore.LatestEvent))
 	}
 	return pruned, rows.Err()
 }

@@ -622,10 +622,10 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "only documents can be approved")
 		return
 	}
+	owner := ownerForArtifact(artifact)
 	// A closed owner takes no approval of any kind, a plan review included (createArtifactPlanReview),
 	// so it is refused before the refusals that name another route: the answer names the real
 	// blocker rather than a command that would be refused too.
-	owner := ownerForArtifact(artifact)
 	//
 	// A request opened on a project document, or on an issue nobody holds, waits on the project's
 	// default, which the one writer of its thread delivers it to (inboxwrite.PlanRecord): that

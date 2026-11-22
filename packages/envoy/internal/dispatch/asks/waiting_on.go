@@ -13,7 +13,7 @@ package asks
 // and the one writer of the threads a person takes part in, which an answer and a create from
 // either package run (inboxwrite.ReadAsk, and the create's assignee arm in inboxwrite.Record),
 // beside the move of that person by the writes that change who an ask waits on and the reopen's
-// restore of withdrawn asks (inboxwrite.MoveWaiting). Each names this constant rather than
+// restore of withdrawn asks (inboxwrite.QueueMoveWaiting). Each names this constant rather than
 // spelling the rule again (api's TestOneExpressionDecidesWhoWaitsInOneSpelling).
 //
 // It names the ask a, its issue i and its project p, so every query reading it joins all three

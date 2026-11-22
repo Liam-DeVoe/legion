@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -104,10 +107,12 @@ func TestTheCommentWalkAnswersAChainAtTheBoundAndCutsOneLonger(t *testing.T) {
 // comments.reply_to carries no acyclicity constraint, and two comments that reply to each other
 // make a cycle far shorter than the depth bound. The walk keyed at one of them, and the walk keyed
 // at a reply into the cycle, each answer inside the deadline with every author of the comments
-// they visited, and neither says it was cut. A cut is what a walk that stepped onto a row it had
-// visited would answer: going round the two comments it reaches the bound's depth with a row that
-// still replies to another, which reads as cut (commentRecipientsQuery), so the answer without a
-// cut is the walk visiting no row twice.
+// they visited, and neither says it was cut. That answer alone cannot tell the guard from the
+// bound: a walk without the guard goes round the two comments until the bound stops it, the
+// union of the members drops the repeats, and the row at the bound replies to a row the walk
+// visited, which the cut rule reads as no cut (commentRecipientsQuery). So the same statement runs
+// again with the bound lifted to the largest depth it binds: only the guard can end that walk, and
+// it answers the same inside the deadline.
 func TestTheCommentWalkEndsACycleOnTheRowsItVisited(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
@@ -138,16 +143,37 @@ func TestTheCommentWalkEndsACycleOnTheRowsItVisited(t *testing.T) {
 		t.Errorf("the walk over the cycle reaches %v, want %v", recipients, want)
 	}
 	if len(cut) != 0 {
-		t.Errorf("the walk over a two-comment cycle says it cut %v, want no cut: it went round the cycle to the depth bound (%d) rather than ending on the rows it visited",
-			cut, maxCommentThreadDepth)
+		t.Errorf("the walk over a two-comment cycle says it cut %v, want no cut", cut)
+	}
+
+	rows, err := database.Pool.Query(ctx, commentRecipientsQuery, []string{a, into}, math.MaxInt32)
+	if err != nil {
+		t.Fatalf("the unbounded walk over a two-comment reply_to cycle did not start: %v", err)
+	}
+	unbounded := map[string][]threadRecipient{}
+	var key string
+	var sessionID *string
+	var fromThread, stopped bool
+	if _, err := pgx.ForEachRow(rows, []any{&key, &sessionID, &fromThread, &stopped}, func() error {
+		if stopped {
+			return fmt.Errorf("the unbounded walk says it cut comment %s", key)
+		}
+		unbounded[key] = append(unbounded[key], threadRecipient{sessionID: *sessionID, fromThread: fromThread})
+		return nil
+	}); err != nil {
+		t.Fatalf("the walk over a two-comment reply_to cycle with no depth bound did not answer inside %s: %v: only the visited guard ends it", walkDeadline, err)
+	}
+	if !reflect.DeepEqual(unbounded, want) {
+		t.Errorf("the walk over the cycle with no depth bound reaches %v, want %v", unbounded, want)
 	}
 }
 
 // The two limits meeting: a cycle of maxCommentThreadDepth+1 comments, keyed at either end of the
 // chain it closes, has the walk up reach its last new row at exactly the bound's depth, still
-// replying to another - the row it set out from, which it has visited. The visited guard ends the
-// walk there, so it is no cut: the walk answers every author of the cycle, in the order they wrote,
-// says it cut nothing, and loadCommentRecipients logs no line.
+// replying to another - the row it set out from, which it has visited. The depth bound stops the
+// walk there, and the cut rule reads that row as no cut, since the row it replies to is one the
+// walk visited (commentRecipientsQuery's cuts): the walk answers every author of the cycle, in the
+// order they wrote, says it cut nothing, and loadCommentRecipients logs no line.
 func TestTheCommentWalkEndsACycleAtTheBoundWithoutACut(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)

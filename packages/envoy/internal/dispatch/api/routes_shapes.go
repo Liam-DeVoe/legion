@@ -371,8 +371,8 @@ type meInboxQuery struct {
 	Limit int `query:"limit"`
 	// Offset is where that page starts.
 	Offset int `query:"offset"`
-	// Kind narrows the entries to those of these relation kinds, as one comma list; it widens
-	// nothing, and a kind no tuple holds answers no entry.
+	// Kind narrows the entries to those of these relation kinds, as a comma list that may be
+	// repeated; it widens nothing, and a kind no tuple holds answers no entry.
 	Kind string `query:"kind"`
 	// State is the page's own narrowing: unread, inbox or dismissed. With none the entries are
 	// the walk of the tuples.
