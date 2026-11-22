@@ -2503,6 +2503,9 @@ describe("behaviour: written cases and the report's descriptions", () => {
     );
   }, 60_000);
 
+  /** alpha's line 8, which only sends the agent to references/x.md. */
+  const NAVIGATION = "1. Read `references/x.md` before the first step.";
+
   // Catches: a navigation line of the skill that a build dropped steps for and no case tests left
   // out of the report, a tested one named, one named twice, and a file that is no build-cases
   // summary read as one.
@@ -2510,8 +2513,6 @@ describe("behaviour: written cases and the report's descriptions", () => {
     const s = scenario("report-navigation", f1File(2), [{ id: "c04" }, { id: "c05" }]);
     writeMadeUpResult(s.out, "c04", { screen: { old: 10, none: 0 } }, { compared: "none" });
     writeMadeUpResult(s.out, "c05", { screen: { old: 8, none: 4 } }, { compared: "none" });
-    /** alpha's line 8, which only sends the agent to references/x.md. */
-    const NAVIGATION = "1. Read `references/x.md` before the first step.";
     /** Writes the summary file `name` of a build-cases form `command` that dropped one step for
      *  each line of `lines` (file and number of SKILL.md, and text), and gives its path. */
     const buildSummary = (name: string, command: string, lines: [number, string][]) => {
@@ -2569,6 +2570,78 @@ describe("behaviour: written cases and the report's descriptions", () => {
     const screen = await cli(behaviour("screen", s, "--build-summary", tested));
     expect(screen.code).toBe(2);
     expect(screen.stderr).toContain("--build-summary is for behaviour report only");
+  }, 60_000);
+
+  // Catches: a replacement case a judge control dropped counted as one that stands, or left
+  // unnamed; one with no result yet left out of the count; one two summaries name counted twice.
+  test("report --build-summary counts the replacement cases the build summaries' session records name and those the judge controls leave, naming each the controls dropped and each not screened yet", async () => {
+    const s = scenario("report-replacements", f1File(2), [{ id: "c04" }, { id: "c05" }]);
+    writeMadeUpResult(s.out, "c04", { screen: { old: 10, none: 0 } }, { compared: "none" });
+    writeMadeUpResult(s.out, "c05", {}, { compared: "none" });
+    // c05's judge controls do not hold: its violating step is judged pass.
+    const resultFile = caseResultFile(s.out, "c05");
+    const made = JSON.parse(readFileSync(resultFile, "utf8"));
+    const judged = (verdict: "pass" | "fail") => ({ verdict, reason: "made up" });
+    const controls = {
+      realStep: judged("pass"),
+      violating: judged("pass"),
+      nothing: judged("fail"),
+      failed: ["violating"],
+      hold: false,
+      usd: 0,
+    };
+    const dropped =
+      "the judge controls do not hold: the violating step is judged pass (fail wanted)";
+    writeFileSync(
+      resultFile,
+      JSON.stringify(CaseResult.parse({ ...made, dropped, droppedAt: "screen", controls }))
+    );
+    /** Writes the summary file `name` of a session build with a session that dropped a step under
+     *  NAVIGATION for each of `replacements` (the id of the case that replaced it, or null) and one
+     *  session that dropped none, and gives its path. */
+    const buildSummary = (name: string, replacements: (string | null)[]) => {
+      const file = path.join(s.dir, name);
+      const withReplacement = replacements.filter((id) => id !== null).length;
+      const navigation = {
+        lines: [{ file: "SKILL.md", number: 8, text: NAVIGATION, dropped: replacements.length }],
+        dropped: replacements.length,
+        withReplacement,
+        withoutReplacement: replacements.length - withReplacement,
+      };
+      const passedOver = { messageIndex: 3, file: "SKILL.md", number: 8, text: NAVIGATION };
+      const sessions = [
+        ...replacements.map((replacement, n) => ({
+          store: "store_a",
+          hash: String(n).padStart(16, "0"),
+          readerUsd: 0,
+          outcome: replacement === null ? "dropped" : `case ${replacement}`,
+          navigation: [{ ...passedOver, reason: "made up", replacement }],
+        })),
+        { store: "store_a", hash: "f".repeat(16), readerUsd: 0, outcome: "case c06" },
+      ];
+      writeFileSync(file, JSON.stringify({ command: "build-cases", navigation, sessions }));
+      return file;
+    };
+    const two = buildSummary("two.summary.json", ["c04", "c05", null]);
+    const reported = await cli([...report(s), "--build-summary", two]);
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = reported.stdout.split("\n");
+    const line =
+      "navigation drops with a replacement case: 2 by the build summaries, 1 after the judge controls (c05 dropped by the judge controls)";
+    expect(lines).toContain(line);
+    // It comes beside the navigation lines no case tests.
+    const untested = lines.findIndex((each) => each.startsWith("navigation lines of the skill"));
+    expect(lines.indexOf(line)).toBe(untested + 1);
+
+    // A case two summaries name counts once; one with no result yet counts, and is named.
+    const more = buildSummary("more.summary.json", ["c05", "c09"]);
+    const both = await cli([...report(s), "--build-summary", two, "--build-summary", more]);
+    expect(both.stdout.split("\n")).toContain(
+      "navigation drops with a replacement case: 3 by the build summaries, 2 after the judge controls (c05 dropped by the judge controls; c09 not screened yet)"
+    );
+    // Without --build-summary the report has no such line.
+    const plain = await cli(report(s));
+    expect(plain.stdout).not.toContain("navigation drops with a replacement case");
   }, 60_000);
 
   test("the judge prompt's sha256 and settings are in the report and in each newly judged stage", async () => {

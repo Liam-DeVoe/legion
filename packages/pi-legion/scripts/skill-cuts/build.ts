@@ -380,13 +380,13 @@
  * replacement may. The files that step read, as cases.ts's `stepSkillFiles` tells them (the
  * arms' and the behaviour report's rule, at the installed directory the session's reads before
  * the step show), are the replacement's files: the case reader goes on from the window that
- * starts after that step (after the window, for a step before it), within READER_WINDOWS, offered
- * only those files' lines (step 4's rule, restricted to them), and its first proposal there is
- * the replacement, which must be a later step and goes through every check, the navigation reader
- * first. Where the step read no file of the skill, the windows run out, the replacement's own line
- * is a navigation line, or any check drops it, the session gives no case
- * (`navigation-no-replacement`, the navigation line and why in its detail); a session whose
- * navigation reader fails before any step is dropped for a navigation line is dropped
+ * starts right after that step (in the window, or among the messages shown before it), within
+ * READER_WINDOWS, offered only those files' lines (step 4's rule, restricted to them), and its
+ * first proposal there is the replacement, which must be a later step and goes through every
+ * check, the navigation reader first. Where the step read no file of the skill, the windows run
+ * out, the replacement's own line is a navigation line, or any check drops it, the session gives
+ * no case (`navigation-no-replacement`, the navigation line and why in its detail); a session
+ * whose navigation reader fails before any step is dropped for a navigation line is dropped
  * (`navigation-failed`). The session's record names each step dropped for a navigation line
  * (`navigation`: its message index, the line's file, number and text, the reader's reason, and the
  * id of the case that replaced it, or null); the summary's `navigation` lists each navigation line
@@ -5464,8 +5464,10 @@ async function caseOf(
     else if (!run.dropNavigation) answer = given;
     else {
       // The navigation reader judges the proposal's line, a replacement's too, and a replacement
-      // must be a later step. After a step under a navigation line, the next window starts after
-      // it when it is in this window.
+      // must be a later step. After a step under a navigation line, the next window starts right
+      // after it, in this window or among the messages shown before it, so no later step of this
+      // window is passed over. Only the session's one such step can start a window before the last
+      // one's start (a second ends the session), and READER_WINDOWS bounds the windows.
       const stepIndex = given.step.messageIndex;
       if (replaced !== undefined && stepIndex <= replaced.messageIndex) {
         return noReplacement(
@@ -5503,7 +5505,9 @@ async function caseOf(
             `the session's reads of ${read.join(", ")} hold no whole line of the base text`
           );
         }
-        if (stepIndex >= start) next = stepIndex + 1;
+        // The next window starts right after the dropped step, wherever it lay, but never before
+        // the skill's first successful read: a step there is no case.
+        next = Math.max(stepIndex, first.index) + 1;
       }
     }
     start = next;
@@ -5789,11 +5793,21 @@ export const NavigationCounts = z.strictObject({
 });
 export type NavigationCounts = z.infer<typeof NavigationCounts>;
 
-/** A summary of either form of build-cases, as `behaviour report --build-summary` reads it: one
- *  that records no navigation lines (an older build-cases wrote it) is no such summary. */
+/** A summary of either form of build-cases, as `behaviour report --build-summary` reads it: its
+ *  navigation lines and, in the session form, the steps each session record names as dropped for
+ *  a navigation line, each with the id of the case that replaced it, or null (`SessionRecord`'s
+ *  `navigation`). One that records no navigation lines (an older build-cases wrote it) is no such
+ *  summary. */
 export const NavigationSummary = z.looseObject({
   command: z.enum(["build-cases", "build-cases --written"]),
   navigation: NavigationCounts,
+  sessions: z
+    .array(
+      z.looseObject({
+        navigation: z.array(z.looseObject({ replacement: z.string().nullable() })).optional(),
+      })
+    )
+    .optional(),
 });
 
 /** The summary's `navigation` of the steps `passes` that `--drop-navigation` dropped. */

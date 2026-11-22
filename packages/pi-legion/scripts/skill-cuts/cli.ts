@@ -191,9 +191,10 @@
  *   (score.ts's `meanDifference`), the screened cases that tie, floor, ceil and reverse
  *   (`screenShapes`), and the judge's identity (judge.ts's `judgeIdentity`) with how many stages
  *   record it; with `--build-summary` (build-cases' summaries, build.ts's `NavigationSummary`),
- *   each navigation line they name that no case has as its line (`untestedNavigationLine`). Its
- *   compared arm is the one its results record. With `--reading-models`, it prints
- *   each model of the file with its sessions and
+ *   each navigation line they name that no case has as its line (`untestedNavigationLine`), and
+ *   how many replacement cases their session records name and how many of those the judge
+ *   controls leave (`replacementLine`). Its compared arm is the one its results record. With
+ *   `--reading-models`, it prints each model of the file with its sessions and
  *   whether the gateway serves it (the file's `served`), the sessions with no model and not
  *   queried, and the served models the screened session cases ran on, each with its cases; a
  *   verdict's line then ends with the reading sessions it speaks for, on each served model its
@@ -3601,11 +3602,21 @@ function stepReadsLine(b: Behaviour, score: SkillScore, old: string): string {
   return `cases whose real step reads a file of the skill other than SKILL.md, which the arm with no skill does not have, so it fails them by construction: ${which}${untold.join("")}; the ${counted(others.length, "screened case")} with no such read: ${count((each) => each.informative)} informative, ${count((each) => each.flagged)} flagged, ${count((each) => each.loss)} confirmed losses (a description beside the registered rule, which it does not change)`;
 }
 
+/** What the report reads of the build-cases summaries (`--build-summary`): their navigation lines,
+ *  and the id of each replacement case their session records name. */
+interface BuildNavigation {
+  readonly lines: NavigationCounts["lines"];
+  readonly replacements: readonly string[];
+}
+
 /** The navigation lines the build-cases summaries `files` name (`--build-summary`, build.ts's
- *  `NavigationSummary`), each line of a file once, in the order the files name them. Refuses a
- *  file that is no build-cases summary, or one written before build-cases named them. */
-function buildNavigationLines(files: readonly string[]): NavigationCounts["lines"] {
+ *  `NavigationSummary`), each line of a file once, and the replacement cases their session records
+ *  name (each `navigation` entry's `replacement` that is not null), each once, in the order the
+ *  files name them. Refuses a file that is no build-cases summary, or one written before
+ *  build-cases named them. */
+function buildNavigation(files: readonly string[]): BuildNavigation {
   const lines = new Map<string, NavigationCounts["lines"][number]>();
+  const replacements = new Set<string>();
   for (const file of files) {
     const parsed = NavigationSummary.safeParse(readJson(file, "--build-summary"));
     if (!parsed.success) {
@@ -3617,11 +3628,16 @@ function buildNavigationLines(files: readonly string[]): NavigationCounts["lines
       const key = `${line.file}\0${line.number}`;
       if (!lines.has(key)) lines.set(key, line);
     }
+    for (const session of parsed.data.sessions ?? []) {
+      for (const { replacement } of session.navigation ?? []) {
+        if (replacement !== null) replacements.add(replacement);
+      }
+    }
   }
-  return [...lines.values()];
+  return { lines: [...lines.values()], replacements: [...replacements] };
 }
 
-/** The report's line of the navigation lines of the build summaries (`buildNavigationLines`) whose
+/** The report's line of the navigation lines of the build summaries (`buildNavigation`) whose
  *  file and text, trimmed, no case of `b` has as its line: lines whose steps a build dropped, which
  *  no case tests. A description beside the registered rule, which it does not change. */
 function untestedNavigationLine(b: Behaviour, navigation: NavigationCounts["lines"]): string {
@@ -3631,6 +3647,30 @@ function untestedNavigationLine(b: Behaviour, navigation: NavigationCounts["line
   );
   const words = untested.map((line) => `${line.file}:${line.number} ${JSON.stringify(line.text)}`);
   return `navigation lines of the skill that no case tests (from the build summaries): ${words.join("; ") || "none"}`;
+}
+
+/** The report's line of the replacement cases of the build summaries (`buildNavigation`): how
+ *  many, and how many of them the judge controls leave, which is all but those whose result in
+ *  `results` a judge control dropped at the screen (a case with no result yet counts, as the build
+ *  counted it); it names each case the controls dropped and each with no result. A description
+ *  beside the registered rule, which it does not change. */
+function replacementLine(
+  results: ReadonlyMap<string, CaseResult>,
+  replacements: readonly string[]
+): string {
+  let kept = 0;
+  const named: string[] = [];
+  for (const id of replacements) {
+    const result = results.get(id);
+    if (result !== undefined && result.dropped !== null && result.controls?.hold === false) {
+      named.push(`${id} dropped by the judge controls`);
+      continue;
+    }
+    kept += 1;
+    if (result === undefined) named.push(`${id} not screened yet`);
+  }
+  const which = named.length === 0 ? "" : ` (${named.join("; ")})`;
+  return `navigation drops with a replacement case: ${replacements.length} by the build summaries, ${kept} after the judge controls${which}`;
 }
 
 /** The report's line of the judge's identity (judge.ts's `judgeIdentity`): the SHA-256 of
@@ -3762,13 +3802,13 @@ function dropLines(b: Behaviour, score: SkillScore): string[] {
 }
 
 /** `behaviour report`: prints each case's passes, the skill's verdict and the run's figures, `old`
- *  being the old text's directory (`--old`), and beside the verdict the line of `navigation`, the
- *  navigation lines of `--build-summary` (`untestedNavigationLine`; none without the flag). A
- *  dropped case's line gives the stage that dropped it, why, and each stage it ran. */
+ *  being the old text's directory (`--old`), and beside the verdict the lines of `navigation`, what
+ *  it read of `--build-summary` (`untestedNavigationLine` and `replacementLine`; none without the
+ *  flag). A dropped case's line gives the stage that dropped it, why, and each stage it ran. */
 function reportCommand(
   given: Behaviour,
   old: string,
-  navigation: NavigationCounts["lines"] | undefined
+  navigation: BuildNavigation | undefined
 ): void {
   const results = readResults(given);
   const b = { ...given, compared: recordedCompared(given.out, results) ?? given.compared };
@@ -3868,7 +3908,12 @@ function reportCommand(
   lines.push(caseModelsLine(b));
   lines.push(...modelLines(b, score), writtenTasksLine(b, score));
   lines.push(`verdict: ${verdictLine(b, results, score)}`);
-  if (navigation !== undefined) lines.push(untestedNavigationLine(b, navigation));
+  if (navigation !== undefined) {
+    lines.push(
+      untestedNavigationLine(b, navigation.lines),
+      replacementLine(results, navigation.replacements)
+    );
+  }
 
   const percent = (x: number) => `${(100 * x).toFixed(2)}%`;
   lines.push(
@@ -3958,7 +4003,7 @@ const BEHAVIOUR_USAGE = [
   `  confirm [--case <id>] (${FRESH_RUNS} fresh runs of old and the compared arm on that case alone, into its own --out)`,
   "  [--again <case id>]... (confirm only, not with --case: one more confirm of that flagged case)",
   "  report needs only --config, --out, --old and --cases; [--limits <file>] (printed as it is)",
-  "  [--build-summary <file>]... (report only: build-cases' summaries, whose navigation lines no case tests it names)",
+  "  [--build-summary <file>]... (report only: build-cases' summaries; it names their navigation lines no case tests and counts their replacement cases before and after the judge controls)",
 ].join("\n");
 
 /** The compared arm the stages of `results` record (a stage that records none was run with
@@ -4097,7 +4142,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     reportCommand(
       behaviour,
       given.old,
-      summaries === undefined ? undefined : buildNavigationLines(summaries)
+      summaries === undefined ? undefined : buildNavigation(summaries)
     );
     return EXIT.ok;
   }

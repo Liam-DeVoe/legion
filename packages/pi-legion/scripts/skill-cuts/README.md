@@ -176,13 +176,18 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   beside the verdict, as a description that changes no rule, `navigation lines of the skill that
   no case tests (from the build summaries): <file>:<number> "<text>"; …`: each navigation line
   of those summaries' `navigation.lines` (each file and number once) whose file and text, trimmed,
-  no case of `--cases` has as its line (`baseFile` and `line.text`), or `none`; without the flag
-  it prints no such line. A file that is not a build-cases summary naming its navigation lines (one
-  of another command, or one written before build-cases named them) is refused (exit 2), as is
-  the flag on a stage command. It names the judge: the SHA-256 of the bytes of `prompts/judge.md`
-  the process read (once, the text every judgement sends) and the settings its header pins, and how
-  many stages of
-  the results record that judge, another one, or none. Each stage records
+  no case of `--cases` has as its line (`baseFile` and `line.text`), or `none`; and after it
+  `navigation drops with a replacement case: <n> by the build summaries, <m> after the judge
+  controls (<id> dropped by the judge controls; <id> not screened yet; …)`: n the replacement
+  cases the summaries' session records name (each `navigation` entry's `replacement` id, each case
+  once), m those whose result a judge control did not drop at the screen (a case with no result
+  yet counts, as the build counted it), each case the controls dropped and each with no result
+  named (no parentheses when there is none); without the flag it prints neither line. A file that
+  is not a build-cases summary naming its navigation lines (one of another command, or one written
+  before build-cases named them) is refused (exit 2), as is the flag on a stage command. It names
+  the judge: the SHA-256 of the bytes of `prompts/judge.md` the process read (once, the text every
+  judgement sends) and the settings its header pins, and how many stages of the results record
+  that judge, another one, or none. Each stage records
   the judge it was made with (`judge`) before its first judgement; a results file made before
   that records none and still loads. A skill whose planted-loss control is no loss gets the reason
   "deleting the case's line showed no detectable change (planted-loss control not a loss)" (with
@@ -1420,9 +1425,10 @@ session form, a step under a navigation line gives no case, and the files it rea
 its replacement: those its `read` calls read by the rule the arms and `behaviour report` use
 (`cases.ts`'s `stepSkillFiles`: a read of `skill://<skill>/<path>`, or of a path that ends with
 `<installed dir>/<path>`, the installed directory being the one the session's first read before
-the step shows). The `case` reader goes on from the window that starts after that step (after the
-window, for a step in the messages before it), within the 6 windows, offered only those files'
-lines (the lines the session's own reads of them held, as the reader's offered lines always are).
+the step shows). The `case` reader goes on from the window that starts right after that step,
+whether the reader saw it in its window or among the messages shown before it (so no later step of
+that window is passed over), within the 6 windows, offered only those files' lines (the lines the
+session's own reads of them held, as the reader's offered lines always are).
 Its first proposal there is the replacement case, with that file's line as its line: it must be a
 later step, and it goes through every check any proposal goes through, the navigation reader
 first, then the line's checks, the restatement check and the audit (and, later, the judge
@@ -1448,7 +1454,7 @@ navigation reader's spend is counted in `readerSpend` with the other readers'. B
 record the flag in their inputs (`dropNavigation`), and a run that goes on from one of the other
 value is refused (exit 2); a summary written before the flag goes on as one without it.
 `behaviour report --build-summary` names the navigation lines of these summaries that no case
-tests.
+tests, and counts their replacement cases before and after the judge controls.
 
 `build-cases --written <n>` (the second form above) writes up to n written cases of one skill, for
 a skill whose session cases give fewer than 6 informative cases in the screen.

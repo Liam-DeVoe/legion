@@ -151,14 +151,20 @@ function insertAfter(
   lines.splice(lines.indexOf(after) + 1, 0, entry);
 }
 
-/** Puts `count` assistant messages, each of `text(n)`, between F1's message 6 and its step. */
-function addFillers(lines: Record<string, unknown>[], count: number, text: (n: number) => string) {
-  let previous = lines.filter((line) => line.type === "message")[6] ?? {};
+/** Puts `count` assistant messages, each of `text(n)`, after F1's message `after` (by default
+ *  between its message 6 and its step), each at the time `at`, which is before the next message's. */
+function addFillers(
+  lines: Record<string, unknown>[],
+  count: number,
+  text: (n: number) => string,
+  { after, at } = { after: 6, at: "2026-11-20T01:59:53.300Z" }
+) {
+  let previous = lines.filter((line) => line.type === "message")[after] ?? {};
   for (let n = 0; n < count; n += 1) {
     const filler = {
       type: "message",
       id: `f111${String(n).padStart(4, "0")}`,
-      timestamp: "2026-11-20T01:59:53.300Z",
+      timestamp: at,
       message: { role: "assistant", content: [{ type: "text", text: text(n) }] },
     };
     insertAfter(lines, previous, filler);
@@ -621,6 +627,11 @@ const FILLERS = 90;
  *  past the case reader's first window (messages 1 to 40) and inside the window that starts after
  *  its read of references/x.md (message 3). */
 const NAV_FILLERS = 35;
+/** The messages the nav-earlier session adds after F1's message 2, before its message 3's time:
+ *  its read of references/x.md is then message 38, inside the case reader's first window (messages
+ *  1 to 40) and among the 20 messages shown before its second (messages 41 to 46), and its task
+ *  call message 42, inside that second window. */
+const EARLIER_FILLERS = 35;
 
 /** Session `name`'s transcript text: F1, changed by `change` (the session's own, unless given). */
 function sessionText(
@@ -850,15 +861,16 @@ const X_LINE =
 const X_READ = '[tool call: read] {"path":"skill://alpha/references/x.md"';
 
 /** The sessions whose first proposal is the read of references/x.md under NAVIGATION_LINE. */
-const NAV_READS = ["nav-step", "nav-skill-md", "nav-nothing"];
+const NAV_READS = ["nav-step", "nav-skill-md", "nav-nothing", "nav-earlier"];
 
 /** The proposal of the stand-in case reader for the session named in the transcript: the step is
  *  the message of the window that calls the `task` tool (F1's message 7) under LINE, and a window
  *  that holds none gives no step. But: nav-line's step is under NAVIGATION_LINE; ref-read's step
  *  is the read of references/x.md (F1's message 3, X_READ) under LINE; and NAV_READS's step, where
  *  the window offers SKILL.md's lines, is that read under NAVIGATION_LINE, and where it does not,
- *  nav-step's is the task call under X_LINE, nav-skill-md's the task call under LINE, and
- *  nav-nothing gives no step. */
+ *  nav-step's and nav-earlier's is the task call under X_LINE, nav-skill-md's the task call under
+ *  LINE, and nav-nothing gives no step. nav-earlier gives no step until a window holds its task
+ *  call. */
 function caseAnswer(name: string, transcript: string): unknown {
   const criterion = CRITERION;
   const messages = transcript.split('<message index="');
@@ -873,14 +885,17 @@ function caseAnswer(name: string, transcript: string): unknown {
     // the messages before the read.
     restatements: name === "restated" ? [{ messageIndex: 0, quote: RESTATED }] : [],
   });
+  const noStep = { step: null, reason: "No step of the transcript is decided by the skill." };
+  if (name === "nav-earlier" && step === undefined) return noStep;
   if (NAV_READS.includes(name) && read !== undefined && transcript.includes(SKILL_MD_OFFERED)) {
     return proposal(read, { file: "SKILL.md", text: NAVIGATION_LINE });
   }
   if (name === "ref-read" && read !== undefined)
     return proposal(read, { file: "SKILL.md", text: LINE });
-  if (name === "no-step" || name === "nav-nothing" || step === undefined)
-    return { step: null, reason: "No step of the transcript is decided by the skill." };
-  if (name === "nav-step") return proposal(step, { file: "references/x.md", text: X_LINE });
+  if (name === "no-step" || name === "nav-nothing" || step === undefined) return noStep;
+  if (name === "nav-step" || name === "nav-earlier") {
+    return proposal(step, { file: "references/x.md", text: X_LINE });
+  }
   if (name === "nav-line") return proposal(step, { file: "SKILL.md", text: NAVIGATION_LINE });
   const text = name === "not-in-base" ? "2. Write each step's result on two lines." : LINE;
   return proposal(step, { file: "SKILL.md", text });
@@ -4646,7 +4661,13 @@ describe("build-cases --drop-navigation", () => {
   const replaced = path.join(scratch, "navigation", "replaced", "cases.jsonl");
   const unreplaced = path.join(scratch, "navigation", "unreplaced", "cases.jsonl");
   const plain = path.join(scratch, "navigation", "plain", "cases.jsonl");
-  const printed: Record<string, string[]> = { replaced: [], unreplaced: [], plain: [] };
+  const earlier = path.join(scratch, "navigation", "earlier", "cases.jsonl");
+  const printed: Record<string, string[]> = {
+    replaced: [],
+    unreplaced: [],
+    plain: [],
+    earlier: [],
+  };
   const requests: Record<string, RecordedRequest[]> = {};
   const codes: Record<string, number> = {};
   let store = "";
@@ -4675,21 +4696,30 @@ describe("build-cases --drop-navigation", () => {
   });
   const NAMES = ["nav-step", "ref-read", "nav-skill-md", "nav-nothing", "nav-line"];
   beforeAll(async () => {
-    // nav-step is F1 with NAV_FILLERS fillers after its message 6; each other is F1.
+    // nav-step is F1 with NAV_FILLERS fillers after its message 6, nav-earlier F1 with
+    // EARLIER_FILLERS fillers after its message 2; each other is F1.
     store = changedStore("navigation-store", (files) => {
       const sessionFiles = files.store_a ?? {};
       for (const name of NAMES) sessionFiles[sessionPath(name)] = sessionText(name);
       sessionFiles[sessionPath("nav-step")] = sessionText("nav-step", (lines) =>
         addFillers(lines, NAV_FILLERS, (n) => `Still reading (${n}).`)
       );
+      sessionFiles[sessionPath("nav-earlier")] = sessionText("nav-earlier", (lines) =>
+        addFillers(lines, EARLIER_FILLERS, (n) => `Still reading (${n}).`, {
+          after: 2,
+          at: "2026-11-20T01:59:49.000Z",
+        })
+      );
     });
     sessions.replaced = sessionsFile("navigation-replaced.jsonl", ["nav-step", "ref-read"]);
     sessions.unreplaced = sessionsFile("navigation-unreplaced.jsonl", NAMES.slice(2));
     sessions.plain = sessionsFile("navigation-plain.jsonl", NAMES);
+    sessions.earlier = sessionsFile("navigation-earlier.jsonl", ["nav-earlier"]);
     for (const [build, out, extra] of [
       ["replaced", replaced, ["--drop-navigation"]],
       ["unreplaced", unreplaced, ["--drop-navigation"]],
       ["plain", plain, []],
+      ["earlier", earlier, ["--drop-navigation"]],
     ] as const) {
       const from = recorder.requests.length;
       codes[build] = await main(navArgs(build, out, ...extra), io(printed[build] ?? []));
@@ -4755,6 +4785,43 @@ describe("build-cases --drop-navigation", () => {
       0
     );
     expect(calls).toBe(requests.replaced?.length);
+  });
+
+  // Catches: a next window that starts after the window when the step dropped for a navigation
+  // line is among the messages shown before it, which skips the window's later steps.
+  test("with --drop-navigation, a step the case reader proposes among the messages shown before its window, under a navigation line, gives no case, and the next window starts right after that step: a later step of that same window, under a line of the file the step read, is the case", () => {
+    expect(codes.earlier).toBe(EXIT.ok);
+    const c = caseOf(earlier, "nav-earlier");
+    expect(c?.realStep).toEqual(f1Messages()[7] as SessionMessage);
+    expect([c?.baseFile, c?.line]).toEqual([
+      "references/x.md",
+      { text: X_LINE, lineNumber: 3, lineCount: 3 },
+    ]);
+    expect(recordOf(earlier, "nav-earlier")).toMatchObject({
+      outcome: `case ${c?.id}`,
+      windows: 3,
+      navigation: [passedOver(38, c?.id ?? "")],
+    });
+    // The first window (messages 1 to 40, after message 0) holds no task call; the second
+    // (messages 41 to 46, after messages 21 to 40) holds it, message 42, and the reader proposes
+    // the read of references/x.md, message 38, shown before it; the third starts right after that
+    // read (messages 39 to 46, after messages 19 to 38) and offers references/x.md alone.
+    expect(
+      usersOf(requests.earlier ?? [], CASE_PROMPT).map((user) => {
+        const shown = [...user.matchAll(/<message index="(\d+)"/g)].map((match) => match[1]);
+        return [user.includes(SKILL_MD_OFFERED), Number(shown[0]), Number(shown.at(-1))];
+      })
+    ).toEqual([
+      [true, 0, 40],
+      [true, 21, 46],
+      [false, 19, 46],
+    ]);
+    expect(summaryOf<NavigationSummary>(earlier).navigation).toEqual({
+      lines: [{ file: "SKILL.md", number: 8, text: NAVIGATION_LINE, dropped: 1 }],
+      dropped: 1,
+      withReplacement: 1,
+      withoutReplacement: 0,
+    });
   });
 
   test("with --drop-navigation, a step that reads references/x.md under a line that is not a navigation line is the case, and nothing is passed over", () => {
