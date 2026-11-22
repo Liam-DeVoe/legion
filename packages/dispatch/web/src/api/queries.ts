@@ -371,7 +371,7 @@ export const projectIssuesQuery = (project: string, labels: readonly string[], o
     queryFn: async (context) => {
       await boardMovesSettled(context, project);
       return api.listIssues({
-        project,
+        project: [project],
         ...(labels.length ? { label: [...labels] } : {}),
         ...(open ? { open: true } : {}),
       });

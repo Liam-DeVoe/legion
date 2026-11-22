@@ -92,7 +92,7 @@ export function useIssueTableActions({
   /** Every issue of this table's listing, read afresh: what an action checks itself against. */
   const listAll = () =>
     "project" in listing
-      ? api.listIssues({ project: listing.project })
+      ? api.listIssues({ project: [listing.project] })
       : api.listIssues(advancesIssuesParams(listing));
 
   const request = <T>(value: WriteRequest<T>, label: string, issue: string, key: string) => {
