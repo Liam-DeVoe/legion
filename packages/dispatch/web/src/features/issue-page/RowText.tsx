@@ -539,19 +539,19 @@ function DrawnText({
       <TextAskCard.Provider value={undefined}>
         {/* A row is one line of a tree: it draws a list of issues as the words it writes. */}
         <TextIssueList.Provider value={undefined}>
-        {/* The body's own link pass is held to the references of `referenceText`: none, so it
+          {/* The body's own link pass is held to the references of `referenceText`: none, so it
             reads no target, and the row's pass links what the words cite (`linkRowReferences`).
             A link whose words its author wrote keeps those words alone, with no status mark. */}
-        <WordedLinksMarked.Provider value={false}>
-          <MarkdownBody
-            markdown={markdown}
-            onRendered={link}
-            referenceText=""
-            source={source}
-            surface="node-row-words"
-            tree={tree}
-          />
-        </WordedLinksMarked.Provider>
+          <WordedLinksMarked.Provider value={false}>
+            <MarkdownBody
+              markdown={markdown}
+              onRendered={link}
+              referenceText=""
+              source={source}
+              surface="node-row-words"
+              tree={tree}
+            />
+          </WordedLinksMarked.Provider>
         </TextIssueList.Provider>
       </TextAskCard.Provider>
     </div>

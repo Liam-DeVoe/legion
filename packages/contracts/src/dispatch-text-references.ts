@@ -317,9 +317,7 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
   {
     body: "Lists dispatch://issues?project=INFRA&project=OSSV&label=overnight&status=todo&priority=P0 and dispatch://issues?priority=P0&status=todo&label=overnight&project=OSSV&project=INFRA here.",
     refs: [],
-    lists: [
-      "dispatch://issues?project=INFRA&project=OSSV&label=overnight&status=todo&priority=P0",
-    ],
+    lists: ["dispatch://issues?project=INFRA&project=OSSV&label=overnight&status=todo&priority=P0"],
   },
   {
     body: "Lists dispatch://issues?label=needs+review&label=needs%20review&status=in_progress&status=done&status=in_progress and dispatch://issues?priority=none.",

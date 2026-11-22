@@ -42,7 +42,9 @@ test("a list's read sends its query's fields and no open, under one key per quer
     project: ["INFRA", "OSSV"],
     status: ["done", "todo"],
   });
-  const labelOnly = { query: { labels: ["overnight"], priorities: [], projects: [], statuses: [] } };
+  const labelOnly = {
+    query: { labels: ["overnight"], priorities: [], projects: [], statuses: [] },
+  };
   expect(queryIssuesParams(labelOnly)).toEqual({ label: ["overnight"] });
   expect(answeredWhole(listing)).toBe(true);
   expect(answeredWhole(labelOnly)).toBe(true);

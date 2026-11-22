@@ -20,13 +20,13 @@ import { MarkdownBody } from "./MarkdownBody";
 import { TextAskCard, TextIssueList } from "./markdown-cards";
 import { setParseDeadline, warmMarkdownRenderer } from "./markdown-engine";
 import { markdownWorkerThreshold } from "./markdown-worker-threshold";
-import type { IssueListQuery } from "./routes";
 import {
   flushTasks,
   type InstalledParseWorker,
   installFakeParseWorker,
   restoreParseWorker,
 } from "./parse-worker-fixture";
+import type { IssueListQuery } from "./routes";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -2076,7 +2076,9 @@ test("a list of issues on a line of its own is drawn in place of the line, and o
     </MemoryRouter>
   );
   try {
-    await waitFor(() => expect(view.container.querySelectorAll("output[data-list]")).toHaveLength(2));
+    await waitFor(() =>
+      expect(view.container.querySelectorAll("output[data-list]")).toHaveLength(2)
+    );
     expect(
       Array.from(view.container.querySelectorAll("output[data-list]"), (list) =>
         list.getAttribute("data-list")
@@ -2088,7 +2090,9 @@ test("a list of issues on a line of its own is drawn in place of the line, and o
       projects: [],
       statuses: ["done"],
     });
-    expect(view.container.textContent).toContain("See dispatch://issues?label=inline in a sentence.");
+    expect(view.container.textContent).toContain(
+      "See dispatch://issues?label=inline in a sentence."
+    );
     expect(view.container.textContent).not.toContain("dispatch://issues?label=overnight");
   } finally {
     view.unmount();

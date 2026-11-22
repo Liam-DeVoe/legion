@@ -1298,5 +1298,8 @@ test.each(
       read.push(list);
     }
   }
-  expect(read).toEqual(lists.map((reference) => parseIssueListReference(reference)));
+  const written = lists.map((reference) => parseIssueListReference(reference));
+  // Every list a row names is one: a row naming text no reader reads as a list is a broken row.
+  expect(written.includes(undefined)).toBe(false);
+  expect(read).toEqual(written.flatMap((list) => (list === undefined ? [] : [list])));
 });

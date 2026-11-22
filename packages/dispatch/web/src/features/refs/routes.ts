@@ -2,8 +2,8 @@ import {
   ASK_URGENCIES,
   decodeBlockId,
   hasControlCharacter,
-  isSessionId,
   ISSUE_STATUSES,
+  isSessionId,
   itemFromSearch,
   PLAIN_ISSUE_TABS,
   SESSION_ID_PATTERN,
@@ -526,7 +526,11 @@ const ISSUE_LIST_FIELDS: Readonly<Record<string, (value: string) => boolean>> = 
  *  `URLSearchParams`. Another parameter, an empty value, a value outside its field's words, a
  *  control character, a fragment, and a query with no parameter at all are no list. */
 export function parseIssueListReference(value: string): IssueListQuery | undefined {
-  if (!value.startsWith(ISSUE_LIST_REFERENCE) || hasControlCharacter(value) || value.includes("#")) {
+  if (
+    !value.startsWith(ISSUE_LIST_REFERENCE) ||
+    hasControlCharacter(value) ||
+    value.includes("#")
+  ) {
     return undefined;
   }
   const fields = new Map<string, Set<string>>();

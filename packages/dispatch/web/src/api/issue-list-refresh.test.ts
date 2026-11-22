@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { Query } from "@tanstack/react-query";
 
 import { eventRefreshTargets } from "./event-refresh";
 import type { DispatchEvent } from "./types";
@@ -26,7 +27,10 @@ function issueEvent(
 
 /** Two lists a document holds, as `queryIssuesQuery` keys and caches them: one whose rows hold
  *  CORE-1, and one whose rows do not. */
-const HOLDING = { key: ["issues", "query", ["CORE"], ["overnight"], [], []], rows: [{ key: "CORE-1" }] };
+const HOLDING = {
+  key: ["issues", "query", ["CORE"], ["overnight"], [], []],
+  rows: [{ key: "CORE-1" }],
+};
 const OTHER = { key: ["issues", "query", [], ["dispatch-ux"], [], []], rows: [{ key: "OSSV-9" }] };
 
 /** The lists the event reads again: those a target's key is a prefix of, whose rows its `when`
@@ -42,7 +46,7 @@ function listsRead(event: DispatchEvent): string[] {
       (target) =>
         target.queryKey.every((part, index) => part === key[index]) &&
         !(target.exact === true && target.queryKey.length !== key.length) &&
-        (target.when === undefined || target.when(rows))
+        (target.when === undefined || target.when(rows, {} as Query))
     );
     return read ? [name as string] : [];
   });

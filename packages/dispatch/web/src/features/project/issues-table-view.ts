@@ -25,8 +25,7 @@ export function useTableView(stateKey?: string, start: StartView = issuesTabStar
   const view = useMemo(() => readUrl(params, stateKey, start), [params, stateKey, start]);
   const updateView = (update: (current: View) => View) =>
     setParams(
-      (current) =>
-        writeUrl(current, update(readUrl(current, stateKey, start)), stateKey, start),
+      (current) => writeUrl(current, update(readUrl(current, stateKey, start)), stateKey, start),
       { replace: true }
     );
   return {

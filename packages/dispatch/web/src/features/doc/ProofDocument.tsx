@@ -50,9 +50,9 @@ import {
 import { useMargin } from "../margin/margin-context";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { blockFragment } from "../refs/block-reference";
+import { TextIssueList } from "../refs/markdown-cards";
 import { PlainText } from "../refs/plain-text";
 import { watchPicturePath } from "../refs/reference-target";
-import { TextIssueList } from "../refs/markdown-cards";
 import {
   buildDispatchReference,
   buildIssuePath,

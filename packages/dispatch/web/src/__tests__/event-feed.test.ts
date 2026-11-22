@@ -1533,6 +1533,7 @@ test("a recorded result refreshes the results of the check's issue and of the re
     ["issue", "CORE-1"],
     ["events", "CORE-1"],
     ["issues", "project", "CORE"],
+    ["issues", "query"],
     ["issue", "CORE-1", "results"],
   ]);
   const child = event("result.recorded", {
@@ -1547,6 +1548,7 @@ test("a recorded result refreshes the results of the check's issue and of the re
     ["issue", "CORE-1"],
     ["events", "CORE-1"],
     ["issues", "project", "CORE"],
+    ["issues", "query"],
     ["issue", "CORE-1", "results"],
     ["issue", "CORE-9", "results"],
   ]);
@@ -1567,6 +1569,7 @@ test("a retracted result refreshes the results of the check's issue and of the r
     ["issue", "CORE-1"],
     ["events", "CORE-1"],
     ["issues", "project", "CORE"],
+    ["issues", "query"],
     ["issue", "CORE-1", "results"],
     ["issue", "CORE-9", "results"],
   ]);

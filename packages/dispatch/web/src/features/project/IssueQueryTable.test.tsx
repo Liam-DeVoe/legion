@@ -49,8 +49,9 @@ afterEach(() => {
 });
 
 /** Draws one list of `query` over `issues`, which the stubbed listing narrows by the statuses it
- *  is asked for, as the server does. */
-function list(query: IssueListQuery, issues: IssueSummary[]) {
+ *  is asked for, as the server does, in a box `width` px wide: the unit DOM lays nothing out, so
+ *  the box's width is given here. */
+function list(query: IssueListQuery, issues: IssueSummary[], width = 1280) {
   const listing = spyOn(api, "listIssues").mockImplementation(async (options = {}) =>
     issues.filter((row) => options.status === undefined || options.status.includes(row.status))
   );
@@ -68,6 +69,12 @@ function list(query: IssueListQuery, issues: IssueSummary[]) {
       return this.dataset.testid === "list1-scroll" ? 600 : (descriptor?.get?.call(this) ?? 0);
     },
   });
+  const bounds = HTMLElement.prototype.getBoundingClientRect;
+  HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+    return this.dataset.testid === "list1-scroll"
+      ? DOMRect.fromRect({ height: 600, width, x: 0, y: 0 })
+      : bounds.call(this);
+  };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["whoami"], { event_head: "0", login: "alice", kind: "user" });
   const view = render(
@@ -86,6 +93,7 @@ function list(query: IssueListQuery, issues: IssueSummary[]) {
     state.mockRestore();
     agents.mockRestore();
     viewer.mockRestore();
+    HTMLElement.prototype.getBoundingClientRect = bounds;
     if (descriptor) Object.defineProperty(HTMLElement.prototype, "clientHeight", descriptor);
     else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
   });
@@ -127,7 +135,7 @@ test("a list draws its five columns with their sorts and filters, and no bar abo
   const headers = within(section)
     .getAllByRole("columnheader")
     .map((header) => header.textContent?.trim() ?? "");
-  expect(headers.map((text) => text.replace(/Filter .*$/, "").trim())).toEqual([
+  expect(headers.map((text) => text.replace(/Filter.*$/, "").trim())).toEqual([
     "Status",
     "Key",
     "Title",
@@ -165,11 +173,32 @@ test("a list draws its five columns with their sorts and filters, and no bar abo
 // A query with no status has no Status filter: the list reads every status, done included
 // (dispatch://INFRA-4935/spec#b-r-exact-query).
 test("a list whose query names no status reads every status", async () => {
-  const { listing } = list(
-    { labels: ["overnight"], priorities: [], projects: [], statuses: [] },
-    [issue("INFRA-1"), issue("OSSV-2", { status: "done" })]
-  );
+  const { listing } = list({ labels: ["overnight"], priorities: [], projects: [], statuses: [] }, [
+    issue("INFRA-1"),
+    issue("OSSV-2", { status: "done" }),
+  ]);
   await screen.findByRole("row", { name: "OSSV-2 Work OSSV-2" });
   expect(listing).toHaveBeenCalledWith({ label: ["overnight"] });
   expect(screen.getByRole("row", { name: "INFRA-1 Work INFRA-1" })).toBeDefined();
+});
+
+// On a phone the Key column goes and each row's key stands above its title, so the title keeps
+// the width (dispatch://INFRA-4935/spec#b-r-phone-key).
+test("in a box 400 px wide a list draws the key above the title, with no Key column", async () => {
+  list(
+    { labels: ["dispatch-ux"], priorities: [], projects: [], statuses: [] },
+    [issue("INFRA-4935")],
+    400
+  );
+  const row = await screen.findByRole("row", { name: "INFRA-4935 Work INFRA-4935" });
+  await waitFor(() =>
+    expect(
+      screen
+        .getAllByRole("columnheader")
+        .map((header) => header.textContent?.replace(/Filter.*$/, ""))
+    ).toEqual(["Status", "Title", "Priority", "Open asks"])
+  );
+  const title = within(row).getAllByRole("cell")[1] as HTMLElement;
+  expect(within(title).getByRole("link", { name: "INFRA-4935" })).toBeDefined();
+  expect(within(title).getByText("Work INFRA-4935")).toBeDefined();
 });
