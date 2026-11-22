@@ -28,8 +28,9 @@
 #
 # A batch runs each run as `rig.sh run <scenario> <label> <n> <index> <start> [<case>]`, which
 # needs that batch's services: <index> is the run's place in the batch, <start> the batch's start
-# in epoch seconds, and <case> a reviewer-own-head run's case. One run on its own is
-# `rig.sh batch <scenario> 1 <label>`.
+# in epoch seconds, and <case> the case of a heads scenario's world that names one
+# (heads-scenarios.txt, the catalog of those worlds, `<scenario> [<case>]` a line, in the order a
+# batch runs them). One run on its own is `rig.sh batch <scenario> 1 <label>`.
 #
 # A run's agent must not learn its scenario, its case or its label: a reviewer whose path read
 # `reviewer-own-head-sibling-fails-ablate-head-1` was told the rule the ablate label had removed.
@@ -39,7 +40,8 @@
 #   <work>/profiles/<id>             a label's profile, <id> 16 random hex digits
 #   <work>/maps/runs/<run>           a link to the run's directory, <run> its name,
 #                                    <scenario>-<label>-<n> (<scenario>-<case>-<label>-<n> for
-#                                    askgate and reviewer-own-head); score.ts reads runs here
+#                                    askgate and a world that names a case); score.ts reads runs
+#                                    here
 #   <work>/maps/profiles/<label>     a link to the label's profile
 #   <work>/maps/built-from/<run>     the run's label's built-from, as the run started
 #   <work>/maps/quiet/<id>...        a run of a -hidden label: its switch, the rig's reads of the
@@ -2372,13 +2374,38 @@ hide_state_off() {
   [ ! -e "$hide_state_file.results-before.txt" ] || mv -- "$hide_state_file.results-before.txt" "$R/results-before.txt"
 }
 
-# heads_scenario SCENARIO reads the one catalog that the proof and scorer read too.
+# heads_cases SCENARIO sets cases, an array of its caller's, to the case of each world of SCENARIO
+# that the heads-scenario catalog lists, in the catalog's order, which a batch runs them in: "" for
+# the scenario's own world, whose run names no case, and no element for a scenario the catalog
+# does not list. The catalog, heads-scenarios.txt, holds one world a line, `<scenario> [<case>]`,
+# and is the one heads-scenarios.ts reads for seed.ts, heads-world.ts, score.ts and hidden-proof.ts.
+heads_cases() {
+  local catalog=$root/packages/pi-legion/scripts/skill-scenarios/heads-scenarios.txt known which
+  [ -r "$catalog" ] || fail "cannot read the heads-scenario catalog $catalog"
+  cases=()
+  # A last line with no newline is a world too, as heads-scenarios.ts reads it.
+  while read -r known which || [ -n "$known" ]; do
+    [ "$known" != "$1" ] || cases+=("$which")
+  done <"$catalog"
+}
+
+# heads_scenario SCENARIO succeeds when the heads-scenario catalog lists a world of SCENARIO.
 heads_scenario() {
-  local scenario=$1 known
-  while IFS= read -r known; do
-    [ "$known" = "$scenario" ] && return 0
-  done <"$root/packages/pi-legion/scripts/skill-scenarios/heads-scenarios.txt"
-  return 1
+  local cases
+  heads_cases "$1"
+  [ ${#cases[@]} -gt 0 ]
+}
+
+# one_of NAME... prints the names that are not empty as a choice of one of them: "a", "a or b",
+# "a, b or c".
+one_of() {
+  local name listed='' last=''
+  for name in "$@"; do
+    [ -n "$name" ] || continue
+    [ -z "$last" ] || listed+="${listed:+, }$last"
+    last=$name
+  done
+  printf '%s\n' "${listed:+$listed or }$last"
 }
 
 # hidden_needs_heads LABEL SCENARIO fails when LABEL ends in -hidden and SCENARIO is not a heads
@@ -2471,16 +2498,19 @@ run_ci_pass_and_fail() {
 }
 
 cmd_run() {
-  local usage="usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail> <label> <n> <index> <start> [<case>]"
-  [ $# = 5 ] || { [ $# = 6 ] && { [ "$1" = reviewer-own-head ] || [ "$1" = architect-pass-and-fail ] || [ "$1" = ci-pass-and-fail ]; }; } || fail "$usage"
+  local usage="usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail> <label> <n> <index> <start> [<case>]" cases known listed=false
+  # A run takes a case when a world of its scenario in the heads-scenario catalog names one.
+  heads_cases "${1:-}"
+  [ $# = 5 ] || { [ $# = 6 ] && [ -n "${cases[*]}" ]; } || fail "$usage"
   local scenario=$1 label=$2 n=$3 index=$4 start=$5 scenario_case=${6:-} name old
   load_label "$label"
   hidden_needs_heads "$label" "$scenario"
   [[ $n =~ ^[0-9]+$ ]] || fail "run number '$n' is not a number"
   [[ $index =~ ^[0-9]+$ && $start =~ ^[0-9]+$ ]] || fail "run index '$index' or batch start '$start' is not a number"
   [ -f "$services_env" ] || fail "a run needs its batch's services: run \`rig.sh batch $scenario 1 $2\`"
-  # An askgate, reviewer-own-head or ci-pass-and-fail run's name carries its case, so the batches or
-  # runs of the cases, each numbered from 1, never remove each other's runs.
+  # An askgate run's name carries its case, and so does the run of a heads scenario's world that
+  # names one, so the batches or runs of the cases, each numbered from 1, never remove each other's
+  # runs.
   if [ "$scenario" = askgate ]; then
     case ${SKILL_SCENARIOS_ASKGATE_CASE:-} in
     facts | link | upload | nochange | nochange-rebuttal | nochange-block | untried | tried)
@@ -2488,21 +2518,10 @@ cmd_run() {
       ;;
     *) fail "SKILL_SCENARIOS_ASKGATE_CASE is '${SKILL_SCENARIOS_ASKGATE_CASE:-}', not facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried" ;;
     esac
-  elif [ "$scenario" = reviewer-own-head ]; then
-    case $scenario_case in
-    sibling-fails | ci-only | no-implementer | no-tester | no-verdict-fail | no-verdict-pass) name=$scenario-$scenario_case-$label-$n ;;
-    *) fail "the reviewer-own-head case '$scenario_case' is not sibling-fails, ci-only, no-implementer, no-tester, no-verdict-fail or no-verdict-pass" ;;
-    esac
-  elif [ "$scenario" = architect-pass-and-fail ] && [ -n "$scenario_case" ]; then
-    case $scenario_case in
-    no-verdict-fail | no-verdict-pass) name=$scenario-$scenario_case-$label-$n ;;
-    *) fail "the architect-pass-and-fail case '$scenario_case' is not no-verdict-fail or no-verdict-pass" ;;
-    esac
-  elif [ "$scenario" = ci-pass-and-fail ]; then
-    case $scenario_case in
-    reviewer | tester | architect) name=$scenario-$scenario_case-$label-$n ;;
-    *) fail "the ci-pass-and-fail case '$scenario_case' is not reviewer, tester or architect" ;;
-    esac
+  elif [ -n "${cases[*]}" ]; then
+    for known in "${cases[@]}"; do [ "$known" != "$scenario_case" ] || listed=true; done
+    $listed || fail "the $scenario case '$scenario_case' is not $(one_of "${cases[@]}")"
+    name=$scenario${scenario_case:+-$scenario_case}-$label-$n
   else
     name=$scenario-$label-$n
   fi
@@ -2563,14 +2582,14 @@ stop_batch() {
 
 cmd_batch() {
   [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail> <runs> <label>..."
-  local runs=$2 label n index=0 start scenario_case cases=('')
+  local runs=$2 label n index=0 start scenario_case cases
   batch_scenario=$1
   case $batch_scenario in ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite | reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail | ci-pass-and-fail) ;; *) fail "unknown scenario $batch_scenario" ;; esac
-  # reviewer-own-head runs each of its six cases, architect-pass-and-fail its own world and its two
-  # cases, and ci-pass-and-fail each of its three roles, the case the last argument of each run.
-  [ "$batch_scenario" != reviewer-own-head ] || cases=(sibling-fails ci-only no-implementer no-tester no-verdict-fail no-verdict-pass)
-  [ "$batch_scenario" != architect-pass-and-fail ] || cases=('' no-verdict-fail no-verdict-pass)
-  [ "$batch_scenario" != ci-pass-and-fail ] || cases=(reviewer tester architect)
+  # A heads scenario runs each of its worlds the heads-scenario catalog lists, in the catalog's
+  # order, the world's case the last argument of each run (none for the scenario's own world);
+  # another scenario runs one world, which names no case.
+  heads_cases "$batch_scenario"
+  [ ${#cases[@]} -gt 0 ] || cases=('')
   [ "$batch_scenario" != askgate ] || case ${SKILL_SCENARIOS_ASKGATE_CASE:-} in
     facts | link | upload | nochange | nochange-rebuttal | nochange-block | untried | tried) ;;
     *) fail "an askgate batch needs SKILL_SCENARIOS_ASKGATE_CASE set to facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried (got '${SKILL_SCENARIOS_ASKGATE_CASE:-}')" ;;
@@ -2607,12 +2626,11 @@ cmd_batch() {
   services_up
   # Each run of a heads scenario starts a natsd of its own (own_github), built here once, as
   # scripts/e2e/verification-results.sh builds it.
-  case $batch_scenario in reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail | ci-pass-and-fail)
+  if heads_scenario "$batch_scenario"; then
     mkdir -p "$S/bin"
     go -C "$root/packages/envoy" build -o "$S/bin/natsd" ./internal/testnats/cmd/natsd ||
       fail "./internal/testnats/cmd/natsd did not build"
-    ;;
-  esac
+  fi
   start=$(date +%s)
   for label in "$@"; do
     for scenario_case in "${cases[@]}"; do

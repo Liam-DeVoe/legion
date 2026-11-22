@@ -30,7 +30,7 @@ import { z } from "zod";
 // (`src/no-cross-import.test.ts`).
 import { RULE_NAMES, RULE_REFUSAL_OPENING } from "../../../pi-envoy/extensions/askgate/rules-check";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
-import { HEADS_SCENARIOS } from "./heads-scenarios";
+import { HEADS_SCENARIOS, headsCases } from "./heads-scenarios";
 import {
   CheckableFile,
   CheckableOutput,
@@ -811,36 +811,25 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   return { run, scenario: "tester-proof", label, pass, ref, notes: notes.join(" ") };
 }
 
-/** The cases of reviewer-own-head, which rig.sh's run_reviewer_own_head runs. */
-const OWN_HEAD_CASES = [
-  "sibling-fails",
-  "ci-only",
-  "no-implementer",
-  "no-tester",
-  "no-verdict-fail",
-  "no-verdict-pass",
-];
-/** A reviewer-own-head run's directory, reviewer-own-head-<case>-<label>-<n>, as an askgate run's
- * names its case (ASKGATE_RUN). */
-const OWN_HEAD_RUN = new RegExp(`^reviewer-own-head-(${OWN_HEAD_CASES.join("|")})-(.+)-\\d+$`);
-/** The cases of architect-pass-and-fail beside its own world, a pass and a later fail at the head,
- * whose run names no case. */
-const ARCHITECT_CASES = ["no-verdict-fail", "no-verdict-pass"];
-/** An architect-pass-and-fail run's directory: architect-pass-and-fail-<label>-<n> for the
- * scenario's own world, whose case is "", or architect-pass-and-fail-<case>-<label>-<n>. */
-const ARCHITECT_RUN = new RegExp(
-  `^architect-pass-and-fail-(?:(${ARCHITECT_CASES.join("|")})-)?(.+)-\\d+$`
+/** The run directory's name of each heads scenario a world of which names a case, keyed by the
+ * scenario: <scenario>-<case>-<label>-<n>, as an askgate run's names its case (ASKGATE_RUN), and
+ * <scenario>-<label>-<n> for the scenario's own world where heads-scenarios.txt lists one, whose
+ * case is "". The longest case that fits is tried first, as ASKGATE_RUN tries it. */
+const HEADS_CASED_RUNS: Record<string, RegExp> = Object.fromEntries(
+  HEADS_SCENARIOS.flatMap((scenario) => {
+    const cases = headsCases(scenario);
+    const named = cases.filter((which) => which !== "").toSorted((a, b) => b.length - a.length);
+    if (named.length === 0) return [];
+    const own = cases.includes("") ? "?" : "";
+    return [[scenario, new RegExp(`^${scenario}-(?:(${named.join("|")})-)${own}(.+)-\\d+$`)]];
+  })
 );
-/** A ci-pass-and-fail run's directory, ci-pass-and-fail-<role>-<label>-<n>: the role it drives. */
-const CI_PASS_AND_FAIL_RUN = /^ci-pass-and-fail-(reviewer|tester|architect)-(.+)-\d+$/;
 /** The scenarios whose run directory names a case before its label, each with the pattern of its
  * directory's name, whose first group is the case: the one list of them that scoreRuns and
  * visible-world.ts both read. architect-pass-and-fail's own world names none, so its case is "". */
 export const CASED_RUNS: Readonly<Record<string, RegExp>> = {
   askgate: ASKGATE_RUN,
-  "reviewer-own-head": OWN_HEAD_RUN,
-  "architect-pass-and-fail": ARCHITECT_RUN,
-  "ci-pass-and-fail": CI_PASS_AND_FAIL_RUN,
+  ...HEADS_CASED_RUNS,
 };
 /** The scenarios whose world rig.sh's heads_world builds, each with its results-before.txt. */
 /** The line `dispatch results` prints for #702's head under a check (fixture_heads waits for it). */

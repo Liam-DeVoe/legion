@@ -1915,6 +1915,8 @@ describe("cmd_batch", () => {
     const result = bash(
       [
         fn("fail"),
+        fn("heads_cases"),
+        fn("heads_scenario"),
         fn("hidden_needs_heads"),
         fn("cmd_batch"),
         "load_label() { :; }",
@@ -1923,7 +1925,7 @@ describe("cmd_batch", () => {
         "services_up() { :; }",
         "date() { echo 1700000000; }",
         `go() { printf 'go %s\\n' "$*" >>"$here/builds"; }`,
-        "here=$1 work=$2 root=/checkout",
+        `here=$1 work=$2 root=${root}`,
         "cmd_batch reviewer-own-head 2 head ablate-head",
       ].join("\n"),
       [here, rigWork]
@@ -1946,7 +1948,7 @@ describe("cmd_batch", () => {
     const runs = readFileSync(path.join(here, "runs"), "utf8").split("\n").filter(Boolean);
     expect(runs.toSorted()).toEqual(want.toSorted());
     expect(readFileSync(path.join(here, "builds"), "utf8")).toBe(
-      `go -C /checkout/packages/envoy build -o ${rigWork}/services/bin/natsd ./internal/testnats/cmd/natsd\n`
+      `go -C ${root}/packages/envoy build -o ${rigWork}/services/bin/natsd ./internal/testnats/cmd/natsd\n`
     );
   });
 
@@ -1960,12 +1962,15 @@ describe("cmd_batch", () => {
     writeFileSync(path.join(rigWork, "services", "env"), "");
     const script = [
       fn("fail"),
+      fn("heads_cases"),
+      fn("heads_scenario"),
       fn("hidden_needs_heads"),
+      fn("one_of"),
       fn("cmd_run"),
       'load_label() { P=$work/profiles/0000000000000001; mkdir -p "$P"; echo "checkout /c/$1" >"$P/built-from"; }',
       "on_exit() { :; }",
       `run_reviewer_own_head() { printf '%s\\n' "$*" >"$R/ran"; echo exit=0 >"$R/out.txt"; }`,
-      "work=$1 maps=$1/maps services_env=$1/services/env",
+      `work=$1 maps=$1/maps services_env=$1/services/env root=${root}`,
       'cmd_run reviewer-own-head head 1 3 1700000000 "$2"',
     ].join("\n");
     const link = path.join(rigWork, "maps", "runs", "reviewer-own-head-ci-only-head-1");
@@ -2002,6 +2007,7 @@ describe("cmd_batch", () => {
     writeFileSync(path.join(rigWork, "services", "env"), "");
     const script = [
       fn("fail"),
+      fn("heads_cases"),
       fn("heads_scenario"),
       fn("hidden_needs_heads"),
       fn("cmd_run"),
@@ -2033,6 +2039,7 @@ describe("cmd_batch", () => {
     const batch = bash(
       [
         fn("fail"),
+        fn("heads_cases"),
         fn("heads_scenario"),
         fn("hidden_needs_heads"),
         fn("cmd_batch"),
@@ -2062,8 +2069,10 @@ describe("cmd_batch", () => {
     writeFileSync(path.join(work, "services", "env"), "");
     const script = [
       fn("fail"),
+      fn("heads_cases"),
       fn("heads_scenario"),
       fn("hidden_needs_heads"),
+      fn("one_of"),
       fn("cmd_run"),
       'load_label() { P=$work/profiles/0000000000000001; mkdir -p "$P"; echo "checkout /c/$1" >"$P/built-from"; }',
       "on_exit() { :; }",
@@ -2164,6 +2173,7 @@ describe("cmd_batch", () => {
     const result = bash(
       [
         fn("fail"),
+        fn("heads_cases"),
         fn("heads_scenario"),
         fn("hidden_needs_heads"),
         fn("cmd_batch"),
@@ -2192,6 +2202,7 @@ describe("cmd_batch", () => {
     const batch = bash(
       [
         fn("fail"),
+        fn("heads_cases"),
         fn("heads_scenario"),
         fn("hidden_needs_heads"),
         fn("cmd_batch"),
@@ -2221,8 +2232,10 @@ describe("cmd_batch", () => {
     writeFileSync(path.join(work, "services", "env"), "");
     const script = [
       fn("fail"),
+      fn("heads_cases"),
       fn("heads_scenario"),
       fn("hidden_needs_heads"),
+      fn("one_of"),
       fn("cmd_run"),
       'load_label() { P=$work/profiles/0000000000000001; mkdir -p "$P"; echo "checkout /c/$1" >"$P/built-from"; }',
       "on_exit() { :; }",

@@ -1,7 +1,7 @@
-// The world of the heads scenarios (reviewer-own-head, reviewer-pass-and-fail and
-// architect-pass-and-fail) on a run's scratch Dispatch, its GitHub stand-in and its NATS: the modes
-// `seed.ts heads-issue` and `seed.ts heads-events`, whose usage seed.ts's header gives, and which
-// seed.ts runs. e2e/api.ts reads its port when it loads, as seed.ts's header says.
+// The world of the heads scenarios (heads-scenarios.txt) on a run's scratch Dispatch, its GitHub
+// stand-in and its NATS: the modes `seed.ts heads-issue` and `seed.ts heads-events`, whose usage
+// seed.ts's header gives, and which seed.ts runs. e2e/api.ts reads its port when it loads, as
+// seed.ts's header says.
 import { readFileSync, writeFileSync } from "node:fs";
 import { connect, StringCodec } from "nats";
 import { z } from "zod";
@@ -13,33 +13,13 @@ import {
   e2eAgentToken,
 } from "../../../dispatch/e2e/api";
 import { harnessPorts } from "../../../dispatch/e2e/harness-ports";
+import { headsCases } from "./heads-scenarios";
 import { RIG_WORLD } from "./rig-world";
 import { agentPost, IMPLEMENTER } from "./seed-requests";
 
 /** The repository of the heads scenarios' world and its default branch, rig-world.json's. */
 const HEADS_REPO = RIG_WORLD.repository;
 const HEADS_BASE = RIG_WORLD.defaultBranch;
-/** The cases of reviewer-own-head, each one batch of rig.sh's cmd_batch. */
-const OWN_HEAD_CASES = [
-  "sibling-fails",
-  "ci-only",
-  "no-implementer",
-  "no-tester",
-  "no-verdict-fail",
-  "no-verdict-pass",
-] as const;
-/** The cases of architect-pass-and-fail beside its own world, which names no case. */
-const ARCHITECT_CASES = ["no-verdict-fail", "no-verdict-pass"] as const;
-/** The cases of ci-pass-and-fail: the role its run drives through one world. */
-const CI_ROLES = ["reviewer", "tester", "architect"] as const;
-/** A heads scenario's world in one word: a case of reviewer-own-head, the scenario's name,
- * architect-pass-and-fail with its case, or ci-pass-and-fail with its role. */
-type HeadsWorld =
-  | (typeof OWN_HEAD_CASES)[number]
-  | "reviewer-pass-and-fail"
-  | "architect-pass-and-fail"
-  | `architect-pass-and-fail-${(typeof ARCHITECT_CASES)[number]}`
-  | `ci-pass-and-fail-${(typeof CI_ROLES)[number]}`;
 /** The job of k1's `ci_check` in the case ci-only, whose check run the GitHub stand-in serves, and
  * the job of k1's `ci_check` in ci-pass-and-fail, whose third attempt at #702's head is still going
  * while its first two recorded a pass and then a fail there (rig.sh's ci_job_results). Each is
@@ -71,23 +51,13 @@ const HeadsFixture = z.object({
 const TESTER = { kind: "session", id: "rig-tester" } as const;
 const REVIEWER = { kind: "session", id: "rig-reviewer" } as const;
 
-/** The world `<scenario> [<case>]` names, or undefined when it names none. */
-export function headsWorld(scenario: string, which: string | undefined): HeadsWorld | undefined {
-  if (scenario === "reviewer-own-head") return OWN_HEAD_CASES.find((known) => known === which);
-  if (scenario === "ci-pass-and-fail") {
-    const role = CI_ROLES.find((known) => known === which);
-    return role === undefined ? undefined : `ci-pass-and-fail-${role}`;
-  }
-  if (scenario === "architect-pass-and-fail" && which !== undefined) {
-    const known = ARCHITECT_CASES.find((one) => one === which);
-    return known === undefined ? undefined : `architect-pass-and-fail-${known}`;
-  }
-  if (
-    which === undefined &&
-    (scenario === "reviewer-pass-and-fail" || scenario === "architect-pass-and-fail")
-  )
-    return scenario;
-  return undefined;
+/** The world `<scenario> [<case>]` names when heads-scenarios.txt lists it, else undefined: a world
+ * of reviewer-own-head is named by its case alone, any other by its scenario's name with the case
+ * after it, and a scenario's own world, which names no case, by the scenario's name. */
+export function headsWorld(scenario: string, which: string | undefined): string | undefined {
+  if (which === "" || !headsCases(scenario).includes(which ?? "")) return undefined;
+  if (which === undefined) return scenario;
+  return scenario === "reviewer-own-head" ? which : `${scenario}-${which}`;
 }
 
 /** `PUT /__fixture/repos` of the GitHub stand-in FAKE_GITHUB_PORT names, which replaces every
@@ -138,7 +108,7 @@ async function agentPut(route: string, input: Record<string, unknown>): Promise<
  * intake takes an event only while a settings row exists; then the issue, its spec, and its
  * Verification document, whose one check k1 carries `ci_check` in the case ci-only and in
  * ci-pass-and-fail. The fixture names that document, whose block k1 rig.sh's ci_job_results reads. */
-export async function headsIssue(file: string, world: HeadsWorld): Promise<void> {
+export async function headsIssue(file: string, world: string): Promise<void> {
   await seedGithub({});
   await agentPut(`/api/v1/settings/repo-projects/${HEADS_REPO}`, {
     default: true,
@@ -257,11 +227,7 @@ const TESTER_PASS: HeadsResult = { ...IMPLEMENTER_PASS, role: "tester" };
  * role's prompt names (roles/tester.md, roles/reviewer.md) and no other: the tester's
  * `implementerProof` is `{how}` alone, since no phase completion or record carries its verdict. It
  * adds each record's `{id, version}` and each pull request body's line of k1 to <file>. */
-export async function headsEvents(
-  file: string,
-  headsFile: string,
-  world: HeadsWorld
-): Promise<void> {
+export async function headsEvents(file: string, headsFile: string, world: string): Promise<void> {
   const fixture = HeadsFixture.parse(JSON.parse(readFileSync(file, "utf8")));
   const heads = z
     .record(z.string(), z.string().regex(/^[0-9a-f]{40}$/))
@@ -493,12 +459,16 @@ export async function headsEvents(
   } else if (ciRunning) {
     test = await handoff("test");
     if (world === "ci-pass-and-fail-architect") review = await handoff("review");
-  } else {
+  } else if (world === "reviewer-pass-and-fail" || world === "architect-pass-and-fail") {
     await record(IMPLEMENTER_PASS);
     await record(TESTER_PASS);
     test = await handoff("test");
     await record(laterFail);
     if (world === "architect-pass-and-fail") review = await handoff("review");
+  } else {
+    // A world the catalog lists and this function records nothing for would leave its run's issue
+    // without the results its agent is to judge.
+    throw new Error(`heads-events records no results for the world ${world}`);
   }
   const written: z.infer<typeof HeadsFixture> = {
     ...fixture,

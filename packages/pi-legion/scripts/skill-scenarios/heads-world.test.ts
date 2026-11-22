@@ -50,10 +50,9 @@ interface Call {
   body: Record<string, unknown>;
 }
 
-/** Runs heads-issue and heads-events of `role`'s world against the stubs, and answers each call. */
-async function world(role: string) {
+/** Stubs Dispatch and the GitHub stand-in, answering each call; returns the calls, in order. */
+function stubFetch(): Call[] {
   const calls: Call[] = [];
-  published.length = 0;
   let handoffs = 0;
   spyOn(globalThis, "fetch").mockImplementation((async (
     input: string | URL | Request,
@@ -70,6 +69,13 @@ async function world(role: string) {
       return json({ id: `h-${++handoffs}`, version: handoffs }, 201);
     return json({});
   }) as typeof fetch);
+  return calls;
+}
+
+/** Runs heads-issue and heads-events of `role`'s world against the stubs, and answers each call. */
+async function world(role: string) {
+  published.length = 0;
+  const calls = stubFetch();
   const dir = dirOf(role);
   const file = path.join(dir, "fixture.json");
   const headsFile = path.join(dir, "heads.json");
@@ -179,4 +185,27 @@ test("ci-pass-and-fail takes the three roles and no other case", () => {
     undefined,
     undefined,
   ]);
+});
+
+// Catches: a world heads-scenarios.txt lists that heads-events records nothing of its own for,
+// which then got reviewer-pass-and-fail's results and no review record, so its agent judged a
+// world no case defined.
+test("heads-events refuses a world it records no results for, and records none", async () => {
+  // The hook's ports and NATS, which restoreEnvironment puts back after each test.
+  process.env.DISPATCH_E2E_PORT = "18777";
+  process.env.FAKE_GITHUB_PORT = "18778";
+  process.env.DISPATCH_E2E_NATS_URL = "nats://127.0.0.1:1";
+  const calls = stubFetch();
+  const dir = dirOf("unknown");
+  const file = path.join(dir, "fixture.json");
+  const headsFile = path.join(dir, "heads.json");
+  writeFileSync(headsFile, JSON.stringify({ "702": "a".repeat(40) }));
+  const unknown = "architect-pass-and-fail-no-verdict";
+  await heads.headsIssue(file, unknown);
+  await expect(heads.headsEvents(file, headsFile, unknown)).rejects.toThrow(
+    `heads-events records no results for the world ${unknown}`
+  );
+  expect(
+    calls.filter((call) => call.path.endsWith("/results") || call.path.includes("/handoffs/"))
+  ).toEqual([]);
 });

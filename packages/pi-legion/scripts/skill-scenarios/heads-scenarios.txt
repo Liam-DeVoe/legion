@@ -1,4 +1,13 @@
-reviewer-own-head
+reviewer-own-head sibling-fails
+reviewer-own-head ci-only
+reviewer-own-head no-implementer
+reviewer-own-head no-tester
+reviewer-own-head no-verdict-fail
+reviewer-own-head no-verdict-pass
 reviewer-pass-and-fail
 architect-pass-and-fail
-ci-pass-and-fail
+architect-pass-and-fail no-verdict-fail
+architect-pass-and-fail no-verdict-pass
+ci-pass-and-fail reviewer
+ci-pass-and-fail tester
+ci-pass-and-fail architect
