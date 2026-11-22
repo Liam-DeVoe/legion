@@ -280,6 +280,7 @@ const BoardLaneRow = memo(function BoardLaneRow({
       </h2>
       <div
         className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
+        data-layout-scroll="board"
         data-testid="board-lane-scroll-container"
       >
         <div className="flex w-max items-stretch gap-4">
@@ -727,6 +728,7 @@ export function IssueBoard({
           ) : (
             <div
               className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
+              data-layout-scroll="board"
               data-testid="board-scroll-container"
             >
               <div className="flex w-max items-stretch gap-4">
