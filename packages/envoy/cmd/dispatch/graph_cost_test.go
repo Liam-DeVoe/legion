@@ -74,15 +74,11 @@ const (
 	// statement on a fresh connection pays for the pages every run after it finds cached, and
 	// a measurement of a corpus is not a measurement of a cold cache (measureDismissedScale).
 	costWarmUp = 1
-	// costBudget is what c-write-cost and c-read-cost hold every path to: a path whose p99
-	// rises by more than this much above the same path at the commit before this child fails.
+	// costBudget is what c-read-cost holds every read to: a read whose p99 rises by more than
+	// this much above the same read at the commit before this child fails. c-write-cost holds
+	// its request paths to ratios instead (write_cost_test.go, writeCostEditRatio and the three
+	// beside it).
 	costBudget = 100 * time.Millisecond
-	// writeCostEditBudget is what the edit of one block of a 1,999-block document carries
-	// instead of costBudget. Placement is a tuple and a projected column now, and the pass
-	// reads every block's placement to find the ones that moved, because a block that moved
-	// without its text changing is found no other way. Measured at +174.0 ms on this pod after
-	// the allocation cut; the rest is margin for this pod's own swing.
-	writeCostEditBudget = 250 * time.Millisecond
 	// writeCostRewriteRowBudget is what each store row of a whole-document rewrite may cost.
 	// The rewrite makes every block of the document new to the index, so it writes about 14,000
 	// rows the commit before this child writes none of: a total would refuse the model, where a
