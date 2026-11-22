@@ -22,7 +22,7 @@
 #
 # The callers: callout-check.sh, project-secrets-check.sh and scripts/e2e/nats-callout-sessions.sh
 # read dev-stack.sh's banner; airlock-check.sh, judge-check.sh and dev-airlock-lease.test.sh read
-# dev-broker.sh's and then dev-airlock.sh's; github-narrowing-check.sh and dev-airlock.sh read
+# dev-broker.sh's and then dev-airlock.sh's; github-profile-check.sh and dev-airlock.sh read
 # dev-broker.sh's. lib/rig-banner.test.sh holds each array below to its rig's own banner text.
 
 # Each rig's banner: its first line and its last, each a whole line of the log.
