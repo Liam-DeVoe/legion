@@ -169,26 +169,33 @@ func (c *countedLogins) Login(r *http.Request) (string, error) {
 // end marks the cookie's session ended: every lookup that starts from now on is counted.
 func (c *countedLogins) end() { c.ended.Store(true) }
 
-// heartbeatSlack is what a loaded runner may add to a heartbeat: how much later than a heartbeat
-// after the last call returned the next call of a socket's heartbeat may start.
+// heartbeatSlack is what scheduling may add to a heartbeat beside the longest single stall a stall
+// meter saw: how much later than a heartbeat after the last call returned the next call of a
+// socket's heartbeat may start, once that stall is allowed too (gapWithin).
 const heartbeatSlack = time.Second
 
 // heartbeatCalls records, once the test starts it (record), each call a socket's heartbeat makes
 // into the product: when it started, when it returned, and whether its answer refused the caller.
 // The calls are the product's own - the API Identity's lookups on a document socket
 // (countedLogins), the broker-token verifier's clock reads and introspections on a live socket
-// (timeBrokerCalls) - so their times tell a heartbeat that asks on every tick of StreamHeartbeat
-// from one that asks every second tick, keeps an answer it stored, or runs on a ticker of its own,
-// with no span the test chose. whileCallerResolves arms its ticker before its first call, and a
-// tick that falls during a slow call waits for it, so the next call starts at most a heartbeat
-// after the last one returned however long a call takes; heartbeatSlack is what a loaded runner
-// may add to that. A call that refused is the heartbeat's last: it closes the socket and asks no
-// more, so nothing is expected after it, however long the close itself takes.
+// (timeBrokerCalls) - and so are the gaps between them: from the return of the calls before one
+// to that call's start. whileCallerResolves arms its ticker before its first call, and a tick that
+// falls during a slow call waits for it, so the next call starts at most a heartbeat after the
+// last one returned however long a call takes. Each gap is judged only once the call that ends it
+// is recorded, or at the close, never off the test's clock while the heartbeat may be about to
+// call, and is allowed a heartbeat, heartbeatSlack, and the longest single stall the row's stall
+// meter saw inside it: the delay of the one goroutine wake there, the heartbeat's own on its tick
+// (requireGapWithin). A heartbeat that skips a tick, keeps an answer it stored past a beat, or asks
+// on a ticker of its own slower than a heartbeat and heartbeatSlack leaves a gap past that; a
+// ticker of its own no slower than that, with the stall, passes, since nothing in the gap tells it
+// from a scheduling delay. A call that refused is the heartbeat's last: it closes the socket and
+// asks no more, so no gap after it is judged.
 type heartbeatCalls struct {
 	mu        sync.Mutex
 	recording bool
-	since     time.Time
 	calls     []heartbeatCall
+	// judged is how many of calls have had the gap before them judged (newGaps).
+	judged int
 	// introspections are the verifier's introspections, recorded from the start, the upgrade's
 	// own among them.
 	introspections []heartbeatCall
@@ -201,11 +208,15 @@ type heartbeatCall struct {
 	refused    bool
 }
 
+// heartbeatGap is a span in which no call of the heartbeat ran: from the latest return of the
+// calls before a call to that call's start.
+type heartbeatGap struct{ from, to time.Time }
+
 // record starts recording the heartbeat's calls.
 func (h *heartbeatCalls) record() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.recording, h.since = true, time.Now()
+	h.recording = true
 }
 
 // begin records the start of a call, once recording, and answers what records its return and
@@ -232,17 +243,24 @@ func (h *heartbeatCalls) introspected(start, end time.Time) {
 	h.introspections = append(h.introspections, heartbeatCall{start: start, end: end})
 }
 
-// longestGap is the longest span of the recording in which no call ran - from when recording
-// began, or the latest return, to the next call's start - and how many calls it holds. With open,
-// the span from the latest return to now counts as well, unless a call is still running or one
-// refused, after which the heartbeat asks no more.
-func (h *heartbeatCalls) longestGap(open bool) (time.Duration, int) {
+// newGaps answers the gaps before the calls recorded since it last answered, and marks those calls
+// judged: one before each call that started once every call before it had returned, none before
+// the first call (nothing of the product's comes before it), none before a call that started while
+// an earlier one ran, and none after a call that refused. A call is recorded at its start, so the
+// gap before it is whole once it is recorded; a call still running when a later one is recorded
+// was running at that call's start, and its return comes after.
+func (h *heartbeatCalls) newGaps() []heartbeatGap {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	latest, running, refused, longest := h.since, false, false, time.Duration(0)
-	for _, call := range h.calls {
-		if !running {
-			longest = max(longest, call.start.Sub(latest))
+	var gaps []heartbeatGap
+	var latest time.Time
+	running, refused := false, false
+	for i, call := range h.calls {
+		if refused {
+			break
+		}
+		if i >= h.judged && i > 0 && !running && call.start.After(latest) {
+			gaps = append(gaps, heartbeatGap{from: latest, to: call.start})
 		}
 		switch {
 		case call.end.IsZero():
@@ -250,12 +268,10 @@ func (h *heartbeatCalls) longestGap(open bool) (time.Duration, int) {
 		case call.end.After(latest):
 			latest = call.end
 		}
-		refused = refused || call.refused
+		refused = call.refused
 	}
-	if open && !running && !refused {
-		longest = max(longest, time.Since(latest))
-	}
-	return longest, len(h.calls)
+	h.judged = len(h.calls)
+	return gaps
 }
 
 // refusedAt is when the heartbeat's first refusing call returned: the refusal that orders the
@@ -273,17 +289,17 @@ func (h *heartbeatCalls) refusedAt() (time.Time, bool) {
 
 // requireClosedAfterRefusal fails the test unless the server ended the socket (closedAt) within a
 // heartbeat of the heartbeat's refusing call returning (refusedAt), both the product's own
-// records, allowing the time meter saw this process stalled between them (requireClosedWithin):
-// a refused caller's socket closes as soon as its refusal is read, and a product that waits on
-// its own before closing it fails here.
-func (rig *documentSocketTokenRig) requireClosedAfterRefusal(t *testing.T, meter *stallMeter, what string, heartbeat time.Duration) {
+// records, allowing for each of hops - the goroutine wakes between the two records - the longest
+// single stall meter saw between them (requireClosedWithin): a refused caller's socket closes as
+// soon as its refusal is read, and a product that waits on its own before closing it fails here.
+func (rig *documentSocketTokenRig) requireClosedAfterRefusal(t *testing.T, meter *stallMeter, what string, heartbeat time.Duration, hops int) {
 	t.Helper()
 	refused, ok := rig.heartbeats.refusedAt()
 	if !ok {
 		t.Fatalf("%s ended with no call of its heartbeat refusing its caller", what)
 	}
 	closed := testwait.Until(t, "the server's own end of "+what, rig.closedAt)
-	requireClosedWithin(t, meter, what, refused, closed, heartbeat)
+	requireClosedWithin(t, meter, what, refused, closed, heartbeat, hops)
 }
 
 // count is how many calls the recording holds.
@@ -295,42 +311,35 @@ func (h *heartbeatCalls) count() int {
 
 // lastIntrospectionGap is the span from the answer of the last introspection but one to the
 // request of the last, and false when there were fewer than two.
-func (h *heartbeatCalls) lastIntrospectionGap() (time.Duration, bool) {
+func (h *heartbeatCalls) lastIntrospectionGap() (heartbeatGap, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if len(h.introspections) < 2 {
-		return 0, false
+		return heartbeatGap{}, false
 	}
 	last, before := h.introspections[len(h.introspections)-1], h.introspections[len(h.introspections)-2]
-	return last.start.Sub(before.end), true
+	return heartbeatGap{from: before.end, to: last.start}, true
 }
 
-// await waits until done holds, and fails the test once the heartbeat has made no call for longer
-// than heartbeat and heartbeatSlack while it still had one to make (no call of it refused): a
-// heartbeat that stopped asking, or asks less often, ends the wait by name rather than at the test
-// binary's deadline, which is the wait's one other bound.
-func (h *heartbeatCalls) await(t *testing.T, heartbeat time.Duration, what string, done func() bool) {
+// await waits until done holds, judging each gap of the heartbeat's calls as the call that ends it
+// is recorded (requireEveryHeartbeat): a heartbeat that asks less often fails by name at its next
+// call. A heartbeat that stops asking makes no call to judge, and the wait's one bound, the test
+// binary's deadline, ends it.
+func (h *heartbeatCalls) await(t *testing.T, meter *stallMeter, heartbeat time.Duration, what string, done func() bool) {
 	t.Helper()
 	testwait.UntilPolling(t, 10*time.Millisecond, what+" (the heartbeat's calls recorded)", func() (int, bool) {
-		if done() {
-			return h.count(), true
-		}
-		gap, calls := h.longestGap(true)
-		if gap > heartbeat+heartbeatSlack {
-			t.Fatalf("waiting for %s, the socket's heartbeat made no call for %s (after %d calls), want one at most a heartbeat (%s) after the last returned: it asks less often than StreamHeartbeat, or stopped asking",
-				what, gap.Round(time.Millisecond), calls, heartbeat)
-		}
-		return calls, false
+		h.requireEveryHeartbeat(t, meter, heartbeat)
+		return h.count(), done()
 	})
 }
 
-// requireEveryHeartbeat fails the test unless every call the recording holds started at most a
-// heartbeat and heartbeatSlack after the one before it returned.
-func (h *heartbeatCalls) requireEveryHeartbeat(t *testing.T, heartbeat time.Duration) {
+// requireEveryHeartbeat fails the test unless each gap before a call recorded since it, or await,
+// last judged is within a heartbeat and heartbeatSlack plus the longest single stall meter saw
+// inside it (requireGapWithin).
+func (h *heartbeatCalls) requireEveryHeartbeat(t *testing.T, meter *stallMeter, heartbeat time.Duration) {
 	t.Helper()
-	if gap, calls := h.longestGap(false); gap > heartbeat+heartbeatSlack {
-		t.Fatalf("the socket's heartbeat made no call for %s in %d calls, want one at most a heartbeat (%s) after the last returned: it asks less often than StreamHeartbeat",
-			gap.Round(time.Millisecond), calls, heartbeat)
+	for _, gap := range h.newGaps() {
+		requireGapWithin(t, meter, "the socket's heartbeat did not ask on every beat: from the return of its calls to the start of the next", gap.from, gap.to, heartbeat+heartbeatSlack)
 	}
 }
 
@@ -418,13 +427,15 @@ func presentedHeaders(presented *http.Request) http.Header {
 // session's end, while the broker still holds the token live and has not once been asked about
 // it. "The first" is read off the heartbeat's own calls, its lookups of the cookie
 // (countedLogins): no lookup that started once the session had ended may find it still resolving,
-// as one served from a cache of the session's state would, and every lookup starts at most a
-// heartbeat and heartbeatSlack after the one before it returned (heartbeatCalls), so a heartbeat
-// that asks every second tick, keeps an answer it stored or runs on a ticker of its own fails too.
-// The server ends the socket within a heartbeat of the lookup that refused returning, by the
-// server's own record of its close (requireClosedAfterRefusal), so a product that waits before it
+// as one served from a cache of the session's state would, and each lookup starts within a
+// heartbeat and heartbeatSlack of the return of the one before it, plus the longest stall the
+// process saw in that gap (heartbeatCalls), so a heartbeat that skips a tick, keeps an answer it
+// stored past a beat or asks on a ticker of its own slower than that fails too. The server ends the
+// socket within a heartbeat of the lookup that refused returning, by the server's own record of its
+// close, allowing the longest stall between them for the one goroutine wake there, the socket's on
+// the heartbeat's cancel (requireClosedAfterRefusal, one hop), so a product that waits before it
 // closes a refused socket fails too. The heartbeat is two seconds, more than heartbeatSlack, so
-// asking every second tick is told apart from a late tick.
+// skipping a tick is told apart from a late tick.
 func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *testing.T) {
 	const heartbeat = 2 * time.Second
 	for _, beside := range []struct {
@@ -446,7 +457,7 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 
 			// While the cookie resolves the socket outlives several heartbeats, each of which
 			// looks the cookie up again, and still answers its editor.
-			rig.heartbeats.await(t, heartbeat, "three heartbeat lookups of the cookie while it resolves", func() bool {
+			rig.heartbeats.await(t, meter, heartbeat, "three heartbeat lookups of the cookie while it resolves", func() bool {
 				return rig.heartbeats.count() >= 3
 			})
 			peer.barrier(t)
@@ -456,7 +467,7 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 			}
 			rig.logins.end()
 			ended := time.Now()
-			rig.heartbeats.await(t, heartbeat, "the document socket's end once its cookie's session ended, with "+beside.name+" the broker holds live beside the cookie", func() bool {
+			rig.heartbeats.await(t, meter, heartbeat, "the document socket's end once its cookie's session ended, with "+beside.name+" the broker holds live beside the cookie", func() bool {
 				select {
 				case <-peer.connection().Ended:
 					return true
@@ -469,8 +480,8 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 			if lookups > 1 {
 				t.Fatalf("the document socket closed after %d heartbeat lookups of its cookie that started once its session had ended, want the first to close it: a heartbeat found the ended session still resolving", lookups)
 			}
-			rig.heartbeats.requireEveryHeartbeat(t, heartbeat)
-			rig.requireClosedAfterRefusal(t, meter, "the document socket", heartbeat)
+			rig.heartbeats.requireEveryHeartbeat(t, meter, heartbeat)
+			rig.requireClosedAfterRefusal(t, meter, "the document socket", heartbeat, 1)
 			// The heartbeat cancels the connection's context with no close code, so ygo drops
 			// the socket without a close frame.
 			if code := peer.connection().CloseCode(); code != gws.CloseAbnormalClosure {
@@ -530,14 +541,18 @@ func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T
 // and the first that asks the broker hears the token is no longer live. That is read off the
 // product's own calls: the broker's introspections are counted (StubBroker.Count); the one that
 // closes the socket is sent within the remembered answer's life (AffirmativeCacheTTL), a heartbeat
-// and heartbeatSlack of the answer of the one before it; and every call the heartbeat makes into
-// the verifier starts at most a heartbeat and heartbeatSlack after the one before it returned
-// (heartbeatCalls, timeBrokerCalls), so a heartbeat that asks every second tick, keeps an answer
-// it stored or runs on a ticker of its own fails too. The server writes its close frame within a
-// heartbeat of the introspection that answered the token not live, by the server's own record
-// (requireClosedAfterRefusal), so a product that waits before it closes a refused socket fails
-// too. The heartbeat is two seconds, more than heartbeatSlack, so asking every second tick is told
-// apart from a late tick, and the client's pong meets the pong deadline on a loaded runner.
+// and heartbeatSlack of the answer of the one before it, plus the longest stall the process saw
+// between them; and each call the heartbeat makes into the verifier starts within a heartbeat and
+// heartbeatSlack of the return of the calls before it, plus the longest stall in that gap
+// (heartbeatCalls, timeBrokerCalls), so a heartbeat that skips a tick, keeps an answer it stored
+// past a beat or asks on a ticker of its own slower than that fails too. The server writes its
+// close frame within a heartbeat of the introspection that answered the token not live, by the
+// server's own record, allowing the longest stall between them for each of the three goroutine
+// wakes there - the verifier's client reading the answer, the heartbeat's cancel, the socket's
+// writer (requireClosedAfterRefusal, three hops) - so a product that waits before it closes a
+// refused socket fails too. The heartbeat is two seconds, more than heartbeatSlack, so skipping a
+// tick is told apart from a late tick, and the client's pong meets the pong deadline on a loaded
+// runner.
 func TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat(t *testing.T) {
 	meter := startStallMeter(t)
 	const heartbeat = 2 * time.Second
@@ -553,7 +568,7 @@ func TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat(t *tes
 
 	rig.tokens.broker.Says(token, ciphertoken.Introspection{Active: false})
 	asked := rig.tokens.broker.Count()
-	rig.heartbeats.await(t, heartbeat, "the live socket's end once the broker stopped holding its token live", func() bool {
+	rig.heartbeats.await(t, meter, heartbeat, "the live socket's end once the broker stopped holding its token live", func() bool {
 		select {
 		case <-client.ended:
 			return true
@@ -567,10 +582,12 @@ func TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat(t *tes
 	if after := rig.tokens.broker.Count() - asked; after > 1 {
 		t.Fatalf("the live socket closed after %d introspections once the broker stopped holding its token live, want the first: a heartbeat kept the remembered answer past the introspection that refused it", after)
 	}
-	if gap, ok := rig.heartbeats.lastIntrospectionGap(); !ok || gap > ciphertoken.AffirmativeCacheTTL+heartbeat+heartbeatSlack {
-		t.Fatalf("the introspection that closed the live socket was sent %s after the answer of the one before it (two recorded: %t), want within the remembered answer's life and a heartbeat, %s",
-			gap.Round(time.Millisecond), ok, ciphertoken.AffirmativeCacheTTL+heartbeat+heartbeatSlack)
+	gap, ok := rig.heartbeats.lastIntrospectionGap()
+	if !ok {
+		t.Fatalf("the live socket closed with fewer than two introspections recorded, so the one that closed it has nothing to be timed from")
 	}
-	rig.heartbeats.requireEveryHeartbeat(t, heartbeat)
-	rig.requireClosedAfterRefusal(t, meter, "the live socket", heartbeat)
+	requireGapWithin(t, meter, "the introspection that closed the live socket was not sent within the remembered answer's life and a heartbeat of the answer of the one before it",
+		gap.from, gap.to, ciphertoken.AffirmativeCacheTTL+heartbeat+heartbeatSlack)
+	rig.heartbeats.requireEveryHeartbeat(t, meter, heartbeat)
+	rig.requireClosedAfterRefusal(t, meter, "the live socket", heartbeat, 3)
 }

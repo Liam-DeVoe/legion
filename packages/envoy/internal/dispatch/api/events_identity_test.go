@@ -41,10 +41,11 @@ func (i *endableIdentity) Login(*http.Request) (string, error) {
 }
 
 // lookupHeartbeat is the heartbeat of the servers whose sockets close once their caller ends: two
-// seconds, past twice the second of slack a closing lookup is allowed (requireClosedAtTheFirstLookup),
-// so a heartbeat that asks every second tick, keeps an answer past a beat or asks on a slower
-// ticker of its own leaves a gap no loaded machine's scheduling explains. It is long enough, too,
-// for the live socket's page to meet its pong deadline (two heartbeats) on a loaded runner.
+// seconds, a second more than the slack a closing lookup's start is allowed (heartbeatSlack), so a
+// heartbeat that skips a tick or keeps an answer past a beat starts its closing lookup a whole
+// heartbeat late, past the heartbeat and the slack unless the process stalled that second away
+// meanwhile. It is long enough, too, for the live socket's page to meet its pong deadline (two
+// heartbeats) on a loaded runner.
 const lookupHeartbeat = 2 * time.Second
 
 // heartbeatLookups is the API's Identity with the lookups a socket's heartbeat makes recorded. A
@@ -59,17 +60,20 @@ const lookupHeartbeat = 2 * time.Second
 // fires once a heartbeat, and keeps a tick waiting while a lookup runs long, so the next lookup
 // starts as soon as the one before it returns. The gap is read off the product's own calls, from
 // the return of the last Login before the end to the start of the first after it, never off the
-// test's clock around them, and is allowed a second beyond the heartbeat for scheduling and the
-// longest single stall the process saw meanwhile (stallMeter), the delay of the one goroutine wake
-// inside it: the heartbeat's own, on its tick. A refused Login the lookup or the heartbeat let pass
-// is a second Login after the end; a heartbeat that skips ticks, answers from a stored answer, or
-// asks on a ticker of its own leaves the gap.
+// test's clock around them, and is allowed the heartbeat, heartbeatSlack for scheduling, and the
+// longest single stall the process saw meanwhile (requireGapWithin), the delay of the one goroutine
+// wake inside it: the heartbeat's own, on its tick. A refused Login the lookup or the heartbeat let
+// pass is a second Login after the end. A heartbeat that skips a tick, answers from a stored answer
+// past a beat, or asks on a ticker of its own slower than the heartbeat and the slack leaves a gap
+// past what is allowed; a ticker of its own no slower than that, with the stall, passes, since the
+// check cannot tell it from a scheduling delay.
 //
-// The refusal then closes the socket within a heartbeat: from the return of the Login that refused
-// to the server's own end of the connection (servedSpans: the start of its close frame, or its close
-// of the connection), allowing each of the close's goroutine wakes the longest single stall between
-// (requireClosedWithin), so a server that waits on its own after the refusal fails, and a machine
-// that stops the process meanwhile does not.
+// The refusal then closes the socket within a heartbeat: from the return of the Login that refused,
+// stamped on the heartbeat's goroutine, to the server's own end of the connection (servedSpans: the
+// start of its close frame, or its close of the connection), made by the socket's goroutine that
+// the heartbeat's cancel wakes. One goroutine wake lies between the two records, so the span is
+// allowed the heartbeat and one longest stall (requireClosedWithin, one hop): a server that waits on
+// its own after the refusal fails, and a machine that stops the process meanwhile does not.
 type heartbeatLookups struct {
 	identity.Identity
 	heartbeat time.Duration
@@ -124,9 +128,9 @@ func (l *heartbeatLookups) end(ending func()) {
 
 // requireClosedAtTheFirstLookup fails the test unless socket, which closed at closedAt by its
 // server's own record, did so on its first heartbeat lookup after the end: exactly one Login came
-// after it, it began within the heartbeat and a second of the return of the Login before it, and the
-// server ended the connection within a heartbeat of that Login's return, each allowing the longest
-// single stall m saw in its span for each goroutine wake inside it.
+// after it, it began within the heartbeat and heartbeatSlack of the return of the Login before it,
+// and the server ended the connection within a heartbeat of that Login's return, each span allowing
+// the longest single stall m saw inside it once (one goroutine wake in each).
 func (l *heartbeatLookups) requireClosedAtTheFirstLookup(t *testing.T, m *stallMeter, socket string, closedAt time.Time) {
 	t.Helper()
 	l.mu.Lock()
@@ -138,12 +142,8 @@ func (l *heartbeatLookups) requireClosedAtTheFirstLookup(t *testing.T, m *stallM
 	if returned.IsZero() {
 		t.Fatalf("%s's heartbeat made no lookup of its caller before the end, so the lookup that closed it has nothing to be timed from", socket)
 	}
-	waitUntil(t, "the stall meter to wake after the closing lookup", func() bool { return m.wokeAfter(closing) })
-	longest := m.longestStallBetween(returned, closing)
-	if gap := closing.Sub(returned); gap > l.heartbeat+time.Second+longest {
-		t.Fatalf("%s's closing lookup began %s after the lookup before it returned, want within its %s heartbeat and a second plus the longest stall this process saw meanwhile (%s): the heartbeat did not ask on every beat", socket, gap, l.heartbeat, longest)
-	}
-	requireClosedWithin(t, m, socket+"'s end by its server after the lookup that refused its caller", refused, closedAt, l.heartbeat)
+	requireGapWithin(t, m, socket+"'s heartbeat did not ask on every beat: from the return of its last lookup before the end to the start of the one after it", returned, closing, l.heartbeat+heartbeatSlack)
+	requireClosedWithin(t, m, socket+"'s end by its server after the lookup that refused its caller", refused, closedAt, l.heartbeat, 1)
 }
 
 // acceptedConns is how many connections the server behind spans has accepted so far: the index the

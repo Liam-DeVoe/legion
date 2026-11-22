@@ -104,20 +104,16 @@ func releaseOnceQueued(t *testing.T, holder pgx.Tx, want int, release func()) <-
 // stallTick is how often a stallMeter's goroutine wakes.
 const stallTick = 5 * time.Millisecond
 
-// closeHops is how many goroutine wakes a refusal's close takes, each of which a busy machine can
-// delay by one scheduling delay: the heartbeat's goroutine back from its refusing call, the
-// socket's goroutine that writes the close, and the reader that sees it.
-const closeHops = 3
-
 // stallMeter measures how late this test process runs a goroutine that is ready: a goroutine of
 // its own wakes every stallTick, and a wake that comes more than two ticks after the one before
 // records how late it came. A row that bounds a product's span by the product's own stated time (a
-// close within a heartbeat of the refusal that orders it) reads its span from the product's records
-// and allows, for each goroutine wake inside that span (closeHops), the longest single delay the
-// meter saw there: one scheduling delay, or one stop of the whole process (a long GC pause). It
-// never allows the sum of the meter's own late wakes, which on a loaded machine grows with the span
-// and would let a product that waits on one timer pass: a product that waits on its own fails the
-// bound by its wait, however loaded the machine.
+// close within a heartbeat of the refusal that orders it, a heartbeat's call within a beat of the
+// one before) reads its span from the product's records and allows, for each goroutine wake inside
+// that span that the row names, the longest single delay the meter saw there: one scheduling delay,
+// or one stop of the whole process (a long GC pause). It never allows the sum of the meter's own
+// late wakes, which on a loaded machine grows with the span and would let a product that waits on
+// one timer pass. A product that waits on its own fails the bound by its wait, unless a single
+// stall in the span is as long as that wait divided by the row's wakes.
 type stallMeter struct {
 	mu       sync.Mutex
 	stalls   [][2]time.Time
@@ -188,16 +184,36 @@ func (m *stallMeter) wokeAfter(at time.Time) bool {
 }
 
 // requireClosedWithin fails the test unless closedAt comes within bound of orderedAt, both read
-// from the product's records, allowing for each of the close's closeHops goroutine wakes the
-// longest single stall the meter saw between them: what names the close and its order, for the
-// failure. It reads the meter only once the meter has woken after closedAt, so a stop of the
-// process that ended just before the close is counted.
-func requireClosedWithin(t *testing.T, m *stallMeter, what string, orderedAt, closedAt time.Time, bound time.Duration) {
+// from the product's records, allowing for each of the close's hops - the goroutine wakes between
+// the record of the order and the record of the close, which the row counts - the longest single
+// stall the meter saw between them: what names the close and its order, for the failure. It reads
+// the meter only once the meter has woken after closedAt, so a stop of the process that ended just
+// before the close is counted.
+func requireClosedWithin(t *testing.T, m *stallMeter, what string, orderedAt, closedAt time.Time, bound time.Duration, hops int) {
 	t.Helper()
 	waitUntil(t, "the stall meter to wake after the close", func() bool { return m.wokeAfter(closedAt) })
 	took := closedAt.Sub(orderedAt)
 	longest := m.longestStallBetween(orderedAt, closedAt)
-	if allowed := bound + closeHops*longest; took > allowed {
-		t.Fatalf("%s: closed %s after the refusal that orders it, want within %s plus %d times the longest stall this process saw meanwhile (%s): the product waited on its own", what, took, bound, closeHops, longest)
+	if allowed := bound + time.Duration(hops)*longest; took > allowed {
+		t.Fatalf("%s: closed %s after the refusal that orders it, want within %s plus %d times the longest stall this process saw meanwhile (%s): the product waited on its own", what, took, bound, hops, longest)
 	}
+}
+
+// requireGapWithin fails the test unless the product's span from from to to, both read from the
+// product's records, is within bound plus the longest single stall the meter saw inside it: one
+// goroutine wake, such as a heartbeat's next call on its tick. It reads the meter only once the
+// meter has woken after to. what names the span, for the failure.
+func requireGapWithin(t *testing.T, m *stallMeter, what string, from, to time.Time, bound time.Duration) {
+	t.Helper()
+	if gap, allowed := gapWithin(t, m, from, to, bound); gap > allowed {
+		t.Fatalf("%s: %s, want within %s plus the longest stall this process saw meanwhile (%s)", what, gap, bound, allowed-bound)
+	}
+}
+
+// gapWithin is the span from from to to and what it is allowed: bound plus the longest single stall
+// the meter saw inside it, read once the meter has woken after to.
+func gapWithin(t *testing.T, m *stallMeter, from, to time.Time, bound time.Duration) (gap, allowed time.Duration) {
+	t.Helper()
+	waitUntil(t, "the stall meter to wake after the span", func() bool { return m.wokeAfter(to) })
+	return to.Sub(from), bound + m.longestStallBetween(from, to)
 }
