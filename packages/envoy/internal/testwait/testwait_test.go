@@ -81,6 +81,22 @@ func TestAWaitGivesUpTheMarginBeforeTheDeadline(t *testing.T) {
 	}
 }
 
+// A testing.TB with no Deadline method - a benchmark, which testing runs once it has stopped the
+// alarm -timeout sets - names no deadline, so a wait in it gives up at no moment of its own, as
+// under -timeout 0, and Until still returns the reading that holds.
+func TestAWaitInATestingTBWithNoDeadlineHasNoEnd(t *testing.T) {
+	if end, ok := giveUpAt(noDeadline{t}); ok {
+		t.Fatalf("a wait in a testing.TB with no Deadline method gives up at %v, want no end", end)
+	}
+	if got := Until(noDeadline{t}, "a reading that holds", func() (int, bool) { return 7, true }); got != 7 {
+		t.Fatalf("Until in a testing.TB with no Deadline method returned %d, want the 7 read", got)
+	}
+}
+
+// noDeadline is a testing.TB with no Deadline method, as testing.B has none: only testing.TB's
+// own methods are promoted from the test it wraps.
+type noDeadline struct{ testing.TB }
+
 // Under a short -timeout Until and Receive give up 30 s before the deadline, before Go's alarm:
 // each writes its line to stderr and fails the test with the same text, which carries Until's last
 // reading.

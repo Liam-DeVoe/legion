@@ -883,8 +883,9 @@ func rereadRateIn(log string) (rate rereadRateLine, ok bool) {
 // AwaitExit waits up to within for the broker to exit and answers what its exit was: nil for a
 // clean one, an *exec.ExitError naming the code otherwise, which is what Wait itself answers. It
 // fails t when the broker is still running after within. The bound is its caller's rather than
-// cmdtest.WaitExit's fixed thirty seconds, because a broker's stop budget is its whole drain plus
-// its shutdown, which the drain row gives ninety.
+// cmdtest.WaitExit's, which waits for an exit until the test binary's deadline and no span of its
+// own, because a broker's stop budget is its whole drain plus its shutdown, which the drain row
+// gives ninety.
 func (p *brokerProcess) AwaitExit(t *testing.T, within time.Duration) error {
 	t.Helper()
 	select {
