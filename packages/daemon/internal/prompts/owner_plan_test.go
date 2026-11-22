@@ -401,3 +401,45 @@ func TestTheAgentsAreToldNoOrder(t *testing.T) {
 		})
 	}
 }
+
+// A move back goes to the phase of any earlier step of the issue's task, in the task's own order
+// (workflow's backwardRows), so the daemon's parts name no fixed target for it. A head that
+// conflicts with its base keeps the issue in its phase, which can be any phase after
+// implementing, a planner's among them. A step reads a planner's plan only where a planner step
+// stands before it in its task: a step before the planner has no plan to build from. Each part
+// is read alone and by its name, so a missing part fails the read. This shows the text is
+// loaded, never that an agent follows it.
+func TestAMoveBackGoesToAnyEarlierStepInTheGoParts(t *testing.T) {
+	toArchitect := []string{"`request_backward_move` with `issue`, `to` (the phase of an earlier step of the task) and `reason`"}
+	retiredTo := []string{"`implementing`, or `testing` where the task has a tester step"}
+	for _, tc := range []struct {
+		part       string
+		want, gone []string
+	}{
+		{
+			"architect-common.md",
+			[]string{
+				"send it back with `request_backward_move` (`issue`, `to` the phase of an earlier step of the task, and `reason`)",
+				"the issue stays in the phase the notice names, a phase after `implementing`",
+			},
+			[]string{
+				"`implementing` or, where the task has a tester step, `testing`",
+				"the phase the notice names (`testing`, `reviewing`, `accepting`, `retro` or `merging`)",
+			},
+		},
+		{"architect.md", toArchitect, retiredTo},
+		{"architect-root.md", toArchitect, retiredTo},
+		{
+			"worker-common.md",
+			[]string{
+				"each step after a planner step of its task, and each step of a task with no `Task:` line",
+				"A step with no planner step before it in its task has no planner's plan",
+			},
+			[]string{"`Steps:` line names the planner", "`Steps:` line names no planner"},
+		},
+	} {
+		t.Run(tc.part, func(t *testing.T) {
+			holdsAndRetires(t, "go/"+tc.part, goPart(t, tc.part), tc.want, tc.gone)
+		})
+	}
+}
