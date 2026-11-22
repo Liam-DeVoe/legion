@@ -633,6 +633,45 @@ test("a node the address names stands where the tree places it, whether its filt
   }
 });
 
+// A node the address names that no row of the view stands above is a row of the view's top, at
+// its place in the tree's order, whichever read lands first: the view must not move it after
+// the view's own rows once its read lands. Here the tree walks an ask holding the named comment
+// before the statement r1.
+test("a node the address names with no row above it keeps the tree's order among the view's top rows, whether its filter's view read is held or not", () => {
+  const spec: TreeAnswer = treeAnswer(
+    [viewNode("r1", "requirement", "query", { in: "spec" })],
+    [],
+    {
+      view: "spec",
+    }
+  );
+  const tree = (views: TreeNode["views"]) =>
+    node(
+      "CORE-1",
+      "issue",
+      [
+        node("ask-1", "ask", [node("comment-x", "comment", [], { readId: "comment-x" })], {
+          readId: "ask-1",
+        }),
+        statement("spec#b-r1", [], { readId: "CORE-1/spec#r1" }),
+      ],
+      views === undefined ? {} : { views }
+    );
+  const top = (root: TreeNode) =>
+    presetView(root, "spec", "", new Set(["comment-x"])).root.children.map((row) => [
+      row.id,
+      row.parentLine?.id,
+    ]);
+
+  expect(top(tree(undefined))).toEqual([
+    ["comment-x", "ask-1"],
+    ["spec#b-r1", undefined],
+  ]);
+  expect(top(tree({ spec })), "the named comment's place once the Spec view read is held").toEqual(
+    top(tree(undefined))
+  );
+});
+
 // Another part draws the Decisions filter's rows itself and reads its kinds from here.
 test("the Decisions filter's row kinds are the asks and the decisions", () => {
   expect(rowKindsOf("decisions")).toEqual(["ask", "decision"]);
