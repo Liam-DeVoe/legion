@@ -60,10 +60,14 @@
  *   the project's prompt includes it), each with its trailing newlines dropped and joined by a
  *   blank line. The role prompt is `profile.appendSystemPrompt` when the case holds it, else the
  *   parts `prompts.Composer.Compose(role, isRoot)` (packages/daemon/internal/prompts/prompts.go)
- *   names at the commit of the plugin repository that holds that file: Compose answers with paths
+ *   names in the plugin repository that holds that file, at the commit the daemon ran: the daemon
+ *   composes the role prompt, so where the case's evidence item `the daemon image's commit of
+ *   <repo>` (build.ts, DAEMON_IMAGE_ITEM) names the commit its daemon image was built from, that
+ *   commit, else the profile's commit of the repository (for a Legion profile, the worker
+ *   image's); the record says which (`commitOf`). Compose answers with paths
  *   of the parts it embeds, so it is run once per distinct `prompts.go` blob and role, by a small
  *   Go test written into the cached copy of the repository (never the workspace) and removed after
- *   (`composes/<blob>-<role>`), and each part is then read at the session's commit. For the
+ *   (`composes/<blob>-<role>`), and each part is then read at that commit. For the
  *   controller (`legion:<project>:controller`) the parts are those `ControllerPromptPaths(true)`
  *   names: a Legion store's controller runs headless in a pod. The daemon's addressing sentence,
  *   which sits between the two, names the session's claim, which a case does not hold, so it is
@@ -124,6 +128,15 @@ import {
 
 /** Where the Legion daemon's role prompt composer is, in the repository that holds it. */
 export const PROMPTS_GO = "packages/daemon/internal/prompts/prompts.go";
+/** The start of the evidence item `the daemon image's commit of <repo>`, which build.ts writes for
+ *  a Legion case and a Legion task's profile: which commit of `<repo>` the project's daemon image
+ *  was built from. The daemon composes the role prompt, so `rolePrompt` composes it at that commit
+ *  when the item's source names one in the words `composedAt` gives (`daemonCommit`); a source
+ *  that says why no rule gave one names none. */
+export const DAEMON_IMAGE_ITEM = "the daemon image's commit of ";
+/** The words of a DAEMON_IMAGE_ITEM source that name `commit` of `repo` as the daemon image's. */
+export const composedAt = (repo: string, commit: string) =>
+  `so the role prompt is composed from ${repo} at ${commit}`;
 /** The repository a load test's own entry of the tested skill names (load.ts's `caseOf`): a name
  *  for no repository, since a context installs the arm's skill from the arm's directory
  *  (`testedCopy`). Every read of a profile entry's repository passes it over; a real repository an
@@ -235,12 +248,15 @@ export interface ContextRecord {
     readonly key: string;
     readonly as: "working directory" | "system prompt" | "user level";
   }[];
-  /** The role prompt: the case's own text, or the parts Compose named, or none. */
+  /** The role prompt: the case's own text, or the parts Compose named, or none. Compose ran at
+   *  `commit` of `repo`: the commit the case's DAEMON_IMAGE_ITEM names (`commitOf: "daemon
+   *  image"`), else the commit the profile names for that plugin repository (`"plugin"`). */
   readonly rolePrompt:
     | "case"
     | {
         readonly repo: string;
         readonly commit: string;
+        readonly commitOf: "daemon image" | "plugin";
         readonly role: string;
         readonly isRoot: boolean;
         readonly promptsBlob: string;
@@ -1292,8 +1308,26 @@ async function composeParts(
  *  file never changes, so it is read once per source. A read that failed is not kept. */
 const promptsBlobs = new WeakMap<RepoSource, Map<string, string>>();
 
-/** The role prompt of `c`'s Legion context and its record: the parts Compose names at the commit
- *  of the plugin repository that holds PROMPTS_GO, joined as `ComposePrompt` joins them. */
+/** The commit of `repo` that the evidence item DAEMON_IMAGE_ITEM of `c` names as its daemon
+ *  image's, in `composedAt`'s words; undefined when `c` has no such item of `repo` or its item
+ *  names no commit (no rule gave one). load.ts reads it too, to check a saved capture. */
+export function daemonCommit(
+  c: { readonly evidence?: readonly { readonly item: string; readonly source: string }[] },
+  repo: string
+): string | undefined {
+  const item = c.evidence?.find(
+    (each) => each.item.toLowerCase() === `${DAEMON_IMAGE_ITEM}${repo}`.toLowerCase()
+  );
+  return /\bso the role prompt is composed from \S+ at ([0-9a-f]{40})\b/.exec(
+    item?.source ?? ""
+  )?.[1];
+}
+
+/** The role prompt of `c`'s Legion context and its record: the parts Compose names in the first
+ *  plugin repository that holds PROMPTS_GO, joined as `ComposePrompt` joins them. Each repository
+ *  is read at the commit its daemon image was built from where `c`'s evidence names one
+ *  (`daemonCommit`), since the daemon composes the role prompt, else at the profile's commit of
+ *  it; the record says which (`commitOf`). */
 async function rolePrompt(
   c: ContextCase,
   role: { readonly role: string; readonly isRoot: boolean },
@@ -1305,14 +1339,23 @@ async function rolePrompt(
   }
   const { source } = options;
   const repositories = [
-    ...new Map(c.profile.plugins.map((p) => [`${p.repo}@${p.commit}`, p])).values(),
+    ...new Map(
+      c.profile.plugins.map((p) => {
+        const daemon = daemonCommit(c, p.repo);
+        const at =
+          daemon === undefined
+            ? { repo: p.repo, commit: p.commit, commitOf: "plugin" as const }
+            : { repo: p.repo, commit: daemon, commitOf: "daemon image" as const };
+        return [`${at.repo}@${at.commit}`, at];
+      })
+    ).values(),
   ];
   let known = promptsBlobs.get(source);
   if (known === undefined) {
     known = new Map();
     promptsBlobs.set(source, known);
   }
-  for (const { repo, commit } of repositories) {
+  for (const { repo, commit, commitOf } of repositories) {
     let promptsBlob = known.get(`${repo}@${commit}`);
     if (promptsBlob === undefined) {
       try {
@@ -1340,7 +1383,16 @@ async function rolePrompt(
     for (const part of parts) text += (await fileText(builds, source, repo, commit, part)).text;
     return {
       text: text.replace(/\n+$/, ""),
-      record: { repo, commit, role: role.role, isRoot: role.isRoot, promptsBlob, key, parts },
+      record: {
+        repo,
+        commit,
+        commitOf,
+        role: role.role,
+        isRoot: role.isRoot,
+        promptsBlob,
+        key,
+        parts,
+      },
     };
   }
   throw new Error(

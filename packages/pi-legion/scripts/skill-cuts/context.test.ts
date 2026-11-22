@@ -665,6 +665,71 @@ describe.skipIf(goMissing && !onActions)("a Legion context", () => {
       ],
     });
   }, 300_000);
+
+  // Catches: the role prompt composed at the plugin's commit (the worker image's) where the
+  // project's daemon image, which composes it, was built from another commit.
+  test("the role prompt is Compose's at the commit the case's evidence names as its daemon image's, and at the plugin's commit where the evidence names none, the record saying which", async () => {
+    const root = path.join(dir, "daemon-commit");
+    /** The made-up commit of acme/legion that the project's daemon image was built from. */
+    const DAEMON_COMMIT = "fedcba9876543210fedcba9876543210fedcba98";
+    const c = aCase("legion:acme:implementer", {
+      plugins: [
+        { repo: "acme/legion", commit: COMMIT, path: "plugins/skills-only", name: "skills-only" },
+      ],
+      contextFiles: [],
+    });
+    const { options, arm } = setUp(root, c);
+    // acme/legion at the daemon image's commit: the same composer, another implementer part.
+    writeTree(path.join(root, "repos", "acme/legion", DAEMON_COMMIT), {
+      ...DAEMON,
+      "packages/daemon/internal/prompts/roles/implementer.md":
+        "Implementer part at the daemon image's commit.\n",
+    });
+    const item = "the daemon image's commit of acme/legion";
+    const project = `acme/infra:legion/projects/10-ACME.yaml at ${COMMIT}`;
+    const digest = "8".repeat(64);
+    const named: Case = {
+      ...c,
+      evidence: [
+        {
+          item,
+          source: `${project} gives the project ACME the daemonImage registry.example/acme/daemon@sha256:${digest}; gh api repos/acme/legion/attestations/sha256:${digest} names git+https://github.com/acme/legion@refs/heads/main at ${DAEMON_COMMIT}, so the role prompt is composed from acme/legion at ${DAEMON_COMMIT}: the Legion daemon of a pod composes its role prompt as it was at the commit its daemon image was built from`,
+        },
+      ],
+    };
+    const atDaemon = await buildContext(named, arm, options);
+    expect(readFileSync(atDaemon.appendSystemPrompt ?? "", "utf8")).toBe(
+      "Core part.\nImplementer part at the daemon image's commit.\nWorker part."
+    );
+    expect(atDaemon.record.rolePrompt).toMatchObject({
+      repo: "acme/legion",
+      commit: DAEMON_COMMIT,
+      commitOf: "daemon image",
+      role: "implementer",
+    });
+
+    // An item that names no commit, as build.ts writes one where no rule gave it, and no item.
+    const unnamed: Case = {
+      ...c,
+      evidence: [
+        {
+          item,
+          source: `${project} has no top-level daemonImage: line, and acme/infra:legion/Pulumi.prod.yaml at ${COMMIT} does not exist, so the role prompt is composed at the commit the profile reads the plugins of acme/legion at: the Legion daemon of a pod composes its role prompt as it was at the commit its daemon image was built from`,
+        },
+      ],
+    };
+    for (const each of [unnamed, c]) {
+      const built = await buildContext(each, arm, options);
+      expect(readFileSync(built.appendSystemPrompt ?? "", "utf8")).toBe(
+        "Core part.\nImplementer part.\nWorker part."
+      );
+      expect(built.record.rolePrompt).toMatchObject({
+        repo: "acme/legion",
+        commit: COMMIT,
+        commitOf: "plugin",
+      });
+    }
+  }, 60_000);
 });
 
 // A SKILL.md's frontmatter as Oh My Pi 18.18.6 reads it (packages/utils/src/frontmatter.ts at the

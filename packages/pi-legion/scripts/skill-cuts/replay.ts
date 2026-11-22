@@ -217,16 +217,25 @@ export class ReadsPastLastRound extends Error {
 /** How a replay runs: the most rounds of skill reads it answers; the installed copies of the
  *  arm's other skills, which a read of one is answered from (arms.ts's `SkillCopy`, context.ts's
  *  `installedCopies` of the arm's capture's record; none by default, and a read of a skill the
- *  profile lists with no copy here fails the run); and the headers that go with the body on every
+ *  profile lists with no copy here fails the run); the headers that go with the body on every
  *  round (gateway.ts's `SendOptions`: the `anthropic-*` headers Oh My Pi sent beside a captured
- *  Messages body, whose betas its fields need; none beside a Responses body). */
+ *  Messages body, whose betas its fields need; none beside a Responses body); and `endsAt`, which
+ *  is told each reply's content and the answers made to its reads (`round`; undefined when the
+ *  reply holds no tool call, or one that reads no skill file), before the reply after the last
+ *  answered round is refused. When it gives true, the run ends at that reply: the reply is the
+ *  judged step, its answers are not sent, and they are in no round of `reads`. Without it, a run
+ *  ends only as the file's header says. load.ts's load test uses it. */
 export interface ReplayOptions extends SendOptions {
   readonly maxSkillRounds?: number;
   readonly copies?: readonly SkillCopy[];
+  readonly endsAt?: (
+    content: readonly ContentBlock[],
+    round: readonly SkillRead[] | undefined
+  ) => boolean;
 }
 
 /** A tool call that reads a skill file, answered: the call's id, the answer, and its record. */
-interface SkillRead {
+export interface SkillRead {
   readonly id: string;
   readonly text: string;
   readonly isError: boolean;
@@ -352,7 +361,7 @@ async function replaySent(
   userId: string | null,
   arm: Arm,
   gateway: Gateway,
-  { maxSkillRounds = MAX_SKILL_ROUNDS, copies = [], headers }: ReplayOptions,
+  { maxSkillRounds = MAX_SKILL_ROUNDS, copies = [], headers, endsAt }: ReplayOptions,
   firstSettled?: () => void
 ): Promise<Replayed> {
   let body = sent;
@@ -371,7 +380,8 @@ async function replaySent(
     const content = reply.message.content;
     const round = roundReads(content, arm, copies);
     const step = { ...reply, message: { ...reply.message, content: [...calls, ...content] } };
-    if (round === undefined) return { step, rounds, reads, usage, userId };
+    const ends = endsAt?.(content, round) === true;
+    if (round === undefined || ends) return { step, rounds, reads, usage, userId };
     if (rounds >= maxSkillRounds) {
       throw new ReadsPastLastRound(
         { step, rounds, reads, usage, userId },
@@ -390,15 +400,17 @@ async function replaySent(
 /** Sends `body` for `arm` with a session id of its own when it names one (`freshIdentity`),
  *  answers its skill reads, and returns the judged step. Rejects when a send does (the gateway's
  *  `BudgetSpent` among them), and with ReadsPastLastRound when the reply after the last answered
- *  round still only reads skill files. */
+ *  round still only reads skill files. `firstSettled` is told once the run's first send has its
+ *  reply or its failure. */
 export function replayOnce(
   body: RequestBody,
   arm: Arm,
   gateway: Gateway,
-  options: ReplayOptions = {}
+  options: ReplayOptions = {},
+  firstSettled?: () => void
 ): Promise<Replayed> {
   const own = freshIdentity(isResponsesBody(body) ? body : withCacheBreakpoint(body));
-  return replaySent(own.body, own.id, arm, gateway, options);
+  return replaySent(own.body, own.id, arm, gateway, options, firstSettled);
 }
 
 /** One arm's runs in a round: its arm, its captured body, the headers that go with it (its
