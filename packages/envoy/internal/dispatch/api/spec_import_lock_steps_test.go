@@ -15,16 +15,20 @@ import (
 
 // TestTheRepairIssueTakesTheStoreLockOrder holds the repair issue of a level's holds
 // (repairIssueHook) to the store's lock order, written on api/inbox_read.go's
-// markInboxReadThreads. The hook runs in the transaction of the create that opens the child issue,
-// after the create's own writes (createIssueWith), and its one write is a repair_issue value on each
-// hold's node at the sentinel: tuples, which lock no row, so the step a hold can stand on is the
-// owner lock the create takes first, its project's. The hook reads the holds again under that lock,
-// so the children of two imports at once queue there and the second finds the holds named. Held
-// there, the create has read nothing of the store yet: its transaction holds no lock on graph_nodes
-// or graph_tuples. The import route runs on a server whose store is one connection of its own, whose
-// backend the test watches: the import's own transaction takes no owner lock and commits first, and
-// the create then queues behind the project's lock. After it each hold the import kept names the
-// child issue the import answers.
+// markInboxReadThreads. The hook runs in the transaction of the create that opens the child issue
+// (createIssueWith): in the create's read phase, right after the owner lock the create takes first,
+// its project's, it takes the lock of the repository's approved spec (specstore.Lock), which every
+// writer of the spec's holds takes, and reads the holds again under both; after the create's own
+// writes, its one write is a repair_issue value on each hold's node at the sentinel: tuples, which
+// lock no row. So the steps a hold can stand on are those two owner steps, the project's and then
+// the spec's, in ascending owner key. The children of two imports at once queue at the project's
+// lock, and the second finds the holds named; an approval that clears a hold holds the spec's lock
+// until it commits, so a create queued behind it finds the hold cleared. Held at either, the create
+// has read nothing of the store yet: its transaction holds no lock on graph_nodes or graph_tuples.
+// The import route runs on a server whose store is one connection of its own, whose backend the
+// test watches: the import's own transaction takes the spec's lock and commits first, so the test
+// holds the spec's lock only once the create has queued behind the project's. After it each hold
+// the import kept names the child issue the import answers.
 func TestTheRepairIssueTakesTheStoreLockOrder(t *testing.T) {
 	ctx := context.Background()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
@@ -59,7 +63,22 @@ func TestTheRepairIssueTakesTheStoreLockOrder(t *testing.T) {
 			map[string]any{"actor": sessionActor(), "notes": "notes.md"})
 		done <- statusOrError(answer, http.StatusOK)
 	}()
-	lockstep.Follow(t, database, "repairIssueHook", pid, done, []*lockstep.Hold{owner})
+	// The import's own transaction took the lock of the approved spec and committed: the create
+	// that opens the child now waits at its project's owner lock, and the spec's lock is free.
+	if answered, early := storetest.WaitForQueuedBehind(t, owner.Tx, pid, done, lockstep.Wait); early {
+		t.Fatalf("the import answered before its create queued behind %s: %v", owner.Name, answered)
+	}
+	spec := &lockstep.Hold{
+		Name: "the lock of the approved spec of " + specRepo, Step: lockstep.StepOwner, Taken: true,
+		Kind: "spec_source", ID: specstore.Address("CORE", specRepo, ""),
+		Statement: "select pg_advisory_xact_lock(hashtext('dispatch-spec-source'), hashtext($1))",
+		Unlocked:  []string{"graph_nodes", "graph_tuples"},
+	}
+	lockstep.Begin(t, database, spec)
+	if err := specstore.Lock(ctx, spec.Tx, "CORE", specRepo); err != nil {
+		t.Fatalf("hold %s: %v", spec.Name, err)
+	}
+	lockstep.Follow(t, database, "repairIssueHook", pid, done, []*lockstep.Hold{owner, spec})
 
 	imported := decodeBody[levelImport](t, answer)
 	if imported.RepairIssue == nil || len(imported.Held) == 0 {
