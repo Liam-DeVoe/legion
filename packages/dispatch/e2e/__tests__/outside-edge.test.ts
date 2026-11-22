@@ -3,11 +3,16 @@
  *
  *  The rows that start nothing hold that a run with an input missing says UNKNOWN, naming the
  *  input, and never PASS, that OUTSIDE_EDGE_LOGIN_SECONDS is refused outside the driver's own test,
- *  and that an error of a command's own (`run`, `revoke`, `release` given a state they cannot use)
- *  is UNKNOWN, exit 2, never 1. The control rows run the driver against an outside origin
- *  stand-in
- *  (`outside-edge-origin-stand-in.ts`) that answers what a real refusal, sign-in, device login or
- *  revocation would not:
+ *  that the sign-in steps alone (OUTSIDE_EDGE_STEPS=sign-in) read no peer, broker or listener and
+ *  refuse a tailnet code, a limits file with no rule of the link's host and any other value of
+ *  OUTSIDE_EDGE_STEPS, and that an error of a command's own (`run`, `revoke`, `release` given a
+ *  state they cannot use) is UNKNOWN, exit 2, never 1. The control rows run the driver against an
+ *  outside origin stand-in (`outside-edge-origin-stand-in.ts`) that answers what a real refusal,
+ *  sign-in, device login or revocation would not:
+ *  - the sign-in steps alone make `sign-in`, `projects` and the rows of the link host's rules, and
+ *    no other row: each other row is a line of its own, `outside-edge: not run: …`, and the run
+ *    asks nothing of a device login; a sign-in that did not pass makes `projects` UNKNOWN, not
+ *    run, and those rules UNKNOWN, and a project list that is no answer fails `projects`;
  *  - `t5`'s passkey row is PASS only on the sign-in's own refusal of the passkey, 401
  *    PASSKEY_UNKNOWN or 403 NOT_LISTED from `POST /auth/passkey/login/finish`; an alert with no
  *    answer ("Dispatch could not be reached"), a 404, a 429, any other code (a 403 among them) is
@@ -58,6 +63,8 @@
  *  - a person on a second project fails step 1, naming it (the project-leak control);
  *  - a peer that never answers fails step 3 by its timeout, naming the peer;
  *  - a threshold of 1 fails step 4, naming the host;
+ *  - the sign-in steps alone, with no peer, broker or listener, pass, judge the outside host's
+ *    rules alone and name every other row not run;
  *  - `revoke` reads the person's own machine-logins list, and ends each credential there;
  *  - `t5` reads UNKNOWN while the person is listed, PASS once the owner took them off, and FAIL
  *    for a person still listed whose cookie is refused: their restored passkey signs them in,
@@ -338,6 +345,96 @@ describe("the inputs", () => {
       }
     },
     rowLimit({ atOnce: ["short", "short", "short"] })
+  );
+
+  // The sign-in steps alone (OUTSIDE_EDGE_STEPS=sign-in) read the link, the project, the limits
+  // and the state, and no peer, broker or listener.
+  const signInOwn = {
+    OUTSIDE_INVITE_URL: all.OUTSIDE_INVITE_URL,
+    OUTSIDE_PROJECT: all.OUTSIDE_PROJECT,
+    OUTSIDE_EDGE_LIMITS: all.OUTSIDE_EDGE_LIMITS,
+    OUTSIDE_EDGE_STATE: all.OUTSIDE_EDGE_STATE,
+  } as const;
+  const refusedFor = (said: string) =>
+    `inputs\tevery input of the driver\t${said}\tUNKNOWN\nUNKNOWN: inputs\n`;
+
+  test(
+    "the sign-in steps read no peer, broker or listener: without them a run missing one of its own inputs is refused for that one, where every step's run is refused for the peer",
+    async () => {
+      const names = Object.keys(signInOwn) as (keyof typeof signInOwn)[];
+      const [everyStep, ...signInRuns] = await Promise.all([
+        // The control: every step's run without the three and the state is refused for the peer,
+        // the first of them it reads, where the sign-in steps' runs without the limits or the
+        // state are refused for those.
+        drive(
+          [],
+          {
+            OUTSIDE_INVITE_URL: all.OUTSIDE_INVITE_URL,
+            OUTSIDE_PROJECT: all.OUTSIDE_PROJECT,
+            OUTSIDE_EDGE_LIMITS: all.OUTSIDE_EDGE_LIMITS,
+          },
+          "short"
+        ),
+        ...names.map((name) =>
+          drive(
+            [],
+            {
+              OUTSIDE_EDGE_STEPS: "sign-in",
+              ...Object.fromEntries(Object.entries(signInOwn).filter(([key]) => key !== name)),
+            },
+            "short"
+          )
+        ),
+      ]);
+      expect(everyStep.stdout).toBe(refusedFor("OUTSIDE_PEER_SESSION is not set"));
+      expect(everyStep.code).toBe(2);
+      for (const [index, name] of names.entries()) {
+        expect(signInRuns[index]?.stdout, name).toBe(refusedFor(`${name} is not set`));
+        expect(signInRuns[index]?.code, name).toBe(2);
+      }
+    },
+    rowLimit({ atOnce: ["short", "short", "short", "short", "short"] })
+  );
+
+  test(
+    "OUTSIDE_EDGE_STEPS other than sign-in is refused, and the sign-in steps refuse a tailnet code and a limits file with no rule of the link's host",
+    async () => {
+      const otherHost = join(scratch, "other-host-limits.txt");
+      writeFileSync(otherHost, "1000 secrets.edge.example exact /v1/oauth/token 240 60\n");
+      const values = ["all", "SIGN-IN", "sign-in relay", "device-login"];
+      const [tailnet, noRule, ...others] = await Promise.all([
+        drive(
+          [],
+          { ...signInOwn, OUTSIDE_EDGE_STEPS: "sign-in", OUTSIDE_TAILNET_USER_CODE: "ABCD-EFGH" },
+          "short"
+        ),
+        drive(
+          [],
+          { ...signInOwn, OUTSIDE_EDGE_STEPS: "sign-in", OUTSIDE_EDGE_LIMITS: otherHost },
+          "short"
+        ),
+        ...values.map((value) => drive([], { ...all, OUTSIDE_EDGE_STEPS: value }, "short")),
+      ]);
+      expect(tailnet.stdout).toBe(
+        refusedFor(
+          "OUTSIDE_TAILNET_USER_CODE asks for an approval, and the sign-in steps make none"
+        )
+      );
+      expect(tailnet.code).toBe(2);
+      expect(noRule.stdout).toBe(
+        refusedFor(
+          "OUTSIDE_EDGE_LIMITS names no rule of dispatch.edge.example, the link's host, the one host the sign-in steps ask"
+        )
+      );
+      expect(noRule.code).toBe(2);
+      for (const [index, value] of values.entries()) {
+        expect(others[index]?.stdout, value).toBe(
+          refusedFor("OUTSIDE_EDGE_STEPS must be sign-in, or unset for every step")
+        );
+        expect(others[index]?.code, value).toBe(2);
+      }
+    },
+    rowLimit({ atOnce: ["short", "short", "short", "short", "short", "short"] })
   );
 
   // An error of a command's own judged nothing of the edge, so each command ends it UNKNOWN, exit
@@ -1165,6 +1262,152 @@ describe("the controls, against an outside origin stand-in", () => {
         "outsideEdgePageWait",
       ],
     })
+  );
+
+  browserRow(
+    "the sign-in steps alone (OUTSIDE_EDGE_STEPS=sign-in) make sign-in, projects and the limits of the link's host, stop there, and print each row they skip as not run, never a row",
+    async () => {
+      // No peer, broker or listener. The link is the stand-in's page origin, `localhost`; the
+      // limits name two rules of it and one of `127.0.0.1`, the stand-in's other name, where a
+      // device login of every step's run would ask, and which these steps never ask.
+      const limits = join(scratch, "sign-in-steps-limits.txt");
+      writeFileSync(
+        limits,
+        [
+          "1000 127.0.0.1 exact /v1/oauth/device_authorization 20 60",
+          "3000 localhost decoded-prefix /auth/ 60 60",
+          "3010 localhost any - 1200 60",
+          "",
+        ].join("\n")
+      );
+      const cases = [
+        ["sign-in-steps-pass", { enroll: "signs-in" }],
+        ["sign-in-steps-refused", { enroll: "refused" }],
+        ["sign-in-steps-projects-403", { enroll: "signs-in", projects: 403 }],
+      ] as const;
+      const started = cases.map(([name, behaviour]) => {
+        const origin = startOriginStandIn(behaviour);
+        const state = join(scratch, name);
+        const ran = drive(
+          [],
+          {
+            DISPATCH_E2E_CASE: name,
+            OUTSIDE_EDGE_STEPS: "sign-in",
+            OUTSIDE_EDGE_ALLOW_HTTP: "1",
+            OUTSIDE_INVITE_URL: `${origin.page}/enroll#token-of-${name}`,
+            OUTSIDE_PROJECT: "OWN",
+            OUTSIDE_EDGE_LIMITS: limits,
+            OUTSIDE_EDGE_STATE: state,
+          },
+          "outsideEdgeBrowser"
+        );
+        ran.catch(() => undefined);
+        return { name, origin, state, ran };
+      });
+      try {
+        const [pass, refused, unlisted] = await Promise.all(
+          started.map(async ({ name, origin, state, ran }) => {
+            const run = await ran;
+            return { name, origin, state, run, rows: rowsOf(run) };
+          })
+        );
+        if (pass === undefined || refused === undefined || unlisted === undefined) {
+          throw new Error("a case did not run");
+        }
+        const skipped = [
+          "outside-edge: not run: device-login: OUTSIDE_EDGE_STEPS is sign-in\n",
+          "outside-edge: not run: relay: OUTSIDE_EDGE_STEPS is sign-in\n",
+          "outside-edge: not run: limit-1000-60s: OUTSIDE_EDGE_STEPS is sign-in, which asks 127.0.0.1 nothing\n",
+        ];
+        for (const one of [pass, refused, unlisted]) {
+          for (const line of skipped) expect(one.run.stdout, one.name).toContain(line);
+          // Nothing of a device login, a code's approval or a relay was asked.
+          expect(
+            one.origin.asked.filter((path) => path.startsWith("/v1/") || path.includes("machine")),
+            one.name
+          ).toEqual([]);
+        }
+
+        // A sign-in and a list that pass: those rows and the two rules of the link's host, each
+        // PASS, and no other row, in the run's output and in its TSV alike.
+        expect([...pass.rows.entries()], pass.run.stdout).toEqual([
+          [
+            "sign-in",
+            {
+              want: `the link enrolls a passkey and signs in at ${pass.origin.page}`,
+              got: `signed in at ${pass.origin.page} as the invited person`,
+              verdict: "PASS",
+            },
+          ],
+          [
+            "projects",
+            { want: "GET /api/v1/projects lists exactly [OWN]", got: "[OWN]", verdict: "PASS" },
+          ],
+          ["limit-3000-60s", expect.objectContaining({ verdict: "PASS" })],
+          ["limit-3010-60s", expect.objectContaining({ verdict: "PASS" })],
+        ]);
+        expect(verdictLine(pass.run)).toBe("PASS");
+        expect(pass.run.code).toBe(0);
+        const tsv = readFileSync(join(pass.state, "outside-edge.tsv"), "utf8");
+        expect([...rowsOf({ ...pass.run, stdout: tsv }).keys()]).toEqual([
+          "sign-in",
+          "projects",
+          "limit-3000-60s",
+          "limit-3010-60s",
+        ]);
+        expect(tsv).not.toContain("not run");
+        // The signed-in state is kept, which `t5` reads; nothing of a device login or a session is.
+        const kept = readdirSync(pass.state);
+        for (const file of ["browser.json", "cookie", "person", "origin", "passkey.json"]) {
+          expect(kept, file).toContain(file);
+        }
+        expect(kept).not.toContain("device-login.json");
+        expect(kept).not.toContain("session");
+
+        // A sign-in that did not pass: `projects` is not run, UNKNOWN, and the link host's rules,
+        // under their counts, are UNKNOWN, since the run was cut short.
+        expect(rowOf(refused, "sign-in").verdict, refused.run.stdout).toBe("FAIL");
+        expect(rowOf(refused, "projects")).toEqual({
+          want: "GET /api/v1/projects lists exactly [OWN]",
+          got: "not run: the sign-in did not pass",
+          verdict: "UNKNOWN",
+        });
+        for (const row of ["limit-3000-60s", "limit-3010-60s"]) {
+          expect(rowOf(refused, row), row).toMatchObject({
+            got: expect.stringContaining(
+              "but the run did not reach projects: the sign-in did not pass"
+            ),
+            verdict: "UNKNOWN",
+          });
+        }
+        expect([...refused.rows.keys()]).toEqual([
+          "sign-in",
+          "projects",
+          "limit-3000-60s",
+          "limit-3010-60s",
+        ]);
+        expect(verdictLine(refused.run)).toBe("FAIL: sign-in");
+        expect(refused.run.code).toBe(1);
+
+        // A list that is no answer fails `projects`, and the run still stops there.
+        expect(rowOf(unlisted, "sign-in").verdict, unlisted.run.stdout).toBe("PASS");
+        expect(rowOf(unlisted, "projects")).toMatchObject({
+          got: "answered 403, no list",
+          verdict: "FAIL",
+        });
+        expect([...unlisted.rows.keys()]).toEqual([
+          "sign-in",
+          "projects",
+          "limit-3000-60s",
+          "limit-3010-60s",
+        ]);
+        expect(verdictLine(unlisted.run)).toBe("FAIL: projects");
+        expect(unlisted.run.code).toBe(1);
+      } finally {
+        for (const { origin } of started) origin.stop();
+      }
+    },
+    rowLimit({ atOnce: ["outsideEdgeBrowser", "outsideEdgeBrowser", "outsideEdgeBrowser"] })
   );
 
   browserRow(
@@ -2167,7 +2410,37 @@ describe("the driver against the local stack", () => {
     }
   );
 
-  test("the stack's people are four, one per case", () => {
-    expect(new Set(Object.values(people)).size).toBe(4);
+  stackRow(
+    "the sign-in steps alone pass sign-in and projects with no peer, broker or listener, judge the outside host's rules alone, and name every other row not run",
+    () => {
+      const rows = rowsOf(runs.signIn);
+      expect([...rows.keys()], runs.signIn.stdout).toEqual([
+        "sign-in",
+        "projects",
+        "limit-3000-60s",
+        "limit-3000-600s",
+        "limit-3010-60s",
+        "limit-3010-600s",
+      ]);
+      expect([...rows.values()].filter((row) => row.verdict !== "PASS")).toEqual([]);
+      expect(rows.get("projects")?.got).toBe("[OWN]");
+      const notRun = runs.signIn.stdout
+        .split("\n")
+        .filter((line) => line.startsWith("outside-edge: not run: "));
+      expect(notRun).toEqual([
+        "outside-edge: not run: device-login: OUTSIDE_EDGE_STEPS is sign-in",
+        "outside-edge: not run: relay: OUTSIDE_EDGE_STEPS is sign-in",
+        ...["1000-60s", "1000-600s", "1010-60s", "1010-600s", "2000-60s", "2000-600s"].map(
+          (rule) =>
+            `outside-edge: not run: limit-${rule}: OUTSIDE_EDGE_STEPS is sign-in, which asks ${runs.edgeHost} nothing`
+        ),
+      ]);
+      expect(verdictLine(runs.signIn)).toBe("PASS");
+      expect(runs.signIn.code).toBe(0);
+    }
+  );
+
+  test("the stack's people are five, one per case", () => {
+    expect(new Set(Object.values(people)).size).toBe(5);
   });
 });

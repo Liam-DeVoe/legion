@@ -64,7 +64,19 @@
  *  A page or a browser that closes while any step waits on it is UNKNOWN, the driver's own
  *  failure, never a page that showed nothing.
  *
- *  Inputs, each refused by name, UNKNOWN and exit 2, when missing or malformed:
+ *  With OUTSIDE_EDGE_STEPS=sign-in, `run` makes step 1 and step 4 alone, for an edge that serves
+ *  the outside origin and no broker or listener yet: it reads no OUTSIDE_PEER_SESSION,
+ *  OUTSIDE_BROKER_URL or OUTSIDE_LISTENER_URL, stops after the `projects` row, and judges only
+ *  the rules of OUTSIDE_EDGE_LIMITS whose host is the link's, the one host those steps ask. It
+ *  makes no `device-login` or `relay` row and no row of another host's rule: each is printed as
+ *  `outside-edge: not run: <row>: <why>`, a line of no row, so none reads PASS and none holds the
+ *  verdict back. A sign-in that did not pass makes `projects` UNKNOWN, not run. A limits file that
+ *  names no rule of the link's host is refused, since step 4 would then judge nothing, and so is
+ *  OUTSIDE_TAILNET_USER_CODE, an approval those steps do not make. Any other value of
+ *  OUTSIDE_EDGE_STEPS is refused; unset or empty, `run` makes every step.
+ *
+ *  Inputs, each refused by name, UNKNOWN and exit 2, when missing or malformed (the sign-in steps
+ *  read no OUTSIDE_PEER_SESSION, OUTSIDE_BROKER_URL or OUTSIDE_LISTENER_URL):
  *    OUTSIDE_INVITE_URL     the owner's enrollment link, https://<outside origin>/enroll#<token>.
  *                           It is single-use, so a run spends it; the run never prints it.
  *    OUTSIDE_PROJECT        the one project the person's list must name.
@@ -84,13 +96,15 @@
  *                           which step 3 ends before the run goes on.
  *                           `approve`, `revoke` and `t5` read them, and so does a later step
  *                           that needs the person's cookie or a session of theirs.
- *  Optional: OUTSIDE_TAILNET_USER_CODE (above); OUTSIDE_EDGE_REPLY_SECONDS (30 when unset; 1 to
- *  600); OUTSIDE_EDGE_TSV, the file the rows are also written to (`<state>/outside-edge.tsv` when
- *  unset). OUTSIDE_EDGE_ALLOW_HTTP=1 lets each origin be http://127.0.0.1 or http://localhost,
- *  and nothing else, for this driver's own test, and only with it OUTSIDE_EDGE_LOGIN_SECONDS (1
- *  to 300) shortens the device login's 5-minute deadline, which that test waits out; without it
- *  that variable is refused. Chromium is started with none of the OUTSIDE_* variables, and every
- *  registration at the listener names the machine `outside-edge-e2e`.
+ *  Optional: OUTSIDE_EDGE_STEPS (above); OUTSIDE_TAILNET_USER_CODE (above);
+ *  OUTSIDE_EDGE_REPLY_SECONDS (30 when unset; 1 to 600); OUTSIDE_EDGE_TSV, the file the rows are
+ *  also written to (`<state>/outside-edge.tsv` when unset). OUTSIDE_EDGE_ALLOW_HTTP=1 lets each
+ *  origin be http://127.0.0.1 or http://localhost, and nothing else, for this driver's own test,
+ *  and only with it OUTSIDE_EDGE_LOGIN_SECONDS (1 to 300) shortens the device login's 5-minute
+ *  deadline, which that test waits out; without it that variable is refused. The sign-in steps
+ *  read neither OUTSIDE_EDGE_REPLY_SECONDS nor OUTSIDE_EDGE_LOGIN_SECONDS. Chromium is started
+ *  with none of the OUTSIDE_* variables, and every registration at the listener names the machine
+ *  `outside-edge-e2e`.
  *
  *  `approve <code>` approves one more device-login code on the outside origin's machine-login
  *  page, in the browser state `run` kept in OUTSIDE_EDGE_STATE, and records its credential, named
@@ -227,6 +241,7 @@ import {
   judgeLimits,
   type Limit,
   LimitsError,
+  limitRow,
   parseLimits,
   type Row,
   verdictOf,
@@ -410,42 +425,51 @@ function kept(state: string, name: string): string {
   return readFileSync(path, "utf8").trim();
 }
 
-/** What `run` reads. */
-interface RunInputs {
+/** What every `run` reads, and all the sign-in steps read. */
+interface SignInInputs {
   readonly invite: URL;
   readonly origin: string;
   readonly project: string;
+  /** The rules step 4 judges: in the sign-in steps, those of the link's host alone. */
+  readonly limits: readonly Limit[];
+  readonly state: string;
+  readonly tsv: string;
+}
+
+/** What `run` reads for every step. */
+interface RunInputs extends SignInInputs {
   readonly peer: string;
   readonly broker: string;
   readonly listener: string;
-  readonly limits: readonly Limit[];
-  readonly state: string;
   readonly tailnetCode: string | undefined;
   readonly replySeconds: number;
   /** How long the device login's poll waits for an approval (LOGIN_SECONDS, or the test's own). */
   readonly loginMs: number;
-  readonly tsv: string;
 }
+
+/** OUTSIDE_EDGE_STEPS's one value: the sign-in steps alone. */
+const SIGN_IN_STEPS = "sign-in";
+
+/** What `run` is asked: every step, or the sign-in steps alone, beside the rules of
+ *  OUTSIDE_EDGE_LIMITS they leave unjudged, each of another host than the link's. */
+type RunAsked =
+  | { readonly steps: "every"; readonly inputs: RunInputs }
+  | {
+      readonly steps: typeof SIGN_IN_STEPS;
+      readonly inputs: SignInInputs;
+      readonly unasked: readonly Limit[];
+    };
 
 const PROJECT_KEY = /^[A-Z][A-Z0-9]{0,31}$/;
 const USER_CODE = /^[A-Za-z0-9]{4}-?[A-Za-z0-9]{4}$/;
 
-function runInputs(env: NodeJS.ProcessEnv): RunInputs {
-  const allowHttp = env.OUTSIDE_EDGE_ALLOW_HTTP === "1";
-  const invite = originOf("OUTSIDE_INVITE_URL", required(env, "OUTSIDE_INVITE_URL"), allowHttp);
-  if (invite.pathname !== "/enroll" || invite.hash.length <= 1) {
-    throw new Refused("OUTSIDE_INVITE_URL is no enrollment link (<origin>/enroll#<token>)");
-  }
-  const project = required(env, "OUTSIDE_PROJECT");
-  if (!PROJECT_KEY.test(project)) throw new Refused("OUTSIDE_PROJECT is no project key");
-  const peer = required(env, "OUTSIDE_PEER_SESSION");
-  if (/\s/.test(peer)) throw new Refused("OUTSIDE_PEER_SESSION holds white space");
-  const broker = originOf("OUTSIDE_BROKER_URL", required(env, "OUTSIDE_BROKER_URL"), allowHttp);
-  const listener = originOf(
-    "OUTSIDE_LISTENER_URL",
-    required(env, "OUTSIDE_LISTENER_URL"),
-    allowHttp
-  );
+/** What every `run` reads last: the rules of OUTSIDE_EDGE_LIMITS, the state directory, made, and
+ *  the file the rows are also written to. */
+function limitsAndState(env: NodeJS.ProcessEnv): {
+  limits: Limit[];
+  state: string;
+  tsv: string;
+} {
   const limitsFile = required(env, "OUTSIDE_EDGE_LIMITS");
   let limits: Limit[];
   try {
@@ -455,6 +479,35 @@ function runInputs(env: NodeJS.ProcessEnv): RunInputs {
     throw new Refused(`OUTSIDE_EDGE_LIMITS could not be read: ${messageOf(error)}`);
   }
   const state = stateDirectory(required(env, "OUTSIDE_EDGE_STATE"));
+  return {
+    limits,
+    state,
+    tsv: (env.OUTSIDE_EDGE_TSV ?? "").trim() || join(state, "outside-edge.tsv"),
+  };
+}
+
+function runInputs(env: NodeJS.ProcessEnv): RunAsked {
+  const steps = (env.OUTSIDE_EDGE_STEPS ?? "").trim();
+  if (steps !== "" && steps !== SIGN_IN_STEPS) {
+    throw new Refused(`OUTSIDE_EDGE_STEPS must be ${SIGN_IN_STEPS}, or unset for every step`);
+  }
+  const allowHttp = env.OUTSIDE_EDGE_ALLOW_HTTP === "1";
+  const invite = originOf("OUTSIDE_INVITE_URL", required(env, "OUTSIDE_INVITE_URL"), allowHttp);
+  if (invite.pathname !== "/enroll" || invite.hash.length <= 1) {
+    throw new Refused("OUTSIDE_INVITE_URL is no enrollment link (<origin>/enroll#<token>)");
+  }
+  const project = required(env, "OUTSIDE_PROJECT");
+  if (!PROJECT_KEY.test(project)) throw new Refused("OUTSIDE_PROJECT is no project key");
+  if (steps === SIGN_IN_STEPS) return signInInputs(env, invite, project);
+  const peer = required(env, "OUTSIDE_PEER_SESSION");
+  if (/\s/.test(peer)) throw new Refused("OUTSIDE_PEER_SESSION holds white space");
+  const broker = originOf("OUTSIDE_BROKER_URL", required(env, "OUTSIDE_BROKER_URL"), allowHttp);
+  const listener = originOf(
+    "OUTSIDE_LISTENER_URL",
+    required(env, "OUTSIDE_LISTENER_URL"),
+    allowHttp
+  );
+  const { limits, state, tsv } = limitsAndState(env);
   const tailnetCode = (env.OUTSIDE_TAILNET_USER_CODE ?? "").trim() || undefined;
   if (tailnetCode !== undefined && !USER_CODE.test(tailnetCode)) {
     throw new Refused("OUTSIDE_TAILNET_USER_CODE is no device-login code (XXXX-XXXX)");
@@ -480,18 +533,47 @@ function runInputs(env: NodeJS.ProcessEnv): RunInputs {
     );
   }
   return {
-    invite,
-    origin: invite.origin,
-    project,
-    peer,
-    broker: broker.origin,
-    listener: listener.origin,
-    limits,
-    state,
-    tailnetCode,
-    replySeconds,
-    loginMs: loginSeconds * 1000,
-    tsv: (env.OUTSIDE_EDGE_TSV ?? "").trim() || join(state, "outside-edge.tsv"),
+    steps: "every",
+    inputs: {
+      invite,
+      origin: invite.origin,
+      project,
+      peer,
+      broker: broker.origin,
+      listener: listener.origin,
+      limits,
+      state,
+      tailnetCode,
+      replySeconds,
+      loginMs: loginSeconds * 1000,
+      tsv,
+    },
+  };
+}
+
+/** The sign-in steps' inputs past the link and the project: the rules of the link's host, the one
+ *  host those steps ask, the state and the TSV file; no peer, broker or listener, which they never
+ *  ask, and no tailnet code, an approval they do not make. A limits file that names no rule of the
+ *  link's host is refused: step 4 would judge nothing, and a run that judged nothing has not
+ *  passed. */
+function signInInputs(env: NodeJS.ProcessEnv, invite: URL, project: string): RunAsked {
+  const { limits, state, tsv } = limitsAndState(env);
+  const host = invite.hostname;
+  const asked = limits.filter((limit) => limit.host === host);
+  if (asked.length === 0) {
+    throw new Refused(
+      `OUTSIDE_EDGE_LIMITS names no rule of ${host}, the link's host, the one host the sign-in steps ask`
+    );
+  }
+  if ((env.OUTSIDE_TAILNET_USER_CODE ?? "").trim() !== "") {
+    throw new Refused(
+      "OUTSIDE_TAILNET_USER_CODE asks for an approval, and the sign-in steps make none"
+    );
+  }
+  return {
+    steps: SIGN_IN_STEPS,
+    inputs: { invite, origin: invite.origin, project, limits: asked, state, tsv },
+    unasked: limits.filter((limit) => limit.host !== host),
   };
 }
 
@@ -723,7 +805,7 @@ function recordApproval(state: string, code: string, credential: string): void {
 
 /** Step 1: the link enrolls a passkey, and the person's list is exactly the project. Answers the
  *  signed-in person, or undefined when the step did not pass. */
-async function signIn(page: Page, context: BrowserContext, inputs: RunInputs, rows: Rows) {
+async function signIn(page: Page, context: BrowserContext, inputs: SignInInputs, rows: Rows) {
   const want = `the link enrolls a passkey and signs in at ${inputs.origin}`;
   const passkey = await addVirtualPasskey(page);
   try {
@@ -1460,9 +1542,9 @@ async function leave(
 }
 
 async function run(env: NodeJS.ProcessEnv): Promise<number> {
-  let inputs: RunInputs;
+  let asked: RunAsked;
   try {
-    inputs = runInputs(env);
+    asked = runInputs(env);
   } catch (error) {
     if (!(error instanceof Refused)) throw error;
     const rows = new Rows(undefined);
@@ -1474,6 +1556,7 @@ async function run(env: NodeJS.ProcessEnv): Promise<number> {
     });
     return rows.finish();
   }
+  const { inputs } = asked;
   // The link's token, as the URL holds it and decoded, which no row carries: a page that did not
   // load fails with an error naming the URL it was loading.
   const token = inputs.invite.hash.slice(1);
@@ -1493,6 +1576,11 @@ async function run(env: NodeJS.ProcessEnv): Promise<number> {
     cut ??= `the run did not reach ${row}: ${why}`;
     rows.add({ row, want, got: `not run: ${why}`, verdict: "UNKNOWN" });
   };
+  // A row the sign-in steps do not make, printed as a line of no row: it never reads PASS, and no
+  // verdict waits on it.
+  const skipped = (row: string, why: string) =>
+    console.log(`outside-edge: not run: ${row}: ${why}`);
+  const signInOnly = `OUTSIDE_EDGE_STEPS is ${SIGN_IN_STEPS}`;
   let browser: Browser | undefined;
   try {
     browser = await launchBrowser();
@@ -1500,22 +1588,32 @@ async function run(env: NodeJS.ProcessEnv): Promise<number> {
     countBrowser(context);
     const page = await context.newPage();
     const person = await signIn(page, context, inputs, rows);
-    if (person === undefined) {
+    if (asked.steps === SIGN_IN_STEPS) {
+      if (person === undefined) {
+        notRun(
+          "projects",
+          `GET /api/v1/projects lists exactly [${inputs.project}]`,
+          "the sign-in did not pass"
+        );
+      }
+      skipped("device-login", signInOnly);
+      skipped("relay", signInOnly);
+    } else if (person === undefined) {
       notRun("device-login", "a device login approved on the page", "the sign-in did not pass");
-      if (inputs.tailnetCode !== undefined)
-        notRun("tailnet-code", `APPROVED ${inputs.tailnetCode}`, "the sign-in did not pass");
+      if (asked.inputs.tailnetCode !== undefined)
+        notRun("tailnet-code", `APPROVED ${asked.inputs.tailnetCode}`, "the sign-in did not pass");
       notRun("relay", "a reply from the peer on the relay socket", "the sign-in did not pass");
     } else {
-      const login = await deviceLogin(page, person, inputs, rows);
-      if (inputs.tailnetCode !== undefined)
-        await tailnetCode(page, inputs.tailnetCode, inputs, rows);
+      const every = asked.inputs;
+      const login = await deviceLogin(page, person, every, rows);
+      if (every.tailnetCode !== undefined) await tailnetCode(page, every.tailnetCode, every, rows);
       if (login === undefined)
         notRun(
           "relay",
           "a reply from the peer on the relay socket",
           "the device login did not pass"
         );
-      else await relay(inputs, rows);
+      else await relay(every, rows);
     }
   } catch (error) {
     // An error no step read, such as a page closed under a step, a browser that did not start, or
@@ -1532,6 +1630,11 @@ async function run(env: NodeJS.ProcessEnv): Promise<number> {
     });
   } finally {
     await closeBrowser(browser);
+  }
+  if (asked.steps === SIGN_IN_STEPS) {
+    for (const limit of asked.unasked) {
+      skipped(limitRow(limit), `${signInOnly}, which asks ${limit.host} nothing`);
+    }
   }
   const judged = judgeLimits(inputs.limits, counted, cut);
   for (const { host, perMinute } of judged.hostPeaks) {
