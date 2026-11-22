@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -305,5 +306,60 @@ func TestASettingNamingAnotherDaemonFinishesTheOldDaemonsMessagesWithNoRead(t *t
 	}
 	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); slices.Contains(got, `"merging"`) || slices.Contains(got, `"testing"`) {
 		t.Errorf("the phase's history is %v: a message of the daemon the setting named before was applied", got)
+	}
+}
+
+// TestAnEventOfTheSameStoreDuringTheReadThatVerifiesANewURLIsApplied: R3 applies every event of
+// the daemon its setting names, and a project that goes quiet is at most one minute behind while
+// its reads succeed. A setting written to a new URL that serves the same store (the daemon moved)
+// is unverified until a read of that URL succeeds. While that read is in flight, the daemon
+// commits and publishes an event past the read's snapshot. The read then lands, verifies the
+// store, and the project goes quiet. The event is applied within about a minute of the read.
+//
+// INFRA's daemon is read whole at 10. The setting names a second URL that serves INFRA's own
+// store at 11, and the test holds that answer. While it is held, the daemon publishes 12. The test
+// lets the answer go, and the read verifies the store at 11. Then nothing is published: on the
+// intake's clock a minute passes, and INFRA-1's phase reaches 12's testing within 75 s.
+//
+// At 86ded796 the intake takes 12 as a message of the store the setting named before, since no
+// read of the new URL has succeeded, and acknowledges it unapplied beside the project's runner
+// while the read is in flight. The read verifies the store at 11 and clears the record, and
+// nothing applies 12 or owes the read that would: INFRA stays at 11 until its next message.
+func TestAnEventOfTheSameStoreDuringTheReadThatVerifiesANewURLIsApplied(t *testing.T) {
+	implementing := strings.Replace(planning("INFRA"), `"planning"`, `"implementing"`, 1)
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+
+	relocated := newFakeDaemon(t, daemonState("INFRA", 11, implementing))
+	release := relocated.holds(t)
+	if _, err := PutSettings(context.Background(), rig.database.Pool, "INFRA", relocated.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
+		t.Fatalf("point INFRA at the URL its daemon moved to: %v", err)
+	}
+	rig.wake <- struct{}{}
+	rig.waitFor(20*time.Second, func() bool { return relocated.served() >= 1 }, func() string {
+		return "the write's starting read of the URL the daemon moved to never began"
+	})
+
+	// The event past the read's snapshot reaches the intake while the read is held.
+	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "testing")))
+	rig.waitFor(20*time.Second, func() bool { return rig.consumerInfo().NumPending == 0 }, func() string {
+		return fmt.Sprintf("the message at 12 was not delivered while the read was held: %+v", rig.consumerInfo())
+	})
+	time.Sleep(time.Second)
+	release()
+	rig.awaitWholeReads(2)
+	if c := cursorOf(t, rig.database, "INFRA"); c.stateID == nil || *c.stateID != rigStateID {
+		t.Fatalf("control: INFRA's cursor after the read of the URL the daemon moved to is %s, want the store %s it serves", c, rigStateID)
+	}
+
+	rig.clock.advance(ReadRetryAfter + time.Second)
+	if !testwait.Holds(75*time.Second, 200*time.Millisecond, func() bool {
+		return slices.Contains(history(t, rig.database, "INFRA", "INFRA-1", FieldPhase), `"testing"`)
+	}) {
+		t.Errorf("75 s after the read that verified the store, with the project quiet, INFRA-1's phase history is %v and INFRA's cursor is %s: the event at 12, published past the read's snapshot while it was in flight, was never applied and nothing owes the read that would",
+			history(t, rig.database, "INFRA", "INFRA-1", FieldPhase), cursorOf(t, rig.database, "INFRA"))
 	}
 }
