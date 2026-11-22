@@ -233,9 +233,9 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background " +
   "job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. " +
   "The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. " +
-  "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
+  "request_backward_move returns an issue to an earlier phase (`to`, `reason`, `return_to`). A phase worker moves its own issue. " +
   "The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. " +
-  "That move counts a review round. " +
+  "That move counts a review round. A move to `step` goes to the one earlier step that runs as `step`; with two, `return_to` names the one, by its place in the task. " +
   "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
   "It also reports the contract the daemon states on its answer to the health route. " +
   "That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. " +

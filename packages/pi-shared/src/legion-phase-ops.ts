@@ -318,8 +318,9 @@ export const PHASE_OP_SENTENCES = {
     "counted as `heldByPause` and left out of those seconds, since its wait measures the pause. A release that suspended no role is woken by " +
     "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. ",
   requestBackwardMove:
-    "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
-    "The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. That move counts a review round. ",
+    "request_backward_move returns an issue to an earlier phase (`to`, `reason`, `return_to`). A phase worker moves its own issue. " +
+    "The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. That move counts a review round. " +
+    "A move to `step` goes to the one earlier step that runs as `step`; with two, `return_to` names the one, by its place in the task. ",
   readBuild:
     "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
     "It also reports the contract the daemon states on its answer to the health route. " +
