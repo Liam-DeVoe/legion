@@ -1,8 +1,11 @@
 package bus
 
 import (
+	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -179,5 +182,132 @@ func TestABoundCreateOnAClientWithStreamMessageReadsSendsNoDirectGet(t *testing.
 	}
 	if requestFor(t, directGets, stream, noRequestFor*10) == nil {
 		t.Fatalf("the plain client's bound Create(%s) drew no direct get on the wire, so the reading cannot see one", key)
+	}
+}
+
+// markerGets is the JetStream context a stream-message-reads handle reads through, its last
+// message gets (GetLastMsg, the read of a delete marker in Create) taken over by the row: each fails
+// at once with nats.ErrTimeout (fail), or is held until the context it was given ends. A get given
+// no context fails at once too, and the row reads which context each get was given (given).
+type markerGets struct {
+	nats.JetStreamContext
+	fail bool
+	mu   sync.Mutex
+	// gets counts the last message gets; given is the context the last one was given, nil for none.
+	gets  int
+	given context.Context
+}
+
+func (g *markerGets) GetLastMsg(_, _ string, opts ...nats.JSOpt) (*nats.RawStreamMsg, error) {
+	var given context.Context
+	for _, opt := range opts {
+		if ctx, ok := opt.(nats.ContextOpt); ok {
+			given = ctx.Context
+		}
+	}
+	g.mu.Lock()
+	g.gets++
+	g.given = given
+	g.mu.Unlock()
+	if g.fail || given == nil {
+		return nil, nats.ErrTimeout
+	}
+	<-given.Done()
+	return nil, given.Err()
+}
+
+// read is the number of last message gets made and the context the last was given.
+func (g *markerGets) read() (int, context.Context) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.gets, g.given
+}
+
+// markerGetsOn replaces the JetStream context the reads of kv, a handle on a client with stream
+// message reads, go through with markerGets, and returns it.
+func markerGetsOn(t *testing.T, kv *KeyValue, fail bool) *markerGets {
+	t.Helper()
+	reads, ok := kv.legacy.(streamMessageReads)
+	if !ok {
+		t.Fatalf("the handle's legacy handle is %T, not stream message reads", kv.legacy)
+	}
+	gets := &markerGets{JetStreamContext: reads.js, fail: fail}
+	reads.js = gets
+	kv.legacy = reads
+	return gets
+}
+
+// liveBucket is a bucket on a client with stream message reads whose key holds a live value, and
+// the client's own handle on it.
+func liveBucket(t *testing.T, bucket, key string) KeyValue {
+	t.Helper()
+	client, err := Connect([]string{testnats.URL(t)}, WithStreamMessageReads())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	js, err := client.Conn.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	kv, err := EnsureKeyValue(t.Context(), client.Conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	if err != nil {
+		t.Fatalf("create bucket %s: %v", bucket, err)
+	}
+	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
+	if _, err := kv.Put(key, []byte("live")); err != nil {
+		t.Fatalf("put %s: %v", key, err)
+	}
+	return kv
+}
+
+// A bound Create's marker read on a client with stream message reads takes the caller's context:
+// over a live value the write is refused, and the read of the marker is sent with a context that
+// ends no later than the caller's deadline, so a read the server holds ends with the caller and
+// the Create answers nats.ErrKeyExists. A read sent with no context would run on its own 10 s.
+func TestABoundCreatesMarkerReadTakesTheCallersContext(t *testing.T) {
+	const key = "ses_live"
+	kv := liveBucket(t, "kv_marker_read_ctx", key)
+	gets := markerGetsOn(t, &kv, false)
+	caller, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err := kv.Within(caller).Create(key, []byte("again"))
+	n, given := gets.read()
+	if n != 1 {
+		t.Fatalf("the bound Create over a live value made %d marker reads, want one, so this row holds nothing", n)
+	}
+	if given == nil {
+		t.Fatal("the bound Create's marker read was sent with no context, so it runs on its own RequestTimeout past the caller's deadline")
+	}
+	callerEnd, _ := caller.Deadline()
+	if readEnd, ok := given.Deadline(); !ok || readEnd.After(callerEnd) {
+		t.Fatalf("the marker read's context ends at %v (has deadline %t), after the caller's %v", readEnd, ok, callerEnd)
+	}
+	if !errors.Is(err, nats.ErrKeyExists) || !IsCASConflict(err) {
+		t.Fatalf("a bound Create over a live value whose marker read was held = %v, want nats.ErrKeyExists", err)
+	}
+}
+
+// A bound Create whose marker read fails answers the refused write, as the legacy Create and
+// nats.go's two Creates do, never a stored create: over a live value with the read failing at once
+// (nats.ErrTimeout), the Create answers nats.ErrKeyExists and the key still holds its live value. A
+// spent-proof create that answered a stored create here would report a proof spent with nothing
+// written.
+func TestABoundCreateWhoseMarkerReadFailsAnswersTheRefusedWrite(t *testing.T) {
+	const key = "ses_live"
+	kv := liveBucket(t, "kv_marker_read_fails", key)
+	gets := markerGetsOn(t, &kv, true)
+	revision, err := kv.Within(t.Context()).Create(key, []byte("again"))
+	if n, _ := gets.read(); n != 1 {
+		t.Fatalf("the bound Create over a live value made %d marker reads, want one, so this row holds nothing", n)
+	}
+	if !errors.Is(err, nats.ErrKeyExists) || !IsCASConflict(err) {
+		t.Fatalf("a bound Create over a live value whose marker read failed = revision %d, %v; want nats.ErrKeyExists", revision, err)
+	}
+	// The handle's own reads go through the failing gets, so the key is read back through its
+	// jetstream handle.
+	entry, err := kv.WatchHandle().Get(t.Context(), key)
+	if err != nil || string(entry.Value()) != "live" {
+		t.Fatalf("read %s after the refused Create = %v, %v; want the live value", key, entry, err)
 	}
 }
