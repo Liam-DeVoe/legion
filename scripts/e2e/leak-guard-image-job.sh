@@ -105,10 +105,11 @@
 #      under the Job's rule file, each naming its class and what matched, the clean case landed,
 #      the refusable push landed with no rule file named and no command printed a `LEAK CHECK`
 #      line, all four setup failures refused under both commands, the gerrit upload was refused
-#      and the push outside the guard landed; on the control's image, if
-#      one was given, the refusable cases were refused under the Job's file and under none, each
-#      naming its class alone, the clean case landed under the Job's file and under a missing or
-#      an unparseable one, and both shared-check failures refused under both commands.
+#      and the push outside the guard landed; on the control's image, if one was given, the
+#      refusable cases were refused under the Job's file and under none, each naming its class
+#      alone, the clean case landed under the Job's file and under a missing or an unparseable
+#      one, both shared-check failures refused under both commands, and the push outside the
+#      guard landed.
 #   1  the Job ran and a check did not hold. Its log, printed above the verdict, says which.
 #   2  the harness could not run: a usage error, a missing input, no Kubernetes credential or a
 #      namespace that refuses a Job, a Job that started no pod, a log that could not be read, or a
