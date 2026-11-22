@@ -26,6 +26,27 @@ test("a value settles once it has held still for the wait", () => {
   }
 });
 
+// A value with nothing to wait for arms no timer: the mount's value, and a value that moved back
+// to the settled one before its wait ran out. A timer armed for it would set the same value
+// later, an update that lands after the page or the test has gone quiet.
+test("a value already settled arms no wait, at the mount or when it moves back", () => {
+  jest.useFakeTimers();
+  const { rerender, result, unmount } = renderHook(({ value }) => useSettled(value, 100), {
+    initialProps: { value: "a" },
+  });
+  try {
+    expect(jest.getTimerCount()).toBe(0);
+    rerender({ value: "ab" });
+    expect(jest.getTimerCount()).toBe(1);
+    rerender({ value: "a" });
+    expect(jest.getTimerCount()).toBe(0);
+    expect(result.current).toBe("a");
+  } finally {
+    realClock();
+    unmount();
+  }
+});
+
 // A wait of zero lets a value through in the render that brings it, and the next value that has
 // to wait starts from it: it never shows a value from before the one let through.
 test("a wait of zero settles a value at once, and the next wait starts from it", () => {

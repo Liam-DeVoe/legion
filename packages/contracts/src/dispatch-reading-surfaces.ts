@@ -97,6 +97,7 @@ export type DispatchReadingSurface =
   | "check-retraction-reason"
   | "referenced-by-excerpt"
   | "referenced-by-title"
+  | "artifacts-reference-name"
   | "priority-description"
   | "body-reference-cards"
   | "dispatch-reference-card"
@@ -1075,6 +1076,20 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: false,
     rendered: false,
     surface: "referenced-by-title",
+  },
+  // The Artifacts tab's References and Referenced by rows: each a link to the node at the far end
+  // of a link of the issue's references read, worded with the name the read gives that node.
+  {
+    files: ["packages/dispatch/web/src/features/artifacts/ArtifactsTab.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/artifacts/ArtifactsTab.test.tsx",
+      test: "a references row reads a reference in its name as its target's name",
+    },
+    reach: "/issues/<ISSUE>/artifacts, a References or Referenced by row",
+    reason: `A row of the issue's references read is a link to the node at its far end, worded with the name the read gives that node, as the server cut it. Where that name is the head of a comment's, an ask's or a message's text, whose \`#id\` is read against that record, or a block's excerpt, it is drawn through this projection; a document's name, an issue's title and a component's are drawn as the characters they are. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "artifacts-reference-name",
   },
   // A priority's description, on its own page and on the open row of the priorities table, and
   // its first line on a closed row of that table.
