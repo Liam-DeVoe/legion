@@ -41,12 +41,13 @@ func (r *refresherRig) failingPass(t *testing.T) {
 
 // TestAFirstDayMovedEarlierLeavesNoDayWithoutARowThoughThePassFails: a pull request of the main
 // project merged again six days before pr-open-to-merge's first day moves that eval's first input
-// day earlier, and the days between the two need zero rows, which the write of the new first day
-// writes in its own transaction. The test fails the first write of one of those zero rows: the
-// pass fails, and the pass after it, which reads the same change again and the new first day from
-// the store, leaves every day from the new first day to today with a row. Written in a later
-// transaction of the pass, the zero rows were lost with the failure: the retry found the eval's
-// first day already moved, and no gap behind it.
+// day earlier, and the days between the two need zero rows. The write of the new first day moves
+// the delivery walk back to the day after it in its own transaction (ProjectDay.Rewind), and the
+// walk writes those zero rows. The test fails the first write of one of them: the pass fails, and
+// the pass after it, whose walk stands where the write moved it, leaves every day from the new
+// first day to today with a row. Recorded in a later transaction of the pass, the move back would
+// have been lost with the failure: the retry finds the eval's first day already moved, and nothing
+// left for the walk.
 func TestAFirstDayMovedEarlierLeavesNoDayWithoutARowThoughThePassFails(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
@@ -162,4 +163,122 @@ func TestADayAnIssueLeftIsRewrittenThoughThePassFailsBeforeIt(t *testing.T) {
 	if owed := r.count(t, `select count(*) from eval_days_owed`); owed != 0 {
 		t.Errorf("%d days are still owed a rewrite after the pass, want none", owed)
 	}
+}
+
+// pageAlone makes a pass's pages and no walk, as a boot that commits the refresher's cursors and
+// stops before its walk does: it moves the pending changes into the log, loads what a pass loads,
+// and reads the feeds page after page, writing the days they name, until one comes back short. It
+// answers what the pages wrote.
+func (r *refresherRig) pageAlone(t *testing.T) refreshed {
+	t.Helper()
+	ctx := t.Context()
+	if _, err := r.horizon.Await(ctx); err != nil {
+		t.Fatalf("await the event log's safe horizon: %v", err)
+	}
+	if _, err := delivery.DrainPending(ctx, r.database.Pool); err != nil {
+		t.Fatalf("drain the change log's outbox: %v", err)
+	}
+	pass := r.registry.newRefresh(r.build, r.now, r.batch)
+	if err := pass.load(ctx, r.seeds); err != nil {
+		t.Fatalf("load the refresher's pass: %v", err)
+	}
+	safe, err := r.horizon.SafeOrAwait(ctx)
+	if err != nil {
+		t.Fatalf("read the event log's safe horizon: %v", err)
+	}
+	for {
+		more, err := pass.page(ctx, safe, refresherPage)
+		if err != nil {
+			t.Fatalf("the refresher's page failed: %v", err)
+		}
+		if !more {
+			return pass.report
+		}
+	}
+}
+
+// TestAChangeBeforeTheFirstWalkWritesNoZeroRowOnADayWithInput: over the delivery and Legion
+// histories, a boot commits the refresher's cursors and stops before its walk (pageAlone), as the
+// migrating boot of dispatch://INFRA-2916's k12 drive did, so every walk is to begin and no day row
+// exists. A change then opens the main project's first merged pull request an hour earlier, and the
+// page that reads it writes that pull request's merge day and the days it links to from their own
+// input: no other day holds a row, so each later day with input reads "no data" until the walk
+// computes it, and no row the page wrote is a zero row of a day the walk then writes with input.
+// At 04de13fa the page wrote the zero rows of every day after the merge day through today
+// (refresh.gapsBehind), days with input among them, which read 0 until the walk reached them. Once
+// the walk has run, the database holds the delivery and CI rows, the members and the stored figures
+// of a second database that made the same change before its first walk (expectSameAsWalk).
+func TestAChangeBeforeTheFirstWalkWritesNoZeroRowOnADayWithInput(t *testing.T) {
+	r := newRefresherRig(t)
+	deliveries, _ := r.seedHistories(t)
+	if report := r.pageAlone(t); len(report.days) != 0 {
+		t.Fatalf("the boot's pages wrote %v, and the check needs none: a page with no cursor writes no day", report.sorted())
+	}
+	if rows := r.count(t, `select count(*) from eval_days`); rows != 0 {
+		t.Fatalf("the boot left %d day rows, and the check needs none", rows)
+	}
+	main := deliveries.Project
+	projects := map[string]string{}
+	for project, keys := range deliveries.Issues {
+		for _, key := range keys {
+			projects[key] = project
+		}
+	}
+	var opened *delivery.DeliveryPullRequest
+	for i, pr := range deliveries.PullRequests {
+		counts := pr.IssueKey == nil || projects[*pr.IssueKey] == main
+		if counts && pr.MergedAt != nil && pr.CreatedAt != nil && !pr.Partial && slices.Contains(deliveries.Settings.PopulationAuthors, pr.Author) &&
+			(opened == nil || pr.MergedAt.Before(*opened.MergedAt)) {
+			opened = &deliveries.PullRequests[i]
+		}
+	}
+	if opened == nil {
+		t.Fatalf("the history holds no merged pull request of %s", main)
+	}
+	day := measures.Midnight(*opened.MergedAt)
+	open := func(rig *refresherRig) {
+		t.Helper()
+		rig.exec(t, "open "+PullRequestMember(opened.Repo, opened.Number)+" an hour earlier", `
+			update delivery_pull_requests set created_at = created_at - interval '1 hour' where repo = $1 and number = $2
+		`, opened.Repo, opened.Number)
+	}
+	open(r)
+	report := r.pageAlone(t)
+	written := map[string]bool{}
+	for _, one := range report.sorted() {
+		written[one] = true
+	}
+	if !written[line(walkDelivery, main, day)] {
+		t.Fatalf("the page wrote %v, and not %s's merge day %s", report.sorted(), main, day.Format(time.DateOnly))
+	}
+	paged := r.dayRows(t)
+	for key, row := range paged {
+		if !written[dayLine(row)] {
+			t.Errorf("%s holds n %d before the walk has computed its day, which no change named", key, row.N)
+		}
+	}
+
+	r.settle(t)
+	walked := r.dayRows(t)
+	later := 0
+	for key, row := range paged {
+		if computed, held := walked[key]; row.N == 0 && held && computed.N > 0 {
+			t.Errorf("%s read 0 before the walk computed its day, which holds input: the walk wrote n %d", key, computed.N)
+		}
+	}
+	for key, row := range walked {
+		if _, held := paged[key]; !held && row.Repo == "" && row.N > 0 && row.Day.After(day) && familyOf(row) == walkDelivery {
+			later++
+		}
+	}
+	if later == 0 {
+		t.Errorf("the walk wrote no row with input of a day after %s the page had not written, and the check needs some", day.Format(time.DateOnly))
+	}
+	walk := newRefresherRig(t)
+	walk.seedHistories(t)
+	open(walk)
+	walk.settle(t)
+	r.expectSameAsWalk(t, "the change read before the first walk", walk)
+	t.Logf("the page wrote %v: %d rows; the walk then wrote %d rows with input of later days the page had left with none",
+		report.sorted(), len(paged), later)
 }

@@ -61,6 +61,28 @@ import (
 // release, on an issue that is a P0 or whose priority moved) rewrites the project's unowned-p0
 // row of today; and one that moves an issue's repository or its parent rewrites the days of the
 // filings of that issue and of every issue below it, whose repository resolves through it.
+//
+// A day a change names is written from its own input, and every day it does not name is the
+// walk's (refresh.walkDays), so the stored rows are a function of the inputs and the settings
+// alone, whichever order the inputs arrived in (dispatch://INFRA-2916, items 5 and 8):
+//
+//   - the write holds the rows the day builds and deletes the rows of the day it no longer builds
+//     (deleteStaleDays), and writes the zero row of each series the day has no input of from the
+//     series' first input day on only where the running build's walk has computed the day (a day
+//     before its next day): on a day the walk has not computed yet, or while it has no record or
+//     begins again, the day holds its rows with input alone, and reads "no data" where it has
+//     none, until the walk computes it (walkNext);
+//   - a write that moves a series' first input day earlier, or creates one, moves the walk of its
+//     family back to the day after it, and one that finds the day was a series' first input day
+//     and holds no input of it any more drops that zero row and moves the walk back to the day
+//     itself, each in the write's own transaction and never later than the walk stands
+//     (ProjectDay.Rewind): the walk then builds every day after the write's from their own input;
+//   - a change in the repositories that hold a delivery run, a new one's first runs, moves the
+//     delivery walk back to the earliest start that changed, in the page's commit (syncKept);
+//   - the walk computes every day it reaches, a day a page of the same pass wrote included, and
+//     every day holding rows of its family, whether or not it builds a row of it; each series'
+//     first input day it builds by is the first it holds among the days before the walk's next
+//     day, which the walk built, or the first it builds itself (refresh.firstOf).
 
 // refresh is one pass's state: the build and the day it writes as, the projects and the delivery
 // settings it read, the first input day of each project's series it has read (of each deploy
@@ -83,33 +105,53 @@ type refresh struct {
 	// builtUnder is the delivery settings the stored delivery and CI rows stand built under
 	// (eval_days_settings), read by the pass's first page that has settings (builtRead) and moved by
 	// each of its pages that brings the rows to the settings it reads (syncSettings); nil where
-	// none are recorded.
+	// none are recorded. keptUnder is the repositories the rows stand built for, read with it and
+	// moved by each page that reads another set (syncKept).
 	builtUnder *delivery.DeliverySettings
+	keptUnder  []keptRepo
 	builtRead  bool
-	first      map[walkKey]map[evalKey]time.Time
-	since      map[string]LegionSince
+	// first is the first input day of each project's series the store holds (storedFirst), read
+	// once a pass and moved by each day a page writes (noteBuilt); walkFirst is the walk's own,
+	// read of the days before walkFrom, where each walk's batch began, and moved by each day the
+	// walk writes (firstOf).
+	first     map[walkKey]map[evalKey]time.Time
+	walkFirst map[walkKey]map[evalKey]time.Time
+	walkFrom  map[walkKey]time.Time
+	since     map[string]LegionSince
 	// reads, done and unowned hold for one page (page sets them anew) and then the walks: a page
 	// writes a day once, from one read of it, and a change to that day committed after the read
 	// is on a later page, which must read and write the day again. Kept for the whole pass, they
 	// would let that page skip the day while its cursor moved past the change, and the day would
-	// stand stale until another change named it. repos is the page's one read of repo_projects,
-	// which every delivery day it reads attributes by, and which a page that reads a change of a
-	// mapping (a settings change) reads after loading that change, since it starts empty; and
-	// deployRepos is the page's one read of the repositories whose rows of the evals that read the
-	// deploy repository are kept (readDeployRepos), made after the page has read its changes, so a
-	// repository whose first run is among them has its rows written.
+	// stand stale until another change named it. The walk sets done anew too, since it computes
+	// every day it reaches, a day a page wrote included. repos is the page's one read of
+	// repo_projects, which every delivery day it reads attributes by, and which a page that reads
+	// a change of a mapping (a settings change) reads after loading that change, since it starts
+	// empty; and deployRepos is the page's one read of the repositories whose rows of the evals
+	// that read the deploy repository are kept (readDeployRepos), made after the page has read its
+	// changes, so a repository whose first run is among them has its rows written.
 	reads       map[time.Time]deliveryRead
 	done        map[builtDay]bool
 	unowned     map[string]bool
 	repos       *repoProjects
 	deployRepos []keptRepo
+	// walks is the page's one read of the running build's walk records (walkNext), begun the
+	// families whose walks the page begins again, and rewound the day each walk of the page's
+	// writes moved back to (ProjectDay.Rewind) or that its commit moves back to (syncKept): what
+	// tells a day the walk has computed from one it has not.
+	walks   map[walkKey]walkState
+	begun   map[string]bool
+	rewound map[walkKey]time.Time
 	// walkApplies is the deploy runs of each kept repository the delivery walk's batch read once
 	// from walkAppliesFrom on (deliveryWalkDay), for the pass's walk alone.
 	walkApplies     map[string]*delivery.ApplyRows
 	walkAppliesFrom time.Time
-	// walking is set while the pass walks, whose days run in order and so need no gap filled
-	// behind a first day they move (gapsBehind), and whose days' stored figures are folded once
-	// the walks' batches are written (foldWalked) rather than in each day's own transaction.
+	// walkHeld is each project's day of each walk's batch that holds rows of the walk's family,
+	// which the walk writes whether or not it builds a row of it (heldDays).
+	walkHeld map[builtDay]bool
+	// walking is set while the pass walks, whose days run in order from the first input day or
+	// from days the walk built, so they move no walk back and write every zero row from each
+	// series' first input day on, and whose days' stored figures are folded once the walks'
+	// batches are written (foldWalked) rather than in each day's own transaction.
 	walking bool
 	// walked is the span of days the pass's walks wrote, by family and project (noteWalked).
 	walked map[walkKey]daySpan
@@ -175,8 +217,10 @@ func (r *refresh) loadSettings(ctx context.Context) error {
 // pageWork is what one page of the feeds names: the pull requests and runs whose rows changed, by
 // row key; the Legion days the facts and filing changes name, by project; the issues whose
 // repository or parent moved; the projects whose count of unowned P0 issues may have moved; the
-// logged evals whose readings changed, by project; the walks to begin again; and the delivery
-// settings to record with the page's cursors as the ones the delivery and CI rows stand built under.
+// logged evals whose readings changed, by project; the walks to begin again; the delivery
+// settings to record with the page's cursors as the ones the delivery and CI rows stand built
+// under; and the repositories to record as the ones they stand built for, with the day the
+// delivery walk moves back to for them.
 type pageWork struct {
 	prs        map[string]pullRequestRef
 	runs       map[string]runRef
@@ -191,6 +235,11 @@ type pageWork struct {
 	// built is the delivery settings commitPage records in eval_days_settings with the cursors and
 	// the walks the page begins again (syncSettings), nil for none.
 	built *delivery.DeliverySettings
+	// kept is the repositories that hold a delivery run commitPage records in eval_days_settings,
+	// nil where they are the ones recorded, and keptRewind the day it moves the delivery walk back
+	// to for them, nil for none (syncKept).
+	kept       []keptRepo
+	keptRewind *time.Time
 }
 
 // pullRequestRef is a pull request's row by its key; runRef a run's.
@@ -364,28 +413,83 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 			delete(r.first, walkKey{family: walkDelivery, project: project})
 		}
 	}
+	// The walks this page begins again have computed no day the page writes (walkNext);
+	// syncSettings may begin the delivery walk again too, which the same map holds.
+	r.begun = work.restart
 	if err := r.syncSettings(ctx, work); err != nil {
+		return false, err
+	}
+	if err := r.syncKept(ctx, work); err != nil {
 		return false, err
 	}
 	if err := r.apply(ctx, work); err != nil {
 		return false, err
 	}
-	if err := r.commitPage(ctx, moved, work.restarts(r.projects), work.built); err != nil {
+	if err := r.commitPage(ctx, moved, work.restarts(r.projects), work); err != nil {
 		return false, err
 	}
 	return full, nil
 }
 
-// beginPage starts a page: its delivery reads, the days it wrote, the unowned-p0 rows it wrote and
-// its reads of repo_projects and of the repositories whose rows are kept per deploy repository
-// begin empty (refresh's rule on why they hold for one page).
+// beginPage starts a page: its delivery reads, the days it wrote, the unowned-p0 rows it wrote,
+// its reads of repo_projects, of the repositories whose rows are kept per deploy repository and
+// of the running build's walks, and the walks it begins again or moves back, begin empty
+// (refresh's rule on why they hold for one page).
 func (r *refresh) beginPage() {
 	r.reads, r.done, r.unowned, r.repos = map[time.Time]deliveryRead{}, map[builtDay]bool{}, map[string]bool{}, nil
 	r.deployRepos = nil
+	r.walks, r.begun, r.rewound = nil, nil, nil
 }
 
-// apply writes every day w names, each with the zero rows of the days behind a first day it moves
-// earlier (gapsBehind), and then every day a write left owed (writeOwed).
+// walkNext is the first day the running build's walk of family (project's, for the Legion walk)
+// has not computed: it computed every day before it and builds every day from it on. It is nil
+// where the walk has computed no day the page can rely on: no record of the running build's, a
+// record to begin, or a walk this page begins again (begun), each of which builds every day from
+// the first input day on. A day this page's writes moved the walk back to (rewound), or its commit
+// will (syncKept), stands in for a later record. The records are read once a page.
+func (r *refresh) walkNext(ctx context.Context, family, project string) (*time.Time, error) {
+	if r.begun[family] {
+		return nil, nil
+	}
+	if r.walks == nil {
+		walks, err := r.store.readWalks(ctx, r.build)
+		if err != nil {
+			return nil, err
+		}
+		r.walks = walks
+	}
+	key := walkOf(family, project)
+	next := r.walks[key].next
+	if back, moved := r.rewound[key]; moved && next != nil && back.Before(*next) {
+		next = &back
+	}
+	return next, nil
+}
+
+// walkOf is the walk that builds project's days of family: the one delivery walk of every
+// project's delivery and CI rows, or project's Legion walk.
+func walkOf(family, project string) walkKey {
+	if family == walkDelivery {
+		return walkKey{family: walkDelivery}
+	}
+	return walkKey{family: family, project: project}
+}
+
+// noteRewind records that the walk key stands no later than day once the page commits (walkNext).
+func (r *refresh) noteRewind(key walkKey, day *time.Time) {
+	if day == nil {
+		return
+	}
+	if r.rewound == nil {
+		r.rewound = map[walkKey]time.Time{}
+	}
+	if back, moved := r.rewound[key]; !moved || day.Before(back) {
+		r.rewound[key] = *day
+	}
+}
+
+// apply writes every day w names (writeDelivery and writeLegion say what each write writes), and
+// then every day a write left owed (writeOwed).
 func (r *refresh) apply(ctx context.Context, w *pageWork) error {
 	if err := r.applyDelivery(ctx, w); err != nil {
 		return err
@@ -661,11 +765,12 @@ func (r *refresh) readDelivery(ctx context.Context, day time.Time, applies map[s
 }
 
 // writeDelivery writes project's delivery and CI rows of read's day, those of the evals that read
-// the deploy repository once for each repository read held, with a zero row of every series the
-// day has no input of whose first input day is on or before it (zerosFrom), once a page
+// the deploy repository once for each repository read held, as planWrite says: the rows the day
+// builds, and the zero row of every series the day has no input of whose first input day is on or
+// before it (zerosFrom) where the day is one the walk computes or has computed; once a page
 // (refresh.done). A project the day counts nothing for and holds no series of before that day
-// writes nothing unless explicit, which a project eval_day_members named is: its write zeroes what
-// the day held.
+// writes nothing unless explicit, which a project eval_day_members named is, or the walk finds
+// the day holding rows of it (walkHeld): its write deletes what the day held.
 func (r *refresh) writeDelivery(ctx context.Context, read deliveryRead, project string, explicit bool) error {
 	key := builtDay{family: walkDelivery, project: project, day: read.Day}
 	if r.done[key] {
@@ -676,12 +781,19 @@ func (r *refresh) writeDelivery(ctx context.Context, read deliveryRead, project 
 		return err
 	}
 	built := read.Rows(project)
-	built.Rows = dropUnshipped(built.Rows, first, read.Day)
-	day := built.WithZeros(zerosFrom(ZeroDeliveryDay(*r.settings, project, read.Day, read.repos).Rows, first, read.Day))
-	if len(day.Rows) == 0 && !explicit {
+	plan, err := r.planWrite(ctx, walkDelivery, project, read.Day, built.Rows, first)
+	if err != nil {
+		return err
+	}
+	built.Rows = dropUnshipped(built.Rows, plan.first, read.Day)
+	day := built
+	if plan.zeros {
+		day = built.WithZeros(zerosFrom(ZeroDeliveryDay(*r.settings, project, read.Day, read.repos).Rows, plan.first, read.Day))
+	}
+	if len(day.Rows) == 0 && !explicit && !r.walkHeld[key] {
 		return nil
 	}
-	day.Gaps = r.gapsBehind(walkDelivery, project, read.Day, built.Rows, first)
+	day.Rewind = plan.rewind
 	if err := r.store.writeDeliveryDay(ctx, day, r.build, !r.walking); err != nil {
 		return err
 	}
@@ -689,8 +801,66 @@ func (r *refresh) writeDelivery(ctx context.Context, read deliveryRead, project 
 		r.noteWalked(walkDelivery, project, read.Day)
 	}
 	r.noteBuilt(walkDelivery, project, read.Day, built.Rows)
+	r.noteRewind(walkOf(walkDelivery, project), plan.rewind)
 	r.done[key], r.report.days[key] = true, true
 	return nil
+}
+
+// dayPlan is how a write of one project's day of a family writes the rows the day builds: the
+// first input days it builds them by, whether it writes the zero rows of the series the day has
+// no input of, and the day it moves the walk of the family back to (ProjectDay.Rewind), nil for
+// none.
+type dayPlan struct {
+	first  map[evalKey]time.Time
+	zeros  bool
+	rewind *time.Time
+}
+
+// planWrite is how the write of project's day of family writes it, where built is the rows the
+// day's reads build and first the series' first input days (firstOf). The walk writes its days in
+// order, from the first input day or from the days it built, by the first input days of those
+// days, with every zero row, and moves no walk back. A write outside a walk, of a day a change
+// names:
+//
+//   - takes the store's first input days, but that of each series whose first input day is day
+//     itself and which the day holds no input of any more (inputKeys): day is no first input day
+//     of it, so the write keeps no row of it, its zero row or a lead time that counts no pull
+//     request, and moves the walk back to day, which builds it and the days after it from their
+//     own input, beginning the series where a whole walk begins it; the series has no first input
+//     day for the rest of the pass;
+//   - moves the walk back to the day after day where it moves a series' first input day earlier,
+//     or creates one (input of a series the store holds no row of on or before day), and leaves
+//     every day after it to the walk, which builds each from its own input;
+//   - writes the zero rows only where the running build's walk has computed day, and still will
+//     once the write commits (walkNext): a day it has not computed holds the rows with input
+//     alone, and reads "no data" where it holds none, until the walk computes it, so no day that
+//     holds input reads 0 before the walk has computed it.
+func (r *refresh) planWrite(ctx context.Context, family, project string, day time.Time, built []DayRow, first map[evalKey]time.Time) (dayPlan, error) {
+	if r.walking {
+		return dayPlan{first: first, zeros: true}, nil
+	}
+	plan := dayPlan{first: first}
+	input := inputKeys(built)
+	for key, since := range first {
+		if since.Equal(day) && !input[key] {
+			// first is the pass's own (storedFirst), which holds no first input day of the series
+			// any more: the store's next one is a day the walk builds again.
+			delete(first, key)
+			plan.rewind = &day
+		}
+	}
+	for key := range input {
+		if since, held := first[key]; plan.rewind == nil && (!held || day.Before(since)) {
+			after := day.AddDate(0, 0, 1)
+			plan.rewind = &after
+		}
+	}
+	next, err := r.walkNext(ctx, family, project)
+	if err != nil {
+		return dayPlan{}, err
+	}
+	plan.zeros = next != nil && day.Before(*next) && (plan.rewind == nil || day.Before(*plan.rewind))
+	return plan, nil
 }
 
 // applyLegion writes the Legion days w names: the days the facts and filing changes named, and the
@@ -736,10 +906,12 @@ func (r *refresh) applyLegion(ctx context.Context, w *pageWork) error {
 	return nil
 }
 
-// writeLegion writes project's Legion rows of day, with a zero row of every series the day has no
-// input of whose first input day is on or before it, once a page (refresh.done). A day with no
-// input and no series begun before it writes nothing unless explicit, which a change naming the
-// day is: its write zeroes what the day held.
+// writeLegion writes project's Legion rows of day as planWrite says: the rows the day builds, and
+// the zero row of every series the day has no input of whose first input day is on or before it
+// where the day is one the walk computes or has computed; once a page (refresh.done). A day with
+// no input and no series begun before it writes nothing unless explicit, which a change naming the
+// day is, or the walk finds the day holding rows of it (walkHeld): its write deletes what the day
+// held.
 func (r *refresh) writeLegion(ctx context.Context, project string, day time.Time, explicit bool) error {
 	key := builtDay{family: walkLegion, project: project, day: day}
 	if r.done[key] {
@@ -758,11 +930,18 @@ func (r *refresh) writeLegion(ctx context.Context, project string, day time.Time
 		return err
 	}
 	built := read.Rows(since)
-	written := built.WithZeros(zerosFrom(ZeroLegionDay(project, read.Day, legionDaySlugs...).Rows, first, read.Day))
-	if len(written.Rows) == 0 && !explicit {
+	plan, err := r.planWrite(ctx, walkLegion, project, read.Day, built.Rows, first)
+	if err != nil {
+		return err
+	}
+	written := built
+	if plan.zeros {
+		written = built.WithZeros(zerosFrom(ZeroLegionDay(project, read.Day, legionDaySlugs...).Rows, plan.first, read.Day))
+	}
+	if len(written.Rows) == 0 && !explicit && !r.walkHeld[key] {
 		return nil
 	}
-	written.Gaps = r.gapsBehind(walkLegion, project, read.Day, built.Rows, first)
+	written.Rewind = plan.rewind
 	if err := r.store.writeLegionDay(ctx, written, r.build, !r.walking); err != nil {
 		return err
 	}
@@ -770,6 +949,7 @@ func (r *refresh) writeLegion(ctx context.Context, project string, day time.Time
 		r.noteWalked(walkLegion, project, read.Day)
 	}
 	r.noteBuilt(walkLegion, project, read.Day, built.Rows)
+	r.noteRewind(walkOf(walkLegion, project), plan.rewind)
 	r.done[key], r.report.days[key] = true, true
 	return nil
 }
@@ -814,14 +994,58 @@ func (r *refresh) sinceOf(ctx context.Context, project string) (LegionSince, err
 }
 
 // firstOf is the first input day of each eval of family that project holds a row of, by eval and
-// deploy repository (evalKey), read once a pass and moved by every day the pass writes
+// deploy repository (evalKey), as a write of a day builds its rows by: the store's (storedFirst)
+// outside a walk, and in it the walk's own, the first day of each eval's all-repositories rows of
+// the days before the day the walk's batch began at (walkFrom), every one of which the walk built
+// or a write outside it built from its input, read once a pass and moved by every day the walk
+// writes (noteBuilt). So the walk begins a series at the first day it builds holding input of it,
+// and a day before the walk's own first days holds no row of it, whatever rows a day the walk now
+// builds held before: a whole walk over the same inputs holds the same.
+func (r *refresh) firstOf(ctx context.Context, family, project string) (map[evalKey]time.Time, error) {
+	if !r.walking {
+		return r.storedFirst(ctx, family, project)
+	}
+	key := walkKey{family: family, project: project}
+	if first, ok := r.walkFirst[key]; ok {
+		return first, nil
+	}
+	var before *time.Time
+	if from, ok := r.walkFrom[walkOf(family, project)]; ok {
+		before = &from
+	}
+	first, err := r.readFirst(ctx, family, project, before)
+	if err != nil {
+		return nil, err
+	}
+	if r.walkFirst == nil {
+		r.walkFirst = map[walkKey]map[evalKey]time.Time{}
+	}
+	r.walkFirst[key] = first
+	return first, nil
+}
+
+// storedFirst is the first input day of each eval of family that project holds a row of, by eval
+// and deploy repository (evalKey), read once a pass and moved by every day a page writes
 // (noteBuilt): the first day of each eval's all-repositories rows of the series its zero day holds
 // (firstDays), of each kept repository's rows of an eval that reads the deploy repository apart.
-func (r *refresh) firstOf(ctx context.Context, family, project string) (map[evalKey]time.Time, error) {
+// It is where a walk begins (deliveryStart, legionStart), so the walk rewrites every day holding a
+// row of its family.
+func (r *refresh) storedFirst(ctx context.Context, family, project string) (map[evalKey]time.Time, error) {
 	key := walkKey{family: family, project: project}
 	if first, ok := r.first[key]; ok {
 		return first, nil
 	}
+	first, err := r.readFirst(ctx, family, project, nil)
+	if err != nil {
+		return nil, err
+	}
+	r.first[key] = first
+	return first, nil
+}
+
+// readFirst reads the first day of each of project's evals of family before before (every day,
+// where it is nil), as storedFirst says.
+func (r *refresh) readFirst(ctx context.Context, family, project string, before *time.Time) (map[evalKey]time.Time, error) {
 	var zero []DayRow
 	switch family {
 	case walkDelivery:
@@ -833,12 +1057,7 @@ func (r *refresh) firstOf(ctx context.Context, family, project string) (map[eval
 	case walkLegion:
 		zero = ZeroLegionDay(project, r.today, legionDaySlugs...).Rows
 	}
-	first, err := r.store.firstDays(ctx, project, zero)
-	if err != nil {
-		return nil, err
-	}
-	r.first[key] = first
-	return first, nil
+	return r.store.firstDays(ctx, project, zero, before)
 }
 
 // zerosFrom is each of zeros whose eval's first input day, of its deploy repository's rows, is on
@@ -854,63 +1073,15 @@ func zerosFrom(zeros []DayRow, first map[evalKey]time.Time, day time.Time) []Day
 	return kept
 }
 
-// gapsBehind is the zero rows of every day a write of day leaves with no row of an eval whose
-// first input day the write moves earlier, outside a walk: for each eval built holds an
-// all-repositories row of (of each deploy repository apart), where day is before its first input
-// day (first) or the eval held none, the days after day up to the day before that first day (to
-// today, where there was none). They are written in the transaction of day's own write
-// (ProjectDay.Gaps), so a pass that fails after that write leaves no day behind it without a row:
-// the retry reads the first day from the store, day itself by then, and would find no gap to
-// fill. A walk writes its days in order from the first input day, so it leaves none.
-func (r *refresh) gapsBehind(family, project string, day time.Time, built []DayRow, first map[evalKey]time.Time) []DayRow {
-	if r.walking {
-		return nil
-	}
-	moved := map[evalKey]*time.Time{}
-	for _, row := range built {
-		if row.Repo != "" {
-			continue
-		}
-		if since, ok := first[keyOf(row)]; !ok {
-			moved[keyOf(row)] = nil
-		} else if day.Before(since) {
-			moved[keyOf(row)] = &since
-		}
-	}
-	var gaps []DayRow
-	for _, key := range slices.SortedFunc(maps.Keys(moved), compareEvalKeys) {
-		end := r.today
-		if before := moved[key]; before != nil {
-			end = before.AddDate(0, 0, -1)
-		}
-		slug := slugOf(project, key.eval)
-		for gap := day.AddDate(0, 0, 1); !gap.After(end); gap = gap.AddDate(0, 0, 1) {
-			var zero []DayRow
-			switch family {
-			case walkDelivery:
-				var of []string
-				if key.deployRepo != "" {
-					of = []string{key.deployRepo}
-				}
-				zero = ZeroDeliveryDay(*r.settings, project, gap, of).Rows
-			case walkLegion:
-				zero = ZeroLegionDay(project, gap, slug).Rows
-			}
-			for _, row := range zero {
-				if keyOf(row) == key {
-					gaps = append(gaps, row)
-				}
-			}
-		}
-	}
-	return gaps
-}
-
 // noteBuilt moves the first input day of each eval built holds an all-repositories row of (of each
 // deploy repository apart) to day, where day is before it or the eval held none: its first input
-// day is now. The write of day wrote the zero rows of the days that leaves behind it (gapsBehind).
+// day is now. A walk's day moves the walk's first days (firstOf), any other the pass's own.
 func (r *refresh) noteBuilt(family, project string, day time.Time, built []DayRow) {
-	first := r.first[walkKey{family: family, project: project}]
+	firsts := r.first
+	if r.walking {
+		firsts = r.walkFirst
+	}
+	first := firsts[walkKey{family: family, project: project}]
 	for _, row := range built {
 		if row.Repo != "" {
 			continue
@@ -925,13 +1096,14 @@ func (r *refresh) noteBuilt(family, project string, day time.Time, built []DayRo
 // walk makes a batch of each walk: the delivery walk (where delivery settings exist), and each
 // project's Legion walk, logged zero fill and unowned-p0 row of today, and then folds the stored
 // figures of the days the batches wrote (foldWalked). It answers whether a walk has days left,
-// which asks for the next pass at once.
+// which asks for the next pass at once. It computes every day it reaches, so the days the pass's
+// pages wrote are written again where a batch reaches them (refresh.done begins empty).
 func (r *refresh) walk(ctx context.Context) (bool, error) {
 	walks, err := r.store.readWalks(ctx, r.build)
 	if err != nil {
 		return false, err
 	}
-	r.walking = true
+	r.walking, r.done = true, map[builtDay]bool{}
 	defer func() { r.walking = false }()
 	pending := false
 	if r.settings != nil {
@@ -965,7 +1137,10 @@ func (r *refresh) walk(ctx context.Context) (bool, error) {
 // to begin (no record of the running build's, which is how each build makes its own walk, or one
 // begun again), from the first input day begin answers, it builds up to r.batch days through today
 // with build, and records where it stands. A walk with nothing to walk (begin answers nil) stands
-// at tomorrow. It answers whether days before today are left.
+// at tomorrow. It answers whether days before today are left. The batch builds by the first input
+// days of the days before its first (beginBatch), and writes each project's day of it that holds
+// rows of the walk's family whether or not it builds a row of it (heldDays), so a day whose input
+// left holds no row a whole walk would not hold.
 func (r *refresh) walkDays(ctx context.Context, walks map[walkKey]walkState, key walkKey,
 	begin func(context.Context) (*time.Time, error), build func(context.Context, time.Time) error) (bool, error) {
 	state, found := walks[key]
@@ -991,6 +1166,9 @@ func (r *refresh) walkDays(ctx context.Context, walks map[walkKey]walkState, key
 	if last.After(r.today) {
 		last = r.today
 	}
+	if err := r.beginBatch(ctx, key, *next, last); err != nil {
+		return false, err
+	}
 	for day := *next; !day.After(last); day = day.AddDate(0, 0, 1) {
 		if err := build(ctx, day); err != nil {
 			return false, err
@@ -1000,6 +1178,29 @@ func (r *refresh) walkDays(ctx context.Context, walks map[walkKey]walkState, key
 		return false, err
 	}
 	return last.Before(r.today), nil
+}
+
+// beginBatch begins a batch of the walk key from from through through: the walk's first input days
+// are read anew of the days before from (firstOf), and the days of the batch that hold rows of its
+// family (walkHeld) are read, once for the batch.
+func (r *refresh) beginBatch(ctx context.Context, key walkKey, from, through time.Time) error {
+	if r.walkFrom == nil {
+		r.walkFrom, r.walkFirst, r.walkHeld = map[walkKey]time.Time{}, map[walkKey]map[evalKey]time.Time{}, map[builtDay]bool{}
+	}
+	r.walkFrom[key] = from
+	projects, slugs := r.projects, deliveryDaySlugs
+	if key.family == walkLegion {
+		projects, slugs = []string{key.project}, legionDaySlugs
+	}
+	for _, project := range projects {
+		delete(r.walkFirst, walkKey{family: key.family, project: project})
+	}
+	held, err := r.store.heldDays(ctx, key.family, projects, slugs, from, through)
+	if err != nil {
+		return err
+	}
+	maps.Copy(r.walkHeld, held)
+	return nil
 }
 
 // deliveryStart is the first input day of the delivery walk, the UTC midnight of the earliest of
@@ -1018,7 +1219,7 @@ func (r *refresh) deliveryStart(ctx context.Context) (*time.Time, error) {
 	}
 	firsts := map[evalKey]time.Time{}
 	for _, project := range r.projects {
-		first, err := r.firstOf(ctx, walkDelivery, project)
+		first, err := r.storedFirst(ctx, walkDelivery, project)
 		if err != nil {
 			return nil, err
 		}
@@ -1036,7 +1237,7 @@ func (r *refresh) legionStart(ctx context.Context, project string) (*time.Time, 
 	if err != nil {
 		return nil, err
 	}
-	first, err := r.firstOf(ctx, walkLegion, project)
+	first, err := r.storedFirst(ctx, walkLegion, project)
 	if err != nil {
 		return nil, err
 	}

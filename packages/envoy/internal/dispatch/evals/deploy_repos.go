@@ -36,8 +36,13 @@ import (
 // runs of the deploy repository alone, so a repository's runs are those stored while it was the
 // deploy repository; one that never was holds none, and so no row: a move to it reads "no data"
 // for every eval that reads the deploy repository (a repository that never deployed has nothing to
-// count), and the rest as before. When its first run arrives, the change that brings it writes its
-// rows of the days the run names, as any change does.
+// count), and the rest as before. The set of them, each with its start (keptRepo.since), is
+// recorded beside the settings the rows stand built under (eval_days_settings), and a page that
+// reads another set, a repository whose first runs arrived, one whose runs went or one whose start
+// moved, moves the delivery walk back to the earliest start that changed (syncKept): the walk
+// then builds every day of that repository from its start on, its rows and its members of every
+// pull request it counts, as a whole walk over the same runs builds them, where the change that
+// brought the runs writes only the days it names.
 //
 // The first day of each of a repository's series, which a read names (data_since, each series its
 // own) and before which a range reads "no data", is that repository's own, and never earlier than
@@ -207,4 +212,19 @@ func dropUnshipped(rows []DayRow, first map[evalKey]time.Time, day time.Time) []
 		return rows
 	}
 	return slices.DeleteFunc(slices.Clone(rows), func(row DayRow) bool { return unshipped[keyOf(row)] })
+}
+
+// inputKeys is each eval and deploy repository of which rows, a project's rows of a day as its
+// reads build them, hold input: an all-repositories row, but a lead time to production of a
+// deploy repository that counts no pull request (dropUnshipped's), which no first input day
+// begins at. A day that holds no input of a series is no first input day of it.
+func inputKeys(rows []DayRow) map[evalKey]bool {
+	input := map[evalKey]bool{}
+	for _, row := range rows {
+		if row.Repo != "" || row.DeployRepo != "" && row.N == 0 && slices.Contains(leadTimeSlugs, slugOf(row.ProjectKey, row.EvalID)) {
+			continue
+		}
+		input[keyOf(row)] = true
+	}
+	return input
 }

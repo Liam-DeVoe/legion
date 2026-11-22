@@ -234,8 +234,7 @@ func (s *sentExecs) Exec(_ context.Context, _ string, args ...any) (pgconn.Comma
 // among rows of other keys, are refused by upsertDays before it sends any statement, the refusal
 // naming the key, as the one statement that took every row refused them (ON CONFLICT DO UPDATE
 // cannot affect a row a second time); cut into two statements, the second would rewrite the
-// first. insertMissingDays, whose one statement kept the first of them and skipped the other (ON
-// CONFLICT DO NOTHING), as its statements do in any cut, sends them.
+// first.
 func TestTwoDayRowsOfOneKeyAreRefusedByAnUpsertBeforeAnyStatement(t *testing.T) {
 	day := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
 	rowOf := func(series, repo string, at time.Time, n int) DayRow {
@@ -255,11 +254,6 @@ func TestTwoDayRowsOfOneKeyAreRefusedByAnUpsertBeforeAnyStatement(t *testing.T) 
 		t.Errorf("an upsert of two rows of one key sent %d statements and answered %v, want no statement and a refusal naming the key", len(upsert.sent), err)
 	}
 	t.Logf("the upsert answered: %v", err)
-
-	insert := &sentExecs{}
-	if err := insertMissingDays(t.Context(), insert, rows, testBuild); err != nil || len(insert.sent) != 1 || dayRowsIn(insert.sent[0]) != len(rows) {
-		t.Errorf("an insert of the missing rows among two of one key answered %v in %d statements, want every row sent in one", err, len(insert.sent))
-	}
 }
 
 // dayInserts is a tracer (storetest.Traced) that records, in the order they start, the statements

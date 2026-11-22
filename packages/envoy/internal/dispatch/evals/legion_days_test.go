@@ -231,21 +231,25 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 	}
 
 	// EVAL-2 closes again on the next day: its first day's rows in acme/api, which held EVAL-2
-	// alone, become zero rows but for splitting's, whose filing is still there, and the next day,
-	// which slot wait now has input on, gains them.
+	// alone, are deleted but for splitting's, whose filing is still there, as a whole walk over the
+	// moved close holds none, and the next day, which slot wait now has input on, gains them.
 	exec("EVAL-2's new close", `update issue_facts set closed_at = $1 where issue_key = 'EVAL-2'`, at(4, 11, 0))
 	r.refreshDays(t, []string{"EVAL"}, day, next)
 	firstFacts, firstGroups := r.legionFacts(t, "EVAL", day)
-	if !maps.Equal(firstGroups, groups) {
-		t.Errorf("the first day after EVAL-2 left it: %v, want every row it held kept, %v", firstGroups, groups)
+	kept := maps.Clone(groups)
+	for _, slug := range []string{SlugLegionWorkTime, SlugLegionPhaseTime, SlugLegionIdleTime, SlugLegionRework} {
+		delete(kept, slug+" acme/api")
+	}
+	if !maps.Equal(firstGroups, kept) {
+		t.Errorf("the first day after EVAL-2 left it: %v, want every row it held but acme/api's of the evals EVAL-2 alone was input of there, %v", firstGroups, kept)
 	}
 	for fact := range firstFacts {
-		if strings.Contains(fact, " acme/api: ") && !strings.HasPrefix(fact, SlugLegionSplitting+" ") && !strings.Contains(fact, ": n=0 ") {
-			t.Errorf("the first day after EVAL-2 left it holds %q, want a zero row of acme/api, which held EVAL-2 alone", fact)
+		if strings.Contains(fact, " acme/api: ") && !strings.HasPrefix(fact, SlugLegionSplitting+" ") {
+			t.Errorf("the first day after EVAL-2 left it holds %q, want no row of acme/api but splitting's, whose filing is still there", fact)
 		}
 	}
-	if !firstFacts["legion-work-time hours acme/api: n=0 via=0 samples=[]"] || !firstFacts["legion-splitting filed:in_tree_at_design acme/api: n=1 via=0 sum=1"] {
-		t.Errorf("the first day after EVAL-2 left it lacks acme/api's zero work-time row or its filing")
+	if !firstFacts["legion-splitting filed:in_tree_at_design acme/api: n=1 via=0 sum=1"] {
+		t.Errorf("the first day after EVAL-2 left it lacks acme/api's filing")
 	}
 	nextFacts, nextGroups := r.legionFacts(t, "EVAL", next)
 	for _, want := range []string{

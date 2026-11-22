@@ -32,10 +32,19 @@ import (
 const settingsApplyStep = "terraform apply"
 
 // newSettingsRig is a refresher over a database of its own loaded with deliverytest's history of
-// five days and settled by its passes, each walking batch days. Every production job that succeeded
-// records an apply step, settingsApplyStep, which succeeded but on the runs whose id ends in 3,
-// where it was skipped; no setting names the step, so each job counts by its own conclusion.
+// five days (newSettingsHistory) and settled by its passes, each walking batch days.
 func newSettingsRig(t *testing.T, batch int) (*refresherRig, deliverytest.Fixture) {
+	t.Helper()
+	r, deliveries := newSettingsHistory(t, batch)
+	r.settle(t)
+	return r, deliveries
+}
+
+// newSettingsHistory is a refresher over a database of its own loaded with deliverytest's history
+// of five days, whose passes each walk batch days, and none run yet. Every production job that
+// succeeded records an apply step, settingsApplyStep, which succeeded but on the runs whose id ends
+// in 3, where it was skipped; no setting names the step, so each job counts by its own conclusion.
+func newSettingsHistory(t *testing.T, batch int) (*refresherRig, deliverytest.Fixture) {
 	t.Helper()
 	r := newRefresherRig(t)
 	r.batch = batch
@@ -45,7 +54,6 @@ func newSettingsRig(t *testing.T, batch int) (*refresherRig, deliverytest.Fixtur
 		set apply_step = $2, apply_step_conclusion = case when run_id % 10 = 3 then 'skipped' else 'success' end
 		where repo = $1 and name = any($3) and conclusion = 'success'
 	`, deliveries.DeployRepo, settingsApplyStep, deliveries.Settings.ProductionJobNames)
-	r.settle(t)
 	return r, deliveries
 }
 
@@ -431,7 +439,7 @@ func TestASettingsChangeThatMovesNoEvalWritesNothing(t *testing.T) {
 		if r.walkXmin(t) != walk {
 			t.Errorf("%s: the pass began the delivery walk again", change.name)
 		}
-		recorded, err := r.registry.readBuiltUnder(t.Context())
+		recorded, _, err := r.registry.readBuiltUnder(t.Context())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -700,15 +708,22 @@ func TestASettingsChangeReadsTheJobsOfTheCardsItMovesAlone(t *testing.T) {
 // conclusions and jobs, so to holds runs of its own as from does.
 func (r *refresherRig) copyRuns(t *testing.T, from, to string, kind delivery.DeliveryRunKind) {
 	t.Helper()
+	r.copyRunsBefore(t, from, to, kind, nil)
+}
+
+// copyRunsBefore is copyRuns of the runs of from that started before before alone (every run,
+// where it is nil).
+func (r *refresherRig) copyRunsBefore(t *testing.T, from, to string, kind delivery.DeliveryRunKind, before *time.Time) {
+	t.Helper()
 	r.exec(t, "copy the "+string(kind)+" runs of "+from+" to "+to, `
 		insert into delivery_runs
 		select (jsonb_populate_record(null::delivery_runs, to_jsonb(run) || jsonb_build_object('repo', $2::text))).*
-		from delivery_runs run where run.repo = $1 and run.kind = $3`, from, to, string(kind))
+		from delivery_runs run where run.repo = $1 and run.kind = $3 and ($4::timestamptz is null or run.started_at < $4)`, from, to, string(kind), before)
 	r.exec(t, "copy the jobs of those runs", `
 		insert into delivery_run_jobs
 		select (jsonb_populate_record(null::delivery_run_jobs, to_jsonb(job) || jsonb_build_object('repo', $2::text))).*
 		from delivery_run_jobs job join delivery_runs run on run.repo = job.repo and run.run_id = job.run_id
-		where job.repo = $1 and run.kind = $3`, from, to, string(kind))
+		where job.repo = $1 and run.kind = $3 and ($4::timestamptz is null or run.started_at < $4)`, from, to, string(kind), before)
 }
 
 // TestAProductionRuleChangeRewritesEachRepositoryThatHoldsDeploys: two databases load one history
@@ -1206,4 +1221,103 @@ func TestAParallelFoldOfTheStoredFiguresWritesWhatOneWorkerWrites(t *testing.T) 
 	}
 	t.Logf("%d groups folded %d ranges (at most %d in a group) and %d days on one worker and on %d",
 		len(moved), len(one.ranges), most, len(one.days), figureFoldWorkers)
+}
+
+// TestARepositoryThatNeverDeployedHoldsWhatAWholeWalkHoldsOnceItsFirstRunsArrive: over a settled
+// history, the deploy repository moves to the history's second repository, which holds pull
+// requests and no run, and that repository then gets its first deploy runs (the deploy
+// repository's of the history's first three days, copied). The passes after them leave the
+// database holding the delivery and CI rows, the members and the stored figures of a second
+// database that held the same runs and settings before its first walk: every day of the new
+// repository from its start on, the lead times of the days after its last deploy among them, and
+// its members of every pull request it counts. The change that brings the runs names their days
+// and those of the pull requests they ship alone; the repositories that hold runs move (syncKept),
+// which moves the delivery walk back to the new repository's start, and the walk builds the rest.
+// At 04de13fa the days after its last deploy held neither those lead times' rows nor those members
+// (dispatch://INFRA-2916's failure 6).
+func TestARepositoryThatNeverDeployedHoldsWhatAWholeWalkHoldsOnceItsFirstRunsArrive(t *testing.T) {
+	live, deliveries := newSettingsRig(t, walkBatch)
+	api := deliveries.Repos[1]
+	moved := deliveries.Settings
+	moved.DeployRepo = api
+	cutoff := deliveries.From.AddDate(0, 0, 3)
+	live.putSettings(t, moved, alice)
+	live.pass(t)
+	live.copyRunsBefore(t, deliveries.DeployRepo, api, delivery.DeliveryRunKindDeploy, &cutoff)
+	live.settle(t)
+
+	walk, _ := newSettingsHistory(t, walkBatch)
+	walk.putSettings(t, moved, alice)
+	walk.copyRunsBefore(t, deliveries.DeployRepo, api, delivery.DeliveryRunKindDeploy, &cutoff)
+	walk.settle(t)
+	live.expectSameAsWalk(t, api+"'s first runs", walk)
+	rows := live.count(t, `select count(*) from eval_days where deploy_repo = $1 and day >= $2`, api, cutoff)
+	members := live.count(t, `select count(*) from eval_day_members where deploy_repo = $1 and day >= $2`, api, cutoff)
+	if rows == 0 || members == 0 {
+		t.Errorf("%s holds %d rows and %d members from %s on, after its last deploy, and the check needs some of each", api, rows, members, cutoff.Format(time.DateOnly))
+	}
+	t.Logf("%s holds %d rows and %d members from %s on, after its last deploy", api, rows, members, cutoff.Format(time.DateOnly))
+}
+
+// TestAnUnmappedRepositorysFirstRunsKeepWhatAWholeWalkKeeps: over a settled history, a repository
+// repo_projects maps to no project gets deploy runs (the deploy repository's, copied), which ship
+// none of its pull requests (it has none) and count for no project, so the change that brings them
+// writes no day. The passes after them leave the database holding the delivery and CI rows, the
+// members and the stored figures of a second database that held the same runs before its first
+// walk: the members of every project's pull requests under that repository from its start on,
+// which the walk keeps for every repository that holds a run. The repositories that hold runs move
+// (syncKept), which moves the delivery walk back to the new repository's start. At 04de13fa those
+// members were missing.
+func TestAnUnmappedRepositorysFirstRunsKeepWhatAWholeWalkKeeps(t *testing.T) {
+	const unmapped = "acme/unmapped"
+	live, deliveries := newSettingsRig(t, walkBatch)
+	live.copyRuns(t, deliveries.DeployRepo, unmapped, delivery.DeliveryRunKindDeploy)
+	live.settle(t)
+
+	walk, _ := newSettingsHistory(t, walkBatch)
+	walk.copyRuns(t, deliveries.DeployRepo, unmapped, delivery.DeliveryRunKindDeploy)
+	walk.settle(t)
+	live.expectSameAsWalk(t, unmapped+"'s first runs", walk)
+	members := live.count(t, `select count(*) from eval_day_members where deploy_repo = $1`, unmapped)
+	if members == 0 {
+		t.Errorf("%s holds no member, and a whole walk keeps the members of every project's pull requests under it", unmapped)
+	}
+	t.Logf("%s holds %d members", unmapped, members)
+}
+
+// TestASeriesWhoseFirstDayLosesItsInputBeginsWhereAWholeWalkBeginsIt: over a settled history,
+// every pull request merged on the first day of the main project's pr-open-to-merge is merged a
+// day later, so that day holds no input of it. The passes after it leave the database holding the
+// delivery and CI rows, the members and the stored figures of a second database that made the
+// same move before its first walk: the series begins on the next day with input, and the day that
+// lost its input holds no row of it, where it kept its zero row before (the store's first day of
+// the series was that day itself). The write of the day drops the zero row and moves the delivery
+// walk back to it (refresh.planWrite), and the walk builds it and the days after it by the first
+// input days of the days it built (refresh.firstOf).
+func TestASeriesWhoseFirstDayLosesItsInputBeginsWhereAWholeWalkBeginsIt(t *testing.T) {
+	live, deliveries := newSettingsRig(t, walkBatch)
+	main := deliveries.Project
+	days, _ := seriesDays(live.dayRows(t), main, SlugPROpenToMerge, measures.SeriesMinutes)
+	if len(days) < 2 {
+		t.Fatalf("%s's pr-open-to-merge holds rows of %v, and the check needs two days", main, days)
+	}
+	first := days[0]
+	move := func(r *refresherRig) {
+		t.Helper()
+		r.exec(t, "merge every pull request of "+first.Format(time.DateOnly)+" a day later", `
+			update delivery_pull_requests set merged_at = merged_at + interval '1 day' where merged_at >= $1 and merged_at < $2
+		`, first, first.AddDate(0, 0, 1))
+	}
+	move(live)
+	live.settle(t)
+
+	walk, _ := newSettingsHistory(t, walkBatch)
+	move(walk)
+	walk.settle(t)
+	live.expectSameAsWalk(t, "every pull request of "+first.Format(time.DateOnly)+" merged a day later", walk)
+	after, _ := seriesDays(live.dayRows(t), main, SlugPROpenToMerge, measures.SeriesMinutes)
+	if len(after) == 0 || !after[0].After(first) {
+		t.Errorf("%s's pr-open-to-merge holds rows of %v, want none on %s, which lost its input", main, after, first.Format(time.DateOnly))
+	}
+	t.Logf("%s's pr-open-to-merge began on %s and holds rows of %v after", main, first.Format(time.DateOnly), after)
 }

@@ -292,9 +292,9 @@ type stampedRow struct {
 // rowsStamp is the fingerprint of one eval's listed rows of one repository and day
 // (eval_day_figures.rows_stamp): each row's series and updated_at to the microsecond Postgres
 // keeps, in series order, which it sorts rows into. Every write that moves a row's value moves
-// its updated_at (upsertDays, zeroStaleDays, writeDays, relistDays), and one that moves nothing,
-// such as a new build's rebuild of rows whose values stood, leaves it, so the stamp moves exactly
-// when the day's rows do, whichever build wrote them.
+// its updated_at (upsertDays, writeDays, relistDays), a row deleteStaleDays deletes leaves the
+// day's rows, and one that moves nothing, such as a new build's rebuild of rows whose values
+// stood, leaves it, so the stamp moves exactly when the day's rows do, whichever build wrote them.
 func rowsStamp(rows []stampedRow) int64 {
 	slices.SortFunc(rows, func(a, b stampedRow) int { return strings.Compare(a.series, b.series) })
 	hash := fnv.New64a()

@@ -7,29 +7,30 @@
 -- own migration, as 20261117100002 is for issue_facts: the transaction holds eval_days's lock
 -- alone, for milliseconds.
 --
--- One change row per eval for every transaction that writes its day rows. The refresher writes a
--- series' days in one or more upsert statements (`insert ... on conflict ... do update`) of the
--- transaction, and Postgres fires an upsert's statement-level triggers once for its inserted rows
--- and once for its updated rows, each with a transition table of its own half. So two
--- statement-level triggers read the two halves, and both hand each eval's span to
+-- One change row per eval for every transaction that writes or deletes its day rows. The refresher
+-- writes a series' days in one or more upsert statements (`insert ... on conflict ... do update`)
+-- of the transaction, and deletes the rows a day no longer builds (evals.deleteStaleDays), and
+-- Postgres fires an upsert's statement-level triggers once for its inserted rows and once for its
+-- updated rows, each with a transition table of its own half. So three statement-level triggers
+-- read the two halves and the deleted rows, and each hands each eval's span to
 -- eval_days_change_log, which records the eval's first change of the transaction in the change
 -- log's outbox through delivery_change_log_pending (20261117100001), which takes no lock, so no
 -- write of the day rows takes the change log's lock (6900, 0100); a drain moves the row into
 -- delivery_changes after the commit (R19, delivery.DrainPending). Every later write of the eval in
--- the transaction, the other half of the upsert or another statement, widens that same pending
--- row's span. The row it widens is this transaction's own, uncommitted and so invisible to every
--- drain until the commit, which delivers the one notification. The id of each eval's pending row,
--- which delivery_change_log_pending answers, is kept in the transaction-local setting
+-- the transaction, the other half of the upsert, a delete or another statement, widens that same
+-- pending row's span. The row it widens is this transaction's own, uncommitted and so invisible to
+-- every drain until the commit, which delivers the one notification. The id of each eval's pending
+-- row, which delivery_change_log_pending answers, is kept in the transaction-local setting
 -- dispatch.eval_days_pending, a JSON object of eval id to pending id: set_config(..., true) reverts
 -- it when the transaction ends, and with a subtransaction that rolls back, as it does the row.
 --
 -- repo holds the project key and ref the eval id, as an eval_readings row does (20261117100012).
--- t_old and t_new are midnight UTC of the first and the last day the eval's written rows hold, so
--- the span names those days and the days between them. The rows of every deploy repository of an
--- eval (eval_days.deploy_repo, 20261117100006) are one change of the eval, its span theirs
--- together: an evals view reads one repository's rows of it, which the delivery settings choose
--- at read time, and the stored figures' fold of the span (evals.figureChanges) reads every
--- repository's.
+-- t_old and t_new are midnight UTC of the first and the last day the eval's written or deleted
+-- rows hold, so the span names those days and the days between them. The rows of every deploy
+-- repository of an eval (eval_days.deploy_repo, 20261117100006) are one change of the eval, its
+-- span theirs together: an evals view reads one repository's rows of it, which the delivery
+-- settings choose at read time, and the stored figures' fold of the span (evals.figureChanges)
+-- reads every repository's.
 --
 -- run_kind holds the cause the writing transaction names in the transaction-local setting
 -- dispatch.eval_days_cause, null where it names none. The refresher's rewrite of a delivery
@@ -53,11 +54,12 @@
 -- TestEveryColumnOfADayRowButItsBookkeepingIsComparedByItsUpdateTrigger fails until it does). The
 -- old and the new rows are matched by the primary key, deploy_repo among its columns, and a row
 -- whose key an update moved matches nothing on either side, so both its old day and its new one
--- are logged. A delete logs nothing: a day the refresher finds no input for keeps an explicit zero
--- row rather than losing its row, and the rows a project's deletion takes go with every view of
--- that project.
+-- are logged. A delete logs the span of the rows it took, as an insert logs the rows it wrote: a
+-- day the refresher writes holds exactly the rows it builds (evals.deleteStaleDays), so a row whose
+-- input left goes, and a view of its numbers wakes to the change. A project's deletion logs one
+-- change of each of its evals, which no view of the deleted project reads.
 --
--- The census answers 0: three functions and two triggers, reading and rewriting no row.
+-- The census answers 0: four functions and three triggers, reading and rewriting no row.
 create function eval_days_change_log(p_project text, p_eval text, p_first date, p_last date)
 returns void language plpgsql as $$
 declare
@@ -126,3 +128,22 @@ create trigger eval_days_inserted after insert on eval_days
 create trigger eval_days_updated after update on eval_days
   referencing old table as replaced new table as written
   for each statement execute function eval_days_updated();
+
+create function eval_days_deleted() returns trigger language plpgsql as $$
+declare
+  span record;
+begin
+  for span in
+    select project_key, eval_id, min(day) as first_day, max(day) as last_day
+    from removed
+    group by project_key, eval_id
+    order by project_key, eval_id
+  loop
+    perform eval_days_change_log(span.project_key, span.eval_id, span.first_day, span.last_day);
+  end loop;
+  return null;
+end $$;
+
+create trigger eval_days_deleted after delete on eval_days
+  referencing old table as removed
+  for each statement execute function eval_days_deleted();

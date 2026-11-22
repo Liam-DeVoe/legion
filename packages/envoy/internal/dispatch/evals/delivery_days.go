@@ -779,17 +779,17 @@ func (d DeliveryDay) buildFamilies(project, repo string, rows familyRows, every 
 // transaction: each row with `insert … on conflict … do update … where (…) is distinct from (…)`,
 // so a row whose every value is what it holds is left as it is (and logs no change, migration
 // 20261117100014), recording builtBy, the running build, as the build that wrote it; then it
-// writes each of the project's rows of that day of the delivery and CI evals (deliveryDaySlugs)
-// that day does not hold, such as a repository whose last row moved to another day or project, as
-// a zero row (zeroStaleDays). It records day's members in eval_day_members on its day, and deletes
-// the members of the project's delivery and CI families recorded on that day that day does not
-// hold, so each item's row there says where it was last counted; and, where figures is set, as
-// the refresher's write of a day outside a walk sets it, it folds again the stored figures of the
-// days whose rows it moved, where builtBy writes them (figures.go). A row of another project,
-// another day or another eval, and an item of another family, is refused before anything is
-// written.
+// deletes each of the project's rows of that day of the delivery and CI evals (deliveryDaySlugs)
+// that day does not hold, such as a repository whose last row moved to another day or project
+// (deleteStaleDays). It records day's members in eval_day_members on its day, and deletes the
+// members of the project's delivery and CI families recorded on that day that day does not hold,
+// so each item's row there says where it was last counted; where figures is set, as the
+// refresher's write of a day outside a walk sets it, it folds again the stored figures of the
+// day where its rows moved, where builtBy writes them (figures.go); and where day.Rewind is set it
+// moves the delivery walk back to that day (writeProjectDay). A row of another project, another
+// day or another eval, and an item of another family, is refused before anything is written.
 func (s *Store) writeDeliveryDay(ctx context.Context, day ProjectDay, builtBy string, figures bool) error {
-	return s.writeProjectDay(ctx, "delivery", day, deliveryDaySlugs, deliveryDayFamilies, builtBy, figures)
+	return s.writeProjectDay(ctx, "delivery", day, deliveryDaySlugs, deliveryDayFamilies, walkKey{family: walkDelivery}, builtBy, figures)
 }
 
 // WriteUnownedP0Day writes project's unowned-p0 row of the UTC day day is on: the count of its

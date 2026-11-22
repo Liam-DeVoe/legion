@@ -272,12 +272,13 @@ func ZeroLegionDay(project string, day time.Time, slugs ...string) ProjectDay {
 
 // writeLegionDay writes day as its project's Legion rows of its day, as writeDeliveryDay writes a
 // delivery day: each row upserted, recording builtBy, the running build; the project's rows of
-// that day of the Legion evals (legionDaySlugs) that day does not hold written as zero rows
-// (zeroStaleDays); its issues recorded in eval_day_members on its day under the family `legion`,
-// whose items recorded on that day that it does not hold are deleted; and, where figures is set,
-// the stored figures of the days whose rows it moved folded again, where builtBy writes them
-// (figures.go). A row of another project, another day or an eval that is not a Legion one, and an
-// item of another family, is refused before anything is written.
+// that day of the Legion evals (legionDaySlugs) that day does not hold deleted (deleteStaleDays);
+// its issues recorded in eval_day_members on its day under the family `legion`, whose items
+// recorded on that day that it does not hold are deleted; where figures is set, the stored
+// figures of the day where its rows moved folded again, where builtBy writes them (figures.go);
+// and where day.Rewind is set, the project's Legion walk moved back to that day
+// (writeProjectDay). A row of another project, another day or an eval that is not a Legion one,
+// and an item of another family, is refused before anything is written.
 func (s *Store) writeLegionDay(ctx context.Context, day ProjectDay, builtBy string, figures bool) error {
-	return s.writeProjectDay(ctx, "Legion", day, legionDaySlugs, legionDayFamilies, builtBy, figures)
+	return s.writeProjectDay(ctx, "Legion", day, legionDaySlugs, legionDayFamilies, walkKey{family: walkLegion, project: day.Project}, builtBy, figures)
 }

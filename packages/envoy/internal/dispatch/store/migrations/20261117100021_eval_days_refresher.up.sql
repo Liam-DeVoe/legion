@@ -55,6 +55,15 @@
 -- of them where the delivery walk still has days to write, in one transaction that records the
 -- settings it read here (evals.rewriteSettings); a pass that finds no row begins the delivery walk
 -- again, which builds every day under the settings it reads, and records them.
+--   kept_repos and kept_since  the repositories that hold a delivery run, whose rows of the evals
+--              that read the deploy repository the stored rows are kept for, in the byte order of
+--              their names, and each one's start (the UTC day of its first deploy or PR-checks
+--              run, before which it holds no row), pairwise: the set the delivery walk last built
+--              for (evals.keptRepo). A page that reads another set moves the delivery walk back to
+--              the earliest start that changed, a new repository's, a gone one's or the earlier of
+--              a moved one's two, in the transaction of its cursors (evals.syncKept), so the walk
+--              builds every day of a repository whose first runs arrived, and of one whose runs
+--              went; the rewrite of a settings change leaves them as they are.
 --   updated_at when the row was last recorded.
 --
 -- Three new tables, all empty: nothing existing is read or rewritten, and the release before this
@@ -84,5 +93,7 @@ create table eval_days_settings (
     production_apply_step_name text,
     staging_e2e_job_name text,
     staging_apply_job_name text,
+    kept_repos text[] not null default '{}',
+    kept_since date[] not null default '{}',
     updated_at timestamptz not null default now()
 );

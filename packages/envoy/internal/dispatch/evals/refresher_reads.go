@@ -316,11 +316,12 @@ func (s *Store) subtreeCloseDays(ctx context.Context, keys []string) ([]projectD
 }
 
 // firstDays is the first day of project's all-repositories rows of each eval rows names, by eval
-// and deploy repository (evalKey), among the computation's rows: the earliest over the series rows
-// names of the eval and deploy repository (a zero day's rows, which name each series an eval's
-// builder writes on every day it has input, for each deploy repository whose rows are kept), each
-// the first entry of one range of the primary key. An eval with no such row has no entry.
-func (s *Store) firstDays(ctx context.Context, project string, rows []DayRow) (map[evalKey]time.Time, error) {
+// and deploy repository (evalKey), among the computation's rows before before (every row, where
+// before is nil): the earliest over the series rows names of the eval and deploy repository (a
+// zero day's rows, which name each series an eval's builder writes on every day it has input, for
+// each deploy repository whose rows are kept), each the first entry of one range of the primary
+// key, which the bound ends. An eval with no such row has no entry.
+func (s *Store) firstDays(ctx context.Context, project string, rows []DayRow, before *time.Time) (map[evalKey]time.Time, error) {
 	first := map[evalKey]time.Time{}
 	if len(rows) == 0 {
 		return first, nil
@@ -335,12 +336,12 @@ func (s *Store) firstDays(ctx context.Context, project string, rows []DayRow) (m
 		cross join lateral (
 			select day from eval_days
 			where project_key = $1 and eval_id = given.eval_id and writer = $4 and deploy_repo = given.deploy_repo
-				and series = given.series and repo = ''
+				and series = given.series and repo = '' and day < coalesce($6::date, 'infinity'::date)
 			order by day
 			limit 1
 		) stored
 		group by given.eval_id, given.deploy_repo
-	`, project, evals, series, writerComputation, deployRepos)
+	`, project, evals, series, writerComputation, deployRepos, before)
 	if err != nil {
 		return nil, fmt.Errorf("read the first days of %s's series: %w", project, err)
 	}
@@ -353,6 +354,41 @@ func (s *Store) firstDays(ctx context.Context, project string, rows []DayRow) (m
 		return nil, fmt.Errorf("read the first days of %s's series: %w", project, err)
 	}
 	return first, nil
+}
+
+// heldDays is each day from from through through on which a project of projects holds a computed
+// all-repositories row of one of the evals slugs names, by project, family and day: the days a
+// walk's batch writes whether or not it builds a row of them, so a day whose input left keeps no
+// row a whole walk would not hold (refresh.walkDays). One read of eval_days_window (project, repo,
+// day, over the listed rows) for the batch: every series of a computed eval is listed but a job
+// series, which a day holds only beside its eval's listed series.
+func (s *Store) heldDays(ctx context.Context, family string, projects, slugs []string, from, through time.Time) (map[builtDay]bool, error) {
+	held := map[builtDay]bool{}
+	if len(projects) == 0 {
+		return held, nil
+	}
+	evalIDs := make([]string, 0, len(projects)*len(slugs))
+	for _, project := range projects {
+		for _, slug := range slugs {
+			evalIDs = append(evalIDs, EvalID(project, slug))
+		}
+	}
+	rows, err := s.database.Pool.Query(ctx, `
+		select distinct project_key, day from eval_days
+		where project_key = any($1) and repo = '' and listed and day >= $2 and day <= $3 and eval_id = any($4) and writer = $5
+	`, projects, from, through, evalIDs, writerComputation)
+	if err != nil {
+		return nil, fmt.Errorf("read the days holding %s rows from %s through %s: %w", family, from.Format(time.DateOnly), through.Format(time.DateOnly), err)
+	}
+	var project string
+	var day time.Time
+	if _, err := pgx.ForEachRow(rows, []any{&project, &day}, func() error {
+		held[builtDay{family: family, project: project, day: measures.Midnight(day)}] = true
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the days holding %s rows from %s through %s: %w", family, from.Format(time.DateOnly), through.Format(time.DateOnly), err)
+	}
+	return held, nil
 }
 
 // deliveryInputStart is the earliest moment a delivery day can hold input: the first merge of a

@@ -459,8 +459,9 @@ func (r *refresherRig) writeIssueEvent(t *testing.T, issue, kind, payload string
 //   - an issue that reopens rewrites the day it had closed on (the change's t_old), and its
 //     close on a later day rewrites that day alone;
 //   - an issue whose close moves from one day to another in one write rewrites both, and the day
-//     it left, which holds no other input, becomes zero rows and logs an eval_days change naming
-//     it, so a view of it wakes;
+//     it left, which holds no other input, keeps the zero rows of the project's series and loses
+//     its repository rows, as a whole walk over the moved close holds them, and logs an eval_days
+//     change naming it, so a view of it wakes;
 //   - a change of an open issue's facts rewrites no day;
 //   - a filing whose class moves rewrites its filing day, and so does a write that moves the filed
 //     issue's repository, which moves the repository the filing is cut by;
@@ -495,34 +496,35 @@ func TestEachLegionChangeRewritesExactlyItsDays(t *testing.T) {
 	moved.ClosedAt = new(d4.Add(9 * time.Hour))
 	history.rows["EVAL-3"] = moved
 	r.writeFacts(t, history, "EVAL-3")
+	prior := before
 	before = r.expectDays(t, "EVAL-3's close moved a day on", before,
 		[]string{line(walkLegion, "EVAL", history.d2), line(walkLegion, "EVAL", d4)},
 		[]string{line(walkLegion, "EVAL", history.d2), line(walkLegion, "EVAL", d4)})
-	lost, zeroedRepos := 0, 0
-	for _, row := range before {
-		if familyOf(row) != walkLegion || !row.Day.Equal(history.d2) {
+	lost, heldRepos := 0, 0
+	for key, row := range prior {
+		if familyOf(row) != walkLegion || !row.Day.Equal(history.d2) || row.Repo == "" || strings.Contains(row.EvalID, SlugLegionSplitting) {
 			continue
 		}
-		switch {
-		case row.Repo == "":
+		// A repository's row of that day held EVAL-3 alone: a whole walk holds none.
+		heldRepos++
+		if _, kept := before[key]; kept {
+			t.Errorf("%s stays after its day lost its one closed issue, want it deleted", key)
+		}
+	}
+	for _, row := range before {
+		if familyOf(row) == walkLegion && row.Day.Equal(history.d2) && row.Repo == "" {
 			if row.N != 0 && !strings.HasPrefix(row.Series, "filed") {
 				t.Errorf("%s holds n %d after its day lost its one closed issue, want a zero row", rowKey(row), row.N)
 			}
 			lost++
-		case !strings.Contains(row.EvalID, SlugLegionSplitting):
-			// A repository's row of that day had input, so it stays, as a zero row.
-			if row.N != 0 {
-				t.Errorf("%s holds n %d after its day lost its one closed issue, want a zero row", rowKey(row), row.N)
-			}
-			zeroedRepos++
 		}
 	}
 	woke := slices.ContainsFunc(r.evalDayChanges(t, seq), func(change string) bool {
 		return strings.HasPrefix(change, EvalID("EVAL", SlugLegionWorkTime)+" ") && strings.Contains(change, history.d2.Format(time.DateOnly))
 	})
-	if lost == 0 || zeroedRepos == 0 || !woke {
-		t.Errorf("the day that lost its input holds %d all-repositories rows and %d repository rows, and an eval_days change naming it was logged: %t; want zero rows of both and a change",
-			lost, zeroedRepos, woke)
+	if lost == 0 || heldRepos == 0 || !woke {
+		t.Errorf("the day that lost its input holds %d all-repositories rows, held %d repository rows before, and an eval_days change naming it was logged: %t; want zero rows of the first, some of the second, and a change",
+			lost, heldRepos, woke)
 	}
 
 	open := history.rows["EVAL-4"]
@@ -580,9 +582,10 @@ func TestAMoveOfAnAncestorRewritesTheCloseDaysBelowIt(t *testing.T) {
 // TestARepoProjectsChangeReattributesWithinOnePass: once every day is walked, the deploy
 // repository's mapping moves to the second project and LEGION gains a default repository, and the
 // one pass after both writes moves every row they decide: the CI runs and the pull requests that
-// name no issue count for the second project and no more for the first, whose days that lost
-// their input hold zero rows, and LEGION's Legion rows are cut by the repository its issues now
-// resolve to.
+// name no issue count for the second project and no more for the first, which holds no CI row at
+// all, since no day holds CI input of it under the new mapping, as a whole walk under it holds
+// none (the walk takes each series' first input day from the days it builds), and LEGION's Legion
+// rows are cut by the repository its issues now resolve to.
 func TestARepoProjectsChangeReattributesWithinOnePass(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, legion := r.seedHistories(t)
@@ -636,10 +639,13 @@ func TestARepoProjectsChangeReattributesWithinOnePass(t *testing.T) {
 	if got := r.count(t, checks, main, EvalID(main, SlugPRCI), measures.SeriesMinutes, refresherToday); got != 0 {
 		t.Errorf("after the pass %s still counts %d timed CI results of a repository mapped elsewhere", main, got)
 	}
-	firstCheck := r.count(t, `select count(*) from eval_days where project_key = $1 and eval_id = $2 and series = $3 and repo = '' and n = 0 and day < $4`,
-		main, EvalID(main, SlugPRCI), measures.SeriesMinutes, refresherToday)
-	if firstCheck == 0 {
-		t.Errorf("%s's CI days that lost their input hold no zero row", main)
+	// The first project's CI rows had a first input day under the old mapping and have none under
+	// the new one: the walk begun again builds every day from the first input day on, and takes
+	// each series' first input day from the days it builds, so it writes no zero row of pr-ci and
+	// deletes every row the first project held of it, today's zero row among them.
+	firstCheck := r.count(t, `select count(*) from eval_days where project_key = $1 and eval_id = $2`, main, EvalID(main, SlugPRCI))
+	if firstCheck != 0 {
+		t.Errorf("%s holds %d pr-ci rows after no day holds CI input of it, want none, as a whole walk under the new mapping holds", main, firstCheck)
 	}
 	via := r.count(t, `select coalesce(sum(via_repository), 0) from eval_days where project_key = $1 and eval_id = $2 and repo = ''`,
 		other, EvalID(other, SlugMergeToProduction))
@@ -653,19 +659,33 @@ func TestARepoProjectsChangeReattributesWithinOnePass(t *testing.T) {
 	for day := range report.days {
 		families[day.family+" "+day.project]++
 	}
-	t.Logf("one pass rewrote %v; %s now counts %d timed CI results and %d deployed pull requests through the repository, and %s %d zero CI days",
+	t.Logf("one pass rewrote %v; %s now counts %d timed CI results and %d deployed pull requests through the repository, and %s holds %d CI rows",
 		families, other, mainChecks, via, main, firstCheck)
 }
 
-// TestARepositoryRowThatLosesItsLastInputBecomesAZeroRow: once every day is walked, every pull
-// request one repository merged on one day is merged again a day earlier, so the repository's last
-// pull request leaves that day. The one pass after it keeps each of the repository's rows of that
-// day, in every project that held one, as a zero row (n 0 and a zero value, its updated_at moved),
-// rather than deleting it, which would log no eval_days change and leave a view of that
-// repository's numbers holding the old ones; it logs an eval_days change spanning that day for the
-// eval of each; and it creates no repository row of a day that never held that repository's
-// input. A row whose series has a first input day counts a zero as a value.
-func TestARepositoryRowThatLosesItsLastInputBecomesAZeroRow(t *testing.T) {
+// mergeDayEarlier merges every pull request of repo merged on day again a day earlier, as
+// TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone moves them.
+func (r *refresherRig) mergeDayEarlier(t *testing.T, repo string, day time.Time) {
+	t.Helper()
+	r.exec(t, "merge "+repo+"'s pull requests of "+day.Format(time.DateOnly)+" a day earlier", `
+		update delivery_pull_requests
+		set merged_at = merged_at - interval '1 day', created_at = least(created_at, merged_at - interval '1 day' - interval '1 hour')
+		where repo = $1 and merged_at >= $2 and merged_at < $3
+	`, repo, day, day.AddDate(0, 0, 1))
+}
+
+// TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone: once every day is walked,
+// every pull request one repository merged on one day is merged again a day earlier, so the
+// repository's last pull request leaves that day. The one pass after it deletes each of the
+// repository's rows of that day, in every project that held one, where it kept them as zero rows
+// before; it logs an eval_days change spanning that day for the eval of each (migration
+// 20261117100014's delete trigger), so a view of that repository's numbers wakes; it creates no
+// repository row of a day that never held that repository's input; and the database then holds the
+// delivery and CI rows, the members and the stored figures a second database holds that made the
+// same move before its first walk, so the rows do not depend on whether the walk read the history
+// before the move or after it. Then the settings stop making the staging gate's card: one pass
+// deletes every row of that card, where a whole walk under the new settings holds none.
+func TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
 	r.settle(t)
@@ -696,38 +716,25 @@ func TestARepositoryRowThatLosesItsLastInputBecomesAZeroRow(t *testing.T) {
 	slices.Sort(held)
 
 	seq := r.latestSeq(t)
-	r.exec(t, "merge "+repo+"'s pull requests of "+day.Format(time.DateOnly)+" a day earlier", `
-		update delivery_pull_requests
-		set merged_at = merged_at - interval '1 day', created_at = least(created_at, merged_at - interval '1 day' - interval '1 hour')
-		where repo = $1 and merged_at >= $2 and merged_at < $3
-	`, repo, day, day.AddDate(0, 0, 1))
+	r.mergeDayEarlier(t, repo, day)
 	r.pass(t)
 	after := r.dayRows(t)
 	changes := r.evalDayChanges(t, seq)
 
-	evalsZeroed := map[string]bool{}
+	evalsDeleted := map[string]bool{}
 	for _, key := range held {
-		row, kept := after[key]
-		switch {
-		case !kept:
-			t.Errorf("%s was deleted, want a zero row", key)
-		case row.N != 0 || measures.ValueOrZero(row.Sum) != 0 || measures.ValueOrZero(row.Num) != 0 || measures.ValueOrZero(row.Den) != 0 || row.Max != nil ||
-			len(row.Samples) != 0 || row.ViaRepository != 0 || slices.ContainsFunc(slices.Collect(maps.Values(row.Counts)), func(count float64) bool { return count != 0 }):
-			t.Errorf("%s holds %s after its last input left, want a zero row", key, rowFacts(row))
-		case before[key].N == 0:
-			// A row already zero (a lead time of pull requests no deploy ships) is left as it is.
-		case !row.UpdatedAt.After(before[key].UpdatedAt):
-			t.Errorf("%s kept its updated_at %s, want it rewritten as a zero row", key, row.UpdatedAt)
-		default:
-			evalsZeroed[row.EvalID] = true
+		if row, kept := after[key]; kept {
+			t.Errorf("%s holds %s after its last input left, want it deleted", key, rowFacts(row))
+			continue
 		}
+		evalsDeleted[before[key].EvalID] = true
 	}
-	for evalID := range evalsZeroed {
+	for evalID := range evalsDeleted {
 		if !slices.ContainsFunc(changes, func(change string) bool {
 			first, last, found := strings.Cut(strings.TrimPrefix(change, evalID+" "), "..")
 			return strings.HasPrefix(change, evalID+" ") && found && first <= day.Format(time.DateOnly) && last >= day.Format(time.DateOnly)
 		}) {
-			t.Errorf("no eval_days change of %s spans %s, where its rows became zero rows: %v", evalID, day.Format(time.DateOnly), changes)
+			t.Errorf("no eval_days change of %s spans %s, where its rows were deleted: %v", evalID, day.Format(time.DateOnly), changes)
 		}
 	}
 	for key, row := range after {
@@ -735,9 +742,138 @@ func TestARepositoryRowThatLosesItsLastInputBecomesAZeroRow(t *testing.T) {
 			t.Errorf("the pass created %s, a row of %s on a day its input never reached", key, repo)
 		}
 	}
-	if len(held) == 0 || len(evalsZeroed) == 0 {
-		t.Errorf("%s held %d rows of %s on %s and %d evals' rows became zero rows, want some of each", repo, len(held), repo, day.Format(time.DateOnly), len(evalsZeroed))
+	if len(held) == 0 || len(evalsDeleted) == 0 {
+		t.Errorf("%s held %d rows of %s on %s and %d evals' rows were deleted, want some of each", repo, len(held), repo, day.Format(time.DateOnly), len(evalsDeleted))
 	}
-	t.Logf("%s's %d rows of %s became zero rows in the evals %v; eval_days changes of the pass: %v",
-		repo, len(held), day.Format(time.DateOnly), slices.Sorted(maps.Keys(evalsZeroed)), changes)
+
+	walk := newRefresherRig(t)
+	walk.seedHistories(t)
+	walk.mergeDayEarlier(t, repo, day)
+	walk.settle(t)
+	r.expectSameAsWalk(t, "after "+repo+"'s pull requests of "+day.Format(time.DateOnly)+" merged a day earlier", walk)
+	t.Logf("%s's %d rows of %s were deleted in the evals %v; eval_days changes of the pass: %v",
+		repo, len(held), day.Format(time.DateOnly), slices.Sorted(maps.Keys(evalsDeleted)), changes)
+
+	settings, err := delivery.GetSettings(t.Context(), r.database.Pool)
+	if err != nil {
+		t.Fatalf("read the delivery settings: %v", err)
+	}
+	if settings.StagingE2EJobName == nil {
+		t.Fatal("the history's settings make no staging gate's card, and the check needs one")
+	}
+	gate := EvalID(deliveries.Project, SlugStagingE2E)
+	if r.count(t, `select count(*) from eval_days where eval_id = $1`, gate) == 0 {
+		t.Fatalf("%s holds no row, and the check needs some", gate)
+	}
+	settings.StagingE2EJobName = nil
+	for _, rig := range []*refresherRig{r, walk} {
+		rig.putSettings(t, settings, alice)
+	}
+	r.pass(t)
+	walk.exec(t, "forget the settings the rows stand built under", `delete from eval_days_settings`)
+	walk.settle(t)
+	if left := r.count(t, `select count(*) from eval_days where eval_id = $1`, gate); left != 0 {
+		t.Errorf("%s holds %d rows once the settings stop making its card, want none", gate, left)
+	}
+	r.expectSameAsWalk(t, "the staging gate's card no longer made", walk)
+}
+
+// TestADayWithNoInputReadsZeroFromItsSeriesFirstInputDayOnAndNoDataBeforeIt: the boundary of the
+// stored rows (dispatch://INFRA-2916, items 5 and 8, R12). Over the delivery history, once every
+// day is walked, the deploy runs of the deploy repository's first deploy day and of its last are
+// deleted. The pass after it leaves the main project's deploy-frequency of that repository with no
+// row on the first of those days, which is no first input day of it any more, so a window over it
+// reads "no data" (every statistic null) and its data_since is the next deploy day; and with the
+// zero row of the last, a day after that first input day with no input, so a window over it reads
+// 0 deploys a day. A second database whose runs were deleted before its first walk holds the same
+// rows, members and stored figures.
+func TestADayWithNoInputReadsZeroFromItsSeriesFirstInputDayOnAndNoDataBeforeIt(t *testing.T) {
+	r := newRefresherRig(t)
+	deliveries, _ := r.seedHistories(t)
+	r.settle(t)
+	ctx := t.Context()
+	repo, main := deliveries.DeployRepo, deliveries.Project
+	started := map[time.Time]bool{}
+	for _, run := range deliveries.Runs {
+		if run.Repo == repo && run.Kind == delivery.DeliveryRunKindDeploy {
+			started[measures.Midnight(run.StartedAt)] = true
+		}
+	}
+	deployDays := slices.SortedFunc(maps.Keys(started), time.Time.Compare)
+	if len(deployDays) < 3 {
+		t.Fatalf("%s's deploy runs start on %v, and the check needs three days", repo, deployDays)
+	}
+	first, second, last := deployDays[0], deployDays[1], deployDays[len(deployDays)-1]
+	drop := func(rig *refresherRig) {
+		t.Helper()
+		for _, day := range []time.Time{first, last} {
+			rig.exec(t, "delete the jobs of the deploy runs of "+day.Format(time.DateOnly), `
+				delete from delivery_run_jobs job using delivery_runs run
+				where run.repo = job.repo and run.run_id = job.run_id and run.repo = $1 and run.kind = $2 and run.started_at >= $3 and run.started_at < $4
+			`, repo, string(delivery.DeliveryRunKindDeploy), day, day.AddDate(0, 0, 1))
+			rig.exec(t, "delete the deploy runs of "+day.Format(time.DateOnly), `
+				delete from delivery_runs where repo = $1 and kind = $2 and started_at >= $3 and started_at < $4
+			`, repo, string(delivery.DeliveryRunKindDeploy), day, day.AddDate(0, 0, 1))
+		}
+	}
+	drop(r)
+	r.settle(t)
+	walk := newRefresherRig(t)
+	walk.seedHistories(t)
+	drop(walk)
+	walk.settle(t)
+	r.expectSameAsWalk(t, "the deploy runs of "+first.Format(time.DateOnly)+" and "+last.Format(time.DateOnly)+" deleted", walk)
+
+	page, err := r.registry.Current(ctx, []string{main}, "", 100, 0)
+	if err != nil {
+		t.Fatalf("read the evals of %s: %v", main, err)
+	}
+	index := slices.IndexFunc(page.Items, func(entry Entry) bool { return entry.Definition.Slug == SlugDeployFrequency })
+	if index < 0 {
+		t.Fatalf("%s has no deploy-frequency eval", main)
+	}
+	entry, evalID := page.Items[index], EvalID(main, SlugDeployFrequency)
+	firsts, err := r.registry.FirstDays(ctx, []Entry{entry}, repo)
+	if err != nil {
+		t.Fatalf("read the first days of %s: %v", evalID, err)
+	}
+	read := func(day time.Time) SeriesValues {
+		t.Helper()
+		window := Range{From: day, To: day.AddDate(0, 0, 1)}
+		rows, err := r.registry.DayWindow(ctx, []string{main}, []Entry{entry}, repo, nil, window, nil)
+		if err != nil {
+			t.Fatalf("read %s over %s: %v", evalID, day.Format(time.DateOnly), err)
+		}
+		values := SeriesValuesOf(entry, rows, firsts[evalID], window, nil)
+		if len(values) == 0 {
+			t.Fatalf("%s states no listed series", evalID)
+		}
+		return values[0]
+	}
+	stored := r.dayRows(t)
+	row := func(day time.Time) (DayRow, bool) {
+		held, found := stored[rowKey(DayRow{ProjectKey: main, EvalID: evalID, DeployRepo: repo, DayPart: measures.DayPart{Series: measures.SeriesDeploys, Day: day}})]
+		return held, found
+	}
+	if held, found := row(first); found {
+		t.Errorf("%s holds %s on %s, before its first input day %s, want no row", evalID, rowFacts(held), first.Format(time.DateOnly), second.Format(time.DateOnly))
+	}
+	before := read(first)
+	for name, value := range before.Window {
+		if value != nil {
+			t.Errorf("a window over %s, before %s's first input day, reads %s %g, want no data", first.Format(time.DateOnly), evalID, name, *value)
+		}
+	}
+	if before.DataSince == nil || *before.DataSince != second.Format(time.DateOnly) {
+		t.Errorf("%s's data_since is %v, want %s, its next deploy day", evalID, before.DataSince, second.Format(time.DateOnly))
+	}
+	if held, found := row(last); !found || held.N != 0 {
+		t.Errorf("%s on %s, a day after its first input day with no input, holds %v (found %t), want its zero row", evalID, last.Format(time.DateOnly), held.N, found)
+	}
+	headline := computedSources[entry.Definition.Source].headline(measures.SeriesDeploys)
+	if value := read(last).Window[headline]; value == nil || *value != 0 {
+		t.Errorf("a window over %s reads %s %s, want 0", last.Format(time.DateOnly), headline, showValue(value))
+	}
+	t.Logf("%s: no row and no data on %s, data_since %s, a zero row on %s reading %s 0", evalID, first.Format(time.DateOnly),
+		second.Format(time.DateOnly), last.Format(time.DateOnly), headline)
 }

@@ -53,15 +53,20 @@ import (
 // of each family the build before it wrote, as issue_facts_computed makes the Legion facts
 // consumer read each project whole again, and while two builds run each continues its own walk.
 //
-// A day written is every row of its project's family of that day, upserted where a value moved
-// (upsertDays), the rows the day no longer builds written as zero rows (zeroStaleDays: each had
-// input once, so a zero is its value), and a zero row of every series whose
-// first input day is on or before it and that the day has no input of. A series' first input day
-// is the first day the store holds a row of it: the builders write a row of a series only on a day
-// with its input, and the refresher writes a zero row only on a day at or after that first day, so
-// the first row is the first input day and a missing row is a day before it. A day that loses all
-// its input therefore becomes zero rows rather than losing its rows, and the eval_days trigger,
-// which logs nothing for a delete, logs the change and wakes the views.
+// The stored rows are a function of the inputs and the settings alone (dispatch://INFRA-2916, item
+// 8): two databases loaded with the same inputs and settings hold the same rows, whichever order
+// the inputs arrived in. A day written holds exactly the rows its project's family builds of it,
+// upserted where a value moved (upsertDays), the rows the day no longer builds deleted
+// (deleteStaleDays), which the eval_days trigger logs, so a view of them wakes; and a zero row of
+// every series whose first input day is on or before it and that the day has no input of, written
+// on a day the running build's walk has computed. A series' first input day is the first day the
+// walk built holding input of it: the builders write a row of a series only on a day with its
+// input, the walk writes a zero row only on a day at or after that first day, and it takes each
+// series' first day from the days it built (refresh.firstOf), so a missing row is a day before it,
+// or a day the walk has not computed yet, which reads "no data" until the walk computes it (item
+// 5). A day a change names is written from its own input; every day after a first input day it
+// moves earlier, or from one that lost its input, and every day of a repository whose first runs
+// arrived, is moved back to the walk, which builds it as a whole walk does (refresher_work.go).
 //
 // A pass that fails logs and leaves its cursors where they were, so the next pass reads the same
 // changes again; every write is safe to make twice.
@@ -393,15 +398,16 @@ func (s *Store) readRefresherCursors(ctx context.Context) (feedCursors, bool, er
 }
 
 // commitPage moves the two cursors to the positions a page read, begins again each walk the page's
-// changes call for and records built, where it is set, as the delivery settings the delivery and
-// CI rows stand built under (eval_days_settings), in one transaction: the days the page named are
-// written before it, so a crash between the two reads the same changes again, and a walk the
-// changes begin again is recorded with the cursor that passed them, and with the settings the walk
-// builds under where none were recorded (syncSettings). The event cursor is stamped with the
-// moment the pass ran as of, and the change cursor with its ReadAt, when a page last read the
-// change log to its end (page), which the lost-cursor rule reads and which a full page leaves where
-// it stood.
-func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts []walkKey, built *delivery.DeliverySettings) error {
+// changes call for, records work.built, where it is set, as the delivery settings the delivery and
+// CI rows stand built under (eval_days_settings), and work.kept, where it is set, as the
+// repositories they stand built for, moving the delivery walk back to work.keptRewind (syncKept),
+// in one transaction: the days the page named are written before it, so a crash between the two
+// reads the same changes again, and a walk the changes begin again or move back is recorded with
+// the cursor that passed them, and with the settings the walk builds under where none were
+// recorded (syncSettings). The event cursor is stamped with the moment the pass ran as of, and the
+// change cursor with its ReadAt, when a page last read the change log to its end (page), which the
+// lost-cursor rule reads and which a full page leaves where it stood.
+func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts []walkKey, work *pageWork) error {
 	tx, err := r.store.database.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin the eval day-row refresher's cursors: %w", err)
@@ -441,8 +447,23 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 			return fmt.Errorf("begin %d walks of the day rows again: %w", len(restarts), err)
 		}
 	}
-	if built != nil {
-		if err := recordBuiltUnder(ctx, tx, *built); err != nil {
+	if work.keptRewind != nil {
+		// Every build's delivery walk moves back, as every build's begins again above, and one to
+		// begin or behind the day stays where it is.
+		if _, err := tx.Exec(ctx, `
+			update eval_days_walks set next_day = $3, updated_at = $4
+			where family = $1 and project_key = $2 and next_day > $3
+		`, walkDelivery, "", *work.keptRewind, r.now); err != nil {
+			return fmt.Errorf("move the delivery walk back to %s: %w", work.keptRewind.Format(time.DateOnly), err)
+		}
+	}
+	if work.built != nil {
+		if err := recordBuiltUnder(ctx, tx, *work.built); err != nil {
+			return err
+		}
+	}
+	if work.kept != nil {
+		if err := recordKept(ctx, tx, work.kept); err != nil {
 			return err
 		}
 	}

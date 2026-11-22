@@ -234,8 +234,11 @@ func dayProjects(read deliveryRead) []string {
 // page of the pass, under testBuild as of the end of the last day: each day's delivery and CI rows
 // of every project (refresh.deliveryWalkDay), where delivery settings exist, and each day's Legion
 // rows of each project of legion (refresh.writeLegion), each with the zero rows of the series
-// begun before it. The pass first loads what a pass loads, its seed of every project no seed has
-// reached included (refresh.load). It answers the days written.
+// begun before it. The walks' batch begins at the first of days (refresh.beginBatch), so each
+// series' first input day is the first of the days before it, or of those the batch writes, that
+// holds input of it, and a day holding rows of a walk's family is written whatever it builds. The
+// pass first loads what a pass loads, its seed of every project no seed has reached included
+// (refresh.load). It answers the days written.
 func (r rig) refreshDays(t *testing.T, legion []string, days ...time.Time) []string {
 	t.Helper()
 	ctx := t.Context()
@@ -244,6 +247,19 @@ func (r rig) refreshDays(t *testing.T, legion []string, days ...time.Time) []str
 		t.Fatalf("load the refresher's pass: %v", err)
 	}
 	pass.walking = true
+	first, last := days[0], days[len(days)-1]
+	walks := []walkKey{}
+	if pass.settings != nil {
+		walks = append(walks, walkKey{family: walkDelivery})
+	}
+	for _, project := range legion {
+		walks = append(walks, walkKey{family: walkLegion, project: project})
+	}
+	for _, key := range walks {
+		if err := pass.beginBatch(ctx, key, first, last); err != nil {
+			t.Fatalf("begin the batch of the %s walk of %q: %v", key.family, key.project, err)
+		}
+	}
 	for _, day := range days {
 		pass.beginPage()
 		if pass.settings != nil {
@@ -267,9 +283,10 @@ func (r rig) refreshDays(t *testing.T, legion []string, days ...time.Time) []str
 // repository's project; the pull request of an unmapped repository counts nowhere; and GAMMA, with
 // nothing, gets no row. Then the day is written again unchanged (no row rewritten), and once
 // acme/alpha#2 names BETA-1 the day's rewrite moves it, and the deploy that shipped it, out of
-// ALPHA: ALPHA's acme/alpha rows of the pull-request evals, which held it alone, become zero rows
-// rather than going, and its items of the day that it no longer holds are deleted; written again,
-// the moved day rewrites nothing.
+// ALPHA: ALPHA's acme/alpha rows of the pull-request evals, which held it alone, are deleted, as a
+// whole walk over the moved pull request holds none, and so is every lead time of ALPHA, whose one
+// day now ships none of its pull requests; its items of the day that it no longer holds are
+// deleted; written again, the moved day rewrites nothing.
 func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 	r := newRig(t)
 	settings := seedAttribution(t, r)
@@ -387,17 +404,18 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 	}
 	r.refreshDays(t, nil, attributionDay)
 	alpha := allFacts(r.stored(t, "ALPHA"))
-	for _, zeroed := range []string{"rework-share prs acme/alpha: n=0 via=0 share=0/0", "merge-to-production minutes acme/alpha: n=0 via=0 samples=[]"} {
-		if !slices.Contains(alpha, zeroed) {
-			t.Errorf("ALPHA's rows after acme/alpha's last pull request moved to BETA lack the zero row %q:\n%s", zeroed, strings.Join(alpha, "\n"))
+	for _, fact := range alpha {
+		if strings.HasPrefix(fact, "rework-share prs acme/alpha: ") || slices.ContainsFunc(leadTimeSlugs, func(slug string) bool { return strings.HasPrefix(fact, slug+" ") }) {
+			t.Errorf("ALPHA's rows after acme/alpha's last pull request moved to BETA hold %q, want no row of acme/alpha's pull requests and no lead time, as a whole walk holds none", fact)
 		}
 	}
 	if err := r.database.Pool.QueryRow(ctx, `select max(updated_at) from eval_days`).Scan(&newest); err != nil {
 		t.Fatalf("read the newest write: %v", err)
 	}
+	stored := r.count(t, `select count(*) from eval_days`)
 	r.refreshDays(t, nil, attributionDay)
-	if rewritten := r.count(t, `select count(*) from eval_days where updated_at > $1`, newest); rewritten != 0 {
-		t.Errorf("writing the moved day again rewrote %d rows, want none: a zero row already zero is left as it is", rewritten)
+	if rewritten := r.count(t, `select count(*) from eval_days where updated_at > $1`, newest); rewritten != 0 || r.count(t, `select count(*) from eval_days`) != stored {
+		t.Errorf("writing the moved day again rewrote %d rows, or deleted some of its %d, want none", rewritten, stored)
 	}
 	for _, kept := range []string{
 		"deploy-frequency deploys all: n=1 via=1 sum=1 with_prs=0", "rework-share prs all: n=1 via=0 share=0/1",
@@ -510,15 +528,17 @@ func TestTheUnownedP0RowIsTheCountAtItsLastWrite(t *testing.T) {
 
 // TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce: each statement that finds what a day no
 // longer holds against the list its write gives it (leftDaysOwedStatement's and
-// goneMembersDeleteStatement's items, zeroStaleDaysStatement's and zeroStaleSettingsDaysStatement's
-// rows) reads that list once, with the write's values and under the generic plan a statement pgx
-// caches can settle on after its fifth run, which estimates every list at 10 rows: the list runs
-// under no SubPlan, no nested loop runs it again for each row of its other side, and the filter is
-// a SetOp Except over the list or a hash or merge anti-join. standingPartsQuery takes no list of
-// the write's own readings (standingParts leaves them out as it reads them, since their ids grow
-// with the batch), and its generic plan matches each reading to its keys by their day, as a hash
-// or merge join on it or an index condition, rather than testing each reading against every key
-// of its series. The day is past work_mem, as one of INFRA's is: 80,000 items across 40 deploy
+// goneMembersDeleteStatement's items, deleteStaleDaysStatement's and
+// deleteStaleSettingsDaysStatement's rows) reads that list once, with the write's values and under
+// the generic plan a statement pgx caches can settle on after its fifth run, which estimates every
+// list at 10 rows: the list runs under no SubPlan, no nested loop runs it again for each row of
+// its other side, and the filter is a SetOp Except over the list or a hash or merge anti-join. The
+// two deletes of rows are explained as one statement of the whole list over every key (no bound
+// of its range, staleRuns), the most rows any of their statements holds. standingPartsQuery takes
+// no list of the write's own readings (standingParts leaves them out as it reads them, since their
+// ids grow with the batch), and its generic plan matches each reading to its keys by their day, as
+// a hash or merge join on it or an index condition, rather than testing each reading against every
+// key of its series. The day is past work_mem, as one of INFRA's is: 80,000 items across 40 deploy
 // repositories and 80,000 rows written through writeDeliveryDay, and 80,000 readings of a logged
 // eval on the same day, the three tables analyzed. Each statement is explained with the arrays a
 // second write of the day sends, one item, one row and one reading fewer than stored, in a
@@ -530,7 +550,7 @@ func TestTheUnownedP0RowIsTheCountAtItsLastWrite(t *testing.T) {
 // `not in (…)`, the filters ran the list again for each stored row once it outgrew work_mem, so
 // one day's write of k20's load at INFRA's size held eval_days for 13 minutes, and on the test
 // Postgres a day of 80,000 items took more than 180 s, where an anti-join took 1.6 s; and written
-// as `not exists`, zeroStaleDays' generic plan was a nested-loop anti-join that had not written
+// as `not exists`, the stale rows' generic plan was a nested-loop anti-join that had not written
 // 80,000 rows after 2 minutes.
 func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 	r := newRig(t)
@@ -637,21 +657,22 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 			literals:   []string{"'EVAL'", "array['delivery', 'ci']", date, "array['delivery']", "array['acme/deploy-00']", "array['pull_request:acme/web#1']"},
 		},
 		{
-			name: "zeroStaleDaysStatement", statement: zeroStaleDaysStatement,
-			arguments:  []any{"EVAL", day, evalIDs, evals, series, repos, testBuild, writerComputation, rowDeployRepos},
-			parameters: []string{"text", "date", "text[]", "text[]", "text[]", "text[]", "text", "text", "text[]"},
-			literals: []string{"'EVAL'", date, "array['EVAL/deploy-frequency']", "array['EVAL/deploy-frequency']", "array['deploys']",
-				"array['acme/repo-00000']", "'test-build'", "'computation'", "array['acme/deploy-00']"},
+			name: "deleteStaleDaysStatement", statement: deleteStaleDaysStatement,
+			arguments:  []any{"EVAL", day, evalIDs, writerComputation, evals, rowDeployRepos, series, repos, []string(nil), []string(nil)},
+			parameters: []string{"text", "date", "text[]", "text", "text[]", "text[]", "text[]", "text[]", "text[]", "text[]"},
+			literals: []string{"'EVAL'", date, "array['EVAL/deploy-frequency']", "'computation'", "array['EVAL/deploy-frequency']",
+				"array['acme/deploy-00']", "array['deploys']", "array['acme/repo-00000']", "null::text[]", "null::text[]"},
 		},
 		{
-			name: "zeroStaleSettingsDaysStatement", statement: zeroStaleSettingsDaysStatement,
+			name: "deleteStaleSettingsDaysStatement", statement: deleteStaleSettingsDaysStatement,
 			settings: []string{"set local plan_cache_mode = force_custom_plan", "set local enable_mergejoin = off"},
-			arguments: []any{[]string{"EVAL"}, []time.Time{day}, projects, evals, series, repos, days, evalIDs, testBuild, writerComputation,
-				rowDeployRepos, deployRepos},
-			parameters: []string{"text[]", "date[]", "text[]", "text[]", "text[]", "text[]", "date[]", "text[]", "text", "text", "text[]", "text[]"},
+			arguments: []any{[]string{"EVAL"}, []time.Time{day}, projects, evals, series, repos, days, evalIDs, writerComputation,
+				rowDeployRepos, deployRepos, []string(nil), []string(nil)},
+			parameters: []string{"text[]", "date[]", "text[]", "text[]", "text[]", "text[]", "date[]", "text[]", "text", "text[]", "text[]",
+				"text[]", "text[]"},
 			literals: []string{"array['EVAL']", "array[" + date + "]::date[]", "array['EVAL']", "array['EVAL/deploy-frequency']", "array['deploys']",
-				"array['acme/repo-00000']", "array[" + date + "]::date[]", "array['EVAL/deploy-frequency']", "'test-build'", "'computation'",
-				"array['acme/deploy-00']", "array['acme/deploy-00']"},
+				"array['acme/repo-00000']", "array[" + date + "]::date[]", "array['EVAL/deploy-frequency']", "'computation'",
+				"array['acme/deploy-00']", "array['acme/deploy-00']", "null::text[]", "null::text[]"},
 		},
 	} {
 		t.Run(filter.name, func(t *testing.T) {
@@ -683,26 +704,28 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 		t.Logf("standingPartsQuery under the generic plan:\n%s", explaintest.Outline(t, generic))
 	})
 
-	// The second write itself, which leaves one item fewer and makes one row zero.
+	// The second write itself, which leaves one item and one row fewer: the row the day no longer
+	// holds is deleted.
 	if err := r.registry.writeDeliveryDay(ctx, ProjectDay{Project: "EVAL", Day: day, Rows: kept, Members: again}, testBuild, true); err != nil {
 		t.Fatalf("write the day again with one item and one row fewer: %v", err)
 	}
 	if held := r.count(t, `select count(*) from eval_day_members where project_key = 'EVAL'`); held != items-1 {
 		t.Errorf("eval_day_members holds %d items of EVAL, want %d", held, items-1)
 	}
-	if zero := r.count(t, `select count(*) from eval_days where project_key = 'EVAL' and writer = 'computation' and n = 0`); zero != 1 {
-		t.Errorf("eval_days holds %d zero rows of EVAL, want 1: the row the day no longer holds", zero)
+	if stored, zero := r.count(t, `select count(*) from eval_days where project_key = 'EVAL' and writer = 'computation'`),
+		r.count(t, `select count(*) from eval_days where project_key = 'EVAL' and writer = 'computation' and n = 0`); stored != items-1 || zero != 0 {
+		t.Errorf("eval_days holds %d rows of EVAL, %d of them zero rows, want %d and none: the row the day no longer holds deleted", stored, zero, items-1)
 	}
 }
 
-// TestTheZeroRowsOfASettingsRewriteMatchTheWrittenDaysByProjectAndDay: zeroStaleSettingsDays runs
-// its statement under a plan whose read of what the days written no longer hold (gone) matches
-// the stored rows to those days by their project and their day at one node, a hash or merge join
-// or an index scan (explaintest.RequireJoinedOnAll), and gives enable_mergejoin back the value it
-// held. A merge join on the project alone, which the primary key's order gives the planner for
-// nothing, tests each row's day against every day written of its project: a settings change that
-// rewrote 200 days of one project tested 434,218 pairs to keep its 2,182 rows. The rows are EVAL's
-// of the six evals a production rule's change moves, in two repositories under one deploy
+// TestTheStaleRowsOfASettingsRewriteMatchTheWrittenDaysByProjectAndDay: deleteStaleSettingsDays
+// runs its statement under a plan whose read of what the days written no longer hold (gone)
+// matches the stored rows to those days by their project and their day at one node, a hash or
+// merge join or an index scan (explaintest.RequireJoinedOnAll), and gives enable_mergejoin back the
+// value it held. A merge join on the project alone, which the primary key's order gives the planner
+// for nothing, tests each row's day against every day written of its project: a settings change
+// that rewrote 200 days of one project tested 434,218 pairs to keep its 2,182 rows. The rows are
+// EVAL's of the six evals a production rule's change moves, in two repositories under one deploy
 // repository, on each of 200 days, beside 10 evals of six series each of EVAL and of another
 // project on the same days: 26,400 rows, fewer than the 30,000 ANALYZE samples, so it reads every
 // row and the statistics are the same on every run. They are written in one transaction that
@@ -710,14 +733,14 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 // index-only scan reads eval_days in the project's order: with asynchronous commits, which the
 // pod's test server runs, a vacuum just after a commit can mark no page all-visible (as
 // embedqueue's TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap found).
-// The write rewrites those 200 days, holds every row but one, and names the six evals of ten
-// projects (a rewrite names every project's), in a transaction planned as rewriteSettings plans
-// its own. With merge joins on, the planner estimates the scan of eval_days at a few hundred rows
-// of its 2,400 and merges it with the days on the project alone, testing the day of each row
-// against all 200 days.
+// The write rewrites those 200 days and holds every row but one, which it deletes, in a
+// transaction planned as rewriteSettings plans its own; its one statement (EVAL's, whose rows fit
+// in one) names EVAL's six evals. With merge joins on, the planner estimates the scan of eval_days
+// at a few hundred rows of its 2,400 and merges it with the days on the project alone, testing the
+// day of each row against all 200 days.
 //
 // The test reads the plan the statement runs under (explainingTx), not the clock.
-func TestTheZeroRowsOfASettingsRewriteMatchTheWrittenDaysByProjectAndDay(t *testing.T) {
+func TestTheStaleRowsOfASettingsRewriteMatchTheWrittenDaysByProjectAndDay(t *testing.T) {
 	r := newRig(t)
 	ctx := t.Context()
 	const days, deployRepo = 200, "acme/deploy"
@@ -774,12 +797,6 @@ func TestTheZeroRowsOfASettingsRewriteMatchTheWrittenDaysByProjectAndDay(t *test
 	for day := range days {
 		projects[day], written[day] = "EVAL", first.AddDate(0, 0, day)
 	}
-	var evalIDs []string
-	for _, project := range []string{"EVAL", "A", "B", "C", "D", "E", "F", "G", "H", "I"} {
-		for _, slug := range slugs {
-			evalIDs = append(evalIDs, EvalID(project, slug))
-		}
-	}
 	tx, err := r.database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the rewrite's transaction: %v", err)
@@ -788,29 +805,31 @@ func TestTheZeroRowsOfASettingsRewriteMatchTheWrittenDaysByProjectAndDay(t *test
 	if _, err := tx.Exec(ctx, `set local plan_cache_mode = force_custom_plan`); err != nil {
 		t.Fatalf("plan the rewrite's transaction as rewriteSettings does: %v", err)
 	}
-	explaining := &explainingTx{Tx: tx, explained: zeroStaleSettingsDaysStatement}
-	if err := zeroStaleSettingsDays(ctx, explaining, projects, written, evalIDs, []string{deployRepo}, stored[1:], testBuild); err != nil {
-		t.Fatalf("zeroStaleSettingsDays: %v", err)
+	explaining := &explainingTx{Tx: tx, explained: deleteStaleSettingsDaysStatement}
+	if err := deleteStaleSettingsDays(ctx, explaining, projects, written, slugs, []string{deployRepo}, stored[1:]); err != nil {
+		t.Fatalf("deleteStaleSettingsDays: %v", err)
 	}
 	if explaining.plan == nil {
-		t.Fatal("zeroStaleSettingsDays ran no zeroStaleSettingsDaysStatement")
+		t.Fatal("deleteStaleSettingsDays ran no deleteStaleSettingsDaysStatement")
 	}
 	plan := explaintest.OnePlan(t, explaining.plan)
-	t.Logf("zeroStaleSettingsDaysStatement as zeroStaleSettingsDays runs it over %d days written:\n%s", days, explaintest.Outline(t, plan))
-	explaintest.RequireJoinedOnAll(t, plan, "zeroStaleSettingsDaysStatement as zeroStaleSettingsDays runs it", "CTE gone", "project_key", "day")
+	t.Logf("deleteStaleSettingsDaysStatement as deleteStaleSettingsDays runs it over %d days written:\n%s", days, explaintest.Outline(t, plan))
+	explaintest.RequireJoinedOnAll(t, plan, "deleteStaleSettingsDaysStatement as deleteStaleSettingsDays runs it", "CTE gone", "project_key", "day")
 	var mergeJoins string
 	if err := tx.QueryRow(ctx, `select current_setting('enable_mergejoin')`).Scan(&mergeJoins); err != nil {
 		t.Fatalf("read enable_mergejoin: %v", err)
 	}
 	if mergeJoins != "on" {
-		t.Errorf("enable_mergejoin is %s after zeroStaleSettingsDays, want on, the value it held before", mergeJoins)
+		t.Errorf("enable_mergejoin is %s after deleteStaleSettingsDays, want on, the value it held before", mergeJoins)
 	}
-	var zero int
-	if err := tx.QueryRow(ctx, `select count(*) from eval_days where project_key = 'EVAL' and deploy_repo = $1 and n = 0`, deployRepo).Scan(&zero); err != nil {
-		t.Fatalf("count EVAL's zero rows: %v", err)
+	var held, zero int
+	if err := tx.QueryRow(ctx, `select count(*), count(*) filter (where n = 0) from eval_days where project_key = 'EVAL' and deploy_repo = $1`,
+		deployRepo).Scan(&held, &zero); err != nil {
+		t.Fatalf("count EVAL's rows of the moved evals: %v", err)
 	}
-	if zero != 1 {
-		t.Errorf("eval_days holds %d zero rows of EVAL's moved evals, want 1: the row the write no longer holds", zero)
+	if held != len(stored)-1 || zero != 0 {
+		t.Errorf("eval_days holds %d rows of EVAL's moved evals, %d of them zero rows, want %d and none: the row the write no longer holds deleted",
+			held, zero, len(stored)-1)
 	}
 }
 
