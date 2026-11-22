@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -703,9 +704,9 @@ func (r PullRequestReview) LegionSession() string {
 
 // LegionHead is the head the review says it read: the head field of the last Legion footer in the
 // review's body (lastLegionFooter). It is "" when the body carries no footer, the footer's JSON
-// cannot be parsed, it names no head, or the head it names is not a full commit SHA, exactly 40
-// lowercase hexadecimal characters (githubrest.CommitSHA) - a short SHA or a branch name names no
-// commit, since only the whole of it says which code was read.
+// cannot be parsed, it names no head, or the head it names is not spelled as a head is
+// (reviewround.IsHead) - a short SHA or a branch name names no commit, since only the whole of it
+// says which code was read.
 //
 // The workflow holds a review the review App submitted to this rather than to CommitID because
 // GitHub rewrites commit_id to the pull request's current head, so its REST record of a review
@@ -715,7 +716,7 @@ func (r PullRequestReview) LegionSession() string {
 // heads apart.
 func (r PullRequestReview) LegionHead() string {
 	head := r.lastLegionFooter().Head
-	if !githubrest.CommitSHA(head) {
+	if !reviewround.IsHead(head) {
 		return ""
 	}
 	return head
@@ -1259,9 +1260,9 @@ type ClaimReady struct {
 func (f ClaimReady) namedIssue() (string, bool) { return f.Issue, true }
 
 // TaskConfirmed is a role's agent taking the work the daemon gave it: a turn of its pending
-// delivery started (supervise's confirm). The workflow changes nothing on it; admission takes it
-// as every other fact, so a root whose wait was held because its architect had not yet taken its
-// task is decided here rather than at the next tick (workflow's ReconcileAwaiting).
+// delivery started (supervise's confirmCarrying). The workflow changes nothing on it; admission
+// takes it as every other fact, so a root whose wait was held because its architect had not yet
+// taken its task is decided here rather than at the next tick (workflow's ReconcileAwaiting).
 type TaskConfirmed struct {
 	Issue      string
 	Role       claim.Role
