@@ -129,21 +129,24 @@ func sendThroughDispatch(t *testing.T, mux http.Handler, target string) (int, st
 // bus.ErrUnacknowledged and bus.ErrStreamFull (bus.sendStored), and a kept role-route send whose
 // keep's publish went unacknowledged reaches the 503 wrapped (keepRoleSend): either may have stored
 // the message, so its 503 carries listenerwire.CodeMaybeStored. So does a send or a topic publish
-// whose first send went unanswered and whose resend was refused while an earlier publish under its
-// id was in process, which publishHeld answers as no stored copy read, and one whose resend the
-// stream answered a duplicate (bus.StoredAck.Resent) whose copy could not be read back: that copy
-// may be this request's own, stored by the first send. The controls are a full stream that sent
-// nothing, a keep that stored nothing, an in-process refusal with no send unanswered, and a first
-// send's duplicate whose copy could not be read, which carry no code.
+// the stream refused as in process under an earlier publish until its request ended, which
+// publishHeld publishes again past each refusal (publishPastInProcess), since the stream may store
+// that earlier publish yet, and one whose resend the stream answered a duplicate
+// (bus.StoredAck.Resent) whose copy could not be read back: that copy may be this request's own,
+// stored by the first send. The controls are a full stream that sent nothing, a keep that stored
+// nothing, and a first send's duplicate whose copy could not be read, which carry no code.
 func TestEveryBusUnavailableAnswerThatMayHaveStoredTheMessageSaysSo(t *testing.T) {
 	unacknowledged := fmt.Errorf("%w: %w", bus.ErrUnacknowledged, errors.New("nats: connection closed"))
 	inProcess := fmt.Errorf("%w: %w", bus.ErrDuplicateInProcess,
 		&natsgo.APIError{Code: 409, ErrorCode: 10158, Description: "duplicate message id is in process"})
-	// held is the error publishHeld answers a publish the stream refused with refusal.
-	held := func(refusal error) error {
+	// inProcessUntilEnded is the error publishHeld answers a publish the stream refuses as in
+	// process on every send until the request's context ends.
+	inProcessUntilEnded := func() error {
 		item := contracts.MessageEnvelope(contracts.Message{Text: "in process"}, "notifications.team.in-process", publishDedupePrefix+uuid.NewString())
-		_, err := publishHeld(context.Background(), nil, func(context.Context, contracts.Envelope) (bus.StoredAck, error) {
-			return bus.StoredAck{}, refusal
+		ctx, cancel := context.WithTimeout(context.Background(), 4*inProcessPause)
+		defer cancel()
+		_, err := publishHeld(ctx, nil, func(context.Context, contracts.Envelope) (bus.StoredAck, error) {
+			return bus.StoredAck{}, inProcess
 		}, &requestRecord{}, requestSender{}, &item)
 		return err
 	}
@@ -164,11 +167,10 @@ func TestEveryBusUnavailableAnswerThatMayHaveStoredTheMessageSaysSo(t *testing.T
 	}{
 		{"an unacknowledged send whose resend met a full stream", fmt.Errorf("%w: %w", bus.ErrUnacknowledged, fmt.Errorf("%w: maximum bytes exceeded", bus.ErrStreamFull)), true},
 		{"a kept role-route send whose keep went unacknowledged", fmt.Errorf("the kept lane of role r did not store the message: %w", fmt.Errorf("keep the role r message on its kept lane under k: %w", unacknowledged)), true},
-		{"an unacknowledged send whose resend was refused in process, answered as no stored copy read", held(fmt.Errorf("%w: %w", bus.ErrUnacknowledged, inProcess)), true},
+		{"a publish refused in process until its request ended", inProcessUntilEnded(), true},
 		{"a resend the stream answered a duplicate whose copy could not be read", unread(true), true},
 		{"control: a full stream that sent nothing", fmt.Errorf("%w: maximum bytes exceeded", bus.ErrStreamFull), false},
 		{"control: a keep that stored nothing", fmt.Errorf("the kept lane of role r did not store the message: %w", errors.New("nats: no responders")), false},
-		{"control: a publish refused in process with no send unanswered", held(inProcess), false},
 		{"control: a first send's duplicate whose copy could not be read", unread(false), false},
 	} {
 		t.Run(row.name, func(t *testing.T) {

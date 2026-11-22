@@ -183,9 +183,7 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 }
 
 // A verdict that names no copy is the stored-copy 503 at once, with Retry-After: 1 and no envelope,
-// recorded stored_copy_unreadable, on each route that meets one: a publish the stream refuses while
-// an earlier one under the same message id is in process (bus.ErrDuplicateInProcess, as the bus
-// names nats-server's 10158), and a role forward the stream acknowledges as a duplicate with no
+// recorded stored_copy_unreadable: a role forward the stream acknowledges as a duplicate with no
 // sequence (bus.ErrDuplicateWithoutSequence, as a forward's Wait names it). The control is a role
 // forward the stream never acknowledges, which is tried again until the send's window ends and
 // answered 504 delivery_failed.
@@ -207,24 +205,6 @@ func TestADuplicateVerdictThatNamesNoCopyAnswers503AtOnce(t *testing.T) {
 			t.Fatalf("%s was recorded %v, want %s", what, outcome, outcomeStoredCopyUnreadable)
 		}
 	}
-
-	t.Run("case: a publish refused while an earlier one under its id is in process", func(t *testing.T) {
-		inProcess := fmt.Errorf("%w: %w", bus.ErrDuplicateInProcess,
-			&natsgo.APIError{Code: 409, ErrorCode: 10158, Description: "duplicate message id is in process"})
-		item := contracts.MessageEnvelope(contracts.Message{Text: "in process"}, "notifications.team.in-process", publishDedupePrefix+uuid.NewString())
-		_, err := publishHeld(context.Background(), nil, func(context.Context, contracts.Envelope) (bus.StoredAck, error) {
-			return bus.StoredAck{}, inProcess
-		}, &requestRecord{}, requestSender{}, &item)
-		var logs strings.Builder
-		record := &requestRecord{logger: logging.NewWithWriter("test", &logs), line: "listener publish", laneKey: "topic", item: &item}
-		recorder := httptest.NewRecorder()
-		record.refuseBusUnavailable(recorder, err)
-		lines := linesIn(logs.String(), "listener publish", nil)
-		if len(lines) != 1 {
-			t.Fatalf("the refusal wrote %d record lines, want one:\n%s", len(lines), logs.String())
-		}
-		requireUnread(t, "a publish in process under an earlier one", recorder.Code, recorder.Header().Get("Retry-After"), recorder.Body.String(), lines[0]["outcome"])
-	})
 
 	rig := newSenderLimitRig(t)
 	rig.limit(60, 10)

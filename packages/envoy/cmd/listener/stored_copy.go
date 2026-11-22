@@ -13,17 +13,17 @@ import (
 
 // errStoredCopyUnread is wrapped by the error of a send, a topic publish or a role forward whose
 // message id the stream already knows when the listener read no stored copy to answer: the copy a
-// duplicate verdict named could not be read (storedCopy), or a send or a topic publish was refused
-// while an earlier publish under the same message id was still in process
-// (bus.ErrDuplicateInProcess), so that no copy is stored yet. A role forward refused that way is
-// tried again as any forward that failed is, and its next answer names the copy (sendToRole). A
-// read's cause is named in the text and not wrapped, so no comparison of a read's error (a denial,
-// a refused subject) can turn the answer into another one: writeBusUnavailable answers it 503 with
-// Retry-After: 1 under storedCopyUnreadablePrefix, whatever the read met. The in-process refusal
-// is wrapped whole, since it is the publish's own answer and may follow a first send nothing
-// answered (bus.ErrUnacknowledged), which the 503 then says with listenerwire.CodeMaybeStored
-// (mayHaveStored). Every error wrapping errStoredCopyUnread is written "<its text>: <reason>", so
-// writeBusUnavailable writes the reason alone after the prefix.
+// duplicate verdict named could not be read (storedCopy). A publish or a role forward the stream
+// refuses while an earlier one under the same message id is still in process
+// (bus.ErrDuplicateInProcess) is no such error: it is made again until the stream names the
+// earlier one's copy (publishPastInProcess, which publishHeld and startRoleForward take), and a
+// request that ends first is the 503 under earlierAttemptInProcessPrefix. A read's cause is named
+// in the text and not wrapped, so no comparison of a read's error (a denial, a refused subject) can
+// turn the answer into another one: writeBusUnavailable answers it 503 with Retry-After: 1 under
+// storedCopyUnreadablePrefix, whatever the read met. A copy that may be the request's own also
+// wraps bus.ErrUnacknowledged (mayBeOwnUnread), which the 503 then says with
+// listenerwire.CodeMaybeStored (mayHaveStored). Every error wrapping errStoredCopyUnread is written
+// "<its text>: <reason>", so writeBusUnavailable writes the reason alone after the prefix.
 var errStoredCopyUnread = errors.New("no stored copy read")
 
 // storedPublish is the publish of an envelope on its own topic that returns the stream's
@@ -96,7 +96,9 @@ func (s requestSender) answer(held contracts.Envelope) contracts.Envelope {
 // holds for it, which it reads through reader, as sender may read it (requestRecord.answerStored).
 // It is the one publish of the send route and of the topic publish, so neither can answer an
 // envelope the stream does not hold: a route answers *item, and after a duplicate verdict *item
-// is the stored copy, not the envelope the route built.
+// is the stored copy, not the envelope the route built. It publishes through publishPastInProcess,
+// so a refusal of the publish as still in process under an earlier one is made again until the
+// stream names that one's copy.
 //
 // A publish the stream stored as a new copy leaves *item as it was, and duplicate false. A
 // duplicate verdict names the copy the stream holds under the same message id, at its sequence
@@ -108,18 +110,15 @@ func (s requestSender) answer(held contracts.Envelope) contracts.Envelope {
 // name the copy this request's first send stored, which carries its own event_id: that copy is
 // this request's, answered with no duplicate as any new copy is.
 //
-// A copy that cannot be read, and a refusal of a publish whose message id is still in process
-// under an earlier one (bus.ErrDuplicateInProcess), are an error wrapping errStoredCopyUnread,
-// with *item untouched, and the charge stays marked by the publish's own answer. A copy that
-// cannot be read after the bus sent the publish again (bus.StoredAck.Resent) may be the one this
-// request's first send stored, so that error is bus.ErrUnacknowledged too (mayBeOwnUnread), and
-// its 503 says maybe_stored as every answer that may have stored the message does (mayHaveStored).
+// A copy that cannot be read is an error wrapping errStoredCopyUnread, with *item untouched, and
+// the charge stays marked by the publish's own answer. A copy that cannot be read after the
+// publish was sent again (bus.StoredAck.Resent: the bus's resend, or publishPastInProcess's after
+// an in-process refusal of a send nothing answered) may be the one this request's first send
+// stored, so that error is bus.ErrUnacknowledged too (mayBeOwnUnread), and its 503 says
+// maybe_stored as every answer that may have stored the message does (mayHaveStored).
 func publishHeld(ctx context.Context, reader storedReader, publish storedPublish, record *requestRecord, sender requestSender, item *contracts.Envelope) (duplicate bool, err error) {
-	ack, err := publish(ctx, *item)
+	ack, err := publishPastInProcess(ctx, func() (bus.StoredAck, error) { return publish(ctx, *item) })
 	record.charge.published(ack, err)
-	if errors.Is(err, bus.ErrDuplicateInProcess) {
-		return false, fmt.Errorf("%w: %w", errStoredCopyUnread, err)
-	}
 	if err != nil || !ack.Duplicate {
 		return false, err
 	}
