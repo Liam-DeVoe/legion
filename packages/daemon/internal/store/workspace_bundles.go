@@ -26,32 +26,20 @@ import (
 // is, so a role relaunched in it must be answered nothing and must leave the attempt for the pod
 // that replaces it. A save with no such pod is refused rather than stored, since the row could
 // not then tell the released pod from its replacement.
+//
+// An empty bundle is a workspace with nothing unpushed. Its save stores nothing and deletes the
+// row the issue holds, whatever saved it, so the next pod never restores stale work.
 func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release int64, b runtime.WorkspaceBundle) error {
-	if issue == "" {
-		return errors.New("a workspace bundle needs its issue")
-	}
 	if release <= 0 {
 		return fmt.Errorf("the workspace bundle of %s needs the release that saved it", issue)
 	}
-	if b.PodUID == "" {
-		return fmt.Errorf("the workspace bundle of %s needs the uid of the pod its work came off", issue)
-	}
-	tips, bookmarks, err := bundleJSON(b)
-	if err != nil {
-		return fmt.Errorf("save the workspace bundle of %s: %w", issue, err)
-	}
-	_, err = s.pool.Exec(ctx, `insert into workspace_bundles (issue, release_id, source_pod_uid, bundle, size_bytes, at, head, tips, bookmarks)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		on conflict (issue) do update set release_id = excluded.release_id, source_pod_uid = excluded.source_pod_uid,
-			bundle = excluded.bundle, size_bytes = excluded.size_bytes, at = excluded.at, head = excluded.head,
-			tips = excluded.tips, bookmarks = excluded.bookmarks,
-			attempt_pod_uid = null, attempt_at = null, attempt_outcome = null`,
-		issue, release, b.PodUID, b.Bundle, b.Size(), b.At, b.Head, tips, bookmarks)
-	if err != nil {
-		return fmt.Errorf("save the workspace bundle of %s: %w", issue, err)
-	}
-	return nil
+	_, err := s.putWorkspaceBundle(ctx, issue, release, false, b)
+	return err
 }
+
+// ErrWorkspaceBundleSpent is a round's save refused because the issue holds a bundle whose one
+// restore attempt is spent (PutRoundWorkspaceBundle).
+var ErrWorkspaceBundleSpent = errors.New("the issue holds a saved bundle whose one restore attempt is spent, the one copy of that work")
 
 // PutRoundWorkspaceBundle saves issue's workspace bundle for the pod that a pod update round is
 // about to replace (internal/daemon's saveHeldWork), and answers the id it saved the bundle
@@ -65,13 +53,34 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 // bundle a release saved.
 //
 // It replaces a bundle that no pod has had its one restore attempt of, as a release's save does.
-// It refuses, and writes nothing, where the issue holds a bundle whose one attempt is spent: such
-// a bundle is the one copy of earlier work, kept for a person to recover, and the idle rule
-// releases no pod of such an issue for the same reason (workspaceBundleUnrestored). The bundle
-// names the pod its work came off, as PutWorkspaceBundle requires.
+// It refuses with ErrWorkspaceBundleSpent, and writes nothing, where the issue holds a bundle
+// whose one attempt is spent: such a bundle is the one copy of earlier work, kept for a person to
+// recover, and the idle rule releases no pod of such an issue for the same reason
+// (workspaceBundleUnrestored). The bundle names the pod its work came off, as PutWorkspaceBundle
+// requires.
+//
+// An empty bundle is a workspace with nothing unpushed. Its save stores nothing, answers the id 0,
+// and deletes a bundle that no pod has had its restore attempt of, as a release's empty save
+// does. A bundle whose attempt is spent stays.
 func (s *Store) PutRoundWorkspaceBundle(ctx context.Context, issue string, b runtime.WorkspaceBundle) (int64, error) {
+	return s.putWorkspaceBundle(ctx, issue, 0, true, b)
+}
+
+// putWorkspaceBundle is the one write of issue's bundle that both saves make (PutWorkspaceBundle,
+// PutRoundWorkspaceBundle), and it answers the id it saved the bundle under. release is the id
+// source: the release that saves the bundle, or 0 for an id drawn from the sequence of
+// issue_releases.id. unspent is the spent-attempt guard: with it, the write leaves a row whose one
+// restore attempt is spent as it is, and a bundle with work refuses with ErrWorkspaceBundleSpent.
+// An empty bundle deletes the row the guard lets it write, and answers the id 0.
+func (s *Store) putWorkspaceBundle(ctx context.Context, issue string, release int64, unspent bool, b runtime.WorkspaceBundle) (int64, error) {
 	if issue == "" {
 		return 0, errors.New("a workspace bundle needs its issue")
+	}
+	if b.Size() == 0 {
+		if _, err := s.pool.Exec(ctx, `delete from workspace_bundles where issue = $1 and (not $2 or attempt_pod_uid is null)`, issue, unspent); err != nil {
+			return 0, fmt.Errorf("delete the workspace bundle of %s: %w", issue, err)
+		}
+		return 0, nil
 	}
 	if b.PodUID == "" {
 		return 0, fmt.Errorf("the workspace bundle of %s needs the uid of the pod its work came off", issue)
@@ -82,16 +91,16 @@ func (s *Store) PutRoundWorkspaceBundle(ctx context.Context, issue string, b run
 	}
 	var id int64
 	err = s.pool.QueryRow(ctx, `insert into workspace_bundles (issue, release_id, source_pod_uid, bundle, size_bytes, at, head, tips, bookmarks)
-		values ($1, nextval(pg_get_serial_sequence('issue_releases', 'id')), $2, $3, $4, $5, $6, $7, $8)
+		values ($1, coalesce(nullif($2::bigint, 0), nextval(pg_get_serial_sequence('issue_releases', 'id'))), $3, $4, $5, $6, $7, $8, $9)
 		on conflict (issue) do update set release_id = excluded.release_id, source_pod_uid = excluded.source_pod_uid,
 			bundle = excluded.bundle, size_bytes = excluded.size_bytes, at = excluded.at, head = excluded.head,
 			tips = excluded.tips, bookmarks = excluded.bookmarks,
 			attempt_pod_uid = null, attempt_at = null, attempt_outcome = null
-		where workspace_bundles.attempt_pod_uid is null
+		where not $10 or workspace_bundles.attempt_pod_uid is null
 		returning release_id`,
-		issue, b.PodUID, b.Bundle, b.Size(), b.At, b.Head, tips, bookmarks).Scan(&id)
+		issue, release, b.PodUID, b.Bundle, b.Size(), b.At, b.Head, tips, bookmarks, unspent).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, fmt.Errorf("save the workspace bundle of %s: the issue holds a saved bundle whose one restore attempt is spent, the one copy of that work", issue)
+		return 0, fmt.Errorf("save the workspace bundle of %s: %w", issue, ErrWorkspaceBundleSpent)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("save the workspace bundle of %s: %w", issue, err)
@@ -200,7 +209,9 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, project, issu
 // WorkspaceBundleSize is the size in bytes of the bundle issue's last release saved, and false
 // when the issue has none. The release's teardown wants the size alone, and a bundle runs to
 // tens of megabytes: reading the row's size_bytes rather than its bundle keeps those bytes out
-// of the pool and out of the daemon's memory.
+// of the pool and out of the daemon's memory. A pod update round reads whether the issue holds a
+// bundle, so that no earlier bundle outlasts the round's replacement (internal/daemon's
+// saveHeldWork).
 func (s *Store) WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, error) {
 	var size int
 	err := s.pool.QueryRow(ctx, `select size_bytes from workspace_bundles where issue = $1`, issue).Scan(&size)
@@ -213,10 +224,11 @@ func (s *Store) WorkspaceBundleSize(ctx context.Context, issue string) (int, boo
 	return size, true, nil
 }
 
-// DeleteWorkspaceBundle drops issue's bundle whatever release saved it: the release saved a
-// workspace with nothing unpushed, or the issue's work is over. A cancelled release deletes its
-// own bundle in its cancel's transaction (CancelIssueRelease), not here. Deleting one the table
-// does not hold is success, so a retried delete finishes.
+// DeleteWorkspaceBundle drops issue's bundle whatever release saved it, once the issue's work is
+// over. A release that saved a workspace with nothing unpushed deletes the bundle through its save
+// (PutWorkspaceBundle). A cancelled release deletes its own bundle in its cancel's transaction
+// (CancelIssueRelease), not here. Deleting one the table does not hold is success, so a retried
+// delete finishes.
 func (s *Store) DeleteWorkspaceBundle(ctx context.Context, issue string) error {
 	if _, err := s.pool.Exec(ctx, `delete from workspace_bundles where issue = $1`, issue); err != nil {
 		return fmt.Errorf("delete the workspace bundle of %s: %w", issue, err)

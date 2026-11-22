@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"errors"
 	"maps"
 	"slices"
 	"testing"
@@ -285,6 +286,58 @@ func TestARoundSavesItsWorkspaceBundleUnderAnIdNoReleaseHas(t *testing.T) {
 	noPod.PodUID = ""
 	if _, err := s.PutRoundWorkspaceBundle(ctx, issue, noPod); err == nil {
 		t.Fatal("a save without the pod its work came off was accepted")
+	}
+}
+
+// An empty bundle is a workspace with nothing unpushed, so its save stores nothing and deletes the
+// bundle it would replace. A round's empty save deletes a bundle that no pod has had its restore
+// attempt of, and leaves a spent one, which is the one copy of earlier work. A round's save with
+// work over a spent bundle is refused with ErrWorkspaceBundleSpent. A release's empty save deletes
+// the issue's bundle, whatever saved it.
+func TestAnEmptySaveDeletesTheBundleItWouldReplace(t *testing.T) {
+	ctx := context.Background()
+	s := bundleStore(t)
+	at := time.Date(2026, 11, 22, 9, 30, 0, 0, time.UTC)
+	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK earlier work"), Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: at, PodUID: releasedPodUID}
+	held := func() bool {
+		t.Helper()
+		_, held, err := s.WorkspaceBundleSize(ctx, "INFRA-945")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return held
+	}
+
+	if _, err := s.PutRoundWorkspaceBundle(ctx, "INFRA-945", saved); err != nil {
+		t.Fatal(err)
+	}
+	if id, err := s.PutRoundWorkspaceBundle(ctx, "INFRA-945", runtime.WorkspaceBundle{}); err != nil || id != 0 {
+		t.Fatalf("a round's empty save answered the id %d, %v; want 0 and no error", id, err)
+	}
+	if held() {
+		t.Fatal("a round's empty save left a bundle that no pod had its restore attempt of")
+	}
+
+	if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 11, saved); err != nil {
+		t.Fatal(err)
+	}
+	if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, bundleProject, "INFRA-945", "pod-uid-1", at.Add(time.Minute)); err != nil || take != runtime.WorkspaceBundleSend {
+		t.Fatalf("the next pod was answered %v, %v; want the bundle sent", take, err)
+	}
+	if id, err := s.PutRoundWorkspaceBundle(ctx, "INFRA-945", runtime.WorkspaceBundle{}); err != nil || id != 0 {
+		t.Fatalf("a round's empty save over a spent bundle answered the id %d, %v; want 0 and no error", id, err)
+	}
+	if !held() {
+		t.Fatal("a round's empty save deleted a bundle whose one restore attempt is spent")
+	}
+	if _, err := s.PutRoundWorkspaceBundle(ctx, "INFRA-945", saved); !errors.Is(err, ErrWorkspaceBundleSpent) {
+		t.Fatalf("a round's save over a spent bundle answered %v, want ErrWorkspaceBundleSpent", err)
+	}
+	if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 12, runtime.WorkspaceBundle{}); err != nil {
+		t.Fatal(err)
+	}
+	if held() {
+		t.Fatal("a release's empty save left the issue's bundle")
 	}
 }
 

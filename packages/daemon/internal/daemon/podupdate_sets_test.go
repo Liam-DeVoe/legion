@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -340,9 +339,10 @@ func TestEveryClaimShapeOfARoleThePauseOwesALaunchIsReadByOneRule(t *testing.T) 
 		{state: supervise.StateRetired},
 	}
 
-	// keepsForThePause is whether a reading of the pod keeps it for the claim's owed launch.
-	keepsForThePause := func(keep podKeep, why string) bool {
-		return keep != podFree && strings.Contains(why, fmt.Sprintf("owes the %s a launch", claim.RoleImplementer))
+	// keepsForThePause is whether a reading of the pod keeps it for the claim's owed launch. The
+	// claim is the one role the pause owes a launch, so the typed hold names it.
+	keepsForThePause := func(keep podKeep, _ string) bool {
+		return keep == keptForOwedLaunch
 	}
 	isClaim := func(of supervise.Claim) bool { return of.Token == token }
 	for _, row := range rows {

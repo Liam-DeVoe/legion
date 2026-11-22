@@ -6755,15 +6755,22 @@ The next pod of the issue restores the bundle before any role starts, as it rest
 The replacement's line names the save (`workspaceBundleSave`, `workspaceBundleBytes`), and the message on the issue says that the next pod restores the work.
 The daemon saves the bundle on a kept volume too: the replacement can mark the volume for a reset, and the next launch deletes a Sandbox whose disk shape changed.
 Where the volume stays, the next pod drops the bundle, because the volume holds the work.
-A workspace with no unpushed work gives an empty bundle, and the daemon saves nothing.
+A workspace with no unpushed work gives an empty bundle.
+The daemon then stores nothing, and it deletes a stored bundle that no pod has tried to restore, as an idle release deletes it.
+Where the round passed over no claim that the work hold stopped but the issue has a stored bundle, the replacement saves too.
+A daemon restart or a failed `ReplacePod` can leave an earlier save of the round, and the hold can end before the next sweep.
+The new save replaces that bundle with the workspace as it is now, or deletes it where the workspace holds no unpushed work, so the next pod restores no earlier work.
+A release's bundle that is still in flight on that pod is replaced the same way, which is safe: the new save is of the same workspace, taken later.
+A bundle whose one restore attempt is spent stays, since no pod is sent it again, and the round replaces the pod.
 A save that fails holds the replacement: nothing is replaced, the round stays open, and the next sweep saves again.
-A bundle above 40 MiB is a save that fails, and so is a save over a bundle whose one restore attempt is spent, since that bundle is the one copy of earlier work.
-The daemon logs `supervise: the issue workspace of a claim the work hold stopped could not be saved before this update round's replacement; nothing was replaced and the round stays open`, with the issue, the held claims and the error.
+A bundle above 40 MiB is a save that fails, and so is a save for a held claim over a bundle whose one restore attempt is spent, since that bundle is the one copy of earlier work.
+The daemon logs `supervise: the issue workspace could not be saved as a bundle before this update round's replacement; nothing was replaced and the round stays open`, with the issue, the held claims and the error.
 One sweep interval bounds each save.
 A save that keeps failing holds the round past its bound, and the operator's side is told once, at the bound, as for a replacement that the runtime refused.
+A hold stop that lands after the save makes the last word refuse the replacement, since no save holds the work of that claim (`replacementDue`).
 A replacement that the last word refuses deletes the bundle that it saved, and the next sweep saves again.
 Only a role process can build the bundle, so the round does not replace a pod that holds a claim the work hold stopped while no role process runs in it, as an idle release keeps a pod whose bundle it cannot build.
-Neither the replacement by issue nor a launch into the pod replaces it (`roundPodEnds`, `heldWorkKeepsPod`): the round holds the replacement as a failed save holds it, with the same line, and tells the operator's side once, at the bound.
+Neither the replacement by issue nor a launch into the pod replaces it (`roundPodEnds`, `replacementByIssue`): the round holds the replacement as a failed save holds it, with the same line, and tells the operator's side once, at the bound.
 The round still asks the held claim nothing and waits for no answer of it.
 It goes on once a role process runs in the pod, often the architect's, since the hold stops no architect: a launch into the pod keeps the pod, and the round replaces it through that process after the save.
 It goes on too once the hold ends and the claim is no longer stopped by the hold.

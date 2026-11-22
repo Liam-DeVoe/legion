@@ -3573,13 +3573,12 @@ func (r *outbox) podDeleted(ctx context.Context, issue, why string) error {
 // bundleIssueWorkspace is the first act of an idle pod's release: it asks the shim of the role
 // the release named — a process still running in the pod, because this row runs before the
 // `release` rows that stop them — for the git bundle of the unpushed work of the workspace every
-// role of the issue shares, and saves it in the daemon's own database. Only a shim can build it:
-// it runs the `jj` of the workspace it already works in, and it dies with its role's process.
+// role of the issue shares, and saves it in the daemon's own database (issueWorkspaceBundle).
 //
 // A bundle that cannot be built, and one above runtime.MaxWorkspaceBundleBytes, stop the release:
 // the pod stays, nothing having been stopped yet, and the work a role has not pushed is kept at
-// the cost of a pod. A workspace with nothing unpushed bundles to nothing, and the row the
-// previous release stored goes with it, so the next pod never restores stale work.
+// the cost of a pod. A workspace with nothing unpushed bundles to nothing, and its save deletes
+// the row the previous release stored, so the next pod never restores stale work.
 //
 // A save of a release that is over stores nothing: the bundle of the issue belongs to whichever
 // release the store's mark names, never to a row of one that was cancelled and is still on the
@@ -3608,23 +3607,13 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 		hold, why := releaseHold(decision.Cause)
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
 	}
-	bundler, ok := r.supervisor.deps.Runtime.(runtime.WorkspaceBundler)
-	if !ok {
-		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, "the runtime bundles no workspace")
-	}
-	bundle, err := bundler.BundleWorkspace(ctx, row.Issue, payload.Role)
-	if err != nil {
+	bundle, err := issueWorkspaceBundle(ctx, r.supervisor.deps.Runtime, row.Issue, payload.Role)
+	var tooLarge workspaceBundleTooLarge
+	switch {
+	case errors.As(err, &tooLarge):
+		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleTooLarge, err.Error())
+	case err != nil:
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
-	}
-	switch size := bundle.Size(); {
-	case size > runtime.MaxWorkspaceBundleBytes:
-		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleTooLarge,
-			fmt.Sprintf("the workspace's unpushed work is %d bytes, over the %d a release carries", size, runtime.MaxWorkspaceBundleBytes))
-	case size == 0:
-		if err := r.trees.DeleteWorkspaceBundle(ctx, row.Issue); err != nil {
-			return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
-		}
-		return nil
 	}
 	// The bundle is stored under the release that took it, so the restore of the pod that
 	// replaces this one names the release whose work it put back (store.PutWorkspaceBundle).
@@ -3632,6 +3621,44 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
 	}
 	return nil
+}
+
+// errNoWorkspaceBundler is the build of a bundle on a runtime that bundles no workspace
+// (issueWorkspaceBundle).
+var errNoWorkspaceBundler = errors.New("the runtime bundles no workspace")
+
+// workspaceBundleTooLarge is the size of a bundle above runtime.MaxWorkspaceBundleBytes, which no
+// save stores (issueWorkspaceBundle).
+type workspaceBundleTooLarge int
+
+func (size workspaceBundleTooLarge) Error() string {
+	return fmt.Sprintf("the workspace's unpushed work is %d bytes, over the %d a bundle carries", int(size), runtime.MaxWorkspaceBundleBytes)
+}
+
+// issueWorkspaceBundle is the one build of the bundle of issue's workspace. An idle release's save
+// makes it (bundleIssueWorkspace), and so does a pod update round's save (supervision's
+// saveHeldWork), each before the pod's disk goes. The shim of role builds the bundle
+// (runtime.WorkspaceBundler): it runs the `jj` of the workspace it already works in, and it dies
+// with its role's process, so only a process in the pod can build it.
+//
+// It answers errNoWorkspaceBundler where rt bundles no workspace, and workspaceBundleTooLarge for
+// a bundle above runtime.MaxWorkspaceBundleBytes. An empty bundle is a workspace with nothing
+// unpushed. Each save stores an empty bundle as such: the store deletes the bundle the issue
+// holds, so the next pod never restores earlier work (store.PutWorkspaceBundle,
+// store.PutRoundWorkspaceBundle).
+func issueWorkspaceBundle(ctx context.Context, rt runtime.Runtime, issue string, role claim.Role) (runtime.WorkspaceBundle, error) {
+	bundler, ok := rt.(runtime.WorkspaceBundler)
+	if !ok {
+		return runtime.WorkspaceBundle{}, errNoWorkspaceBundler
+	}
+	bundle, err := bundler.BundleWorkspace(ctx, issue, role)
+	if err != nil {
+		return runtime.WorkspaceBundle{}, err
+	}
+	if size := bundle.Size(); size > runtime.MaxWorkspaceBundleBytes {
+		return runtime.WorkspaceBundle{}, workspaceBundleTooLarge(size)
+	}
+	return bundle, nil
 }
 
 // releaseIssue is the last act of an idle pod's release, run once the save has stored the

@@ -315,9 +315,9 @@ func TestWorkHoldAnUpdateRoundPassesOverAClaimTheHoldStopped(t *testing.T) {
 	}
 }
 
-// heldWorkUnsavedLine is the line of a replacement that a save of the held claim's work held back
-// (saveHeldWork).
-const heldWorkUnsavedLine = "supervise: the issue workspace of a claim the work hold stopped could not be saved before this update round's replacement; nothing was replaced and the round stays open"
+// heldWorkUnsavedLine is the line of a replacement that a save of the issue workspace held back
+// (workspaceNotSaved).
+const heldWorkUnsavedLine = "supervise: the issue workspace could not be saved as a bundle before this update round's replacement; nothing was replaced and the round stays open"
 
 // bundlingRuntime is the pod-update rig's runtime with the workspace bundle that a role's shim
 // builds (runtime.WorkspaceBundler). It asks the role's agent connection, as the Sandbox runtime
@@ -331,6 +331,9 @@ type bundlingRuntime struct {
 	// savedAtReplace is, for each replacement, the id of the save of the issue's workspace bundle
 	// the store held then, 0 for none.
 	savedAtReplace []int64
+	// failNext is the error the next replacement fails with before it reaches the runtime, nil for
+	// none (failNextReplacement).
+	failNext error
 }
 
 func (b *bundlingRuntime) BundleWorkspace(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceBundle, error) {
@@ -348,7 +351,12 @@ func (b *bundlingRuntime) ReplacePod(ctx context.Context, k runtime.Known, due f
 	}
 	b.mu.Lock()
 	b.savedAtReplace = append(b.savedAtReplace, release)
+	fail := b.failNext
+	b.failNext = nil
 	b.mu.Unlock()
+	if fail != nil {
+		return fail
+	}
 	return b.Runtime.ReplacePod(ctx, k, due)
 }
 
@@ -357,6 +365,15 @@ func (b *bundlingRuntime) replacedWith() []int64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return slices.Clone(b.savedAtReplace)
+}
+
+// failNextReplacement makes the next replacement fail with err before it reaches the runtime: a
+// ReplacePod that fails in another way than the last word's refusal, as an API call that does not
+// reach the cluster fails. It asks no last word, so nothing deletes the save made for it.
+func (b *bundlingRuntime) failNextReplacement(err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.failNext = err
 }
 
 // Spec step 6 under `work`: the daemon keeps the pod of a claim the work hold stopped, so that the
@@ -536,6 +553,321 @@ func TestWorkHoldAnUpdateRoundKeepsAPodWithNoProcessToSaveTheHeldWork(t *testing
 	}
 	if c := rig.claimOf(held); c.State != supervise.StateSuspended || c.SuspendedBy != supervise.SuspendedByHold {
 		t.Fatalf("the %s is %s, suspended by %q, after the round; want it still held by the work hold", held, c.State, c.SuspendedBy)
+	}
+}
+
+var (
+	// heldWorkSave is the bundle of the planner's unpushed work that a role's shim builds in the
+	// rows below.
+	heldWorkSave = runtime.WorkspaceBundle{Bundle: []byte("PACK the planner's unpushed work"), Head: passedOverHead,
+		Tips: []string{passedOverCommit}, At: podUpdateStart, PodUID: podUpdatePod}
+	// nothingUnpushed is the bundle of a workspace with no unpushed work: it carries no bytes.
+	nothingUnpushed = runtime.WorkspaceBundle{Head: passedOverHead, At: podUpdateStart.Add(time.Minute), PodUID: podUpdatePod}
+)
+
+// bundling makes the rig's runtime a bundlingRuntime, and scripts the read of the issue's
+// workspace to find one unpushed commit. A rig that a restart made needs its own.
+func (r *podUpdateRig) bundling() *bundlingRuntime {
+	bundler := &bundlingRuntime{Runtime: r.rt, rig: r}
+	r.s.runtime = bundler
+	r.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
+	return bundler
+}
+
+// bundlesTo makes the shim of every role that has a process connection bundle b from now on.
+func (r *podUpdateRig) bundlesTo(b runtime.WorkspaceBundle) {
+	for _, conn := range r.workers {
+		conn.SetWorkspaceBundle(b)
+	}
+}
+
+// nextPodTakes is what the issue's next pod is answered when it asks for the saved bundle: a pod
+// created an hour after the round opened, after every save of these rows. The ask spends the
+// bundle's one restore attempt.
+func (r *podUpdateRig) nextPodTakes() (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake) {
+	r.t.Helper()
+	restored, how, err := savedWorkspaceBundle(r.st, podUpdateProject)(r.ctx, podUpdateIssue, podUpdateReplacementPod, podUpdateStart.Add(time.Hour))
+	if err != nil {
+		r.t.Fatalf("the next pod asked for the saved bundle: %v", err)
+	}
+	return restored, how
+}
+
+// heldWorkRound carries the round of TestWorkHoldAnUpdateRoundSavesTheWorkOfAClaimTheHoldStopped
+// to its replacement: two ready workers and the planner, which the work hold stopped. Each shim
+// bundles the planner's work (heldWorkSave). The round asks both workers, and both answer.
+func heldWorkRound(t *testing.T) (*podUpdateRig, *bundlingRuntime) {
+	t.Helper()
+	rig := newPodUpdateRig(t,
+		readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester),
+		suspendedRole(claim.RolePlanner, supervise.SuspendedByHold),
+	)
+	bundler := rig.bundling()
+	rig.bundlesTo(heldWorkSave)
+	rig.drifts(podUpdateDrift)
+	rig.tick()
+	for _, role := range passedOverWorkers {
+		rig.awaitAsked(role, podUpdateRound)
+	}
+	rig.awaitRound(claim.RolePlanner, podUpdateRound)
+	for _, role := range passedOverWorkers {
+		rig.signal(role, "a1b2c3d")
+	}
+	rig.settleAll()
+	return rig, bundler
+}
+
+// refuseBundleDeletes makes the store refuse each delete of a workspace bundle, as a database
+// that fails the statement does, until allow runs.
+func refuseBundleDeletes(t *testing.T, rig *podUpdateRig) (allow func()) {
+	t.Helper()
+	for _, statement := range []string{
+		`create function refuse_bundle_delete() returns trigger language plpgsql as $$
+			begin raise exception 'the test refuses the delete of the bundle of %', old.issue; end $$`,
+		`create trigger refuse_bundle_delete before delete on workspace_bundles for each row execute function refuse_bundle_delete()`,
+	} {
+		if _, err := rig.pool.Exec(rig.ctx, statement); err != nil {
+			t.Fatalf("make the store refuse the delete of a bundle: %v", err)
+		}
+	}
+	return func() {
+		t.Helper()
+		if _, err := rig.pool.Exec(rig.ctx, `drop trigger refuse_bundle_delete on workspace_bundles`); err != nil {
+			t.Fatalf("let the store delete bundles again: %v", err)
+		}
+	}
+}
+
+// dropFailedLine is the line of a refused replacement whose delete of its own save failed
+// (dropRoundSave).
+const dropFailedLine = "supervise: the bundle saved for an update round's replacement that was not made could not be deleted"
+
+// A replacement that the last word refuses deletes its save (dropRoundSave). Where that delete
+// fails, the save stays in the store. The next replacement finds a workspace with nothing
+// unpushed, because the work was pushed since. Its save is empty, and an empty save deletes the
+// bundle that no pod has had its restore attempt of, as an idle release's empty save does. So the
+// next pod restores nothing over the workspace that moved on. A daemon restart between the failed
+// delete and the empty save changes nothing, since the store alone holds the bundle.
+func TestWorkHoldAnEmptySaveDeletesTheBundleARefusedReplacementLeft(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		name := "at the next sweep"
+		if restart {
+			name = "after a daemon restart"
+		}
+		t.Run(name, func(t *testing.T) {
+			rig, bundler := heldWorkRound(t)
+			// A turn of the implementer starts while the runtime waits for the pod's launch turn,
+			// so the last word refuses the replacement. The store refuses the delete of the save.
+			token := rig.tokens[claim.RoleImplementer]
+			allow := refuseBundleDeletes(t, rig)
+			rig.rt.HoldReplacePod(func() {
+				rig.rt.HoldReplacePod(nil)
+				rig.handle(claim.RoleImplementer, supervise.StreamTurnStart{Claim: token})
+			})
+			testwait.Eventually(t, "a sweep to reach the replacement and the last word to refuse it", func() bool {
+				rig.tick()
+				return len(rig.notDue()) > 0
+			})
+			stale := bundler.replacedWith()
+			if len(stale) != 1 || stale[0] <= 0 || len(rig.replacements()) != 0 {
+				t.Fatalf("the store held the saves %v at the refused replacement, and the pod was replaced %d times; want one save and no replacement",
+					stale, len(rig.replacements()))
+			}
+			if lines := loggedLines(t, rig.logs.String(), dropFailedLine); len(lines) != 1 {
+				t.Fatalf("the failed delete of the save was logged %d times, want once", len(lines))
+			}
+			allow()
+			rig.handle(claim.RoleImplementer, supervise.StreamTurnEnd{Claim: token})
+			rig.reportsNothingRunning(claim.RoleImplementer)
+			if restart {
+				rig = rig.restart()
+				rig.drifts(podUpdateDrift)
+				bundler = rig.bundling()
+			}
+			rig.bundlesTo(nothingUnpushed)
+
+			rig.awaitReplacement(1, "once the turn ended")
+			if at := bundler.replacedWith(); at[len(at)-1] != 0 {
+				t.Errorf("when the pod was replaced the store held the save %d, want none: the empty save deletes the save that the refused replacement left",
+					at[len(at)-1])
+			}
+			if restored, how := rig.nextPodTakes(); how != runtime.WorkspaceBundleNone {
+				t.Fatalf("the next pod was answered %v with the bundle at %s, want nothing: that work was pushed since, and a restore moves the issue's bookmarks back over it",
+					how, restored.Head)
+			}
+		})
+	}
+}
+
+// A hold stop can land between the sweep's reading and the last word. The sweep read no claim
+// that the hold stopped, so the replacement saved nothing, and the claim that the stop lands on
+// leaves its unpushed work on the pod's disk. The last word reads the held claims again under the
+// pod's launch turn and refuses the replacement (replacementDue). The next sweep saves the work of
+// that claim and replaces the pod, and the next pod restores the work.
+//
+// Here the tester has not answered when the round's bound comes, so the bound lets the
+// replacement through, and the hold stops the tester while the runtime waits for the launch turn.
+func TestWorkHoldAnUpdateRoundSavesTheWorkOfAClaimTheHoldStopsBeforeTheLastWord(t *testing.T) {
+	const stopped = claim.RoleTester
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(stopped))
+	bundler := rig.bundling()
+	rig.bundlesTo(heldWorkSave)
+	// The tree's record of the hold, as the close writes it (workflow's workHoldClose). The hold's
+	// stop reads it, and a stop that finds no record makes no stop (supervise's readHoldForStop).
+	if err := pgx.BeginFunc(rig.ctx, rig.pool, func(tx pgx.Tx) error {
+		return rig.records.PutWorkHold(rig.ctx, tx, record.WorkHold{Project: "LEGION", Tree: podUpdateIssue, RootGeneration: 1,
+			Step: record.DesignStepSpec, ArtifactID: "artifact-484", Version: 2, ClosedAt: rig.clock.Now()})
+	}); err != nil {
+		t.Fatalf("record the work hold of %s: %v", podUpdateIssue, err)
+	}
+	rig.drifts(podUpdateDrift)
+
+	rig.tick()
+	for _, role := range passedOverWorkers {
+		rig.awaitAsked(role, podUpdateRound)
+	}
+	rig.signal(claim.RoleImplementer, "a1b2c3d")
+	rig.settleAll()
+	rig.clockAt(podUpdateBound)
+	rig.rt.HoldReplacePod(func() {
+		rig.rt.HoldReplacePod(nil)
+		rig.handle(stopped, supervise.RequestSuspend{Claim: rig.tokens[stopped], By: supervise.SuspendedByHold,
+			Reason: "the design gate of LEGION-208 closed", Deadline: rig.clock.Now().Add(2 * time.Minute)})
+	})
+	testwait.Eventually(t, "a sweep past the bound to reach the replacement", func() bool {
+		rig.tick()
+		return len(rig.notDue())+len(rig.replacements()) > 0
+	})
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times with the work of the %s unsaved: the hold stopped it after the sweep's save", len(calls), stopped)
+	}
+	if c := rig.claimOf(stopped); c.State != supervise.StateSuspended || !c.WorkHeld() {
+		t.Fatalf("the %s is %s, suspended by %q; want it stopped by the work hold", stopped, c.State, c.SuspendedBy)
+	}
+
+	rig.awaitReplacement(1, "once the stopped claim's work was saved")
+	at := bundler.replacedWith()
+	if len(at) != 2 || at[0] != 0 || at[1] <= 0 {
+		t.Fatalf("at the two replacements the store held the saves %v, want none at the refused one and the round's save at the one made", at)
+	}
+	restored, how := rig.nextPodTakes()
+	if how != runtime.WorkspaceBundleSend || !bytes.Equal(restored.Bundle, heldWorkSave.Bundle) || restored.Release != at[1] {
+		t.Fatalf("the next pod was answered %v with %q of save %d, want %q of save %d", how, restored.Bundle, restored.Release, heldWorkSave.Bundle, at[1])
+	}
+}
+
+// A daemon restart, or a ReplacePod that fails in another way than the last word's refusal, after
+// the round saved the planner's work leaves that save in the store: only a refusal of the last
+// word deletes it (dropRoundSave). The hold then ends, and the planner runs in the pod again and
+// answers the round. So the next sweep holds no claim that the hold stopped, and the earlier save
+// still stands. The replacement saves again (saveHeldWork): a workspace with nothing unpushed
+// deletes the earlier save, and a workspace with work replaces it with the workspace as it is now.
+// Either way the next pod restores no earlier work over the work done since.
+func TestWorkHoldAnUpdateRoundLeavesNoEarlierSaveForTheNextPod(t *testing.T) {
+	newer := runtime.WorkspaceBundle{Bundle: []byte("PACK the work done since the first save"), Head: passedOverCommit,
+		At: podUpdateStart.Add(time.Minute), PodUID: podUpdatePod}
+	for _, tc := range []struct {
+		name    string
+		restart bool
+		// now is the bundle of the workspace at the replacement after the hold ended.
+		now runtime.WorkspaceBundle
+	}{
+		{name: "a daemon restart, then nothing unpushed", restart: true, now: nothingUnpushed},
+		{name: "a ReplacePod that failed, then new work", now: newer},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const held = claim.RolePlanner
+			rig, bundler := heldWorkRound(t)
+			bundler.failNextReplacement(errors.New("the Kubernetes API did not answer"))
+			testwait.Eventually(t, "a sweep to save the planner's work and reach the replacement", func() bool {
+				rig.tick()
+				return len(bundler.replacedWith()) > 0
+			})
+			earlier := bundler.replacedWith()
+			if len(earlier) != 1 || earlier[0] <= 0 || len(rig.replacements()) != 0 {
+				t.Fatalf("the store held the saves %v at the failed replacement, and the pod was replaced %d times; want one save and no replacement",
+					earlier, len(rig.replacements()))
+			}
+			if tc.restart {
+				rig = rig.restart()
+				rig.drifts(podUpdateDrift)
+				bundler = rig.bundling()
+			}
+
+			// The hold ends: the planner starts again in the round's own pod, and the round asks it.
+			rig.intoRoundPod(held)
+			m, ok := rig.sup.Machine(rig.tokens[held])
+			if !ok {
+				t.Fatalf("the %s is not supervised", held)
+			}
+			if started, err := m.EndHold(rig.ctx, nil); err != nil || !started {
+				t.Fatalf("the end of the hold started the %s: %t, %v; want it started", held, started, err)
+			}
+			rig.registerInto(held, podUpdatePod)
+			rig.bundlesTo(tc.now)
+			rig.awaitAsked(held, podUpdateRound)
+			rig.signal(held, "a1b2c3d")
+			rig.settleAll()
+
+			rig.awaitReplacement(1, "once the planner answered")
+			at := bundler.replacedWith()
+			last := at[len(at)-1]
+			restored, how := rig.nextPodTakes()
+			if tc.now.Size() == 0 {
+				if last != 0 || how != runtime.WorkspaceBundleNone {
+					t.Fatalf("the store held the save %d at the replacement and the next pod was answered %v, want no save and nothing: the earlier save %d is older than the workspace",
+						last, how, earlier[0])
+				}
+				return
+			}
+			if last <= earlier[0] || how != runtime.WorkspaceBundleSend || !bytes.Equal(restored.Bundle, tc.now.Bundle) || restored.Release != last {
+				t.Fatalf("the store held the save %d at the replacement and the next pod was answered %v with %q of save %d; want %q of a save after %d",
+					last, how, restored.Bundle, restored.Release, tc.now.Bundle, earlier[0])
+			}
+		})
+	}
+}
+
+// A bundle whose one restore attempt is spent is never sent to a pod again, so no earlier work can
+// come of it, and it stays for a person to recover. A round that passed over no claim the hold
+// stopped replaces the pod over such a bundle as it replaces a pod with no bundle, though the
+// workspace holds unpushed work. The store refuses the save over the spent bundle
+// (store.ErrWorkspaceBundleSpent), and with no held claim that refusal holds nothing.
+func TestWorkHoldAnUpdateRoundReplacesThePodOverASpentBundle(t *testing.T) {
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	rig.bundling()
+	rig.bundlesTo(heldWorkSave)
+	spent := runtime.WorkspaceBundle{Bundle: []byte("PACK the work of an earlier release"), Head: passedOverCommit,
+		At: podUpdateStart.Add(-time.Hour), PodUID: "pod-of-an-earlier-release"}
+	if err := rig.st.PutWorkspaceBundle(rig.ctx, podUpdateIssue, 7, spent); err != nil {
+		t.Fatalf("save the earlier release's bundle: %v", err)
+	}
+	// The round's pod took that bundle for its one restore, and no report of the restore came.
+	take := savedWorkspaceBundle(rig.st, podUpdateProject)
+	if _, how, err := take(rig.ctx, podUpdateIssue, podUpdatePod, podUpdateStart.Add(-30*time.Minute)); err != nil || how != runtime.WorkspaceBundleSend {
+		t.Fatalf("the round's pod asked for the earlier bundle and was answered %v, %v; want it sent", how, err)
+	}
+	rig.drifts(podUpdateDrift)
+
+	rig.tick()
+	for _, role := range passedOverWorkers {
+		rig.awaitAsked(role, podUpdateRound)
+	}
+	for _, role := range passedOverWorkers {
+		rig.signal(role, "a1b2c3d")
+	}
+	rig.settleAll()
+	replaced := rig.awaitReplacement(1, "over the spent bundle")
+
+	through, _ := replaced[0].Pod.Claim.Role()
+	if asked := rig.workers[through].Bundlings(); len(asked) == 0 {
+		t.Errorf("the %s's shim was asked to bundle nothing, want the workspace bundled over the bundle that stands", through)
+	}
+	if size, held, err := rig.st.WorkspaceBundleSize(rig.ctx, podUpdateIssue); err != nil || !held || size != len(spent.Bundle) {
+		t.Errorf("after the replacement the store holds %d bytes (held=%t, %v), want the %d of the spent bundle kept", size, held, err, len(spent.Bundle))
+	}
+	if lines := loggedLines(t, rig.logs.String(), heldWorkUnsavedLine); len(lines) != 0 {
+		t.Errorf("the round logged %d failed saves, want none: the refusal over a spent bundle holds nothing", len(lines))
 	}
 }
 
