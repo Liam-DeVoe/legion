@@ -36,8 +36,12 @@
 -- - project is the project's own key and the row's identity, and goes with the project.
 -- - state_url is the daemon the row follows: the setting's state_url when the row was written. A
 --   row naming another daemon than the setting is no starting point, so the intake reads the
---   setting's daemon whole. Every write of the setting deletes the row (legion.PutSettings and
---   legion.DeleteSettings), which is what makes a PUT of the same URL a fresh whole read.
+--   setting's daemon whole. A write of the setting (legion.PutSettings) sets it to '', which no
+--   setting names, and every column below but previous_state_id to its empty value: that is what
+--   makes a PUT of the same URL a fresh whole read. A write of the URL the row follows while a
+--   message holds the owed read (read_holder) leaves the row as it is instead: that message's read,
+--   a whole read, is the read the write calls for. A delete of the setting deletes the row
+--   (legion.DeleteSettings).
 -- - run is the daemon run (the UUID it minted at boot) of the newest message the intake applied, or
 --   the daemon.stateRun of the daemon that served a successful whole read made after it, where that
 --   daemon served one; null before either. A boot at or below last_seq under another run is a
@@ -45,7 +49,7 @@
 --   cursor holds.
 -- - last_seq is the newest state sequence the project's observations reflect: the stateSeq a
 --   successful whole read served, or the seq of the newest transaction applied. Null while the row
---   holds none, which is only while a read is owed.
+--   holds none, which is only while a read is owed or the row follows no daemon (state_url '').
 -- - read_reasons is every reason a whole read is owed for (legion's ReadReason constants), in the
 --   order they called for it, and empty while none is owed: a whole read that failed owes it for
 --   `retry`, a message that calls for a read inside a minute of the last one adds its reason, and a
@@ -66,23 +70,32 @@
 --   it, and 0 where no message holds it. The intake acknowledges the holder once it has gone back
 --   10 times (legion's stateMaxHolds) and clears both columns. A lease take-over creates the
 --   intake's durable again, which starts the message's own delivery count again, and keeps this
---   count, so the holder goes back 10 times at the most in all and holds the durable's ack floor
---   for about 11 minutes at the most.
+--   count, and so does a write of the setting that names the daemon the row follows, so the holder
+--   goes back 10 times at the most in all and holds the durable's ack floor for about 11 minutes at
+--   the most.
 -- - state_id is the id of the daemon's store (the state route's daemon.stateId, which every state
---   message carries as stateId): a successful whole read sets it, and nothing else does. The
---   intake applies no message of another id, and none at all while it is null, which is only while
---   a read is owed.
+--   message carries as stateId): a successful whole read sets it, a write of the setting that sets
+--   state_url to '' clears it, and nothing else writes it. The intake applies no message of another
+--   id, and none at all while it is null, which is only while a read is owed or the row follows no
+--   daemon.
 -- - schema_version is the store's schema version as the row last saw it: the daemon.schemaVersion
 --   of a successful whole read, or the schemaVersion of the newest boot event applied. A boot of
 --   another version is read whole. Null for none.
+-- - previous_state_id is the store of the daemon the setting named before a write that named
+--   another daemon: the write sets it to the row's state_id, and keeps it where state_id is null.
+--   The intake finishes each message of this store unapplied while state_id is null or another
+--   store (legion's outcomeForgotten): R3 applies no message of the daemon the setting named
+--   before. Such a message calls for no read of its own and holds none; it makes an owed read
+--   that is due and that no message holds, as the project's next message. A write of the URL the
+--   row follows and a whole read keep the column. Null for none.
 --
 -- legion_event_parts holds the messages of a transaction the daemon split over several messages
 -- (each but the last carries `more: true`) until its last message arrives: the intake then applies
 -- every event of the transaction in one batch and deletes the parts, so no observation holds a
 -- value of a transaction it has not read whole. A part is held only where it follows the cursor or
 -- the part before it, under the same run and store. A successful whole read deletes the project's
--- parts, and so does the cursor's delete (the foreign key), which every write of the setting
--- makes; a whole read that failed keeps them:
+-- parts, and so does each write of the setting that sets state_url to '', and the cursor's delete
+-- (the foreign key), which a delete of the setting makes; a whole read that failed keeps them:
 --
 -- - project and first_seq are the part's identity: the project, and the first sequence the part
 --   carries. last_seq is its last.
@@ -135,7 +148,8 @@ create table legion_event_cursors (
   read_holder bigint,
   read_holds integer not null default 0,
   state_id text,
-  schema_version bigint
+  schema_version bigint,
+  previous_state_id text
 );
 
 create table legion_event_parts (

@@ -448,26 +448,27 @@ func requireWholeRead(t *testing.T, row readRecord, reason string, ok bool) {
 
 // cursorRow is project's legion_event_cursors row.
 type cursorRow struct {
-	lastSeq     *int64
-	readOwed    bool
-	run         *string
-	stateID     *string
-	readReasons []string
-	readHolder  *int64
-	readHolds   int
+	lastSeq         *int64
+	readOwed        bool
+	run             *string
+	stateID         *string
+	readReasons     []string
+	readHolder      *int64
+	readHolds       int
+	previousStateID *string
 }
 
 func (r cursorRow) String() string {
-	return fmt.Sprintf("{lastSeq=%s readOwed=%v readReasons=%v readHolder=%s readHolds=%d run=%s stateId=%s}",
-		orNone(r.lastSeq), r.readOwed, r.readReasons, orNone(r.readHolder), r.readHolds, orNone(r.run), orNone(r.stateID))
+	return fmt.Sprintf("{lastSeq=%s readOwed=%v readReasons=%v readHolder=%s readHolds=%d run=%s stateId=%s previousStateId=%s}",
+		orNone(r.lastSeq), r.readOwed, r.readReasons, orNone(r.readHolder), r.readHolds, orNone(r.run), orNone(r.stateID), orNone(r.previousStateID))
 }
 
 func cursorOf(t *testing.T, database *store.Store, project string) cursorRow {
 	t.Helper()
 	var row cursorRow
 	if err := database.Pool.QueryRow(context.Background(),
-		`select last_seq, read_owed, run, state_id, read_reasons, read_holder, read_holds from legion_event_cursors where project = $1`, project).Scan(
-		&row.lastSeq, &row.readOwed, &row.run, &row.stateID, &row.readReasons, &row.readHolder, &row.readHolds); err != nil {
+		`select last_seq, read_owed, run, state_id, read_reasons, read_holder, read_holds, previous_state_id from legion_event_cursors where project = $1`, project).Scan(
+		&row.lastSeq, &row.readOwed, &row.run, &row.stateID, &row.readReasons, &row.readHolder, &row.readHolds, &row.previousStateID); err != nil {
 		t.Fatalf("read the cursor of %s: %v", project, err)
 	}
 	return row
@@ -1003,9 +1004,11 @@ func TestAnEventAtOrBelowTheReadsSequenceWritesNothing(t *testing.T) {
 }
 
 // TestAProjectWithoutAStartingPointIsReadOnceAndNothingReadsItAgain: a project with a setting and
-// no cursor is read whole once at each of the three moments it has none - the durable's first
-// creation, a new setting, a PUT of the same URL (the settings wake) - and nothing else reads a
-// daemon: a run of events, a wake that changed nothing, all apply with no read.
+// no starting point is read whole once at each of the three moments it has none - the durable's
+// first creation and a new setting, with no cursor, and a PUT of the same URL while no message
+// holds a read, which leaves the cursor following no daemon (settingWritten), at the settings wake
+// - and nothing else reads a daemon: a run of events, a wake that changed nothing, all apply with
+// no read.
 func TestAProjectWithoutAStartingPointIsReadOnceAndNothingReadsItAgain(t *testing.T) {
 	rig := newIntakeRig(t)
 	infra := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -1032,11 +1035,15 @@ func TestAProjectWithoutAStartingPointIsReadOnceAndNothingReadsItAgain(t *testin
 	rig.publish("LINUX", change(22, "LINUX-1", moved("phase", "testing")))
 	rig.settled()
 
-	// A PUT of the same URL forgets INFRA's starting point. The daemon's state now holds the
-	// three events the intake applied, as a daemon's would.
+	// A PUT of the same URL, while no message holds a read, forgets INFRA's starting point: the
+	// cursor keeps no sequence and no store. The daemon's state now holds the three events the
+	// intake applied, as a daemon's would.
 	infra.serves(daemonState("INFRA", 13, planning("INFRA")))
 	if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", infra.URL, actor); err != nil {
 		t.Fatalf("set INFRA's daemon again: %v", err)
+	}
+	if c := cursorOf(t, rig.database, "INFRA"); c.lastSeq != nil || c.stateID != nil || c.readOwed || c.readHolder != nil {
+		t.Fatalf("INFRA's cursor after the PUT of the same URL is %s, want no sequence, no store, nothing owed and no holder", c)
 	}
 	rig.wake <- struct{}{}
 	rig.awaitWholeReads(3)
@@ -2188,14 +2195,16 @@ func TestAMessageWhoseSequenceItsEventsDoNotReachMovesNoCursor(t *testing.T) {
 }
 
 // TestARepointedSettingWhoseFirstReadFailsAppliesNoMessageOfTheDaemonItNamedBefore: R3 applies no
-// message of the daemon a setting named before, once the setting names another. Here the first
-// read of the newly named daemon fails, since it does not answer yet, so the cursor follows the new
+// message of the daemon a setting named before, once the setting names another. The write that
+// names another daemon records the store the cursor held (previous_state_id). Here the first read
+// of the newly named daemon fails, since it does not answer yet, so the cursor follows the new
 // daemon with no store, while the daemon named before still publishes under the same project, in
 // its own store and run, at its next sequences. None of its messages is applied, none gives the
-// cursor its store, and the drop is logged once; the first of them goes back to the stream until
-// the owed read is due. A minute on, its next message makes the owed read, which takes the named
-// daemon's state and store, and that message is dropped too, as one of another store; the named
-// daemon's own next event is applied.
+// cursor its store, none holds a read, and the drop is logged once: each is finished at its first
+// delivery, and inside the minute none makes a read. R3 tries a failed read again at the project's
+// next message, so the one that arrives a minute on, once the owed read is due, makes it as a call
+// no message makes would, and is finished unapplied all the same. The read takes the named
+// daemon's state and store, and the named daemon's own next event is applied on it.
 func TestARepointedSettingWhoseFirstReadFailsAppliesNoMessageOfTheDaemonItNamedBefore(t *testing.T) {
 	const namedRun, namedStore = "2c7e9a14-5b3d-4f86-a1e0-8d6c4b2f9e37", "6e1f3a8c-2d4b-4c97-b5a0-9f7e1d3c8b26"
 	rig := newIntakeRig(t)
@@ -2218,34 +2227,46 @@ func TestARepointedSettingWhoseFirstReadFailsAppliesNoMessageOfTheDaemonItNamedB
 	// The daemon named before publishes on, under the rig's run and store, which are its own.
 	rig.publish("INFRA", change(2000001, "INFRA-1", moved("phase", "merging")))
 	rig.publish("INFRA", change(2000002, "INFRA-1", moved("phase", "merging")), change(2000003, "INFRA-1", claimMoved("planner", "idle")))
-	rig.settledHolding(1)
+	rig.settled()
 	if after := currentValues(t, rig.database, "INFRA"); !maps.Equal(after, before) {
 		t.Errorf("legion_current = %v, want %v: no message of the daemon the setting named before is applied", after, before)
 	}
-	if c := cursorOf(t, rig.database, "INFRA"); !c.readOwed || c.lastSeq != nil || c.stateID != nil {
-		t.Errorf("the cursor is %+v, want no sequence, no store and the read owed", c)
-	}
-	if drops := rig.awaitLogRecords(noStoreLine, 1); len(drops) != 1 || drops[0]["project"] != "INFRA" || drops[0]["stateId"] != rigStateID {
-		t.Errorf("the drops logged = %v, want one naming INFRA and the message's store", drops)
+	if c := cursorOf(t, rig.database, "INFRA"); !c.readOwed || c.lastSeq != nil || c.stateID != nil || c.readHolder != nil || c.readHolds != 0 {
+		t.Errorf("the cursor is %s, want no sequence, no store, the read owed and no holder", c)
 	}
 	if served := named.served(); served != 1 {
 		t.Errorf("the named daemon served %d reads inside a minute of its failed one, want that one alone", served)
 	}
 
-	// A minute on, the named daemon answers, in a store and under a run of its own.
+	// A minute on, the owed read is due, and the named daemon answers, in a store and under a run
+	// of its own. The daemon named before publishes again: its message makes the owed read, holds
+	// none, and is not applied.
 	implementing := strings.Replace(planning("INFRA"), `"planning"`, `"implementing"`, 1)
 	named.serves(strings.Replace(strings.Replace(daemonState("INFRA", 5, implementing), rigStateID, namedStore, 1), rigRun, namedRun, 1))
 	rig.clock.advance(ReadRetryAfter + time.Second)
 	rig.publish("INFRA", change(2000004, "INFRA-1", moved("phase", "merging")))
-	rig.settledHolding(1)
-	reads = readRecords(t, rig.database, "INFRA")
-	requireWholeRead(t, reads[len(reads)-1], ReadReasonRetry, true)
-	if c := cursorOf(t, rig.database, "INFRA"); c.readOwed || c.lastSeq == nil || *c.lastSeq != 5 || c.stateID == nil || *c.stateID != namedStore {
-		t.Errorf("the cursor after the good read is %+v, want the named daemon's sequence 5 and store %s, nothing owed", c, namedStore)
+	rig.settled()
+	if served := named.served(); served != 2 {
+		t.Errorf("the named daemon served %d reads, want the failed one and the one the message a minute on made", served)
+	}
+	whole := wholeReadsOf(t, rig.database, "INFRA")
+	if len(whole) != 3 {
+		t.Fatalf("whole reads = %v, want the first daemon's, the named daemon's failed one and its good one", whole)
+	}
+	requireWholeRead(t, whole[2], ReadReasonRetry, true)
+	if c := cursorOf(t, rig.database, "INFRA"); c.readOwed || c.lastSeq == nil || *c.lastSeq != 5 || c.stateID == nil || *c.stateID != namedStore || c.readHolder != nil {
+		t.Errorf("the cursor after the good read is %s, want the named daemon's sequence 5 and store %s, nothing owed and no holder", c, namedStore)
+	}
+	if drops := rig.awaitLogRecords(forgottenLine, 1); len(drops) != 1 || drops[0]["project"] != "INFRA" || drops[0]["stateId"] != rigStateID {
+		t.Errorf("the drops logged = %v, want one naming INFRA and the message's store", drops)
+	}
+	if held := rig.logRecords(heldLine); len(held) != 0 {
+		t.Errorf("the messages sent back = %v, want none: no message of the daemon the setting named before holds a read", held)
 	}
 
+	// The named daemon's own next event is applied on the read.
 	rig.publishIn("INFRA", namedRun, namedStore, time.Now().UTC().Truncate(time.Microsecond), false, change(6, "INFRA-1", moved("phase", "testing")))
-	rig.settledHolding(1)
+	rig.settled()
 	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); !slices.Equal(got, []string{`"planning"`, `"implementing"`, `"testing"`}) {
 		t.Errorf("the phase's history is %v, want the first daemon's read's planning, the named daemon's read's implementing and its event's testing, and no merging", got)
 	}

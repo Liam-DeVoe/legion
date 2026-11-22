@@ -43,7 +43,7 @@ const StateChannel = "dispatch_legion_state"
 // SettingsChannel is the Postgres notification channel a write of a Legion setting announces
 // itself on at commit, with the project as its payload (PutSettings, DeleteSettings): the channel
 // whose wake (pglisten.Hub) the server hands the intake, which reads the setting's daemon whole
-// once its cursor is gone (Intake.SettingsChanged).
+// where the write left the project no starting point (Intake.SettingsChanged).
 const SettingsChannel = "dispatch_legion_settings"
 
 // Execer is what NotifyRead needs of its connection: the pool, or the transaction of the record it
@@ -116,7 +116,10 @@ func GetSettings(ctx context.Context, pool *store.Pool, project string) (Setting
 // The write forgets how far the project's observations had followed its daemon, in its own
 // transaction (settingWritten): the intake then has no starting point for the project, and reads
 // the daemon whole when the write's notification wakes it. So a write of the same URL is the way
-// to have a project's state read whole again.
+// to have a project's state read whole again. Where a message holds the project's owed read, a
+// write of the same URL joins that read and forgets nothing: the message's redelivery makes the
+// read, a whole read, and the hold's count of hand-backs goes on. After a write that names another
+// daemon, the intake finishes each message of the store the project followed before, unapplied.
 func PutSettings(ctx context.Context, pool *store.Pool, project, stateURL string, actor model.Actor) (Settings, error) {
 	createdBy, err := json.Marshal(actor)
 	if err != nil {
@@ -135,7 +138,7 @@ func PutSettings(ctx context.Context, pool *store.Pool, project, stateURL string
 	if err != nil {
 		return Settings{}, fmt.Errorf("write the Legion setting of %s: %w", project, err)
 	}
-	if err := settingWritten(ctx, tx, project); err != nil {
+	if err := settingWritten(ctx, tx, project, stateURL); err != nil {
 		return Settings{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -146,8 +149,8 @@ func PutSettings(ctx context.Context, pool *store.Pool, project, stateURL string
 
 // DeleteSettings removes a project's setting and reports whether it had one. The project's reads
 // and observations stay: they are what was observed, and nothing re-reads them. Where it had one,
-// the delete forgets how far the project's observations had followed its daemon too
-// (settingWritten), so a setting written again starts from a whole read.
+// the delete deletes the project's cursor too (settingWritten), with how far the project's
+// observations had followed its daemon, so a setting written again starts from a whole read.
 func DeleteSettings(ctx context.Context, pool *store.Pool, project string) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -161,7 +164,7 @@ func DeleteSettings(ctx context.Context, pool *store.Pool, project string) (bool
 	if tag.RowsAffected() == 0 {
 		return false, nil
 	}
-	if err := settingWritten(ctx, tx, project); err != nil {
+	if err := settingWritten(ctx, tx, project, ""); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -170,15 +173,44 @@ func DeleteSettings(ctx context.Context, pool *store.Pool, project string) (bool
 	return true, nil
 }
 
-// settingWritten is what every write of project's setting does in its own transaction: it deletes
-// the project's event cursor, and with it the parts of a split transaction held for it (their
-// foreign key), so the intake has no starting point for it, and notifies SettingsChannel, which
-// reaches the intake at the write's commit (Intake.SettingsChanged).
-func settingWritten(ctx context.Context, tx pgx.Tx, project string) error {
-	if _, err := tx.Exec(ctx, `
-		with forgotten as (delete from legion_event_cursors where project = $1)
-		select pg_notify($2, $1)
-	`, project, SettingsChannel); err != nil {
+// settingWritten is what every write of project's setting does in its own transaction, stateURL
+// being the daemon the setting names from the write on, "" for a delete. It notifies
+// SettingsChannel, which reaches the intake at the write's commit (Intake.SettingsChanged), and:
+//   - A write that names the daemon the project's cursor follows, while a message holds the
+//     cursor's owed read (read_holder), leaves the cursor as it is. R3 says a reason that arrives
+//     while a read is in flight or owed joins it: the message's redelivery makes the read, a whole
+//     read, and the cursor counts the hold's hand-backs on from read_holds (stateMaxHolds). The
+//     wake's call for the project's starting point joins that read too (cursor.readFor).
+//   - Every other write of a URL makes the cursor follow no daemon (an empty state_url), with every
+//     position, reason, holder and store back to its empty value, and deletes the parts of a split
+//     transaction held for it, so the intake has no starting point for the project and reads the
+//     setting's daemon whole at the wake (ReadReasonStart). A write that names another daemon
+//     records the store the cursor held, or keeps the one recorded already where it held none, as
+//     the store of the daemon the setting named before (previous_state_id): the intake finishes
+//     each message of that store unapplied (outcomeForgotten), so the message that held the read
+//     holds it no more. A write of the same daemon keeps what is recorded there.
+//   - A delete deletes the cursor, and with it the held parts (their foreign key).
+func settingWritten(ctx context.Context, tx pgx.Tx, project, stateURL string) error {
+	var err error
+	if stateURL == "" {
+		_, err = tx.Exec(ctx, `
+			with forgotten as (delete from legion_event_cursors where project = $1)
+			select pg_notify($2, $1)
+		`, project, SettingsChannel)
+	} else {
+		_, err = tx.Exec(ctx, `
+			with forgotten as (
+				update legion_event_cursors set
+					state_url = '', run = null, last_seq = null, read_reasons = '{}', read_tried_at = null,
+					read_holder = null, read_holds = 0, state_id = null, schema_version = null,
+					previous_state_id = case when state_url = $3 then previous_state_id else coalesce(state_id, previous_state_id) end
+				where project = $1 and (state_url <> $3 or read_holder is null)
+				returning project
+			), parts as (delete from legion_event_parts where project in (select project from forgotten))
+			select pg_notify($2, $1)
+		`, project, SettingsChannel, stateURL)
+	}
+	if err != nil {
 		return fmt.Errorf("forget where the Legion events of %s stood: %w", project, err)
 	}
 	return nil
