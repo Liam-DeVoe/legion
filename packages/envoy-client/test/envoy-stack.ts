@@ -84,7 +84,6 @@ export interface EnvoyStackOptions {
 
 /** The Go module both rigs build their binaries from. */
 export const ENVOY_MODULE = path.resolve(import.meta.dir, "../../envoy");
-const READY_TIMEOUT_MS = 60_000;
 const TAIL_LINES = 10;
 const STOP_GRACE_MS = 10_000;
 
@@ -199,15 +198,26 @@ export function tail(file: string, lines: number): string {
   }
 }
 
-/** How long a rig gives a process to come up, and how much of its log an error quotes. */
+/**
+ * How long a rig gives a process to come up, and how much of its log an error quotes. With no
+ * `timeoutMs` the wait has no deadline of its own: it ends when the process serves or exits, and
+ * a process that does neither is the caller's hook limit to end.
+ */
 export interface ReadyBudget {
-  readonly timeoutMs: number;
+  readonly timeoutMs?: number;
   readonly tailLines: number;
 }
 
-const ENVOY_READY: ReadyBudget = { timeoutMs: READY_TIMEOUT_MS, tailLines: TAIL_LINES };
+// natsd, the listener and natsd's ENVOY_NOTIFICATIONS stream are given no deadline: the time from
+// spawn to serving is the host's speed. Under 131 busy loops (the 96 rung) on two CPUs, over 20
+// starts in the Job infra-1580-krows-st-vbknv of the cluster's `builds` namespace (row A at 35.0 s
+// against the calibration's 31.2 s), 2026-11-22T18:20Z to 19:24Z, natsd took up to 2 699.19 ms,
+// the stream 394.97 ms and the listener 10 101.91 ms, past a tenth of the 60 s it was given. The
+// live describes that start the stack bound the start with their `beforeAll`'s limit.
+const ENVOY_READY: ReadyBudget = { tailLines: TAIL_LINES };
 
-/** Polls `ready` until it holds, throwing when `child` exits first or the budget passes. */
+/** Polls `ready` until it holds, throwing when `child` exits first or the budget, where it has a
+ *  `timeoutMs`, passes. */
 export async function awaitReady(
   what: string,
   child: Subprocess,
@@ -215,7 +225,7 @@ export async function awaitReady(
   budget: ReadyBudget,
   ready: () => Promise<boolean>
 ): Promise<void> {
-  const deadline = Date.now() + budget.timeoutMs;
+  const deadline = budget.timeoutMs === undefined ? undefined : Date.now() + budget.timeoutMs;
   for (;;) {
     if (child.exitCode !== null || child.signalCode !== null) {
       throw new Error(
@@ -223,7 +233,7 @@ export async function awaitReady(
       );
     }
     if (await ready().catch(() => false)) return;
-    if (Date.now() > deadline) {
+    if (deadline !== undefined && Date.now() > deadline) {
       throw new Error(
         `${what} was not ready within ${budget.timeoutMs} ms: ${tail(log, budget.tailLines)}`
       );
