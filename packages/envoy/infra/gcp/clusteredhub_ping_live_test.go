@@ -84,10 +84,9 @@ const (
 const routePingLines = "ping_interval: \"1s\"\nping_max: 5\n"
 
 // routeClosed matches a line nats-server logs when it closes a route connection to another server,
-// with the line's local time (logger.go's flags hold microseconds), its reason and that server's
-// name (server/client.go markConnAsClosed: "Router connection closed: <reason> - Remote: <name>").
-// A close of a server's route to itself names no remote.
-var routeClosed = regexp.MustCompile(`(?m)(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}\.\d{6}) \[INF\] .* - rid:\d+ - Router connection closed: (.+) - Remote: (\S+)$`)
+// with its reason and that server's name (server/client.go markConnAsClosed: "Router connection
+// closed: <reason> - Remote: <name>"). A close of a server's route to itself names no remote.
+var routeClosed = regexp.MustCompile(`(?m)\[INF\] .* - rid:\d+ - Router connection closed: (.+) - Remote: (\S+)$`)
 
 // staleReason is the reason a server logs for a route it closed as stale (server/client.go
 // StaleConnection).
@@ -96,27 +95,38 @@ const staleReason = "Stale Connection"
 // routePinEntry matches one entry of the routes' ping pin in the rendered nats.conf's cluster block.
 var routePinEntry = regexp.MustCompile(`"ping_(interval|max)":\s*("30s"|2),?\s*`)
 
-// routeClose is one close of a route connection a server logged: its reason, and the time of the
-// line.
-type routeClose struct {
-	reason string
-	at     time.Time
+// closeReasons is the reason of each route connection to remote that a server's output logs as
+// closed, in the order logged.
+func closeReasons(out, remote string) []string {
+	var reasons []string
+	for _, m := range routeClosed.FindAllStringSubmatch(out, -1) {
+		if m[2] == remote {
+			reasons = append(reasons, m[1])
+		}
+	}
+	return reasons
 }
 
-// closesOf is each route connection to remote that a server's output logs as closed, in the order
-// logged.
-func closesOf(t *testing.T, out, remote string) []routeClose {
-	t.Helper()
-	var closes []routeClose
-	for _, m := range routeClosed.FindAllStringSubmatch(out, -1) {
-		if m[3] != remote {
-			continue
-		}
-		at, err := time.ParseInLocation("2006/01/02 15:04:05.000000", m[1], time.Local)
-		require.NoError(t, err)
-		closes = append(closes, routeClose{reason: m[2], at: at})
+// routeClose is one close of a route connection between A and B that a server logged: its reason,
+// and when the drain's wait first read it, on the test's monotonic clock.
+type routeClose struct {
+	reason string
+	seen   time.Time
+}
+
+// closeLog is the closes one server has logged of its route connections to remote since the burst
+// began, each stamped when the drain's wait first read it (read).
+type closeLog struct {
+	before int
+	closes []routeClose
+}
+
+// read adds to l each close out logs past those l holds, stamped now.
+func (l *closeLog) read(out, remote string, now time.Time) {
+	reasons := closeReasons(out, remote)
+	for _, reason := range reasons[l.before+len(l.closes):] {
+		l.closes = append(l.closes, routeClose{reason: reason, seen: now})
 	}
-	return closes
 }
 
 // fate is how a route's burst ended:
@@ -169,12 +179,15 @@ func stale(closes []routeClose) bool {
 // moves it. Then it waits for whichever comes first: B's subscriber holding the whole burst, a
 // server logging the route between A and B closed as stale, or both servers logging it closed for
 // another reason. Only the test binary's deadline bounds that wait. When the wait finds both a
-// drained burst and a close, the close counts only if its line's time comes before the moment B's
-// subscriber took the burst's last byte. A burst that A did not queue for the route ends the drain
-// at once, since nothing of it can then cross. B is its own only peer, so it solicits a route to
-// its own route port, which nats-server ignores (server/route.go routesToSelf), since a JetStream
-// cluster refuses to start with no configured route ("JetStream cluster requires configured
-// routes").
+// drained burst and a close, the two are ordered on the test's monotonic clock: the moment B's
+// subscriber took the burst's last byte, against the moment the wait first read the close's line.
+// The wait reads the servers' output every testwait.Poll, so a close logged less than that, and the
+// pipe's own delay, before the drain reads as after it; the configurations this row tells apart
+// differ by seconds (5 to 6.4 s against 15.5 s, 60 s against 20 s). A burst that A did not queue
+// for the route ends the drain at once, since nothing of it can then cross. B is its own only peer,
+// so it solicits a route to its own route port, which nats-server ignores (server/route.go
+// routesToSelf), since a JetStream cluster refuses to start with no configured route ("JetStream
+// cluster requires configured routes").
 func drainARoute(t *testing.T, r *clusteredHubRender, binary, natsConf, subject string) fate {
 	t.Helper()
 	// nats.go flushes only under a context with a deadline: the row's is the test binary's own less
@@ -205,16 +218,21 @@ func drainARoute(t *testing.T, r *clusteredHubRender, binary, natsConf, subject 
 
 	sub := dialSeed(t, b.url(), r.keys.operatorSeed)
 	t.Cleanup(sub.Close)
-	// received is the burst's bytes B's subscriber took; drainedAt, the moment, in Unix
-	// nanoseconds, it took the last of them.
-	var received, drainedAt atomic.Int64
+	// received is the burst's bytes B's subscriber took; drainedAt, the moment, on the test's
+	// monotonic clock, it took the last of them, stored before the wait can read the count whole
+	// (the wait reads a whole count with no moment yet as a drain still under way).
+	var received atomic.Int64
+	var drainedAt atomic.Pointer[time.Time]
 	var probed atomic.Bool
 	_, err := sub.Subscribe("load.probe", func(*natsgo.Msg) { probed.Store(true) })
 	require.NoError(t, err)
 	_, err = sub.Subscribe(subject, func(m *natsgo.Msg) {
-		if received.Add(int64(len(m.Data))) >= routeBurst {
-			drainedAt.CompareAndSwap(0, time.Now().UnixNano())
+		size := int64(len(m.Data))
+		if received.Load()+size >= routeBurst {
+			now := time.Now()
+			drainedAt.CompareAndSwap(nil, &now)
 		}
+		received.Add(size)
 	})
 	require.NoError(t, err)
 	require.NoError(t, sub.FlushWithContext(deadline))
@@ -230,7 +248,8 @@ func drainARoute(t *testing.T, r *clusteredHubRender, binary, natsConf, subject 
 	})
 
 	// Only closes of the route between A and B count, and only those logged once the burst began.
-	closedBefore := []int{len(closesOf(t, a.proc.Output.String(), b.name)), len(closesOf(t, b.proc.Output.String(), a.name))}
+	closedA := closeLog{before: len(closeReasons(a.proc.Output.String(), b.name))}
+	closedB := closeLog{before: len(closeReasons(b.proc.Output.String(), a.name))}
 	queuedBefore := routeQueued(t, a)
 	payload := make([]byte, 16<<10)
 	began := time.Now()
@@ -250,17 +269,17 @@ func drainARoute(t *testing.T, r *clusteredHubRender, binary, natsConf, subject 
 	f.entered = true
 	var after []string
 	testwait.Until(t, "the burst to drain, a server to log the route closed as stale, or both servers to log a route closed", func() (string, bool) {
-		crossed := received.Load()
-		closedA := closesOf(t, a.proc.Output.String(), b.name)[closedBefore[0]:]
-		closedB := closesOf(t, b.proc.Output.String(), a.name)[closedBefore[1]:]
-		closed := append(slices.Clone(closedA), closedB...)
-		if crossed < routeBurst && !stale(closed) && (len(closedA) == 0 || len(closedB) == 0) {
+		now := time.Now()
+		closedA.read(a.proc.Output.String(), b.name, now)
+		closedB.read(b.proc.Output.String(), a.name, now)
+		crossed, drained := received.Load(), drainedAt.Load()
+		closed := append(slices.Clone(closedA.closes), closedB.closes...)
+		if (crossed < routeBurst || drained == nil) && !stale(closed) && (len(closedA.closes) == 0 || len(closedB.closes) == 0) {
 			return fmt.Sprintf("%d of the burst's %d bytes across; routes closed since it began: %d", crossed, routeBurst, len(closed)), false
 		}
 		f.crossed, f.took = crossed, time.Since(began)
-		drained := drainedAt.Load()
 		for _, c := range closed {
-			if drained == 0 || c.at.Before(time.Unix(0, drained)) {
+			if drained == nil || c.seen.Before(*drained) {
 				f.closed = append(f.closed, c.reason)
 			} else {
 				after = append(after, c.reason)
