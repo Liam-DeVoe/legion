@@ -204,9 +204,12 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 //     refuseDeadController);
 //   - a claim whose role runs on the Claude Code backend has no Oh My Pi session to compact at
 //     all, and it is the one refusal this route makes itself, since no state of the claim says
-//     which harness it runs. Which harness a role runs on is the daemon's configuration rather
-//     than anything the claim records (`worker_backends`, runtime.Backends), so it is handed to
-//     this server as Options.Backend, which the daemon fills from config.Config.BackendFor.
+//     which harness it runs. Which harness a role runs on is the daemon's configuration and the
+//     plan of the claim's issue rather than anything the claim records, so it is handed to this
+//     server as Options.Backend, which the daemon fills from its one decision of a role's harness
+//     (internal/daemon's roleBackends): the plan of the claim's issue is read first, and a role
+//     it defines runs on Oh My Pi, and every other role runs on what `worker_backends` names
+//     against runtime.Backends.
 //
 // The project's own controller claim is not refused here, where a fresh session of it is
 // (freshSession's NOT_THE_CONTROLLER). The asymmetry is the two operations' own, not an

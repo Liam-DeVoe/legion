@@ -158,18 +158,27 @@ type Deployment struct {
 	Owner RoleDef
 }
 
-// RolesOf is the roles the steps of p can name: each role of d, then each role p defines that d
-// does not, as a RoleDef of its name, its type and its model on Oh My Pi. It is the one place that
-// answers which role a step names, and of which type, model and harness. The answer is a fresh
-// map, so a caller that changes it leaves d's roles whole.
+// RolesOf is the roles the steps of p can name, each as a RoleDef of its name, type, model and
+// harness: Legion's own roles of d (BuiltinRoles) first, then each role p defines, of its type and
+// its model on Oh My Pi, then each other role of d. A role p defines is read before a role of d of
+// its name, as the daemon reads a role the plan in force of an issue defines before the
+// deployment's role of that name for a claim of that issue (its specs.rolePromptPaths and
+// roleBackends, appauth.AppRoleFor). Validate refuses a plan that defines a role of d's name or
+// of Legion's (V2), so the order decides nothing for a version that is judged. It holds for a
+// version taken after the deployment took the name of one of its roles. RolesOf answers for a
+// version as it is judged or taken, and the daemon's readers answer for one claim. The answer is
+// a fresh map, so a caller that changes it leaves d's roles whole.
 func RolesOf(p Plan, d Deployment) map[string]RoleDef {
 	roles := make(map[string]RoleDef, len(d.Roles)+len(p.Roles))
 	for name, role := range d.Roles {
 		roles[name] = role
 	}
+	legion := BuiltinRoles()
 	for _, role := range p.Roles {
-		if _, ok := roles[role.Name]; ok {
-			continue
+		if _, deployed := roles[role.Name]; deployed {
+			if _, own := legion[role.Name]; own {
+				continue
+			}
 		}
 		roles[role.Name] = RoleDef{Name: role.Name, Type: role.Type, Model: role.Model, Backend: planRoleBackend}
 	}
