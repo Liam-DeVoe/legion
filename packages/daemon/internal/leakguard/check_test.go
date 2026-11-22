@@ -391,9 +391,8 @@ func stoppedPush(t *testing.T, ctx context.Context, onceSleeping func()) (*Setup
 }
 
 // answered runs call and waits for it to return with the test binary's deadline as its only bound
-// (testwait.Receive). Each call here is a read under a stand-in that does not answer on its own,
-// so only the guard's stop can end it: a stop that never comes fails the row by name before the
-// package's timeout, and a stop that a loaded machine makes slow passes.
+// (testwait.Receive): a call that never returns fails the row by name before the package's
+// timeout, and one a loaded machine makes slow passes.
 func answered(t *testing.T, what string, call func()) {
 	t.Helper()
 	done := make(chan struct{})
