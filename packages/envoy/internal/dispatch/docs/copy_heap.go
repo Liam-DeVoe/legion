@@ -27,7 +27,7 @@ import (
 // from the pool.
 //
 // The first is one whole-document decode, held while it decodes: a room's load (its fold of a
-// history of several updates, the copy LoadDoc decodes, the load hook's decode into the room,
+// history of several updates, the copy LoadDocContext decodes, the load hook's decode into the room,
 // bootstrapLoadedState), the fold of a cold read, a version read or a compaction (foldRead) - a
 // cold read keeps its fold's grant while it reads the tree of the document it folded, renders it
 // and walks it (foldDocument, foldLoaded), and a read of a room behind the stored head keeps it
@@ -222,11 +222,7 @@ const loadSlotsName = "load"
 // an issue's close, reopen, sweep and repair, which write its ask states into each of its
 // documents in turn (Docs.WriteIssueAskStates) - weighs them all first, and its first fork takes
 // their sum, capped at one slot as every weight is (Service.forksAhead), so a later fork takes
-// nothing more unless its document grew between the weighing and the fork; or a document weighed
-// at its resident room's copy (forkWeight) forks cold instead, its room retired or behind the
-// stored head by then (readFork), and its stored history weighs more than that copy; or its stored
-// history folds into more than its rows weigh - a split-dense history folds into more structs than
-// its rows declare, which no weighing ahead of the fold can know.
+// nothing more unless it weighs more than it was weighed at (forksAhead lists when).
 //
 // A decode's grant, held between its take and its release, decodes, renders or reads the rows of
 // the transaction it already holds, takes no lock held across a wait, takes no pooled connection
@@ -744,9 +740,9 @@ type loadedHistory struct {
 	// refused is ygo's refusal of the history, the document's own failure rather than the
 	// service's, and nil for one that decoded: a history no room can load, which each reader
 	// answers its own way (loadTree's ErrDocumentUnloadable, rebuildSource's reason to rebuild,
-	// LoadDoc's failure of the load). A history that decodes here and parks past a room's cap is
-	// no more loadable, and is not refused here: each reader judges decoded against the room's
-	// caps itself (parkedPastRoomCaps), and the rebuild builds from that decode.
+	// LoadDocContext's failure of the load). A history that decodes here and parks past a room's
+	// cap is no more loadable, and is not refused here: each reader judges decoded against the
+	// room's caps itself (parkedPastRoomCaps), and the rebuild builds from that decode.
 	refused error
 }
 

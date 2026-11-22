@@ -128,11 +128,7 @@ func requireEditedOnce(t *testing.T, handler http.Handler, artifactID string) {
 // (requireEditedOnce).
 func requireRetryEditsOnce(t *testing.T, handler http.Handler, artifactID string) {
 	t.Helper()
-	if retried := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{
-		"ops": []map[string]string{{"op": "replace", "find": "before", "with": "after"}},
-	}, "alice"); retried.Code != http.StatusOK {
-		t.Fatalf("the retry answered status=%d body=%s, want %d", retried.Code, retried.Body.String(), http.StatusOK)
-	}
+	requireEditLands(t, handler, artifactID, "before", "after", "the retry")
 	requireEditedOnce(t, handler, artifactID)
 }
 

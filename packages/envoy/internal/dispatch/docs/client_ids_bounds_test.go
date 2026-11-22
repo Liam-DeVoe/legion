@@ -172,7 +172,7 @@ func TestAnUpdateWhoseMintFindsEveryUnlandedRowLiveIsRefusedBusyAndLandsOnceOneL
 	awaitAnswer(t, replaying, "alice's next tab")
 	other := openPage(t, serverURL, artifactID, "alice")
 	awaitAnswer(t, other, "alice's other tab")
-	rv9cFillCapUntilGone(t, service, artifactID, serverURL, a)
+	fillCapUntilGone(t, service, artifactID, serverURL, a)
 	// With the lapse at its own 15 minutes again, every row she holds is live.
 	presenceIntervalForTest.Store(0)
 	if rows := unlandedMintsOf(t, service, artifactID, "alice"); rows != maxUnlandedMintsADocument {

@@ -309,13 +309,7 @@ func TestAHoldsQueryBehindAShareWhoseRoomsReplicaLockIsHeldIsAnsweredWithinItsWa
 	}
 	other := createIssueDocument(t, pair.database, 2, "Another document.")
 	replica.mu.Lock()
-	held := true
-	release := func() {
-		if held {
-			held = false
-			replica.mu.Unlock()
-		}
-	}
+	release := sync.OnceFunc(replica.mu.Unlock)
 	t.Cleanup(release)
 	shared := make(chan error, 1)
 	go func() {

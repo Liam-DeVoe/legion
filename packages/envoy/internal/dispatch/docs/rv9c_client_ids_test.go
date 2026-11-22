@@ -11,9 +11,9 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
-// rv9cFillCapUntilGone opens and leaves alice's pages until the row of gone is given back, and
+// fillCapUntilGone opens and leaves alice's pages until the row of gone is given back, and
 // returns how many opens that took.
-func rv9cFillCapUntilGone(t *testing.T, service *Service, artifactID, serverURL string, gone crdt.ClientID) int {
+func fillCapUntilGone(t *testing.T, service *Service, artifactID, serverURL string, gone crdt.ClientID) int {
 	t.Helper()
 	url := socketURL(serverURL, artifactID) + "&" + contracts.DocumentClientIdParameter + "="
 	opens := 0
@@ -52,7 +52,7 @@ func TestRV9CAClosedTabsSavedRowLandsAfterTheCapGaveBackItsID(t *testing.T) {
 	saved := typeAt(t, first.Doc, 0, "offline ")
 	time.Sleep(time.Second) // A's row lapses (3 x 300 ms)
 
-	opens := rv9cFillCapUntilGone(t, service, artifactID, serverURL, a)
+	opens := fillCapUntilGone(t, service, artifactID, serverURL, a)
 	t.Logf("alice's row for id %d was given back after %d more page loads of hers; her unlanded rows: %d", a, opens, unlandedMintsOf(t, service, artifactID, "alice"))
 	time.Sleep(1100 * time.Millisecond) // the left pages' rows lapse, so the next mint can give one back
 

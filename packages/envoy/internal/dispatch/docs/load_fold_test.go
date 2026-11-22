@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -250,25 +251,30 @@ func idleInTransaction(t *testing.T, database *store.Store) int {
 	return sessions
 }
 
-// foldSlotWaiters is how many goroutines wait for a slot of the buffered folds, read off the
-// goroutine dump (goroutinetest), since nothing reports that a load has reached that wait: parked
-// on the slots' channel in the take a document load makes before its read transaction
-// (takeFoldSlot), or in the one foldRead made inside that transaction in the order before it, which
-// a run of this test on that order counts too.
-func foldSlotWaiters() int {
-	waiting := 0
+// parkedIn is how many goroutines the goroutine dump (goroutinetest) shows parked in one of states,
+// the state a goroutine's header names, at one of frames. The dump leaves the runtime's own frames
+// out, so the frame under a parked goroutine's header is the one parked.
+func parkedIn(states []string, frames ...string) int {
+	parked := 0
 	for _, goroutine := range goroutinetest.Traces() {
-		// The dump leaves the runtime's own frames out, so the frame under a parked goroutine's
-		// header is the one parked: the take's select on the slots' channel.
 		lines := strings.SplitN(goroutine, "\n", 3)
-		if len(lines) < 2 || !strings.Contains(lines[0], "[select") && !strings.Contains(lines[0], "[chan send") {
+		if len(lines) < 2 || !slices.ContainsFunc(states, func(state string) bool { return strings.Contains(lines[0], state) }) {
 			continue
 		}
-		if strings.Contains(lines[1], "(*PgVersioned).takeFoldSlot(") || strings.Contains(lines[1], "(*PgVersioned).foldRead(") {
-			waiting++
+		if slices.ContainsFunc(frames, func(frame string) bool { return strings.Contains(lines[1], frame) }) {
+			parked++
 		}
 	}
-	return waiting
+	return parked
+}
+
+// foldSlotWaiters is how many goroutines wait for a slot of the buffered folds, read off the
+// goroutine dump (parkedIn), since nothing reports that a load has reached that wait: parked on the
+// slots' channel in the take a document load makes before its read transaction (takeFoldSlot), or
+// in the one foldRead made inside that transaction in the order before it, which a run of this
+// test on that order counts too.
+func foldSlotWaiters() int {
+	return parkedIn([]string{"[select", "[chan send"}, "(*PgVersioned).takeFoldSlot(", "(*PgVersioned).foldRead(")
 }
 
 // A fold of rows read into memory ends with its context, as a fold that streams them does: a load

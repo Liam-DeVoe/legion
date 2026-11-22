@@ -1126,7 +1126,7 @@ var _ persistence.VersionedPersistence = (*PgVersioned)(nil)
 // takes (newDocumentCopy, and newCappedDocumentCopy at the cap of the instance the decode runs
 // for). Two fields hold that per-instance cap - PgVersioned.maxPendingItems, which the store's
 // folds, read-backs and seed check take, and Service.maxPendingItems, which the copies of a room's
-// stored state (loadTree's or LoadDoc's decodeStoredCopy) and the check they are compared with
+// stored state (loadTree's or LoadDocContext's decodeStoredCopy) and the check they are compared with
 // take - and their constructors set both to this (NewPgVersioned, New), so every such production
 // decode takes this queue; only a test lowers the two (shrinkPendingItems), to make a log that
 // does not fold out of a few dozen items. The rooms, whose documents ygo builds for the service,

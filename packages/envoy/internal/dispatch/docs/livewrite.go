@@ -505,11 +505,8 @@ type forkSlot struct {
 	// ahead is what the forks of every document the transaction is about to write weigh
 	// together, capped at one slot, where it weighed them before its first fork
 	// (Service.forksAhead), and 0 otherwise: its first fork's cover takes that sum rather than its
-	// own weight alone, so its later forks take nothing more unless their document grew meanwhile;
-	// or it was weighed at its resident room's copy and forks cold, its room retired or behind the
-	// stored head by then, from a stored history that weighs more; or their stored history folds
-	// into more than its rows weigh, as a split-dense history does, which no weighing ahead of the
-	// fold can know (coverFork).
+	// own weight alone (coverFork), so each later fork takes nothing more unless it weighs more than
+	// it was weighed at (forksAhead lists when).
 	ahead int64
 }
 
@@ -562,9 +559,8 @@ func (w *liveWrite) carriedBy(ctx context.Context) context.Context {
 // since a wait for more while holding the first fork's grant could wait on a waiter that needs
 // those very bytes (loadSlots). A transaction that weighed every document it is about to write
 // before its first fork has that first fork take their sum (forkSlot.ahead, Service.forksAhead),
-// so its later forks take nothing more unless a document grew meanwhile, was weighed at its
-// resident room's copy and forks cold from a stored history that weighs more, or folds into more
-// than its rows weigh. The first fork's grant holds, as its cover is taken, at most what the
+// so each later fork takes nothing more unless it weighs more than it was weighed at (forksAhead
+// lists when). The first fork's grant holds, as its cover is taken, at most what the
 // fork's own read took on it - a cold read's fold (foldRead) - and nothing that read built, so
 // where the pool does not give the difference at once the cover gives that back and takes bytes
 // whole, waiting holding nothing of the pool (loadSlot.retake). A grant the transaction borrowed

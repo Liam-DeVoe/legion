@@ -1254,7 +1254,7 @@ func (s *Service) residentTree(ctx context.Context, artifactID string, live *crd
 // the pod's load concurrency (loadSlots), whose wait ends with ctx, the socket's request: one
 // that ends first answers ctx's error and holds nothing of the pool. The copy this decode made
 // is the admission's own: it answers the schema check and is dropped here, and the room's load
-// decodes the same state once more for its replica and its scan total (LoadDoc,
+// decodes the same state once more for its replica and its scan total (LoadDocContext,
 // decodeStoredCopy). The grant is given back before the room fails, whose eviction can wait.
 func (s *Service) loadTree(ctx context.Context, artifactID string) (*pmdoc.Node, *persistence.LoadResult, int64, error) {
 	tree, held, err := s.heldTree(ctx, artifactID)

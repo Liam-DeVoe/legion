@@ -1931,8 +1931,8 @@ func TestARoomLoadingWhileThisProcessesWriteCommitsStandsAtTheHead(t *testing.T)
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	closeDocumentRoom(t, service, artifactID)
 
-	// The load is held where the window is: ygo's LoadDoc has read the store and the head it
-	// stands at, and the hook that starts the room's instance has not run.
+	// The load is held where the window is: ygo's LoadDocContext has read the store and the head
+	// it stands at, and the hook that starts the room's instance has not run.
 	entered, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	load := service.srv.OnLoadDocument
