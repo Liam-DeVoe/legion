@@ -65,7 +65,7 @@ func TestAResultEntryNeedsTheDPoPEntryAtStart(t *testing.T) {
 		name, says string
 		spoil      func(*proxyrules.SecretRule)
 	}{
-		{"no such entry", "holds no entry", func(s *proxyrules.SecretRule) { s.Name = "OTHER_TOKEN"; s.Kind = "" }},
+		{"no such entry", "holds no profile", func(s *proxyrules.SecretRule) { s.Name = "OTHER_TOKEN"; s.Kind = "" }},
 		{"no host", "one exact host", func(s *proxyrules.SecretRule) { s.Hosts = nil }},
 		{"a wildcard host", "one exact host", func(s *proxyrules.SecretRule) { s.Hosts = []string{"*.example.com"} }},
 		{"a second host", "one exact host", func(s *proxyrules.SecretRule) { s.Hosts = []string{"dispatch.example", "api.github.com"} }},
