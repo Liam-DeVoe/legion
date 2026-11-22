@@ -72,7 +72,8 @@ func serviceSettings(t *testing.T, url string, keys testnats.CalloutKeys) Settin
 
 // connectSession connects to url as s, presenting its token and its proof over the nonce the
 // server sends this connection, and hands every asynchronous error the server sends it to errs.
-func connectSession(t *testing.T, url string, s *session, errs chan<- error) (*nats.Conn, error) {
+// extra are options after these, such as the connection's name.
+func connectSession(t *testing.T, url string, s *session, errs chan<- error, extra ...nats.Option) (*nats.Conn, error) {
 	t.Helper()
 	sign := func(nonce []byte) ([]byte, error) {
 		proof, err := cipherclient.ConnectionProof(s.key, s.token, string(nonce))
@@ -92,11 +93,39 @@ func connectSession(t *testing.T, url string, s *session, errs chan<- error) (*n
 			}
 		}))
 	}
-	nc, err := nats.Connect(url, options...)
+	nc, err := nats.Connect(url, append(options, extra...)...)
 	if err == nil {
 		t.Cleanup(nc.Close)
 	}
 	return nc, err
+}
+
+// The service reads the connection's name from the CONNECT (Request.Name, from the authorization
+// request's connect options), the name the held grant reads a daemon's generation from
+// (natsgrant.Scope.Connection). A client that names its connection is decided with that name. The
+// control is the answerer without that read, under which the decision is asked with no name and
+// the row fails.
+func TestTheServiceDecidesWithTheConnectionsName(t *testing.T) {
+	keys := testnats.NewCalloutKeys(t)
+	url := testnats.StartWithCallout(t, keys)
+	a := newSession(t, "ses_a", 15*time.Minute)
+	names := make(chan string, 1)
+	startService(t, url, keys, Deps{Introspect: introspector(a)}, func(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
+		select {
+		case names <- req.Name:
+		default:
+		}
+		return Decide(ctx, deps, services, req)
+	})
+	const name = "legion-go-PUB-github/RFuDfoOI3HLgXUdIZvZnZx"
+	_, err := connectSession(t, url, a, nil, nats.Name(name))
+	require.NoError(t, err)
+	select {
+	case got := <-names:
+		require.Equal(t, name, got, "the decision was asked with another name than the CONNECT's")
+	default:
+		t.Fatal("the service decided no request")
+	}
 }
 
 // publisher is a static user that may publish every notification topic, as a listener does.
