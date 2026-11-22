@@ -97,9 +97,10 @@ func TestARestrictedMemberListsAndRevokesOnlyTheirOwnMachineLogins(t *testing.T)
 }
 
 // machineLoginsWithAPod is the broker's answer to GET /v1/launcher-credentials in
-// TestARestrictedMemberListsAndRevokesThePodLoginsTheBrokerMapsToThem: erin's own machine login,
-// the login of a pod the broker's BROKER_POD_OPERATORS maps to erin (its person field names her,
-// and no person approved it, as the broker lists a person's pod login), and a service's login.
+// TestARestrictedMemberListsAndRevokesThePodLoginsTheBrokerMapsToThem and
+// TestARemovalRevokesTheMembersOwnLoginAndNotTheirPodsLogin: erin's own machine login, the login
+// of a pod the broker's BROKER_POD_OPERATORS maps to erin (its person field names her, and no
+// person approved it, as the broker lists a person's pod login), and a service's login.
 const machineLoginsWithAPod = `{"credentials":[
 	{"credential_id":"cred-erin","host":"erin-laptop","service":null,"subject":null,"approved_by":"Erin@Other.example","issued_at":"2026-11-20T00:00:00Z","expires_at":"2026-12-20T00:00:00Z","expired":false},
 	{"credential_id":"cred-pod-erin","host":"agents/erin-pod","service":"erin-agent","subject":"system:serviceaccount:agents:erin-pod","person":"Erin@Other.example","approved_by":"","issued_at":"2026-11-20T00:00:00Z","expires_at":"2026-12-20T00:00:00Z","expired":false},

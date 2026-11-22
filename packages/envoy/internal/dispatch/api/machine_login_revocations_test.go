@@ -206,6 +206,43 @@ func TestARemovalRevokesALoginTheBrokersClockStampsAfterIt(t *testing.T) {
 	}
 }
 
+// TestARemovalRevokesTheMembersOwnLoginAndNotTheirPodsLogin: the revocation a removal owes ends the
+// device logins the person approved (ownMachineLogins), and not the logins of the pods the broker's
+// BROKER_POD_OPERATORS maps to them, which their own list and revoke hold beside those
+// (memberMachineLogins): a pod login it ended would log in again with its pod's token. alice takes
+// erin, a restricted member, off ACC's list, and the broker lists erin's own machine login, the
+// login of a pod whose person names her, and a service's login (machineLoginsWithAPod). The pass
+// revokes erin's own login alone, leaves her pod's login, and settles the revocation.
+//
+// Control: revokeMachineLoginsOf listing memberMachineLogins in place of ownMachineLogins, and the
+// pass revokes the pod's login too, named.
+func TestARemovalRevokesTheMembersOwnLoginAndNotTheirPodsLogin(t *testing.T) {
+	rig := newFakeBrokerRig(t)
+	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
+		admitsRestricted: true,
+		agentSecretsURL:  rig.server.URL,
+	})
+	ctx := t.Context()
+	for _, write := range []struct{ method, does string }{
+		{http.MethodPut, "names erin on"},
+		{http.MethodDelete, "takes erin off"},
+	} {
+		if response := dispatchRequest(t, served, write.method, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("alice %s ACC's list: status=%d body=%s", write.does, response.Code, response.Body.String())
+		}
+	}
+	rig.bodyByRoute["GET /v1/launcher-credentials"] = machineLoginsWithAPod
+
+	removalAged(t, database, machineLoginSettleAfter)
+	registered.revokeBrokerDebts(ctx)
+	if !slices.Equal(rig.revokes(), []string{"POST /v1/launcher-credentials/cred-erin/revoke-by-approver"}) {
+		t.Errorf("the pass after erin's removal revoked %v; want her own machine login cred-erin alone, and not cred-pod-erin, the login of the pod the broker maps to her", rig.revokes())
+	}
+	if owed, _, err := store.NewMachineLoginRevocations(database.Pool).Owing(ctx, accessErin); err != nil || owed {
+		t.Errorf("the revocation of erin's machine logins is owed %t (%v) after the pass, want it settled", owed, err)
+	}
+}
+
 // TestALoginApprovedInFlightAsTheRemovalCommitsIsRevoked: erin's browser approve of her own machine
 // login reaches the broker, which has not answered it when alice takes her off ACC's list. The
 // approval holds erin's approval lock until the broker answers (relayMachineLoginApproval), so the
