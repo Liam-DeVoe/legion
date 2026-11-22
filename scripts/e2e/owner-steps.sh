@@ -34,9 +34,6 @@
 #   - control-no-plan-rows: the fourth issue is given the plan `implementer reviewer`, and its rows
 #     are deleted before its gate opens; it starts a planner, and the check of
 #     walk-implementer-reviewer fails on it;
-#   - control-tester-first: register_plan of `tester implementer` on the fifth issue is refused 409
-#     PLAN_REFUSED with the one reason that step 1 names the tester and no step before it the
-#     implementer whose pull request it reads, naming task a, and records nothing;
 #   - walk-any-order: the fifth issue is given the plan `implementer reviewer tester`; it walks
 #     implementing, reviewing, testing, retro and merging to done, its implementer, its reviewer and
 #     its tester first launched in that order, and `dispatch steps --issue <KEY>` as the person

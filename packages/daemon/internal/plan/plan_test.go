@@ -159,7 +159,7 @@ func TestATaskWithNoStepsRunsTheDefaultSteps(t *testing.T) {
 		if len(p.Tasks) != 1 || p.Tasks[0].NamesSteps() || p.Tasks[0].Steps != nil {
 			t.Fatalf("FromBlocks(%v) = %+v, want one task with no steps", attributes, p.Tasks)
 		}
-		if r := Supported(p, Deployment{Roles: BuiltinRoles()}); len(r) != 0 {
+		if r := Supported(p); len(r) != 0 {
 			t.Fatalf("Supported(%v) = %+v, want none", attributes, r)
 		}
 		if r := Validate(p, Deployment{Roles: BuiltinRoles()}); len(r) != 0 {

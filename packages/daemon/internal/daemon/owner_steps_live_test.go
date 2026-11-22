@@ -59,8 +59,7 @@ type ownerStepsLive struct {
 // five issues of one project: the first walks its owner's plan `implementer reviewer`, the second
 // the default steps, the third the default steps with its plan rows deleted while its planner works,
 // the fourth is given a plan Legion refuses and then a plan whose rows are deleted before its
-// gate opens, and the fifth is refused the plan `tester implementer` and then walks its owner's
-// plan `implementer reviewer tester`.
+// gate opens, and the fifth walks its owner's plan `implementer reviewer tester`.
 func TestOwnerStepsLive(t *testing.T) {
 	l := newOwnerStepsLive(t, "scripts/e2e/owner-steps.sh", 5)
 	planned, byDefault, rowsDeleted, unplanned, anyOrder := l.issues[0].key, l.issues[1].key, l.issues[2].key, l.issues[3].key, l.issues[4].key
@@ -102,10 +101,6 @@ func TestOwnerStepsLive(t *testing.T) {
 	l.check("control-no-plan-rows", func() {
 		l.on(unplanned)
 		l.noPlanRows()
-	})
-	l.check("control-tester-first", func() {
-		l.on(anyOrder)
-		l.note("register_plan of `tester implementer` on %s: 409 %s; %s holds no plan rows", anyOrder, strings.TrimSpace(l.testerFirstRefused()), anyOrder)
 	})
 	l.check("walk-any-order", func() {
 		l.on(anyOrder)

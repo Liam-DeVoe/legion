@@ -149,10 +149,9 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 
 // register_plan judges a plan against the deployment the server is given (Options.Deployment),
 // the roles the daemon's settings define: with checker in it, `implementer checker` is taken;
-// without it, the plan is refused naming checker; and `reviewer implementer` is refused with the
-// reason of a step that reads a pull request before the implementer, whatever the deployment.
+// without it, the plan is refused naming checker; and `reviewer implementer`, a step that reads
+// its task's pull request before the implementer, is taken, whatever the deployment.
 func TestRegisterPlanTakesARoleTheDeploymentDefines(t *testing.T) {
-	readsBeforeTheImplementer := PlanReason{Task: "a", Reason: "step 1 of task a names reviewer, and no step before it names the role implementer, whose pull request reviewer reads; a role of this deployment that reports pass or fail needs none. This release of Legion does not carry it out yet."}
 	for _, tc := range []struct {
 		name       string
 		deployment plan.Deployment
@@ -162,7 +161,7 @@ func TestRegisterPlanTakesARoleTheDeploymentDefines(t *testing.T) {
 		{"checker in the deployment", checkerDeployment(), "implementer checker", nil},
 		{"checker in no deployment", plan.Deployment{Roles: plan.BuiltinRoles()}, "implementer checker",
 			[]PlanReason{{Task: "a", Reason: "step 2 of task a names the role checker, which neither the deployment nor the plan defines."}}},
-		{"a review before the implementer", checkerDeployment(), "reviewer implementer", []PlanReason{readsBeforeTheImplementer}},
+		{"a review before the implementer", checkerDeployment(), "reviewer implementer", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, facts, statuses := planHarness(t)

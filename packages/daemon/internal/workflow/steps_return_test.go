@@ -168,7 +168,7 @@ func assertWalksAt(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string,
 // A failed step returns the task's work to the step of the type implementation before it, read
 // from the type the plan's rows record for each step (record.PlanStep.Type), and no count stops a
 // task: each return counts and tells as today, on the task. A plan whose one step is the tester is
-// refused, since it has no implementer.
+// taken: the owner does the retro of a task with no step of the type implementation.
 func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 	t.Run("a review that requests changes returns to the implementer, the same agents on", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -206,15 +206,10 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 		assertWalksAt(t, pool, engine, root.Key, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
 	})
 
-	t.Run("a plan whose one step is the tester is refused: it has no implementer", func(t *testing.T) {
+	t.Run("a plan whose one step is the tester is taken", func(t *testing.T) {
 		given := plan.Plan{ArtifactID: "plan-artifact", Version: 2, Tasks: []plan.Task{{ID: "a", Steps: []plan.Step{{Role: "tester"}}, Text: "Test it."}}}
-		refusals := append(plan.Validate(given, builtinDeployment), plan.Supported(given, builtinDeployment)...)
-		want := []plan.Refusal{
-			{Task: "a", Reason: "task a has no step implementer. This release of Legion does not carry it out yet."},
-			{Task: "a", Reason: "step 1 of task a names tester, and no step before it names the role implementer, whose pull request tester reads; a role of this deployment that reports pass or fail needs none. This release of Legion does not carry it out yet."},
-		}
-		if !reflect.DeepEqual(refusals, want) {
-			t.Fatalf("the plan `tester` is refused with %+v, want the two reasons %+v", refusals, want)
+		if refusals := append(plan.Validate(given, builtinDeployment), plan.Supported(given)...); len(refusals) != 0 {
+			t.Fatalf("the plan `tester` is refused with %+v, want it taken", refusals)
 		}
 	})
 
