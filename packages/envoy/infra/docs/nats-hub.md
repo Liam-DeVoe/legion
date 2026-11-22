@@ -197,9 +197,9 @@ other listeners' and Dispatch's included, which is why a user any session shares
 a `machineId` or a `dispatchMachineId` user therefore keeps its own durable alone and refuses
 every registration that asks for consumer delivery `503 no_grant`, so a session registering
 through it is not registered at all and receives nothing until its listener's grant carries the
-session consumers. The same two sets end with the reads and writes of the session consumers'
-selection bucket `envoy_session_consumers` and none of its stream's create or update
-(`natsgrant.KVWriteExisting`), so a listener keeps each session's current consumer name there in
+session consumers. The same two sets end with the session consumers' selection bucket
+`envoy_session_consumers`'s leader read and key writes, and none of its stream's create or update
+(`natsgrant.KVRecordStore`), so a listener keeps each session's current consumer name there in
 the fresh consumer naming mode and never makes the bucket itself
 ([Permission sets](../README.md#permission-sets)). Every set above subscribes to the role lanes in
 the queue group every listener shares, `envoy-roles`, beside the machine's own, since each user

@@ -87,35 +87,43 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 	require.Equal(t, base.DispatchDurables, natsgrant.DispatchDurables())
 }
 
-// withSelectionBucket is s with the session consumers' selection bucket's reads and writes appended
-// to its publish list, as Listener appends them: the calls of a bucket the listener can neither
-// create nor update (KVWriteExisting).
+// withSelectionBucket is s with the session consumers' selection bucket's calls appended to its
+// publish list, as Listener appends them: the record store's leader read and key writes
+// (KVRecordStore), the two calls consumernames.KVStore makes.
 func withSelectionBucket(s set) set {
 	stream := "KV_" + consumernames.SessionBucket
 	s.Publish = append(slices.Clone(s.Publish),
-		"$JS.API.STREAM.INFO."+stream,
-		"$JS.API.DIRECT.GET."+stream+".>",
 		"$JS.API.STREAM.MSG.GET."+stream,
 		"$KV."+consumernames.SessionBucket+".>",
-		"$JS.API.CONSUMER.CREATE."+stream+".>",
-		"$JS.API.CONSUMER.DELETE."+stream+".>",
-		"$JS.FC."+stream+".>",
 	)
 	return s
 }
 
-// The selection bucket's grant writes its keys and reads them from the stream's leader, and can
-// neither create the bucket's stream nor update it, so a listener never makes a lost bucket again
-// empty. Only the users that manage session consumers hold it.
+// The selection bucket's grant is the two calls the listener makes on it, through
+// consumernames.KVStore: the leader read of a key's last message and the writes to its keys. It
+// can neither create the bucket's stream nor update it, so a listener never makes a lost bucket
+// again empty, and it holds none of nats.go's KV calls the listener does not make (the stream's
+// info, a direct get, a watcher's consumer and its flow control). Only the users that manage
+// session consumers hold it. Before, the listener held seven entries on the bucket, KVWrite less
+// the stream's create and update.
 func TestTheListenerWritesTheSelectionBucketAndCannotCreateIt(t *testing.T) {
 	stream := "KV_" + consumernames.SessionBucket
-	existing := natsgrant.KVWriteExisting(consumernames.SessionBucket)
-	require.Contains(t, existing, "$KV."+consumernames.SessionBucket+".>")
-	require.Contains(t, existing, "$JS.API.STREAM.MSG.GET."+stream)
+	want := []string{"$JS.API.STREAM.MSG.GET." + stream, "$KV." + consumernames.SessionBucket + ".>"}
+	for name, grant := range map[string]natsgrant.Permissions{
+		"Listener":     natsgrant.Listener("example-host-a"),
+		"ListenerHost": natsgrant.ListenerHost("example-host-a"),
+	} {
+		var held []string
+		for _, entry := range grant.Publish {
+			if strings.Contains(entry, stream) || strings.HasPrefix(entry, "$KV."+consumernames.SessionBucket+".") {
+				held = append(held, entry)
+			}
+		}
+		require.Equal(t, want, held, "%s's entries on the selection bucket", name)
+	}
 	// Control: KVWrite, which every other bucket's writer holds, does carry the create.
 	require.Contains(t, natsgrant.KVWrite(consumernames.SessionBucket), "$JS.API.STREAM.CREATE."+stream)
 	for _, refused := range []string{"$JS.API.STREAM.CREATE." + stream, "$JS.API.STREAM.UPDATE." + stream} {
-		require.NotContains(t, existing, refused)
 		for name, grant := range map[string]natsgrant.Permissions{
 			"Listener":     natsgrant.Listener("example-host-a"),
 			"ListenerHost": natsgrant.ListenerHost("example-host-a"),
@@ -125,7 +133,6 @@ func TestTheListenerWritesTheSelectionBucketAndCannotCreateIt(t *testing.T) {
 			require.NotContains(t, grant.Publish, refused, "%s may create or update the selection bucket", name)
 		}
 	}
-	require.Contains(t, natsgrant.Listener("example-host-a").Publish, "$KV."+consumernames.SessionBucket+".>")
 	require.NotContains(t, natsgrant.Dispatch("example-host-a").Publish, "$KV."+consumernames.SessionBucket+".>")
 	require.NotContains(t, natsgrant.Host("example-host-a").Publish, "$KV."+consumernames.SessionBucket+".>")
 }

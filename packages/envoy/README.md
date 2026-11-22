@@ -190,8 +190,9 @@ are in [`consumernames/README.md`](consumernames/README.md).
   `503 consumer_error`. A key holding no record of its own is answered naming the key and the
   bucket, for that session alone. An open operation's candidate that is not as the listener creates
   it is answered naming the consumer. A registration whose NATS user may not read the bucket is
-  answered `503 no_grant`. The listener's grant (`natsgrant.KVWriteExisting("envoy_session_consumers")`)
-  holds the bucket's reads and key writes, and no create or update of its stream.
+  answered `503 no_grant`. The listener's grant (`natsgrant.KVRecordStore("envoy_session_consumers")`)
+  holds the bucket's leader read and key writes, the two calls the store makes, and no create or
+  update of its stream.
 - **`/healthz`:**
   - The healthy answer carries `consumer_names` (`fixed` or `fresh`). When the durable's read
     fails, it is `UNKNOWN`, with `consumer_names_unknown` naming the failed read and the

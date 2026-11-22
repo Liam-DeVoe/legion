@@ -3949,16 +3949,16 @@ asks for consumer delivery `503 no_grant` (one probe and one refusal per ten-min
 episode), writing nothing, and a session registering through it is not registered at all and
 receives nothing until that user's grant carries the session consumers.
 
-Last in those two sets come the reads and writes of the session consumers' selection bucket,
+Last in those two sets come the session consumers' selection bucket's calls,
 `envoy_session_consumers`, which a listener in the fresh consumer naming mode
 (`ENVOY_CONSUMER_NAMES=fresh`) keeps each session's current consumer name in, and which a listener
 in the default fixed mode reads at its start and on every new connection, making no consumer call
-on that connection until the read says the cutover has not converted the bucket: the
-stream info, direct and stream message gets of `KV_envoy_session_consumers`, writes to
-`$KV.envoy_session_consumers.>`, its watchers' consumer create and delete, and their flow-control
-replies (`natsgrant.KVWriteExisting`). They hold no create or update of the bucket's stream, so no
-listener makes the bucket, or makes it again empty after a loss: the operator's create-bucket does,
-and every session-consumer call of the fresh mode refuses until it has. `HostPermissions` holds
+on that connection until the read says the cutover has not converted the bucket: the leader read
+of a key's last message, `$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers`, and the writes to
+`$KV.envoy_session_consumers.>` (`natsgrant.KVRecordStore`), the two calls the selection store
+makes. They hold no create or update of the bucket's stream, so no listener makes the bucket, or
+makes it again empty after a loss: the operator's create-bucket does, and every session-consumer
+call of the fresh mode refuses until it has. `HostPermissions` holds
 none of them, and a host's listener (`ENVOY_LISTENER_ROLE=host`, which `host:Listener` renders under `hostUser: true`)
 reads no marker at all: it runs fixed names for good. `HostPermissions` is retiring, no
 production connection holds it, and the cutover's window requires that no host listener runs at

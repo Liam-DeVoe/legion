@@ -107,18 +107,13 @@ var sessionConsumerPublish = []string{
 	"$JS.ACK.ENVOY_NOTIFICATIONS.*.>",
 }
 
-// selectionBucketPublish are the session consumers' selection bucket's reads and writes, which the
-// fresh consumer naming mode keeps and the operator alone creates: KVWrite of the bucket without its
-// stream's create and update (natsgrant.KVWriteExisting), which ListenerPermissions adds after the
-// session consumers' calls.
+// selectionBucketPublish are the session consumers' selection bucket's calls, which the fresh
+// consumer naming mode keeps and the operator alone creates: the record store's leader read and
+// key writes (natsgrant.KVRecordStore), which ListenerPermissions adds after the session consumers'
+// calls.
 var selectionBucketPublish = []string{
-	"$JS.API.STREAM.INFO.KV_envoy_session_consumers",
-	"$JS.API.DIRECT.GET.KV_envoy_session_consumers.>",
 	"$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers",
 	"$KV.envoy_session_consumers.>",
-	"$JS.API.CONSUMER.CREATE.KV_envoy_session_consumers.>",
-	"$JS.API.CONSUMER.DELETE.KV_envoy_session_consumers.>",
-	"$JS.FC.KV_envoy_session_consumers.>",
 }
 
 // listenerPublish is the listener's own publish grant: the base grant, then the session consumers'
