@@ -5,14 +5,37 @@ Rules for this repository's tests that the code under test does not show.
 ## Where a test runs
 
 Every test of this repository runs in a CI job that `ci-ok` needs, before each merge that changes a file it reads, with stand-ins for what is outside the machine.
+A release workflow's check of an artifact that the same workflow builds, and that no merge builds, runs in that workflow, and `.github/release-checks.yaml` names it with the artifact it checks.
 A test of real infrastructure that no stand-in can make runs in the deployment's pipeline after each apply of what it checks.
 A check of the operator's own grants and configuration belongs to the deployment's repository, not to this one.
 A check that production already makes at each use, where a failure reaches a role, is not repeated as a test.
 A measurement or a reading is a Go benchmark or a command, not a test, and its first lines carry the `legion: tool - ` line, which the reviewer judges.
+A script that a workflow runs to act on GitHub, a release or a deployment, and that judges no code, carries the `legion: not a test - ` line, which the reviewer judges; no `*.test.sh` file carries it, and neither does a script whose header calls it a test, a proof or a smoke.
 
-`.github/scripts/check-test-reach.sh`, a step of the `lint` job, holds the tree to the first of these: it fails on each test that no step of a job `ci-ok` needs runs, whether a build tag, a `-skip`, a variable gate, a script no such step runs or a step that runs only on a schedule leaves it out, and its header says how it reads each.
+`.github/scripts/check-test-reach.sh`, a step of the `lint` job, holds the tree to the first of these: it fails on each test that no step of a job `ci-ok` needs runs, whether a build tag, a race or platform constraint, a `-skip`, a variable gate, a script or a tool's package script no such step runs, a step of a workflow no merge waits for, or a release step that tests the source leaves it out, and its header says how it reads each.
 A variable gate holds only where `.github/test-variables.yaml` names its variable with one of five classes, `set`, `selector`, `prerequisite`, `tool` or `opt-out`, and that class holds for the gate.
-A script whose first 15 lines use the words proof, smoke, check or test, and that no such step runs, carries in those lines the tool line (`legion: tool - `, then what it measures or reads, and who runs it for which decision) or the not-a-test line (`legion: not a test - `, then what the script is), and the reviewer judges either line; a Go tool that calls a package's own code is a `Benchmark…` function of its `_test.go` file, run as `go test -run '^$' -bench '^BenchmarkX$' -benchtime 1x`.
+A script whose first 15 lines use the words proof, smoke, check or test, and that no such step runs, carries in those lines the tool line (`legion: tool - `, then what it measures or reads, and who runs it for which decision), or, for a script that acts and judges no code, the not-a-test line; a Go tool that calls a package's own code is a `Benchmark…` function of its `_test.go` file, run as `go test -run '^$' -bench '^BenchmarkX$' -benchtime 1x`.
+A tool that a workflow step reaches through `bun run` and that runs package scripts names each in a `legion: runs - <script>` line.
+
+### When CI runs each job
+
+The merge queue runs every job of `ci.yaml` on the merged tree, except `worker-image`.
+`worker-image` runs on the pull request and in the release; in the merge queue, the `kind-image` job builds the same image with the same probe.
+On a pull request, a job runs when its filter in `.github/ci-areas.yaml` matches a changed file, or when a changed file matches no filter, and the job is not held.
+The held jobs are the slow suites (`go-envoy-held` and the jobs that carry its legs' names), `agent-harness`, `airlock-arm` and the full browser lane: a pull request runs them only while it carries the label `full-ci`.
+`full-ci` runs no `kind`: no pull request runs `kind`.
+
+A `workflow_dispatch` run of `ci.yaml` runs every job but `kind` and `agent-harness`, the held jobs included.
+`gh workflow run ci.yaml --ref <branch>` starts one, and is how a pull request gets a held suite's result before the merge without the label.
+`gh workflow run ci.yaml --ref <branch> -f kind-and-agent-harness=true` also runs `kind` and `agent-harness`, and is the way to run `kind` at a head.
+
+A check whose `ci_check` names a check run of `kind` is proved by such a run with `kind-and-agent-harness` true, at the pull request's head, started after the pull request's own run.
+A job that a dispatch run skips carries an expression for its name, as `pr-title` does since cybermonklabs/legion#4750, so that its skipped record never carries the name that a `ci_check` gives.
+A called workflow whose calling job the dispatch run skips, such as `worker-image`, writes no check run under its own jobs' names.
+A check of a check run that runs in merge groups alone, such as `dispatch-two-builds / dispatch-two-builds-same`, is a `default_branch` check, read from a merge-group run.
+
+In a merge group, a Go test that fails once is run again once, and the group passes when it passes then; `ci-ok`'s summary names it.
+A data race, a panic, a build failure or more than ten failed tests in one step are not run again.
 
 ## The fixtures a test takes rather than copies
 
