@@ -866,10 +866,10 @@ const shapedAnswersContract = 193
 // it is served the state without the key (withoutDispatchCredential, its row of stateNarrowings):
 // one built before sjawhar/legion#2788 reads the state with a strict schema and would refuse the
 // whole body for a key it does not name, and one built after strips the key instead, so the band
-// keeps the body its own contract's record describes. shapedAnswersContract stands below it with
-// no row of stateNarrowings between the two, and every caller at either states its contract, so a
-// caller stating a contract from shapedAnswersContract up to below this one is served the keys of
-// that contract and not this object.
+// keeps the body its own contract's record describes. repositoriesLiveContract stands below it
+// with no row of stateNarrowings between the two, and every caller at either states its contract,
+// so a caller stating a contract from repositoriesLiveContract up to below this one is served the
+// keys of that contract and not this object.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the key arrived at stays where it is. It moves only with this

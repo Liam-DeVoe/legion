@@ -6739,7 +6739,7 @@ A `legion-v20.14.0` daemon then replaces the pod once every role it asked has an
 A daemon before `legion-v20.14.0` replaces the pod on its workers' answers, asking once more a worker whose standing answer was a turn's end.
 
 No role was asked to push what a claim the round passed over left on the disk.
-So where the round passed over a claim that had not answered, the replacement first reads the issue's workspace, once per round, through the role whose process the pod is replaced through (`readRoundWorkspace`, `runtime.WorkspaceWorkReader`, the shim's `workspace-work` frame).
+So where the round passed over a claim that had not answered and an agent of which registered a session in the pod (below), the replacement first reads the issue's workspace, once per round, through the role whose process the pod is replaced through (`readRoundWorkspace`, `runtime.WorkspaceWorkReader`, the shim's `workspace-work` frame).
 For a claim whose launch waits on the round's pod, [The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker) says when the replacement reads the workspace and what the message on the issue names.
 The replacement reads the workspace only where every claim the round asks has answered and no turn runs, so a replacement that the bound lets through over a claim the round asks that has not answered, or over a running turn, makes no read; background work a role reports holds the replacement until the bound and does not stop the read.
 A claim that a project's pause still keeps and that the round does not ask, a launch that forgot the role's lost session, holds the replacement until the bound (above) and does not stop the read either: it runs no process in the pod, and the claim the round passed over still left its work there.
@@ -6747,7 +6747,7 @@ The read counts as work a commit under a workspace's working copy or under a loc
 An empty commit with no description is no work, so the empty working copies that every issue pod's clone keeps count for nothing.
 A commit that a fetch left visible is no work either: the clone keeps unreachable commits (`git.abandon-unreachable-commits = false`), so after any role's `jj git fetch` hundreds of other issues' commits are visible with no bookmark.
 Nor is a side head that no working copy and no bookmark reaches, although such a head can hold this issue's own unpushed work: that loss goes unnamed, and it is the cost of a read that names no other issue's commits.
-The replacement's line, `supervise: the pod of this update round is replaced and the round is over`, names each claim with a session that the round did not wait for and that had not answered, a failed claim or a claim the round passed over (`notWaitedFor`), under `waitingOnThePodNotWaitedFor` each claim with a session whose launch waits on the round's pod and that had not answered, whether or not it records the round (`unwaitedOnThePod`, [The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)), and what the read found, or why it made no read.
+The replacement's line, `supervise: the pod of this update round is replaced and the round is over`, names each claim with a session that the round did not wait for, that had not answered and an agent of which registered a session in the pod, a failed claim or a claim the round passed over (`notWaitedFor`), under `waitingOnThePodNotWaitedFor` each claim whose launch waits on the round's pod, that had not answered and an agent of which registered a session in the pod, whether or not it records the round (`unwaitedOnThePod`, [The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)), and what the read found, or why it made no read.
 Where the read found work or failed, the daemon writes one message on the issue that names each claim the round did not wait for and each claim whose launch waits on the round's pod that the read was made for ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)), each with its state, and the commits, the change in the working copy or the read's error (`notAskedToPush`, `workspaceLostMessage`).
 The read's gate and the replacement's line read the claims as the replacement's decision reads them, where a claim whose machine is deciding at that read counts as one that has not answered (`roundGroup`).
 The message reads the claims as they stand, not as the decision reads them (`noticeGroup`): a claim that answered while its machine was deciding is not named, and where no claim is left to name, the daemon writes nothing on the issue, even though the read found work or failed.
@@ -6828,14 +6828,24 @@ The sweep keeps the round it ended (`podUpdateEnded`), and while a claim still r
 So a round whose pod took unpushed work writes its message on the issue once (`podWentWithoutItsRound`).
 A restart forgets that record and every post not yet taken, so the next boot makes the end once more for each claim the store still holds in the round (dispatch://INFRA-3276 R5).
 The first sweep that decides a stale round on a claim that `fresh_session` started again in a new session ends that round too, whatever session the claim runs.
-The message is decided from the round's own record and not from where any claim's process is now (`endRoundOverAGonePod`):
+The message is decided from the round's own record and from where each member's agents registered, and not from where any claim's process is now (`endRoundOverAGonePod`):
 the round records, on each of its members, the round that member left and whether it had answered when it left, and only the round's end clears either.
 So a worker relaunched into the pod that replaced this one is still a member of the round, with the part the dead pod left it; a role first started in that new pod is no member and is named nothing; and an earlier sweep's end landing on some claims before others takes those claims out of the round rather than into the message.
-What the pod took with it is the members who neither answered nor left having answered, so a round every member had answered lost nothing and nothing is written on the issue at all.
+What the pod took with it is the members who neither answered nor left having answered and an agent of which registered a session in that pod, so a round every member had answered lost nothing and nothing is written on the issue at all.
 That is a different question from whom a replacement waits for before the round's bound, which is every claim the round asks that has not answered and every claim that a project's pause still keeps (`unansweredClaims`), beside each turn that runs and each claim whose report holds the round (above): a claim the round has not asked yet still holds the pod, and is asked at a later sweep, once its agent is ready.
 While no claim of the issue records a pod at all — every role suspended, or the one live role relaunching — no locator is evidence either way, so the daemon asks the runtime which pod the issue's Sandbox holds now (`IssuePod`, `podlessRound`):
 another pod than the round's own, or none, ends the round as a gone pod's round ends, the round's own pod is a pod with no role process in it (below), and a runtime that cannot say leaves the round waiting for a claim to record a pod again;
 and where the claims record the round's pod but no live claim records a process in it, the daemon asks the runtime about that pod (`roundWithNoProcessInItsPod`): a pod that is gone ends the round, and a pod that is there is a pod with no role process in it.
+
+**Every end of a round names a role that had not answered only where an agent of that role registered a session in the round's pod** (`registeredInRoundPod`).
+That holds at the sweep's replacement, at a replacement by issue or at a launch, and where the pod went.
+Each claim's machine keeps, in the daemon's memory, the pods in which an agent of the claim registered a session (`supervise.Claim.RegisteredPods`): each registration adds the pod of the process that registered, and nothing takes a pod out.
+So a role that registered in the round's pod and lost its session since, as a launch that forgets the role's lost session does, is named, with no session or with a new one.
+A role whose session came from another pod and that has not registered in the round's pod is not named for it, since its work is on that other pod's disk; an earlier release named such a role.
+After a daemon restart, a claim's machine knows one pod of that set from the store: the pod that a registered agent of the stored claim runs in.
+Where the stored claim shows a session it held, now or abandoned (`supervise.Claim.Abandoned`), the rest of the set is unknown, and every end names that role where it had not answered, as an earlier release named every member that had not answered, with a session or with none and wherever its launch waits (`supervise.bootRegisteredPods`).
+So after a restart the daemon errs towards naming a role, never towards hiding a loss.
+Where the stored claim shows no session, the set is known, and holds that one pod or none.
 
 A pod with no role process in it has no process to replace it through, and a role launched into it would have its first turn ended by the round's replacement and be launched a second time, as INFRA-4455's tester was on 2026-11-19 (dispatch://INFRA-4109 R7).
 So the daemon replaces such a pod before any launch goes into it, wherever nothing holds the pod (`roundPodEnds`).
@@ -6852,9 +6862,9 @@ Four things hold it:
 Any other claim that the ask never reached holds nothing, and neither does a claim the round passes over, even one the daemon suspended after its ask reached it.
 The sweep makes that replacement after its walk, through the runtime's `ReplaceIssuePod` (`replaceIssuePodForRound`), which ends the round's own pod of the issue's Sandbox as `ReplacePod` ends a pod, and replaces nothing where the issue has no Sandbox, where the Sandbox is suspended, or where it holds another pod.
 It reads the claims again before the pod's launch turn and under it, and gives the replacement up for that sweep while a claim's machine is in a decision, which can be a launch into the pod that has not recorded its process yet, while a claim records a process in the pod, or while something above holds the pod.
-No process can read the workspace first, so the replacement's line, and one message on the issue, name each member of the round that had not answered, with a session or with none, and say that nobody read the workspace; a round every member of which had answered writes nothing on the issue.
-A member with no session forgot its session after the round was posted to it, as a launch that forgets the role's lost session does, so it had a worker whose unpushed work was on the disk (`lostClaims`).
-A member that the runtime refused for the pod while it had no session is the exception, and is left out, since no worker of it ran there ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker), `lostNotRefused`).
+No process can read the workspace first, so the replacement's line, and one message on the issue, name each member of the round that had not answered and an agent of which registered a session in the pod, with a session now or with none, and say that nobody read the workspace; a round with no such member writes nothing on the issue (`lostClaims`).
+A member with no session now is named where an agent of it registered in the pod and it forgot that session since, as a launch that forgets the role's lost session does: that worker's unpushed work was on the disk.
+A member no agent of which registered in the pod is left out, whatever it records by then, as a member that the runtime refused for the pod with no session does ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)).
 A replacement by issue that the cluster refuses is retried at the next sweep, and past the bound it is told as a refused `ReplacePod` is.
 
 A launch reads the same rule when it runs (`roundPodEndsAtLaunch`, the Sandbox runtime's `RoundPodEnds`, `relaunch.go`).
@@ -8978,31 +8988,31 @@ The round asks the claim nothing and waits on no answer of it, because no proces
 Where no claim records a process in the pod, the daemon replaces the pod through the waiting claim when the round ends (`podProcess`).
 The claim's next try, within a minute, starts in the new pod, which carries the exchange identity.
 
-A waiting claim with a session had a worker, and that worker's process can have died in the pod before the runtime refused its relaunch.
-So where such a claim had not answered the round, the daemon names it as having lost what it did not push.
-The replacement's Info line, `supervise: the pod of this update round is replaced and the round is over`, names under `waitingOnThePodNotWaitedFor` each waiting claim that had not answered, with a session or with none where it held one in the pod (below), whether or not it records the round (`unwaitedOnThePod`).
+A waiting claim had a worker in the pod where an agent of it registered a session there ([The disk dies with its pod](#the-disk-dies-with-its-pod), `registeredInRoundPod`), and that worker's process can have died in the pod before the runtime refused its relaunch, or the claim can have lost that session since, as a relaunch that finds the session in no store and starts a fresh agent, which the runtime refuses with no session, does.
+So where such a claim had not answered the round, the daemon names it as having lost what it did not push, with a session now or with none.
+A waiting claim no agent of which registered in the pod is named nothing: one that the runtime refused for the pod with no session, and one whose session an agent registered in another pod, since its work is on that other pod's disk.
+The replacement's Info line, `supervise: the pod of this update round is replaced and the round is over`, names under `waitingOnThePodNotWaitedFor` each waiting claim that had not answered and an agent of which registered in the pod, whether or not it records the round (`unwaitedOnThePod`).
 The daemon's message on the issue names such a claim only where it records the round, and what the replacement reads first turns on whether a process of another claim runs in the pod (`lostWaitingClaims`):
 
 - Where no claim records a process in the pod, the sweep replaces the pod through the waiting claim, or the claim's own next try replaces it first where nothing holds the pod (`roundPodEndsAtLaunch`).
   No process runs in the pod to read the workspace through, so neither replacement reads it.
-  Its message names each member of the round that had not answered, such a claim among them, but never a member that the runtime refused for the pod while it had no session (below), and it says that no process of these roles ran in the pod (`lostNotRefused`).
-  That holds where a claim's own try replaced the pod, of that claim and of any other member: by the next sweep such a member can record a process in the new pod, and a session once its new agent registers, and the message still names it nothing.
+  Its message names each member of the round that had not answered and an agent of which registered in the pod, such a claim among them, and it says that no process of these roles ran in the pod (`lostClaims`).
+  That holds where a claim's own try replaced the pod, of that claim and of any other member: by the next sweep such a member can record a process in the new pod, and a session once its new agent registers there, and the message names it only where an agent of it registered in the pod that went.
   Where no member is left to name, as where the sweep replaces the pod through a waiting claim with no session that is its issue's only claim, the daemon writes nothing on the issue.
 
 - Where a process of another claim runs in the pod, the claim's next try cannot replace the pod, since a launch keeps a pod that a claim records a process in (`keepAtLaunch`).
-  The sweep replaces the pod through that process, and first reads the workspace through it for a waiting claim that records the round and had not answered, with a session or with none where it held one in the pod, under the same conditions as for a claim the round passed over ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
+  The sweep replaces the pod through that process, and first reads the workspace through it for a waiting claim that records the round, had not answered and an agent of which registered in the pod, under the same conditions as for a claim the round passed over ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
   The message names that claim only where the read found work or failed.
 
-Where the pod goes before its round is over, the daemon's message that the pod went names such a claim with the other members that had not answered, and leaves out each member that the runtime refused for the pod while it had no session, as in the first case (`lostNotRefused`).
+Where the pod goes before its round is over, the daemon's message that the pod went names such a claim by the same rule, with the other members that had not answered and an agent of which registered in the pod (`lostClaims`).
+That holds where the pod is recreated from the issue's Sandbox without the exchange identity, and the runtime refuses each claim's retry again for the pod in its place: a claim refused for the pod that went with no session is named for it nothing, whatever pod it waits on by then.
+Where each member that had not answered registered no agent in the pod, the end logs `supervise: the pod of this issue's update round is gone, and each member of the round that had not answered ran no worker in that pod; nothing was lost and the round is over`, naming those members under `unansweredMembers`, and writes nothing on the issue.
 
-When the runtime refuses a launch for the pod while the claim has no session, the claim's machine records that refusal, in the daemon's memory (`supervise.Claim.RefusedWithNoSession`), and keeps the record through the claim's later launches.
-So every end of the round leaves that member out, whatever it records by then: a wait on the pod, a process in the pod in its place, or a session there.
-A member that registers a session in the refused pod itself after its refusal is named after all, since that session's worker ran there.
-The machine records no such refusal for a claim that held a session in the pod (`supervise.Claim.SessionPod`): a relaunch that finds the claim's session in no store forgets the session and starts a fresh agent, which the runtime then refuses with no session, and the worker of the session it lost can have left work on the disk.
-Such a member is named at every end, also while its launch waits on the pod (`lostClaim`).
-The record is in memory only, so after a daemon restart the ends name each member refused with no session before the restart that records a process by then.
-The machine that the restart builds reads where the claim held a session from the stored claim; where the stored claim shows a session it cannot place, a session it abandoned (`supervise.Claim.Abandoned`) or a session with no process, the machine records no refusal and the ends name the claim, until the claim registers a session again.
-So the daemon errs towards naming a role, never towards hiding a loss.
+The set of pods each claim's agents registered in is in memory only ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
+After a daemon restart, a claim's machine knows the pod that a registered agent of the stored claim runs in, and names the claim for that pod where it had not answered.
+Where the stored claim shows a session it held, now or abandoned (`supervise.Claim.Abandoned`), the rest is unknown, and the ends name the claim where it had not answered, as an earlier release named every member that had not answered: with a session or with none, also while it waits on the round's pod and also where it records a process in the pod in its place by then.
+So after a restart the daemon errs towards naming a role, never towards hiding a loss.
+Where the stored claim shows no session, the machine knows the claim registered nowhere before the restart, and the ends name it for no pod it has not registered in since.
 
 The daemon keeps the waiting pod in memory only.
 After a daemon restart, the claim gets the pod back only at its next refused launch (`startWaitsForPodRound`).

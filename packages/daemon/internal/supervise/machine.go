@@ -464,34 +464,27 @@ type Claim struct {
 	// process there. Three functions of internal/daemon read it: podLocator, awaitsRoundPod and
 	// podProcess. The doc of awaitsRoundPod says what the round does with such a claim.
 	AwaitsPod *runtime.Locator
-	// RefusedWithNoSession is the live pod a launch of this claim was last refused for, for want of
-	// that pod's update round (runtime.AwaitingPodRound), while the claim had no session, and nil
-	// for none. No session of the claim records a worker that ran in that pod, so nothing of the
-	// claim was on its disk, and every end of that pod's update round names the claim nothing
-	// (internal/daemon's refusedForRoundPod). It is set at that refusal (startWaitsForPodRound),
-	// except where the claim held a session in that pod or its machine cannot say it did not
-	// (SessionPod), since that session's worker can have left work on the disk. A refusal while
-	// the claim has a session leaves it as it is. Unlike AwaitsPod, it stays through the launches,
-	// the let-gos and the retries that follow, because the ends read it after the claim has
-	// started in the pod that replaced the refused one, and its agent may have registered there.
-	// A registration of a session in the refused pod itself voids it (register): that session's
-	// worker ran there. It is memory only, as AwaitsPod is: Machine.Claim and View report it, the
-	// daemon's pod-update sweep reads it off the machine of each claim it groups
-	// (Machine.RefusedWithNoSession), and the store never writes or reads it, so a daemon restart
-	// forgets it and the ends then name such a claim as any other.
-	RefusedWithNoSession *runtime.Locator
-	// SessionPod is the pod this claim last held a session in, as its machine knows it: the pod of
-	// the process that registered the session (register), or no pod where that process runs in
-	// none (a tmux pane), kept through a forget of the session, a fresh start, the let-gos and the
-	// later launches, since a session lost does not undo that the claim held one there. A later
-	// registration moves it to the pod of its own process, or to none. A machine built over a
-	// stored claim has no memory of a session the claim held and lost before (bootSessionPod), so
-	// it reads the guard off what the store holds, and where it cannot place a session the claim
-	// held, the guard is unknown and names every pod until the claim registers again. It is the
-	// guard on RefusedWithNoSession, and on internal/daemon's lostClaim, whose exception for a
-	// member with no session whose launch waits on the round's pod holds of no claim it names that
-	// pod of. It is memory only, as RefusedWithNoSession is, and read with it.
-	SessionPod SessionPod
+	// RegisteredPods is the set of pods, by uid, in which an agent of this claim registered a
+	// session, as its machine knows it: each registration adds the pod of the process that
+	// registered (register), and a process in no pod (a tmux pane, a locator with no pod) adds
+	// nothing. Nothing takes a pod out of it, not a session lost or forgotten, a let-go, or a
+	// relaunch into another pod, since an agent that registered in a pod had a worker there, and
+	// what that worker did not push was on that pod's disk. It is the one fact the daemon's update
+	// round names a member that lost work by (internal/daemon's ranInRoundPod): an end of a round
+	// over a pod names a member only where an agent of it registered a session in that pod.
+	//
+	// A machine built over a stored claim does not know where the claim registered before it was
+	// built (bootRegisteredPods). It knows one pod from the store: the pod of the process that a
+	// claim whose state holds a registered agent (HoldsCapability) records, since that agent
+	// registered there. Where the stored claim shows a session it held, now or abandoned
+	// (Claim.Abandoned), the set is Unknown besides, since an earlier agent of it may have
+	// registered in another pod; where it shows none, the set is known and holds that one pod or
+	// none. A later registration adds its pod and leaves Unknown as it is: where an earlier agent
+	// registered stays unknown, and the update round names such a claim that had not answered for
+	// any pod, as main does. It is memory only, as AwaitsPod is: Machine.Claim and View report
+	// it, the daemon's pod-update sweep reads it off the machine of each claim it groups
+	// (Machine.RegisteredPods), and the store never writes or reads it (StoredClaim).
+	RegisteredPods RegisteredPods
 	// PluginContract is the contract the current registration declared: 0 means no contract has
 	// been recorded, which every claim has at the first boot on this release. It is set whenever a
 	// registration records Session/SessionFile/CapabilityHash (register, reregister).
@@ -1651,16 +1644,11 @@ type Machine struct {
 	// the launch, so a sweep that reads the claim while that try runs still finds the pod; that
 	// try's outcome then settles it (launchNow). Memory only, as podRoundWaiting is.
 	awaitsPod *runtime.Locator
-	// refusedWithNoSession is the pod a launch of the claim was last refused for while the claim
-	// had no session, as the runtime's refusal named it, and nil for none: what
-	// Claim.RefusedWithNoSession reports (current). startWaitsForPodRound sets it and register voids
-	// it; nothing else writes it, so neither letGo nor a launch clears it, as they do awaitsPod.
-	// Memory only, as awaitsPod is.
-	refusedWithNoSession *runtime.Locator
-	// sessionPod is the pod the claim last held a session in: what Claim.SessionPod reports
-	// (current). NewMachine reads it off the claim it is built over (bootSessionPod) and register
-	// sets it; nothing else writes it. Memory only.
-	sessionPod SessionPod
+	// registeredPods is the set of pods an agent of the claim registered a session in: what
+	// Claim.RegisteredPods reports (current). NewMachine reads it off the claim it is built over
+	// (bootRegisteredPods) and register adds to it; nothing else writes it, so neither letGo nor a
+	// launch takes a pod out of it. Memory only, as awaitsPod is.
+	registeredPods RegisteredPods
 	// wake is the launch the wake pacing holds until its turn (reserveWake), run when TimerWake
 	// fires (wakeNow); nil for none. It lives as long as that timer, which letGo disarms with it,
 	// and it is memory only, as relaunch and staleRelaunch are: a restart loses no wake. A
@@ -1782,14 +1770,14 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		deps.Log = slog.Default()
 	}
 	m := &Machine{
-		ctx:         ctx,
-		deps:        deps,
-		log:         deps.Log.With("claim", string(c.Token)),
-		claim:       copyClaim(c),
-		sessionFrom: c.Generation,
-		sessionPod:  bootSessionPod(c),
-		timers:      map[TimerKind]armed{},
-		stale:       map[string]bool{},
+		ctx:            ctx,
+		deps:           deps,
+		log:            deps.Log.With("claim", string(c.Token)),
+		claim:          copyClaim(c),
+		sessionFrom:    c.Generation,
+		registeredPods: bootRegisteredPods(c),
+		timers:         map[TimerKind]armed{},
+		stale:          map[string]bool{},
 	}
 	m.idle = sync.NewCond(&m.mu)
 	switch c.State {
@@ -2375,15 +2363,12 @@ func (m *Machine) AwaitsPod() *runtime.Locator {
 	return cloneLocator(m.view.Load().AwaitsPod)
 }
 
-// RefusedWithNoSession is the pod the claim's launch was refused for while it had no session
-// (Claim.RefusedWithNoSession), nil for none, and the pod the claim last held a session in
-// (Claim.SessionPod), as the machine last published both. The daemon's pod-update sweep reads them
+// RegisteredPods is the set of pods an agent of the claim registered a session in
+// (Claim.RegisteredPods), as the machine last published it. The daemon's pod-update sweep reads it
 // of every claim it groups (internal/daemon's reconcilePodUpdates), as it reads AwaitsPod, and for
-// the same reasons it never waits on the decision in flight and copies these two alone. Both come
-// from the one view, so a registration that voids the one and moves the other is read whole.
-func (m *Machine) RefusedWithNoSession() (*runtime.Locator, SessionPod) {
-	v := m.view.Load()
-	return cloneLocator(v.RefusedWithNoSession), v.SessionPod
+// the same reasons it never waits on the decision in flight and copies the set alone.
+func (m *Machine) RegisteredPods() RegisteredPods {
+	return m.view.Load().RegisteredPods.clone()
 }
 
 // Deciding is the event the decision in flight handles (Handle), or nil when the machine decides
@@ -2413,7 +2398,7 @@ func (m *Machine) decide(ev Event) {
 }
 
 // current is a copy of the claim as the machine holds it now, with what only memory holds. The
-// caller holds mu.
+// caller holds mu. Each field it sets here is one StoredClaim clears, below.
 func (m *Machine) current() Claim {
 	c := copyClaim(m.claim)
 	if m.held != nil {
@@ -2422,8 +2407,27 @@ func (m *Machine) current() Claim {
 	c.Compacting = m.compacting != nil
 	c.ProcessGone = m.processGone
 	c.AwaitsPod = cloneLocator(m.awaitsPod)
-	c.RefusedWithNoSession = cloneLocator(m.refusedWithNoSession)
-	c.SessionPod = m.sessionPod
+	c.RegisteredPods = m.registeredPods.clone()
+	return c
+}
+
+// StoredClaim is c in the form a claim write hands the store. A pending delivery has a table of
+// its own, and the store holds none of the fields current overlays on the claim the machine
+// reports: a suspension held for its turn (SuspensionHeld, SuspensionHeldBy), a compaction in
+// flight (Compacting), a process the runtime reported gone (ProcessGone), the pod a launch waits
+// on (AwaitsPod) and the pods an agent of the claim registered in (RegisteredPods). Only the
+// machine holds them, in memory, and internal/store writes none of them, so the one statement
+// below clears every one, and no stored claim, nor a claim compared with one, carries any of
+// them. A field that current comes to overlay belongs in that statement too.
+//
+// No caller needs one of them on the claim it hands the store: the machine's own writes hand it
+// the claim the machine holds, which carries none of them (stored); the boot's repair hands it a
+// claim the store read back (internal/daemon's supervisor.restore); and a project pause's stop
+// hands it the claim one of those writes built (internal/daemon's projectPause.stopTx). Call
+// NormalizeClaim before this when c will also construct a machine.
+func StoredClaim(c Claim) Claim {
+	c.Pending, c.SuspensionHeld, c.SuspensionHeldBy, c.Compacting, c.ProcessGone, c.AwaitsPod, c.RegisteredPods =
+		nil, false, "", false, false, nil, RegisteredPods{}
 	return c
 }
 
@@ -3163,15 +3167,6 @@ const podRoundWaitLine = "supervise: this start waits for its pod's update round
 // opens over and replaces the pod through, where no claim records a process in it. Without it no
 // round would come, and this wait would never end. The write below publishes it, before the
 // retry is due.
-//
-// A refusal that names a pod while the claim has no session records that pod as the one the claim
-// was refused for with no session (refusedWithNoSession, Claim.RefusedWithNoSession), which every
-// end of that pod's update round reads: no worker of the claim ran there. The guard keeps the
-// record off a claim that held a session in that pod, or whose machine cannot say it did not
-// (sessionPod, SessionPod.Names): a fresh start after a resume that found no session leaves the
-// claim with no session at the very refusal that follows, and the worker of the session it lost
-// can have left work on the pod's disk. A refusal while the claim has a session, and one the guard
-// keeps the record off, leaves the record as it is.
 func (m *Machine) startWaitsForPodRound(ctx context.Context, cause error, charged, exempt, waiting bool) error {
 	err := errors.Join(cause, m.stopPrevious(ctx))
 	if !waiting {
@@ -3184,64 +3179,59 @@ func (m *Machine) startWaitsForPodRound(ctx context.Context, cause error, charge
 	if errors.As(cause, &refusal) {
 		pod := refusal.Pod
 		m.awaitsPod = &pod
-		if refused := locatorPod(&pod); refused != "" && m.claim.Session == "" && !m.sessionPod.Names(refused) {
-			m.refusedWithNoSession = cloneLocator(&pod)
-		}
 	}
 	return errors.Join(err, m.persist(ctx))
 }
 
-// SessionPod is the pod a claim last held a session in, as its machine knows it
-// (Claim.SessionPod): Pod, the uid of the pod whose process registered the session, "" for a
-// claim that has held none or held its last in no pod (a tmux pane), or Unknown, where the
-// machine cannot place a session the claim held.
-type SessionPod struct {
-	Pod     string
+// RegisteredPods is the set of pods in which an agent of a claim registered a session, as its
+// machine knows it (Claim.RegisteredPods).
+type RegisteredPods struct {
+	// Pods is the uid of each pod an agent of the claim registered a session in, each once, in the
+	// order of the first registration there.
+	Pods []string
+	// Unknown is whether an agent of the claim may have registered in a pod that Pods does not
+	// name: a machine built over a stored claim that shows a session it held cannot say where
+	// each earlier agent of it registered (bootRegisteredPods).
 	Unknown bool
 }
 
-// Names is whether the claim may have held a session in pod: it held its last one there, or its
-// machine cannot say where it held one. An unknown guard names every pod, since the rule errs
-// towards naming a role that lost work, never towards hiding a loss.
-func (p SessionPod) Names(pod string) bool {
-	return p.Unknown || (pod != "" && p.Pod == pod)
+// add puts pod in the set, unless it is "" (a process in no pod) or in the set already.
+func (s *RegisteredPods) add(pod string) {
+	if pod != "" && !slices.Contains(s.Pods, pod) {
+		s.Pods = append(s.Pods, pod)
+	}
 }
 
-// sessionPodAt is the guard a session held by the process at loc leaves, the one rule register
-// and bootSessionPod read: that process's pod; no pod where loc is a process in none (a tmux
-// pane), since that session's worker ran on no pod's disk; and unknown where the session cannot
-// be placed: no locator, as a stored session with no process has, and a process in a pod whose
-// uid loc does not record.
-func sessionPodAt(loc *runtime.Locator) SessionPod {
-	if pod := locatorPod(loc); pod != "" {
-		return SessionPod{Pod: pod}
-	}
-	if loc != nil && loc.Sandbox == nil {
-		return SessionPod{}
-	}
-	return SessionPod{Unknown: true}
+// clone is s with Pods of its own, so a claim handed out of the machine shares no slice with the
+// set the machine adds to (current, copyClaim).
+func (s RegisteredPods) clone() RegisteredPods {
+	s.Pods = slices.Clone(s.Pods)
+	return s
 }
 
-// bootSessionPod is the guard of a machine built over c (NewMachine). A claim the store read back
-// may have held a session and lost it before the restart, which no memory of this machine
-// records, so the guard is read off the stored claim, and where it cannot tell it is unknown:
+// bootRegisteredPods is the set of a machine built over c (NewMachine). A claim the store read
+// back may have registered agents in pods before this machine was built, which no memory of it
+// records, so the set is read off the stored claim, and it knows one thing:
 //
-//   - A claim that records an abandoned session (Claim.Abandoned) held that session somewhere.
-//     forgetSession writes the record whenever it drops a session, in the same write that drops
-//     it, the store keeps it, and nothing clears it: the next abandonment replaces it. The record
-//     names no pod, so the guard is unknown.
-//   - A claim that records a session holds it where its process runs: the guard is that process's
-//     pod, no pod where that process runs in none, and unknown where the claim records no
-//     process, or one in a pod whose uid it does not record (sessionPodAt).
-//   - A claim that records neither has held no session: the guard names no pod.
-func bootSessionPod(c Claim) SessionPod {
-	switch {
-	case c.Abandoned.Session != "":
-		return SessionPod{Unknown: true}
-	case c.Session != "":
-		return sessionPodAt(c.Locator)
+//   - A claim whose state holds a registered agent (HoldsCapability) with a process in a pod
+//     registered in that pod: the agent registered through the process the claim records. That
+//     pod is in the set.
+//   - A claim that shows a session it held, now (Session) or abandoned (Claim.Abandoned), may have
+//     registered an earlier agent in another pod, which nothing stored names, so the set is
+//     Unknown besides. forgetSession writes the abandoned record whenever it drops a session, in
+//     the write that drops it, and nothing clears it: the next abandonment replaces it. The
+//     daemon's update round names a member whose set is unknown and that had not answered, for
+//     any pod, as main names every such member (internal/daemon's registeredInRoundPod): the rule
+//     errs towards naming a role that lost work.
+//   - A claim that shows neither has registered no agent anywhere else: the set is known, and
+//     holds the pod above or none.
+func bootRegisteredPods(c Claim) RegisteredPods {
+	var set RegisteredPods
+	if HoldsCapability(c.State) {
+		set.add(locatorPod(c.Locator))
 	}
-	return SessionPod{}
+	set.Unknown = c.Session != "" || c.Abandoned.Session != ""
+	return set
 }
 
 // locatorPod is the uid of the pod loc names, and "" for none and for a process in no pod (a tmux
@@ -4572,17 +4562,6 @@ func (m *Machine) stored() Claim {
 	return StoredClaim(m.claim)
 }
 
-// StoredClaim is c in the form a claim write hands the store: a pending delivery has a table of
-// its own, and the store holds none of the pod the launch waits on, the refusal with no session
-// and its guard (Claim.AwaitsPod, Claim.RefusedWithNoSession, Claim.SessionPod), which only the
-// machine holds, in memory, and overlays on the claim it reports (current), so no stored claim,
-// and no claim compared with one, carries any of them. Call NormalizeClaim before this when c will
-// also construct a machine.
-func StoredClaim(c Claim) Claim {
-	c.Pending, c.AwaitsPod, c.RefusedWithNoSession, c.SessionPod = nil, nil, nil, SessionPod{}
-	return c
-}
-
 // HoldsCapability says whether a claim in state has a registered agent with a running process.
 func HoldsCapability(state ClaimState) bool {
 	switch state {
@@ -4695,7 +4674,7 @@ func claimOf(ev Event) claim.Token {
 func copyClaim(c Claim) Claim {
 	c.Locator = cloneLocator(c.Locator)
 	c.AwaitsPod = cloneLocator(c.AwaitsPod)
-	c.RefusedWithNoSession = cloneLocator(c.RefusedWithNoSession)
+	c.RegisteredPods = c.RegisteredPods.clone()
 	if c.Enrollment != nil {
 		e := *c.Enrollment
 		c.Enrollment = &e

@@ -2465,10 +2465,9 @@ func spawn(m *Machine, ctx context.Context, ev Event) error {
 // to boot. A registration whose plugin still differs from the daemon's is relaunched at once and
 // refused (staleRegistration): the agent that just registered is not the one that relaunch starts.
 //
-// The registering process's pod is where the claim now holds a session, so it becomes the guard
-// (Claim.SessionPod), and a refusal for that pod with no session that the claim recorded before is
-// void (Claim.RefusedWithNoSession): the claim now has a worker in that pod after all. A record of
-// another pod stays, since this session's worker never ran there.
+// The registering process's pod is one an agent of the claim registered a session in, so it goes
+// in the claim's set (Claim.RegisteredPods) and stays there, whatever the claim does next. A
+// process in no pod (a tmux pane) adds nothing.
 func register(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
 	if err := checkSessionNames(r.Session, r.SessionFile); err != nil {
@@ -2478,10 +2477,7 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 		return err
 	}
 	m.claim.Session, m.claim.SessionFile = r.Session, r.SessionFile
-	m.sessionPod = sessionPodAt(m.claim.Locator)
-	if pod := locatorPod(m.claim.Locator); pod != "" && locatorPod(m.refusedWithNoSession) == pod {
-		m.refusedWithNoSession = nil
-	}
+	m.registeredPods.add(locatorPod(m.claim.Locator))
 	m.claim.AgentResumeGeneration = 0
 	m.claim.CapabilityHash = bytes.Clone(r.CapabilityHash)
 	m.claim.PluginContract = r.PluginContract

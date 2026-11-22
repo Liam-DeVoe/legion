@@ -4,13 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
 
-// The pods these tests refuse launches for and start processes in: the pod a refusal names, and
+// The pods these tests start processes in and refuse launches for: the pod a refusal names, and
 // two others, the one that replaced it and one more.
 const (
 	refusedPod  = "0d4e7a1c-5b38-4f62-9c07-3e1a8b5d2f94"
@@ -27,233 +29,166 @@ func refusedFor(pod string) func(context.Context) error {
 	}
 }
 
-// wantRefused is the pod the claim was refused for with no session (Claim.RefusedWithNoSession),
-// "" for none, and the pod it last held a session in (Claim.SessionPod), as Claim, View and the
-// accessor the daemon's sweep reads (Machine.RefusedWithNoSession) report them, and the store
-// holding neither: both are memory only.
-func (h *harness) wantRefused(pod string, held SessionPod, when string) {
+// wantRegistered holds the set of pods an agent of the claim registered a session in
+// (Claim.RegisteredPods) to want, as Claim, View and the accessor the daemon's sweep reads
+// (Machine.RegisteredPods) each report it, and holds the store to none of it: the set is memory
+// only.
+func (h *harness) wantRegistered(want RegisteredPods, when string) {
 	h.t.Helper()
-	viewed, viewedHeld := h.m.RefusedWithNoSession()
-	for name, got := range map[string]struct {
-		refused *runtime.Locator
-		held    SessionPod
-	}{
-		"Claim":        {h.claim().RefusedWithNoSession, h.claim().SessionPod},
-		"View":         {h.m.View().RefusedWithNoSession, h.m.View().SessionPod},
-		"the accessor": {viewed, viewedHeld},
+	for name, got := range map[string]RegisteredPods{
+		"Claim": h.claim().RegisteredPods, "View": h.m.View().RegisteredPods, "the accessor": h.m.RegisteredPods(),
 	} {
-		if gotPod := locatorPod(got.refused); gotPod != pod || (pod == "") != (got.refused == nil) {
-			h.t.Fatalf("%s %s reports the claim refused for pod %q with no session (%+v), want %q", when, name, gotPod, got.refused, pod)
-		}
-		if got.held != held {
-			h.t.Fatalf("%s %s reports the claim's last session in %+v, want %+v", when, name, got.held, held)
+		if !slices.Equal(got.Pods, want.Pods) || got.Unknown != want.Unknown {
+			h.t.Fatalf("%s %s reports the claim registered in %+v, want %+v", when, name, got, want)
 		}
 	}
-	if stored := h.store.load(h.token); stored.RefusedWithNoSession != nil || stored.SessionPod != (SessionPod{}) {
-		h.t.Fatalf("%s the store holds the refusal %+v and the guard %+v, want neither: both are memory only",
-			when, stored.RefusedWithNoSession, stored.SessionPod)
+	if stored := h.store.load(h.token).RegisteredPods; len(stored.Pods) != 0 || stored.Unknown {
+		h.t.Fatalf("%s the store holds the set %+v, want none: it is memory only", when, stored)
 	}
 }
 
-// A launch of a claim with no session that the runtime refuses for want of its pod's update round
-// records that pod as the one the claim was refused for with no session (Claim.RefusedWithNoSession).
-// The record stays where the wait's pod goes: through the retries that are refused again, and
-// through the retry that starts the claim's process in that very pod, which ends the wait
-// (Claim.AwaitsPod). The registration of a session from that process voids it, since that
-// session's worker ran in the pod, and makes that pod the guard (Claim.SessionPod).
-//
-// The negative control (the pull request records the run): register without the void, where the
-// record stays at the registration.
-func TestARefusalWithNoSessionIsRecordedUntilASessionRegistersInThatPod(t *testing.T) {
+// A registration adds the pod of the process that registered to the claim's set
+// (Claim.RegisteredPods), and nothing else adds to it: not a refusal for a pod, and not a process
+// started in a pod before its agent registers. Nothing takes a pod out of it either: a relaunch
+// into another pod adds that pod beside the first once its agent registers, and a claim that lost
+// its session and started a fresh agent in a third pod still holds both, since an agent of it
+// registered in each, and what that agent's worker did not push was on that pod's disk.
+func TestARegistrationAddsItsPodToTheSetAndNothingTakesItOut(t *testing.T) {
 	h := newHarness(t)
-	h.wantRefused("", SessionPod{}, "before any launch,")
+	h.wantRegistered(RegisteredPods{}, "before any launch,")
 	h.rt.OnSpawn = refusedFor(refusedPod)
 	if err := h.handle(RequestSpawn{Claim: h.token}); !errors.Is(err, runtime.ErrAwaitingPodRound) {
 		t.Fatalf("the launch answered %v, want the runtime's wait for the pod's round", err)
 	}
-	h.wantRefused(refusedPod, SessionPod{}, "at the refusal,")
-
-	h.advance(podRoundRetry)
-	h.wantCalls("Spawn", 2)
-	h.wantRefused(refusedPod, SessionPod{}, "at the retry's refusal,")
+	h.wantRegistered(RegisteredPods{}, "at a refusal for a pod,")
 
 	h.rt.OnSpawn = nil
-	h.rt.ScriptSpawn(fake.SpawnResult{Locator: podProcess(refusedPod, 3)})
+	h.rt.ScriptSpawn(fake.SpawnResult{Locator: podProcess(refusedPod, 2)})
 	h.advance(podRoundRetry)
-	if c := h.claim(); locatorPod(c.Locator) != refusedPod || c.AwaitsPod != nil {
-		t.Fatalf("the retry that went through left the claim at %+v waiting on %+v, want a process in pod %s and no wait", c.Locator, c.AwaitsPod, refusedPod)
+	if c := h.claim(); locatorPod(c.Locator) != refusedPod {
+		t.Fatalf("the retry that went through left the claim at %+v, want a process in pod %s", c.Locator, refusedPod)
 	}
-	h.wantRefused(refusedPod, SessionPod{}, "once a retry started a process in the refused pod,")
-
+	h.wantRegistered(RegisteredPods{}, "once a retry started a process in the refused pod, before its agent registered,")
 	h.connect()
 	h.register()
-	h.wantRefused("", SessionPod{Pod: refusedPod}, "once a session registered in the refused pod,")
-}
+	h.wantRegistered(RegisteredPods{Pods: []string{refusedPod}}, "once its agent registered in that pod,")
+	h.ready()
 
-// A claim refused for a pod with no session whose retry starts it in another pod, the one that
-// replaced the refused pod, keeps the record when its agent registers there: no session of it ran
-// in the refused pod. The guard moves to the pod it registered in.
-func TestARefusalRecordStaysThroughARegistrationInAnotherPod(t *testing.T) {
-	h := newHarness(t)
-	h.rt.OnSpawn = refusedFor(refusedPod)
-	if err := h.handle(RequestSpawn{Claim: h.token}); !errors.Is(err, runtime.ErrAwaitingPodRound) {
-		t.Fatalf("the launch answered %v, want the runtime's wait for the pod's round", err)
-	}
-	h.rt.OnSpawn = nil
-	h.rt.ScriptSpawn(fake.SpawnResult{Locator: podProcess(replacedPod, 2)})
-	h.advance(podRoundRetry)
-	h.connect()
-	h.register()
-	h.wantRefused(refusedPod, SessionPod{Pod: replacedPod}, "once a session registered in the pod that replaced the refused one,")
-}
+	h.diesIntoPod(replacedPod)
+	h.wantRegistered(RegisteredPods{Pods: []string{refusedPod, replacedPod}}, "once a relaunch into another pod registered there,")
 
-// A refusal while the claim has a session records nothing: that session's worker may have run in
-// the refused pod. The claim here registered its session in another pod, so the guard names
-// another pod than the refused one, and the claim's session alone keeps the record off.
-//
-// The negative control (the pull request records the run): startWaitsForPodRound setting the
-// record at a refusal whatever the claim's session, where the claim is recorded as refused.
-func TestARefusalWithASessionRecordsNothing(t *testing.T) {
-	h := newHarness(t)
-	h.inPod(anotherPod)
-	h.wantRefused("", SessionPod{Pod: anotherPod}, "once ready in its own pod,")
-	h.rt.OnResume = refusedFor(refusedPod)
-	if err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}}); !errors.Is(err, runtime.ErrAwaitingPodRound) {
-		t.Fatalf("the death's relaunch answered %v, want the runtime's wait for the pod's round", err)
-	}
-	if c := h.claim(); c.Session != session || locatorPod(c.AwaitsPod) != refusedPod {
-		t.Fatalf("the refused claim records session %q and waits on %+v, want its session kept and the wait on pod %s", c.Session, c.AwaitsPod, refusedPod)
-	}
-	h.wantRefused("", SessionPod{Pod: anotherPod}, "at a refusal with a session,")
-}
-
-// A claim that held a session in a pod and lost it — a relaunch whose resume finds the session in
-// no store forgets it and spawns a fresh agent in the same try (startFresh) — has no session at
-// the refusal of that spawn for the same pod. The guard still names the pod (Claim.SessionPod),
-// through the forget, the fresh start and the let-go, so the refusal records nothing: the worker
-// of the session it lost can have left work on that pod's disk. A refusal with no session for
-// another pod is recorded, since the guard names that pod of no session.
-//
-// The negative control (the pull request records the run): startWaitsForPodRound setting the
-// record at a refusal with no session whatever the guard says, where the claim is recorded as
-// refused for the pod it held its session in.
-func TestTheGuardKeepsTheRecordOffAClaimThatHeldASessionInTheRefusedPod(t *testing.T) {
-	h := newHarness(t)
-	h.inPod(refusedPod)
-	h.wantRefused("", SessionPod{Pod: refusedPod}, "once ready in the pod,")
 	h.rt.ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: no store holds it", testToken, runtime.ErrSessionFileMissing)})
-	h.rt.OnSpawn = refusedFor(refusedPod)
-	if err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}}); !errors.Is(err, runtime.ErrAwaitingPodRound) {
-		t.Fatalf("the death's relaunch answered %v, want the fresh spawn refused for the pod's round", err)
+	h.rt.ScriptSpawn(fake.SpawnResult{Locator: podProcess(anotherPod, 1)})
+	h.observe(runtime.Gone)
+	if c := h.claim(); c.Session != "" || c.Abandoned.Session != session || locatorPod(c.Locator) != anotherPod {
+		t.Fatalf("the claim records session %q, abandoned %q, at %+v; want its session abandoned and a fresh agent in pod %s",
+			c.Session, c.Abandoned.Session, c.Locator, anotherPod)
 	}
-	if c := h.claim(); c.Session != "" || c.Abandoned.Session != session || locatorPod(c.AwaitsPod) != refusedPod {
-		t.Fatalf("the claim records session %q, abandoned %q, waiting on %+v; want its session forgotten and abandoned, and the wait on pod %s",
-			c.Session, c.Abandoned.Session, c.AwaitsPod, refusedPod)
-	}
-	h.wantRefused("", SessionPod{Pod: refusedPod}, "at the fresh spawn's refusal for the pod the session was held in,")
-
-	h.advance(podRoundRetry)
-	h.wantRefused("", SessionPod{Pod: refusedPod}, "at the retry's refusal,")
-
-	h.rt.OnSpawn = refusedFor(anotherPod)
-	h.advance(podRoundRetry)
-	h.wantRefused(anotherPod, SessionPod{Pod: refusedPod}, "at a refusal for another pod,")
+	h.wantRegistered(RegisteredPods{Pods: []string{refusedPod, replacedPod}}, "once the claim lost its session and started fresh in a third pod,")
 }
 
-// A machine built over a stored claim has no memory of a session the claim held and lost before
-// the restart, so it reads the guard off the stored claim (bootSessionPod), and where it cannot
-// place a session the claim held, the guard is unknown and names every pod (SessionPod.Names):
-// a stored session with no process, and an abandoned session (Claim.Abandoned), which
-// forgetSession writes with the forget and the store keeps. A stored session whose process is in
-// a pod is placed there, and one whose process is in no pod (a tmux pane) names no pod, by the
-// rule a registration reads (sessionPodAt). A claim that records neither has held no session.
+// A machine built over a stored claim does not know where the claim registered before, so it reads
+// the set off the stored claim (bootRegisteredPods). It knows one pod: the pod of the process that
+// a claim whose state holds a registered agent (HoldsCapability) records. Where the stored claim
+// shows a session it held, now or abandoned (Claim.Abandoned), the set is Unknown besides; where
+// it shows none, the set is known. A session whose agent has not registered since its launch, a
+// session with no process and an abandoned one place no pod, and a registered agent whose process
+// runs in no pod (a tmux pane) places none either.
 //
-// The last two cases drive it on. A claim that held its session in a pod and lost it, whose fresh
-// agent started in that same pod, is refused for that pod after a restart with no session, and
-// nothing is recorded, as before the restart. Registering again places the guard. And a claim
-// built over an abandoned session that registers through a process in no pod holds a guard that
-// names no pod: that session's worker ran on no pod's disk.
-//
-// The negative controls (the pull request records the runs): bootSessionPod answering
-// SessionPod{} for every claim, where the abandoned row reads a known guard and the restart's
-// refusal is recorded; and sessionPodAt answering unknown for a process in no pod, where both
-// rows of a process in no pod read an unknown guard.
-func TestAMachineBuiltOverAStoredClaimReadsTheGuardOffIt(t *testing.T) {
+// The cases after the table drive it on. A registered agent's pod stays in the set through the
+// restart, and a relaunch's registration in another pod after the restart adds that pod and
+// leaves the set Unknown: where an earlier agent registered stays unknown. And a registration
+// through a process in no pod adds nothing.
+func TestAMachineBuiltOverAStoredClaimReadsTheSetOffIt(t *testing.T) {
 	inPod := podProcess(refusedPod, 4)
 	pane := runtime.Locator{Runtime: runtime.RuntimeTmux, Claim: testToken, Incarnation: "4242:1",
 		Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%1"}}
 	for name, tc := range map[string]struct {
 		claim Claim
-		want  SessionPod
+		want  RegisteredPods
 	}{
-		"no session and none abandoned": {claim: queuedClaim(), want: SessionPod{}},
-		"a session whose process is in a pod": {claim: func() Claim {
+		"no session and none abandoned": {claim: queuedClaim(), want: RegisteredPods{}},
+		"a registered agent whose process is in a pod": {claim: func() Claim {
 			c := queuedClaim()
 			c.State, c.Session, c.SessionFile, c.Locator = StateReady, session, sessionFile, &inPod
 			return c
-		}(), want: SessionPod{Pod: refusedPod}},
-		"a session whose process is in no pod": {claim: func() Claim {
+		}(), want: RegisteredPods{Pods: []string{refusedPod}, Unknown: true}},
+		"a registered agent whose process is in no pod": {claim: func() Claim {
 			c := queuedClaim()
 			c.State, c.Session, c.SessionFile, c.Locator = StateReady, session, sessionFile, &pane
 			return c
-		}(), want: SessionPod{}},
+		}(), want: RegisteredPods{Unknown: true}},
+		"a session whose agent has not registered since its launch into a pod": {claim: func() Claim {
+			c := queuedClaim()
+			c.State, c.Session, c.SessionFile, c.Locator = StateLaunching, session, sessionFile, &inPod
+			return c
+		}(), want: RegisteredPods{Unknown: true}},
 		"a session and no process": {claim: func() Claim {
 			c := queuedClaim()
 			c.State, c.SuspendedBy, c.Session, c.SessionFile = StateSuspended, SuspendedByOperator, session, sessionFile
 			return c
-		}(), want: SessionPod{Unknown: true}},
+		}(), want: RegisteredPods{Unknown: true}},
 		"an abandoned session and none now": {claim: func() Claim {
 			c := queuedClaim()
 			c.Abandoned = AbandonedSession{Session: "ses_before", Why: "no store holds it", At: epoch}
 			return c
-		}(), want: SessionPod{Unknown: true}},
+		}(), want: RegisteredPods{Unknown: true}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newBareHarness(t)
 			h.store.PutClaim(h.ctx, tc.claim)
 			h.start(h.store.load(testToken))
-			if got := h.claim().SessionPod; got != tc.want {
-				t.Fatalf("the machine built over the stored claim reads the guard %+v, want %+v", got, tc.want)
-			}
+			h.wantRegistered(tc.want, "built over the stored claim,")
 		})
 	}
 
-	t.Run("a session lost in the refused pod before a restart", func(t *testing.T) {
+	t.Run("a registered agent's pod through a restart, and a registration after it", func(t *testing.T) {
 		h := newHarness(t)
 		h.inPod(refusedPod)
-		h.rt.ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: no store holds it", testToken, runtime.ErrSessionFileMissing)})
-		h.rt.ScriptSpawn(fake.SpawnResult{Locator: podProcess(refusedPod, 2)})
-		h.observe(runtime.Gone)
-		if c := h.claim(); c.Session != "" || c.Abandoned.Session != session || locatorPod(c.Locator) != refusedPod {
-			t.Fatalf("the claim records session %q, abandoned %q, at %+v; want its session abandoned and its fresh agent in pod %s",
-				c.Session, c.Abandoned.Session, c.Locator, refusedPod)
-		}
+		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod}}, "once ready in the pod,")
 
 		h.restart()
-		h.wantRefused("", SessionPod{Unknown: true}, "after the restart,")
-		h.rt.OnSpawn = refusedFor(refusedPod)
-		if err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}}); !errors.Is(err, runtime.ErrAwaitingPodRound) {
-			t.Fatalf("the death's relaunch answered %v, want the runtime's wait for the pod's round", err)
-		}
-		h.wantRefused("", SessionPod{Unknown: true}, "at the refusal after the restart,")
-
-		h.rt.OnSpawn = nil
-		h.rt.ScriptSpawn(fake.SpawnResult{Locator: podProcess(replacedPod, 5)})
-		h.advance(podRoundRetry)
-		h.connect()
-		h.register()
-		h.wantRefused("", SessionPod{Pod: replacedPod}, "once a session registered again,")
+		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod}, Unknown: true}, "after the restart,")
+		h.diesIntoPod(replacedPod)
+		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod, replacedPod}, Unknown: true}, "once a relaunch registered in another pod after the restart,")
 	})
 
 	t.Run("a registration through a process in no pod", func(t *testing.T) {
 		c := queuedClaim()
 		c.Abandoned = AbandonedSession{Session: "ses_before", Why: "no store holds it", At: epoch}
 		h := newHarnessOf(t, c)
-		h.wantRefused("", SessionPod{Unknown: true}, "built over a claim that abandoned a session,")
+		h.wantRegistered(RegisteredPods{Unknown: true}, "built over a claim that abandoned a session,")
 		h.reach(StateRegistered)
 		if loc := h.claim().Locator; loc == nil || loc.Sandbox != nil {
 			t.Fatalf("the claim registered through %+v, want a process in no pod", loc)
 		}
-		h.wantRefused("", SessionPod{}, "once a session registered through a process in no pod,")
+		h.wantRegistered(RegisteredPods{Unknown: true}, "once a session registered through a process in no pod,")
 	})
+}
+
+// StoredClaim clears every field the machine overlays on the claim it reports (current), each of
+// which only the machine holds, in memory: with each of the machine's memory set, the claim it
+// reports carries each overlay, and that claim in its stored form equals the claim the machine
+// holds in its stored form, which carries none. A field current comes to overlay that StoredClaim
+// leaves set fails here once this test sets its memory.
+func TestStoredClaimClearsEveryFieldTheMachineOverlays(t *testing.T) {
+	h := newHarness(t)
+	h.inPod(refusedPod)
+	awaited := podProcess(replacedPod, 2)
+	h.m.mu.Lock()
+	h.m.held = &RequestSuspend{Claim: h.token, By: SuspendedByOperator}
+	h.m.compacting = &compacting{}
+	h.m.processGone = true
+	h.m.awaitsPod = &awaited
+	reported, held := h.m.current(), copyClaim(h.m.claim)
+	h.m.held, h.m.compacting, h.m.processGone, h.m.awaitsPod = nil, nil, false, nil
+	h.m.mu.Unlock()
+
+	if !reported.SuspensionHeld || reported.SuspensionHeldBy != SuspendedByOperator || !reported.Compacting || !reported.ProcessGone ||
+		reported.AwaitsPod == nil || len(reported.RegisteredPods.Pods) == 0 {
+		t.Fatalf("the claim the machine reports carries %+v, want every overlay set", reported)
+	}
+	if stored, want := StoredClaim(reported), StoredClaim(held); !reflect.DeepEqual(stored, want) {
+		t.Fatalf("the reported claim's stored form is\n%+v\nwant the held claim's\n%+v", stored, want)
+	}
 }
