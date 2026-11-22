@@ -47,6 +47,9 @@ type HandshakeHold struct {
 	// attempts counts the CONNECTs that have reached the server under a hold: each is one handshake
 	// attempt whose answer the hold keeps.
 	attempts atomic.Int64
+	// lockGuard bounds HoldWriteLock's take of the connection's lock (connLockGuard); its zero value
+	// is the bound every row takes.
+	lockGuard connLockGuard
 }
 
 // StartHandshakeHold relays to the NATS server at target, a client URL such as Start returns,
@@ -138,7 +141,7 @@ func (h *HandshakeHold) HoldWriteLock(t *testing.T, conn *natsgo.Conn) (release 
 	t.Helper()
 	h.Freeze()
 	t.Cleanup(h.Restore)
-	lock, taken := takeConnLock(t, conn)
+	lock, taken := takeConnLock(t, conn, h.lockGuard)
 	if !taken {
 		return h.Restore
 	}
