@@ -63,6 +63,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      JOB_TIMEOUT_MINUTES: 102 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       TESTCONTAINERS_RYUK_DISABLED: "true"
       # The broker's store, which the writer hold's rows open (holdrecordtest.Start) and skip
       # without; a skip is a pass, so without this variable the hold's rows never run here.
@@ -75,6 +76,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/infra/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # go-envoy-infra, under the key .github/workflows/ci-caches.yaml's envoy-infra job fills: the
       # runner's architecture, the Go version and the hash of the files that choose the module

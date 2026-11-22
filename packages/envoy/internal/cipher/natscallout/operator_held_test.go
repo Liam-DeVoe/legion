@@ -246,7 +246,7 @@ func TestTheHeldOperatorGetsTheFullList(t *testing.T) {
 	require.EqualValues(t, 20, backup.messages)
 	succeeds(t, operator.Conn, "$JS.API.STREAM.CREATE.ENVOY_MEASURE", measure)
 	succeeds(t, operator.Conn, "$JS.API.STREAM.DELETE."+sessions, nil)
-	succeeds(t, operator.Conn, "$JS.API.STREAM.CREATE."+sessions, created)
+	createsAfterDelete(t, operator.Conn, "$JS.API.STREAM.CREATE."+sessions, created)
 	updated := streamConfig(t, operator.Conn, sessions)
 	updated["description"] = "updated under the hold"
 	succeeds(t, operator.Conn, "$JS.API.STREAM.UPDATE."+sessions, updated)
@@ -266,8 +266,7 @@ func TestTheHeldOperatorGetsTheFullList(t *testing.T) {
 	require.Contains(t, names.Streams, sessions)
 	succeeds(t, operator.Conn, "$JS.API.CONSUMER.LIST."+bus.Stream, nil)
 	succeeds(t, operator.Conn, "$JS.API.CONSUMER.DELETE."+bus.Stream+".retired-1", nil)
-	_, err = js.ConsumerInfo(bus.Stream, "retired-1")
-	require.ErrorIs(t, err, nats.ErrConsumerNotFound, "consumer-names cleanup left the retired consumer")
+	awaitConsumerGone(t, adminNC, bus.Stream, "retired-1")
 
 	operator.refused(t, "$JS.API.STREAM.CREATE.KV_other", map[string]any{"name": "KV_other", "subjects": []string{"$KV.other.>"}})
 	_, err = js.StreamInfo("KV_other")
@@ -294,6 +293,57 @@ func TestTheHeldOperatorGetsTheFullList(t *testing.T) {
 	}
 	requireOperatorDecision(t, r.decisions.after(t, operatorName, seen+1), natsgrant.OperatorPhaseReleased)
 	operator.refused(t, "$JS.API.STREAM.LIST", nil)
+}
+
+// storeFailed is nats-server's answer to a stream create it could not make a file store for.
+const storeFailed = "error creating store for stream"
+
+// createsAfterDelete requires a create, through nc, of a stream deleted just before to succeed.
+// nats-server answers a delete before a goroutine of its own has removed the account's streams
+// directory, and a create that arrives first is answered 10049, storeFailed; no API says when that
+// goroutine has run (testnats.RecreateKeyValue's doc gives the server's code). So the create is
+// sent again on exactly that answer, every 100 ms, its one bound the test binary's deadline
+// (testwait.UntilPolling); any other refusal fails the test at once.
+func createsAfterDelete(t *testing.T, nc *nats.Conn, subject string, body any) {
+	t.Helper()
+	testwait.UntilPolling(t, 100*time.Millisecond, subject+" to be answered with no store failure", func() (string, bool) {
+		answer := answered(t, nc, subject, body)
+		if answer.Error != nil && answer.Error.ErrCode == 10049 && answer.Error.Description == storeFailed {
+			t.Logf("%s answered %s; asking again", subject, answer.raw)
+			return string(answer.raw), false
+		}
+		require.Nil(t, answer.Error, "%s was refused: %s", subject, answer.raw)
+		return string(answer.raw), true
+	})
+}
+
+// consumerRead bounds one read of a stream's consumer listing in awaitConsumerGone. A read that
+// gets no answer within it is read again, so it bounds a try and not the wait.
+const consumerRead = 10 * time.Second
+
+// awaitConsumerGone waits for the server's own listing of stream's consumers to leave consumer
+// out, which is what a delete the server answered leads to. Its one bound is the test binary's
+// deadline (testwait.Until): on a loaded machine a single read of the consumer right after its
+// delete once waited past its request's deadline, "context deadline exceeded", with nothing
+// wrong but the wait.
+func awaitConsumerGone(t *testing.T, nc *nats.Conn, stream, consumer string) {
+	t.Helper()
+	testwait.Until(t, "the server's listing of "+stream+"'s consumers to leave out "+consumer, func() (string, bool) {
+		msg, err := nc.Request("$JS.API.CONSUMER.NAMES."+stream, nil, consumerRead)
+		if err != nil {
+			return "no answer: " + err.Error(), false
+		}
+		var names struct {
+			Consumers []string `json:"consumers"`
+			Error     *struct {
+				Description string `json:"description"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(msg.Data, &names); err != nil || names.Error != nil {
+			return fmt.Sprintf("the listing answered %q", msg.Data), false
+		}
+		return fmt.Sprint(names.Consumers), !slices.Contains(names.Consumers, consumer)
+	})
 }
 
 // restoreStall is how long nats-server waits for a restore's next chunk before it ends the restore

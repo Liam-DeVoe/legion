@@ -235,7 +235,7 @@ named after `<n>` rather than after the hub's own name:
 | Deployment `<n>-tailnet` (only with `tailnet`) | `tailnet.replicas` tailnet hosts (see [The tailnet hosts](#the-tailnet-hosts)), rolled with `maxUnavailable: 0` and `maxSurge: 1`. It waits on the Secret, the ConfigMap, the ServiceAccount and the priority class read. |
 | PodDisruptionBudget `<n>-tailnet` (only with `tailnet`) | `maxUnavailable: 1` over the tailnet hosts. |
 | ServiceAccount `<n>-listener` (only with `tailnet`) | The session listener's account, which mounts no token: the listener calls no Kubernetes API. |
-| Deployment `<n>-listener` (only with `tailnet`) | One session listener pod (see [The session listener](#the-session-listener)), rolled with `maxUnavailable: 0` and `maxSurge: 1`. It waits on the ServiceAccount and the priority class read. |
+| Deployment `<n>-listener` (only with `tailnet`) | One session listener pod (see [The session listener](#the-session-listener)), rolled with `maxUnavailable: 0` and `maxSurge: 1`; with `listener.replaceUnderHold: true` or `tailnet.listener.replaceUnderHold: true`, `Recreate` with no `rollingUpdate` block, and `pulumi.com/skipAwait: "true"` ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)). It waits on the ServiceAccount and the priority class read. |
 | Service `<n>-listener` (only with `tailnet`) | Port 9020 to the listener pod's port 9020. Each tailnet host forwards the Tailscale Service's port 9020 to it. |
 | NetworkPolicy `<n>-listener` (only with `tailnet`) | An Ingress policy on the listener's pods with exactly one rule: TCP 9020 from the tailnet hosts' pods. Every other port of that pod is admitted to nobody. |
 | PodDisruptionBudget `<n>-listener` (only with `tailnet`) | `maxUnavailable: 1` over the one listener pod, so a node drain or an Autopilot upgrade moves it rather than stalling on it. |
@@ -291,7 +291,7 @@ pod starts on them.
 | `routeAuthorization` | unset | The routes' credential: `secretName` and `secretKey`, an existing Kubernetes Secret in `namespace` and its key, holding the route password, which the component names by reference and never reads; and `stage`, `env`, `routes` or `authorization`, each one apply after the one before it has finished. `env` gives the nats container `NATS_ROUTE_PASSWORD` and `NATS_ROUTE_URLS` and rolls the pods, `routes` names `$NATS_ROUTE_URLS` as `nats.conf`'s cluster routes, and `authorization` names the user `route` and `$NATS_ROUTE_PASSWORD` as its authorization, each applied by the reloader. The password holds letters and digits only, a letter first, and at least 32 characters. Change `secretKey` only together with `stage: env`. Unset, routes carry no credential, as before. See [Route authorization](docs/nats-hub.md#route-authorization). |
 | `listener` | unset | The session listener the hub runs as a workload of its own, declared beside the tailnet entry rather than inside it (see [The session listener](#the-session-listener)): the fields `tailnet.listener` takes, below. It always requires a credential of its callers: `oidcIssuer`, `oidcAudience` and `oidcAccounts` are required and `allowedHosts` is refused, and its `image` must be `legion-envoy-v30.32.0` or later, the first listener that reads `ENVOY_OIDC_ACCOUNTS`: an older one admits every subject the issuer signs for the audience. With `tailnet` the hosts forward the Service's port 9020 to it, and the hub renders what the same listener renders as `tailnet.listener` but for the listener container's token check; without `tailnet` it is reached inside the cluster alone, so `machineId` and at least one `clientNamespaces` entry are required. Refused beside `tailnet.listener`, since the hub runs one listener, and beside `authCallout`, as `tailnet` is. |
 | `tailnet` | unset | The tailnet entry: `serviceName`, the Tailscale Service's name without `svc:`, under `gcp:NatsHub`'s `hostname` rule (2 to 26 lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen); `tailnetDnsName`, the tailnet's DNS name, such as `example-tailnet.ts.net`; `tags`, at least one `tag:<name>`, which every host joins with; `replicas`, the number of hosts, 2 by default and at least 2, so a drained host leaves another serving; `tailscaleImage`, pinned by digest; and `listener`, the session listener the hosts forward the Service's port 9020 to, unless the hub's own `listener` declares it. |
-| `tailnet.listener` | required with `tailnet`, unless `listener` is set | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest, and `legion-envoy-v30.32.0` or later wherever the listener requires a credential (with `clientNamespaces`), the first listener that reads `ENVOY_OIDC_ACCOUNTS`; `machineId`, `tailnet.serviceName` by default; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `clientNamespaces`, the namespaces whose pods reach the listener at its cluster Service, `<n>-listener.<namespace>.svc.cluster.local:9020`, beside the tailnet hosts, none by default, each a DNS label, none repeated; `oidcIssuer`, `oidcAudience` and `oidcAccounts`, the credential the listener requires of every caller, a projected ServiceAccount token `oidcIssuer` (an https URL with no user, query or fragment, an empty one included, such as the cluster's own `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`) signed for `oidcAudience`, of a subject `oidcAccounts` lists as `system:serviceaccount:<namespace>:<name>`, none repeated, all three required with `clientNamespaces` or as the hub's own `listener` and refused otherwise; `allowedHosts`, any further address a client dials a listener with no credential by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves, refused where the listener requires a credential, since it then serves any `Host`; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends ([The listener's sender limit](#the-listeners-sender-limit)). |
+| `tailnet.listener` | required with `tailnet`, unless `listener` is set | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest, and `legion-envoy-v30.32.0` or later wherever the listener requires a credential (with `clientNamespaces`), the first listener that reads `ENVOY_OIDC_ACCOUNTS`; `machineId`, `tailnet.serviceName` by default; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `clientNamespaces`, the namespaces whose pods reach the listener at its cluster Service, `<n>-listener.<namespace>.svc.cluster.local:9020`, beside the tailnet hosts, none by default, each a DNS label, none repeated; `oidcIssuer`, `oidcAudience` and `oidcAccounts`, the credential the listener requires of every caller, a projected ServiceAccount token `oidcIssuer` (an https URL with no user, query or fragment, an empty one included, such as the cluster's own `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`) signed for `oidcAudience`, of a subject `oidcAccounts` lists as `system:serviceaccount:<namespace>:<name>`, none repeated, all three required with `clientNamespaces` or as the hub's own `listener` and refused otherwise; `allowedHosts`, any further address a client dials a listener with no credential by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves, refused where the listener requires a credential, since it then serves any `Host`; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends ([The listener's sender limit](#the-listeners-sender-limit)). Two more prepare a replacement under the writer hold: `consumerNames`, `fixed` or `fresh`, and `replaceUnderHold`, `false` by default ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)). |
 | `tailnetAuthKey` | required with `tailnet` | A secret: the Tailscale auth key the tailnet hosts join with, which [Before the first deployment](#before-the-first-deployment) says how to make. Refused without `tailnet`. May come from another resource or stack. |
 
 Only `kubeconfig` and `tailnetAuthKey` may come from another resource's output. Every other input
@@ -339,8 +339,9 @@ input:
   one that begins with `..`), no `clientNamespaces` without `tailnet` and an entry that is not a DNS label
   or repeats an earlier one, an `allowedHosts` entry refused as `gcp:NatsHub`'s
   `listener.allowedHosts` entries are, a `senderMessagesPerMinute` outside 1 to 60000, a
-  `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, and a `cpu` or `memory` at
-  which Autopilot would not run the listener pod as rendered (see [Sizing](#sizing)); of a listener
+  `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, a `consumerNames` other than
+  `fixed` or `fresh`, and a `cpu` or `memory` at which Autopilot would not run the listener pod as
+  rendered (see [Sizing](#sizing)); of a listener
   that requires a credential (the hub's own `listener`, or a `tailnet.listener` with
   `clientNamespaces`): no `oidcIssuer`, `oidcAudience` or `oidcAccounts`, an `oidcIssuer` that is
   not an https URL with a host and no user, query or fragment, an `oidcAudience` holding whitespace
@@ -406,7 +407,8 @@ one per zone, held hard, with `minDomains` the lesser of `replicas` and 3. With
 ### The session listener
 
 The Deployment `<n>-listener` runs Envoy's session listener as a workload of its own, in one pod,
-rolled with `maxUnavailable: 0` and `maxSurge: 1`. The listener is declared once, as `listener`
+rolled with `maxUnavailable: 0` and `maxSurge: 1`, or recreated with `pulumi.com/skipAwait: "true"`
+under `<l>.replaceUnderHold: true` (below). The listener is declared once, as `listener`
 or as `tailnet.listener`, and the hub renders the same objects either way but for the listener
 container's token check, which a listener declared as `listener` always carries (below); `<l>`
 stands for the path it is declared at. The pod runs under the ServiceAccount
@@ -439,6 +441,10 @@ pod's 33 seconds, its 5-second preStop wait and its 28-second stop, and what has
 new pod's own 135-second bind deadline, counted from its `/v1` open. A new pod that never becomes
 Ready leaves the old one serving while the new one restarts on its bind deadline.
 
+With `<l>.replaceUnderHold` the Deployment is recreated instead, so the old pod stops before the
+new one starts, and the apply does not wait for the new pod
+([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)).
+
 Three more objects carry that pod:
 
 - the Service `<n>-listener`, port 9020 to the pod's port 9020, which each tailnet host's serve
@@ -458,8 +464,10 @@ to NATS at `serviceUrl` with `ENVOY_ALLOW_REMOTE_NATS=1`.
 `streamMaxBytes` are. `ENVOY_SENDER_MESSAGES_PER_MINUTE` and `ENVOY_SENDER_MESSAGE_BURST` are set
 exactly when `<l>.senderMessagesPerMinute` and `<l>.senderMessageBurst`
 are ([The listener's sender limit](#the-listeners-sender-limit)). Setting, changing or removing
-either changes the pod's environment, so the update rolls the pod as above. `NATS_NKEY_SEED_FILE`
-names the mounted seed. There is no `ENVOY_API_TOKEN`.
+either changes the pod's environment, so the update rolls the pod as above. `ENVOY_CONSUMER_NAMES`
+is set exactly when `<l>.consumerNames` is, and a change to it rolls the pod the same way
+([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)).
+`NATS_NKEY_SEED_FILE` names the mounted seed. There is no `ENVOY_API_TOKEN`.
 
 How `/v1` admits a caller depends on who reaches the listener:
 
@@ -486,7 +494,7 @@ How `/v1` admits a caller depends on who reaches the listener:
   background, and answers every projected token 503 with `Retry-After: 1` until it has read it.
   Its pod still needs egress to the issuer, such as GKE's cluster issuer,
   `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`:
-  without it, or with a wrong `<l>.oidcIssuer`, the pod becomes Ready, the rolling update replaces
+  without it, or with a wrong `<l>.oidcIssuer`, the pod becomes Ready, the update replaces
   the old pod, and every `/v1` caller then gets that 503. `/healthz`'s `oidc` field reads `false`
   and `envoy_listener_oidc_issuer_discovered{issuer="cluster"}` reads `0` while the listener has
   not read the issuer. None of the probes below reads either, and this component renders no scrape
@@ -506,7 +514,8 @@ Three probes read the pod's own loopback, two routes between them:
   served; the pattern matches that line and never the gauge's `# HELP` or `# TYPE` line, which
   every scrape carries. The kubelet runs neither of the other two probes, and the pod is not
   Ready, until this one has passed, so a new pod stays out of the Service until its `/v1`
-  serves, and the rolling update keeps the old pod serving until then. `/v1` opens without
+  serves, and the rolling update keeps the old pod serving until then (under
+  `<l>.replaceUnderHold` the Deployment is recreated instead). `/v1` opens without
   waiting for the durable consumer, which the old pod holds until it stops, so the gate cannot
   wait on the old pod. The listener writes the sample this way since `legion-envoy-v29.15.0`; an
   older listener writes it from its first answer, so there the probe passes at that answer, as
@@ -796,7 +805,7 @@ resources each of those is, the sandbox and the public origin in the paragraph u
 | ServiceAccount `<hostname>-tailnet`, Role and RoleBinding `<hostname>-tailnet-tls` | The front door's pods run as an account of their own, which the Role lets `get` and `patch` the one Secret `<hostname>-tailnet-tls` and nothing else (no `create`, since the component creates it, and no `update`, since the pods send merge patches), so neither the app nor the listener, nor the account `serviceAccountSubject` names, can write the certificate. The pod does not automount the account's token: only `cert-publish`, which calls the API server, mounts it, so the tailnet-facing `tailscale` and `advertiser` containers hold no credential for the Secret. The RoleBinding names the Role by an output that waits on the Role's ID, so a preview that creates the Role leaves the name unknown and pulumi-kubernetes sends no server-side dry run of the binding, which an account without the `bind` verb would see refused as "not found" while the Role does not exist. | Not built |
 | Secret `<hostname>-tailnet-tls` | The Tailscale Service's certificate, its key and the ACME account key (keys `tls.crt`, `tls.key` and `acme-account.key.pem`), which the front door's pods publish and seed from ([The front door](#the-front-door)). The component declares it with no data and ignores its contents, so a later preview never plans to undo what the pods wrote, and no pod template carries its checksum, so a renewed certificate rolls no pod. | Not built |
 | Three ClusterIP Services and three NetworkPolicies (two Services with `natsInCluster`) | Dispatch's API on port 8766, to the `allowedNamespaces` and the front door; the front door's SOCKS5 proxy on port 1055, to the app and the listener, neither the Service nor that rule rendered with `natsInCluster`, which leaves the front door's policy admitting nothing; the listener's API on port 9020, to the app. Each policy admits those sources alone among pods (Kubernetes still admits each pod's own node). | Not built |
-| Three Deployments | The app at `replicas` pods, the front door at `frontDoorReplicas` (2 by default) and the listener at `listenerReplicas` (1 by default), each `Recreate` at one pod and `RollingUpdate` (`maxUnavailable: 0`, `maxSurge: 1`) above one, by its own count. Every pod carries required pod anti-affinity on `kubernetes.io/hostname` and a `topology.kubernetes.io/zone` spread with `minDomains: 2`, both over its own Deployment's pods, and every serving container a startup and a liveness probe ([The pods](#the-pods)). The app and the listener each have a five-second pre-stop wait and the stop each is built for, and their termination grace periods differ: the app 35 seconds, the listener 40. The front door has 60 seconds, for its drain ([The front door](#the-front-door)). Every container has equal requests and limits. A pod template whose Deployment has no PodDisruptionBudget carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`; one whose Deployment has a budget does not. | Not built |
+| Three Deployments | The app at `replicas` pods, the front door at `frontDoorReplicas` (2 by default) and the listener at `listenerReplicas` (1 by default), each `Recreate` at one pod and `RollingUpdate` (`maxUnavailable: 0`, `maxSurge: 1`) above one, by its own count. With `replaceUnderHold: true`, the app and the listener are `Recreate` at any count, with no `rollingUpdate` block, and carry `pulumi.com/skipAwait: "true"`; the front door keeps its strategy ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)). Every pod carries required pod anti-affinity on `kubernetes.io/hostname` and a `topology.kubernetes.io/zone` spread with `minDomains: 2`, both over its own Deployment's pods, and every serving container a startup and a liveness probe ([The pods](#the-pods)). The app and the listener each have a five-second pre-stop wait and the stop each is built for, and their termination grace periods differ: the app 35 seconds, the listener 40. The front door has 60 seconds, for its drain ([The front door](#the-front-door)). Every container has equal requests and limits. A pod template whose Deployment has no PodDisruptionBudget carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`; one whose Deployment has a budget does not. | Not built |
 | Up to three PodDisruptionBudgets | `<hostname>` with `appPdbMinAvailable`, `<hostname>-tailnet` with `frontDoorPdbMinAvailable` and `<hostname>-listener` with `listenerPdbMinAvailable`, each over its own Deployment's pods (`app=<name>`) alone, with that `minAvailable` and Kubernetes' default `unhealthyPodEvictionPolicy`, so a drain cannot take that workload below that many ready pods. | Not built |
 
 Three inputs change what the first four rows register:
@@ -1342,8 +1351,9 @@ instance waits for nothing of the consumer's.
 
 `replicas`, `frontDoorReplicas` and `listenerReplicas` are the pod counts of the app, the front
 door and the listener: 1, 2 and 1 by default, each refused by name below 1 before the component
-registers a resource. Each Deployment takes its update strategy from its own count ([The
-pods](#the-pods)). The front door runs two by default, since with one pod every node drain,
+registers a resource. Each Deployment takes its update strategy from its own count, but for the
+app's and the listener's while `replaceUnderHold` is `true` ([The pods](#the-pods)). The front door
+runs two by default, since with one pod every node drain,
 upgrade or scale-down that moves it takes Dispatch off the tailnet until its replacement is ready.
 Raise `replicas` above 1 only on an envoy image that meets "Running more than one process" in
 `packages/envoy/cmd/dispatch/README.md` (below). Raise `listenerReplicas` above 1 only on an envoy
@@ -1400,6 +1410,15 @@ equals the rate. Each of the `listenerReplicas` pods keeps its own count for eac
 session whose requests reach more than one pod can send more than the rate in all. The component
 refuses a rate outside 1 to 60000, a burst below 1 and a burst with no rate, each by name, before
 it registers a resource, and `clusterOnly` refuses both inputs by name.
+
+`consumerNames` and `replaceUnderHold` prepare a replacement under the writer hold
+([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)):
+`consumerNames`, `fixed` or `fresh`, is `ENVOY_CONSUMER_NAMES` on the app's `envoy-dispatch` and
+the listener's `envoy-listener`, the two containers that create JetStream consumers, rendered only
+when it is set. `replaceUnderHold`, `false` by default, recreates the app's and the listener's
+Deployments at any replica count and lets the apply finish without waiting for them; the front door
+keeps its own strategy. The component refuses a `consumerNames` other than `fixed` or `fresh` by
+name before it registers a resource, and `clusterOnly` refuses both inputs by name.
 
 `signingKeyGenerations`, `[0]` by default, is the ordered key set `DISPATCH_SIGNING_KEY` holds:
 the first generation in the list signs every new session cookie and seals every new refresh
@@ -1662,8 +1681,9 @@ namespaces, allowed namespaces, an `appCpu`, `appMemory`, `proxyCpu`, `proxyMemo
 Autopilot's bounds for the app pod (above), a `pprofPort` outside 1-65535 or on a port the app pod
 already binds (above), a `replicas`, `frontDoorReplicas` or `listenerReplicas` below 1, a
 `natsReplicas` outside 1 to 5 or a `streamMaxBytes` below 1, a `senderMessagesPerMinute` outside
-1 to 60000, a `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, a
-`priorityClassName` that is empty, not a DNS subdomain or a `system-` class, an
+1 to 60000, a `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, a `consumerNames`
+other than `fixed` or `fresh`, a `priorityClassName` that is empty, not a DNS subdomain or a
+`system-` class, an
 `appPdbMinAvailable`, `frontDoorPdbMinAvailable` or `listenerPdbMinAvailable` outside 1 to its
 Deployment's replica count, a `databaseAvailabilityType` other than `ZONAL` or `REGIONAL`, a
 negative `signingKeyGenerations` entry, which names no resource, or a repeated one, which would
@@ -1801,15 +1821,19 @@ Azure form, which `azureChatEndpoint` takes too, the projected token at
 `/var/run/secrets/azure-federation/token`; and with `chatTokenSecret`, the answerer's bearer token
 at `/var/run/secrets/chat-token/token`.
 
-Each Deployment takes its update strategy from its own replica count. At one pod it is recreated,
-stopping the old pod before the new one starts: a roll would run the outgoing and the incoming
-builds together, which is safe only once the outgoing build follows the rules for two builds
-running side by side and keeps its assets in the shared store, and a one-pod release cannot know
-that of the build it replaces. Above one pod it rolls, with `maxUnavailable: 0` and `maxSurge: 1`,
-so a new pod is ready before any old one goes down: an operator who runs a workload above one pod
-runs such builds and wants no gap in service. There is no strategy or surge input, since the safe
-strategy follows from the count. So at one replica an input or image update recreates that
-workload's one pod, which is a brief outage, and the front door, at its default of two, rolls.
+With `replaceUnderHold` unset or false, each Deployment takes its update strategy from its own
+replica count. At one pod it is recreated, stopping the old pod before the new one starts: a roll
+would run the outgoing and the incoming builds together, which is safe only once the outgoing
+build follows the rules for two builds running side by side and keeps its assets in the shared
+store, and a one-pod release cannot know that of the build it replaces. Above one pod it rolls,
+with `maxUnavailable: 0` and `maxSurge: 1`, so a new pod is ready before any old one goes down: an
+operator who runs a workload above one pod runs such builds and wants no gap in service. So at one
+replica an input or image update recreates that workload's one pod, which is a brief outage, and
+the front door, at its default of two, rolls. The one input that sets a strategy is
+`replaceUnderHold`: with `true`, the app and the listener are recreated at any count and carry
+`pulumi.com/skipAwait: "true"`, for a replacement under the writer hold, and the front door keeps
+the strategy its count gives it
+([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)).
 
 Every pod carries two rules over its own Deployment's pods, at any replica count. Required pod
 anti-affinity on `kubernetes.io/hostname` puts at most one of them on a node, so a node's loss
@@ -3644,6 +3668,46 @@ forward may have stored the message. A repeat that finds the count at 0 is refus
 message is. The listener's own two settings are on the documentation site's
 [Envoy page](https://cybermonklabs.github.io/legion/dispatch/envoy/#the-sender-limit).
 
+## The consumer-name mode and the writer hold's update rule
+
+Two optional inputs prepare a deployment for a replacement under the writer hold, which refuses
+every NATS client but the operator's. `gcp:ClusteredNatsHub` takes them under `listener` or
+`tailnet.listener`, and `gcp:Dispatch` takes them as its own inputs. The components that take
+them render something only where an input is set, so a deployment that sets neither renders
+exactly what it rendered before.
+
+`consumerNames` is how each consumer creator names the JetStream consumers it creates: `fixed`,
+one name for each consumer, or `fresh`, a new physical name at each creation behind a selection
+record. The component renders it as `ENVOY_CONSUMER_NAMES` on each creator: the hub's listener
+container, and Dispatch's `envoy-dispatch` and `envoy-listener` containers. Dispatch's front door
+creates no consumer and gets nothing. Unset, the component renders nothing, and a creator runs
+`fixed`. A creator reads the setting only at its start, so a change rolls its pod; a creator built
+before the setting existed reads no such variable and runs as it always did. The component refuses
+any other value before it registers anything, with an error that names the input and quotes the
+value, as `tailnet.listener.consumerNames "Fresh" must be "fixed" or "fresh"
+(ENVOY_CONSUMER_NAMES); leave it unset for fixed`. Case and surrounding whitespace count.
+
+`replaceUnderHold`, `false` by default, is the update rule of each creator's Deployment for that
+replacement. Under the hold a new pod cannot connect to NATS, so it does not become ready: the hub
+listener's startup probe passes only once its `/v1` serves, and a rolling update keeps the old pod
+beside a new pod that never becomes ready. With `true`:
+
+- each creator's Deployment uses `strategy: {type: Recreate}`, with no `rollingUpdate` block, at
+  any replica count, so every old pod stops before a new one starts;
+- each creator's Deployment carries the annotation `pulumi.com/skipAwait: "true"` on its own
+  metadata, so the apply does not wait for its rollout. A check of the running pods, not the
+  apply, shows the replacement.
+
+The creators are the hub's listener, `<n>-listener`, and Dispatch's app, `<hostname>`, and
+listener, `<hostname>-listener`. The pod template does not change, so the rule by itself rolls no
+pod. Dispatch's front door keeps the strategy its replica count gives it. With `false` every
+Deployment renders exactly as before: the hub's listener rolls with `maxSurge: 1` and
+`maxUnavailable: 0`, and each Dispatch Deployment is recreated at one replica and rolls with those
+bounds above one. Each of those rolling strategies writes its bounds itself, so the component's
+field manager owns `rollingUpdate`, and server-side apply removes it when `true` stops rendering
+it. Set `replaceUnderHold` back to `false` once the hold is released: under Recreate every later
+release stops every pod before its replacement serves.
+
 ## NATS seeds
 
 A NATS client authenticates as an nkey user with that user's seed, and the server knows the user
@@ -4667,10 +4731,13 @@ row reads a missing journal as no journal only on a replica whose floor never sa
 record, and refuses a journal older than one its floor saw. The residual: every floor is per
 replica and lasts as long as its process, so a replica that starts again, or one that has not
 served the row or a record since its newer gen, serves an older signed one put back as it would
-the genuine one; production runs two replicas. Records carry no history of their own, unlike the
-row's signed log: after a database restore, a replica that starts again reads the records as the
-restore left them, an older signed journal or a journal gone included. A floor both replicas share,
-kept outside the database, is the fix if that acceptance changes.
+the genuine one; production runs two replicas. Records carry no signed history of their own, but
+a journal is bound to the row's signed log: each of its entries names the hold row it was written
+under, so the restore reads another history's journal, even at a higher gen, as unknown. The other
+records (a cohort, a conversion's saved set, the selection inputs) carry no such binding: after a
+database restore, a replica that starts again reads them as the restore left them, an older signed
+version or one gone included. A floor both replicas share, kept outside the database, is the fix
+if that acceptance changes.
 
 **Restoring a lost hold row.** The route stores a restored row only at one above the highest gen
 its log holds, which no command can read: a restore at any other gen is refused naming that gen
@@ -4705,17 +4772,24 @@ operator's client: name it and restore again); or after a `held` one whose hold'
 shows `hold release` or `hold abort` done. After any other `held` entry it refuses
 `bad_transition`, so no restore frees every client while a command of a hold may run. Whatever the
 latest entry, it first reads every hold's journal, an ended hold's included, against the broker's
-record floor and its signature: an older version than one the broker wrote or served, or one that
-does not verify, is unknown (409 `below_floor`). It then refuses a `released` row, naming a hold or
-none, while a hold the verified log does not show ended has a signed journal showing `hold set`
-done and no end: that hold is held by its own record. A verified `released` entry naming a hold,
-at any gen (a release or abort cut before its done entry included), shows it ended only while its
-journal shows no command's intent pending but `hold release`'s or `hold abort`'s; no command runs
-while the row is lost, since Admit reads the row first. Nothing else shows a hold ended: after a
-point-in-time restore, or saved rows put back into a log cut back, the log holds entries of two
-histories, whose gens and signing times say nothing of each other, so neither a later hold's
-`prepare` nor the live hold's own `released` entry from the other history, while one of its
-commands may run, ends it. Each refusal names the hold, and for a signature whose key has left
+record floor, its signature and the log: an older version than one the broker wrote or served,
+one that does not verify, or one bound to another history is unknown (409 `below_floor`). A
+journal is bound to its history by its entries: each names the hold row it was written under,
+its gen and signing time (`Operation.Row`: the row `Admit` read for an intent, the row read when
+a done or stop entry is written), and a journal one of whose entries names a row the verified log
+does not hold, or names none, is another history's or one whose hold's log entries were cut or
+deleted. It then refuses a `released` row, naming a hold or none, while a hold's signed journal
+shows `hold set` done and no end, or shows `hold set` not done while the verified log holds that
+hold's `held` entry: that hold is held by its own record. A done `hold release` or `hold abort`
+shows a hold ended. A verified `released` entry naming a hold, at any gen, shows it ended only
+while its journal shows the end that history admitted: `hold release`'s or `hold abort`'s intent
+as that command's latest entry, cut before its done entry, and no other command's intent pending.
+Nothing else shows a hold ended. After a point-in-time restore, or saved rows put back into a log
+cut back, the log holds entries of two histories: gens and signing times say nothing across
+holds, so a later hold's `prepare` says nothing of a hold, and the live hold's own `released`
+entry from the other history says nothing of whether this history ended it, so it ends a hold
+idle between commands, stopped, or running one no more than it ends one whose journal admitted no
+end. Each refusal names the hold, and for a signature whose key has left
 `BROKER_NATS_HOLD_SIGNING_KEYS` that key's id (`RouteError.Message` in the operator's client); it
 advises restoring the row `held` with the hold's id only when the route admits that restore, after
 a log whose latest entry is that hold's own `prepare` or `held` entry, and otherwise names the
@@ -4725,31 +4799,49 @@ process: a database writer who empties the log, or cuts it back to an earlier en
 since it started, sent by a client that has seen no row; the journals stop a `released` row then
 only while a hold's journal shows it held.
 
+Two cases still store a `released` row while a hold is live, each a database writer's: the live
+hold's own `released` entry from another history put back while its `hold release` intent was
+written and the row had not yet moved (the end was begun, but in `hub-restore` its disk check may
+not have run); and the live hold's `held` entry deleted while `hold set` runs, which makes the log
+look like an abort from `prepare`.
+
 The residual: a database writer can leave the operator no restore on any route, and that lasts
 after the writer stops. Each of these does it: one unsigned insert of a done record under a hold
-id no hold uses; an older version of any hold's journal put back, an ended hold's included, on a
-replica that saw the newer one; a live hold's done record deleted; an ended hold's `released`
-entry deleted; the log cut back under a live hold; or an entry from another history put back
-above a live hold. Every `released` restore is then refused, and a `held` one too unless the log's
-latest entry is that hold's own and its done record is there; with `BROKER_NATS_HOLD_READ=true`
-every client but the operator is refused meanwhile. No route can tell such a record from a live
-hold's journal a writer broke, and skipping it would free every client mid-hold. The refusal names
-the rows: 409 `below_floor` naming the hold whose done record does not verify or is older than one
-the broker saw; 400 `bad_transition` naming the hold whose journal shows it held while the log's
-latest entry, named by its phase, gen and hold id, is not that hold's; or 400 `bad_transition`
+id no hold uses; an older version of any hold's journal put back, an ended hold's included,
+whether on a replica that saw the newer one or, for a version from while the hold was held, on
+any replica; another history's journal of a hold put in this one's place; a live hold's done
+record deleted; an ended hold's `released` entry deleted; the log cut back under any hold's
+entries while that hold's journal stays; or an entry from another history put back above a live
+hold. Every `released` restore is then refused, and a `held` one too unless the log's latest entry
+is that hold's own and its done record is there; with `BROKER_NATS_HOLD_READ=true` every client
+but the operator is refused meanwhile. No route can tell such a record from a live hold's journal
+a writer broke, and skipping it would free every client mid-hold. The refusal names the rows: 409
+`below_floor` naming the hold whose done record does not verify, is older than one the broker saw,
+or holds an entry whose hold row the log does not hold (naming the entry and that row's gen); 400
+`bad_transition` naming the hold whose journal shows it held while the log's latest entry, named
+by its phase, gen and hold id, is not that hold's, and when the log names that hold released, the
+released entry's gen with the two causes the route cannot tell apart: that entry put back from
+another history, or an older version of this hold's journal put back; or 400 `bad_transition`
 naming the hold of a latest `held` entry that has no done record. The hand repair, by a database
 admin, starts by reading the named hold's rows (`select * from nats_hold_records where hold_id =
 '<hold>'` and `select * from nats_hold_log where hold_id = '<hold>' order by gen`), then by cause:
 
 - A done record no hold of the operator's wrote: delete it by name (`delete from nats_hold_records
   where hold_id = '<hold>' and kind = 'done'`), then send the restore again.
-- A journal put back, or a done record or log entries deleted: restore them from a backup, then
-  send the restore again.
+- A journal put back, another history's or an older version, or a done record or log entries
+  deleted: restore them from a backup, then send the restore again. A journal whose entry names a
+  row the log lost to a cut-back, of a hold whose journal shows it ended, may instead be deleted by
+  name.
 - An entry from another history put back above a live hold, which the refusal names as the log's
-  latest entry: delete it by gen (`delete from nats_hold_log where gen = <gen>;`); restart each
-  broker replica that answered a restore since it was put back, since judging that restore took
-  the entry into the replica's floor of the row, which then refuses the log below it until the
-  replica starts again; then restore the row `held` with the live hold's id.
+  latest entry or as the `released` entry naming the hold: first compare the named hold's journal
+  with a backup. When the backup holds a later version of it, one that shows `hold release` or
+  `hold abort` admitted or done, the journal was put back older and that `released` entry is the
+  hold's genuine end: restore the journal (the case above) and keep the entry, since deleting it
+  would hold an ended hold again. Otherwise delete the entry by gen
+  (`delete from nats_hold_log where gen = <gen>;`); restart each broker replica that answered a
+  restore since it was put back, since judging that restore took the entry into the replica's
+  floor of the row, which then refuses the log below it until the replica starts again; then
+  restore the row `held` with the live hold's id.
 
 **Rotating the hold signing key.** `BROKER_NATS_HOLD_SIGNING_KEYS` is the one list every hold row,
 record, log entry, record delete and cutover row verifies against, and so is every records-only
@@ -4766,7 +4858,9 @@ rotation goes in this order:
 1. Add the new public key to `BROKER_NATS_HOLD_SIGNING_KEYS` beside the old one, and roll it out to
    the broker and to every command that verifies the hold's rows.
 2. Sign with the new key alone, and destroy the old private key: the operator's commands hold only
-   the newest private key.
+   the newest private key. Then, in a routine rotation, run one hold under the new key, which
+   re-signs the hold row, and within it re-sign each family's cutover row with `PutCutover` at the
+   state it holds, so the first read in step 3 lists neither and step 4 deletes neither.
 3. Read which stored rows the old key signed, by its id (`<old>` below). A signature written before
    signatures named their key has no dot, so `split_part` gives the whole signature and the read
    lists it too:
@@ -4781,33 +4875,51 @@ rotation goes in this order:
 
    Then read which records-only copies it signed, with `<copies>` the directory the copies are
    kept under: each copy is a directory whose `manifest.sig` opens with its key's id and a dot, or
-   holds no dot when it was written before signatures named their key.
+   holds no dot when it was written before signatures named their key. The read first counts the
+   copies, and stops naming the directory when it holds none, so a wrong directory never reads as
+   one with no copy the old key signed:
 
    ```sh
-   grep -rlE --include=manifest.sig '^(<old>\.|[^.]+$)' <copies>
+   count=$(find <copies> -name manifest.sig | wc -l)
+   if [ "$count" -eq 0 ]; then echo "no manifest.sig under <copies>: not the records-only copies' directory" >&2; else grep -rlE --include=manifest.sig '^(<old>\.|[^.]+$)' <copies>; fi
    ```
 
 4. The hand repair, which removes the old key. With no hold live, a database admin deletes by name
-   every row the first read lists, the hold row and the cutover rows included:
+   every row the first read lists, the hold row and the cutover rows included, and for each log
+   entry it lists, first the journal of that entry's hold, since the journal names the entry (one
+   the new key wrote last, of a hold that began under the old key, still names rows the old key
+   signed, and the restore reads a journal naming rows its log does not hold as unknown):
 
    ```sql
    delete from nats_hold where gen = <gen>;
+   delete from nats_hold_records where kind = 'done' and hold_id in (select hold_id from nats_hold_log where gen = <gen>);
    delete from nats_hold_log where gen = <gen>;
    delete from nats_hold_records where hold_id = '<hold>' and kind = '<kind>' and key = '<key>';
    delete from nats_hold_record_deletes where hold_id = '<hold>' and kind = '<kind>' and key = '<key>';
    delete from nats_cutover where family = '<family>';
    ```
 
-   A cutover row left signed by a key no longer listed makes `Cutovers()`, which reads every
-   family's row, fail; once deleted, that family has no cutover row until a hold's conversion or
-   rollback writes one again. Each copy the second read lists stops reading once the old key
-   leaves the list: take it again with the new key, and delete the old one. Then remove the old
+   When the read listed the hold row, deleting it leaves the auth service's view unknown, so with
+   `BROKER_NATS_HOLD_READ=true` every client but the operator is refused from that delete until the
+   restore; the hold step 2 runs under the new key re-signs the row, and then the read lists no
+   hold row to delete. The read lists a cutover row only when step 2's re-signing was skipped, or
+   for a leaked key, whose cutover rows are deleted, not re-signed. A deleted family has no cutover
+   row until a hold's conversion or rollback writes one again (`Cutovers()`, which reads every
+   family's row, fails on one left signed by a key no longer listed), and the streams census, which
+   runs only once every family it declares has a `done` cutover row (INFRA-4015's plan), exits
+   naming that step until the family is converted again, so a `hub-restore` hold, which a census
+   completes, cannot complete either. Each copy the second read lists stops reading once the old
+   key leaves the list: take it again with the new key, and delete the old one. Then remove the old
    key from the list, restart each broker replica (a replica that served the old row refuses an
-   emptied or cut-back log under it until it starts again), and restore the row: `Bootstrap` when
-   the log is empty, otherwise the restore at the gen its `RestoreGenError` names.
+   emptied or cut-back log under it until it starts again), and restore the row, when the read
+   listed the hold row: `Bootstrap` when the log is empty, otherwise the restore at the gen its
+   `RestoreGenError` names.
 
-A key removed because it leaked takes step 4 at once, since what it signed can no longer be
-trusted: run both reads in step 3 with the leaked key's id, then follow step 4 as written.
+A key removed because it leaked takes step 4 as soon as no hold is live, since what it signed can
+no longer be trusted, and its cutover rows are deleted rather than re-signed, since it may have
+signed one no conversion wrote. When a hold is live, do steps 1 and 2 first, end the live hold
+with the new key (`hold release`, or `hold abort` once a command stopped), and only then run both
+reads in step 3 with the leaked key's id and follow step 4 as written.
 
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the

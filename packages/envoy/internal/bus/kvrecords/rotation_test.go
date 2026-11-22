@@ -17,20 +17,25 @@ import (
 
 // copiesRead is infra/README.md's read of the records-only copies a key signed ("Rotating the hold
 // signing key", step 3), with <old> the key's id and <copies> the directory the operator keeps the
-// copies under: each copy is a directory whose manifest.sig opens with its key's id and a dot, or
-// holds no dot when written before signatures named their key.
-const copiesRead = `grep -rlE --include=manifest.sig '^(<old>\.|[^.]+$)' <copies>`
+// copies under: it counts the copies first and stops, naming the directory, when it holds none;
+// otherwise it lists each copy whose manifest.sig opens with the key's id and a dot, or holds no
+// dot (written before signatures named their key).
+const copiesRead = `count=$(find <copies> -name manifest.sig | wc -l)
+if [ "$count" -eq 0 ]; then echo "no manifest.sig under <copies>: not the records-only copies' directory" >&2; else grep -rlE --include=manifest.sig '^(<old>\.|[^.]+$)' <copies>; fi`
 
 // The hold's records-only copies are signed with the operator's hold key, so a key rotation reads
 // them too: infra/README.md's read, run as written over a directory of copies, lists the copy the
 // old key signed and one written before signatures named their key, and not the new key's copy;
-// and the old key's copy stops reading once that key leaves the list, naming its id. Fails while
-// the README's step 3 reads only the five tables, as at e481b26500 (the README does not hold the
-// read), or with a read that misses copies with no key id.
+// run over a directory that holds no copy, it says so, naming the directory, rather than print
+// nothing, which reads as no copy the old key signed; and the old key's copy stops reading once
+// that key leaves the list, naming its id. Fails while the README's step 3 reads only the five
+// tables, as at e481b26500, or reads the copies with no count, as at 886868daac (a wrong
+// directory prints nothing), or with a read that misses copies with no key id.
 func TestTheRotationReadFindsTheCopiesTheOldKeySigned(t *testing.T) {
 	readme, err := os.ReadFile("../../../infra/README.md")
 	require.NoError(t, err)
-	require.True(t, strings.Contains(string(readme), copiesRead), "infra/README.md's rotation step 3 does not hold the copies' read word for word: %s", copiesRead)
+	words := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	require.True(t, strings.Contains(words(string(readme)), words(copiesRead)), "infra/README.md's rotation step 3 does not hold the copies' read word for word: %s", copiesRead)
 
 	r := newRig(t)
 	r.fillBucket(t)
@@ -53,9 +58,11 @@ func TestTheRotationReadFindsTheCopiesTheOldKeySigned(t *testing.T) {
 	require.True(t, named, "the copy's signature %q names no key", sig)
 	require.NoError(t, os.WriteFile(sigPath, []byte(bare), 0o600))
 
-	command := strings.NewReplacer("<old>", signedrecord.KeyID(old), "<copies>", copies).Replace(copiesRead)
-	out, err := exec.Command("sh", "-c", command).Output()
-	require.NoError(t, err, "the read %q", command)
+	read := func(dir string) *exec.Cmd {
+		return exec.Command("sh", "-c", strings.NewReplacer("<old>", signedrecord.KeyID(old), "<copies>", dir).Replace(copiesRead))
+	}
+	out, err := read(copies).Output()
+	require.NoError(t, err, "the read over %s", copies)
 	var found []string
 	for _, line := range strings.Fields(string(out)) {
 		rel, err := filepath.Rel(copies, line)
@@ -65,6 +72,11 @@ func TestTheRotationReadFindsTheCopiesTheOldKeySigned(t *testing.T) {
 	slices.Sort(found)
 	require.Equal(t, []string{filepath.Join("legacy", kvrecords.SignatureFile), filepath.Join("old", kvrecords.SignatureFile)}, found,
 		"the read by the old key's id lists the old key's copy and the copy with no key id, and not the new key's")
+
+	empty := t.TempDir()
+	said, _ := read(empty).CombinedOutput()
+	require.Contains(t, string(said), "no manifest.sig under "+empty+": not the records-only copies' directory",
+		"the read over a directory with no copy prints %q; want it to say the directory holds none", said)
 
 	_, _, err = kvrecords.Read(oldCopy, bucket, r.keys, oldManifest.ManifestSHA256)
 	var unlisted *signedrecord.UnlistedKeyError

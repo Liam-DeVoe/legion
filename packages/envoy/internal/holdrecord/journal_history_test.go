@@ -3,6 +3,7 @@ package holdrecord_test
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -99,7 +100,9 @@ func historyRows(t *testing.T) {
 	t.Run("a released restore naming a hold whose journal shows hold set done and no end is refused, whatever the log shows", func(t *testing.T) {
 		// The reviewer's case: a writer deletes the row and the log entries above the hold's own
 		// prepare entry, and the broker starts again; a client that has seen no row restores
-		// released with the hold's id. Fails while the route judges by the log alone: it stores
+		// released with the hold's id. The hold's journal names the held row it was written under,
+		// which the cut log no longer holds, so it reads as unknown: 409 below_floor naming that
+		// entry and the hand repair. Fails while the route judges by the log alone: it stores
 		// released at gen 3 with a command pending.
 		r := newRig(t)
 		c := r.client(t)
@@ -114,11 +117,9 @@ func historyRows(t *testing.T) {
 			t.Fatal(err)
 		}
 		r.Restart()
-		fresh := r.client(t)
-		got, err := fresh.RestoreRow(ctx, held.Gen, natsgrant.OperatorPhaseReleased, "h-cut-log", "released after a cut log")
-		var refusal *holdrecord.RouteError
-		if !errors.As(err, &refusal) || refusal.Code != "bad_transition" {
-			t.Errorf("RestoreRow of released for h-cut-log answered %+v, %v; want 400 bad_transition", got, err)
+		got := restoreRefusal(t, r.client(t), held.Gen, natsgrant.OperatorPhaseReleased, "h-cut-log")
+		if !refusedWith(got, http.StatusConflict, "below_floor", `hold "h-cut-log"'s journal entry`, "which the verified log does not hold", handRepair) {
+			t.Errorf("RestoreRow of released for h-cut-log answered %s; want 409 below_floor naming the journal's entry whose row the cut log lost", refusalText(got))
 		}
 		if gen, phase := storedRow(t, r); gen != 0 {
 			t.Errorf("after the refused restore the table holds %s at gen %d, want no row", phase, gen)
@@ -178,8 +179,9 @@ func restoreJournalRows(t *testing.T) {
 	t.Run("a released restore with no hold id is refused while any held hold's journal shows hold set done and no end", func(t *testing.T) {
 		// Claude's round-6 case: a replica restarted, a writer cut the log back to its first entry and
 		// deleted the row, and a fresh client restores released with no hold id while a command is
-		// pending. Fails while the route reads only the named hold's journal: released is stored at
-		// gen 2.
+		// pending. The held hold's journal names rows the cut log no longer holds, so it reads as
+		// unknown: 409 below_floor naming that entry. Fails while the route reads only the named
+		// hold's journal: released is stored at gen 2.
 		r := newRig(t)
 		c := r.client(t)
 		hold(t, c, "h-cut-to-1", holdrecord.WorkflowCutover, nil)
@@ -194,11 +196,9 @@ func restoreJournalRows(t *testing.T) {
 		}
 		r.Restart()
 		fresh := r.client(t)
-		gen := restoreGen(t, fresh)
-		got, err := fresh.RestoreRow(ctx, gen, natsgrant.OperatorPhaseReleased, "", "released after a cut log")
-		var refusal *holdrecord.RouteError
-		if !errors.As(err, &refusal) || refusal.Code != "bad_transition" {
-			t.Errorf("RestoreRow of released with no hold id answered %+v, %v; want 400 bad_transition", got, err)
+		got := restoreRefusal(t, fresh, restoreGen(t, fresh), natsgrant.OperatorPhaseReleased, "")
+		if !refusedWith(got, http.StatusConflict, "below_floor", `hold "h-cut-to-1"'s journal entry`, "which the verified log does not hold", handRepair) {
+			t.Errorf("RestoreRow of released with no hold id answered %s; want 409 below_floor naming the journal's entry whose row the cut log lost", refusalText(got))
 		}
 		if gen, phase, _ := stored(t, r); gen != 0 {
 			t.Errorf("after the refused restore the table holds %s at gen %d, want no row", phase, gen)

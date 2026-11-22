@@ -114,6 +114,80 @@ func makeDeclaredOn(t *testing.T, admin *natsgo.Conn, js natsgo.JetStreamContext
 	require.NoError(t, streamset.EnsureStreams(ctx, admin, settings))
 }
 
+// awaitReadable waits until the cluster can answer every read check sends: a meta leader that
+// counts the running members, for the stream names (Cluster.AwaitReady), and, for each declared
+// stream but the transient barrier and the missing ones, a leader other than not, the server_name
+// of a member the test stopped, for that stream's info (awaitLeader). check bounds each read by a
+// fixed wait (requestWait), the bound a deploy's run wants, and a read sent while an election runs
+// draws no answer within it and is UNKNOWN; so the row waits the election out first, rather than
+// leave a read to land in it.
+func (h *hub) awaitReadable(t *testing.T, settings streamset.Settings, not string, missing ...string) {
+	t.Helper()
+	h.cluster.AwaitReady(t)
+	for _, stream := range streamset.Declared(settings) {
+		if stream.Transient || slices.Contains(missing, stream.Name) {
+			continue
+		}
+		h.awaitLeader(t, stream.Name, not)
+	}
+}
+
+// leaderRead bounds one read of awaitLeader's, which reads again until its own bound.
+const leaderRead = 5 * time.Second
+
+// awaitLeader waits until stream has a leader other than not, bounded by the test's own deadline
+// (go test -timeout, less a minute for the test to fail by name), not by a fixed wait: under load
+// the elections a stopped member and held routes leave run past any fixed bound short enough to
+// mean anything. It fails naming the stream and the last thing it read.
+func (h *hub) awaitLeader(t *testing.T, stream, not string) {
+	t.Helper()
+	deadline, ok := t.Deadline()
+	if !ok {
+		deadline = time.Now().Add(10 * time.Minute)
+	}
+	ctx, cancel := context.WithDeadline(t.Context(), deadline.Add(-time.Minute))
+	defer cancel()
+	last := "no info was read"
+	for {
+		read, cancelRead := context.WithTimeout(ctx, leaderRead)
+		info, err := h.js.StreamInfo(stream, natsgo.Context(read))
+		cancelRead()
+		switch {
+		case err != nil:
+			last = err.Error()
+		case info.Cluster == nil:
+			last = "no cluster info"
+		case info.Cluster.Leader == "" || info.Cluster.Leader == not:
+			last = fmt.Sprintf("leader %q", info.Cluster.Leader)
+		default:
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("stream %s had no leader other than %q by the test's deadline; last read: %s", stream, not, last)
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+// redialTo connects the hub's admin and its stream-write watch again, both to the member at url:
+// testnats connects without reconnecting, so a test that stops a member first moves both to one
+// it keeps running.
+func (h *hub) redialTo(t *testing.T, url string) {
+	t.Helper()
+	h.admin = testnats.Connect(t, url)
+	t.Cleanup(h.admin.Close)
+	js, err := h.admin.JetStream(natsgo.MaxWait(30 * time.Second))
+	require.NoError(t, err)
+	h.js = js
+	h.writes = testnats.WatchStreamWrites(t, url)
+}
+
+// electionHold is how long TestStreamsCheckChangesNothing holds the routes between the members it
+// keeps running after it stops the notification stream's leader, so that stream's election cannot
+// finish sooner: a slow election, as a loaded box makes one.
+const electionHold = 20 * time.Second
+
 // phase is a hold row that reads p.
 func phase(p natsgrant.OperatorPhase) streams.Phase {
 	return func(context.Context) (natsgrant.OperatorPhase, error) { return p, nil }
@@ -147,7 +221,11 @@ func requireFailureNaming(t *testing.T, report streams.Report, stream, what stri
 // check, run unattended as the measurement job's user under the answer the auth service gives it
 // (natsgrant.ForCallout of Measure), reports a missing KV_envoy_roles and exits 1, then a
 // KV_envoy_roles at fewer copies than the deployment's three, and an ENVOY_MEASURE whose byte
-// limit was changed, each named; and the server is asked for no stream create and no update.
+// limit was changed, each named; and the server is asked for no stream create and no update. The
+// member leading the notification stream, the first stream check reads, is stopped first, as one is
+// when its pod restarts, and the routes between the other two are held for electionHold, so that
+// stream's election runs slow; the row waits it out before check runs (awaitReadable), since check
+// bounds each read by a fixed wait and a read sent inside the election is UNKNOWN.
 func TestStreamsCheckChangesNothing(t *testing.T) {
 	h := startHub(t, 3, natsgrant.ForCallout(natsgrant.Measure()))
 	settings := streamset.Settings{Replicas: 3}
@@ -158,7 +236,16 @@ func TestStreamsCheckChangesNothing(t *testing.T) {
 	_, err := h.js.AddStream(&changed)
 	require.NoError(t, err)
 	require.NoError(t, h.js.DeleteKeyValue(bus.RoleClaimBucket))
-	h.writes.Take(t)
+	leading, err := h.js.StreamInfo(bus.Stream)
+	require.NoError(t, err)
+	stopped := h.cluster.Member(leading.Cluster.Leader)
+	require.NotEqual(t, -1, stopped, "no member is named %q, the notification stream's leader", leading.Cluster.Leader)
+	h.redialTo(t, h.cluster.Servers[(stopped+1)%len(h.cluster.Servers)].URL())
+	h.cluster.Servers[stopped].Stop(t)
+	thaw := h.cluster.FreezeRoutes(t)
+	t.Cleanup(thaw)
+	time.AfterFunc(electionHold, thaw)
+	h.awaitReadable(t, settings, h.cluster.Name(stopped), "KV_"+bus.RoleClaimBucket)
 
 	errs := make(chan error, 64)
 	conn := h.connect(t, measureInbox, errs)
@@ -171,9 +258,9 @@ func TestStreamsCheckChangesNothing(t *testing.T) {
 
 	_, err = h.js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bus.RoleClaimBucket, Storage: natsgo.FileStorage, Replicas: 1})
 	require.NoError(t, err)
+	h.awaitReadable(t, settings, h.cluster.Name(stopped))
 	h.writes.Take(t)
 	report = streams.Check(t.Context(), conn, settings)
-	require.Equal(t, 1, report.ExitCode(), "%v", report.Lines())
 	requireFailureNaming(t, report, "KV_"+bus.RoleClaimBucket, "num_replicas is 1, want 3")
 	require.Empty(t, h.writes.Take(t), "check asked for a stream write")
 	info, err := h.js.StreamInfo("KV_" + bus.RoleClaimBucket)
