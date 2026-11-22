@@ -286,6 +286,12 @@ func holdCIReadBounds(t *testing.T) *ciReadBounds {
 func (b *ciReadBounds) bound(ctx context.Context) (context.Context, context.CancelFunc) {
 	inner := ctx.Value(ciEndedBoundKey{}) != nil
 	bound := &ciEndedBound{parent: ctx, done: make(chan struct{})}
+	// A bound made under a context that has already ended ends with it at once, as
+	// context.WithTimeout's would: context.AfterFunc runs its function in a goroutine of its own,
+	// so without this a read made under the ended context could still reach GitHub.
+	if err := ctx.Err(); err != nil {
+		bound.end(err)
+	}
 	stop := context.AfterFunc(ctx, func() { bound.end(ctx.Err()) })
 	b.mu.Lock()
 	if !inner {

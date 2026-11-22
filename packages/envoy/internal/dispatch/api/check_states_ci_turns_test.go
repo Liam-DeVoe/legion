@@ -207,6 +207,91 @@ func TestAnUnreadHeadsOldPassNeverCrossesATestHandoff(t *testing.T) {
 	}
 }
 
+// TestAFailedReadWaitsItsBackoffOnceEveryFormerHeadIsRead: #70 is pushed through seventeen heads,
+// settled at each, and is open at an eighteenth. Then the issue is marked owed, and GitHub stops
+// answering for all seventeen: each read waits until the bound of its settle ends, so a settle
+// starts eight of them, reports each as a failed read, and does not start the rest. The settles
+// that follow at the minimum gap start the heads the settles before them did not, so every head
+// is read within ceil(17/8) settles; then the issue holds no mark due before the failure backoff,
+// so the settler reads GitHub again only once that backoff has passed, and not at every gap for
+// as long as one head of the seventeen is still to be read.
+func TestAFailedReadWaitsItsBackoffOnceEveryFormerHeadIsRead(t *testing.T) {
+	savedTimeout := githubapp.RequestTimeout
+	githubapp.RequestTimeout = 24 * time.Hour
+	t.Cleanup(func() { githubapp.RequestTimeout = savedTimeout })
+	rig := newCheckStatesRig(t, checkStatesWithCI)
+	visited := make([]string, 17)
+	for index := range visited {
+		visited[index] = fmt.Sprintf("%040x", len(visited)-index)
+		rig.github.listings.set(visited[index], completedRun(int64(900+index), ciJobName, "success"))
+	}
+	rig.github.listings.set(eachHeadH4, completedRun(950, ciJobName, "success"))
+	for _, sha := range append(visited, eachHeadH4) {
+		upsertHead(t, rig, 70, sha, rig.issue, "A change")
+		settleOwed(t, rig)
+	}
+
+	entered := rig.github.listings.blockReadsOf(t, visited...)
+	bounds := holdCIReadBounds(t)
+	settler := rig.newSettler(t, "check states backoff")
+	exec := func(statement string) {
+		if _, err := rig.database.Pool.Exec(context.Background(), statement, rig.issue); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	var owedAt time.Time
+	if err := rig.database.Pool.QueryRow(context.Background(), `select now()`).Scan(&owedAt); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+	exec(`select check_states_owe($1)`)
+	turns := (len(visited) + ciHeadReadConcurrency - 1) / ciHeadReadConcurrency
+	// A mark due within this window is one the settler reads at its next gap, not after a backoff:
+	// the test's gap is 50 ms, and the first backoff is the production retry of 30 s.
+	const soon = 10 * time.Second
+	for settle := 1; ; settle++ {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			settler.settle(store.WithTransactionTracking(context.Background()), rig.issue)
+		}()
+		for range ciHeadReadConcurrency {
+			ciAwait(t, fmt.Sprintf("every read slot of settle %d to be taken", settle), entered)
+		}
+		bounds.expire(t)
+		ciAwait(t, fmt.Sprintf("settle %d to end", settle), done)
+		var due, later int
+		var failures int
+		if err := rig.database.Pool.QueryRow(context.Background(), `
+			select count(*) filter (where due_at < now() + make_interval(secs => $2)),
+				count(*) filter (where due_at >= now() + make_interval(secs => $3)), coalesce(max(failures), 0)
+			from check_states_owed where issue_key = $1`,
+			rig.issue, soon.Seconds(), (checkStatesTestSchedule.retry-time.Second).Seconds()).Scan(&due, &later, &failures); err != nil {
+			t.Fatalf("read the marks of %s: %v", rig.issue, err)
+		}
+		if due == 0 {
+			if later != 1 || failures == 0 {
+				t.Fatalf("after settle %d the issue holds %d marks due from the backoff on, counting %d failures; want one, counting the failed reads", settle, later, failures)
+			}
+			var unread int
+			if err := rig.database.Pool.QueryRow(context.Background(), `
+				select count(*) from unnest($2::text[]) as head (sha) where not exists (
+					select 1 from check_states where issue_key = $1 and head_sha = head.sha and check_block_id = '' and ci_read_at >= $3)`,
+				rig.issue, visited, owedAt).Scan(&unread); err != nil {
+				t.Fatalf("read when the former heads were read: %v", err)
+			}
+			if unread != 0 {
+				t.Fatalf("after settle %d the issue waits its backoff, but %d of the %d former heads were not read since the change", settle, unread, len(visited))
+			}
+			t.Logf("every former head was read and the next read waits the backoff after settle %d of at most %d", settle, turns)
+			return
+		}
+		if settle >= turns {
+			t.Fatalf("after %d settles, which started a read of each of the %d former heads, the issue still holds %d marks due within %s: the failed reads are read again at each minimum gap, and their backoff never applies", settle, len(visited), due, soon)
+		}
+		exec(`update check_states_owed set due_at = now() where issue_key = $1 and due_at < now() + interval '10 seconds'`)
+	}
+}
+
 // publishedLine is a published row's state and reason as one line a failure prints.
 func publishedLine(row publishedState) string {
 	if row.state == nil {
