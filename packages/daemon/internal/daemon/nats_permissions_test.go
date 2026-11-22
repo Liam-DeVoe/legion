@@ -283,15 +283,18 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 // so dials as its own connection does: the dial hears the daemon's own connection and one
 // generation of each of its three durables, named <logical>/<generation>; the server admits only
 // the daemon's nkey user and the admin, so a generation's connection that presented another
-// credential, or none, would end the boot; and when the server stops, each of the four connections
-// logs its loss through the daemon's own events (natsauth.LogEvents). The control is round 2's
-// generation dial, written apart from the daemon's with the same arguments: the dial then hears the
-// daemon's own connection alone, and the row fails naming the generations it did not hear.
+// credential, or none, would end the boot; and when the daemon's path to the server is cut, each
+// of the four connections logs its loss through the daemon's own events (natsauth.LogEvents). The
+// daemon dials through a proxy the row cuts (testnats.NewCutProxy), so the server keeps running and
+// its own leak check reads it at the row's end. The control is round 2's generation dial, written
+// apart from the daemon's with the same arguments: the dial then hears the daemon's own connection
+// alone, and the row fails naming the generations it did not hear.
 func TestEveryConnectionOfAFreshDaemonDialsAsItsOwn(t *testing.T) {
-	daemonSeed, admin, js, server, uri := startDaemonGrantServer(t, testnatsimages.Images[0].Ref, natsgrant.Daemon())
+	daemonSeed, admin, js, _, uri := startDaemonGrantServer(t, testnatsimages.Images[0].Ref, natsgrant.Daemon())
 	defer admin.Close()
 	createDaemonNotificationStream(t, js)
-	cfg := daemonGrantConfig(uri)
+	path := testnats.NewCutProxy(t, strings.TrimPrefix(uri, "nats://"))
+	cfg := daemonGrantConfig("nats://" + path.Addr)
 	cfg.ConsumerNames = consumernames.ModeFresh
 	logs := &syncBuffer{}
 	w := grantWorkflow(t, logs)
@@ -319,10 +322,7 @@ func TestEveryConnectionOfAFreshDaemonDialsAsItsOwn(t *testing.T) {
 		}
 	}
 	admin.Close()
-	stop := 10 * time.Second
-	if err := server.Stop(t.Context(), &stop); err != nil {
-		t.Fatalf("stop the server: %v", err)
-	}
+	path.Cut()
 	const lost, want = "NATS connection lost", 4
 	testwait.Eventually(t, fmt.Sprintf("%d connections logging their loss through the daemon's events", want), func() bool {
 		return strings.Count(logs.String(), lost) >= want
@@ -335,14 +335,17 @@ func TestEveryConnectionOfAFreshDaemonDialsAsItsOwn(t *testing.T) {
 // Each fresh generation's connection is watched for a reconnect as the daemon's own is
 // (reconnectWatchdogWith): one that stays disconnected warns "NATS has not reconnected" every
 // reconnectWarnEvery, naming the connection, until it reconnects or closes. Its durable reads
-// nothing meanwhile, and nats.go logs its loss once. The daemon's own connection's watchdog runs
-// beside Run and is not started here, so each warn the row reads is a generation's. The control is
-// the code before this row, which watched the daemon's own connection alone: no generation warned.
+// nothing meanwhile, and nats.go logs its loss once. The daemon dials through a proxy the row cuts
+// and keeps cut (testnats.NewCutProxy), so the server keeps running and its own leak check reads it
+// at the row's end. The daemon's own connection's watchdog runs beside Run and is not started
+// here, so each warn the row reads is a generation's. The control is the code before this row,
+// which watched the daemon's own connection alone: no generation warned.
 func TestEachFreshGenerationsConnectionIsWatchedForItsReconnect(t *testing.T) {
-	daemonSeed, admin, js, server, uri := startDaemonGrantServer(t, testnatsimages.Images[0].Ref, natsgrant.Daemon())
+	daemonSeed, admin, js, _, uri := startDaemonGrantServer(t, testnatsimages.Images[0].Ref, natsgrant.Daemon())
 	defer admin.Close()
 	createDaemonNotificationStream(t, js)
-	cfg := daemonGrantConfig(uri)
+	path := testnats.NewCutProxy(t, strings.TrimPrefix(uri, "nats://"))
+	cfg := daemonGrantConfig("nats://" + path.Addr)
 	cfg.ConsumerNames = consumernames.ModeFresh
 	logs := &syncBuffer{}
 	w := grantWorkflow(t, logs)
@@ -353,10 +356,7 @@ func TestEachFreshGenerationsConnectionIsWatchedForItsReconnect(t *testing.T) {
 	}
 	defer w.closeNATS()
 	admin.Close()
-	stop := 10 * time.Second
-	if err := server.Stop(t.Context(), &stop); err != nil {
-		t.Fatalf("stop the server: %v", err)
-	}
+	path.Cut()
 	logicals := []string{dispatchGrantConsumer, githubGrantConsumer, wakeGrantConsumer}
 	testwait.Eventually(t, "a reconnect warn from each generation's connection", func() bool {
 		logged := logs.String()
