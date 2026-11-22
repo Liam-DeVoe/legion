@@ -2109,7 +2109,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	// refused with the wait's own code before the table is read, which would only say that no
 	// backward row serves the phase (dispatch://INFRA-3320 R11).
 	if issue.Phase == phase.AwaitingChildren {
-		return e.waitingRefusal(ctx, tx, *issue, actBackwardMove)
+		return e.waitingRefusal(ctx, tx, *issue, actBackwardMove, fact.Requester)
 	}
 	// The table is the guard, and it reads three things: the move names a target, a backward row
 	// of the issue's phase serves that target - anything but an earlier phase has none - and the
@@ -2150,9 +2150,23 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 // (record.EndChildRule), and ask the person about a child that no move fits. hold is what the
 // architect holds until the person answers.
 func endChildrenFirst(hold string) string {
-	return record.StatusNotTakenYet + " " + record.EndChildRule +
-		" When a child can neither finish nor take one of these moves, ask the person. Hold the " + hold + " until they answer."
+	return endChildWords + " When a child can neither finish nor take one of these moves, ask the person. Hold the " + hold + " until they answer."
 }
+
+// endChildWords is the sentence on a status the daemon has not taken yet, then the rules for
+// ending a child (record.StatusNotTakenYet, record.EndChildRule), which the architect's refusals
+// over children still in the workflow and the pr-merged notice carry. endChildrenFirst puts it
+// before its sentence on asking the person (sign_off's and close_root's refusals,
+// acceptanceRefusals); the architect's WAITING_ON_CHILDREN refusal (waitingRefusal) and
+// waitingForTree end with it. The notices over open children end a child by childrenLeave
+// instead.
+const endChildWords = record.StatusNotTakenYet + " " + record.EndChildRule
+
+// childrenLeave is what the awaiting-children notice (awaitingChildrenNotice) and the
+// children-first notice (ChildrenFirstNotice) say of ending a child: a released child and an
+// unreleased one leave by the architect's own status write, by the rules for ending a child
+// (record.EndChildRule).
+const childrenLeave = "A child you released and a child you did not release leave by the same status write. " + record.EndChildRule
 
 // The three holds on an issue's acceptance (signOff) and on a root's close (closeRoot) after the
 // work under it, by their refusal codes, in the order the daemon answers them when more than one
@@ -2310,7 +2324,7 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 		return intake.Result{Refusal: refusal}, err
 	}
 	if issue.Phase == phase.AwaitingChildren {
-		return e.waitingRefusal(ctx, tx, *issue, actSignOff)
+		return e.waitingRefusal(ctx, tx, *issue, actSignOff, claim.RoleArchitect)
 	}
 	if issue.Phase != phase.Accepting {
 		return refused("SIGNOFF_OUTSIDE_ACCEPTING", fmt.Sprintf("%s is in phase %s, not accepting; this sign-off changed nothing", issue.Key, issue.Phase)), nil

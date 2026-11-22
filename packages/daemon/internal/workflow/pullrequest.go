@@ -440,7 +440,7 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 // counts once the daemon has taken it (record.StatusNotTakenYet).
 func waitingForTree(issue string, number int, waiting []string) string {
 	return fmt.Sprintf("pull request #%d merged, and %s's close is waiting for these children of it, which are not done: %s. Dispatch closes an issue only once each of its children is done, so %s stays in merging and closes once each of them is done.",
-		number, issue, strings.Join(waiting, ", "), issue) + " " + record.StatusNotTakenYet + " " + record.EndChildRule
+		number, issue, strings.Join(waiting, ", "), issue) + " " + endChildWords
 }
 
 // closeMergedTelling closes issue on its merged pull request (closeMerged) and, when the close
