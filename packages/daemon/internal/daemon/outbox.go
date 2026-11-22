@@ -3716,11 +3716,11 @@ func (r *outbox) issueSandboxName(issue string) string {
 // A cancel while the project is paused queues no resume: the store records each role the release
 // had stopped as stopped by the pause, holds the pod, and arms the open phase's worker's backstop
 // as the stop transaction arms one (decision 12 of dispatch://INFRA-3759). The backstop is the
-// idle release's own (outbox.backstop), and the open phase's worker is the workflow's rule
-// (workflow.OpenPhaseRole).
+// idle release's own (outbox.backstop), and the open phase's worker is the claim the record gives
+// the open phase's step (workflow.OpenWorker, openWorker), read in the cancel's transaction.
 func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold workflow.IdleHold, why string) error {
 	cancelled, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow,
-		store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole})
+		store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenWorker: r.openWorker})
 	if err != nil {
 		return err
 	}
@@ -3741,6 +3741,16 @@ func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold wor
 	}
 	r.recordPodHold(ctx, issue, hold)
 	return nil
+}
+
+// openWorker is the claim of the worker of key's open phase (workflow.OpenWorker), read in tx, and
+// "" for an issue the record does not hold: store.ReleaseCancelPause.OpenWorker.
+func (r *outbox) openWorker(ctx context.Context, tx pgx.Tx, key string) (claim.Token, error) {
+	issue, err := r.records.Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		return "", err
+	}
+	return workflow.OpenWorker(ctx, r.records, tx, r.project, *issue)
 }
 
 // releaseResume is the outbox row that brings one claim a cancelled release suspended back: the

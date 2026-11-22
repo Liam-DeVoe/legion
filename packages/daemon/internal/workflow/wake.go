@@ -13,7 +13,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -468,21 +467,36 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, released.Token, kind, pause, WakeTask(kind, detail, stop)))
 }
 
-// OpenPhaseRole is the phase worker of an open phase, and "" where there is none: a phase no role
-// works, and the architect, whose phases (admitted and accepting) are the architect's own turn
-// rather than a worker's. It reads the phase alone, so it answers none for step, whose role the
-// issue's plan names: it is OpenRoleOf of an issue that names no running role, and a reader that
-// holds the issue reads OpenRoleOf. It answers which role a release arms a backstop for — an
-// architect gets none, because nothing of its own is due and a sub-architect woken for nothing
-// would hold a pod open for the backstop period — and which live claim of a pod has a phase
-// reminder armed in it.
-func OpenPhaseRole(p phase.Phase) claim.Role {
-	return OpenRoleOf(record.Issue{Phase: p})
+// OpenWorker is the claim of the worker of issue's open phase, and "" where there is none: the
+// claim the record gives the step of the open phase's role (OpenRoleOf, which at step is the role
+// of the running step, read with the issue), through record.WorkerClaim over the issue's phases
+// rows, read in tx. That claim can be a keyed agent's, whose token names another role, beside the
+// role's own claim of an earlier version of the plan, so a role does not name it. It answers which
+// claim a pause's stop arms a backstop for — an architect gets none, because nothing of its own is
+// due and a sub-architect woken for nothing would hold a pod open for the backstop period — and
+// project is the project's token, as record.WorkerClaim takes it.
+func OpenWorker(ctx context.Context, phases PhaseReader, tx pgx.Tx, project string, issue record.Issue) (claim.Token, error) {
+	role := OpenRoleOf(issue)
+	if role == "" {
+		return "", nil
+	}
+	rows, err := phases.Phases(ctx, tx, issue.Key)
+	if err != nil {
+		return "", fmt.Errorf("read the phases of %s: %w", issue.Key, err)
+	}
+	return record.WorkerClaim(project, issue.Key, role, rows)
+}
+
+// PhaseReader reads an issue's phases rows (record.Store.Phases), what OpenWorker needs of a
+// record store.
+type PhaseReader interface {
+	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]record.PhaseRow, error)
 }
 
 // OpenRoleOf is the worker of issue's open phase, and "" where there is none: the role that works
 // the issue at its phase (record.Issue.RoleAt), which for step is the role of its running step,
-// read with the issue, and none for the architect's phases, as OpenPhaseRole. It is the one
+// read with the issue, and none for the architect's phases (admitted and accepting), which are the
+// architect's own turn rather than a worker's, nor for a phase no role works. It is the one
 // statement of "the worker of the open phase" each path that brings a worker back to its work
 // reads: which ready claim is sent its phase's task (readyWorkerTask), which suspended claim the
 // boot resumes (suspendedPhaseOwners), which claim the silence repair prompts

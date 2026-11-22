@@ -504,11 +504,10 @@ func TestABackstopReadTwiceFiresOnce(t *testing.T) {
 	}
 }
 
-// R5: an architect gets no backstop. OpenPhaseRole is the one statement of "the worker of the
-// open phase" — which role a release arms a backstop for, which role a CI settlement wakes, and
-// which live claim has a phase reminder armed in it — and it answers none for a phase the
-// architect works and none for a phase no role works. Admitted and accepting are the two the
-// architect works (phase.RoleFor).
+// R5: an architect gets no backstop. OpenRoleOf is the one statement of "the worker of the open
+// phase" — whose claim a release and a pause's stop arm a backstop for (OpenWorker) and which role
+// a CI settlement wakes — and it answers none for a phase the architect works and none for a phase
+// no role works. Admitted and accepting are the two the architect works (phase.RoleFor).
 func TestAnArchitectGetsNoBackstop(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -523,8 +522,8 @@ func TestAnArchitectGetsNoBackstop(t *testing.T) {
 		{name: "done", p: phase.Done},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := OpenPhaseRole(tc.p); got != tc.want {
-				t.Fatalf("OpenPhaseRole(%s) = %q, want %q", tc.p, got, tc.want)
+			if got := OpenRoleOf(record.Issue{Phase: tc.p}); got != tc.want {
+				t.Fatalf("OpenRoleOf(%s) = %q, want %q", tc.p, got, tc.want)
 			}
 		})
 	}

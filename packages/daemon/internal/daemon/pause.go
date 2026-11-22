@@ -248,8 +248,16 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 		if issue, err = p.records.Issue(ctx, tx, c.Issue); err != nil {
 			return made, err
 		}
-		if issue != nil && p.backstop > 0 && c.Role == workflow.OpenPhaseRole(issue.Phase) && c.ServingGeneration == issue.Generation {
-			rec.Backstop = &store.PodWakeBackstop{Project: p.token, Issue: c.Issue, Role: c.Role, DueAt: at.Add(p.backstop)}
+		if issue != nil && p.backstop > 0 && c.ServingGeneration == issue.Generation {
+			// The open phase's worker is a claim, not a role: at step a keyed agent's claim can work
+			// the step beside the role's own claim (workflow.OpenWorker).
+			worker, err := workflow.OpenWorker(ctx, p.records, tx, p.token, *issue)
+			if err != nil {
+				return made, err
+			}
+			if c.Token == worker {
+				rec.Backstop = &store.PodWakeBackstop{Project: p.token, Issue: c.Issue, Role: c.Role, DueAt: at.Add(p.backstop)}
+			}
 		}
 	}
 	first, err := store.RecordPauseStopTx(ctx, tx, rec)
