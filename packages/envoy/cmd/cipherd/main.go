@@ -477,8 +477,7 @@ func main() {
 		slog.Info("airlock proxy listening", "addr", started.AirlockListener.Addr().String())
 	}
 	if started.EdgeListener != nil {
-		slog.Info("broker edge listening", "addr", started.EdgeListener.Addr().String(), "url", cfg.EdgeURL,
-			"verification_uri", cfg.EdgeMachineLoginURL, "workspace_domains", cfg.WorkspaceDomains())
+		logEdgeListening(started.EdgeListener.Addr().String(), &cfg)
 	}
 	// Logged as the API's line is, once its bind has succeeded, so a rig that starts many brokers
 	// on port 0 reads each one's own metrics address from its own log.
@@ -1827,6 +1826,14 @@ func runSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	fmt.Fprintf(stderr, "broker: unknown subcommand %q; the subcommands are %s <login>, %s and %s <file> [--against <old file>], and broker with no argument serves\n",
 		args[0], endSessionsCommand, versionsCommand, airlockCheckCommand)
 	return 2
+}
+
+// logEdgeListening logs the edge's bind, BROKER_EDGE_URL and BROKER_EDGE_MACHINE_LOGIN_URL, each URL
+// through redact.URL, as the machine login line prints BROKER_MACHINE_LOGIN_URL: neither loader
+// refuses a user name, a password or a query, so a credential written into either is not printed.
+func logEdgeListening(addr string, cfg *config.Config) {
+	slog.Info("broker edge listening", "addr", addr, "url", redact.URL(cfg.EdgeURL),
+		"verification_uri", redact.URL(cfg.EdgeMachineLoginURL), "workspace_domains", cfg.WorkspaceDomains())
 }
 
 // versions prints what broker_schema_migrations records of each version against the migrations
