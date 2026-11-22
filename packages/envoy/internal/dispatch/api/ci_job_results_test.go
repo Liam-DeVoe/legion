@@ -93,8 +93,9 @@ type ciJobGitHub struct {
 	pullCommitsAnswered  map[int][]*ciJobHeldRead
 	pullCommitsPageFails map[int]int
 	// pulls is GitHub's answer for each pull request itself, by number: its head commit, its base
-	// branch and the commit that branch is at. A pull request it holds none for is 404. pullReads
-	// counts those reads.
+	// branch and the commit that branch is at. A pull request it holds none for stands at the last
+	// commit pullCommits lists for it, onto main at ciJobBaseSHA, and one with neither is 404.
+	// pullReads counts those reads.
 	pulls     map[int]ciJobPull
 	pullReads map[int]int
 	// compares is GitHub's answer for the comparison of two commits or branches, by
@@ -370,6 +371,9 @@ func (g *ciJobGitHub) serve(t *testing.T) string {
 		fmt.Sscan(r.PathValue("number"), &number)
 		g.pullReads[number]++
 		pull, held := g.pulls[number]
+		if listed := g.pullCommits[number]; !held && len(listed) > 0 {
+			pull, held = ciJobPull{head: listed[len(listed)-1], base: "main", baseSHA: ciJobBaseSHA}, true
+		}
 		if !held {
 			w.WriteHeader(http.StatusNotFound)
 			fmt.Fprint(w, `{"message":"Not Found"}`)

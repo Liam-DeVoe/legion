@@ -40,11 +40,17 @@ body: |-
     and no other path (`pull_request_former_heads_answer`), which under the pull request's lock
     gives the claim back by its token and applies only where the claim is still live, the pull
     request's generation and its snapshot of heads, base branches and base revisions are as the
-    claim read them, and each candidate keeps the incarnation read
+    claim read them, the head and base revision GitHub's answer is about are the ones Dispatch
+    stores for the row the read went by (any base revision where the row stores none), and each
+    candidate keeps the incarnation read
     (`pull_request_former_heads.incarnation`, drawn anew at each change of the row), so an answer
     about a claim that ran out or was taken over, an ended lifecycle, a moved head, a base revision
-    stored anew or a replaced candidate applies nothing and the candidates are read again, with
-    the obligation that asked for the read kept; the base revision is the commit the base branch
+    stored anew, a head or a base revision GitHub moved to that no write has stored yet, or a
+    replaced candidate applies nothing and the candidates are read again, with
+    the obligation that asked for the read kept; the verification reads the pull request after its
+    list of commits, whose `head.sha` and `base.sha` are the revisions its answer is about, and a
+    whole list that does not name that head was read at another head and is about none; the base
+    revision is the commit the base branch
     was at when the pull request was last read, which every writer of `pull_request_heads` now
     stores beside the branch's name (`pull_request_heads.base_sha`, migration `20261122071000`,
     from GitHub's `base.sha` in a read of the pull request and from the listener's new `base_sha`

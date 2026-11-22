@@ -100,14 +100,18 @@
 -- (pull_request_former_heads_claim) answers what the read is about: the claim's token, the pull
 -- request's generation, a snapshot of its open rows (pull_request_former_heads_snapshot: each row's
 -- name, number, head, base branch and the revision of the base branch the row was last read at),
--- and each candidate with its incarnation. The answer brings all of them back with each member and
--- each commit shown outside, and, under the pull request's lock, applies only where the claim with
--- that token is still live, the generation and the snapshot are still the pull request's, and each
--- candidate still has the incarnation the read saw; a positive answer marks it verified, a
--- negative one deletes it. Any other answer, about a claim that ran out or was taken over, about a
--- lifecycle that ended, about a head or a base revision since stored anew, or about a candidate
--- since replaced, applies nothing, and its candidates are read again: a base branch moves with no
--- change of its name, so the snapshot names its revision, not the name alone.
+-- and each candidate with its incarnation. The read reports the head and base revisions GitHub's
+-- answer is about (delivery.PullRequestMembership), since GitHub can move a pull request on before
+-- any write stores where it went. The answer brings all of them back with each member and each
+-- commit shown outside, and, under the pull request's lock, applies only where the claim with that
+-- token is still live, the generation and the snapshot are still the pull request's, GitHub's
+-- answer is about the head and the base revision the row it read stores, and each candidate still
+-- has the incarnation the read saw; a positive answer marks it verified, a negative one deletes it.
+-- Any other answer, about a claim that ran out or was taken over, about a lifecycle that ended,
+-- about a head or a base revision since stored anew, about a head or a base revision GitHub names
+-- and Dispatch does not store, or about a candidate since replaced, applies nothing, and its
+-- candidates are read again: a base branch moves with no change of its name, so the snapshot and
+-- the answer name its revision, not the name alone.
 --
 -- pull_request_former_heads_keep() records each insert of a row, open, closed or merged, each
 -- update that moves a row's key, head or state while it is or becomes open, and each delete, by an
@@ -687,9 +691,10 @@ end $$;
 -- base branch was at when the row was last read (pull_request_heads.base_sha, migration
 -- 20261122071000), in one order. The base branch can move with no change of its name, and the
 -- answer is about one base revision, so the snapshot names the revision, and "unknown" where the
--- row holds none: an answer claimed while it is unknown applies while it stays unknown, and a write
--- that stores a revision refuses it, so a row of a release before this one neither applies an
--- answer across a stored change nor waits for one for ever. It reads only.
+-- row holds none: an answer claimed while it is unknown applies while it stays unknown, whichever
+-- base revision GitHub named, and a write that stores a revision refuses it, so a row of a release
+-- before this one neither applies an answer across a stored change nor waits for one for ever. It
+-- reads only.
 create function pull_request_former_heads_snapshot(integer) returns text language sql stable as $$
   select coalesce(string_agg(lower(head.repo) || '#' || head.number || '@' || head.head_sha || ' onto ' || head.base_ref
     || ' at ' || coalesce(head.base_sha, 'unknown'), ', ' order by lower(head.repo), head.number), '')
@@ -729,15 +734,24 @@ begin
 end $$;
 
 -- The one application of GitHub's answer about the candidates of the pull request of an identity
--- (above): $2 the claim's token, $3 the generation and $4 the snapshot the claim answered, $5 and
--- $6 each member and the incarnation the claim read it at, $7 and $8 each commit GitHub showed is
--- not one and its incarnation, $9 the issue settling. Under the pull request's lock it gives the
--- claim back by its token, and applies only where that claim was still live and the generation and
--- the snapshot are still the pull request's: it marks each member verified and deletes each commit
--- shown outside, each only where it is still a candidate of the incarnation read, and marks owed
--- each other issue an open row of the pull request is at where a candidate became a former head.
--- Answers whether it applied, and how many candidates it kept, dropped and issues it marked owed.
-create function pull_request_former_heads_answer(integer, bigint, integer, text, text[], bigint[], text[], bigint[], text)
+-- (above): $2 the claim's token, $3 the generation and $4 the snapshot the claim read, $5 and $6
+-- each member and the incarnation the claim read it at, $7 and $8 each commit GitHub showed is not
+-- one and its incarnation, $9 the issue settling, and $10 to $13 the row the read went by, its name
+-- and number, and the head and the base revision GitHub's answer is about, as the read reported
+-- them (api/check_states.go, verifyFormerHeads; "" for an answer about no one head). Under the pull
+-- request's lock it gives the claim back by its token, and applies only where that claim was still
+-- live, the generation and the snapshot are still the pull request's, and, where the answer decides
+-- a commit, it is about the head that row stores and its base revision, or any base revision where
+-- the row stores none (pull_request_former_heads_snapshot). The snapshot shows that Dispatch stored
+-- nothing new while the read ran; the revisions show that GitHub answered about what Dispatch
+-- stores, not about a head or a base revision GitHub has moved the pull request to that no write
+-- has stored yet, which a later settle reads again once one has. An answer that decides no commit,
+-- every commit unknown, changes nothing either way. It marks each member verified and deletes each
+-- commit shown outside, each only where it is still a candidate of the incarnation read, and marks
+-- owed each other issue an open row of the pull request is at where a candidate became a former
+-- head. Answers whether it applied, and how many candidates it kept, dropped and issues it marked
+-- owed.
+create function pull_request_former_heads_answer(integer, bigint, integer, text, text[], bigint[], text[], bigint[], text, text, integer, text, text)
 returns table (applied boolean, kept integer, dropped integer, owed integer)
 language plpgsql as $$
 #variable_conflict use_column
@@ -753,7 +767,12 @@ begin
   into live;
   delete from pull_request_former_heads_reads claim where claim.pull = $1 and claim.token = $2;
   select pulls.generation into standing from pull_request_former_heads_pulls pulls where pulls.pull = $1;
-  if not live or standing is distinct from $3 or pull_request_former_heads_snapshot($1) <> $4 then
+  if not live or standing is distinct from $3 or pull_request_former_heads_snapshot($1) <> $4
+    or (cardinality($5) + cardinality($7) > 0 and not exists (
+      select 1 from pull_request_heads head
+      join pull_request_former_heads_aliases alias on alias.repo = lower(head.repo) and alias.number = head.number
+      where alias.pull = $1 and head.state = 'open' and lower(head.repo) = lower($10) and head.number = $11
+        and head.head_sha = $12 and (head.base_sha is null or head.base_sha = $13))) then
     return query select false, 0, 0, 0;
     return;
   end if;

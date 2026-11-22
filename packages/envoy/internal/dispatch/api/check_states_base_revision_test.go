@@ -73,11 +73,13 @@ func TestAMembershipAnswerAboutABaseRevisionSinceStoredAppliesNothing(t *testing
 				before, after = after, before
 			}
 			rig.github.setPullCommits(70, before...)
+			rig.github.setPull(70, eachHeadH2, "main", baseRevisionA)
 			entered, release := rig.github.holdPullCommitsAnswer(t, 70)
 			first := settleInTheBackground(rig.settler, rig.issue)
 			ciAwait(t, "the settle's read of #70's commits", entered)
 			if row.moved {
 				rig.github.setPullCommits(70, after...)
+				rig.github.setPull(70, eachHeadH2, "main", baseRevisionB)
 				storeBaseRevision(t, rig, 70, eachHeadH2, baseRevisionB)
 			} else {
 				storeBaseRevision(t, rig, 70, eachHeadH2, baseRevisionA)
@@ -134,6 +136,7 @@ func TestAnAnswerAboutARowWithNoStoredBaseRevisionAppliesUntilAWriteStoresOne(t 
 			ciAwait(t, "the settle's read of #70's commits", entered)
 			if stored {
 				rig.github.setPullCommits(70, eachHeadH2)
+				rig.github.setPull(70, eachHeadH2, "main", baseRevisionB)
 				storeBaseRevision(t, rig, 70, eachHeadH2, baseRevisionB)
 			} else {
 				storeBaseRevision(t, rig, 70, eachHeadH2, "")
@@ -153,6 +156,96 @@ func TestAnAnswerAboutARowWithNoStoredBaseRevisionAppliesUntilAWriteStoresOne(t 
 			}
 			if left := marksOf(t, rig.database, rig.issue); left != 0 {
 				t.Fatalf("%s holds %d marks after the settles, want none: nothing is left to read", rig.issue, left)
+			}
+		})
+	}
+}
+
+// TestAMembershipAnswerAboutRevisionsDispatchHasNotStoredAppliesNothing: the tester recorded k1
+// passing at H1, and Dispatch stores #70 at H2 with its base branch, main, at baseRevisionA, so H1
+// is #70's candidate. GitHub has moved #70 on where Dispatch has not stored it yet: its base branch
+// is at baseRevisionB, or its head is H3; or GitHub's whole list of #70's commits is of an earlier
+// head than the one its read of #70 names. The answer a read makes there is about revisions the
+// claim did not name, whichever way it answered and whether GitHub's list of #70's commits is
+// whole or capped: it applies nothing, H1 stays a candidate and its obligation stays. Once
+// Dispatch stores what GitHub names, or GitHub's list catches up, the next settle reads #70 again
+// and applies what GitHub answers then. The neighbour's GitHub stands at the revisions Dispatch
+// stores, and its answer applies at once.
+func TestAMembershipAnswerAboutRevisionsDispatchHasNotStoredAppliesNothing(t *testing.T) {
+	capped := make([]string, 251)
+	for index := range capped {
+		capped[index] = fmt.Sprintf("%040x", 0xd0000+index)
+	}
+	for _, row := range []struct {
+		name string
+		// head is the head Dispatch stores for #70; pull, base and listed are GitHub's: the head
+		// and base revision its read of #70 names, and the commits its list names.
+		head, pull, base string
+		listed           []string
+		// caught is what moves Dispatch, or GitHub, to agree: a write of #70 at the head and base
+		// revision GitHub names, or GitHub's list of #70's commits at the head it names.
+		caught func(t *testing.T, rig *checkStatesRig)
+		// applied is whether the first settle's answer applies; want is k1's state at H1 once both
+		// agree.
+		applied bool
+		want    string
+	}{
+		{name: "GitHub stands at the stored revisions", head: eachHeadH2, pull: eachHeadH2, base: baseRevisionA,
+			listed: []string{eachHeadH1, eachHeadH2}, applied: true, want: model.PassStandsYes},
+		{name: "the base branch moved on and the whole list leaves H1 out", head: eachHeadH2, pull: eachHeadH2, base: baseRevisionB,
+			listed: []string{eachHeadH2}, want: "",
+			caught: func(t *testing.T, rig *checkStatesRig) { storeBaseRevision(t, rig, 70, eachHeadH2, baseRevisionB) }},
+		{name: "the base branch moved on and the whole list names H1", head: eachHeadH2, pull: eachHeadH2, base: baseRevisionB,
+			listed: []string{eachHeadH1, eachHeadH2}, want: model.PassStandsYes,
+			caught: func(t *testing.T, rig *checkStatesRig) { storeBaseRevision(t, rig, 70, eachHeadH2, baseRevisionB) }},
+		{name: "the base branch moved on and the capped list leaves H1 to the comparisons", head: capped[250], pull: capped[250], base: baseRevisionB,
+			listed: capped, want: "",
+			caught: func(t *testing.T, rig *checkStatesRig) { storeBaseRevision(t, rig, 70, capped[250], baseRevisionB) }},
+		{name: "the head moved on", head: eachHeadH2, pull: eachHeadH3, base: baseRevisionA,
+			listed: []string{eachHeadH3}, want: "",
+			caught: func(t *testing.T, rig *checkStatesRig) { storeBaseRevision(t, rig, 70, eachHeadH3, baseRevisionA) }},
+		{name: "the whole list is of an earlier head than the read of #70 names", head: eachHeadH2, pull: eachHeadH2, base: baseRevisionA,
+			listed: []string{eachHeadH1}, want: model.PassStandsYes,
+			caught: func(t *testing.T, rig *checkStatesRig) { rig.github.setPullCommits(70, eachHeadH1, eachHeadH2) }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newCheckStatesRig(t, checkStatesTwoChecks)
+			eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadH1)
+			storeBaseRevision(t, rig, 70, row.head, baseRevisionA)
+			if got := candidatesOf(t, rig); !maps.Equal(got, map[string]bool{eachHeadH1: false}) {
+				t.Fatalf("#70 holds the former heads %v, want H1 unverified: this test holds nothing", got)
+			}
+			rig.github.setPullCommits(70, row.listed...)
+			rig.github.setPull(70, row.pull, "main", row.base)
+			// Where the capped list leaves H1 out, the comparisons decide it: GitHub's head holds
+			// H1 and so does the base revision it names, so H1 is outside.
+			rig.github.setCompare(row.pull, eachHeadH1, ciJobCompare{status: "behind"})
+			rig.github.setCompare(row.base, eachHeadH1, ciJobCompare{status: "behind"})
+			settleOwed(t, rig)
+			got := candidatesOf(t, rig)
+			if row.applied {
+				if !maps.Equal(got, map[string]bool{eachHeadH1: true}) {
+					t.Fatalf("#70 holds the former heads %v once GitHub answered at the stored revisions, want H1 verified", got)
+				}
+			} else {
+				if !maps.Equal(got, map[string]bool{eachHeadH1: false}) {
+					t.Fatalf("#70 holds the former heads %v once GitHub answered at %s onto %s, which Dispatch does not store, want H1 unverified still: that answer applies nothing", got, row.pull[:4], row.base[:4])
+				}
+				if marks := fenceMarksOf(t, rig, rig.issue); len(marks) == 0 {
+					t.Fatalf("%s holds no mark a handoff waits for once the answer about revisions Dispatch does not store applied nothing, want its obligation kept", rig.issue)
+				}
+				row.caught(t, rig)
+			}
+			if _, err := rig.database.Pool.Exec(context.Background(), `select check_states_owe($1)`, rig.issue); err != nil {
+				t.Fatalf("owe %s a settle: %v", rig.issue, err)
+			}
+			settleEveryMark(t, rig)
+			if got := stateAt(t, rig, rig.issue, eachHeadH1, "k1"); got != row.want {
+				t.Fatalf("k1 at H1 is published %q, want %q: an answer applies only at the revisions the claim named", got, row.want)
+			}
+			verified, held := candidatesOf(t, rig)[eachHeadH1]
+			if held != (row.want != "") || held && !verified {
+				t.Fatalf("#70 holds H1 as held=%v verified=%v once Dispatch and GitHub agree, want it verified where GitHub's answer names it and gone where it does not", held, verified)
 			}
 		})
 	}

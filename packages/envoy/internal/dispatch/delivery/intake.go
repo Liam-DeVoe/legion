@@ -859,12 +859,15 @@ func fetchCommitMessagesWithToken(ctx context.Context, client *githubapp.Client,
 
 // CommitMembership is what PullRequestMembership could tell about each commit it was asked about:
 // Members are the pull request's own commits, Outside the commits that are not, and Unknown each
-// commit whose answer a read that failed withheld. Complete is whether GitHub's list of the pull
-// request's commits was whole; Pages, PullReads, Compares and CommitReads count the reads the
-// answer cost: the pages of that list, the read of the pull request, the comparisons and the
-// reads of a commit.
+// commit whose answer a read that failed withheld. Head and Base are the head and the base
+// revision the answer is about, which the read of the pull request after its list named, and Head
+// is "" where the answer is about no one head: a whole list that does not name the head that read
+// names was read at another head. Complete is whether GitHub's list of the pull request's commits
+// was whole; Pages, PullReads, Compares and CommitReads count the reads the answer cost: the pages
+// of that list, the read of the pull request, the comparisons and the reads of a commit.
 type CommitMembership struct {
 	Members, Outside, Unknown               []string
+	Head, Base                              string
 	Complete                                bool
 	Pages, PullReads, Compares, CommitReads int
 }
@@ -872,15 +875,20 @@ type CommitMembership struct {
 // PullRequestMembership tells, for each of candidates, whether it is a commit of pull request
 // number of repoFull: a commit of the set `git log base..head`, which the head holds and the base
 // branch does not. The check states settler asks it about the candidate former heads of an open
-// pull request (api/check_states.go, verifyFormerHeads).
+// pull request (api/check_states.go, verifyFormerHeads), and applies its answer only where the
+// head and base revisions it reports are the ones Dispatch stores for that pull request.
 //
-// It reads the pull request's list of commits first, pages of pullRequestCommitsPage. A commit
-// the list names is a member. The list is whole only where it ended on a page that was not full
-// and names fewer than pullRequestCommitsListed commits, GitHub's cap; then a commit it does not
-// name is outside. Where the list is not whole, a commit it does not name is decided by GitHub's
-// comparisons, which have no such cap, against the head and the base branch's revision that one
-// read of the pull request names (GET /repos/{owner}/{repo}/pulls/{number}, its head.sha and
-// base.sha), each comparison of the verification against those two commits and never against the
+// It reads the pull request's list of commits first, pages of pullRequestCommitsPage, and then the
+// pull request itself (GET /repos/{owner}/{repo}/pulls/{number}), whose head.sha and base.sha are
+// the revisions the answer is about. GitHub reads no list at a revision, and a pull request can
+// move between two reads; read after the list, the pull request names where it stood once the list
+// was read, so a move during the list's read shows as revisions Dispatch does not store, and a
+// whole list must name that head, or it was read at another head and the answer is about none.
+// A commit the list names is a member. The list is whole only where it ended on a page that was
+// not full and names fewer than pullRequestCommitsListed commits, GitHub's cap; then a commit it
+// does not name is outside. Where the list is not whole, a commit it does not name is decided by
+// GitHub's comparisons, which have no such cap, against the head and the base revision the read
+// of the pull request named, each comparison against those two commits and never against the
 // base branch's name, which can move between two comparisons: the comparison with the head says
 // whether the head holds the commit (githubapp.Client.CommitOnBranch); a commit the head does not
 // hold is outside, and else the comparison with the base revision decides: held there, outside,
@@ -893,7 +901,8 @@ type CommitMembership struct {
 // Every other failure of a read leaves each commit that read would have decided in Unknown, and
 // the first such failure is the error; the commits other reads decided keep their answers. A
 // failed read of the list or of the pull request, or a read of the pull request that names no
-// base revision, leaves every commit it would have decided unknown.
+// head or base revision, leaves every commit unknown: each answer is about the revisions that
+// read names.
 func PullRequestMembership(ctx context.Context, client *githubapp.Client, repoFull string, number int, candidates []string) (CommitMembership, error) {
 	var answer CommitMembership
 	owner, repo, err := refs.SplitGitHubRepo(repoFull)
@@ -908,11 +917,30 @@ func PullRequestMembership(ctx context.Context, client *githubapp.Client, repoFu
 		answer.Unknown = append(answer.Unknown, candidates...)
 		return answer, err
 	}
+	current, err := token()
+	if err != nil {
+		answer.Unknown = append(answer.Unknown, candidates...)
+		return answer, fmt.Errorf("%w for %s: %w", ErrTokenMint, repoFull, err)
+	}
+	answer.PullReads++
+	pull, err := fetchPullRequestPayload(ctx, client, current, owner, repo, number)
+	if err != nil {
+		answer.Unknown = append(answer.Unknown, candidates...)
+		return answer, err
+	}
+	if pull.Head.SHA == "" || pull.Base.SHA == "" {
+		answer.Unknown = append(answer.Unknown, candidates...)
+		return answer, fmt.Errorf("the read of %s#%d names no head or base revision its commits are of", repoFull, number)
+	}
 	listed := make(map[string]bool, len(commits))
 	for _, commit := range commits {
 		listed[commit.SHA] = true
 	}
 	answer.Complete = len(commits) < pullRequestCommitsListed && len(commits) < pages*pullRequestCommitsPage
+	answer.Head, answer.Base = pull.Head.SHA, pull.Base.SHA
+	if answer.Complete && len(commits) > 0 && !listed[pull.Head.SHA] {
+		answer.Head = ""
+	}
 	var unlisted []string
 	for _, sha := range candidates {
 		switch {
@@ -923,24 +951,6 @@ func PullRequestMembership(ctx context.Context, client *githubapp.Client, repoFu
 		default:
 			unlisted = append(unlisted, sha)
 		}
-	}
-	if len(unlisted) == 0 {
-		return answer, nil
-	}
-	current, err := token()
-	if err != nil {
-		answer.Unknown = append(answer.Unknown, unlisted...)
-		return answer, fmt.Errorf("%w for %s: %w", ErrTokenMint, repoFull, err)
-	}
-	answer.PullReads++
-	pull, err := fetchPullRequestPayload(ctx, client, current, owner, repo, number)
-	if err != nil {
-		answer.Unknown = append(answer.Unknown, unlisted...)
-		return answer, err
-	}
-	if pull.Head.SHA == "" || pull.Base.SHA == "" {
-		answer.Unknown = append(answer.Unknown, unlisted...)
-		return answer, fmt.Errorf("the read of %s#%d names no head or base revision to compare its commits with", repoFull, number)
 	}
 	var failed error
 	for _, sha := range unlisted {
