@@ -1590,16 +1590,20 @@ func IndexOwedItemBlocks(ctx context.Context, pool Pool, item OwedItemBlock, ser
 // TestTheLockTablePlacesEveryWriterTheCensusNames keeps the two lists one: every name on the
 // census is a row of that table, or is in that table's gap map with why it has none.
 //
-// Six of the census's names take no owner lock, in four exceptions, and cost this one nothing;
-// the lock table's gap map names the same six. cmd/dispatch-seed's three item loaders fill a
-// database before any server is started on it; api's writeBroadcast writes direct messages,
-// whose conversation is no owner (store.OwnerOf); docs' restoreWordings runs once at boot under
-// the copy locks alone (RestoreDecidedWordings) and refuses its restoration when the rows moved
-// under it; and RebuildAll raises the owed markers of every comment, message and ask so the
-// index re-derives them, and writes no item row and no other column of a state row. Every other
-// writer holds the owner this takes: those the lock table drives, the backfill among them, by
-// taking it themselves, and those its gap map names as running inside a caller's transaction,
-// through the lock that caller took.
+// Fifteen of the census's names take no owner lock, in seven exceptions, and cost this one
+// nothing; the lock table's gap map names the same fifteen. cmd/dispatch-seed's three item loaders
+// fill a database before any server is started on it; api's queueBroadcastCopy writes direct
+// messages, whose conversation is no owner (store.OwnerOf); docs' restoreWordings runs once at
+// boot under the copy locks alone (RestoreDecidedWordings) and refuses its restoration when the
+// rows moved under it; RebuildAll raises the owed markers of every comment, message and ask so
+// the index re-derives them, and writes no item row and no other column of a state row; store's
+// collisions, nameWrite and urlWrite build the statements of the boot rename pass
+// (RewriteRenamedRepositories), whose tables hold stored repository fields and no item row;
+// graphcensus' writeAttempts and writeMarks, two boot passes of the backfill, write delivery
+// attempts and a person's read state, tables no item owns; and the migration runners' four
+// writers of their version tables write no item row. Every other writer holds the owner this
+// takes: those the lock table drives, the backfill among them, by taking it themselves, and those
+// its gap map names as running inside a caller's transaction, through the lock that caller took.
 //
 // A new writer of one of those rows takes this lock before it reads what it writes:
 // store.LockOwner on store.OwnerOf(the row's issue key, its artifact id), as this function,
