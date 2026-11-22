@@ -103,6 +103,14 @@ describe("parseGitHubRemoteUrl", () => {
     expect(canonicalRepo(" Owner ", " Repo.git ")).toBe("owner/repo");
   });
 
+  // Dispatch trims each part with Go's `strings.TrimSpace` before it parses the repository
+  // (refs.ParseGitHubRepo), so canonicalRepo does too (goTrimSpace): it cuts U+0085, and it keeps
+  // U+FEFF, which `trim` cuts.
+  it("trims repository components as Go's strings.TrimSpace does", () => {
+    expect(canonicalRepo("\u0085Owner", "Repo.git\u0085")).toBe("owner/repo");
+    expect(canonicalRepo("\uFEFFOwner", "Repo")).toBe("\uFEFFowner/repo");
+  });
+
   it("returns null for a non-GitHub host", () => {
     expect(parseGitHubRemoteUrl("https://gitlab.com/acme/widgets.git")).toBeNull();
     expect(parseGitHubRemoteUrl("git@gitlab.com:acme/widgets.git")).toBeNull();

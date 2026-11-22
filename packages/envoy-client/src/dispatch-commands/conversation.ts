@@ -5,6 +5,7 @@ import {
   type MessageDelivery,
   type MessageDeliveryMode,
 } from "@legion/contracts";
+import { goTrimSpace } from "@legion/contracts/go-blank";
 import { commandLine } from "../dispatch-command";
 import {
   dispatchChildRef,
@@ -204,7 +205,7 @@ export async function messageCommand(context: CommandContext): Promise<DispatchT
     // session's own conversation, where the person reads the reply.
     let body = written;
     if (pictures.length > 0) {
-      const sessionId = input.sessionId?.trim();
+      const sessionId = goTrimSpace(input.sessionId ?? "");
       if (!sessionId) {
         throw new Error("host session id is required to send pictures in a direct-message reply");
       }

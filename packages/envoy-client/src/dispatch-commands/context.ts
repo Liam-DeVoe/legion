@@ -9,6 +9,7 @@ import type {
   IssuePriority,
   Sleep,
 } from "@legion/contracts";
+import { goTrimSpace } from "@legion/contracts/go-blank";
 import { urlForText } from "@legion/contracts/log-text";
 import type { ActiveDispatchConfig } from "../dispatch-config";
 import type { DispatchHost, ExecFn } from "../dispatch-cwd";
@@ -256,7 +257,8 @@ export interface SessionContext {
    * then every link prints as its `dispatch://` reference (`linkBaseOf`, `linkFor`).
    */
   readonly linkBase: string | undefined;
-  /** This host's own session id, trimmed; a command that needs one refuses an empty one itself. */
+  /** This host's own session id, trimmed as Dispatch trims it, with Go's `strings.TrimSpace`
+   *  (`goTrimSpace`); a command that needs one refuses an empty one itself. */
   readonly hostSession: string | undefined;
   /**
    * A factory, not one instance: the constructor starts the request deadline, and the main path
@@ -325,7 +327,7 @@ export function sessionContext(
     pictures: checked.pictures,
     configUrl,
     linkBase: linkBaseOf(input.config.publicUrl ?? url),
-    hostSession: input.sessionId?.trim(),
+    hostSession: input.sessionId === undefined ? undefined : goTrimSpace(input.sessionId),
     newClient: () =>
       new DispatchClient(url, credential, fetchImpl, {
         signal: input.signal,

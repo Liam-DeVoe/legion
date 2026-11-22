@@ -1379,8 +1379,10 @@ const flagName = (flag: Word) => flag.value.split("=", 1)[0];
  * stands in for the directory here. The one exception is a path that names the directory itself
  * or one above it (`.`, `..`, `x/..`), whose last part is that directory's own name: it may be a
  * document, and the read decides.
+ *
+ * Exported for its table test in askgate.test.ts, which holds it to `uploadIsDocument`.
  */
-function uploadMayBeDocument(flags: readonly Word[]): boolean {
+export function uploadMayBeDocument(flags: readonly Word[]): boolean {
   if (flags.some((flag) => [...INLINE_FLAGS, ...INDIRECT_FLAGS].includes(flagName(flag))))
     return true;
   const flagValue = (name: string): { value: string; literal: boolean } | undefined => {

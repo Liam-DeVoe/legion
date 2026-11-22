@@ -2491,6 +2491,41 @@ describe("executeDispatchTool", () => {
     ).rejects.toThrow("host session id is required");
   });
 
+  // Dispatch trims the session it reads with Go's `strings.TrimSpace`, so the command does too
+  // (goTrimSpace): a session id of U+0085 alone is none, and one ending in U+0085 goes without it.
+  test("dispatch_open_asks trims the host session id as Go's strings.TrimSpace does", async () => {
+    const requests: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      requests.push(target.pathname + target.search);
+      return response({
+        session_id: "session-1",
+        as_of: "2026-09-13T00:00:00Z",
+        opened_since: false,
+        count: 0,
+        waiting_on_human: 0,
+        waiting_on_agent: 0,
+        asks: [],
+      });
+    };
+    const openAsks = (sessionId: string) =>
+      executeDispatchTool({
+        tool: "dispatch_open_asks",
+        args: {},
+        cwd: "/workspace",
+        host: "omp",
+        sessionId,
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+
+    await expect(openAsks("\u0085")).rejects.toThrow("host session id is required");
+    await openAsks("session-1\u0085");
+    expect(requests).toEqual(["/api/v1/asks/open?author_session=session-1"]);
+  });
+
   test("dispatch_open_asks propagates Dispatch errors rather than treating them as no asks", async () => {
     const fetchImpl = async (): Promise<Response> =>
       new Response(
@@ -11762,6 +11797,15 @@ describe("executeDispatchTool", () => {
     // Every path is read in one working directory, where notes.md/, notes.md/. and notes.md/x/..
     // resolve to notes.md, and each pair goes up both ways, read from the path and with the bytes
     // AskGate read; each pair whose two answers part is named with both.
+    //
+    // INFRA-4071, review 6012684631 at e0d2289b, four more paths: `../notes.md/` resolves to the
+    // notes.md one directory up, `<cwd>/notes.md/.` to notes.md by its absolute path, and `a/b/..`
+    // and `notes.md/..` to the directories a and <cwd>. A directory cannot be read, so with no
+    // bytes of AskGate's the command refuses that upload as it reads the path, before anything
+    // goes up; with AskGate's bytes it sends them, and the two answers agree as on every pair.
+    // The gate and the declared type read one predicate (uploadIsDocument), so their agreement
+    // alone would hold were it to read a path as written: each path that resolves to another is
+    // also held exactly as the plain path it resolves to is, and each pair held otherwise is named.
     test("declares text/markdown exactly when AskGate holds the upload as a document, on the tester's matrix", async () => {
       const names = [
         "a.md",
@@ -11796,6 +11840,12 @@ describe("executeDispatchTool", () => {
         "a.md.1.",
         "dir/a.md",
       ];
+      const notes = text("# Notes\n");
+      // The working directory is one of its own inside the row's, so `../notes.md/` names a file
+      // the row wrote.
+      const root = makeDirectory();
+      const cwd = path.join(root, "work");
+      const absolute = `${cwd}/notes.md/.`;
       const paths = [
         "x.md",
         "x.txt",
@@ -11807,14 +11857,30 @@ describe("executeDispatchTool", () => {
         "notes.md/x/..",
         ".md",
         "cases.txt",
+        "../notes.md/",
+        absolute,
+        "a/b/..",
+        "notes.md/..",
       ];
-      const notes = text("# Notes\n");
-      const cwd = makeDirectory();
-      mkdirSync(path.join(cwd, "dir"));
+      // The paths that name a directory, which no upload reads.
+      const directories = ["a/b/..", "notes.md/.."];
+      // Each path that resolves to another, and the plain path it resolves to.
+      const plain = new Map([
+        ["notes.md/", "notes.md"],
+        ["notes.md/.", "notes.md"],
+        ["notes.md/x/..", "notes.md"],
+        ["../notes.md/", "../notes.md"],
+        [absolute, "notes.md"],
+        ["a/b/..", "a"],
+        ["notes.md/..", cwd],
+      ]);
+      mkdirSync(path.join(cwd, "dir"), { recursive: true });
+      mkdirSync(path.join(cwd, "a", "b"), { recursive: true });
       const files = ["x.md", "x.txt", "x.MD", "x.mkd", "dir/.md", "notes.md", ".md", "cases.txt"];
       for (const file of files) {
         writeFileSync(path.join(cwd, file), notes);
       }
+      writeFileSync(path.join(root, "notes.md"), notes);
       const parted: Array<{
         name: string;
         path: string;
@@ -11822,17 +11888,35 @@ describe("executeDispatchTool", () => {
         held: boolean;
         declared: string;
       }> = [];
+      const moved: Array<{ name: string; path: string; held: boolean }> = [];
+      const unrefused: Array<{ name: string; path: string; answer: string }> = [];
       for (const name of names) {
         for (const file of paths) {
+          const shown = file === absolute ? "<cwd>/notes.md/." : file;
           const held = gatedWrite("dispatch_artifact", { issue: "DSP-42", name, path: file }, cwd);
+          const resolved = plain.get(file);
+          if (
+            resolved !== undefined &&
+            gatedWrite("dispatch_artifact", { issue: "DSP-42", name, path: resolved }, cwd) !== held
+          ) {
+            moved.push({ name, path: shown, held });
+          }
           for (const gated of [false, true]) {
+            if (!gated && directories.includes(file)) {
+              const answer = await uploadFrom(cwd, name, file, notes, false).then(
+                ({ declared }) => `sent as ${declared.join(", ")}`,
+                (error: unknown) => String(error)
+              );
+              if (!answer.includes("EISDIR")) unrefused.push({ name, path: file, answer });
+              continue;
+            }
             const [declared = ""] = (await uploadFrom(cwd, name, file, notes, gated)).declared;
             const markdown = declared.split(";", 1)[0]?.trim().toLowerCase() === "text/markdown";
-            if (held !== markdown) parted.push({ name, path: file, gated, held, declared });
+            if (held !== markdown) parted.push({ name, path: shown, gated, held, declared });
           }
         }
       }
-      expect(parted).toEqual([]);
+      expect({ parted, moved, unrefused }).toEqual({ parted: [], moved: [], unrefused: [] });
     });
 
     // A name with no extension takes the type its path gives, so notes.md/ sent from cases.txt is

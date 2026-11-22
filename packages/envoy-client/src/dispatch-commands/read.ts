@@ -1,3 +1,4 @@
+import { goTrimSpace } from "@legion/contracts/go-blank";
 import type { IssueReadOptions } from "../dispatch-http";
 import {
   dispatchChildRef,
@@ -77,7 +78,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     return pictures.images.length === 0 ? {} : { images: pictures.images };
   };
   if (message !== undefined) {
-    const sessionId = input.sessionId?.trim();
+    const sessionId = goTrimSpace(input.sessionId ?? "");
     if (!sessionId) throw new Error("host session id is required for dispatch read --message");
     const thread = await client.getMessageThread(messageIdOf(message) as string, sessionId);
     const issueKey = thread.message.issue_key;

@@ -12,3 +12,7 @@ body: |-
   `uploadExtensionOf` gives the extension that decides, from the name trimmed as Go's
   `strings.TrimSpace` trims it (`goTrimSpace` in `@legion/contracts/go-blank`): an extension holds
   letters, marks, digits, `_`, `-` and `+`, up to 32 characters, so `notes.md/` has none.
+  `canonicalRepo` trims an owner and a repository as Go's `strings.TrimSpace` does, as Dispatch
+  trims them, and the tool specs refuse a `done` status's reason, a `changes_requested` review's
+  reason and a result's `retract` reason that Dispatch would read as blank (U+0085 alone), while
+  they let through one Dispatch reads as content (U+FEFF alone).

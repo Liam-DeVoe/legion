@@ -5,6 +5,7 @@ import type {
   WhoamiResponse,
 } from "@legion/contracts";
 import { awaitsDecision, inboxThreadRow, serviceSubjectLabel } from "@legion/contracts";
+import { goTrimSpace } from "@legion/contracts/go-blank";
 import { actorText } from "../actor-text";
 import { textHead } from "../ask-answer";
 import { type CredentialPendingRow, DispatchServiceError } from "../dispatch-http";
@@ -20,7 +21,7 @@ import { dispatchAnswered, refusalWithCode } from "./failures";
  */
 export async function answersCommand(context: SessionContext): Promise<DispatchToolResult> {
   const { configUrl, input, newClient: dispatchClient } = context;
-  const sessionId = input.sessionId?.trim();
+  const sessionId = goTrimSpace(input.sessionId ?? "");
   if (!sessionId) throw new Error("host session id is required for dispatch answers");
   let response: SessionAnswersResponse;
   try {
@@ -53,7 +54,7 @@ function whoamiPerson(identity: WhoamiResponse): string | null {
  */
 export async function whoamiCommand(context: SessionContext): Promise<DispatchToolResult> {
   const { input, newClient: dispatchClient } = context;
-  const sessionId = input.sessionId?.trim();
+  const sessionId = goTrimSpace(input.sessionId ?? "");
   if (!sessionId) throw new Error("host session id is required for dispatch whoami");
   const client = dispatchClient();
   const identity = await client.whoami();

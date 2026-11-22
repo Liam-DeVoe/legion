@@ -319,6 +319,14 @@ describe("newAsks", () => {
     ]);
   });
 
+  // Dispatch reads a question with Go's `strings.TrimSpace` (validateAskQuestion), so the ask's
+  // text is cut as Go cuts it (goTrimSpace): a trailing U+0085, which `trim` keeps, goes.
+  test("a dispatch ask's question is trimmed as Go's strings.TrimSpace trims it", () => {
+    expect(newAsks("dispatch_ask", { issue: "DSP-1", question: "Which region?\u0085" })).toEqual(
+      newAsks("dispatch_ask", { issue: "DSP-1", question: "Which region?" })
+    );
+  });
+
   test("a retype into an ask is an ask whose text the document holds", () => {
     expect(
       newAsks("dispatch_doc_edit", {

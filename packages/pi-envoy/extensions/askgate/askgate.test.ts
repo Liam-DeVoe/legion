@@ -14,6 +14,7 @@ import {
   pidNamespace,
   processStart,
   setRecordMode,
+  uploadIsDocument,
   writeAskgateRecord,
 } from "@legion/envoy-client/askgate-marker";
 import { newAsks } from "@legion/envoy-client/askgate-new-asks";
@@ -3132,6 +3133,22 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     }
     // Ten real dry runs, each a bun process: past bun's 5 s default on a loaded host.
   }, 30_000);
+  // INFRA-4071, review 6012684631 at e0d2289b: after `cd sub`, `--path ../notes.md/` resolves to
+  // the work directory's notes.md, so `--name Plan` sends a Markdown document, which the CLI gates
+  // and the gate holds for review, as it holds `--name Plan --path notes.md/` run from the work
+  // directory ("(o2)" below).
+  test("a leading cd and a --path that resolves to a Markdown file above it are reviewed, as the CLI gates the upload", async () => {
+    const notes = "# Notes\n\nThe person said: ship it on Friday.\n";
+    fs.mkdirSync(path.join(work, "sub"), { recursive: true });
+    fs.writeFileSync(path.join(work, "notes.md"), notes);
+    const g = bind({ env: STUB, cwd: work });
+    await g.bash("cd", "cd sub && dispatch artifact --issue X-1 --name Plan --path ../notes.md/");
+    expect(g.entries.map((e) => [e.tool, e.outcome])).toEqual([["dispatch_artifact", "verdict"]]);
+    expect(g.dryRuns[0]).toMatchObject({ script: "cd sub >/dev/null && pwd -P", cwd: work });
+    expect(g.calls).toHaveLength(1);
+    expect(g.calls[0].user).toContain(JSON.stringify(notes));
+    expect(markersIn(g.store)).toMatchObject([{ outcome: "verdict" }]);
+  }, 30_000);
   test("a 2>&1 after the here-document opener runs as written and is left out of the dry-run", () => {
     const after = core.scopedCommand(
       "dispatch comment --issue X-1 --body-file - <<'EOF' 2>&1\nhi\nEOF"
@@ -4529,6 +4546,84 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       expect(g.calls[0].user).toContain(JSON.stringify(BRIEF));
       expect(g.entries.map((e) => [e.tool, e.outcome])).toEqual([["dispatch_artifact", "verdict"]]);
       expect(markersIn(g.store)).toMatchObject([{ outcome: "verdict" }]);
+    });
+    // INFRA-4071, review 6012684631 at e0d2289b: the pre-check (uploadMayBeDocument) is the
+    // gate's first, quick read of an upload, before it knows the directory the call runs in, so
+    // it never says no where the CLI's gate (uploadIsDocument) says yes in any directory. The
+    // names and paths are the tester's matrix (dispatch-execute.test.ts, "on the tester's
+    // matrix", with its four more paths), each pair asked under two working directories; each
+    // pair the CLI holds there and the pre-check lets run unread is named.
+    test("the pre-check holds every upload the CLI's gate holds, in either of two working directories", () => {
+      const names = [
+        "a.md",
+        "a.MD",
+        "a.Markdown",
+        "a.md.1",
+        "a.md.2026.11",
+        "a.MARKDOWN.0",
+        "a.mdown",
+        "a.mkd",
+        "a.txt",
+        "a.txt.1",
+        "a.json",
+        "a.jsonl",
+        "a.c++",
+        "a.tar.gz",
+        "a.данные",
+        "a.md\u200b",
+        "a.\uff4d\uff44",
+        "a.m d",
+        "a.",
+        "a.md/",
+        "a v1.2",
+        "a",
+        `a.${"x".repeat(32)}`,
+        `a.${"x".repeat(33)}`,
+        "a.md ",
+        " a.md",
+        "a.\u0661",
+        "a.md.\u0661",
+        "a.md..1",
+        "a.md.1.",
+        "dir/a.md",
+      ];
+      const paths = [
+        "x.md",
+        "x.txt",
+        "x.MD",
+        "x.mkd",
+        "dir/.md",
+        "notes.md/",
+        "notes.md/.",
+        "notes.md/x/..",
+        ".md",
+        "cases.txt",
+        "../notes.md/",
+        "a/b/..",
+        "notes.md/..",
+      ];
+      // Each value as one single-quoted literal word, as the shell scan reads one; no name or
+      // path here holds a single quote.
+      const quoted = (value: string) => ({ raw: `'${value}'`, value });
+      const missed: Array<{ name: string; path: string; cwd: string }> = [];
+      for (const cwd of ["/workspace", "/workspace/sub"]) {
+        for (const name of names) {
+          for (const file of [...paths, `${cwd}/notes.md/.`]) {
+            const flags = [
+              { raw: "--issue", value: "--issue" },
+              quoted("DSP-1"),
+              { raw: "--name", value: "--name" },
+              quoted(name),
+              { raw: "--path", value: "--path" },
+              quoted(file),
+            ];
+            if (uploadIsDocument({ name, path: file }, cwd) && !core.uploadMayBeDocument(flags)) {
+              missed.push({ name, path: file, cwd });
+            }
+          }
+        }
+      }
+      expect(missed).toEqual([]);
     });
     test("other writes keep the full rules and do not get the upload instruction", async () => {
       const g = bind({ env: STUB, cwd: work });

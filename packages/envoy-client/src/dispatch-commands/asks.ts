@@ -7,6 +7,7 @@ import type {
   OpenAsk,
 } from "@legion/contracts";
 import { ASK_URGENCIES, isIdPrefix } from "@legion/contracts";
+import { goTrimSpace } from "@legion/contracts/go-blank";
 import { textHead } from "../ask-answer";
 import { type DispatchClient, DispatchServiceError } from "../dispatch-http";
 import { issueTopic, type Owner, parseDispatchRef } from "../dispatch-owner";
@@ -224,7 +225,7 @@ async function sessionOpenAsks(
   client: DispatchClient,
   sessionId: string | undefined
 ): Promise<readonly Pick<OpenAsk, "id" | "question">[]> {
-  const session = sessionId?.trim();
+  const session = goTrimSpace(sessionId ?? "");
   if (!session) throw new Error("host session id is required to read this session's open asks");
   return (await client.openAsks(session)).asks ?? [];
 }
@@ -282,7 +283,7 @@ export async function openAsksCommand(context: SessionContext): Promise<Dispatch
     const response = await client.openAsksForProject(project);
     return { text: formatOpenAsksSummary(response, linkBase), details: { ...response } };
   }
-  const sessionId = input.sessionId?.trim();
+  const sessionId = goTrimSpace(input.sessionId ?? "");
   if (!sessionId) throw new Error("host session id is required for dispatch open-asks");
   const response = await client.openAsks(sessionId);
   return { text: formatOpenAsksSummary(response, linkBase), details: { ...response } };
@@ -413,7 +414,7 @@ export async function resolveAskCommand(context: CommandContext): Promise<Dispat
 /** `dispatch follow`: have an ask's answer and replies reach this session, or stop them. */
 export async function followCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input } = context;
-  const sessionId = input.sessionId?.trim();
+  const sessionId = goTrimSpace(input.sessionId ?? "");
   if (!sessionId) throw new Error("host session id is required for dispatch follow");
   const { id: ask, read: refRead } = await resolveAskArgument(input.tool, args, client, sessionId);
   const action = stringArg(args, "action");

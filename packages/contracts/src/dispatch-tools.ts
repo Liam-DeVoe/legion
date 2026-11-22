@@ -471,7 +471,7 @@ function issueUpdateProblem(value: unknown): string | undefined {
     readonly after?: unknown;
   };
   if (input.status === "done") {
-    if (typeof input.reason !== "string" || input.reason.trim() === "") {
+    if (typeof input.reason !== "string" || goTrimSpace(input.reason) === "") {
       return `${ISSUE_UPDATE_DONE_RULE}.`;
     }
   } else if (input.reason !== undefined) {
@@ -761,7 +761,7 @@ const reviewValidation: NonNullable<DispatchToolSpec["validation"]> = {
     const input = value as { readonly verdict?: unknown; readonly reason?: unknown };
     return (
       input.verdict !== "changes_requested" ||
-      (typeof input.reason === "string" && input.reason.trim() !== "")
+      (typeof input.reason === "string" && goTrimSpace(input.reason) !== "")
     );
   },
   message: REVIEW_REASON_RULE,
@@ -806,7 +806,7 @@ function resultProblem(value: unknown): string | undefined {
   const carried = RESULT_RECORD_FIELDS.filter((field) => input[field] !== undefined);
   if (typeof input["retract"] === "string") {
     const reason = input["reason"];
-    if (typeof reason !== "string" || reason.trim() === "") {
+    if (typeof reason !== "string" || goTrimSpace(reason) === "") {
       return "retract needs reason, the words that say why the result is wrong.";
     }
     if (carried.length > 0) {

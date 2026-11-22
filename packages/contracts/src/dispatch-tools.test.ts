@@ -656,6 +656,12 @@ describe("dispatchToolSpecs", () => {
     expect(refusal({ retract: "res-2", reason: "Stale build.", ...record })).toEqual([
       "retract takes reason alone, and this call also carries issue, check, role, verdict, commit. Retract the result, then record a new one with a call of its own.",
     ]);
+    // Dispatch reads the reason with Go's `strings.TrimSpace`, so the check does (goTrimSpace):
+    // U+0085 alone is blank to Go and refused, and U+FEFF alone is text to Go and goes through.
+    expect(refusal({ retract: "res-2", reason: "\u0085" })).toEqual([
+      "retract needs reason, the words that say why the result is wrong.",
+    ]);
+    expect(schema.safeParse({ retract: "res-2", reason: "\uFEFF" }).success).toBe(true);
     expect(refusal({ ...record, reason: "Stale build." })).toEqual([
       "reason goes with retract, and this call carries no retract. Name the result to retract, or drop reason.",
     ]);
@@ -994,6 +1000,8 @@ describe("dispatchToolSpecs", () => {
       [{ issue: "DSP-1", status: "done" }, ISSUE_UPDATE_DONE_RULE],
       [{ issue: "DSP-1", status: "done", reason: "" }, ISSUE_UPDATE_DONE_RULE],
       [{ issue: "DSP-1", status: "done", reason: "  \n" }, ISSUE_UPDATE_DONE_RULE],
+      // Blank to Go's `strings.TrimSpace`, which Dispatch reads the reason with (goTrimSpace).
+      [{ issue: "DSP-1", status: "done", reason: "\u0085" }, ISSUE_UPDATE_DONE_RULE],
       [{ issue: "DSP-1", status: "done", title: "Renamed" }, ISSUE_UPDATE_DONE_RULE],
       [
         { issue: "DSP-1", status: "in_progress", reason: "Starting." },
@@ -1012,6 +1020,10 @@ describe("dispatchToolSpecs", () => {
         JSON.stringify(args)
       ).toEqual([refusal]);
     }
+    // U+FEFF is text to Go's `strings.TrimSpace`, so a reason of it alone closes the issue.
+    expect(schema.safeParse({ issue: "DSP-1", status: "done", reason: "\uFEFF" }).success).toBe(
+      true
+    );
     // The Dispatch server owns the bound on a body (INFRA-370), so the schema takes a reason the
     // old client-side cap of 32,000 characters refused.
     expect(
@@ -1622,7 +1634,15 @@ describe("dispatchToolSpecs", () => {
     const changes = { issue: "DSP-1", version: 2, verdict: "changes_requested" };
 
     expect(schema.safeParse({ ...changes, reason: "Name the rollback path." }).success).toBe(true);
-    for (const args of [changes, { ...changes, reason: "" }, { ...changes, reason: "   " }]) {
+    // Dispatch reads the reason with Go's `strings.TrimSpace` (goTrimSpace): U+FEFF alone is text
+    // to it, and U+0085 alone is blank.
+    expect(schema.safeParse({ ...changes, reason: "\uFEFF" }).success).toBe(true);
+    for (const args of [
+      changes,
+      { ...changes, reason: "" },
+      { ...changes, reason: "   " },
+      { ...changes, reason: "\u0085" },
+    ]) {
       const result = schema.safeParse(args);
       expect(result.success, JSON.stringify(args)).toBe(false);
       expect(result.error?.issues.map((issue) => issue.message)).toEqual([

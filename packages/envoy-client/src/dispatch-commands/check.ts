@@ -5,6 +5,7 @@ import {
   PROJECT_KEY_RULE,
   zodSchemaApi,
 } from "@legion/contracts";
+import { goTrimSpace } from "@legion/contracts/go-blank";
 import { canonicalRepo } from "@legion/contracts/repo";
 import { z } from "zod";
 import { commandName } from "../dispatch-command";
@@ -66,7 +67,7 @@ const issueFreeTools: Readonly<Record<string, true>> = {
 };
 
 function canonicalExternalIssueRef(value: string): string {
-  const match = value.trim().match(externalIssueRefPattern);
+  const match = goTrimSpace(value).match(externalIssueRefPattern);
   return match ? `${canonicalRepo(match[1] ?? "", match[2] ?? "")}#${match[3]}` : value;
 }
 /** The question text sent to Dispatch: the ref appended unless the question already cites it.
