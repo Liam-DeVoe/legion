@@ -668,12 +668,15 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	WriteJSON(w, http.StatusOK, model.IssueReferences{
+	// Each row's name reaches a caller that sent Dispatch-Trees: 1 with its tree, read where it
+	// stands (newIssueReferencesRead). The trees are read from the names the ETag already covers,
+	// so the ETag above stands for both readings.
+	WriteJSON(w, http.StatusOK, newIssueReferencesRead(model.IssueReferences{
 		Members:    members,
 		Truncated:  false,
 		Links:      closure.Links,
 		LinkedFrom: closure.LinkedFrom,
-	})
+	}, wantsDisplayTrees(r)))
 }
 
 // referencesClosureBound is the budget every statement of one GET of an issue's references shares

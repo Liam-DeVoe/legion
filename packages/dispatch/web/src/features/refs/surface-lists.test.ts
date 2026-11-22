@@ -974,12 +974,14 @@ const STORED_PROSE_FIELDS = new Set([
   ...HAND_NAMED_TEXTS.map((text) => text.field),
 ]);
 
-/** The stored fields the dashboard's own controls also call their words by - a tab's, a menu
- *  item's or a filter's `label`, a picker row's `description` - so a member of one of these
- *  names is read as a stored text only on a value reached through a field of the contract that
- *  holds it (`ContractTexts.holders`): an ask's `options`, today. Every other field is read as
- *  stored wherever it is written. */
-const UI_WORD_FIELDS: readonly string[] = ["description", "label"];
+/** The stored fields the dashboard's own controls and records also call their words by - a
+ *  tab's, a menu item's or a filter's `label`, a picker row's `description`, and the `name` of a
+ *  document, a project, a job or a group - so a member of one of these names is read as a stored
+ *  text only on a value reached through a field of the contract that holds it
+ *  (`ContractTexts.holders`): an ask's `options`, and the `links` and `linked_from` rows of an
+ *  issue's references read, whose `name` is the head of a record's text, today. Every other field
+ *  is read as stored wherever it is written. */
+const UI_WORD_FIELDS: readonly string[] = ["description", "label", "name"];
 
 /** The fields of the contract a value holding one of `UI_WORD_FIELDS` is reached through. */
 const UI_WORD_HOLDERS = new Set(
@@ -2833,6 +2835,7 @@ describe("the walk reads the dashboard's source", () => {
         "description",
         "label",
         "markdown",
+        "name",
         "prose",
         "question",
         "reason",
@@ -2844,11 +2847,19 @@ describe("the walk reads the dashboard's source", () => {
     );
   });
 
-  test("reads which fields of the contract hold an ask option's label and description", () => {
-    // A guard on the reading of the contract's holders: were it to find none, no label and no
-    // description would be read as a stored text anywhere.
+  test("reads which fields of the contract hold an ask option's label and description, and a references row's name", () => {
+    // A guard on the reading of the contract's holders: were it to find none, no label, no
+    // description and no name would be read as a stored text anywhere.
+    const holders: Readonly<Record<string, readonly string[]>> = {
+      description: ["options"],
+      label: ["options"],
+      name: ["links", "linked_from"],
+    };
+    expect([...UI_WORD_FIELDS].sort()).toEqual(Object.keys(holders).sort());
     for (const field of UI_WORD_FIELDS) {
-      expect([...(CONTRACT_TEXTS.holders.get(field) ?? [])]).toContain("options");
+      expect([...(CONTRACT_TEXTS.holders.get(field) ?? [])]).toEqual(
+        expect.arrayContaining([...(holders[field] ?? [])])
+      );
     }
   });
 
