@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,10 +13,9 @@ import type { ProxiedRequest, ProxiedSocket } from "../round-robin-proxy";
 import { eventually, rowLimit, runBounded } from "./bounded-subprocess";
 
 // The proxy runs as the harness runs it, a `bun` process of its own, and this file answers as the
-// two Dispatch processes it proxies and opens its websockets with `ws`'s client. The test preload
-// puts happy-dom's Response on globalThis, which carries no compressed body, so the rows that
-// answer gzip build theirs with Bun's own Response.
-const NativeResponse = (await Bun.fetch("data:,")).constructor as typeof Response;
+// two Dispatch processes it proxies and opens its websockets with `ws`'s client. This lane loads no
+// preload, so the global `Response` the upstreams answer with, a gzipped body included, is Bun's
+// own.
 const { WebSocket: WsClient } = require("ws") as {
   WebSocket: new (
     url: string,
@@ -93,9 +92,9 @@ function startUpstream(name: DispatchProcess) {
         // (api/response_compression.go), so the proxy must forward one.
         const body = JSON.stringify({ comments: compressedComments, from: name });
         if (!(request.headers.get("accept-encoding") ?? "").includes("gzip")) {
-          return new NativeResponse(body, { headers: { "Content-Type": "application/json" } });
+          return new Response(body, { headers: { "Content-Type": "application/json" } });
         }
-        return new NativeResponse(gzipSync(Buffer.from(body)), {
+        return new Response(gzipSync(Buffer.from(body)), {
           headers: {
             "Content-Encoding": "gzip",
             "Content-Type": "application/json",
@@ -132,17 +131,23 @@ function startUpstream(name: DispatchProcess) {
 
 const a = startUpstream("a");
 const b = startUpstream("b");
+/** The proxy of the row that runs, its port, and its origin, which `beforeEach` of the
+ *  "round-robin proxy" block below sets. */
+let proxy: Subprocess<"ignore", "pipe", "inherit"> | undefined;
+let proxyPort = 0;
+let origin = "";
 /** A home for every child this file starts, so none of them reads the caller's. */
 const childHome = temporaryDirectory("round-robin-proxy-home");
 
 /** The proxy as the harness runs it, a `bun` process of its own, on a port it binds itself:
  *  DISPATCH_E2E_PORT unset is port 0, so the kernel chooses, and the proxy's one line names the
  *  origin it got. No port is chosen here and given back for the proxy to bind a moment later, a
- *  gap in which any other process could take it. */
-async function startProxy(): Promise<{
+ *  gap in which any other process could take it. The proxy comes back before that line is read,
+ *  so its caller holds it to stop whether or not it ever listens. */
+function startProxy(): {
   readonly proxy: Subprocess<"ignore", "pipe", "inherit">;
-  readonly origin: string;
-}> {
+  readonly origin: Promise<string>;
+} {
   const started = Bun.spawn(["bun", proxyScript], {
     env: {
       PATH: process.env.PATH ?? "",
@@ -155,42 +160,30 @@ async function startProxy(): Promise<{
     stderr: "inherit",
     stdout: "pipe",
   });
-  // The proxy logs one line once it listens: `round-robin proxy on <origin> for ...`.
+  return { proxy: started, origin: listensOn(started) };
+}
+
+/** The origin `started` names in the one line it logs once it listens:
+ *  `round-robin proxy on <origin> for ...`. */
+async function listensOn(started: Subprocess<"ignore", "pipe", "inherit">): Promise<string> {
+  const listens = /round-robin proxy on (http:\/\/127\.0\.0\.1:[1-9][0-9]*) /;
+  const decoder = new TextDecoder();
   const reader = started.stdout.getReader();
   let logged = "";
-  let listening = /round-robin proxy on (http:\/\/127\.0\.0\.1:[1-9][0-9]*) /.exec(logged);
+  let listening: RegExpExecArray | null = null;
   while (listening === null) {
     const { done, value } = await reader.read();
     if (done) throw new Error(`the proxy exited before it listened: ${logged}`);
-    logged += new TextDecoder().decode(value);
-    listening = /round-robin proxy on (http:\/\/127\.0\.0\.1:[1-9][0-9]*) /.exec(logged);
+    logged += decoder.decode(value);
+    listening = listens.exec(logged);
   }
   reader.releaseLock();
-  return { proxy: started, origin: listening[1] as string };
+  return listening[1] as string;
 }
 
-let proxy: Subprocess<"ignore", "pipe", "inherit">;
-let origin = "";
-let proxyPort = 0;
-
-beforeAll(async () => {
-  ({ proxy, origin } = await startProxy());
-  proxyPort = Number(new URL(origin).port);
-});
-
-afterAll(async () => {
-  proxy.kill();
-  await proxy.exited;
+afterAll(() => {
   a.server.stop(true);
   b.server.stop(true);
-});
-
-beforeEach(async () => {
-  expect((await Bun.fetch(`${origin}/_proxy/reset`, { method: "POST" })).status).toBe(204);
-  a.seen.length = 0;
-  b.seen.length = 0;
-  a.hookStatus = 200;
-  b.hookStatus = 200;
 });
 
 const get = (path: string, headers: Record<string, string> = {}) =>
@@ -220,6 +213,29 @@ function openSocket(headers: Record<string, string>) {
 }
 
 describe("round-robin proxy", () => {
+  // Each row starts a proxy of its own and stops it after, because once a row passes its timeout
+  // Bun's test runner sends SIGTERM to every process a row or hook of the file started that still
+  // runs (https://github.com/oven-sh/bun/issues/46373), so a proxy the rows shared failed every
+  // row after a slow one. A new proxy starts with empty logs and both alternations at A.
+  beforeEach(async () => {
+    a.seen.length = 0;
+    b.seen.length = 0;
+    a.hookStatus = 200;
+    b.hookStatus = 200;
+    const started = startProxy();
+    proxy = started.proxy;
+    origin = await started.origin;
+    proxyPort = Number(new URL(origin).port);
+  });
+
+  // A proxy the runner killed already, as one whose row timed out, has exited, and its stop
+  // returns at once.
+  afterEach(async () => {
+    proxy?.kill();
+    await proxy?.exited;
+    proxy = undefined;
+  });
+
   test("alternates requests between A and B, forwarding Host and Origin unchanged", async () => {
     const answers = [];
     for (let index = 0; index < 4; index++) {
@@ -361,9 +377,20 @@ describe("round-robin proxy", () => {
     expect(await proxyRequests()).toEqual([{ method: "GET", path: "/who", upstream: "a" }]);
     expect([...a.seen, ...b.seen].map((seen) => seen.path)).toEqual(["/who"]);
 
+    // The reset empties both logs and starts both alternations over at A: an unpinned socket took
+    // the websocket turn before it, and the next one goes to A again.
+    const before = openSocket({});
+    expect(await before.received(1)).toEqual(["opened on a"]);
+    before.socket.close();
+    await before.closed;
     expect((await Bun.fetch(`${origin}/_proxy/reset`, { method: "POST" })).status).toBe(204);
     expect(await proxyRequests()).toEqual([]);
+    expect(await proxySockets()).toEqual([]);
     expect(await answeredBy("/who")).toBe("a");
+    const after = openSocket({});
+    expect(await after.received(1)).toEqual(["opened on a"]);
+    after.socket.close();
+    await after.closed;
   });
 
   test(
@@ -685,20 +712,17 @@ describe("the proxy's port", () => {
 
   test("a proxy started as this file starts it answers as itself under the squat, and is given no port: it binds its own, so none is chosen here and given back", async () => {
     const { result, squatted } = await withSquat(async () => {
-      let started: Awaited<ReturnType<typeof startProxy>>;
+      const started = startProxy();
       try {
-        started = await startProxy();
-      } catch (error) {
-        return { thrown: String(error) };
-      }
-      try {
-        const answer = await Bun.fetch(`${started.origin}/_proxy/requests`);
+        const answer = await Bun.fetch(`${await started.origin}/_proxy/requests`);
         // The environment the proxy runs with, as the kernel holds it: a port handed to it by any
         // means a squat of this process's servers cannot see would show here.
         const handed = readFileSync(`/proc/${started.proxy.pid}/environ`, "utf8")
           .split("\0")
           .filter((entry) => entry.startsWith("DISPATCH_E2E_PORT="));
         return { status: answer.status, body: await answer.text(), handed };
+      } catch (error) {
+        return { thrown: String(error) };
       } finally {
         started.proxy.kill();
         await started.proxy.exited;
