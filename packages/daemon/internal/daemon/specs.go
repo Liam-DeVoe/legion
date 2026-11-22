@@ -470,18 +470,21 @@ func (s specs) controllerSpawnSpec(ctx context.Context) (runtime.SpawnSpec, erro
 }
 
 // rolePromptPaths is the role prompt of c and the model its role names ("" for one of Legion's
-// six, which run the profile's own). It keeps an explicit operator prompt as a narrow test
+// roles, which run the profile's own). It keeps an explicit operator prompt as a narrow test
 // override, which replaces the prompt alone. Every ordinary claim uses the role prompts daemon
 // boot snapshotted below its state directory (prompts.New): Legion's roles their composed parts
-// (prompts.Composer.Compose), a role the plan of c's issue defines (planRole) the daemon's own
+// (prompts.Composer.Compose) — the six roles of a claim, and acceptance, Legion's role of a step
+// that is no claim role, whose fresh agent a plan step `acceptance` with no key asks for
+// (legionRole) — a role the plan of c's issue defines (planRole) the daemon's own
 // copy of the plan's prompt (planRolePromptFile) between the headless mechanics and Legion's
 // worker part (prompts.Composer.ComposeStep), and a role the deployment defines its own prompt
 // file in that same place. The plan is read first: a deployment that took the name of a role a
 // plan in force defines leaves that issue the plan's role, with its prompt and its model, until a
-// version of the plan changes it (appauth.AppRoleFor decides its App the same way). A role none
-// of them defines is refused, naming the issue and the role, with no prompt.
+// version of the plan changes it (appauth.AppRoleFor decides its App the same way, and answers
+// Legion's roles, acceptance among them, before either). A role none of them defines is refused,
+// naming the issue and the role, with no prompt.
 func (s specs) rolePromptPaths(ctx context.Context, c supervise.Claim) ([]string, string, error) {
-	if claim.IsBuiltin(c.Role) {
+	if legionRole(c.Role) {
 		paths, err := s.overridden(c, func() ([]string, error) {
 			parts, err := s.prompts.Compose(c.Role, claim.IsTreeRoot(c.Issue, c.Tree))
 			return parts.RolePromptPaths, err
@@ -511,6 +514,14 @@ func (s specs) rolePromptPaths(ctx context.Context, c supervise.Claim) ([]string
 		return paths, role.Model, err
 	}
 	return nil, "", fmt.Errorf("the role prompt of %s: neither the deployment nor the plan of %s defines the role %s", c.Token, c.Issue, c.Role)
+}
+
+// legionRole says whether role is one of Legion's own, whose prompt Legion composes
+// (prompts.Composer.Compose): a role of a claim (claim.IsBuiltin), or one of Legion's roles of a
+// step (stepplan.BuiltinRoles), which adds acceptance.
+func legionRole(role claim.Role) bool {
+	_, step := stepplan.BuiltinRoles()[string(role)]
+	return claim.IsBuiltin(role) || step
 }
 
 // overridden is the operator's prompt kept for c under the state directory (rolePromptPath),
