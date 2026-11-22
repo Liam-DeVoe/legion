@@ -348,6 +348,9 @@ test("a finding is a block whose parent is a lens", () => {
   expect(idsOf(root)).not.toContain("stray");
 });
 
+/** A store address or its uuid, which no row's words draw. */
+const STORE_ADDRESS = /dispatch:\/\/|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/u;
+
 // A stored string that cites a lens, a risk or a constraint by its own address draws no address
 // and no uuid: the address reads as words, as a bare address of an issue's block does. A verdict,
 // a heading and an early warning are read through the stored string's plain words; a finding's
@@ -401,9 +404,6 @@ test("a lens's, a risk's and a finding's words draw no address of a lens, a risk
   expect(drawnWords.earlyWarning.startsWith("The bill passes ")).toBe(true);
   expect(drawnWords.finding.startsWith("A second region doubles the cost, as ")).toBe(true);
 });
-
-/** A store address or its uuid, which no row's words draw. */
-const STORE_ADDRESS = /dispatch:\/\/|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/u;
 
 /** Each run of `tree` that carries a link mark, as its words and the address it links to. */
 function linksIn(tree: DisplayTree | undefined): [string, unknown][] {

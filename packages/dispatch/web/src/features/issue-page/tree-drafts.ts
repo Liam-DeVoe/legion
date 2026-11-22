@@ -475,7 +475,8 @@ export function addressesAsShortForms(words: string): string {
   let cursor = 0;
   for (const { start, value } of referenceSpans(words, "dispatch://")) {
     const route = parseDispatchReference(value);
-    const word = route === undefined ? storeKindWord(value) : undefined;
+    const address = route === undefined ? storeAddressReference(value) : undefined;
+    const word = address === undefined ? undefined : storeKindWord(address);
     if (word !== undefined) {
       shortened += `${words.slice(cursor, start)}${word}`;
       cursor = start + value.length;
@@ -488,24 +489,16 @@ export function addressesAsShortForms(words: string): string {
   return shortened + words.slice(cursor);
 }
 
-/** The page's word for the kind of node the store address `value` names
- *  (`storeAddressReference`), what a place reads such an address by where it knows no name for
- *  the node: `lens`, `risk`, `constraint`, and `finding` for a block of a lens. Undefined for any
- *  other value, an interaction's and a lens kind's address among them. */
-export function storeKindWord(value: string): string | undefined {
-  const address = storeAddressReference(value);
-  if (address === undefined) return undefined;
+/** The page's word for the kind of node the store address `address` names, written as
+ *  `storeAddressReference` answers it: what a place reads such an address by where it knows no
+ *  name for the node: `lens`, `risk`, `constraint`, and `finding` for a block of a lens. Undefined
+ *  for an interaction's and a lens kind's address. */
+export function storeKindWord(address: string): string | undefined {
   if (address.includes("#")) return NODE_TYPE_NAMES.finding;
-  switch (address.slice("dispatch://".length, address.lastIndexOf("/"))) {
-    case "constraint":
-      return NODE_TYPE_NAMES.constraint;
-    case "lens":
-      return NODE_TYPE_NAMES.lens;
-    case "risk":
-      return NODE_TYPE_NAMES.risk;
-    default:
-      return undefined;
-  }
+  const kind = address.slice("dispatch://".length, address.lastIndexOf("/"));
+  return kind === "constraint" || kind === "lens" || kind === "risk"
+    ? NODE_TYPE_NAMES[kind]
+    : undefined;
 }
 
 /**

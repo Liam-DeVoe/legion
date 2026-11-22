@@ -43,7 +43,7 @@ import {
 interface StoreNode {
   /** The words a row reads it by (`nameOf`). */
   readonly name: string;
-  /** The address of its row: the outline's, at its `?node=`, as a lens chip links it. */
+  /** The address of its row (`outlineRowPath`), as a lens chip links it. */
   readonly path: string;
 }
 
@@ -65,9 +65,6 @@ const FACT_ATTRIBUTES = [
 
 /** One fact line of `FACT_ATTRIBUTES`. */
 type StoredFact = (typeof FACT_ATTRIBUTES)[number][0];
-
-/** The attributes a constraint's words are read from (`constraintWords`). */
-const CONSTRAINT_ATTRIBUTES = ["standard", "measurement", "value"] as const;
 
 /**
  * The mark of `tree-read/tree-nodes.ts`'s `treeDraftMarks` that names each store address in
@@ -93,7 +90,7 @@ export function storeWords(
   answer: TreeAnswer,
   context: TreeDraftContext
 ): void {
-  const index = storeIndex(answer, context);
+  const index = () => storeIndex(answer, context);
   switch (draft.type) {
     case "child_issue":
       return;
@@ -105,11 +102,10 @@ export function storeWords(
       nameFacts(draft, node, index);
       return;
     case "constraint":
-      if (CONSTRAINT_ATTRIBUTES.some((name) => cites(node.attributes?.[name]))) {
-        draft.text = constraintWords(node, (raw) =>
-          readingWords(storeAddressesIn(storedReading(raw), index))
-        );
-      }
+      draft.text = constraintWords(node, (raw) => {
+        const named = namedReading(raw, index);
+        return named === undefined ? plainWords(raw) : readingWords(named);
+      });
       nameFacts(draft, node, index);
       return;
     default: {
@@ -130,12 +126,12 @@ const storeIndexes = new WeakMap<TreeDraftContext, StoreIndex>();
 
 /** Every node of the answer that `lensDrafts` drafts as a lens, a risk, a constraint or a finding
  *  and that has a row, by its store address (`addressOf`): its name (`nameOf`) and the path of its
- *  row. It is made before the mark names any draft's words, so a name is read from the words as
- *  drafted. */
+ *  row. It is made at the first store address of such a node a run's words name (`namedRuns`), so
+ *  a build whose words name none makes none; no draft's words are named before then, so a name is
+ *  read from the words as drafted. */
 function storeIndex(answer: TreeAnswer, context: TreeDraftContext): StoreIndex {
   const held = storeIndexes.get(context);
   if (held !== undefined) return held;
-  const conversation = presetPath(context.key, "conversation");
   const index = new Map<string, StoreNode>();
   for (const node of answer.nodes ?? []) {
     const type = lensTypeOf(node, context);
@@ -144,11 +140,18 @@ function storeIndex(answer: TreeAnswer, context: TreeDraftContext): StoreIndex {
     if (address === undefined || index.has(address)) continue;
     index.set(address, {
       name: nameOf(node, type, context),
-      path: `${conversation}?node=${encodeURIComponent(node.id)}`,
+      path: outlineRowPath(context.key, node.id),
     });
   }
   storeIndexes.set(context, index);
   return index;
+}
+
+/** The address of the row of the node whose id in the tree read is `readId` on the page of the
+ *  issue `issueKey`: the outline's, at its `?node=`, as a lens chip (`NodeLink.tsx`) and a store
+ *  address in a row's words (`storeIndex`) link that row. */
+export function outlineRowPath(issueKey: string, readId: string): string {
+  return `${presetPath(issueKey, "conversation")}?node=${encodeURIComponent(readId)}`;
 }
 
 /** The name a row's words read `node` by: a lens by its kind's words as its chip names it
@@ -176,7 +179,7 @@ function cites(raw: string | undefined): raw is string {
 /** The reading of the stored string `raw` with each store address in it named
  *  (`storeAddressesIn`), or undefined where it names none, so a draft that cites none keeps the
  *  words it has. */
-function namedReading(raw: string | undefined, index: StoreIndex): DisplayTree | undefined {
+function namedReading(raw: string | undefined, index: () => StoreIndex): DisplayTree | undefined {
   if (!cites(raw)) return undefined;
   const reading = storedReading(raw);
   const named = storeAddressesIn(reading, index);
@@ -200,7 +203,7 @@ function nameLine(draft: Draft, named: DisplayTree | undefined): void {
 
 /** `draft`'s fact lines (`FACT_ATTRIBUTES`) read again from their attributes with each store
  *  address named, each only where `lensDrafts` drew it and its attribute names one. */
-function nameFacts(draft: Draft, node: TreeAnswerNode, index: StoreIndex): void {
+function nameFacts(draft: Draft, node: TreeAnswerNode, index: () => StoreIndex): void {
   const facts = draft.lens;
   if (facts === undefined) return;
   let named: Partial<Record<StoredFact, string>> | undefined;
@@ -230,7 +233,7 @@ function nameFacts(draft: Draft, node: TreeAnswerNode, index: StoreIndex): void 
  * as it is, so a reading with none is answered whole, the very object: a row's reading keeps its
  * identity across reads, which `RowText.tsx`'s `useSameValue` and the paint rely on.
  */
-function storeAddressesIn(node: DisplayTree, index: StoreIndex, inCode = false): DisplayTree {
+function storeAddressesIn(node: DisplayTree, index: () => StoreIndex, inCode = false): DisplayTree {
   const content = node.content;
   if (!Array.isArray(content)) return node;
   const code = inCode || node.type === "code_block";
@@ -258,9 +261,15 @@ function storeAddressesIn(node: DisplayTree, index: StoreIndex, inCode = false):
 
 /** The runs the text run `run`, of words `text`, is written as with each store address in it
  *  named: its own words, a kind's word written into them, and a linked run for each name. Undefined
- *  where it names none: it holds no store address, or stands in inline code or in a link. */
-function namedRuns(run: DisplayTree, text: string, index: StoreIndex): DisplayTree[] | undefined {
-  if (!text.includes("dispatch://")) return undefined;
+ *  where it names none: it holds no store address, or stands in inline code or in a link. The
+ *  index (`index`) is asked for only here, at a store address of a lens, a risk, a constraint or a
+ *  finding. */
+function namedRuns(
+  run: DisplayTree,
+  text: string,
+  index: () => StoreIndex
+): DisplayTree[] | undefined {
+  if (!cites(text)) return undefined;
   const marks = Array.isArray(run.marks) ? (run.marks as DisplayTree[]) : NO_MARKS;
   if (marks.some((mark) => mark.type === "inlineCode" || mark.type === "link")) return undefined;
   const runs: DisplayTree[] = [];
@@ -268,11 +277,13 @@ function namedRuns(run: DisplayTree, text: string, index: StoreIndex): DisplayTr
   let words = "";
   let cursor = 0;
   for (const { start, value } of referenceSpans(text, "dispatch://")) {
-    const word = storeKindWord(value);
+    const address = storeAddressReference(value);
+    if (address === undefined) continue;
+    const word = storeKindWord(address);
     if (word === undefined) continue;
     words += text.slice(cursor, start);
     cursor = start + value.length;
-    const named = index.get(storeAddressReference(value) ?? "");
+    const named = index().get(address);
     if (named === undefined) {
       words += word;
       continue;

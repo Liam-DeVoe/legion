@@ -3,9 +3,9 @@ import { Link, useParams } from "react-router-dom";
 
 import { pageMutedText } from "../../../theme/classes";
 import { isPlainClick } from "../../refs/picture-lightbox";
-import { buildIssuePath } from "../../refs/routes";
 import { authorText, pageChrome } from "../page-structure";
 import type { LensChip } from "./lens-drafts";
+import { outlineRowPath } from "./store-words";
 
 /**
  * One chip of a lens line: a lens, a check or a constraint, by its words. Where a step drafted
@@ -42,7 +42,7 @@ export function NodeLink({ chip, tabStops }: { chip: LensChip; tabStops: boolean
           data-chip-name=""
           onClick={(event) => focusDrawnRow(event, id)}
           tabIndex={tabStops ? undefined : -1}
-          to={`${buildIssuePath({ key, kind: "issue" })}?node=${encodeURIComponent(id)}`}
+          to={outlineRowPath(key, id)}
           {...marks}
         >
           {chip.words}
