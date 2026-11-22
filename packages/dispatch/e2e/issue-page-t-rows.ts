@@ -36,7 +36,7 @@ import {
   type TreeView,
   treeAnswerOf,
 } from "./issue-page-t-tree";
-import { idReadsOf } from "./issue-page-u";
+import { heldDecisionsRead, idReadsOf } from "./issue-page-u";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 
 /**
@@ -161,7 +161,11 @@ function canonical(value: unknown): string {
 /** What row 1 reads of one seed's page. */
 interface OutlineRead {
   readonly answer: IssueTreeRead;
-  readonly decisions: DecisionsRead | undefined;
+  /** The decisions read the page received, and where it received none - the page draws its
+   *  decisions from the tree read's nodes and sends no decisions read - the read of the
+   *  Decisions view the row sends itself (`heldDecisionsRead`), so whether the seed's decisions
+   *  are nodes (`decisionsAreNodes`) reads what the server holds, not whether the page asked. */
+  readonly decisions: DecisionsRead;
   readonly keys: ReadonlyMap<string, string>;
   readonly opened: readonly RowReading[];
   readonly reads: TreeIdReads;
@@ -170,7 +174,8 @@ interface OutlineRead {
 
 /** Opens the seeded issue and reads it as the recorder did: the rows as the page opens, once two
  *  readings agree, then every row once every branch is open, with its body where `bodies`; and
- *  what the page received of the tree read and the decisions read. */
+ *  what the page received of the tree read, and the decisions read as `OutlineRead.decisions`
+ *  says. */
 export async function readOutline(
   page: Page,
   seeded: SeededIssue,
@@ -194,7 +199,7 @@ export async function readOutline(
   const slugs = (reads.issue.artifacts ?? []).map((artifact) => artifact.slug);
   return {
     answer,
-    decisions: decisions.read(),
+    decisions: await heldDecisionsRead(seeded.key, decisions),
     keys: seedKeys(seeded, slugs),
     opened,
     reads,
