@@ -452,6 +452,15 @@ func markAllOnPlan(t *testing.T, deps Deps, plan storetest.Plan) http.Handler {
 	return mux
 }
 
+// racingPools names the backends of the two servers markAllOnPlan mounts, which serve the two calls
+// a race test sends and nothing else (storetest.PlannedApplication): the backends whose queue on
+// the gate row the race tests wait for (releaseOnceQueued), and never the server's own, such as
+// the seeded issue's document settlement.
+var racingPools = []string{
+	storetest.PlannedApplication(storetest.IndexScan),
+	storetest.PlannedApplication(storetest.SequentialScan),
+}
+
 // unreadAgain puts Alice's rows back behind their newest reply, which is the state a press
 // marks, and lays them out in the heap in descending thread_id order, which is what gives the
 // two presses two scan orders to disagree about.
@@ -656,6 +665,11 @@ func holdGateThread(t *testing.T, database *store.Store, gate string) gateHold {
 // the first was just given, and Postgres breaks the cycle with a 40P01 its caller answers 500.
 // With it the two queue at the same row in the same order, and one simply follows the other.
 //
+// The wait for the queue counts the presses' own backends alone (racingPools): the issue's spec
+// settles 20 ms after its create, on the server's own pool, and its exclusive take of the issue's
+// owner lock can queue behind the first press's shared one and ahead of the second's, a third
+// backend behind the gate that a count of every backend would read.
+//
 // The two presses carry marks a millisecond apart, so one of them moves every row whichever
 // order they commit in.
 func TestInboxReadRacingAnotherMarkAll(t *testing.T) {
@@ -677,7 +691,7 @@ func TestInboxReadRacingAnotherMarkAll(t *testing.T) {
 		held := holdGateThread(t, database, gate)
 		// race holds the test's goroutine until both presses answer, and they answer only once
 		// the gate is released, so a goroutine of its own releases it (releaseOnceQueued).
-		queued := releaseOnceQueued(t, held.tx, 2, held.release)
+		queued := releaseOnceQueued(t, held.tx, racingPools, 2, held.release)
 		mark := time.Now()
 		later := mark.Add(time.Millisecond)
 		first, second := race(t, round,
@@ -692,7 +706,7 @@ func TestInboxReadRacingAnotherMarkAll(t *testing.T) {
 				})
 			})
 		if waiting := <-queued; waiting.err != nil || waiting.count != 2 {
-			t.Fatalf("round %d: %d presses queued on the gate row, want both of them (read error: %v)", round, waiting.count, waiting.err)
+			t.Fatalf("round %d: %d of the two presses queued behind the gate row, want both of them (read error: %v)", round, waiting.count, waiting.err)
 		}
 		if first.Code != http.StatusOK || second.Code != http.StatusOK {
 			t.Fatalf("round %d: the press in thread_id order %d %s, the press in heap order %d %s",
