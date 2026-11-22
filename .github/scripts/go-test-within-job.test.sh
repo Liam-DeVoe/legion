@@ -53,18 +53,31 @@ drive() {
 ran_go() { [ -e "$work/go-args" ] && echo yes || echo no; }
 go_args() { tr '\n' ' ' < "$work/go-args" | sed 's/ $//'; }
 
-echo "case: a go test with a 32-minute job just begun"
-drive JOB_TIMEOUT_MINUTES=32 -- go test -count=1 -tags natslive -run '^(TestA|TestB)$' ./gcp
+echo "case: a go test in a 32-minute job that has run 600 s"
+# A stand-in ps first on PATH answers `-o etimes= -p <pid>` with 600 for the stand-in
+# Runner.Worker alone (the process named Runner.Worker whose command line runs this harness's
+# wrapper), and passes every other call to the real ps. So the -timeout is 1260 s only when the
+# wrapper reads the elapsed time of the nearest Runner.Worker: one that read its own, or a real
+# Runner.Worker above the harness (CI runs it under one), or read no time at all, gives another.
+real_ps=$(type -P ps)
+mkdir -p "$work/etimes600"
+cat > "$work/etimes600/ps" <<PS
+#!/usr/bin/env bash
+if [ "\$#" = 4 ] && [ "\$1" = -o ] && [ "\$2" = etimes= ] && [ "\$3" = -p ] \\
+  && [ "\$("$real_ps" -o comm= -p "\$4")" = Runner.Worker ] \\
+  && [[ \$("$real_ps" -o args= -p "\$4") == *"$wrapper"* ]]; then
+  echo 600
+  exit 0
+fi
+exec "$real_ps" "\$@"
+PS
+chmod +x "$work/etimes600/ps"
+drive JOB_TIMEOUT_MINUTES=32 PATH="$work/etimes600:$work/bin:$PATH" -- go test -count=1 -tags natslive -run '^(TestA|TestB)$' ./gcp
 check "exits with the go test's status" "$(is "$status" 0)"
-given=$(sed -n 's/^go-test-within-job.sh: the job has run \([0-9]*\) s of its 32 min; go test -timeout \([0-9]*\)s$/\1 \2/p' <<<"$out")
-check "says how long the job has run and the -timeout it gives" "$(is "$(wc -w <<<"$given" | tr -d ' ')" 2)"
-read -r job_ran timeout <<<"$given"
-check "the -timeout is 32 min less what the job ran less 60 s" "$(is "$timeout" "$((32 * 60 - job_ran - 60))")"
-# The stand-in began after this harness did, and a real Runner.Worker (CI runs this harness under
-# one) before it: a time no longer than the harness's own SECONDS is the stand-in's.
-check "the time read is the nearest Runner.Worker's, the stand-in's" "$(is "$([ "${job_ran:-99999}" -le "$SECONDS" ] && echo yes || echo no)" yes)"
+check "says the job has run 600 s and gives -timeout 1260s (32 min, less 600 s, less 60 s)" \
+  "$(contains "$out" '^go-test-within-job.sh: the job has run 600 s of its 32 min; go test -timeout 1260s$')"
 check "runs go test with the -timeout first and the rest as given" \
-  "$(is "$(go_args)" "test -timeout ${timeout}s -count=1 -tags natslive -run ^(TestA|TestB)\$ ./gcp")"
+  "$(is "$(go_args)" "test -timeout 1260s -count=1 -tags natslive -run ^(TestA|TestB)\$ ./gcp")"
 
 echo "case: the go test's own failure is the step's"
 printf '1\n' > "$work/go-status"
