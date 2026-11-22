@@ -89,6 +89,14 @@ type StoreReport struct {
 	Absent bool
 	// Sizing is what the sizing pass found, or nil when it was not asked for.
 	Sizing *SizingReport
+	// ReadSeq is the read sequence the census saw: the highest graph_tuples.seq its snapshot
+	// holds, which is graph_tuples.seq at the commit the census read, and 0 for a store that
+	// holds no tuple or is Absent. R29 of the parent change's specification has a query, a census
+	// and an approval each record the read sequence it saw, so storeCensus reads it inside the
+	// census's own repeatable-read transaction, in the snapshot every kind is read in. Read on
+	// any other snapshot, it could name a tuple a write committed after the census's snapshot was
+	// taken, which none of the census's counts saw.
+	ReadSeq int64
 }
 
 // Rows is how many projection rows the census checked over every kind.
@@ -674,6 +682,12 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 		return nil, fmt.Errorf("look up the store: %w", err)
 	}
 	if !report.Absent {
+		// The highest seq is one probe of graph_tuples' primary key from its end, and reading it
+		// in this transaction is what makes it the sequence of the snapshot the kinds are read in
+		// (ReadSeq).
+		if err := tx.QueryRow(ctx, `select coalesce(max(seq), 0) from graph_tuples`).Scan(&report.ReadSeq); err != nil {
+			return nil, fmt.Errorf("read the census's read sequence: %w", err)
+		}
 		if report.Kinds, err = censusOfKinds(ctx, tx, afterKind); err != nil {
 			return nil, err
 		}
@@ -850,8 +864,10 @@ func (r *StoreReport) Write(w io.Writer) {
 		writeDifferences(w, kind.Kind, kind.NodeDifferences, kind.ReportedNodes)
 	}
 	if !r.Absent {
-		fmt.Fprintf(w, "census: store rows_checked=%s differences=%s\n",
-			pgmigrate.Thousands(r.Rows()), pgmigrate.Thousands(r.Differences()))
+		// read_seq is printed whole, without Thousands' separators: it is no count but a position
+		// in graph_tuples, and a reader holds it against graph_tuples.seq as a statement writes it.
+		fmt.Fprintf(w, "census: store rows_checked=%s differences=%s read_seq=%d\n",
+			pgmigrate.Thousands(r.Rows()), pgmigrate.Thousands(r.Differences()), r.ReadSeq)
 	}
 	if r.Sizing != nil {
 		r.Sizing.Write(w)
