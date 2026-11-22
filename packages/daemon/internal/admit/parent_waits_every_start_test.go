@@ -230,15 +230,17 @@ const (
 	// phase that ended (%s).
 	pwCommitAndPush = "Commit and push what you have to the issue's branch, and do no more work on %s."
 	// pwWriteNothing is what a worker other than the implementer is told in place of
-	// pwCommitAndPush when the move dropped a merge forward that had not landed; %s is the phase
-	// that ended.
+	// pwCommitAndPush when the move dropped a merge forward asked of the implementer that had not
+	// landed; %s is the phase that ended.
 	pwWriteNothing = "Write and push nothing more, because the implementer may be merging in the workspace you share: put what you found on the Dispatch issue, and do no more work on %s."
-	// pwDroppedForward names the dropped merge forward to the implementer, %[1]s being the issue,
-	// %[2]s the base and %[3]s the head, and gives it the begun and not-begun rule.
+	// pwDroppedForward names the dropped merge forward to the role it was asked of, %[1]s being
+	// the issue, %[2]s the base and %[3]s the head, and gives it the begun and not-begun rule.
 	pwDroppedForward = "The daemon dropped the merge forward of %[2]s onto head %[3]s that it asked of you for %[1]s: if you have begun that merge, finish it, push it and do nothing more; if you have not begun it, begin none."
-	// pwNoAskAgain tells the implementer when a merge of the base (%s) forward is its to make again.
+	// pwNoAskAgain tells the role a dropped merge forward was asked of when a merge of the base
+	// (%s) forward is its to make again.
 	pwNoAskAgain = "The daemon does not ask for that merge forward again: in a later task of the issue, merge %s forward only once GitHub reads its pull request CONFLICTING."
-	// pwMovedIntoTheWait opens the implementer's role message, %s being the issue.
+	// pwMovedIntoTheWait opens the role message of the role a dropped merge forward was asked of,
+	// %s being the issue.
 	pwMovedIntoTheWait = "%s: the issue moved into awaiting_children, where it waits on its open Dispatch children."
 	// pwNextTask is when the issue's next task comes, in every form.
 	pwNextTask = "The daemon gives the issue its next task once its children are finished."
@@ -247,15 +249,16 @@ const (
 	pwLeaveUncommitted = "leave whatever you have uncommitted"
 )
 
-// pwDropped is what the implementer is told of dropped, a merge forward of issue's pull request
-// that the move into awaiting_children dropped before it landed: the merge forward named, the
-// begun and not-begun rule, and when a merge forward is its to make again.
+// pwDropped is what the role dropped was asked of (dropped.Role) is told of it, dropped being a
+// merge forward of issue's pull request that the move into awaiting_children dropped before it
+// landed: the merge forward named, the begun and not-begun rule, and when a merge forward is that
+// role's to make again.
 func pwDropped(issue string, dropped record.DroppedMergeForward) []string {
 	return []string{fmt.Sprintf(pwDroppedForward, issue, dropped.Base, dropped.Head), fmt.Sprintf(pwNoAskAgain, dropped.Base)}
 }
 
-// pwDroppedBody is the body of the role message the implementer of issue is sent when a move into
-// awaiting_children that stops no phase of its own drops dropped: that the issue waits on its
+// pwDroppedBody is the body of the role message the role dropped was asked of is sent when a move
+// into awaiting_children that stops no phase of that role's drops it: that the issue waits on its
 // children, what pwDropped says, and when the issue's next task comes.
 func pwDroppedBody(issue string, dropped record.DroppedMergeForward) string {
 	return strings.Join(append(append([]string{fmt.Sprintf(pwMovedIntoTheWait, issue)}, pwDropped(issue, dropped)...), pwNextTask), " ")
@@ -754,7 +757,7 @@ func pwForwards() []pwForward {
 	return []pwForward{
 		{name: "no merge forward", asked: func(phase.Phase) *record.MergeForward { return nil }},
 		{name: "a merge forward asked and not landed", asked: func(at phase.Phase) *record.MergeForward { return pwAsked(at, false) },
-			dropped: &record.DroppedMergeForward{Head: "head-42", Base: "main"}},
+			dropped: &record.DroppedMergeForward{Head: "head-42", Base: "main", Role: claim.RoleImplementer}},
 		{name: "a merge forward that landed", asked: func(at phase.Phase) *record.MergeForward { return pwAsked(at, true) }},
 	}
 }
@@ -903,7 +906,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 				t.Fatalf("the queued ask to the implementer is left %q (%v), want it undelivered: the record holds no merge forward", left, err)
 			}
 		})
-		dropped := &record.DroppedMergeForward{Head: "head-42", Base: "main"}
+		dropped := &record.DroppedMergeForward{Head: "head-42", Base: "main", Role: claim.RoleImplementer}
 		pwToldImplementer(t, pool, dropped)
 		pwToldR10(t, pwPayloads[record.PhaseEnded](t, pool, spParent), claim.RoleTester, phase.Testing, wait.Reason, dropped)
 	})
@@ -930,16 +933,19 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 			t.Errorf("role messages = %+v, want none: the implementer is told in its phase-ended message", messages)
 		}
 		pwToldR10(t, pwPayloads[record.PhaseEnded](t, pool, spParent), claim.RoleImplementer, phase.Implementing, wait.Reason,
-			&record.DroppedMergeForward{Head: "head-42", Base: "main"})
+			&record.DroppedMergeForward{Head: "head-42", Base: "main", Role: claim.RoleImplementer})
 	})
 
 	// R10's message about a dropped merge forward goes to the role the record's ask names
-	// (record.MergeForward.Asked), and not to the implementer by assumption. A merger's ask made in
-	// merging stays in the record when the merger moves the issue back to testing, and the pass
-	// that stops the tester once the architect releases the parent's child drops it: the merger is
-	// sent one role message on its own role topic that names it, the implementer is sent nothing,
-	// and the tester is told in the R10 message to write and push nothing more, since the merger
-	// may be merging in the workspace they share.
+	// (record.MergeForward.Asked), and not to the implementer by assumption. The record holds a
+	// merger's ask made in merging and not landed, which the merger's move back out of merging left
+	// there, and the tester is in the middle of a later testing entry, one no move out of merging
+	// raised (its phases row names no entry_from): the pass leaves the entry that move back raised
+	// where it stands (workflow's acceptedEntry), and stops the tester on this one once the
+	// architect releases the parent's child. It drops the ask: the merger is sent one role message
+	// on its own role topic that names it, the implementer is sent nothing, and the tester is told
+	// in the R10 message to write and push nothing more, since the merger may be merging in the
+	// workspace they share.
 	t.Run("a pass that drops a merge forward asked of the merger tells the merger on its role topic", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := pwAdmission(t, 2)

@@ -411,8 +411,9 @@ func (r *personHandoverRig) readAncestorOpening(c ancestorOpening) {
 	if viewOf := r.record(root.Key).ViewOf; viewOf != parent.Key {
 		t.Fatalf("the view fact recorded at %s's registration = %q, want %s", root.Key, viewOf, parent.Key)
 	}
-	viewSentence := fmt.Sprintf("%s is a view on %s: the requirements of %s are the parts of the requirements of %s that the Delivers: line in the spec of %s names.",
-		root.Key, parent.Key, root.Key, parent.Key, root.Key)
+	viewSentence := fmt.Sprintf("%s is a view on %s: the requirements of %s are the parts of the requirements of %s that the Delivers: line in the spec of %s names,"+
+		" so Dispatch's Coverage line, which counts only %s's own blocks, shows no gap.",
+		root.Key, parent.Key, root.Key, parent.Key, root.Key, root.Key)
 	if task := r.entryTask(root.Key, claim.RolePlanner); !strings.Contains(task, viewSentence) {
 		t.Fatalf("the planner's task of %s = %q, want the view sentence %q", root.Key, task, viewSentence)
 	}

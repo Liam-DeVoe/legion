@@ -12,9 +12,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
-// droppedForward is the merge forward of main onto c0de that a move of LEGION-208 into
-// awaiting_children dropped before it landed (record.PhaseEnded.MergeForward).
-var droppedForward = record.DroppedMergeForward{Head: "c0de", Base: "main"}
+// droppedForward is the merge forward of main onto c0de, asked of the implementer, that a move of
+// LEGION-208 into awaiting_children dropped before it landed (record.PhaseEnded.MergeForward).
+var droppedForward = record.DroppedMergeForward{Head: "c0de", Base: "main", Role: claim.RoleImplementer}
 
 // droppedForwardBody is the body of the role message the implementer of LEGION-208 is sent when a
 // move into awaiting_children that stops no phase of its own drops droppedForward
