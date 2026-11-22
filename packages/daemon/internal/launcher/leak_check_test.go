@@ -726,10 +726,10 @@ const (
 // (pidGuard.starter, which newManagers gives the pod's install): a run whose exit the reaper took
 // first fails its own wait with `waitid: no child processes`, or under gVisor at times `wait: no
 // child processes` or `waitid: no such process`, and the role's launch is refused with it.
-// The race needs a pod's shape: PID 1 of a PID namespace whose /proc lists a handful of processes,
-// so a reaper's pass is short. Under a host's /proc of thousands, a pass took long enough that 200
-// unguarded installs met no reap at all, so the installs run in the test binary as PID 1 of a PID
-// namespace of its own (TestLeakCheckInstallPIDOneHelper).
+// The row runs in the pod's shape, the test binary as PID 1 of a PID namespace of its own
+// (TestLeakCheckInstallPIDOneHelper), so the reaper's passes read that namespace's /proc, a handful
+// of processes, and reap only the helper's own children. Each run of the check meets a pass because
+// metTheReaper waits for one, not because passes are short.
 func TestTheLeakCheckInstallSurvivesPID1sReaper(t *testing.T) {
 	t.Logf("%s", runAsPIDOne(t, "TestLeakCheckInstallPIDOneHelper"))
 }
