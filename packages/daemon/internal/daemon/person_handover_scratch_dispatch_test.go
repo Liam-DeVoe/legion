@@ -1072,20 +1072,24 @@ func (r *personHandoverRig) notQueued(key, status string, lines int) {
 // architect's registered session holds, as architectGrants does for the blockers proof, and keeps
 // that launch and session for ready.
 func (r *personHandoverRig) admit(key string) func() string {
+	r.t.Helper()
+	setDispatchStatus(r.t, r.baseURL, key, "todo")
+	return r.admitted(key, 0)
+}
+
+// admitted waits for key, handed to Legion, to take a slot, for the daemon to launch its architect
+// a time past the launched it had launched it before, and for Dispatch to show the daemon's
+// in_progress, and answers as admit does: a root that waited in the line is admitted by the
+// promotion a freed slot brings, with no act of the person's.
+func (r *personHandoverRig) admitted(key string, launched int) func() string {
 	t := r.t
 	t.Helper()
-	setDispatchStatus(t, r.baseURL, key, "todo")
 	settled(t, r.d, "admit "+key+" into a slot", func(s api.State) bool {
 		return slices.Contains(s.Admission.Active, key)
 	})
 	architect := r.architectToken(key)
 	testwait.Eventually(t, "the daemon to launch the architect of "+key, func() bool {
-		for _, call := range r.rt.Calls() {
-			if (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim == architect {
-				return true
-			}
-		}
-		return false
+		return r.launches(string(architect)) > launched
 	})
 	launch := lastLaunch(t, r.rt, architect)
 	session, secret := registerLaunch(t, r.d, launch)

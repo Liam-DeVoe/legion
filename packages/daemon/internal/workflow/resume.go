@@ -116,8 +116,9 @@ type suspendedOwner struct {
 
 // phaseOwners is what suspendedPhaseOwners reads: every issue the store holds, which the daemon's
 // store holds of the project alone (internal/daemon's projectRecords); the roots of the project's
-// trees that run (record.RunningRoots); and the suspended owners of the project's unfinished
-// phases in those trees, in the order the store lists the issues.
+// trees that run (record.RunningRoots), which the boot's status repair reads (correctStatuses);
+// and the suspended owners of the project's unfinished phases in the trees that have started, in
+// the order the store lists the issues.
 type phaseOwners struct {
 	issues    []record.Issue
 	running   map[string]struct{}
@@ -125,7 +126,7 @@ type phaseOwners struct {
 }
 
 // suspendedPhaseOwners reads, for each issue of the project, the suspended owner of its phase
-// while that phase is unfinished and the issue's tree runs. The boot's resume by rule (booted) and
+// while that phase is unfinished and the issue's tree has started. The boot's resume by rule (booted) and
 // the cutover's repair of the mergers the `awaiting_merge` cutover left stopped
 // (cutoverMergerRepair) both read their owners here, and each narrows them by terms of its own,
 // booted to a claim a ByRule source suspended and the repair to a merger the idle release
@@ -134,17 +135,14 @@ type phaseOwners struct {
 // work of an entry a claim stands behind (owedEntryRoles). It writes nothing.
 //
 // The phase's owner is the role that works the issue's phase (phase.RoleFor) on an issue in the
-// workflow whose tree is running — this generation of it, by the one rule every reader of that
-// question asks (record.RunningRoots, record.TreeRuns): its lifecycle stands open under the
-// workflow, its root does not linger, and its root is not itself waiting in the line for the
-// tree to be opened. A lingering tree's claims stay suspended until re-admission runs the tree
-// again, and a queued root's members are started by the promotion that opens the tree, which
-// gives each mid-phase member its own start (admit's startMidPhaseMembers): a start queued for
-// such an owner instead would re-point the claim at a tree with no lifecycle, and would put the
-// member in the line's first part ahead of its own root. It is the lifecycle rather than the
-// root's row because a row says the daemon has started that one issue and nothing about the
-// tree: a root that arrived from another tree carries one while the tree of its own has still to
-// be opened (record.KeepsSlot).
+// workflow whose tree has started — this generation of it (record.StartedRoots,
+// record.TreeStarted): its root is in Legion's work and does not wait in the line for its first
+// start, whose promotion starts the root's architect and the tree. It is not whether the tree runs
+// (record.TreeRuns, R4 of dispatch://INFRA-3320): a root waiting in the line for the slot of its
+// own returned work, or one whose phase worker a stop or a crash left suspended while it holds no
+// row, runs nothing by R4, and the resume is what puts its worker's start back, marked for the
+// issue's slot where it holds none (StartOrOwe), so it waits in the line for that slot rather than
+// standing in no part of it with no start owed.
 // A phase its own terminating fact has already met is given no owner either (PhaseFinished): a
 // merged root stands in merging for as long as the rest of its tree runs, and resuming its merger
 // there would hand it the same phase again at every boot, for days.
@@ -170,7 +168,12 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 	if err != nil {
 		return phaseOwners{}, err
 	}
-	owners := phaseOwners{issues: issues, running: record.RunningRoots(issues, facts)}
+	slots, err := e.store.Slots(ctx, tx)
+	if err != nil {
+		return phaseOwners{}, err
+	}
+	owners := phaseOwners{issues: issues, running: record.RunningRoots(issues, slots, facts)}
+	started := record.StartedRoots(issues, facts)
 	for _, issue := range issues {
 		role := phase.RoleFor(issue.Phase)
 		if role == "" || role == claim.RoleArchitect || record.OutOfWorkflow(issue.Status) {
@@ -181,12 +184,10 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 		if !ok {
 			continue
 		}
-		// The tree must be running — this generation of it, by the one rule every reader of that
-		// question asks (record.TreeRuns, read here through record.RunningRoots): the workflow has
-		// opened its lifecycle and not closed it, the root does not linger, and the root is not
-		// itself waiting in the line for the tree to be opened, whose architect's first task comes
-		// with its promotion.
-		if _, runs := owners.running[root.Key]; !runs {
+		// The tree must have started — this generation of it (record.TreeStarted, read here
+		// through record.StartedRoots): the root is in Legion's work and does not wait in the line
+		// for its first start, whose promotion starts it.
+		if _, ok := started[root.Key]; !ok {
 			continue
 		}
 		finished, err := e.phaseFinished(ctx, tx, issue)

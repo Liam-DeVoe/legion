@@ -37,10 +37,10 @@ const (
 )
 
 // WaitsForSlot says whether root is a root a person handed to Legion that waits in the line for
-// its first start, with no architect running for it yet: in Legion's work, a root on Dispatch's
-// chain as the copy shows it now (Chains.IsRoot), the one queued-root rule (QueuedRoot) read with
-// its own design gate, and holding no slot of its own. steps are the design-gate steps the
-// deployment gates.
+// its first start, with no architect running for it yet: in Legion's work, an issue whose run
+// starts as a root's on Dispatch's chain as the copy shows it now (Chains.StartsAsRoot), the one
+// queued-root rule (QueuedRoot) read with its own design gate, and holding no slot of its own.
+// steps are the design-gate steps the deployment gates.
 //
 // It is that rule and no other reading of it. "Status todo and no slot" used to say the same
 // thing and no longer does: a running root can hold no row while it waits on another issue, and a
@@ -56,7 +56,7 @@ func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps
 		return false, nil
 	}
 	chains, err := ReadChains(ctx, tx, store, root.Project, []string{root.Key})
-	if err != nil || !chains.IsRoot(root.Key) {
+	if err != nil || !chains.StartsAsRoot(root.Key) {
 		return false, err
 	}
 	rows, err := store.GatesOf(ctx, tx, root.Key)

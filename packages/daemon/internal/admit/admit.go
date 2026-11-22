@@ -1332,13 +1332,17 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 //   - a parent in awaiting_children that no open child holds any longer goes back
 //     (workflow.Engine.ReturnFromChildren), on this pass and with nobody acting.
 //
-// Each reads an issue of this project in the workflow whose gate root runs (record.RunningRoots
-// over the pass's chains: the gate root in Legion's work and not waiting in the line for its first
-// start), so an issue under a root still queued stays where it stands, a queued root is left alone
-// (record.LineFacts.Queued), and a root handed over in awaiting_children comes back once its
-// promotion has started it. An issue whose own chain the copy cannot show to its top is decided
-// nothing either (R16 of dispatch://INFRA-3320): at work, it goes on in the list it stands in,
-// neither moved into awaiting_children nor taken back from it, until the daemon has read Dispatch
+// Each reads an issue of this project in the workflow whose gate root has started
+// (record.StartedRoots, record.TreeStarted: the gate root in Legion's work on the pass's chains
+// and not waiting in the line for its first start), so an issue under a root still queued stays
+// where it stands, a queued root is left alone (record.LineFacts.Queued), and a root handed over in
+// awaiting_children comes back once its promotion has started it. It does not ask whether the tree
+// runs (record.TreeRuns, R4 of dispatch://INFRA-3320), which a root waiting in the line for the slot
+// of its returned work answers false: such a root is a parent whose start is written and not
+// delivered, the case the first move is for (R9), and the issues under it work. An issue whose own
+// chain the copy cannot show to its top is decided nothing either (R16 of dispatch://INFRA-3320):
+// at work, it goes on in the list it stands in, neither moved into awaiting_children nor taken
+// back from it, until the daemon has read Dispatch
 // again. A key a hold still names (held, the pass's own predicate) is read on the first pass after
 // the hold ends, as the promotion reads it. The engine leaves alone a parent held, in retro or in
 // merging, whose pull request has merged, or whose phase's role stands on an entry a role's move
@@ -1364,7 +1368,7 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 		return false, nil
 	}
 	slices.SortFunc(parents, func(left, right record.Issue) int { return cmp.Compare(left.Key, right.Key) })
-	running := record.RunningRoots(issues, facts)
+	started := record.StartedRoots(issues, facts)
 	owed := make(map[string][]record.OwedStart, len(facts.OwedRows))
 	for _, start := range facts.OwedRows {
 		owed[start.Issue] = append(owed[start.Issue], start)
@@ -1374,7 +1378,7 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 		if parent.Project != a.project || !record.InWorkflow(parent) || held(parent.Key) || !facts.Chains.Chain(parent.Key).Known() {
 			continue
 		}
-		if _, runs := running[facts.Chains.GateRoot(parent.Key)]; !runs {
+		if _, ok := started[facts.Chains.GateRoot(parent.Key)]; !ok {
 			continue
 		}
 		wait, open := facts.StartedParentWaits[parent.Key]
@@ -2488,8 +2492,9 @@ type slotReading struct {
 }
 
 // readSlotHolders is the reading owedEntryRoles weighs, over its domain: every slot of the
-// project, then each issue of the project past its review in a tree that runs, then the architect
-// of each root of the project released for a wait in a tree that runs. Only the role of each
+// project, then each issue of the project past its review under a gate root that has started
+// (record.TreeStarted), then the architect of each root of the project released for a wait in a tree
+// that runs (record.TreeRuns). Only the role of each
 // candidate's current phase is held, and a root's own architect.
 //
 // Which role of a candidate the rule reaches is two questions, because two roles can stand on
@@ -2562,7 +2567,7 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 			continue
 		}
 		root, rooted := byKey[facts.Chains.GateRoot(issue.Key)]
-		if !rooted || !record.TreeRuns(root, facts.Gates[root.Key]) {
+		if !rooted || !record.TreeStarted(root, facts.Gates[root.Key]) {
 			continue
 		}
 		take(issue, time.Time{})
@@ -2574,8 +2579,10 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 		if _, already := seen[issue.Key]; already {
 			continue
 		}
+		// The root holds no row while it waits on another issue, and that wait is no wait for a
+		// slot (record.WaitsWithoutSlot), so this asks R4's rule as it stands.
 		architect, selected := a.rootArchitectOf(project, issue, facts.Chains)
-		if !selected || !record.TreeRuns(issue, facts.Gates[issue.Key]) {
+		if !selected || !record.TreeRuns(issue, facts.Gates[issue.Key], false) {
 			continue
 		}
 		seen[issue.Key] = struct{}{}
@@ -2713,8 +2720,9 @@ func (a *Admission) architectReached(ctx context.Context, tx pgx.Tx, root record
 // sub-architect claim outside the rule, since its start, which the child's first phase start
 // queues (workflow's gateOpened), carries no task and raises no entry). The slotted form
 // reads nothing, because root is one readSlotHolders holds: it holds one of the slots this pass
-// read, or stands past its review in a tree that runs, or was released for a wait in a tree that
-// runs (record.TreeRuns, which no queued root does), and so waits for none. And the root must be
+// read, or stands past its review under a gate root that has started (record.TreeStarted), or was
+// released for a wait in a tree that runs (record.TreeRuns), neither of which a queued root is, and
+// so waits for none. And the root must be
 // inside the reach (workflow.ArchitectAtWork): a root standing at admitted, whatever its design
 // gate, a root a hand-over carried in while it stands in the run that hand-over carried it into,
 // and a root past admitted under its own power, waiting on no person, only while the entry its

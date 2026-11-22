@@ -56,8 +56,9 @@ func legionOnChain(chains *record.Chains, key string) bool {
 //     anyone's to write (R26 of dispatch://INFRA-3320);
 //  6. its gate root on the Dispatch chain (record.Chains.GateRoot) is not among the roots this run
 //     reads as running, by the one rule every reader of the question asks (record.TreeRuns, read
-//     here through record.RunningRoots): it is out of Legion's work, or itself still waiting in
-//     the line for its first start. Its key goes in the run line's passed-over list;
+//     here through record.RunningRoots, R4 of dispatch://INFRA-3320): it is out of Legion's work,
+//     or itself still waiting in the line for a slot it does not hold, its first start or the one
+//     its returned work needs. Its key goes in the run line's passed-over list;
 //  7. it already has an unfinished dispatch_status row of any kind (PendingStatusWrites), so a
 //     write is on its way. Its key goes in the run line's pending list.
 //

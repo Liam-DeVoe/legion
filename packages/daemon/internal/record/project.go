@@ -671,16 +671,16 @@ func (f LineFacts) GateHolders(key string) []string {
 }
 
 // ShutGates is the issues whose gate holds key's work where it stands, nearest first, and nothing
-// where every gate it waits for is open. A root waits for its own design gate to open
-// (TreeGate.Open), which its architect's design opens. An issue under a parent waits for each
-// gate step it holds itself that does not stand open — a step registered on it, whether it ran
-// as a root or not — and not for a design its architect never registered: an issue a person
-// queued as a root and that never started holds no step, and under a parent at work it starts on
-// todo (R19). And every issue waits for the gate of each gate holder above it (GateHolders) that
-// is not open.
+// where every gate it waits for is open. An issue whose run starts as a root's (Chains.StartsAsRoot)
+// waits for its own design gate to open (TreeGate.Open), which its architect's design opens. Any
+// other issue under a parent waits for each gate step it holds itself that does not stand open — a
+// step registered on it, whether it ran as a root or not — and not for a design its architect
+// never registered: an issue a person queued as a root and that never started holds no step, and
+// under a parent at work it starts on todo (R19). And every issue waits for the gate of each gate
+// holder above it (GateHolders) that is not open.
 func (f LineFacts) ShutGates(key string) []string {
 	var shut []string
-	if f.Chains.IsRoot(key) {
+	if f.Chains.StartsAsRoot(key) {
 		if !f.Gates[key].Open() {
 			shut = append(shut, key)
 		}
@@ -704,11 +704,12 @@ func (f LineFacts) ShutGates(key string) []string {
 func (f LineFacts) GatesOpen(key string) bool { return len(f.ShutGates(key)) == 0 }
 
 // Queued says whether issue waits in the line for its first start as a root (QueuedRoot): its own
-// record and design gate say its first start has still to come, and it is a root on the pass's
-// chains (Chains.IsRoot). The record is read first, so an issue whose record already says no
-// costs no walk of its chain.
+// record and design gate say its first start has still to come, and its run starts as a root's on
+// the pass's chains (Chains.StartsAsRoot), a root's or a new run of an issue that holds its own
+// gate. The record is read first, so an issue whose record already says no costs no walk of its
+// chain.
 func (f LineFacts) Queued(issue Issue) bool {
-	return QueuedRoot(issue, f.Gates[issue.Key]) && f.Chains.IsRoot(issue.Key)
+	return QueuedRoot(issue, f.Gates[issue.Key]) && f.Chains.StartsAsRoot(issue.Key)
 }
 
 // AtWork is AtWork for an issue of the pass: whether it holds its own gate is the pass's chains'
@@ -1442,19 +1443,51 @@ func TreeLive(ctx context.Context, store Store, tx pgx.Tx, root Issue) (bool, er
 }
 
 // TreeRuns says whether root, a gate root, runs (R4 of dispatch://INFRA-3320 as R15 reads it): it
-// is in Legion's work and does not wait in the line for a first start whose slot it does not hold
-// (QueuedRoot, over gate, its own design gate). Whether root is a gate root is the chain's
-// question (Chains.GateRoot), which RunningRoots asks of every root of a pass and TreeRunning of
-// one.
+// is in Legion's work and does not wait in the line for a slot it does not hold, holds being
+// whether it holds a slot row: for its first start (QueuedRoot, over gate, its own design gate),
+// or for the slot its work needs again, among the work that came back after a stop (R20,
+// WaitsWithoutSlot). Whether root is a gate root is the chain's question (Chains.GateRoot), which
+// RunningRoots asks of every root of a pass and TreeRunning of one.
 //
 // It is the one statement of "the tree runs", and the readers that must agree all call it: the
-// claims nothing will wake (workflow.Stranded), the boot's resume of a suspended phase worker
-// (workflow's booted) and the question whether a session's status write lands on a running tree
-// (workflow's sessionStatusWrite). Each of them acts on the root as it stands now, and a root
-// waiting in the line runs nothing yet: its architect's first task comes with its promotion, so a
-// claim of it is not stranded, a suspended worker of it is not resumed, and a status write on it
-// is a person's move.
-func TreeRuns(root Issue, gate TreeGate) bool {
+// claims nothing will wake (workflow.Stranded), the question whether a session's status write
+// lands on a running tree (workflow's sessionStatusWrite), the status repair's passed-over roots,
+// the stalled-tree measure and the state's `treeRuns`. Each of them acts on the root as it stands
+// now, and a root waiting in the line runs nothing yet: its architect's first task comes with its
+// promotion, and a returned root's work comes back with the slot its start waits for, so a claim
+// of it is not stranded, a status write on it is a person's move, and its quiet is no stall. The
+// readers that decide what a started root, or an issue under it, owes once its slot comes ask
+// TreeStarted instead.
+func TreeRuns(root Issue, gate TreeGate, holds bool) bool {
+	return TreeStarted(root, gate) && !WaitsWithoutSlot(root, holds)
+}
+
+// WaitsWithoutSlot says whether issue waits in the line for a slot it does not hold, holds being
+// whether it holds a slot row: it needs one where it stands (NeedsSlot), the rule the line offers
+// a returning issue a slot by (Waiting), it holds none, and it waits on no other issue
+// (Issue.ReleasedForWaitAt), whose wait the line passes over and whose work the issues it waits
+// on carry meanwhile. Such an issue's work came back to it without its slot: a stop freed the row
+// and its return owes its phase's worker a start, or stands it at admitted with its gate open
+// (R20 of dispatch://INFRA-3320), and work sent back from past its review into a phase that keeps
+// a row waits the same way (KeepsSlot).
+func WaitsWithoutSlot(issue Issue, holds bool) bool {
+	return !holds && NeedsSlot(issue) && issue.ReleasedForWaitAt == nil
+}
+
+// TreeStarted says whether root, a gate root, has made its first start and is in Legion's work: it
+// does not wait in the line for its first start (QueuedRoot, over gate, its own design gate). It
+// states R9 of dispatch://INFRA-3320, "No phase of a parent starts while an open child stands under
+// it", over every issue whose phases started, a start written and not delivered among them, and
+// R20's "The daemon acts on each issue's own status". It is not TreeRuns (R4: "does not wait in the
+// line for a slot it does not hold"): a root that waits for the slot of its own returned work runs
+// nothing by R4, while it is still a parent whose start is written and not delivered (R9), the
+// issues under it work on with slots of their own (R20), and a start its phase worker owes is
+// written marked for that slot, which it waits for in the line. Its readers decide for such a
+// root or the issues under it: the admission pass's children waits and the repair's issues past
+// their review (admit's childrenWaits, readSlotHolders), and the boot's resume of a suspended
+// phase worker (workflow's booted), which puts back a start a stop or a crash lost, marked for
+// the slot where the issue holds none.
+func TreeStarted(root Issue, gate TreeGate) bool {
 	return InLegionsWork(root) && !QueuedRoot(root, gate)
 }
 
@@ -1498,28 +1531,50 @@ func OperatorHolds(ctx context.Context, store Store, tx pgx.Tx, issue Issue) (bo
 }
 
 // RunningRoots is the set of the keys among issues that are gate roots on the pass's chains
-// (Chains.GateRoot) and run (TreeRuns), read from the records and the pass's own facts already in
-// hand.
-func RunningRoots(issues []Issue, facts LineFacts) map[string]struct{} {
+// (Chains.GateRoot) and run (TreeRuns), read from the records, the slot rows and the pass's own
+// facts already in hand.
+func RunningRoots(issues []Issue, slots []Slot, facts LineFacts) map[string]struct{} {
+	slotted := make(map[string]struct{}, len(slots))
+	for _, slot := range slots {
+		slotted[slot.Issue] = struct{}{}
+	}
 	running := make(map[string]struct{}, len(issues))
 	for _, issue := range issues {
-		if facts.Chains.GateRoot(issue.Key) == issue.Key && TreeRuns(issue, facts.Gates[issue.Key]) {
+		_, holds := slotted[issue.Key]
+		if facts.Chains.GateRoot(issue.Key) == issue.Key && TreeRuns(issue, facts.Gates[issue.Key], holds) {
 			running[issue.Key] = struct{}{}
 		}
 	}
 	return running
 }
 
+// StartedRoots is the set of the keys among issues that are gate roots on the pass's chains
+// (Chains.GateRoot) and have made their first start (TreeStarted), read from the records and the
+// pass's own facts already in hand.
+func StartedRoots(issues []Issue, facts LineFacts) map[string]struct{} {
+	started := make(map[string]struct{}, len(issues))
+	for _, issue := range issues {
+		if facts.Chains.GateRoot(issue.Key) == issue.Key && TreeStarted(issue, facts.Gates[issue.Key]) {
+			started[issue.Key] = struct{}{}
+		}
+	}
+	return started
+}
+
 // ReadRunningRoots is RunningRoots for a caller that holds no facts of the pass: the chains of
-// project with every key of issues named and the gates on them (readChainFacts), four reads
-// whatever the number of roots, and then the one rule. project is the Dispatch project key and
-// steps the design-gate steps the deployment gates.
+// project with every key of issues named and the gates on them (readChainFacts), and the slot
+// rows, five reads whatever the number of roots, and then the one rule. project is the Dispatch
+// project key and steps the design-gate steps the deployment gates.
 func ReadRunningRoots(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, steps []DesignStep) (map[string]struct{}, error) {
 	chains, gates, err := readChainFacts(ctx, tx, store, project, issues, steps)
 	if err != nil {
 		return nil, err
 	}
-	return RunningRoots(issues, LineFacts{Chains: chains, Gates: gates}), nil
+	slots, err := store.Slots(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	return RunningRoots(issues, slots, LineFacts{Chains: chains, Gates: gates}), nil
 }
 
 // LiveRoots is the set of the keys among issues whose trees are live (TreeLive): each gate root

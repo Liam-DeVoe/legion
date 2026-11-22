@@ -326,6 +326,24 @@ func (c *Chains) HoldsOwnGate(key string) bool {
 	return c.IsRoot(key)
 }
 
+// StartsAsRoot says whether key's run starts as a root's does (R19 and R20 of
+// dispatch://INFRA-3320): the waiting line's promotion starts it and its architect (LineFacts.Queued),
+// and its first phase waits for its own design gate to open (LineFacts.ShutGates). A root does, and
+// so does an issue that holds its own gate (HoldsOwnGate) at a new run, a generation past its
+// first: R20 opens a new run of an issue "as a re-admission does", and the new run has none of
+// the gate its architect designed before (workflow's NewRun clears it), so its own architect,
+// started at the promotion with the person's approvals of its documents kept (KeptDecisionsTask),
+// designs it again. An issue that holds its own gate at its first run and stands under a parent in
+// Legion's work starts as any issue under a parent does (R19): on todo, waiting for the gate steps
+// it holds itself.
+func (c *Chains) StartsAsRoot(key string) bool {
+	if c.IsRoot(key) {
+		return true
+	}
+	issue, recorded := c.records[key]
+	return recorded && issue.Generation > 1 && c.HoldsOwnGate(key)
+}
+
 // GateRoot is key's gate root (R15): the nearest issue at or above it in Legion's work that holds
 // its own gate, "" where none does. On a known chain an issue in work always has one, its top
 // issue being a root, so "" is an issue in work only on an unknown chain, or an issue not in work

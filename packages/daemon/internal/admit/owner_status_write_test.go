@@ -249,6 +249,20 @@ func (r *ownerRig) echo(key, status string) {
 		HandedOver: recorded.HandedOver, DaemonActor: true})
 }
 
+// deliverStatusWrites is the outbox's delivery of every status write the daemon queued for key:
+// Dispatch took each one, and the outbox finished its row (record.Postgres.FinishOutbox), as it
+// does before Dispatch's event of that write reaches the daemon. An echo of the daemon's own write
+// applied while a write of the issue is still queued takes only Dispatch's view (workflow's
+// dispatchIssue, keepStatus), so a test that lands the daemon's close through its echo delivers it
+// first.
+func (r *ownerRig) deliverStatusWrites(key string) {
+	r.t.Helper()
+	if _, err := r.pool.Exec(context.Background(), `delete from outbox where kind = $1 and issue = $2`,
+		string(record.OutboxKindDispatchStatus), key); err != nil {
+		r.t.Fatalf("deliver the queued status writes of %s: %v", key, err)
+	}
+}
+
 func (r *ownerRig) applyEvent(eventID string, fact intake.DispatchIssue) {
 	r.t.Helper()
 	if r.mirrored {
@@ -875,6 +889,7 @@ func TestTheOwningArchitectsMoveOfAChildItsMergeClosedIsAPersonsMove(t *testing.
 		})
 		rig.pullRequest(ownerChild, 42, record.PullRequestOpen)
 		rig.merge(ownerChild, 42)
+		rig.deliverStatusWrites(ownerChild)
 		rig.echo(ownerChild, record.DoneStatus)
 		if got, check := issue(t, rig.pool, ownerChild), rig.check(ownerChild); got.Phase != phase.Done || got.Status != record.DoneStatus || check == nil || !check.Open() {
 			t.Fatalf("%s after its merge = phase %s, status %s, check %+v, want it closed at done with its check open: this test proves nothing", ownerChild, got.Phase, got.Status, check)

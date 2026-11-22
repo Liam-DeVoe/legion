@@ -156,7 +156,10 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	// Step 1: the reading that costs no query. A root inside the bound here is inside it under
 	// any claim of its tree, so this is the whole of a working project's pass.
 	recorded := record.QuietTrees(facts.Chains, issues, nil, now)
-	running := record.RunningRoots(issues, facts)
+	// A tree is measured only while it runs (record.TreeRuns, R4 of dispatch://INFRA-3320): a root
+	// waiting in the line for a slot it does not hold, its first or the one its returned work
+	// needs, runs nothing, and it waits there by the cap's own hold.
+	running := record.RunningRoots(issues, slots, facts)
 	candidates := make([]record.Issue, 0, len(running))
 	for _, issue := range issues {
 		if _, runs := running[issue.Key]; !runs {

@@ -482,16 +482,18 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// The running gate roots are the term that says an issue past its review is at work: it
 	// holds no slot since dispatch://INFRA-2560, so no list of the three places it and the answer
 	// turns on whether its gate root runs at all (whyStates, atWorkPastReview). They are read
-	// from the records and the facts this pass already holds, so the reading costs no query.
-	running := record.RunningRoots(own, facts)
+	// from the records, the slot rows and the facts this pass already holds, so the reading costs
+	// no query.
+	running := record.RunningRoots(own, slots, facts)
 	whyStates(&projected, own, running, in.Stranded, rows, facts)
 	// Every issue of this project's own records that holds its own gate carries whether it runs
 	// (`treeRuns`), read from the same running gate roots, so the state serves the daemon's own
 	// rule (record.TreeRuns) rather than leaving a reader to rebuild it from the fields beside it,
-	// which decide it in no case alone: a root waiting in the line for its first start runs
-	// nothing whatever its architect's claim reads, and a root a person answered runs while it
-	// waits there for its resume (dispatch://INFRA-3320, R4). Another project's issue carries
-	// none, since this pass reads the chains of this daemon's project alone.
+	// which decide it in no case alone: a root waiting in the line for a slot it does not hold, for
+	// its first start or among the work that came back after a stop, runs nothing whatever its
+	// architect's claim reads, and a root a person answered runs while it waits there for its
+	// resume (dispatch://INFRA-3320, R4). Another project's issue carries none, since this pass
+	// reads the chains of this daemon's project alone.
 	for _, issue := range own {
 		if !chains.HoldsOwnGate(issue.Key) {
 			continue

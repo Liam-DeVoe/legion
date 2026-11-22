@@ -226,15 +226,16 @@ func returnToWorkTask(issue record.Issue) string {
 	return continueLine(issue) + fmt.Sprintf(" Resume the existing phase work: %s came back into Legion's work after a stop, and this is a new entry of the phase it stood in.", issue.Key)
 }
 
-// queuedRoot says whether issue holds its own gate and has still to make its first start
-// (record.QueuedRoot over its own design gate): the waiting line's promotion is what starts such a
-// root and its architect.
+// queuedRoot says whether issue's run starts as a root's (record.Chains.StartsAsRoot) and has still
+// to make its first start (record.QueuedRoot over its own design gate), the waiting line's queued
+// root (record.LineFacts.Queued): the line's promotion is what starts such a root and its
+// architect.
 func (e *Engine) queuedRoot(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
 	if issue.Phase != phase.Admitted {
 		return false, nil
 	}
-	holds, err := e.holdsOwnGate(ctx, tx, issue)
-	if err != nil || !holds {
+	chains, err := record.ReadChains(ctx, tx, e.store, issue.Project, []string{issue.Key})
+	if err != nil || !chains.StartsAsRoot(issue.Key) {
 		return false, err
 	}
 	gates, err := e.store.GatesOf(ctx, tx, issue.Key)
@@ -300,10 +301,13 @@ func (e *Engine) tellAbove(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 
 // NewRun opens a new run of issue: a new generation from its first phase, for decision 8's three
 // cases (backInWork's two, and rerun_child's in its own fact). The run waits at admitted for its
-// first start, at the status
-// Dispatch shows, whichever status in work brought it: a root that a person handed to Legion waits
-// in the line for its promotion (record.QueuedRoot), and an issue under a parent in Legion's work
-// for its first phase (record.Waiting), as any first start does.
+// first start, at the status Dispatch shows, whichever status in work brought it. An issue that
+// holds its own gate starts it as a re-admitted root does (R20 of dispatch://INFRA-3320,
+// record.Chains.StartsAsRoot), whether it is a root or stands under a parent in Legion's work: on
+// a todo it waits in the line for the promotion that starts its architect (record.LineFacts.Queued),
+// and its first phase waits for its own design gate, which that architect designs again. Any other
+// issue under a parent in Legion's work waits for its first phase (record.Waiting), as any first
+// start does.
 //
 // It clears the issue's own run and nothing of another issue's (R17 of dispatch://INFRA-3320): the
 // held start, the hold, the wait on a person and the close Dispatch refused go with the run that

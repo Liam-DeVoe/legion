@@ -667,10 +667,11 @@ func (e *Engine) judgeSessionWrite(ctx context.Context, tx pgx.Tx, chains *recor
 	}
 	if !agent {
 		// Whether the write lands on the root of a tree that is running now, by the one rule every
-		// reader of that question asks (record.TreeRunning, record.TreeRuns): it is in Legion's work
-		// and not itself waiting in the line for its run to be opened. A root waiting for its slot
-		// runs nothing: where no tree runs, an outside session's write is a person's move, which is
-		// the whole of the question.
+		// reader of that question asks (record.TreeRunning, record.TreeRuns, R4 of
+		// dispatch://INFRA-3320): it is in Legion's work and not itself waiting in the line for a
+		// slot it does not hold, its first or the one its returned work needs. A root waiting for
+		// its slot runs nothing: where no tree runs, an outside session's write is a person's move,
+		// which is the whole of the question.
 		waiting := gateRoot == issue.Key && issue.AwaitingPerson()
 		if admitted, err := record.TreeRunning(ctx, e.store, tx, issue, e.cfg.Steps); err != nil || !admitted && !waiting {
 			return writeTaken, false, err

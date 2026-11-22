@@ -195,14 +195,14 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 			continue
 		}
 		// The tree must be running — this generation of it, by the one rule every reader of that
-		// question asks (record.TreeRuns): the workflow has opened its lifecycle and not closed
-		// it, the root does not linger, and the root is not itself waiting in the line for the
-		// tree to be opened. A root that waits there — one that never ran, a re-admitted one, one
-		// reopened inside its own linger, whose readmit cleared the linger while the ended run's
-		// lifecycle still stands open — is live for the ancestry hold's purposes (record.TreeLive)
-		// but runs nothing yet, and its architect's task comes with its promotion, so nothing of it
-		// is stranded. Nor is anything of a root waiting on a person, whose architect its answer
-		// resumes.
+		// question asks (record.TreeRuns, R4 of dispatch://INFRA-3320): the root is in Legion's
+		// work and is not itself waiting in the line for a slot it does not hold. A root that
+		// waits there — one whose first start has still to come, or one whose work came back
+		// after a stop and waits for its slot — is live for the ancestry hold's purposes
+		// (record.TreeLive) but runs nothing yet: its architect's task comes with its promotion,
+		// and its phase worker's start is queued already, held until the slot comes, so nothing
+		// of it is stranded. Nor is anything of a root waiting on a person, whose architect its
+		// answer resumes.
 		if _, runs := running[root.Key]; !runs {
 			continue
 		}

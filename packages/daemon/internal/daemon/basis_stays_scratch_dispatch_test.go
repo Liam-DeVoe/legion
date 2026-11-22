@@ -265,37 +265,82 @@ func (r *personHandoverRig) launches(token string) int {
 	return count
 }
 
-// readmit has the person move key, a running root, to the backlog and take it back once its tree's
-// cleanup is confirmed, as A3 moves a recorded root to the backlog and takes it back: the daemon
-// admits it as a new generation and launches its architect again, whose session the rig registers
-// as admit does. It answers the operator's view of that claim, whose pending task is the new
-// generation's start task (none where the start names nothing), and the state the re-admission
-// left. That is the release before's path: on dispatch://INFRA-3320's R20 a stop keeps the phase
-// and its return opens no run, and k3 of dispatch://INFRA-4730 opens R's new run with the backlog
-// the architect above R writes in Dispatch and then that architect's rerun_child, which opens a new
-// run on a child Dispatch shows in backlog whoever wrote it (decision 8).
-func (r *personHandoverRig) readmit(key string) (api.OperatorClaim, api.State) {
+// rerunFromAbove starts a new run of run's root from the architect above it, as R20 of
+// dispatch://INFRA-3320 has it: that architect writes backlog on the root in Dispatch as its own
+// session, so the event names that session as its actor, and the daemon takes the write of the
+// architect of an issue above as a person's move (decision 24 of dispatch://INFRA-4730) and stops
+// the root where it stands; the architect then calls rerun_child, which opens a new run of a child
+// Dispatch shows in backlog, whoever wrote it (decision 8). Where the run left P with no architect
+// at work, the person hands P to Legion first and P's architect registers P's own gate on the
+// person's approval, as openRun's live P does, so that an architect stands above the root and its
+// new run waits on no gate above it (R19). It answers the operator's view of the root's architect
+// claim once the new run launched it again, whose pending task is the new run's start task (none
+// where the start names nothing), and the state the new run left.
+func (r *personHandoverRig) rerunFromAbove(run *basisRun) (api.OperatorClaim, api.State) {
 	t := r.t
 	t.Helper()
-	before := r.record(key).Generation
-	r.setStatus(key, "backlog")
-	settled(t, r.d, "release the slot of "+key+" once the person moved it to the backlog", func(s api.State) bool {
-		return !slices.Contains(s.Admission.Active, key)
+	root, parent := run.root.Key, run.parent.Key
+	if run.parentGrant == nil {
+		run.parentGrant = r.admit(parent)
+		r.registerApprovedGate(parent, run.parent.PrimaryArtifactID, run.basisVersion, run.parentGrant)
+	}
+	before := r.record(root).Generation
+	session := r.architects[parent].session
+	if status, answer := dispatchAnswerWith(t, r.baseURL, http.MethodPatch, "/api/v1/issues/"+root,
+		map[string]any{"status": "backlog", "actor": map[string]string{"kind": "session", "id": session}}, bearing(scratchAgentToken)); status != http.StatusOK {
+		t.Fatalf("the backlog of %s by the session %s of %s's architect = %d: %s", root, session, parent, status, answer)
+	}
+	parked := r.newestEvent(root, "issue.updated", func(e scratchEvent) bool { return e.status() == "backlog" })
+	if parked.Actor != (scratchActor{Kind: "session", ID: session}) {
+		t.Fatalf("the backlog event of %s = %+v, want it naming the session %s of %s's architect as its actor", root, parked, session, parent)
+	}
+	r.applied(parked)
+	// The stop is read where the record takes it, its slot freed and its status the backlog. The
+	// rig runs no agent for R's planner, which the stop's suspension of it waits on (the outbox's
+	// suspend is held for the agent's turn, supervise.ErrSuspendHeld), so nothing here waits for
+	// that row: the new run rerun_child opens fences the rows of the run before it.
+	settled(t, r.d, "stop "+root+" on the backlog its architect above wrote", func(s api.State) bool {
+		return !slices.Contains(s.Admission.Active, root) && s.Issues[root].Status == "backlog"
 	})
-	r.stopped(key)
-	token := r.architectToken(key)
+	token := r.architectToken(root)
 	launched := r.launches(string(token))
-	setDispatchStatus(t, r.baseURL, key, "todo")
-	state, _ := settled(t, r.d, "re-admit "+key+" as a new generation", func(s api.State) bool {
-		return slices.Contains(s.Admission.Active, key) && s.Issues[key].Generation == before+1
+	if status, body := r.d.request(http.MethodPost, "/legion/v1/children/rerun", api.RerunChildRequest{GrantID: run.parentGrant(), Issue: root}, false); status != http.StatusOK {
+		t.Fatalf("the rerun_child of %s by %s's architect = %d: %s", root, parent, status, body)
+	}
+	state, _ := settled(t, r.d, "start a new run of "+root, func(s api.State) bool {
+		return slices.Contains(s.Admission.Active, root) && s.Issues[root].Generation == before+1
 	})
-	testwait.Eventually(t, "the daemon to launch the architect of "+key+" again", func() bool {
-		return r.launches(string(token)) > launched
-	})
+	// The new run starts as a re-admitted root's does (R20): its promotion starts the architect,
+	// which launches the claim the stop suspended again, in its session.
+	if !testwait.Holds(2*time.Minute, 200*time.Millisecond, func() bool { return r.launches(string(token)) > launched }) {
+		t.Fatalf("the architect claim of %s after rerun_child = %+v, launched %d times as before, want the new run's start to launch it; outbox rows of %s: %q",
+			root, r.d.claim(token), launched, root, r.outboxDump(root))
+	}
 	launch := lastLaunch(t, r.rt, token)
 	session, secret := registerLaunch(t, r.d, launch)
-	r.architects[key] = rigArchitect{launch: launch, session: session, secret: secret}
-	return r.d.claim(token), state
+	r.architects[root] = rigArchitect{launch: launch, session: session, secret: secret}
+	// A root at admitted is always handed a start task (workflow.ArchitectStartTask), which the
+	// claim holds once its relaunch registered.
+	var started api.OperatorClaim
+	testwait.Eventually(t, "the architect of "+root+" to hold its new run's start task", func() bool {
+		started = r.d.claim(token)
+		return started.Pending != nil
+	})
+	return started, state
+}
+
+// outboxDump is each row of key the outbox holds, as its kind, its payload and its last error.
+func (r *personHandoverRig) outboxDump(key string) []string {
+	r.t.Helper()
+	rows, err := r.pool.Query(r.t.Context(), "select kind || ' ' || payload::text || ' ' || coalesce(last_error, '') from outbox where issue = $1 order by id", key)
+	if err != nil {
+		r.t.Fatalf("read the outbox rows of %s: %v", key, err)
+	}
+	held, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		r.t.Fatalf("read the outbox rows of %s: %v", key, err)
+	}
+	return held
 }
 
 // approvedVersionPattern finds each version a start task names as approved, in the words of the
@@ -303,11 +348,11 @@ func (r *personHandoverRig) readmit(key string) (api.OperatorClaim, api.State) {
 // subject and all, so the daemon's `No person approved version <N>` is not counted.
 var approvedVersionPattern = regexp.MustCompile(`(?i)a person approved version (\d+)`)
 
-// namesNoApprovalFrom fails unless task, key's start task after a re-admission, names no approval
-// of key's own document at version from or later: no `A person approved version N` with N of from
-// or more, and no decision on key's spec that opened its step in the line that names the decisions
-// kept for the tree (workflow.KeptDecisionsTask: `<ref> (design-approved by <actor>)`, which names
-// no version). It answers the versions the task names as approved.
+// namesNoApprovalFrom fails unless task, key's start task in a new run, names no approval of key's
+// own document at version from or later: no `A person approved version N` with N of from or more,
+// and no decision on key's spec that opened its step in the line that names the decisions kept for
+// the tree (workflow.KeptDecisionsTask: `<ref> (design-approved by <actor>)`, which names no
+// version). It answers the versions the task names as approved.
 func (r *personHandoverRig) namesNoApprovalFrom(key, task string, from int) []int {
 	t := r.t
 	t.Helper()
@@ -318,14 +363,14 @@ func (r *personHandoverRig) namesNoApprovalFrom(key, task string, from int) []in
 			t.Fatalf("the start task of %s names approved version %q, which is no number: %v", key, match[1], err)
 		}
 		if version >= from {
-			t.Fatalf("the start task of %s after its re-admission names approved version %d, want no approval of its document at version %d or later: %q",
+			t.Fatalf("the start task of %s in its new run names approved version %d, want no approval of its document at version %d or later: %q",
 				key, version, from, task)
 		}
 		approved = append(approved, version)
 	}
 	for _, decision := range []record.DecisionKind{record.DecisionDesignApproved, record.DecisionCarriedGateOpened} {
 		if own := fmt.Sprintf("dispatch://%s/spec (%s by ", key, decision); strings.Contains(task, own) {
-			t.Fatalf("the start task of %s after its re-admission names the kept decision %q, want no approval of its own document kept: %q", key, own, task)
+			t.Fatalf("the start task of %s in its new run names the kept decision %q, want no approval of its own document kept: %q", key, own, task)
 		}
 	}
 	return approved
@@ -464,6 +509,11 @@ func (r *personHandoverRig) openRun(held *outboxHold, names []string, opt stayin
 		run.parentGrant = r.admit(run.parent.Key)
 		r.registerApprovedGate(run.parent.Key, run.parent.PrimaryArtifactID, approval.Version, run.parentGrant)
 	} else {
+		// The person moves P into work, and G above it first, as Dispatch's parent status rule asks
+		// of every parent of an issue in work (R24 of dispatch://INFRA-3320).
+		if opt.grandparent {
+			r.setStatus(run.grand.Key, "in_progress")
+		}
 		r.setStatus(run.parent.Key, "in_progress")
 	}
 	r.linkUnder(run.root, run.parent, opt.live)
@@ -506,16 +556,18 @@ func (r *personHandoverRig) openRun(held *outboxHold, names []string, opt stayin
 //     its own (applyAsTheDaemon), since the consumer answers a redelivery under the event's own id
 //     as a duplicate before any handler reads it.
 //  5. R's architect writes a new version of R's Verification document that adds a check serving a
-//     requirement of G, the issue above P.
+//     requirement of G, the issue above P, which the person moved into work before P.
 //
 // Then, in fresh runs from an open step: a new version of R's primary document closes it; the
 // person's changes request on it closes it and reaches R's architect as design-changes-requested;
 // the person's approval of it leaves it open on that approval with no basis; a registration of it
 // with no basis leaves it closed until the person approves; and a new version of it followed by a
-// re-admission leaves R with no gate and a start task naming no approval of R's document at the
-// version the basis opened or later, neither as an approved version nor as a kept decision, once
-// with no earlier approval of R and once from the fourth run's R, whose start task names the
-// person's approval of v2, asks for a request of the latest version and names R1's path.
+// new run that the architect above R starts (rerunFromAbove: it writes backlog on R in Dispatch as
+// its own session, the event naming that session as its actor, and then calls rerun_child, R20)
+// leaves R with no gate and a start task naming no approval of R's document at the version the
+// basis opened or later, neither as an approved version nor as a kept decision, once with no
+// earlier approval of R and once from the fourth run's R, whose start task names the person's
+// approval of v2, asks for a request of the latest version and names R1's path.
 func TestBasisGateStaysOnTheRootDocument(t *testing.T) {
 	held := &outboxHold{}
 	r := newPersonHandoverRig(t, 16)
@@ -700,41 +752,42 @@ func TestBasisGateStaysOnTheRootDocument(t *testing.T) {
 	}
 	t.Logf("%s registered with no basis stayed closed until the person approved its own document", plain.root.Key)
 
-	// A new version of R's document, then a re-admission: no earlier approval of R.
-	readmitted := r.openRun(held, []string{"Windmill blade inspector", "Coastal energy cooperative"}, stayingOptions{})
-	r.editDocument(readmitted.root.PrimaryArtifactID, insertParagraph("The inspector climbs at low wind."))
-	r.quiet(readmitted.root.Key)
-	started, state := r.readmit(readmitted.root.Key)
-	if gates := r.gates(readmitted.root.Key); len(gates) != 0 || stepOf(state, readmitted.root.Key).Status != api.GatedStepUnregistered {
-		t.Fatalf("after the re-admission %s holds the gates %+v and the state serves %+v, want none: a new generation keeps no gate", readmitted.root.Key, gates,
-			stepOf(state, readmitted.root.Key))
+	// A new version of R's document, then a new run from the architect above it: no earlier
+	// approval of R.
+	rerun := r.openRun(held, []string{"Windmill blade inspector", "Coastal energy cooperative"}, stayingOptions{})
+	r.editDocument(rerun.root.PrimaryArtifactID, insertParagraph("The inspector climbs at low wind."))
+	r.quiet(rerun.root.Key)
+	started, state := r.rerunFromAbove(&rerun)
+	if gates := r.gates(rerun.root.Key); len(gates) != 0 || stepOf(state, rerun.root.Key).Status != api.GatedStepUnregistered {
+		t.Fatalf("after its new run %s holds the gates %+v and the state serves %+v, want none: a new generation keeps no gate", rerun.root.Key, gates,
+			stepOf(state, rerun.root.Key))
 	}
 	var task string
 	if started.Pending != nil {
 		task = started.Pending.Task
 	}
 	if strings.Contains(task, "approved version") {
-		t.Fatalf("the start task of %s after its re-admission = %q, want no approval of its document named", readmitted.root.Key, task)
+		t.Fatalf("the start task of %s in its new run = %q, want no approval of its document named", rerun.root.Key, task)
 	}
-	r.namesNoApprovalFrom(readmitted.root.Key, task, readmitted.rootVersion)
-	t.Logf("%s re-admitted with no gate; its start task %+v names no approval, and no kept decision of its own document",
-		readmitted.root.Key, started.Pending)
+	r.namesNoApprovalFrom(rerun.root.Key, task, rerun.rootVersion)
+	t.Logf("%s in a new run from its architect above with no gate; its start task %+v names no approval, and no kept decision of its own document",
+		rerun.root.Key, started.Pending)
 
 	// The fourth run's R: its start task names the person's approval of v2 and R1's path.
 	latest := r.editDocument(four.root.PrimaryArtifactID, insertParagraph("The polisher stops at the rim."))
 	r.quiet(four.root.Key)
-	started, state = r.readmit(four.root.Key)
+	started, state = r.rerunFromAbove(&four)
 	if gates := r.gates(four.root.Key); len(gates) != 0 || stepOf(state, four.root.Key).Status != api.GatedStepUnregistered {
-		t.Fatalf("after the re-admission %s holds the gates %+v, want none", four.root.Key, gates)
+		t.Fatalf("after its new run %s holds the gates %+v, want none", four.root.Key, gates)
 	}
 	kept := fmt.Sprintf("A person approved version %d of the primary document, and the primary document is now at version %d. Request approval of version %d,",
 		four.ownApproval.Version, latest, latest)
 	path := fmt.Sprintf("The other way is to write %s as a view on an approved ancestor and register the step on that ancestor's approval", four.root.Key)
 	if started.Pending == nil || !strings.Contains(started.Pending.Task, kept) || !strings.Contains(started.Pending.Task, path) {
-		t.Fatalf("the start task of %s after its re-admission = %+v, want it naming %q and %q", four.root.Key, started.Pending, kept, path)
+		t.Fatalf("the start task of %s in its new run = %+v, want it naming %q and %q", four.root.Key, started.Pending, kept, path)
 	}
 	approved := r.namesNoApprovalFrom(four.root.Key, started.Pending.Task, four.rootVersion)
-	t.Logf("%s re-admitted with no gate; its start task names approved versions %v, each below its version %d registered on the basis (latest %d), and no kept decision of its own document: %q",
+	t.Logf("%s in a new run from its architect above with no gate; its start task names approved versions %v, each below its version %d registered on the basis (latest %d), and no kept decision of its own document: %q",
 		four.root.Key, approved, four.rootVersion, latest, started.Pending.Task)
 }
 

@@ -3,8 +3,6 @@ package admit
 import (
 	"context"
 	"fmt"
-	"io"
-	"log/slog"
 	"maps"
 	"reflect"
 	"slices"
@@ -65,6 +63,19 @@ func pnChildMerged(t *testing.T, pool *pgxpool.Pool, child, parent string, numbe
 	spMirror(t, pool, child, "done", parent, 2)
 }
 
+// pnNoWork fails unless every one of starts, what's starts, is a plain start carrying no task:
+// what a return queues to bring a claim of a waiting parent back in its own session (workflow's
+// reviveClaims, decision 9 of dispatch://INFRA-4730), which hands its worker no work while the
+// parent waits on its children (dispatch://INFRA-3320 R11).
+func pnNoWork(t *testing.T, what string, starts []midPhaseStart) {
+	t.Helper()
+	for _, start := range starts {
+		if start.task != "" || start.needsSlot {
+			t.Fatalf("the starts of %s = %+v, want plain starts alone, handing no work: it waits on its open child", what, starts)
+		}
+	}
+}
+
 // pnAsksNoForwardMerge fails unless task carries neither the forward-merge request (pnForwardMerge)
 // nor the line that asks for a full test round after one (spMergeLine).
 func pnAsksNoForwardMerge(t *testing.T, what, task string) {
@@ -100,14 +111,6 @@ func pnAdmission(t *testing.T, pool *pgxpool.Pool, cap int) *Admission {
 	admission.engine = workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
 		Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }, Pods: pods}, nil)
 	return admission
-}
-
-// pnLingering is a workflow engine of the test project under a one-hour linger, as the daemon's
-// engine applies a person's or a hand-over's Dispatch event to a tree that lingers.
-func pnLingering() *workflow.Engine {
-	return workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
-		Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }},
-		slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 // pnArmBackstop arms the backstop an earlier release of key's pod armed for role, due at due.
@@ -601,8 +604,9 @@ func pnAsksTheBaseMergeRun(t *testing.T, path pnTestingPath, kind pnParentKind) 
 // to itself where its pull request merged during the wait, with no forward merge asked and the
 // children that merged named (dispatch://INFRA-3320 R11, R12, R13, and its check
 // dispatch://INFRA-3320/artifact/verification-md#b-k13, of which this package proves the wait, the
-// returns, the tester's rule for every round of a parent, the blocked_by order, the grandparent,
-// the hand-over, the held list and the stalled measure). Every case runs through the workflow
+// returns, the tester's rule for every round of a parent, the return to work of an issue above a
+// waiting parent, a change of its Dispatch parent, its stop and its return, the blocked_by order,
+// the grandparent, the held list and the stalled measure). Every case runs through the workflow
 // engine and the admission pass as the daemon runs them.
 func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 	// The first case is the check's own run of the wait. Its first read is what the negative
@@ -1014,6 +1018,196 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 			t.Fatalf("starts of %s = %+v, want the implementer's on the held task %q, naming no child as merged", spParent, starts, wait.Task)
 		}
 		pnAsksNoForwardMerge(t, "the implementer's task", starts[0].task)
+	})
+
+	// The return to work of an issue above a waiting parent starts no role of the parent (R20 of
+	// dispatch://INFRA-3320: a return brings back the issue that returns, and nothing of an issue
+	// under it). A person moves the root above the parent to the backlog with the open issues under
+	// it and back to todo with them, as Dispatch's parent status rule asks of a parent over issues
+	// in work (include_children, R24): Dispatch writes the issues under the root before the root
+	// itself, the deepest first, so the parent is back in Legion's work, waiting on its child, when
+	// the root's own return is applied. The parent's own return brings each of its claims that ran
+	// back in its own session with no work handed to it (pnNoWork), and the root's return then
+	// starts nothing of it.
+	t.Run("the return to work of an issue above a waiting parent starts no role of it", func(t *testing.T) {
+		const root, member, grandchild = "LEGION-208", "LEGION-209", "LEGION-210"
+		pool := migratedPool(t)
+		admission := pnAdmission(t, pool, 2)
+		spSeedParent(t, pool, root, phase.Admitted, true, func(issue *record.Issue) { issue.DispatchStatus, issue.LastDispatchSeq = "in_progress", 1 })
+		putWorkerClaim(t, pool, root, root, claim.RoleArchitect, 1, supervise.StateWorking, "")
+		waited := fixedNow.Add(-2 * time.Hour)
+		held := record.ChildrenWait{Start: phase.Implementing, Task: "Continue LEGION-209. Issue: LEGION-209. Phase: implementing.",
+			Reason: "a review asked for changes, while these Dispatch children of LEGION-209 were open: LEGION-210 (backlog)", Since: waited}
+		putIssue(t, pool, record.Issue{Key: member, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
+			Title: member, Tree: root, Parent: record.ParentOf(root), Phase: phase.AwaitingChildren, Generation: 1, Status: "in_progress",
+			DispatchStatus: "in_progress", Rank: "B", LastDispatchSeq: 1, HandedOver: true, ChildrenWait: &held, ChildrenWaitedAt: &waited})
+		seedMirrorChild(t, pool, grandchild, "backlog", member)
+		var tokens []claim.Token
+		for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester} {
+			tokens = append(tokens, putWorkerClaim(t, pool, root, member, role, 1, supervise.StateIdle, ""))
+		}
+
+		// The stop: the member, then the root.
+		apply(t, pool, admission, "member-to-backlog", intake.DispatchIssue{Key: member, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+			Status: "backlog", Title: member, Parent: root, Rank: "B", HandedOver: true}, admission.engine)
+		apply(t, pool, admission, "root-to-backlog", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+			Status: "backlog", Title: root, Rank: root, HandedOver: true}, admission.engine)
+		if got := issue(t, pool, member); got.Phase != phase.AwaitingChildren || !sameHeldStart(got.ChildrenWait, &held) || record.InLegionsWork(got) {
+			t.Fatalf("%s on the backlog = %+v; want it stopped in awaiting_children holding %+v", member, got, held)
+		}
+
+		// The return: the member's child, the member, then the root.
+		apply(t, pool, admission, "grandchild-to-todo", intake.DispatchIssue{Key: grandchild, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+			Status: "todo", Title: grandchild, Parent: member, Rank: "C"}, admission.engine)
+		apply(t, pool, admission, "member-to-todo", intake.DispatchIssue{Key: member, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated",
+			Status: "todo", Title: member, Parent: root, Rank: "B", HandedOver: true}, admission.engine)
+		revived := startsOf(t, pool, member)
+		pnNoWork(t, member+" back in work", revived)
+		apply(t, pool, admission, "root-to-todo", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated",
+			Status: "todo", Title: root, Rank: root, HandedOver: true}, admission.engine)
+		spPass(t, pool, admission)
+
+		if got := issue(t, pool, root); got.Generation != 1 || !record.InLegionsWork(got) {
+			t.Fatalf("%s after its return = %+v; want it back in Legion's work at generation 1", root, got)
+		}
+		if starts := startsOf(t, pool, member); !slices.Equal(starts, revived) {
+			t.Fatalf("the starts of %s after the return of %s = %+v, want the %+v its own return queued: no role of a waiting parent is started", member, root, starts, revived)
+		}
+		if got := issue(t, pool, member); got.Phase != phase.AwaitingChildren || !sameHeldStart(got.ChildrenWait, &held) || got.Generation != 1 ||
+			!record.InLegionsWork(got) {
+			t.Fatalf("%s after the return of %s = %+v; want it in Legion's work at generation 1, waiting still with the start it held, %+v", member, root, got, held)
+		}
+		states := claimStates(t, pool)
+		for _, token := range tokens {
+			if state := supervise.ClaimState(states[string(token)]); state == supervise.StateRetired || state == supervise.StateFailed || pnSession(t, pool, token) != "ses_worker" {
+				t.Fatalf("the claim %s after the return of %s = %s with session %q, want it kept in its session ses_worker", token, root, state, pnSession(t, pool, token))
+			}
+		}
+	})
+
+	// A waiting parent whose Dispatch parent changes keeps its run (R13, R17 of
+	// dispatch://INFRA-3320): its pull request, its phase records, its design gate and the start it
+	// holds stay as they were, and it comes back as above once its child is done. A person moves it
+	// under another root at work, whose design gate is open, which Dispatch's parent status rule
+	// lets stand, both being in work (R24).
+	t.Run("a waiting parent whose Dispatch parent changes keeps its pull request, phase records, gate and held start, and comes back", func(t *testing.T) {
+		const other = "LEGION-390"
+		gates := []record.DesignGate{
+			{Issue: spParent, ArtifactID: "6c1d3e8f-2a54-4b9f-8d7e-3f8a2b4c9e51", LatestVersion: 2, ApprovedVersion: new(2), EverOpened: true},
+			{Issue: other, ArtifactID: "9e2a4c6b-8d13-4f5a-b7c9-1d3e5f7a9b20", LatestVersion: 1, ApprovedVersion: new(1), EverOpened: true},
+		}
+		pool, admission, wait := pnMovedParent(t, phase.Testing, func(t *testing.T, pool *pgxpool.Pool) {
+			spSeedParent(t, pool, other, phase.Planning, true, nil)
+			for _, gate := range gates {
+				seedGate(t, pool, gate)
+			}
+		}, "api", tested("fail", "the empty list panics"), phase.Implementing, "the tester completed testing")
+		kept := func() (record.PullRequest, map[claim.Role]record.PhaseRow, map[record.DesignStep]record.DesignGate) {
+			t.Helper()
+			var pr record.PullRequest
+			var gates map[record.DesignStep]record.DesignGate
+			inTx(t, pool, func(tx pgx.Tx) {
+				records, ctx := record.NewStore(), context.Background()
+				read, err := records.PullRequest(ctx, tx, spParent)
+				if err != nil || read == nil {
+					t.Fatalf("read the pull request of %s: %+v, %v", spParent, read, err)
+				}
+				pr = *read
+				if gates, err = records.GatesOf(ctx, tx, spParent); err != nil {
+					t.Fatalf("read the gates of %s: %v", spParent, err)
+				}
+			})
+			rows := map[claim.Role]record.PhaseRow{}
+			for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+				rows[role] = spPhaseRow(t, pool, spParent, role)
+			}
+			return pr, rows, gates
+		}
+		pr, rows, held := kept()
+
+		apply(t, pool, admission, "reparented", intake.DispatchIssue{Key: spParent, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+			Status: "in_progress", Title: spParent, Parent: other, Rank: spParent, HandedOver: true}, admission.engine)
+		spPass(t, pool, admission)
+
+		got := issue(t, pool, spParent)
+		if got.Parent == nil || *got.Parent != other || got.Phase != phase.AwaitingChildren || !sameHeldStart(got.ChildrenWait, &wait) || got.Generation != 1 {
+			t.Fatalf("%s moved under %s = parent %v, phase %s, held start %+v, generation %d; want it under %s, waiting still with %+v at generation 1",
+				spParent, other, got.Parent, got.Phase, got.ChildrenWait, got.Generation, other, wait)
+		}
+		if nowPR, nowRows, nowGates := kept(); !reflect.DeepEqual(nowPR, pr) || !reflect.DeepEqual(nowRows, rows) || !reflect.DeepEqual(nowGates, held) {
+			t.Fatalf("%s after the change of its parent: pull request %+v, phases rows %+v, gates %+v; want them as they were: %+v, %+v, %+v",
+				spParent, nowPR, nowRows, nowGates, pr, rows, held)
+		}
+		if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 0 {
+			t.Fatalf("worker starts of %s after the change of its parent = %+v, want none: it waits on its open child", spParent, starts)
+		}
+
+		back := pnChildDone(t, pool, admission)
+		if back.Phase != phase.Implementing || back.ChildrenWait != nil || back.Generation != 1 {
+			t.Fatalf("%s once its child is done = phase %s, held start %+v, generation %d; want implementing, the start it held, at generation 1",
+				spParent, back.Phase, back.ChildrenWait, back.Generation)
+		}
+		starts := pwWorkerStarts(t, pool, spParent)
+		if len(starts) != 1 || starts[0].role != claim.RoleImplementer || !strings.HasPrefix(starts[0].task, wait.Task) {
+			t.Fatalf("starts of %s = %+v, want the implementer's on the held task %q", spParent, starts, wait.Task)
+		}
+		pnAsksNoForwardMerge(t, "the implementer's task", starts[0].task)
+	})
+
+	// A waiting parent a person moves to the backlog and back to todo comes back the same way,
+	// holding the same start, with its sessions and no new run (R13, R20 of dispatch://INFRA-3320).
+	// The person moves it with its open child, as Dispatch's parent status rule asks of a parent over
+	// a child in work (include_children, R24), and back to todo alone: its child stays on the
+	// backlog, filed and not released, and so still open. The return brings its implementer's claim
+	// back in its own session with no work handed to it (pnNoWork), and the start it holds goes to
+	// that claim once the child is done.
+	t.Run("a waiting parent a person moves to the backlog and back to todo comes back holding the same start, with its sessions and no new run", func(t *testing.T) {
+		var implementer claim.Token
+		pool, admission, wait := pnMovedParent(t, phase.Testing, func(t *testing.T, pool *pgxpool.Pool) {
+			implementer = putWorkerClaim(t, pool, spParent, spParent, claim.RoleImplementer, 1, supervise.StateIdle, "")
+		}, "api", tested("fail", "the empty list panics"), phase.Implementing, "the tester completed testing")
+
+		apply(t, pool, admission, "child-to-backlog", intake.DispatchIssue{Key: spChild, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+			Status: "backlog", Title: spChild, Parent: spParent, Rank: spChild}, admission.engine)
+		apply(t, pool, admission, "to-backlog", intake.DispatchIssue{Key: spParent, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+			Status: "backlog", Title: spParent, Rank: spParent, HandedOver: true}, admission.engine)
+		if stopped := issue(t, pool, spParent); stopped.Phase != phase.AwaitingChildren || !sameHeldStart(stopped.ChildrenWait, &wait) ||
+			stopped.Generation != 1 || record.InLegionsWork(stopped) {
+			t.Fatalf("%s on the backlog = %+v; want it stopped in awaiting_children at generation 1, holding %+v", spParent, stopped, wait)
+		}
+
+		apply(t, pool, admission, "back-to-todo", intake.DispatchIssue{Key: spParent, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated",
+			Status: "todo", Title: spParent, Rank: spParent, HandedOver: true}, admission.engine)
+		spPass(t, pool, admission)
+		if returned := issue(t, pool, spParent); returned.Phase != phase.AwaitingChildren || !sameHeldStart(returned.ChildrenWait, &wait) ||
+			returned.Generation != 1 || !record.InLegionsWork(returned) {
+			t.Fatalf("%s back in todo = %+v; want it in Legion's work in awaiting_children at generation 1, holding %+v", spParent, returned, wait)
+		}
+		revived := startsOf(t, pool, spParent)
+		pnNoWork(t, spParent+" back in todo", revived)
+		workers := len(pwWorkerStarts(t, pool, spParent))
+		if session := pnSession(t, pool, implementer); session != "ses_worker" {
+			t.Fatalf("the implementer's claim holds session %q, want the session it had, ses_worker", session)
+		}
+
+		back := pnChildDone(t, pool, admission)
+		if back.Phase != phase.Implementing || back.ChildrenWait != nil || back.Generation != 1 {
+			t.Fatalf("%s once its child is done = phase %s, held start %+v, generation %d; want implementing, the start it held, at generation 1",
+				spParent, back.Phase, back.ChildrenWait, back.Generation)
+		}
+		starts := pwWorkerStarts(t, pool, spParent)[workers:]
+		if len(starts) != 1 || starts[0].role != claim.RoleImplementer || !strings.HasPrefix(starts[0].task, wait.Task) {
+			t.Fatalf("starts of %s once its child is done = %+v, want the implementer's on the held task %q", spParent, starts, wait.Task)
+		}
+		pnAsksNoForwardMerge(t, "the implementer's task", starts[0].task)
+		project, err := claim.ProjectToken(testProject)
+		if err != nil {
+			t.Fatalf("project token: %v", err)
+		}
+		start := pnWorkerStart(t, pool, spParent, claim.RoleImplementer)
+		if token, err := claim.NewToken(project, start.Tree, start.Role); err != nil || token != implementer || start.FreshSession || start.Generation != 1 {
+			t.Fatalf("the start = %+v, naming claim %s (%v); want the implementer's claim %s at generation 1, its session kept", start, token, err, implementer)
+		}
 	})
 
 	// The parent that held planning after the architect's backward move comes back at planning with

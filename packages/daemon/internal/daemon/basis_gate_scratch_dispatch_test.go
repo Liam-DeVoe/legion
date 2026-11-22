@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -257,13 +258,13 @@ func catchUpGate(t *testing.T, notice record.Notice) record.CatchUpGate {
 }
 
 // linkUnder sets parent as root's Dispatch parent, as the person does at the dashboard. Where the
-// daemon records parent in a live tree (live), it waits for R18's reparented notices
-// (dispatch://INFRA-3320): one to root's own architect and one to parent's, the architect above
-// it now, each queued on root and naming the architect it tells (record.Notice.To), and requires
-// those words to name R1's path, the view on parent, and not that root's work reaches parent's
-// tree only through its own issues. Where it records parent in none, it waits only for the daemon
-// to apply the link: that the link told no architect of parent's tree is read once root's step has
-// opened (untoldAtTheLink).
+// daemon records parent in a live tree whose architect holds a claim (live), it waits for R18's
+// reparented notices (dispatch://INFRA-3320): one to root's own architect and one to parent's, the
+// architect above it now, each queued on root and naming the architect it tells
+// (record.Notice.To), and requires those words to name R1's path, the view on parent, and not that
+// root's work reaches parent's tree only through its own issues. Where no architect of parent holds
+// a claim, as for a parent waiting in the line for its first slot (waitInLine), it waits only for
+// the daemon to apply the link.
 func (r *personHandoverRig) linkUnder(root, parent scratchIssue, live bool) {
 	t := r.t
 	t.Helper()
@@ -286,35 +287,6 @@ func (r *personHandoverRig) linkUnder(root, parent scratchIssue, live bool) {
 		return toldTo(root.Key) && toldTo(parent.Key)
 	})
 	t.Logf("%s, set under %s, and the architect of %s were told R1's path: %q", root.Key, parent.Key, parent.Key, path)
-}
-
-// untoldAtTheLink fails unless the link of root under parent, whose tree is not live, told no
-// architect of parent's tree: R18's reparented notices go to each architect the owner walk names
-// (workflow's reparentRead), and the walk from a parent with nothing in Legion's work at or above
-// it names nobody, so only root's own architect can be told. It is read once root's step has opened
-// and the outbox has finished every Dispatch row of root (dispatchRowsDone), so the re-parent seed
-// the link queued has run and queued every notice it tells by now. A child-status notice keyed by
-// parent, the root of parent's tree, is read where it stands in the outbox and in the daemon's
-// log, where the outbox writes one line for a notice it finishes undelivered: a tree with no
-// architect finishes it so (notice_routing.go), and the row is gone by the time this reads it.
-func (r *personHandoverRig) untoldAtTheLink(root, parent scratchIssue) {
-	t := r.t
-	t.Helper()
-	r.dispatchRowsDone(root.Key)
-	for _, notice := range r.notices(root.Key, string(record.ReparentedNotice)) {
-		if notice.To != root.Key {
-			t.Fatalf("the daemon told the architect of %s of %s's link under %s, whose tree is not live: %+v", notice.To, root.Key, parent.Key, notice)
-		}
-	}
-	if notices := childStatusNotices(t, r.pool, parent.Key); len(notices) != 0 {
-		t.Fatalf("the child-status notices queued for an architect of %s's tree = %q, want none: the tree is not live", parent.Key, notices)
-	}
-	for _, line := range loggedLines(t, r.logs.String(), `"kind":"child-status"`) {
-		if line["issue"] == parent.Key {
-			t.Fatalf("the outbox ran a child-status notice for an architect of %s's tree, which is not live: %v", parent.Key, line)
-		}
-	}
-	t.Logf("the link of %s under %s, whose tree is not live, told no architect of %s's tree", root.Key, parent.Key, parent.Key)
 }
 
 // openedOnBasis is what every opening of root's spec step on parent's approval reads, once its
@@ -354,16 +326,18 @@ func (r *personHandoverRig) openedOnBasis(root, parent scratchIssue, rootVersion
 // ancestorOpening is one case of k1 once its registration answered 200: root's spec step open at
 // its own version rootVersion on approval, the person's approval of parent's primary document,
 // registered with reason. The fields past those say where the case's world is not the first
-// case's: parentLive is false for a parent the daemon records in no live tree while the step opens
-// (P on the backlog); ownApproval is the version of root's own document a person approved, older
-// than rootVersion (R at v4 holding the person's approval of v2), 0 for none; and whileOpen, when
-// set, runs once every read of the open root is made and before root is taken to done.
+// case's: restingEnded is true where the resting-root row the registration queued for parent's
+// architect ended undelivered, since no architect claim of parent stood while parent waited in the
+// line for its first slot (openWhileWaiting); ownApproval is the version of root's own document a
+// person approved, older than rootVersion (R at v4 holding the person's approval of v2), 0 for
+// none; and whileOpen, when set, runs once every read of the open root is made and before root is
+// taken to done.
 type ancestorOpening struct {
 	root, parent scratchIssue
 	rootVersion  int
 	approval     scratchReview
 	reason       string
-	parentLive   bool
+	restingEnded bool
 	ownApproval  int
 	whileOpen    func()
 }
@@ -428,35 +402,22 @@ func (r *personHandoverRig) readAncestorOpening(c ancestorOpening) {
 			root.Key, caught, caught.Basis, c.rootVersion, c.approval.Version, parent.Key)
 	}
 
-	// P's architect is told that R rests on P where the daemon records P in a live tree. P on the
-	// backlog is in none, so while R opens no architect of P runs to be told or to catch up: the
-	// link of R under P told no architect of P's tree, the daemon queues no resting-root row, and
-	// P's architect hears of R in its start task once the person sets P todo and P is admitted. P's
-	// architect then registers P's own gate, as the first case's step 5 does, so that from here on
-	// P stands where the first case's P stands.
+	// P's architect is told once that R rests on P: the row stands in the outbox, for P's
+	// architect, unless it ended undelivered while P waited in the line with no architect claim
+	// (openWhileWaiting read it then, and P's start task named R at its admission).
 	told := 1
-	if c.parentLive {
+	if c.restingEnded {
+		told = 0
+		if resting := r.notices(parent.Key, "resting-root"); len(resting) != 0 {
+			t.Fatalf("the resting-root notices queued on %s = %+v, want none: the row queued while it waited ended undelivered", parent.Key, resting)
+		}
+	} else {
 		resting := r.notices(parent.Key, "resting-root")
 		if len(resting) != 1 || resting[0].Version != c.approval.Version || resting[0].Ref != "dispatch://"+parent.Key+"/spec" ||
 			!strings.Contains(resting[0].Reason, root.Key) || !strings.Contains(resting[0].Reason, "spec step") ||
 			!strings.Contains(resting[0].Reason, fmt.Sprintf("%s@v%d", p2, c.approval.Version)) {
 			t.Fatalf("the resting-root notices to %s's architect = %+v, want one naming %s, its spec step and P2", parent.Key, resting, root.Key)
 		}
-	} else {
-		told = 0
-		r.untoldAtTheLink(root, parent)
-		if resting := r.notices(parent.Key, "resting-root"); len(resting) != 0 {
-			t.Fatalf("the daemon queued resting-root notices %+v on %s, which it records in no live tree; want none", resting, parent.Key)
-		}
-		parentGrant := r.admit(parent.Key)
-		startTask := fmt.Sprintf("These roots rest on the approval of %s and are still in the workflow: %s (its spec step, in planning).", parent.Key, root.Key)
-		started := r.d.claim(r.architectToken(parent.Key))
-		if started.Pending == nil || !strings.Contains(started.Pending.Task, startTask) {
-			t.Fatalf("the start task of %s's architect at its admission = %+v, want it naming %q", parent.Key, started.Pending, startTask)
-		}
-		t.Logf("%s rested on %s while it was on the backlog with no resting-root row, and %s's start task names it: %q",
-			root.Key, parent.Key, parent.Key, started.Pending.Task)
-		r.registerApprovedGate(parent.Key, parent.PrimaryArtifactID, c.approval.Version, parentGrant)
 	}
 	r.ready(parent.Key)
 	restingClause := fmt.Sprintf("resting on the approval of %s and still in the workflow: %s (its spec step, in planning)", parent.Key, root.Key)
@@ -541,6 +502,117 @@ func (r *personHandoverRig) readAncestorOpening(c ancestorOpening) {
 		return s.Issues[parent.Key].Phase == phase.Planning
 	})
 	t.Logf("%s is done, %s's architect was told so, and %s plans", root.Key, parent.Key, parent.Key)
+}
+
+// waitInLine fills the project's admission cap with labelled roots, each titled by the next of
+// titles (Dispatch refuses a title it reads as a duplicate of an open issue's, so no two share
+// their words) and admitted as admit does, and then has the person set key, a labelled issue,
+// todo, so that key waits in the line for its first slot and no architect of key launches (R19 of
+// dispatch://INFRA-3320). It answers the roots that fill the cap: a person's done on one frees the
+// slot that admits key.
+func (r *personHandoverRig) waitInLine(key string, titles ...string) []scratchIssue {
+	t := r.t
+	t.Helper()
+	state, _ := settled(t, r.d, "answer its state before the cap fills", func(api.State) bool { return true })
+	var fillers []scratchIssue
+	for held := len(state.Admission.Active); held < r.cfg.AdmissionCap; held++ {
+		if len(fillers) == len(titles) {
+			t.Fatalf("filling the cap of %d over %v takes more roots than the %d titles given", r.cfg.AdmissionCap, state.Admission.Active, len(titles))
+		}
+		filler := r.create(asSession, titles[len(fillers)], map[string]any{"labels": []string{"legion"}})
+		r.admit(filler.Key)
+		fillers = append(fillers, filler)
+	}
+	if len(fillers) == 0 {
+		t.Fatalf("the project already stands past its cap of %d with %v, so no root of the case's own frees the slot that admits %s",
+			r.cfg.AdmissionCap, state.Admission.Active, key)
+	}
+	launched := r.launches(string(r.architectToken(key)))
+	r.setStatus(key, "todo")
+	r.waiting(key)
+	r.quiet(key)
+	if now := r.launches(string(r.architectToken(key))); now != launched {
+		t.Fatalf("the architect of %s launched %d times while %s waits in the line for its first slot, want %d", key, now, key, launched)
+	}
+	t.Logf("%s waits in the line for its first slot, the cap of %d held by %d roots of the case's own among others", key, r.cfg.AdmissionCap, len(fillers))
+	return fillers
+}
+
+// openWhileWaiting registers root's spec step on approval, parent's, while parent waits in the line
+// for its first slot (waitInLine), and reads what R8 of dispatch://INFRA-3320 queues for parent. The
+// step opens on the basis while root stays admitted, since root waits for parent's own gate too
+// (R19), and one resting-root row is queued for parent's architect, parent's tree being live (R15).
+// Where no architect claim of parent stands (suspended false), the row ends undelivered; where
+// parent came back with its architect's claim suspended, the row waits for that claim. A person's
+// done on free, a root of the case's own holding a slot, then frees the slot whose promotion admits
+// parent and starts its architect, whose start task names root, and parent's architect registers
+// parent's own gate on its approval, as step 6 does, so that root plans and parent stands where
+// the first case's parent stands.
+func (r *personHandoverRig) openWhileWaiting(held *outboxHold, grant string, root, parent scratchIssue, approval scratchReview, reason string,
+	free scratchIssue, suspended bool,
+) {
+	t := r.t
+	t.Helper()
+	held.hold(parent.Key, record.OutboxKindNotice)
+	r.registerBasis(grant, root, 1, parent, approval.Version, reason)
+	settled(t, r.d, "open the spec step of "+root.Key+" on the basis while "+parent.Key+" waits in the line", func(s api.State) bool {
+		return stepOf(s, root.Key).Status == api.GatedStepOpenOnBasis && slices.Contains(s.Admission.Waiting, parent.Key)
+	})
+	if got := r.record(root.Key).Phase; got != phase.Admitted {
+		t.Fatalf("%s stands at %s once its step opened on the approval of %s, which waits in the line, want admitted: it waits for %s's own gate (R19)",
+			root.Key, got, parent.Key, parent.Key)
+	}
+	p2 := specBlock(parent.Key, "p2")
+	resting := r.notices(parent.Key, "resting-root")
+	if len(resting) != 1 || resting[0].Version != approval.Version || resting[0].Ref != "dispatch://"+parent.Key+"/spec" ||
+		!strings.Contains(resting[0].Reason, root.Key) || !strings.Contains(resting[0].Reason, "spec step") ||
+		!strings.Contains(resting[0].Reason, fmt.Sprintf("%s@v%d", p2, approval.Version)) {
+		t.Fatalf("the resting-root rows queued for %s's architect while it waits in the line = %+v, want one naming %s, its spec step and P2",
+			parent.Key, resting, root.Key)
+	}
+	held.release(parent.Key)
+	architect := r.architectToken(parent.Key)
+	if suspended {
+		testwait.Eventually(t, "the outbox to try the resting-root row of "+parent.Key, func() bool { return r.restingAttempts(parent.Key) > 0 })
+		if rows, state := r.notices(parent.Key, "resting-root"), r.d.claim(architect).State; len(rows) != 1 || state != string(supervise.StateSuspended) {
+			t.Fatalf("after the outbox tried it, the resting-root rows of %s = %+v with its architect claim %s, want the row waiting for that suspended claim",
+				parent.Key, rows, state)
+		}
+		t.Logf("the resting-root row of %s waits for its suspended architect claim", parent.Key)
+	} else {
+		testwait.Eventually(t, "the resting-root row of "+parent.Key+" to end undelivered", func() bool {
+			return len(r.notices(parent.Key, "resting-root")) == 0
+		})
+		t.Logf("the resting-root row of %s ended undelivered, no architect claim of %s standing", parent.Key, parent.Key)
+	}
+	launched := r.launches(string(architect))
+	r.setStatus(free.Key, "done")
+	parentGrant := r.admitted(parent.Key, launched)
+	startTask := fmt.Sprintf("These roots rest on the approval of %s and are still in the workflow: %s (its spec step, in admitted).", parent.Key, root.Key)
+	var started api.OperatorClaim
+	testwait.Eventually(t, "the architect of "+parent.Key+" to hold its start task", func() bool {
+		started = r.d.claim(architect)
+		return started.Pending != nil
+	})
+	if !strings.Contains(started.Pending.Task, startTask) {
+		t.Fatalf("the start task of %s's architect at its admission = %q, want it naming %q", parent.Key, started.Pending.Task, startTask)
+	}
+	if rows := r.notices(parent.Key, "resting-root"); suspended && len(rows) != 1 {
+		t.Fatalf("the resting-root rows of %s at its architect's resume = %+v, want the one that waited for that claim", parent.Key, rows)
+	}
+	t.Logf("a slot admitted %s, and its architect's start task names %s: %q", parent.Key, root.Key, started.Pending.Task)
+	r.registerApprovedGate(parent.Key, parent.PrimaryArtifactID, approval.Version, parentGrant)
+}
+
+// restingAttempts is how many times the outbox has tried the resting-root rows of key it still holds.
+func (r *personHandoverRig) restingAttempts(key string) int {
+	r.t.Helper()
+	var attempts int
+	if err := r.pool.QueryRow(r.t.Context(), `select coalesce(sum(attempts), 0) from outbox where kind = $1 and issue = $2 and payload->>'kind' = 'resting-root'`,
+		string(record.OutboxKindNotice), key).Scan(&attempts); err != nil {
+		r.t.Fatalf("read the attempts of the resting-root rows of %s: %v", key, err)
+	}
+	return attempts
 }
 
 // registrationPause holds the register_gate call of one issue between its Dispatch reads and its
@@ -657,8 +729,8 @@ func insertAtEnd(markdown string) map[string]string {
 //
 //  1. R is labelled, set todo and admitted, and its architect launched: R ran as a root.
 //  2. P, marking P1 to P3, is approved by the person at its latest version, labelled and admitted.
-//  3. P is set as R's parent: the message on R and the child-status notice to P's architect name
-//     R1's path. R's Verification document's one check serves P2.
+//  3. P is set as R's parent: R18's reparented notice to R's architect and to P's names R1's path
+//     (linkUnder). R's Verification document's one check serves P2.
 //  4. The negative control: P gains a version the person has not approved, and R's registration
 //     on it is refused BASIS_NOT_APPROVED; R's step stays unregistered, R stays admitted, and R
 //     holds no new message. The person approves that version.
@@ -678,12 +750,14 @@ func insertAtEnd(markdown string) map[string]string {
 //     person approved R's document. The seed then runs and leaves the step open.
 //  8. R is taken to done: P's architect is told again, and P's first phase starts.
 //  9. The repeats, each read as steps 7 and 8 read the first case (readAncestorOpening): P's
-//     approval carried by Dispatch in the person's name; P labelled and on the backlog, no live
-//     tree while R opens, so the link of R under P tells no architect of P's tree, no resting-root
-//     row is queued and no architect of P catches up until P is admitted, whose start task then
-//     names R; and R holding the person's approval of v2 of its own document while at v4, where no
-//     reader names v2: not the state, the message, a notice queued on R or a role message of its
-//     tree.
+//     approval carried by Dispatch in the person's name; P labelled and set todo while the
+//     project stands at its cap, so that P waits in the line for its first slot and no architect
+//     of P runs (waitInLine), twice: with no architect claim of P, where the resting-root row
+//     R's registration queues for P ends undelivered, and with P a root that came back, admitted
+//     and stopped on the backlog before its todo, where the row waits for P's suspended architect
+//     claim; in each, a slot then admits P, whose start task names R (openWhileWaiting); and R
+//     holding the person's approval of v2 of its own document while at v4, where no reader names
+//     v2: not the state, the message, a notice queued on R or a role message of its tree.
 //
 // Where the rig reaches no phase — the implementer's, the tester's and the reviewer's tasks, the
 // production check's task, the merger's start — the workflow and record tests do:
@@ -695,15 +769,12 @@ func insertAtEnd(markdown string) map[string]string {
 // (internal/api): the rig runs no pod and no caller of it states a contract below this daemon's
 // own, so no caller here is narrowed.
 //
-// Dispatch's parent status rule (R24 of dispatch://INFRA-3320) is off for this test alone. The
-// second repeat of step 9 stands R, in work, under P on the backlog: a child in work under a
-// parent that is not, a world the rule refuses to write and that stands only before Dispatch's
-// boot fix (R25) runs with the rule on, so the daemon reads it where Dispatch serves with the
-// rule off. Every other step keeps the rule: each other P is admitted, and so in progress, before
-// R is linked under it.
+// Dispatch's parent status rule (R24 of dispatch://INFRA-3320) is on, and every step keeps it as
+// a person would: each P is in work before R is linked under it, and a P stopped on the backlog is
+// stopped before it has a child.
 func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	pause, held := &registrationPause{}, &outboxHold{}
-	r := newPersonHandoverRigOn(t, scratchDispatchOptions{natsURL: testnats.URL(t), env: []string{parentStatusRule + "=off"}}, 8)
+	r := newPersonHandoverRigOn(t, scratchDispatchOptions{natsURL: testnats.URL(t)}, 8)
 	r.tune = func(o *overrides) {
 		o.gateRegistrationRead = pause.hook
 		o.holdOutbox = held.holds
@@ -725,7 +796,8 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	r.approve(parent.PrimaryArtifactID)
 	parentGrant := r.admit(parent.Key)
 
-	// 3. P is set as R's parent, and R's one check serves P2.
+	// 3. P is set as R's parent, which R18's reparented notice tells R's architect and P's, and R's
+	// one check serves P2.
 	r.linkUnder(root, parent, true)
 	p2 := specBlock(parent.Key, "p2")
 	r.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{p2}}))
@@ -788,7 +860,7 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 
 	// 7 and 8. What the opening reads, its seed held until every read of the open root is made, and
 	// R taken to done.
-	r.readAncestorOpening(ancestorOpening{root: root, parent: parent, rootVersion: 1, approval: approval, reason: reason, parentLive: true,
+	r.readAncestorOpening(ancestorOpening{root: root, parent: parent, rootVersion: 1, approval: approval, reason: reason,
 		whileOpen: func() {
 			if seeds := r.outboxCount(root.Key, record.OutboxKindGateSeed); seeds == 0 {
 				t.Fatalf("no gate seed of %s is held in the outbox; the opening was to be read before the seed ran", root.Key)
@@ -822,24 +894,44 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	r.registerBasis(carriedGrant(), carriedRoot, 1, carriedParent, carried.Version, reason)
 	r.registerApprovedGate(carriedParent.Key, carriedParent.PrimaryArtifactID, carried.Version, carriedParentGrant)
 	t.Logf("Dispatch carried the person's approval of version %d of %s to version %d, and %s registered on it", before.Version, carriedParent.Key, carried.Version, carriedRoot.Key)
-	r.readAncestorOpening(ancestorOpening{root: carriedRoot, parent: carriedParent, rootVersion: 1, approval: carried, reason: reason, parentLive: true})
+	r.readAncestorOpening(ancestorOpening{root: carriedRoot, parent: carriedParent, rootVersion: 1, approval: carried, reason: reason})
 
-	// 9b. P labelled and on the backlog: no live tree while R opens, so the link tells no architect
-	// of P's tree, no resting-root row is queued, and no architect of P runs until P's admission,
-	// whose start task names R.
-	backlogRoot := r.create(asSession, "Glacier telemetry probe", labelled)
-	backlogGrant := r.admit(backlogRoot.Key)
-	backlogParent := r.create(asSession, "Arctic sensor network", parentOf("Sensors", ""))
-	backlogApproval := r.approve(backlogParent.PrimaryArtifactID)
-	// The daemon reads the issue a person's approval is on as Dispatch shows it when the event is
-	// delivered (workflow's personHandoverQueues), so the approval is applied while P is still in
-	// triage: one read after the move to the backlog would be the person's handover of P.
-	r.applied(r.newestEvent(backlogParent.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == backlogApproval.Version }))
-	r.setStatus(backlogParent.Key, "backlog")
-	r.linkUnder(backlogRoot, backlogParent, false)
-	r.writeDocument(backlogRoot.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(backlogParent.Key, "p2")}}))
-	r.registerBasis(backlogGrant(), backlogRoot, 1, backlogParent, backlogApproval.Version, reason)
-	r.readAncestorOpening(ancestorOpening{root: backlogRoot, parent: backlogParent, rootVersion: 1, approval: backlogApproval, reason: reason})
+	// 9b. P labelled and set todo while the project stands at its cap, so that P waits in the line
+	// for its first slot: with no architect claim of P, the resting-root row R's registration queues
+	// for P ends undelivered, and P's start task at its admission names R.
+	waitingRoot := r.create(asSession, "Glacier telemetry probe", labelled)
+	waitingGrant := r.admit(waitingRoot.Key)
+	waitingParent := r.create(asSession, "Arctic sensor network", parentOf("Sensors", ""))
+	waitingApproval := r.approve(waitingParent.PrimaryArtifactID)
+	fillers := r.waitInLine(waitingParent.Key, "Tide gauge recorder", "Orchard frost alarm", "Bakery oven scheduler", "Museum humidity log",
+		"Stadium ticket kiosk", "Ferry timetable sync", "Library return chute", "Dairy cooler monitor")
+	r.linkUnder(waitingRoot, waitingParent, false)
+	r.writeDocument(waitingRoot.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(waitingParent.Key, "p2")}}))
+	r.openWhileWaiting(held, waitingGrant(), waitingRoot, waitingParent, waitingApproval, reason, fillers[0], false)
+	r.readAncestorOpening(ancestorOpening{root: waitingRoot, parent: waitingParent, rootVersion: 1, approval: waitingApproval, reason: reason,
+		restingEnded: true})
+
+	// 9b again, with P a root that came back: admitted, stopped by the person's backlog before it
+	// has a child, and set todo again at the cap, its architect claim suspended. The row waits for
+	// that claim, and P's start task at its resume names R.
+	backRoot := r.create(asSession, "Tundra soil sampler", labelled)
+	backGrant := r.admit(backRoot.Key)
+	backParent := r.create(asSession, "Permafrost survey network", parentOf("Survey", ""))
+	backApproval := r.approve(backParent.PrimaryArtifactID)
+	r.admit(backParent.Key)
+	r.setStatus(backParent.Key, "backlog")
+	settled(t, r.d, "stop "+backParent.Key+" on the person's backlog", func(s api.State) bool {
+		return !slices.Contains(s.Admission.Active, backParent.Key) && s.Issues[backParent.Key].Status == "backlog"
+	})
+	testwait.Eventually(t, "the architect claim of "+backParent.Key+" to be suspended", func() bool {
+		return r.d.claim(r.architectToken(backParent.Key)).State == string(supervise.StateSuspended)
+	})
+	fillers = r.waitInLine(backParent.Key, "River flow meter", "Vineyard drone planner", "Pharmacy refill queue", "Theatre lighting desk",
+		"Quarry blast logger", "Clinic waiting board", "Garage door opener", "Bicycle dock counter")
+	r.linkUnder(backRoot, backParent, true)
+	r.writeDocument(backRoot.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(backParent.Key, "p2")}}))
+	r.openWhileWaiting(held, backGrant(), backRoot, backParent, backApproval, reason, fillers[0], true)
+	r.readAncestorOpening(ancestorOpening{root: backRoot, parent: backParent, rootVersion: 1, approval: backApproval, reason: reason})
 
 	// 9c. R holding the person's approval of v2 of its own document while at v4.
 	olderRoot := r.create(asSession, "Violin tuning assistant", labelled)
@@ -857,7 +949,7 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	r.writeDocument(olderRoot.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(olderParent.Key, "p2")}}))
 	r.registerBasis(olderGrant(), olderRoot, fourth, olderParent, olderApproval.Version, reason)
 	r.registerApprovedGate(olderParent.Key, olderParent.PrimaryArtifactID, olderApproval.Version, olderParentGrant)
-	r.readAncestorOpening(ancestorOpening{root: olderRoot, parent: olderParent, rootVersion: fourth, approval: olderApproval, reason: reason, parentLive: true,
+	r.readAncestorOpening(ancestorOpening{root: olderRoot, parent: olderParent, rootVersion: fourth, approval: olderApproval, reason: reason,
 		ownApproval: second})
 	t.Logf("%s, holding the person's approval of version %d and at version %d, opened at %d on %s's approval, and no reader names version %d",
 		olderRoot.Key, second, fourth, fourth, olderParent.Key, second)
