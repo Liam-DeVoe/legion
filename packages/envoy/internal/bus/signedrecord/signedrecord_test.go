@@ -458,6 +458,27 @@ func TestParsePublicKeysReadsTheSettingsList(t *testing.T) {
 	}
 }
 
+// A key listed twice is refused at load, naming both places in the list and the key's id, never
+// the key's text: a list that holds a key twice was written in error, and its rotation steps read
+// as if two keys were listed. Two different keys stay accepted whatever their ids, since Verify
+// tries every listed key that has a signature's id. Fails while ParsePublicKeys keeps a duplicate,
+// as at 886868daac.
+func TestParsePublicKeysRefusesAKeyListedTwice(t *testing.T) {
+	first, _ := newKey(t)
+	second, _ := newKey(t)
+	encode := func(key ed25519.PublicKey) string { return base64.RawURLEncoding.EncodeToString(key) }
+	_, err := signedrecord.ParsePublicKeys("EXAMPLE_KEYS", encode(first)+","+encode(second)+" "+encode(first))
+	if err == nil || !strings.Contains(err.Error(), "EXAMPLE_KEYS entries 1 and 3") || !strings.Contains(err.Error(), signedrecord.KeyID(first)) {
+		t.Fatalf("ParsePublicKeys of a key listed twice answered %v, want a refusal naming entries 1 and 3 and key id %s", err, signedrecord.KeyID(first))
+	}
+	if strings.Contains(err.Error(), encode(first)) {
+		t.Errorf("the refusal %q holds the key itself", err)
+	}
+	if keys, err := signedrecord.ParsePublicKeys("EXAMPLE_KEYS", encode(first)+" "+encode(second)); err != nil || len(keys) != 2 {
+		t.Errorf("ParsePublicKeys of two different keys answered %v, %v; want both", keys, err)
+	}
+}
+
 // A record value that is not JSON is refused ErrBadField, naming the byte where it stops being
 // JSON and no character of it: the value is a record's, and json's message for a syntax error
 // quotes the character it stopped at. Run by hand, the control is Canonical at bb2b623923, whose

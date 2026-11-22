@@ -44,11 +44,12 @@ func putJournalBack(t *testing.T, r rig, holdID string, j savedJournal) {
 
 // endedHoldRows are TestTheHoldJournal's rows of a released restore beside the journals of holds
 // the verified log shows ended. Every hold's journal, an ended one's included, is judged first
-// against this replica's record floor and its signature: an older version, or one that does not
-// verify, is unknown (409 below_floor). Then a hold's journal holds no restore once the log shows
-// a released entry naming it, at any gen, while it shows no command's intent pending but hold
-// release's or hold abort's (repairRows' B5); a later hold's prepare shows nothing (forkRows). A
-// hold_mismatch names only a hold a verified row or log entry names.
+// against this replica's record floor, its signature and the log (journalBindingRows): an older
+// version, or one that does not verify, is unknown (409 below_floor). Then a hold's journal holds
+// no restore once it shows a done hold release or hold abort, or once the log shows a released
+// entry naming it, at any gen, while the journal shows hold release's or hold abort's intent as
+// that command's latest entry and no other intent pending (strictEndRows); a later hold's prepare
+// shows nothing (forkRows). A hold_mismatch names only a hold a verified row or log entry names.
 func endedHoldRows(t *testing.T) {
 	ctx := context.Background()
 	stored := func(t *testing.T, r rig) (int64, string) {
@@ -137,10 +138,13 @@ func endedHoldRows(t *testing.T) {
 		}
 	})
 
-	t.Run("an earlier hold's journal from mid-hold put back after a restart: the released restore stores", func(t *testing.T) {
-		// TN's S8: hold A's journal from while it was held, put back after A and B ended. Fails
-		// while every verified journal showing hold set done and no end refuses: every released
-		// restore is refused.
+	t.Run("an earlier hold's journal from mid-hold put back after a restart: refused, naming the older journal", func(t *testing.T) {
+		// TN's S8: hold A's journal from while it was held, put back after A and B ended. After a
+		// restart the route cannot tell it from an idle live hold whose released entry another
+		// history put back (TN deep's R10-1), so a released entry ends a hold only while its
+		// journal shows that end admitted, and this is a writer's residual infra/README.md lists.
+		// Fails while a released entry ends any hold with no intent pending, as at 886868daac:
+		// released is stored.
 		r := newRig(t)
 		c := r.client(t)
 		hold(t, c, "h-a", holdrecord.WorkflowStreamsUpdate, nil)
@@ -153,7 +157,15 @@ func endedHoldRows(t *testing.T) {
 			t.Fatal(err)
 		}
 		r.Restart()
-		restoresReleased(t, r, "with hold A's mid-hold journal put back")
+		fresh := r.client(t)
+		got := restoreRefusal(t, fresh, restoreGen(t, fresh), natsgrant.OperatorPhaseReleased, "")
+		if !refusedWith(got, http.StatusBadRequest, "bad_transition", "hold h-a's journal", "neither hold release's nor hold abort's intent",
+			"an older version of this hold's journal put back", handRepair) {
+			t.Errorf("the released restore answered %s; want 400 bad_transition naming h-a's journal, that it shows no end admitted, the older journal and the hand repair", refusalText(got))
+		}
+		if gen, phase := stored(t, r); gen != 0 {
+			t.Errorf("the table holds %s at gen %d, want no row", phase, gen)
+		}
 	})
 
 	t.Run("an older version of an ended hold's journal on the replica that saw the newer one is unknown: 409 below_floor", func(t *testing.T) {
