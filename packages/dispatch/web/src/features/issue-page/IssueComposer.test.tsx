@@ -1187,8 +1187,8 @@ test("an edit saves the comment's words", async () => {
 // R7: with the look, the hint under the field and the list of mention targets are off screen and
 // still read out - the hint as the field's description, the list by its name - and a row of the
 // reference picker carries no `title`, the page drawing no tooltips (`NoTooltips`). A session's
-// row, whose name two sessions can share, gives the session's full id as its description instead,
-// in a line drawn off screen.
+// row, whose name two sessions can share, draws the session's full id on screen instead, in a
+// line of the row that is its description and no part of its name.
 test("the look keeps the hint and the targets off screen, and a picker row has no title", async () => {
   const user = userEvent.setup();
   const hit: SearchResult = {
@@ -1235,7 +1235,10 @@ test("the look keeps the hint and the targets off screen, and a picker row has n
   const session = await within(parties).findByRole("option", { name: /^Planner/ });
   expect(parties.querySelectorAll("[title]")).toHaveLength(0);
   expect(session).toHaveAccessibleDescription(PLANNER.id);
-  expect(within(parties).getByText(PLANNER.id)).toHaveClass("sr-only");
+  expect(session).not.toHaveAccessibleName(new RegExp(PLANNER.id));
+  const line = within(session).getByText(PLANNER.id);
+  expect(line).not.toHaveClass("sr-only");
+  expect(line).toHaveAttribute("aria-hidden", "true");
 });
 
 // R7, and the root spec's R6 (no tooltip on the page) and R19 (nothing lost): today's composers

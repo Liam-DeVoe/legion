@@ -214,16 +214,17 @@ export function RefPickerList({
   };
   const sessionOf = (one: RefPickerRow) =>
     one.kind === "agent" ? one.agent?.sessionId : undefined;
-  // A session's row on a surface with no tooltips is described by a line the list draws off
-  // screen beside it, outside the row so its words are no part of the row's name. A listbox owns
-  // only options and groups, so the line is presentational, as a group's heading is, and is read
-  // only as the row's description.
+  // A session's row on a surface with no tooltips draws the session's full id as a line of its
+  // own, under its detail, quiet and cut to one line as the detail is. The line is hidden from
+  // assistive technology, so its words are no part of the row's name. The row names it in
+  // `aria-describedby`, which reads a line it names even when that line is hidden, so the id is
+  // still the row's description.
   const sessionLineId = (one: RefPickerRow) =>
     !tooltips && sessionOf(one) !== undefined ? `${headingPrefix}-${one.id}` : undefined;
   const sessionLine = (one: RefPickerRow) => {
     const id = sessionLineId(one);
     return id === undefined ? null : (
-      <span className="sr-only" id={id} key={one.id} role="presentation">
+      <span aria-hidden="true" className={`truncate text-xs ${textOptionDescription}`} id={id}>
         {sessionOf(one)}
       </span>
     );
@@ -235,8 +236,8 @@ export function RefPickerList({
     // accessible description: its name can be the short form `session:<8>…`, which two sessions
     // may share.
     // That holds where the surface draws tooltips. Where it draws none (the issue page), the row
-    // carries no title, and its description is the line the list draws off screen for it
-    // (`sessionLine`).
+    // carries no title. It draws the full id on screen instead, as a line under its detail
+    // (`sessionLine`), and that line is its description.
     <div
       aria-describedby={sessionLineId(one)}
       aria-selected={one.id === picker.activeId}
@@ -270,6 +271,7 @@ export function RefPickerList({
             <RefRowDetail row={one} />
           </TruncatedText>
         )}
+        {sessionLine(one)}
       </span>
       <RefPartsControl picker={picker} row={one} />
     </div>
@@ -294,7 +296,6 @@ export function RefPickerList({
             {group.heading}
           </div>
           {group.rows.map(row)}
-          {tooltips ? null : group.rows.map(sessionLine)}
         </div>
       ))}
       <RefPickerNotes picker={picker} />
