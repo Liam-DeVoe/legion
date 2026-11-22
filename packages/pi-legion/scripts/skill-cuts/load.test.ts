@@ -342,6 +342,16 @@ describe("a run loads the skill when its first assistant message reads it", () =
       alpha,
       none([]),
     ],
+    [
+      "Oh My Pi: a read of another source's alpha, by its namespaced path or by skill://tools/alpha, does not load the tested alpha",
+      "omp",
+      [
+        functionCall("read", { path: "/work/namespaced/tools/skills/alpha/SKILL.md" }),
+        functionCall("read", { path: "skill://tools/alpha" }),
+      ],
+      alpha,
+      none(["read", "read"]),
+    ],
   ];
   test.each(rows)("%s", (_name, host, content, skill, want) => {
     expect(ALPHA_PATH).toEndWith("/alpha/SKILL.md");

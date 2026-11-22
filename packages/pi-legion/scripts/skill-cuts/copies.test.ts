@@ -33,6 +33,7 @@ import {
   main,
   manifestKind,
   mentions,
+  npmPins,
   PREFIX_TABLE_COLUMNS,
   parseManifest,
   parseTsv,
@@ -43,6 +44,7 @@ import {
   REPOSITORY_JOBS,
   type ReaderSkill,
   ReadSlots,
+  releaseTag,
   repositoryFiles,
   repositoryKey,
   resolveInstallers,
@@ -51,6 +53,7 @@ import {
   searchTerms,
   skillFields,
   type TreeEntry,
+  tarballSkills,
   tsv,
   walkLevelKey,
   writeOutputs,
@@ -4232,4 +4235,43 @@ describe("build.ts's profile reads of a repository", () => {
       );
     }
   }, 60_000);
+});
+
+test("a plugin list's exact npm versions are its npm pins; a package's release tag is <directory>-v<version>, or v<version> at a repository's root; a tarball's skills are those its manifest's directories hold", () => {
+  const file = "omp/plugins/package.json";
+  const list = parseManifest(
+    "omp-plugins",
+    file,
+    JSON.stringify({
+      name: "omp-plugins",
+      dependencies: {
+        "@acme/kit": "1.0.0",
+        "@acme/range": "^2.0.0",
+        "acme-powers": "github:acme/powers#v1.2.0",
+        "@acme/pre": "3.0.0-rc.1",
+      },
+    })
+  );
+  const manifest = { repository: "acme/dots", path: file, facts: list.facts } as Manifest;
+  expect(npmPins([manifest]).map((pin) => `${pin.package} ${pin.version}`)).toEqual([
+    "@acme/kit 1.0.0",
+    "@acme/pre 3.0.0-rc.1",
+  ]);
+  expect(releaseTag("packages/pi-envoy/package.json", "15.1.2")).toBe("pi-envoy-v15.1.2");
+  expect(releaseTag("package.json", "0.2.9")).toBe("v0.2.9");
+  const files = new Map([
+    [
+      "package.json",
+      JSON.stringify({ name: "@acme/kit", omp: { skills: ["dist/skills", "one"] } }),
+    ],
+    ["dist/skills/a/SKILL.md", "a"],
+    ["dist/skills/b/SKILL.md", "b"],
+    ["dist/skills/b/references/x.md", "x"],
+    ["one/SKILL.md", "one"],
+    ["skills/c/SKILL.md", "c"],
+  ]);
+  expect(tarballSkills(files)).toEqual(["a", "b", "one"]);
+  // With no skills key, Oh My Pi falls back to skills/.
+  files.set("package.json", JSON.stringify({ name: "@acme/kit", pi: {} }));
+  expect(tarballSkills(files)).toEqual(["c"]);
 });

@@ -36,7 +36,8 @@ type Template =
   | "sessions.sql"
   | "session-head.sql"
   | "session-paths.sql"
-  | "subagents.sql";
+  | "subagents.sql"
+  | "digest-times.sql";
 
 /** The text of one of the runner's SQL files. */
 function readTemplate(name: Template): string {
@@ -222,6 +223,20 @@ export function sessionPathsSql(pathHashes: readonly string[]): string {
 /** subagents.sql filled for the top-level sessions' path hashes `pathHashes` (`pathHashArray`). */
 export function subagentsSql(pathHashes: readonly string[]): string {
   return fillTemplate(readTemplate("subagents.sql"), { hashes: pathHashArray(pathHashes) });
+}
+
+/** digest-times.sql filled for the subagent sessions `sessions`: each one's path hash and start
+ *  (an ISO time), as one JSON array literal. */
+export function digestTimesSql(
+  sessions: readonly { readonly hash: string; readonly before: string }[]
+): string {
+  pathHashArray(sessions.map((each) => each.hash));
+  const bad = sessions.find((each) => Number.isNaN(Date.parse(each.before)));
+  if (bad !== undefined) throw new Error(`${JSON.stringify(bad.before)} is not a time`);
+  const value = JSON.stringify(sessions.map(({ hash, before }) => ({ hash, before })));
+  return fillTemplate(readTemplate("digest-times.sql"), {
+    sessions: `${sqlString(value)}::jsonb`,
+  });
 }
 
 const USAGE =

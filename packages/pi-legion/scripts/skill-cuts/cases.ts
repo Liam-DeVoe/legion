@@ -21,7 +21,7 @@ import { schemaFaults } from "./common";
 import { CaseKind } from "./score";
 
 /** A file of a repository at a commit: the repository (`owner/name`), the commit, and the path
- * inside it. */
+ * inside it; `.` for the repository's root (a skill at the root, build.ts). */
 const RepoPath = {
   repo: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
   commit: z.string().min(1),

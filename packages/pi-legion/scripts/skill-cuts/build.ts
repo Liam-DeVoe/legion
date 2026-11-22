@@ -514,9 +514,11 @@ import {
   installerPins,
   keepsEntry,
   type Manifest,
+  npmPins,
   parseJson,
   parseManifest,
   prefixMatches,
+  releaseTag,
   repoPath,
   repositoryFiles,
   resolveInstallers,
@@ -524,8 +526,10 @@ import {
   skillFields,
   spawnGh,
   type TreeEntry,
+  tarballSkills,
 } from "./copies";
 import {
+  digestTimesSql,
   mtimeRange,
   PULL_PAGE,
   pullSql,
@@ -759,6 +763,8 @@ export interface BuildIo {
   /** Waits `ms` before a GitHub read that failed for a transient reason is sent again
    *  (`Bun.sleep` when absent). */
   sleep?(ms: number): Promise<void>;
+  /** Reads the registry's tarball of a package version (`registryTarball` when absent). */
+  readonly npm?: NpmTarball;
 }
 
 /** The directory a build pulls transcripts into, `<out>.spool`, made empty: one file for each
@@ -1885,6 +1891,46 @@ function ghAnswer(args: readonly string[], result: GhResult): string {
   return result.stdout;
 }
 
+/** A read of the npm registry's tarball of `version` of the package `name`: its bytes, or
+ *  undefined when the registry has none. */
+export type NpmTarball = (name: string, version: string) => Promise<Uint8Array | undefined>;
+
+/** The registry's tarball URL of `version` of the package `name` (`@scope/name` too). */
+export const tarballUrl = (name: string, version: string) =>
+  `https://registry.npmjs.org/${name}/-/${name.split("/").pop()}-${version}.tgz`;
+
+/** The registry's tarball of a package version, one GET: undefined for a 404, a throw for any
+ *  other failure. */
+export const registryTarball: NpmTarball = async (name, version) => {
+  const response = await fetch(tarballUrl(name, version));
+  if (response.status === 404) return undefined;
+  if (!response.ok) throw new Error(`${tarballUrl(name, version)}: HTTP ${response.status}`);
+  return new Uint8Array(await response.arrayBuffer());
+};
+
+/** The files of a gzipped tar (an npm tarball), by path less its first part (`package/`), each
+ *  as UTF-8 text: a regular file's entry only, its name the ustar prefix and name joined. */
+export function tarballFiles(gzipped: Uint8Array): Map<string, string> {
+  const bytes = Bun.gunzipSync(new Uint8Array(gzipped));
+  const text = (from: number, to: number) =>
+    new TextDecoder().decode(bytes.subarray(from, to)).replace(/\0.*$/s, "");
+  const files = new Map<string, string>();
+  for (let at = 0; at + 512 <= bytes.length; ) {
+    const name = text(at, at + 100);
+    if (name === "") break;
+    const size = Number.parseInt(text(at + 124, at + 136).trim() || "0", 8);
+    const type = text(at + 156, at + 157);
+    const prefix = text(at + 345, at + 500);
+    const full = prefix === "" ? name : `${prefix}/${name}`;
+    if (type === "" || type === "0") {
+      const inside = full.split("/").slice(1).join("/");
+      files.set(inside, new TextDecoder().decode(bytes.subarray(at + 512, at + 512 + size)));
+    }
+    at += 512 + Math.ceil(size / 512) * 512;
+  }
+  return files;
+}
+
 /** The GitHub reads the profile makes, each made once, and each sent again after a transient
  *  failure as common.ts's `GhRetries` says (`retries`, which counts them): a read that failed so
  *  on every try is not kept, so a later caller reads it again. Exported for copies.test.ts, which
@@ -1898,8 +1944,21 @@ export class GithubReads {
   constructor(
     private readonly gh: Gh,
     private readonly branches: ReadonlyMap<string, string>,
-    readonly retries: GhRetries
+    readonly retries: GhRetries,
+    /** The registry's tarball of a package version (`registryTarball` in a real run). */
+    readonly tarball: NpmTarball = registryTarball
   ) {}
+
+  /** Whether GitHub lists the tag `tag` of `repo`: one read of its tags that start so. */
+  async hasTag(repo: string, tag: string): Promise<boolean> {
+    const refs = await this.ok([
+      "api",
+      `repos/${repo}/git/matching-refs/tags/${encodeURIComponent(tag)}`,
+      "--jq",
+      ".[].ref",
+    ]);
+    return refs.split("\n").includes(`refs/tags/${tag}`);
+  }
 
   /** gh's answer to `args`, sent again as `retries` says, the read made once: an answer that
    *  failed for a transient reason on every try is dropped once it does. */
@@ -2228,7 +2287,21 @@ function githubReads(
     { sleep: (ms) => io.sleep?.(ms) ?? Bun.sleep(ms), err: (line) => io.err(line) },
     who
   );
-  return new GithubReads(io.gh, branches, retries);
+  return new GithubReads(io.gh, branches, retries, io.npm);
+}
+
+/** Which skills a package pinned by an exact npm version ships, and where its source says so. */
+const NPM_PIN_RULE =
+  "a plugin list that pins a package by an exact npm version installs that version (bun install), which ships the skills of that release: the package's release tag (<directory>-v<version> of its repository, v<version> for a package at its repository's root) when GitHub lists it and its tree holds the package, read as copies.ts reads a package; else the registry's tarball of the version, which names the skills it ships (copies.ts's tarballSkills); a version of neither ships nothing to the profile";
+
+/** How a package pinned by an npm version is read (NPM_PIN_RULE): at its release tag (`sha`,
+ *  and the rows by which it ships each skill there), else the names its tarball ships, else
+ *  neither (left out); with why. */
+interface PinnedVersion {
+  readonly why: string;
+  readonly sha?: string;
+  readonly rows?: ReturnType<typeof resolveInstallers>["rows"];
+  readonly names?: ReadonlySet<string>;
 }
 
 /** The session repository: the repository the session's working directory is a checkout of
@@ -2256,6 +2329,8 @@ interface ProfileInput {
   readonly cwd: string | undefined;
   readonly recordedPrompt: boolean;
   readonly checkout?: Checkout;
+  /** For a subagent, when its repositories are read (PARENT_LOAD_RULE). */
+  readonly parentLoad?: ParentLoad;
 }
 
 /** The items of the profile's evidence that name the session repository, and that say there is
@@ -2431,6 +2506,71 @@ async function subagentListings(
     });
   }
   return found;
+}
+
+/** When a subagent's skills were loaded, and where Oh My Pi's source says so. */
+const PARENT_LOAD_RULE =
+  "Oh My Pi 18.18.6 gives a subagent the skills its parent loaded (task/structured-subagent.ts, lines 806-818 and 895-902), and a subagent of a subagent its parent's, so from its root session's last prompt build before its start (each build writes one system-prompt-digest line: session/session-tools.ts, lines 1795-1830); the subagent rescans only the skill directories an extension names (session/session-tools.ts, lines 2350-2560). So a subagent's profile reads each repository at the root's last prompt build before the subagent's start (digest-times.sql), but a pool's (a repository of an extension's skills-sources pool: copies.ts's pool units) at the subagent's start, and every repository at the subagent's start when the store holds no prompt build of its root before it";
+
+/** When the repositories of a subagent's profile are read (PARENT_LOAD_RULE): `at`, the root's
+ *  last prompt build before the subagent's start, for each but a pool's (undefined when there is
+ *  none, so every repository is read at the subagent's start), and the evidence that says both
+ *  times and which is used. */
+interface ParentLoad {
+  readonly at: string | undefined;
+  readonly line: Evidence;
+}
+
+const DigestRow = z.strictObject({
+  hash: z.string(),
+  root: z.string().nullable(),
+  rootHeld: z.boolean(),
+  before: z.string(),
+  digests: z.array(z.string()),
+});
+
+/** The ParentLoad of each subagent session of `sessions` (its path hash and start) in the store
+ *  `store`, by path hash: one digest-times.sql query, none for no session. A session the store
+ *  no longer holds is read at its start. */
+async function parentLoads(
+  command: string,
+  store: string,
+  sessions: readonly { readonly hash: string; readonly before: string }[]
+): Promise<Map<string, ParentLoad>> {
+  const rows = new Map<string, z.infer<typeof DigestRow>>();
+  if (sessions.length > 0) {
+    for (const row of await storeRows(command, store, digestTimesSql(sessions))) {
+      const parsed = DigestRow.safeParse(row);
+      if (parsed.success) rows.set(parsed.data.hash, parsed.data);
+    }
+  }
+  const loads = new Map<string, ParentLoad>();
+  for (const { hash, before } of sessions) {
+    const row = rows.get(hash);
+    const at = row?.digests.at(-1);
+    const why =
+      row === undefined
+        ? `the store ${store} holds no file of the subagent now`
+        : row.root === null
+          ? "its path names no root session's directory"
+          : !row.rootHeld
+            ? `the store ${store} holds no file of its root (${row.root.slice(0, 12)})`
+            : at === undefined
+              ? `its root (${row.root.slice(0, 12)}) holds no system-prompt-digest line before it`
+              : `its root (${row.root.slice(0, 12)}) built its prompt last at ${at} before it (${row.digests.length} builds)`;
+    loads.set(hash, {
+      at,
+      line: {
+        item: "read times",
+        source: `the subagent started at ${before}; ${why}, so ${
+          at === undefined
+            ? `each repository is read at the subagent's start ${before}`
+            : `each repository is read at ${at}, and a pool's at the subagent's start ${before}`
+        }: ${PARENT_LOAD_RULE}`,
+      },
+    });
+  }
+  return loads;
 }
 
 /** The names of the `<skills>` listing of the recorded prompt `blocks`, as capture.ts's
@@ -2836,6 +2976,25 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const checkout =
     input.checkout ?? sessionRepository(input.context, input.cwd, copies.branches.keys());
   evidence.push(checkout.line);
+  if (input.parentLoad !== undefined) evidence.push(input.parentLoad.line);
+  // The time each repository is read at (PARENT_LOAD_RULE): for a subagent whose root built its
+  // prompt before it, that build's, but each repository a skills-sources pool clones, which is
+  // read at the session's start, as for any other session. A pool's host (the repository that
+  // holds its skills-sources.json, the plugin lists and the installers) is read at the root's
+  // build too, and again at the subagent's start for its pool directories (`poolAt`, below).
+  const poolRows = copies.installers.filter((row) => (row.unit ?? "").startsWith("pool:"));
+  const poolHosts = new Set(
+    poolRows.map((row) => (row.manifest_repository ?? "").toLowerCase()).filter((r) => r !== "")
+  );
+  const poolClones = new Set(
+    poolRows
+      .map((row) => (row.copy_repository ?? "").toLowerCase())
+      .filter((repo) => repo !== "" && !poolHosts.has(repo))
+  );
+  const whenOf = (repo: string): { at: string; words: string } =>
+    input.parentLoad?.at !== undefined && !poolClones.has(repo.toLowerCase())
+      ? { at: input.parentLoad.at, words: "the root's last prompt build" }
+      : { at: input.sessionStart, words: "the session's start" };
   // The project skill directories Oh My Pi reads, in its order: each kind of PROJECT_SKILLS, under
   // the working directory and then under each parent up to the checkout's root.
   const levels = [checkout.rel];
@@ -2853,22 +3012,23 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
    *  installer's pin at the session's start, below, takes its place where one names the
    *  repository). */
   const readCommit = async (repo: string): Promise<{ sha: string; line: Evidence }> => {
+    const when = whenOf(repo);
     let { branch, from } = await github.branch(repo);
     let younger = "";
     let sha: string;
     try {
-      sha = await github.commitAt(repo, branch, input.sessionStart);
+      sha = await github.commitAt(repo, branch, when.at);
     } catch (error) {
       if (transientFailure(error) || from !== "repositories.tsv") throw error;
-      younger = `${branch}, the ref repositories.tsv names, has no commit at or before the session's start; `;
+      younger = `${branch}, the ref repositories.tsv names, has no commit at or before ${when.words}; `;
       ({ branch, from } = await github.branch(repo, true));
-      sha = await github.commitAt(repo, branch, input.sessionStart);
+      sha = await github.commitAt(repo, branch, when.at);
     }
     return {
       sha,
       line: {
         item: `commit ${sha} of ${repo}`,
-        source: `${younger}the last commit of ${branch} (from ${from}) at or before the session's start ${input.sessionStart}: gh api repos/${repo}/commits?sha=${branch}&until=${input.sessionStart}`,
+        source: `${younger}the last commit of ${branch} (from ${from}) at or before ${when.words} ${when.at}: gh api repos/${repo}/commits?sha=${branch}&until=${when.at}`,
       },
     };
   };
@@ -3093,7 +3253,20 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   for (const [index, value] of values.entries()) {
     const pin = pins.find((each) => each.repository.toLowerCase() === value.repo.toLowerCase());
     if (pin === undefined || pin.ref === "" || !repositories.has(value.repo)) continue;
-    const sha = await github.commitAt(value.repo, pin.ref, input.sessionStart);
+    const when = whenOf(value.repo);
+    let sha: string;
+    try {
+      sha = await github.commitAt(value.repo, pin.ref, when.at);
+    } catch (error) {
+      // A pin's tag made after the root's last prompt build: the repository stays at the commit
+      // read above.
+      if (transientFailure(error)) throw error;
+      evidence.push({
+        item: `left out: the pin ${pin.ref} of ${value.repo}`,
+        source: `${pin.manifest.repository}:${pin.manifest.path} pins ${pin.ref}, which has no commit at or before ${when.words} ${when.at} (${messageFor(error)}), so ${value.repo} is read at ${value.commit.sha}`,
+      });
+      continue;
+    }
     if (sha === value.commit.sha) continue;
     values[index] = {
       ...value,
@@ -3101,7 +3274,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         sha,
         line: {
           item: `commit ${sha} of ${value.repo}`,
-          source: `the last commit of ${pin.ref}, the ref ${pin.manifest.repository}:${pin.manifest.path} pins at the session's start, at or before ${input.sessionStart}: gh api repos/${value.repo}/commits?sha=${pin.ref}&until=${input.sessionStart}`,
+          source: `the last commit of ${pin.ref}, the ref ${pin.manifest.repository}:${pin.manifest.path} pins at the session's start, at or before ${when.words} ${when.at}: gh api repos/${value.repo}/commits?sha=${pin.ref}&until=${when.at}`,
         },
       },
       at: await github.at(value.repo, sha, run.config.excludePaths),
@@ -3127,7 +3300,8 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         const pinned = `${pin.manifest.repository}:${pin.manifest.path}`;
         try {
           const ref = pin.ref === "" ? (await github.branch(pin.repository)).branch : pin.ref;
-          const sha = await github.commitAt(pin.repository, ref, input.sessionStart);
+          const when = whenOf(pin.repository);
+          const sha = await github.commitAt(pin.repository, ref, when.at);
           repositories.add(pin.repository);
           values.push({
             repo: pin.repository,
@@ -3135,7 +3309,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
               sha,
               line: {
                 item: `commit ${sha} of ${pin.repository}`,
-                source: `the last commit of ${ref}, the ref ${pinned} ${pin.ref === "" ? "names (its default branch: the installer names no ref)" : "pins"} at the session's start, at or before ${input.sessionStart}: gh api repos/${pin.repository}/commits?sha=${ref}&until=${input.sessionStart}`,
+                source: `the last commit of ${ref}, the ref ${pinned} ${pin.ref === "" ? "names (its default branch: the installer names no ref)" : "pins"} at the session's start, at or before ${when.words} ${when.at}: gh api repos/${pin.repository}/commits?sha=${ref}&until=${when.at}`,
               },
             },
             at: await github.at(pin.repository, sha, run.config.excludePaths),
@@ -3178,13 +3352,107 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       });
     }
   }
+  // Each tree read at another commit than its repository's (a pinned package's release tag, a
+  // pool host's at a subagent's start), by `<repo>@<commit>`.
+  const trees = new Map<string, RepositoryAt>();
+  // A subagent's pool hosts at its start: Oh My Pi rescans a pool's directories then, while the
+  // host's plugin lists, installers and settings are what its root loaded (PARENT_LOAD_RULE).
+  const poolAt = new Map<string, string>();
+  if (input.parentLoad?.at !== undefined) {
+    for (const repo of [...held.keys()].sort()) {
+      if (!poolHosts.has(repo.toLowerCase())) continue;
+      const { branch } = await github.branch(repo);
+      const sha = await github.commitAt(repo, branch, input.sessionStart);
+      evidence.push({
+        item: `read times of ${repo}`,
+        source: `its plugin lists, installers and settings at ${commits.get(repo)} (the root's last prompt build ${input.parentLoad.at}), its pool directories at ${sha}, the last commit of ${branch} at or before the subagent's start ${input.sessionStart}: ${PARENT_LOAD_RULE}`,
+      });
+      if (sha === commits.get(repo)) continue;
+      poolAt.set(repo, sha);
+      trees.set(`${repo}@${sha}`, await github.at(repo, sha, run.config.excludePaths));
+    }
+  }
+  // A package a plugin list pins by an exact npm version ships what that version ships
+  // (NPM_PIN_RULE); the dev box's own plugin lists come first.
+  const versions = new Map<string, PinnedVersion>();
+  const heldManifests = [...held.values()].flatMap((at) => at.manifests);
+  const lists = heldManifests.toSorted(
+    (a, b) => Number(b.repository === home) - Number(a.repository === home)
+  );
+  for (const pin of npmPins(lists)) {
+    const id = `package:${pin.package}`;
+    if (versions.has(id)) continue;
+    const pkg = heldManifests.find(
+      (manifest) =>
+        manifest.kind === "omp-package" &&
+        manifest.facts.some((fact) => fact.type === "package" && fact.name === pin.package)
+    );
+    if (pkg === undefined) continue;
+    const repo = pkg.repository;
+    const tag = releaseTag(pkg.path, pin.version);
+    const pinned = `${pin.manifest.repository}:${pin.manifest.path} at ${commits.get(pin.manifest.repository)} pins ${pin.package} ${pin.version}`;
+    const listing = `gh api repos/${repo}/git/matching-refs/tags/${tag}`;
+    let tagWhy = `GitHub lists no tag ${tag} of ${repo} (${listing})`;
+    try {
+      if (await github.hasTag(repo, tag)) {
+        const sha = await github.commitAt(repo, tag, whenOf(repo).at);
+        const at = await github.at(repo, sha, run.config.excludePaths);
+        if (at.manifests.some((each) => each.path === pkg.path && each.kind === "omp-package")) {
+          trees.set(`${repo}@${sha}`, at);
+          const rows = resolveInstallers(at.manifests, new CopyIndex(at.copies)).rows.filter(
+            (row) =>
+              row.unit === id &&
+              row.manifestRepository === repo &&
+              row.manifestPath === pkg.path &&
+              row.copyPath !== undefined &&
+              Object.hasOwn(MEMBER_ACTIONS, row.action)
+          );
+          versions.set(id, {
+            sha,
+            rows,
+            why: `${pinned}; its release tag ${tag} (${listing}) is ${repo} at ${sha}, whose tree holds ${pkg.path}: ${NPM_PIN_RULE}`,
+          });
+          continue;
+        }
+        tagWhy = `the tree of ${repo}'s tag ${tag} (${sha}) holds no ${pkg.path}`;
+      }
+    } catch (error) {
+      if (transientFailure(error)) throw error;
+      tagWhy = `${repo}'s tag ${tag} cannot be read (${messageFor(error)})`;
+    }
+    const url = tarballUrl(pin.package, pin.version);
+    const bytes = await github.tarball(pin.package, pin.version);
+    if (bytes === undefined) {
+      versions.set(id, {
+        why: `${pinned}; ${tagWhy}, and the registry has no tarball of it (${url}), so it ships nothing to the profile: ${NPM_PIN_RULE}`,
+      });
+      continue;
+    }
+    const names = new Set(tarballSkills(tarballFiles(bytes)));
+    versions.set(id, {
+      names,
+      why: `${pinned}; ${tagWhy}, so the registry's tarball (${url}) names the skills it ships (${[...names].join(", ") || "none"}), each installed from ${repo} at ${commits.get(repo)}: ${NPM_PIN_RULE}`,
+    });
+  }
   const resolved = resolveInstallers(
     [...held.values()].flatMap((at) => at.manifests),
     new CopyIndex([...held.values()].flatMap((at) => at.copies))
   );
-  /** The rows by which `via`'s unit ships a skill at the session's start (copies.ts's rules). */
+  /** The tree of `repo` a pool's directories are read at: its own at a subagent's start, else
+   *  the one held. */
+  const poolTree = (repo: string, at: RepositoryAt) =>
+    trees.get(`${repo}@${poolAt.get(repo) ?? ""}`) ?? at;
+  const poolResolved =
+    poolAt.size === 0
+      ? resolved
+      : resolveInstallers(
+          [...held].flatMap(([repo, at]) => poolTree(repo, at).manifests),
+          new CopyIndex([...held].flatMap(([repo, at]) => poolTree(repo, at).copies))
+        );
+  /** The rows by which `via`'s unit ships a skill at the session's start (copies.ts's rules): a
+   *  pool's from its host's tree at the subagent's start. */
   const shipsAtStart = (via: Via) =>
-    resolved.rows.filter(
+    (via.unit.startsWith("pool:") ? poolResolved : resolved).rows.filter(
       (row) =>
         row.unit === via.unit &&
         row.manifestRepository === via.repository &&
@@ -3293,7 +3561,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
    *  the evidence of it and its rank among the copies of its name (`unitRank`); then each copy
    *  installed alone, and then the session repository's project skills. */
   const offers: {
-    copy: Omit<ProfileSkill, "commit">;
+    copy: Omit<ProfileSkill, "commit"> & { readonly commit?: string };
     how: string;
     source: string;
     rank: number | undefined;
@@ -3303,7 +3571,16 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   for (const [key, { via, why }] of units) {
     const id = via.unit;
     const start = `${via.repository} at ${commits.get(via.repository)}`;
-    const members = shipsAtStart(via);
+    const version = id.startsWith("package:") ? versions.get(id) : undefined;
+    let members = shipsAtStart(via);
+    if (version !== undefined) {
+      evidence.push({ item: `version of ${key}`, source: version.why });
+      members =
+        version.rows ??
+        (version.names === undefined
+          ? []
+          : members.filter((row) => version.names?.has(row.skill) === true));
+    }
     const later = listed(via);
     evidence.push({ item: `unit ${key}`, source: why });
     if (members.length === 0) {
@@ -3313,7 +3590,14 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       });
     }
     for (const row of members) {
-      const copy = { repo: row.copyRepository, path: row.copyPath ?? "", name: row.skill };
+      const commit =
+        version?.sha ?? (id.startsWith("pool:") ? poolAt.get(row.copyRepository) : undefined);
+      const copy = {
+        repo: row.copyRepository,
+        path: row.copyPath ?? "",
+        name: row.skill,
+        ...(commit === undefined ? {} : { commit }),
+      };
       const how = `${id} ${row.action} it (${row.manifestRepository}:${row.manifestPath})`;
       const inR4 = later.some(
         (each) => each.copy_repository === copy.repo && repoPath(each.copy_path ?? "") === copy.path
@@ -3321,7 +3605,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       offers.push({
         copy,
         how,
-        source: `${copy.repo} at ${commits.get(copy.repo)}: ${how}${inR4 ? "" : "; installers.tsv, which the copies output read later, does not list it"}`,
+        source: `${copy.repo} at ${commit ?? commits.get(copy.repo)}: ${how}${inR4 ? "" : "; installers.tsv, which the copies output read later, does not list it"}`,
         rank: unitRank(id),
         namespace: unitNamespace(id),
       });
@@ -3488,13 +3772,16 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       .reduce((a, b) => (rankOf(b) < rankOf(a) ? b : a));
     chosen.set(name, first);
   }
-  const skills = new Map<string, Omit<ProfileSkill, "commit">>();
+  const skills = new Map<string, Omit<ProfileSkill, "commit"> & { readonly commit?: string }>();
   const again: InstallPath[] = [];
+  /** The tree a copy is read from: its own commit's when it names one, else its repository's. */
+  const treeOf = (copy: { repo: string; commit?: string | undefined }) =>
+    (copy.commit === undefined ? undefined : trees.get(`${copy.repo}@${copy.commit}`)) ??
+    held.get(copy.repo) ??
+    (copy.repo === checkout.repo ? projectTree : undefined);
   /** The blob of the SKILL.md of `copy` at the session's start, as read. */
-  const blobOf = (copy: { repo: string; path: string }) =>
-    (held.get(copy.repo) ?? (copy.repo === checkout.repo ? projectTree : undefined))?.copies.find(
-      (each) => each.path === copy.path
-    )?.blob;
+  const blobOf = (copy: { repo: string; path: string; commit?: string | undefined }) =>
+    treeOf(copy)?.copies.find((each) => each.path === copy.path)?.blob;
   for (const offer of offers) {
     const pick = chosen.get(offer.copy.name);
     if (pick === undefined) continue;
@@ -3610,13 +3897,18 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   for (const skill of [...skills.values()].sort((a, b) =>
     listedName(a) < listedName(b) ? -1 : listedName(a) > listedName(b) ? 1 : 0
   )) {
-    profileSkills.push({ ...skill, commit: await commitOf(skill.repo) });
+    // A skill at its repository's root (a clone that is one skill) has the path ".".
+    profileSkills.push({
+      ...skill,
+      path: skill.path === "" ? "." : skill.path,
+      commit: skill.commit ?? (await commitOf(skill.repo)),
+    });
   }
   // A skill whose SKILL.md hides it is installed, so skill:// reads it, and not listed.
   const hidden = new Set<string>();
   for (const skill of profileSkills) {
-    const at = held.get(skill.repo) ?? (skill.repo === checkout.repo ? projectTree : undefined);
-    if (at?.hidden.has(skill.path) !== true) continue;
+    const at = treeOf(skill);
+    if (at?.hidden.has(skill.path === "." ? "" : skill.path) !== true) continue;
     hidden.add(listedName(skill));
     evidence.push({
       item: `not listed: skill ${listedName(skill)}`,
@@ -3972,6 +4264,13 @@ function sessionHeader(
   return { sessionStart, cwd: typeof header?.cwd === "string" ? header.cwd : undefined };
 }
 
+/** The schema a written task profile must pass: the one load reads it with (cases.ts's Profile
+ *  and the context of a case). */
+const WrittenProfile = Profile.extend({ context: Case.shape.context });
+
+/** A rebuilt task profile its readers would refuse (WrittenProfile), which is never written. */
+class ProfileRefused extends Error {}
+
 /** A load test's profile of one session (load.ts's LoadProfile: cases.ts's Profile and the
  *  context), the evidence for each part, the secrets taken out of it, and whether a load test of
  *  the skill in it lists the skill (`listsSkill`). */
@@ -4027,6 +4326,14 @@ async function sessionProfile(
   const rebuilt = sessionContext(store, t, transcriptPath);
   if ("drop" in rebuilt) throw new Error(`${rebuilt.drop}: ${rebuilt.detail}`);
   const { context, project, evidence, init } = rebuilt;
+  const parentLoad =
+    init === undefined
+      ? undefined
+      : (
+          await parentLoads(run.config.psqlCommand, store.name, [
+            { hash: pathHash(transcriptPath), before: header.sessionStart },
+          ])
+        ).get(pathHash(transcriptPath));
   const profiled = await caseProfile(run, {
     store: store.name,
     context: store.context,
@@ -4035,6 +4342,7 @@ async function sessionProfile(
     cwd: header.cwd,
     recordedPrompt: init !== undefined,
     reads: shownReads(t.items.map((item) => item.slim)),
+    parentLoad,
   });
   const secrets = scrubbed({ systemPrompt: init?.systemPrompt });
   const recorded =
@@ -4044,13 +4352,22 @@ async function sessionProfile(
   // Each copy of the tested skill's source, the load test installs (cases.ts's `testedCopy`); a
   // copy of another source that shares its name stays.
   const tested = testedCopy(profiled.profile.skills, skill);
+  const profile = {
+    ...profiled.profile,
+    ...recorded,
+    skills: profiled.profile.skills.filter((each) => !tested(each)),
+    context,
+  };
+  // A profile the readers would refuse is never written (load reads it with cases.ts's Profile
+  // and a context): the task fails with why.
+  const checked = WrittenProfile.safeParse(profile);
+  if (!checked.success) {
+    throw new ProfileRefused(
+      `its rebuilt profile is one load refuses (cases.ts's Profile and a context): ${schemaFaults(checked.error)}`
+    );
+  }
   return {
-    profile: {
-      ...profiled.profile,
-      ...recorded,
-      skills: profiled.profile.skills.filter((each) => !tested(each)),
-      context,
-    },
+    profile,
     evidence: [
       ...evidence,
       ...profiled.evidence,
@@ -4194,6 +4511,19 @@ async function caseOf(
   // reads it can reach ships the skill of the cut's repository, no step's profile installs it, and
   // the session is dropped as the step's profile check would drop it. A GitHub read that fails
   // here is the step's read too.
+  let parentLoad: ParentLoad | undefined;
+  try {
+    parentLoad =
+      init === undefined
+        ? undefined
+        : (
+            await parentLoads(run.config.psqlCommand, store.name, [
+              { hash: pathHash(transcriptPath), before: sessionStart },
+            ])
+          ).get(pathHash(transcriptPath));
+  } catch (error) {
+    return drop("profile-failed", messageFor(error));
+  }
   const profileInput = {
     store: store.name,
     context: store.context,
@@ -4201,6 +4531,7 @@ async function caseOf(
     sessionStart,
     cwd: header.cwd,
     recordedPrompt: init !== undefined,
+    parentLoad,
   };
   let reachable: ProfileResult;
   try {
@@ -4722,6 +5053,15 @@ async function reprofileCases(
       .map((c) => c.source.pathHash);
     subagents.set(name, await subagentListings(config.psqlCommand, name, hashes));
   }
+  // A case whose session recorded its prompt (a subagent's) reads its repositories at its root's
+  // last prompt build before its start (PARENT_LOAD_RULE): one digest-times.sql query a store.
+  const loads = new Map<string, Map<string, ParentLoad>>();
+  for (const name of heads.keys()) {
+    const sessions = cases
+      .filter((c) => c.source.store === name && c.profile.systemPrompt !== undefined)
+      .map((c) => ({ hash: c.source.pathHash, before: c.sessionStart }));
+    loads.set(name, await parentLoads(config.psqlCommand, name, sessions));
+  }
   const rebuilt: Case[] = [];
   const records: Record<string, unknown>[] = [];
   const leftOut: { id: string; why: string }[] = [];
@@ -4780,6 +5120,7 @@ async function reprofileCases(
             ? undefined
             : `/legion/workspaces/${agents.repo}/`,
         recordedPrompt: c.profile.systemPrompt !== undefined,
+        parentLoad: loads.get(store.name)?.get(c.source.pathHash),
         checkout:
           held || decided === undefined
             ? undefined
@@ -7417,6 +7758,12 @@ async function reprofileTasks(
         try {
           built = await pulledProfile(run, task.store, filePath, spool, skill);
         } catch (error) {
+          // A profile load would refuse is not written: the task is left out with why.
+          if (error instanceof ProfileRefused) {
+            leftOut.push({ task: task.id, why: error.message });
+            io.err(`build-tasks: ${task.id}: left out: ${error.message}`);
+            continue;
+          }
           throw new Error(
             `task ${task.id} (${task.store} ${task.pathHash.slice(0, 12)}): ${messageFor(error)}`
           );
