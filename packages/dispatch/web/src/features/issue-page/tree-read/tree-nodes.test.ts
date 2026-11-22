@@ -520,8 +520,9 @@ test("a reading stands under the parent the read names, and nowhere else", () =>
 
 // R10: a statement whose own `from` names one origin and a decision that says it shaped it names
 // another draws the two edges disagreeing - an agent's decision, and an ask a person answered,
-// which the read answers with that person's decision. An ask still open decided nothing, as the
-// decisions read's entries hold (`isDecisionEntry`), so its `shaped` tuple draws no disagreement.
+// which the read answers with that person's decision and its ties. A decision is one by the rule
+// every reader of a decision reads (`decision-nodes.ts`' `decisionNodes`), and an ask still open
+// decided nothing, so its `shaped` tuple draws no disagreement.
 test("an open ask's shaped tuple draws no shaped_disagreement, where a decision's and an answered ask's do", () => {
   const origin = { from: `dispatch://${KEY}/spec#b-r-origin` };
   const { drafts } = drawn(
@@ -532,8 +533,10 @@ test("an open ask's shaped tuple draws no shaped_disagreement, where a decision'
         block("r-answered", "requirement", KEY, SPEC, 2, { attributes: origin }),
         block("r-agent", "requirement", KEY, SPEC, 3, { attributes: origin }),
         node("q-open", "ask", KEY),
-        node("q-answered", "ask", KEY, { decision: {} }),
-        decisionNode("d1", KEY),
+        node("q-answered", "ask", KEY, {
+          decision: { links: [linkTo(`dispatch://${KEY}/spec#b-r-answered`)] },
+        }),
+        block("d1", "decision", KEY, DECISIONS, 0),
       ],
       [
         tuple("shaped", "q-open", "r-open"),
@@ -550,6 +553,84 @@ test("an open ask's shaped tuple draws no shaped_disagreement, where a decision'
   expect(
     ["r-open", "r-answered", "r-agent"].map((id) => drafts.get(blockNodeId("spec", id))?.gaps)
   ).toEqual([[], ["shaped_disagreement"], ["shaped_disagreement"]]);
+});
+
+// R10: the gap mark counts what `decisionNodes` counts, so a node no reader of a decision finds
+// claims nothing against the statement's origin: a decision node that carries no `decision`,
+// which no reader could say how it stands, and one no document holds, which has no address.
+test("a decision node with no decision or no document draws no shaped_disagreement", () => {
+  const origin = { from: `dispatch://${KEY}/spec#b-r-origin` };
+  const { drafts } = drawn(
+    answer(
+      [
+        block("r-origin", "requirement", KEY, SPEC, 0),
+        block("r-bare", "requirement", KEY, SPEC, 1, { attributes: origin }),
+        block("r-nowhere", "requirement", KEY, SPEC, 2, { attributes: origin }),
+        // The fixture gives every decision node a decision, so this one has its own taken away.
+        { ...block("d-bare", "decision", KEY, DECISIONS, 0), decision: undefined },
+        decisionNode("d-nowhere", KEY),
+      ],
+      [tuple("shaped", "d-bare", "r-bare"), tuple("shaped", "d-nowhere", "r-nowhere")]
+    ),
+    {
+      coverage: coverage(["r-origin", "r-bare", "r-nowhere"].map(requirement)),
+      issue: issueDetails(),
+    }
+  );
+
+  expect(["r-bare", "r-nowhere"].map((id) => drafts.get(blockNodeId("spec", id))?.gaps)).toEqual([
+    [],
+    [],
+  ]);
+});
+
+// R10: a decision node whose decision the read answers as a person's (`decision.kind` `person`)
+// is a decision as every reader reads it (`decisionNodes`), so a `shaped` tuple from it that
+// names another node than the statement's origin draws the disagreement, as an agent's does.
+test("a decision node of a person's decision draws shaped_disagreement", () => {
+  const origin = { from: `dispatch://${KEY}/spec#b-r-origin` };
+  const { drafts } = drawn(
+    answer(
+      [
+        block("r-origin", "requirement", KEY, SPEC, 0),
+        block("r-person", "requirement", KEY, SPEC, 1, { attributes: origin }),
+        block("d-person", "decision", KEY, DECISIONS, 0, { decision: { kind: "person" } }),
+      ],
+      [tuple("shaped", "d-person", "r-person")]
+    ),
+    { coverage: coverage(["r-origin", "r-person"].map(requirement)), issue: issueDetails() }
+  );
+
+  expect(drafts.get(blockNodeId("spec", "r-person"))?.gaps).toEqual(["shaped_disagreement"]);
+});
+
+// R10: an ask the asks read says a person answered is that person's decision where the tree read
+// carries none on its node (`decisionNodes`), so its `shaped` tuple that names another node than
+// the statement's origin draws the disagreement.
+test("an ask the asks read answers draws shaped_disagreement where its node carries no decision", () => {
+  const origin = { from: `dispatch://${KEY}/spec#b-r-origin` };
+  const { drafts } = drawn(
+    answer(
+      [
+        block("r-origin", "requirement", KEY, SPEC, 0),
+        block("r-answered", "requirement", KEY, SPEC, 1, { attributes: origin }),
+        node("q-answered", "ask", KEY),
+      ],
+      [tuple("shaped", "q-answered", "r-answered")]
+    ),
+    {
+      asks: [
+        question("q-answered", {
+          answer: { at: "2026-11-06T12:00:00Z", selected: [], text: "Both.", user: "alice" },
+          state: "answered",
+        }),
+      ],
+      coverage: coverage(["r-origin", "r-answered"].map(requirement)),
+      issue: issueDetails(),
+    }
+  );
+
+  expect(drafts.get(blockNodeId("spec", "r-answered"))?.gaps).toEqual(["shaped_disagreement"]);
 });
 
 // R1, root R4: a check stands under the requirement the read answers and again under each other

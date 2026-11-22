@@ -637,8 +637,8 @@ export function deciderOf(
  * picking one. The node its `from` names saying it shaped it is the two edges agreeing, which
  * draws none, and an absent `from` is no gap of its own (R10). `tree-read/tree-nodes.ts`'
  * `draftRequirement` reads both edges from the tree read: the statement's `from` attribute, and
- * the `shaped` tuples that end at it from a decision node - a `decision` node, or an ask the read
- * answers a person's decision on (`isDecisionNode`); an open or a declined ask decided nothing.
+ * the `shaped` tuples that end at it from a decision, by the one rule every reader of a decision
+ * reads (`decision-nodes.ts`' `decisionNodes`); an open or a declined ask decided nothing.
  */
 export function requirementGaps(
   coverage: readonly string[],

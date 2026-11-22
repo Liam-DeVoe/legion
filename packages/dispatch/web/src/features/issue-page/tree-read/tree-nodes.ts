@@ -12,7 +12,6 @@ import type {
   IssueDetails,
   RequirementCoverage,
 } from "../../../api/types";
-import { isDecisionEntry } from "../../issue/decision-entries";
 import { buildDispatchReference, parseNodeReference } from "../../refs/routes";
 import { checkFacts, resultFacts } from "../check-facts";
 import {
@@ -457,7 +456,12 @@ function walkOf(answer: TreeAnswer, key: string): TreeAnswerNode[] {
  *  the issue where it is one (`isStatementNode`). Where that read holds it, its gaps are read by
  *  the outline's one rule (`requirementGaps`), which draws its two edges disagreeing too: the
  *  node its `from` attribute names (`originOf`) against each decision a `shaped` tuple that ends
- *  at it starts from (`isDecisionNode`), each read as the id the tree draws that node by. */
+ *  at it starts from, each read as the id the tree draws that node by. Which of those nodes is a
+ *  decision is read by the one rule every other reader of a decision reads (`decisionNodes`,
+ *  held as `TreeDraftContext.decisions`): a decision node that carries the model's decision and
+ *  stands in a document, of whatever kind, and an ask a person answered, where the read carries
+ *  that person's decision on it or the asks read says it is answered. An open or a declined ask
+ *  decided nothing, and a decision node with no `decision` or no document is no decision. */
 function draftRequirement(
   node: TreeAnswerNode,
   _answer: TreeAnswer,
@@ -478,7 +482,7 @@ function draftRequirement(
         : new Set(
             context.tuplesTo(node.id).flatMap((tuple) => {
               const shaper = tuple.kind === "shaped" ? context.nodeOf(tuple.from.id) : undefined;
-              return shaper !== undefined && isDecisionNode(shaper)
+              return shaper !== undefined && context.decisions.has(shaper)
                 ? [context.treeIdOfNode(shaper)]
                 : [];
             })
@@ -486,21 +490,6 @@ function draftRequirement(
     draft.gaps = requirementGaps(coverage.gaps ?? [], origin, shapers);
   }
   return draft;
-}
-
-/** Whether `node` is a decision, by the rule the decisions read's entries are read by
- *  (`isDecisionEntry`): a decision node is an agent's decision, and an ask is a person's where a
- *  person answered it, which the read says by the decision it sends on the ask - the route sends
- *  one only on an ask whose state is `answered` (`issue_tree_read.go`'s `readDecisions`). An open
- *  ask is a question and a declined one decided nothing, so neither carries one, and neither is
- *  a decision. */
-function isDecisionNode(node: TreeAnswerNode): boolean {
-  if (node.supertag !== "decision" && node.supertag !== "ask") return false;
-  const answered = node.supertag === "ask" && node.decision !== undefined;
-  return isDecisionEntry({
-    answer_state: answered ? "answered" : null,
-    kind: node.supertag === "decision" ? (node.decision?.kind ?? "agent") : "person",
-  });
 }
 
 /** The node a requirement's `from` attribute names as where it came from: the attribute's first
