@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -35,15 +36,29 @@ func stopRig(t *testing.T, prefix string, setup func(*sessionRelays)) (*relayRig
 }
 
 // stopRelays stops rig's relays with no deadline of the stop's own, so how long the hand-overs take
-// is the relays' own doing, and waits for the stop with testwait.Receive.
-func stopRelays(t *testing.T, rig *relayRig) {
+// is the relays' own doing, waits for the stop with testwait.Receive, and returns how long it took.
+func stopRelays(t *testing.T, rig *relayRig) time.Duration {
 	t.Helper()
 	stopped := make(chan struct{})
+	began := time.Now()
 	go func() {
 		rig.relays.stop(context.Background())
 		close(stopped)
 	}()
 	testwait.Receive(t, "the relays' stop to return", stopped)
+	return time.Since(began)
+}
+
+// requireStopBeforeTheFlushBound fails the row when the stop took as long as nats.go's own bound
+// on a flush (bus.SessionPullFlushBound): a hand-over that only that bound ended could still read
+// as one the stop's wait ended, because Detach's flush and the drain's own flush time out
+// together, so the line's text alone cannot tell the two apart. The stop's wait is a tenth of it.
+func requireStopBeforeTheFlushBound(t *testing.T, took time.Duration) {
+	t.Helper()
+	if took >= bus.SessionPullFlushBound {
+		t.Fatalf("the relays' stop took %s, at or past nats.go's flush bound %s: the stop's wait (%s) did not end the hand-over", took.Round(time.Millisecond), bus.SessionPullFlushBound, bus.SessionPullDrainWait)
+	}
+	t.Logf("the relays' stop took %s", took.Round(time.Millisecond))
 }
 
 // handOverRecords is every record of logs whose msg is line and whose session_id is sessionID.
@@ -79,7 +94,7 @@ func requireStopEndedHandOver(t *testing.T, rig *relayRig, sessionID string, rea
 func TestAStopOnASilentHubEndsItsHandOversAtTheStopsWait(t *testing.T) {
 	rig, srv, sessionID := stopRig(t, "ses_stop_silent_", func(*sessionRelays) {})
 	t.Cleanup(srv.Freeze(t))
-	stopRelays(t, rig)
+	requireStopBeforeTheFlushBound(t, stopRelays(t, rig))
 	requireStopEndedHandOver(t, rig, sessionID, relayCancelListenerStopping)
 }
 
@@ -101,7 +116,7 @@ func TestAStopEndsAHandOverAnotherCancellationBegan(t *testing.T) {
 	if got := testwait.Receive(t, "the hand-over the lost binding began", began); got != sessionID {
 		t.Fatalf("the lost binding began the hand-over of session %s, want %s", got, sessionID)
 	}
-	stopRelays(t, rig)
+	requireStopBeforeTheFlushBound(t, stopRelays(t, rig))
 	requireStopEndedHandOver(t, rig, sessionID, relayCancelBindingLost)
 }
 

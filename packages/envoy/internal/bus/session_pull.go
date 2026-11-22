@@ -58,9 +58,10 @@ const (
 	// bound Detach put on every drain, so it is what a stop on a silent hub spent on its relays'
 	// hand-overs.
 	SessionPullDrainWait = time.Second
-	// sessionPullFlushBound is nats.go's own bound on a flush (Conn.Flush, 10 s in nats.go
-	// v1.55.0), which Detach's flush keeps for a ctx that has no deadline.
-	sessionPullFlushBound = 10 * time.Second
+	// SessionPullFlushBound is nats.go's own bound on a flush (Conn.Flush, 10 s in nats.go
+	// v1.55.0), which Detach's flush keeps for a ctx that has no deadline: a hand-over on a silent
+	// link that no caller's wait ends takes this long.
+	SessionPullFlushBound = 10 * time.Second
 	// sessionPullDrainPoll is how often Detach reads whether the pull's inbox subscription has
 	// gone invalid, which is nats.go having handed over every message it held unread. It is the
 	// 10 ms the connection's own drain waits at (Client.drainDeliveries): nats.go runs a
@@ -410,12 +411,12 @@ func (p *SessionPull) detach(ctx context.Context) error {
 }
 
 // flushWithin is the server's answer to a PING sent now: nil once it answered, else why it did
-// not before ctx ended, or before nats.go's own bound on a flush (sessionPullFlushBound) for a ctx
+// not before ctx ended, or before nats.go's own bound on a flush (SessionPullFlushBound) for a ctx
 // with no deadline of its own.
 func (p *SessionPull) flushWithin(ctx context.Context) error {
 	if _, bounded := ctx.Deadline(); !bounded {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, sessionPullFlushBound)
+		ctx, cancel = context.WithTimeout(ctx, SessionPullFlushBound)
 		defer cancel()
 	}
 	return p.conn.FlushWithContext(ctx)
