@@ -409,6 +409,15 @@ type Service struct {
 	// taken and before the close runs. Nil outside tests; tests use it to count the closes that
 	// path starts and to hold one while they make the room load again.
 	beforeRefusedAppendClose func(room string)
+	// evictionsRunning counts the closes a room's own state started that have not returned yet:
+	// the append gate's refusal for a closed issue (refuseClosedIssueAppend), a replaced history
+	// (closeRoomOnReplacedHistory) and a failed room's eviction (failRoomLocked). Each adds one
+	// before its goroutine starts and takes it off when that goroutine returns, whether or not
+	// evictWG joined it. A test waits for it to read zero (waitForRefusedAppendClose) rather than
+	// for evictWG, which the room budget's trim also joins, and a socket's close starts that trim:
+	// a Wait on that group while the service accepts work can race an Add from zero, which
+	// sync.WaitGroup forbids.
+	evictionsRunning atomic.Int64
 	// betweenCloseSnapshotReads runs in a close for a closed issue between the two readings its
 	// snapshot is made of: the document's pending-settlement row, read first, and the room's
 	// record, read after it (setRoomIssueOpen, closeRefusedAppendRoom, closeSnapshot). Nil
@@ -2876,7 +2885,9 @@ func (s *Service) refuseClosedIssueAppend(room string, instance *roomInstance) {
 	// Shutdown joins the close, as it does a failed room's eviction (failRoomLocked); one that
 	// begins after Shutdown stopped accepting work runs unjoined, since the room still must close.
 	tracked := s.addUnlessStopping(&s.evictWG)
+	s.evictionsRunning.Add(1)
 	go func() {
+		defer s.evictionsRunning.Add(-1)
 		if tracked {
 			defer s.evictWG.Done()
 		}
@@ -3010,7 +3021,9 @@ func (s *Service) closeRoomOnReplacedHistory(room string, instance *roomInstance
 	if !s.addUnlessStopping(&s.evictWG) {
 		return
 	}
+	s.evictionsRunning.Add(1)
 	go func() {
+		defer s.evictionsRunning.Add(-1)
 		defer s.evictWG.Done()
 		live := s.srv.GetDoc(room)
 		if live == nil || s.instanceOf(live) != instance {
@@ -3451,7 +3464,9 @@ func (s *Service) failRoomLocked(room string, state *roomState, cause error) {
 	// no connection of its own, and a gated eviction that never ran would strand them. Only the
 	// joining is skipped.
 	tracked := s.addUnlessStopping(&s.evictWG)
+	s.evictionsRunning.Add(1)
 	go func() {
+		defer s.evictionsRunning.Add(-1)
 		if tracked {
 			defer s.evictWG.Done()
 		}

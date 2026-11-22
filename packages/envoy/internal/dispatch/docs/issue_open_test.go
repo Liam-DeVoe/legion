@@ -1199,21 +1199,21 @@ func awaitRefusedAppendCloseParked(t *testing.T, parked <-chan struct{}) {
 	}
 }
 
-// waitForRefusedAppendClose waits for the close the append gate's refusal started to have run.
-// The service registers that goroutine with evictWG, the group its Shutdown joins
-// (refuseClosedIssueAppend), so the group draining is the close having returned - the one it
-// left alone as much as the one it closed.
+// waitForRefusedAppendClose waits for the close the append gate's refusal started to have run -
+// the one that left the room alone as much as the one that closed it - and for any eviction a
+// room's failure started meanwhile, which a test that requires no failed room must see: it waits
+// for the count of those still running (Service.evictionsRunning) to read zero. It does not wait
+// on evictWG: the room budget's trim, which a socket's close starts, joins that group too, and a
+// Wait on it while the service accepts work can race the trim's Add from zero, which
+// sync.WaitGroup forbids.
 func waitForRefusedAppendClose(t *testing.T, service *Service) {
 	t.Helper()
-	done := make(chan struct{})
-	go func() {
-		service.evictWG.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(roomWait(t)):
-		t.Fatalf("the close the gate's refusal started had not finished after %v", roomWait(t))
+	deadline := time.Now().Add(roomWait(t))
+	for service.evictionsRunning.Load() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the close the gate's refusal started had not finished after %v", roomWait(t))
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
