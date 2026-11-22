@@ -487,6 +487,11 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   };
   // Whether a row was pressed while it held the focus, until the commit that answers the press:
   // the press asks for a render, so that commit comes even where the press changes nothing else.
+  // The row's own click handler notes it, beside the change it hands the host, so the render it
+  // asks for commits with the host's answer. Noted in the capture phase, Chromium committed that
+  // render before the row's handler ran, between React's capture and bubble listeners, and the
+  // note was spent on a commit that took nothing away (builds Job infra-2160-probe2-67cfcdb1, an
+  // Enter on a focused row; Firefox ran the row's handler first).
   const focusedRowPressed = useRef(false);
   const [, renderAfterPress] = useState(0);
   const noteFocusedRow = (event: { readonly currentTarget: EventTarget }) => {
@@ -494,9 +499,8 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     focusedRowPressed.current = true;
     renderAfterPress((renders) => renders + 1);
   };
-  // Read in the commit itself, as the row leaves the page: a passive effect can run after the
-  // frame at which the page's rescue hands a lost focus on (`handOn`), which then has put it on
-  // the next row, as it did in Chromium and WebKit in a builds Job while Firefox ran this first.
+  // Read in the commit itself: the page's rescue hands a lost focus on at a later frame
+  // (`handOn`), and a layout effect runs before any frame, whatever the update's priority.
   useLayoutEffect(() => {
     const pressed = focusedRowPressed.current;
     focusedRowPressed.current = false;
@@ -673,8 +677,10 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
                   disabled={disabled}
                   id={optionId(option)}
                   key={option}
-                  onClick={() => choose(option)}
-                  onClickCapture={noteFocusedRow}
+                  onClick={(event) => {
+                    noteFocusedRow(event);
+                    choose(option);
+                  }}
                   onMouseDown={(event) => event.preventDefault()}
                   role="option"
                   type="button"
