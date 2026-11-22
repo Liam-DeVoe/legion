@@ -630,9 +630,9 @@ dispatch-first in a profile that installs the Envoy plugin is captured with the 
 the tested text and the hidden stand-in, and a profile that also installs a copy under its own name
 is refused: the plugin would put that copy in. The load test refuses dispatch-first on Claude Code,
 whose Envoy plugin puts it into a session from a session-start hook the test does not run, and a
-subagent profile whose agent definition (read in Oh My Pi's order: the dev box's user agents, then
-the profile's plugins, each at its commit) autoloads the tested skill: the subagent has its text
-before its task whatever the listing says.
+subagent profile whose agent definition (read in Oh My Pi's order: the project's agents, the dev
+box's user agents, then the profile's plugins, each at its commit) autoloads the tested skill: the
+subagent has its text before its task whatever the listing says.
 In any other profile such a skill is listed and tested like any other.
 
 On 2026-11-22 the commits of cybermonklabs/legion the cases use (155 of them) have one skill a
@@ -649,22 +649,50 @@ lines 53-74, 93-120 and 157-162; task/structured-subagent.ts, lines 538-541; uti
 lines 361-363). The dev box's repository links its own agents there: its installers/omp.sh links
 `${DOTFILES_DIR}/omp/agents` as `${OMP_AGENT_DIR}/agents`, `OMP_AGENT_DIR` being
 `${HOME}/.omp/agent` (lines 9 and 43 on 2026-11-22, lines 9 and 52 on 2026-10-31). So for a
-subagent's context the runner reads first the directory that an installer script of a repository
-of the profile (`installers/*.sh`: an `ensure_link` or `ln -s` line whose target is
-`.omp/agent/agents` under the home) links there (context.ts's `userAgents`); the record's `agent`
-names that line (`linkedBy`). Oh My Pi reads those agents at each subagent's start, from the dev
-box's checkout as it is then, so the runner reads the installers and the directory they link at
-the commit of the subagent's start: the commit the case's `read times of <repository>` evidence
-item gives for that repository's pool directories (the commit after "its pool directories at"),
-else the one commit the profile holds the repository at. A profile that holds such a repository
-at two commits with no such item reads none, and the record's `leftOut` says why. It reads none
-for a Legion store's session, whose pod runs no dev box's installers, and none when two
-repositories of the profile each link one, which the record's `leftOut` says. On 2026-11-22 the
-dev box's repository holds 25 agent definitions and none autoloads a skill; two are named
-`thermonuclear-code-quality` and `thermonuclear-deep-review`, so a dev box's subagent of either
-name runs the box's definition, which autoloads nothing, though the profile also installs
-pi-legion's. Oh My Pi reads a project's `.omp/agents` before the user's; a profile does not hold
-it, and the runner does not read it.
+subagent's context the runner reads, after the project's agents (below), the directory that an
+installer script of a repository of the profile (`installers/*.sh`: an `ensure_link` or `ln -s`
+line whose target is `.omp/agent/agents` under the home) links there (context.ts's
+`devboxAgents`); the record's `agent` names that line (`linkedBy`). Oh My Pi reads those agents at
+each subagent's start, from the dev box's checkout as it is then, so the runner reads the
+installers and the directory they link at the commit of the subagent's start: the commit the
+case's `read times of <repository>` evidence item gives for that repository's pool directories
+(the commit after "its pool directories at"), else the one commit the profile holds the repository
+at. A profile that holds such a repository at two commits with no such item reads none, and the
+record's `leftOut` says why. It reads none for a Legion store's session, whose pod runs no dev
+box's installers, and none when two repositories of the profile each link one, which the record's
+`leftOut` says. On 2026-11-22 the dev box's repository holds 25 agent definitions and none
+autoloads a skill; two are named `thermonuclear-code-quality` and `thermonuclear-deep-review`, so a
+dev box's subagent of either name runs the box's definition, which autoloads nothing, though the
+profile also installs pi-legion's.
+
+Oh My Pi reads a project's agents before the user's: the `.omp/agents` directory nearest the
+session's working directory, from that directory up through each parent to the filesystem's root,
+and only that one (task/discovery.ts, lines 34 and 100-111; config.ts, lines 218-246; it skips
+`.claude/agents` and the like, lines 13-16). So for a subagent's context the runner first reads
+the session repository at its commit, from the profile's working directory up to the checkout's
+root, and takes the first level that holds a `.omp/agents` (context.ts's `projectAgents`); the
+record's `agent` names it with `source: "project"` and its path in the session repository. A
+`.omp` or `.omp/agents` the repository holds as a symbolic link is followed to its target in the
+repository, as Oh My Pi's `stat` follows it, and `linkedBy` names each link followed
+(`<link> -> <target>`). A link to nothing in the repository is no directory, and the walk goes on.
+A link out of the repository (an absolute target, or one above its root) stops the walk, and the
+record's `leftOut` names the link and its target: Oh My Pi reads that target when it is a
+directory, and then no farther level. Above the checkout, Oh My Pi's walk reaches the dev box's
+home when the working directory is under it, and `~/.omp/agents` there is a project directory too,
+farther than every level of the checkout. Where no level of the checkout holds one, the runner
+reads the directory an installer of the profile's repositories links as `~/.omp/agents` (an
+`ensure_link` or `ln -s` line, read at the commit the user agents are read at), when the
+`session repository <repository>` or `no session repository` evidence item names a working
+directory (the path after "working directory ") under `/home/<user>` or `/root`. A working
+directory outside the home reads none, and the record says nothing of it, as Oh My Pi's walk
+never reaches it. A working directory no evidence item names, or an installer line that names
+`~/.omp/agents` other than as such a link (a copy, a `mkdir`), reads none, and the record's
+`leftOut` says why. The levels between the checkout's root and the home are no repository's, and
+the runner reads none of them. On 2026-11-22 no installer, script or shim of the dev box's
+repository names `~/.omp/agents`, at its last commit or at 2026-10-31's (they name
+`~/.omp/agent/...`, `~/.omp/plugins`, `~/.omp/browser-relay`, `~/.omp/skill-farms`,
+`~/.omp/stats.db` and `~/.omp/profiles`), so it is read for no case, and none of the 15 session
+repositories of the cases holds `.omp/agents` at its default branch.
 
 A profile is read at the prompt build its session ran under. Oh My Pi 18.18.6 writes a
 `system-prompt-digest` line in a session's file when its prompt changes, just before the first

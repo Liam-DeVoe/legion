@@ -18,6 +18,7 @@ import type { SessionMessage } from "../skill-scenarios/transcript";
 import { type Arm, buildArm } from "./arms";
 import { type Case, pathHash } from "./cases";
 import {
+  type AgentDefinition,
   buildContext,
   type ContextOptions,
   cacheKey,
@@ -1637,6 +1638,7 @@ test("a subagent's context names the agent definition of the profile's plugins i
   };
   expect(await agentOf("subagent:alpha-reviewer")).toEqual({
     name: "alpha-reviewer",
+    source: "plugin",
     repo: "acme/legion",
     commit: COMMIT,
     path: "packages/agents-pack/agents/reviewer.md",
@@ -1688,8 +1690,9 @@ const PLUGIN_AGENTS = {
 const AGENTS_PACK = [
   { repo: "acme/legion", commit: COMMIT, path: "packages/agents-pack", name: "agents-pack" },
 ];
-const PLUGIN_REVIEWER = {
+const PLUGIN_REVIEWER: AgentDefinition = {
   name: "alpha-reviewer",
+  source: "plugin",
   repo: "acme/legion",
   commit: COMMIT,
   path: "packages/agents-pack/agents/reviewer.md",
@@ -1738,8 +1741,9 @@ test("a dev box's subagent runs the user agent its installers link as ~/.omp/age
     });
     return { c, arm, options, context: await buildContext(c, arm, options) };
   };
-  const userAgent = {
+  const userAgent: AgentDefinition = {
     name: "alpha-reviewer",
+    source: "user",
     repo: "acme/dotfiles",
     commit: COMMIT,
     path: "omp/agents/reviewer.md",
@@ -1764,6 +1768,7 @@ test("a dev box's subagent runs the user agent its installers link as ~/.omp/age
   // An agent only the plugin defines is the plugin's.
   expect((await built("listed", "subagent:listed", "devbox")).context.record.agent).toEqual({
     name: "listed",
+    source: "plugin",
     repo: "acme/legion",
     commit: COMMIT,
     path: "packages/agents-pack/agents/listed.md",
@@ -1828,8 +1833,9 @@ test("a dev box's subagent reads its user agents, and the installer line that li
     return { c, options, context: await buildContext(c, arm, options) };
   };
   const subagent = subagentItem("subagent:alpha-reviewer", "devbox");
-  const userAgent = {
+  const userAgent: AgentDefinition = {
     name: "alpha-reviewer",
+    source: "user",
     repo: "acme/dotfiles",
     commit: START,
     path: "omp/agents/reviewer.md",
@@ -1846,4 +1852,299 @@ test("a dev box's subagent reads its user agents, and the installer line that li
   expect(untimed.context.record.leftOut).toEqual([
     `the user agents of a dev box: the profile holds acme/dotfiles at ${COMMIT} and ${START}, its installers/omp.sh:9 at ${COMMIT} and installers/omp.sh:10 at ${START} each link a directory as Oh My Pi's user agents directory, and no evidence item "read times of acme/dotfiles" names the commit of the subagent's start, when Oh My Pi reads that directory, so the context reads none`,
   ]);
+}, 120_000);
+
+/** A made-up session repository's project agents: `alpha-reviewer` in the `.omp/agents` of its
+ *  directory agents/vm (autoloading beta) and of its root (autoloading alpha), and a
+ *  `.omp/agents` of its directory tools that holds no agent. */
+const PROJECT_AGENT_FILES = {
+  "agents/vm/.omp/agents/reviewer.md":
+    "---\nname: alpha-reviewer\ndescription: Reviews, the project's way for the VM.\nautoloadSkills: [beta]\n---\n",
+  ".omp/agents/reviewer.md":
+    "---\nname: alpha-reviewer\ndescription: Reviews, the project's way.\nautoloadSkills: [alpha]\n---\n",
+  "tools/.omp/agents/README.txt": "The tools' agents go here.\n",
+};
+
+// Catches: a subagent read as running the dev box's user agent or a plugin's agent of its name,
+// though the session repository's `.omp/agents` nearest its working directory defines one, which
+// Oh My Pi reads before both.
+test("a subagent runs the project agent of its name from the nearest .omp/agents of its session repository, from the working directory up, before the user's and a plugin's; a nearer .omp/agents with no agent hides a farther one; no session repository reads none", async () => {
+  const root = path.join(dir, "project-agents");
+  const gamma = { repo: "acme/dotfiles", commit: COMMIT, path: "skills/gamma", name: "gamma" };
+  const project = { repo: "acme/project", commit: COMMIT };
+  const built = async (name: string, profile: Partial<Case["profile"]>, store = "devbox") => {
+    const base = aCase("subagent:alpha-reviewer", { plugins: AGENTS_PACK, contextFiles: [] });
+    const c: Case = {
+      ...base,
+      id: `case-${name}`,
+      profile: { ...base.profile, skills: [...base.profile.skills, gamma], ...profile },
+      evidence: [subagentItem("subagent:alpha-reviewer", store)],
+    };
+    const where = path.join(root, name);
+    const { options, arm } = setUp(where, c);
+    writeTree(path.join(where, "repos", "acme", "legion", COMMIT), PLUGIN_AGENTS);
+    writeTree(path.join(where, "repos", "acme", "dotfiles", COMMIT), DOTFILES);
+    writeTree(path.join(where, "repos", "acme", "project", COMMIT), PROJECT_AGENT_FILES);
+    return { c, options, context: await buildContext(c, arm, options) };
+  };
+  const projectAgent = (dir: string, autoloadSkills: string[]): AgentDefinition => ({
+    name: "alpha-reviewer",
+    source: "project",
+    repo: "acme/project",
+    commit: COMMIT,
+    path: `${dir}.omp/agents/reviewer.md`,
+    autoloadSkills,
+  });
+  const userAgent: AgentDefinition = {
+    name: "alpha-reviewer",
+    source: "user",
+    repo: "acme/dotfiles",
+    commit: COMMIT,
+    path: "omp/agents/reviewer.md",
+    linkedBy: "installers/omp.sh:9",
+    autoloadSkills: [],
+  };
+  // From agents/vm, its own .omp/agents, not the root's.
+  const vm = await built("vm", { sessionRepository: project, workingDirectory: "agents/vm" });
+  expect(vm.context.record.agent).toEqual(projectAgent("agents/vm/", ["beta"]));
+  expect(await subagentDefinition(vm.c, vm.options)).toEqual(projectAgent("agents/vm/", ["beta"]));
+  // From a directory with none above it but the root's, the root's.
+  expect(
+    (await built("docs", { sessionRepository: project, workingDirectory: "docs/guide" })).context
+      .record.agent
+  ).toEqual(projectAgent("", ["alpha"]));
+  expect((await built("root", { sessionRepository: project })).context.record.agent).toEqual(
+    projectAgent("", ["alpha"])
+  );
+  // tools/.omp/agents is the nearest, and Oh My Pi reads it alone: it defines no agent, so the
+  // root's is not read and the user agent is the one.
+  expect(
+    (await built("tools", { sessionRepository: project, workingDirectory: "tools" })).context.record
+      .agent
+  ).toEqual(userAgent);
+  // A Legion pod's checkout has its project agents too.
+  expect(
+    (
+      await built(
+        "legion",
+        { sessionRepository: project, workingDirectory: "agents/vm" },
+        "legion:acme"
+      )
+    ).context.record.agent
+  ).toEqual(projectAgent("agents/vm/", ["beta"]));
+  // A profile that names no session repository reads no project agents.
+  expect((await built("none", { workingDirectory: "agents/vm" })).context.record.agent).toEqual(
+    userAgent
+  );
+}, 120_000);
+
+/** The user agent of DOTFILES, as the record names it. */
+const DOTFILES_REVIEWER: AgentDefinition = {
+  name: "alpha-reviewer",
+  source: "user",
+  repo: "acme/dotfiles",
+  commit: COMMIT,
+  path: "omp/agents/reviewer.md",
+  linkedBy: "installers/omp.sh:9",
+  autoloadSkills: [],
+};
+
+/** A made-up subagent case of alpha-reviewer for the project agents' rows: its profile names
+ *  AGENTS_PACK, gamma of acme/dotfiles (whose installers link the user agents) and `profile`,
+ *  and its evidence is the subagent's of a dev box, then `evidence`. */
+function projectCase(
+  name: string,
+  profile: Partial<Case["profile"]>,
+  evidence: NonNullable<Case["evidence"]> = []
+): Case {
+  const base = aCase("subagent:alpha-reviewer", { plugins: AGENTS_PACK, contextFiles: [] });
+  const gamma = { repo: "acme/dotfiles", commit: COMMIT, path: "skills/gamma", name: "gamma" };
+  return {
+    ...base,
+    id: `case-${name}`,
+    profile: { ...base.profile, skills: [...base.profile.skills, gamma], ...profile },
+    evidence: [subagentItem("subagent:alpha-reviewer", "devbox"), ...evidence],
+  };
+}
+
+/** The record's agent and leftOut of `c`'s context, its made-up repositories under `root`: the
+ *  agents pack, `dotfiles` as acme/dotfiles, and `project` (files, and links by path to target)
+ *  in acme/project over the usual ones. */
+async function projectContext(
+  root: string,
+  c: Case,
+  dotfiles: Record<string, string>,
+  project: { readonly files: Record<string, string>; readonly links?: Record<string, string> }
+): Promise<{ agent: AgentDefinition | null; leftOut: readonly string[] }> {
+  const { options, arm } = setUp(root, c);
+  const repos = path.join(root, "repos", "acme");
+  writeTree(path.join(repos, "legion", COMMIT), PLUGIN_AGENTS);
+  writeTree(path.join(repos, "dotfiles", COMMIT), dotfiles);
+  writeTree(path.join(repos, "project", COMMIT), project.files);
+  for (const [link, target] of Object.entries(project.links ?? {})) {
+    const at = path.join(repos, "project", COMMIT, link);
+    mkdirSync(path.dirname(at), { recursive: true });
+    symlinkSync(target, at);
+  }
+  const { record } = await buildContext(c, arm, options);
+  return { agent: record.agent, leftOut: record.leftOut };
+}
+
+// Catches: a session repository whose `.omp/agents`, or its `.omp`, is a symbolic link read as
+// holding no project agents, though Oh My Pi's stat follows the link; and a link out of the
+// repository passed over in silence.
+test("a .omp/agents or .omp the session repository holds as a link is followed to its target in the repository; a link out of it is recorded and stops the walk; a link to nothing is passed", async () => {
+  const root = path.join(dir, "project-links");
+  const project = {
+    files: {
+      "config/agents/reviewer.md":
+        "---\nname: alpha-reviewer\ndescription: Reviews, from the linked agents.\nautoloadSkills: [beta]\n---\n",
+      "shared/omp/agents/reviewer.md":
+        "---\nname: alpha-reviewer\ndescription: Reviews, from the linked .omp.\nautoloadSkills: [alpha]\n---\n",
+      ".omp/agents/reviewer.md":
+        "---\nname: alpha-reviewer\ndescription: Reviews, the root's way.\nautoloadSkills: [gamma]\n---\n",
+    },
+    links: {
+      "agents/vm/.omp/agents": "../../../config/agents",
+      "web/.omp": "../shared/omp",
+      "ops/.omp/agents": "/etc/omp/agents",
+      "gone/.omp/agents": "../missing",
+    },
+  };
+  const sessionRepository = { repo: "acme/project", commit: COMMIT };
+  const at = (workingDirectory: string) =>
+    projectContext(
+      path.join(root, workingDirectory.replace(/\W/g, "-")),
+      projectCase(workingDirectory, { sessionRepository, workingDirectory }),
+      DOTFILES,
+      project
+    );
+  const projectAgent = (
+    file: string,
+    autoloadSkills: string[],
+    linkedBy?: string
+  ): AgentDefinition => ({
+    name: "alpha-reviewer",
+    source: "project",
+    repo: "acme/project",
+    commit: COMMIT,
+    path: file,
+    ...(linkedBy === undefined ? {} : { linkedBy }),
+    autoloadSkills,
+  });
+  expect(await at("agents/vm")).toEqual({
+    agent: projectAgent(
+      "config/agents/reviewer.md",
+      ["beta"],
+      "agents/vm/.omp/agents -> ../../../config/agents"
+    ),
+    leftOut: [],
+  });
+  expect(await at("web")).toEqual({
+    agent: projectAgent("shared/omp/agents/reviewer.md", ["alpha"], "web/.omp -> ../shared/omp"),
+    leftOut: [],
+  });
+  // Out of the repository: neither its target nor the root's .omp/agents is read.
+  expect(await at("ops")).toEqual({
+    agent: DOTFILES_REVIEWER,
+    leftOut: [
+      `the project agents: the session repository acme/project at ${COMMIT} holds ops/.omp/agents as a link to /etc/omp/agents, outside the repository, so the context reads neither its target, which Oh My Pi reads as the project's agents when it is a directory, nor any .omp/agents farther from the working directory`,
+    ],
+  });
+  // A link to nothing in the repository is no directory: the walk goes on to the root's.
+  expect(await at("gone")).toEqual({
+    agent: projectAgent(".omp/agents/reviewer.md", ["gamma"]),
+    leftOut: [],
+  });
+}, 120_000);
+
+/** DOTFILES with a line more in installers/omp.sh (line 10). */
+function dotfilesWith(line: string): Record<string, string> {
+  return {
+    ...DOTFILES,
+    "installers/omp.sh": `${DOTFILES["installers/omp.sh"] ?? ""}${line}\n`,
+    "omp/project-agents/reviewer.md":
+      "---\nname: alpha-reviewer\ndescription: Reviews, the home's project way.\n---\n",
+  };
+}
+
+// Catches: a dev box whose installers link a directory as ~/.omp/agents, which Oh My Pi's walk
+// from a working directory under the home reads as the project's agents, read as if it held
+// none, or read for a session whose working directory is elsewhere.
+test("a dev box's ~/.omp/agents its installers link is the project agents of a session under the home with none nearer in the checkout; elsewhere it is not read; an unknown working directory or a line not read as a link is recorded", async () => {
+  const root = path.join(dir, "home-agents");
+  const linked = dotfilesWith(
+    `ensure_link "\${DOTFILES_DIR}/omp/project-agents" "\${HOME}/.omp/agents"`
+  );
+  const sessionRepository = { repo: "acme/project", commit: COMMIT };
+  const where = (cwd: string) => ({
+    item: "session repository acme/project",
+    source: `The working directory ${cwd} is named project, which acme/project alone of the list is named`,
+  });
+  const homeAgent: AgentDefinition = {
+    name: "alpha-reviewer",
+    source: "project",
+    repo: "acme/dotfiles",
+    commit: COMMIT,
+    path: "omp/project-agents/reviewer.md",
+    linkedBy: "installers/omp.sh:10",
+    autoloadSkills: [],
+  };
+  const run = (name: string, c: Case, dotfiles = linked, files: Record<string, string> = {}) =>
+    projectContext(path.join(root, name), c, dotfiles, { files });
+  const repository = { sessionRepository, workingDirectory: "agents/vm" };
+  // Under the home, with no .omp/agents in the checkout: the home's is the project's.
+  expect(
+    await run("home", projectCase("home", repository, [where("/home/alpha/src/project/agents/vm")]))
+  ).toEqual({ agent: homeAgent, leftOut: [] });
+  // A session no repository holds, under the home, reaches it too.
+  expect(
+    await run(
+      "no-repository",
+      projectCase("no-repository", {}, [
+        {
+          item: "no session repository",
+          source:
+            "a dev box's working directory is a checkout of a repository the list names. No part of the working directory /home/alpha/notes is named as a repository of the list",
+        },
+      ])
+    )
+  ).toEqual({ agent: homeAgent, leftOut: [] });
+  // A nearer .omp/agents in the checkout is the one Oh My Pi reads.
+  expect(
+    (
+      await run(
+        "nearer",
+        projectCase("nearer", repository, [where("/home/alpha/src/project/agents/vm")]),
+        linked,
+        PROJECT_AGENT_FILES
+      )
+    ).agent?.path
+  ).toBe("agents/vm/.omp/agents/reviewer.md");
+  // A working directory outside the home: Oh My Pi's walk does not reach it, and nothing is
+  // recorded.
+  expect(
+    await run("mnt", projectCase("mnt", repository, [where("/mnt/data/project/agents/vm")]))
+  ).toEqual({ agent: DOTFILES_REVIEWER, leftOut: [] });
+  // No evidence of the working directory: recorded, and not read.
+  expect(await run("unknown", projectCase("unknown", repository))).toEqual({
+    agent: DOTFILES_REVIEWER,
+    leftOut: [
+      "the project agents of a dev box's home: acme/dotfiles's installers/omp.sh:10 links omp/project-agents as ~/.omp/agents, which Oh My Pi reads as a project's agents when the session's working directory is under the home, and no evidence item names the working directory, so the context reads none",
+    ],
+  });
+  // A copy into it, which the runner does not read: recorded.
+  const copied = dotfilesWith(`cp -r "\${DOTFILES_DIR}/omp/project-agents" "\${HOME}/.omp/agents"`);
+  expect(
+    await run(
+      "copied",
+      projectCase("copied", repository, [where("/home/alpha/src/project/agents/vm")]),
+      copied
+    )
+  ).toEqual({
+    agent: DOTFILES_REVIEWER,
+    leftOut: [
+      `the project agents of a dev box's home: acme/dotfiles's installers/omp.sh:10 at ${COMMIT} names ~/.omp/agents in a line the runner does not read as a link of a directory of the repository (ensure_link or ln -s), so the context reads none of it`,
+    ],
+  });
 }, 120_000);
