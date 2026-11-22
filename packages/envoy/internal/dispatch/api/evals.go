@@ -14,7 +14,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -276,7 +279,7 @@ func evalCompareRange(compare *evals.Range) *evalRange {
 // evalFreshness is how fresh the day rows an answer folded are: the oldest updated_at among them,
 // the moment each row's values last moved (a rebuild to the same values leaves it, so the live
 // evals view, which hears of a row only when its values move, answers the same; null where it
-// folded none), and the day-row refresher's age (evals.Store.RefresherAge), in seconds: the time
+// folded none), and the day-row refresher's age (evals.RefresherAgeIn), in seconds: the time
 // since its last pass ran, or since a pass last read the delivery change log to its end,
 // whichever is older, so a pass catching up a backlog of changes reads as old as its last read of
 // the whole log; null where no pass has run on this database. The refresher is the deployment's
@@ -739,180 +742,178 @@ func (s *server) evalProjects(ctx context.Context, named []string) ([]string, er
 }
 
 // readEvalList is the list read: one page of the evals of request's projects, by project in the
-// order given and then by slug (evals.Store.Current, through evals_current), each with its values
-// over the window and the compare range (evalItemsOf). The page runs across the projects: total is
+// order given and then by slug (evals.CurrentIn, through evals_current), each with its values over
+// the window and the compare range (readEvalValues). The page runs across the projects: total is
 // every project's count, and offset counts from the first project's first eval. It is the body of
 // both list routes, which the live hub's view of the evals reads too. Each of its reads reads
-// every project at once, so a read of many projects makes as many statements as a read of one;
-// the page and the deploy repository its values read (evalDeployRepo) are read side by side.
+// every project at once, so a read of many projects makes as many statements as a read of one.
+//
+// One answer, one snapshot: every read it makes (the page, the deploy repository its values read,
+// evalDeployRepo, and the reads its values are stated from, readEvalValues) runs in one read-only
+// repeatable-read transaction on one connection (evals.Store.BeginSnapshot), committed before the
+// folds (evalValues.items). A write that commits while the answer reads, as a settings rewrite
+// commits its day rows and their stored figures, is in the whole answer or in none of it, so the
+// live evals view, which sends what moved between two answers, sends it as one delta of the whole
+// new state, never as an eval's old window figures beside its new days. The transaction holds
+// ctx's connection mark, so a read of the pool made under it is refused (store.ErrNestedAcquire).
 func (s *server) readEvalList(ctx context.Context, request evalListRequest, now time.Time) (evalListResponse, error) {
-	registry := s.registry()
-	answer := evalListResponse{
-		Items: []evalListItem{}, Limit: request.limit, Offset: request.offset,
-		Window: newEvalRange(request.ranges.window), Compare: evalCompareRange(request.ranges.compare),
+	tx, err := s.registry().BeginSnapshot(ctx)
+	if err != nil {
+		return evalListResponse{}, fmt.Errorf("begin the read of the evals of %v: %w", request.projects, err)
 	}
-	var page evals.Page[evals.Entry]
-	var deployRepo string
-	if err := store.ReadSideBySide(ctx,
-		func(ctx context.Context) (err error) {
-			page, err = registry.Current(ctx, request.projects, request.kind, request.limit, request.offset)
-			return err
-		},
-		func(ctx context.Context) (err error) {
-			deployRepo, err = s.evalDeployRepo(ctx)
-			return err
-		},
-	); err != nil {
-		return evalListResponse{}, err
-	}
-	answer.Total = page.Total
-	items, freshness, err := s.evalItemsAndFreshness(ctx, registry, page.Items, deployRepo, request.repos, request.ranges, now)
+	defer tx.Rollback(ctx)
+	page, err := evals.CurrentIn(ctx, tx, request.projects, request.kind, request.limit, request.offset)
 	if err != nil {
 		return evalListResponse{}, err
 	}
-	for _, item := range items {
-		answer.Items = append(answer.Items, evalListItem{ID: item.Definition.EvalID, evalItem: item})
+	deployRepo, err := evalDeployRepo(ctx, tx)
+	if err != nil {
+		return evalListResponse{}, err
 	}
-	answer.Freshness = freshness
+	values, err := readEvalValues(ctx, tx, page.Items, deployRepo, request.repos, request.ranges, now)
+	if err != nil {
+		return evalListResponse{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return evalListResponse{}, fmt.Errorf("end the read of the evals of %v: %w", request.projects, err)
+	}
+	items, freshness := values.items()
+	answer := evalListResponse{
+		Items: make([]evalListItem, len(items)), Total: page.Total, Limit: request.limit, Offset: request.offset,
+		Window: newEvalRange(request.ranges.window), Compare: evalCompareRange(request.ranges.compare), Freshness: freshness,
+	}
+	for index, item := range items {
+		answer.Items[index] = evalListItem{ID: item.Definition.EvalID, evalItem: item}
+	}
 	return answer, nil
 }
 
-// evalItemsAndFreshness states each of entries with its values (evalItemsOf), none where entries
-// holds none, and the answer's freshness: the oldest updated_at of the rows it folded and the
-// refresher's age at now. The refresher's age is read side by side with the day rows, which it
-// does not depend on.
-func (s *server) evalItemsAndFreshness(ctx context.Context, registry *evals.Store, entries []evals.Entry, deployRepo string, repos []string, ranges evalRanges, now time.Time) ([]evalItem, evalFreshness, error) {
-	var items []evalItem
-	var oldest *time.Time
-	var age time.Duration
-	var found bool
-	reads := []func(context.Context) error{func(ctx context.Context) (err error) {
-		age, found, err = registry.RefresherAge(ctx, now)
-		return err
-	}}
-	if len(entries) > 0 {
-		reads = append(reads, func(ctx context.Context) (err error) {
-			items, oldest, err = s.evalItemsOf(ctx, registry, entries, deployRepo, repos, ranges)
-			return err
-		})
-	}
-	if err := store.ReadSideBySide(ctx, reads...); err != nil {
-		return nil, evalFreshness{}, err
-	}
-	freshness := evalFreshness{RowsUpdatedAt: oldest}
-	if found {
-		freshness.RefresherAgeSeconds = new(int(age / time.Second))
-	}
-	return items, freshness, nil
+// evalValues is what one answer states its evals' values from, read in its snapshot
+// (readEvalValues): each eval's values where the stored figures answer it, the indexes of those
+// they do not (unstated) with the day rows and the first days their values are folded from, the
+// oldest updated_at of the stored rows read, and the refresher's age.
+type evalValues struct {
+	entries  []evals.Entry
+	ranges   evalRanges
+	values   [][]evals.SeriesValues
+	unstated []int
+	rows     []evals.WindowRow
+	firsts   map[string]map[string]time.Time
+	oldest   *time.Time
+	age      time.Duration
+	aged     bool
 }
 
-// evalItemsOf states each of entries with its values, and answers the items, in entries' order,
-// and the oldest updated_at of the rows it folded. Each eval that reads the deploy repository is
-// stated from the rows kept for deployRepo, the repository the delivery settings name now
-// (evals.DeployRepoOf, evalDeployRepo), so a move of the deploy repository is this selection and
-// rewrites nothing. A read of an offered range (evals.FiguresOffered: a window and a compare range
-// each of a length the Evals tab offers, of the projects' own rows or one repository's) reads the
-// stored figures (evals.Store.ReadStoredFigures, two primary-key reads and the read of how far
-// each project is built) and each series' first day (evals.Store.FirstDays) side by side, and
-// states each eval from its stored rows; an eval they cannot answer (a project whose figures are
-// not built yet, or a stored row of another fold key than the eval's) and every eval of any other
-// read is stated from one read of the day rows of the window and the compare range
-// (evals.Store.DayWindow, the rows of repos where it names any), side by side with the first days
-// where nothing was read before. Both answer the same bits (evals.StoredFigures.SeriesValues).
-// Each read reads every project the entries it reads are evals of at once.
-func (s *server) evalItemsOf(ctx context.Context, registry *evals.Store, entries []evals.Entry, deployRepo string, repos []string, ranges evalRanges) ([]evalItem, *time.Time, error) {
-	values := make([][]evals.SeriesValues, len(entries))
-	var oldest *time.Time
-	earliest := func(at time.Time) {
-		if oldest == nil || at.Before(*oldest) {
-			oldest = &at
-		}
+// readEvalValues reads in tx, one answer's snapshot (readEvalList), the refresher's age at now
+// (evals.RefresherAgeIn) and what each of entries' values over ranges is stated from. Each eval
+// that reads the deploy repository is stated from the rows kept for deployRepo, the repository the
+// delivery settings name now (evals.DeployRepoOf, evalDeployRepo), so a move of the deploy
+// repository is this selection and rewrites nothing. It reads each series' first day
+// (evals.FirstDaysIn), and for an offered range (evals.FiguresOffered: a window and a compare range
+// each of a length the Evals tab offers, of the projects' own rows or one repository's) the stored
+// figures (evals.ReadStoredFiguresIn, two primary-key reads and the read of how far each project is
+// built), from which it states each eval they answer. An eval they cannot answer (a project whose
+// figures are not built yet, or a stored row of another fold key than the eval's) and every eval of
+// any other read is stated from one read of the day rows of the window and the compare range
+// (evals.DayWindowIn, the rows of repos where it names any), folded once the snapshot is committed
+// (evalValues.items). Both answer the same bits (evals.StoredFigures.SeriesValues). Each read reads
+// every project the entries it reads are evals of at once.
+func readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.Entry, deployRepo string, repos []string, ranges evalRanges, now time.Time) (evalValues, error) {
+	read := evalValues{entries: entries, ranges: ranges, values: make([][]evals.SeriesValues, len(entries))}
+	var err error
+	if read.age, read.aged, err = evals.RefresherAgeIn(ctx, tx, now); err != nil {
+		return evalValues{}, err
 	}
-	var firsts map[string]map[string]time.Time
-	readFirsts := func(ctx context.Context) (err error) {
-		firsts, err = registry.FirstDays(ctx, entries, deployRepo)
-		return err
+	if len(entries) == 0 {
+		return read, nil
 	}
-	unstated := make([]int, 0, len(entries))
+	if read.firsts, err = evals.FirstDaysIn(ctx, tx, entries, deployRepo); err != nil {
+		return evalValues{}, err
+	}
 	if evals.FiguresOffered(repos, ranges.window, ranges.compare) {
 		repo := ""
 		if len(repos) == 1 {
 			repo = repos[0]
 		}
-		var stored evals.StoredFigures
-		if err := store.ReadSideBySide(ctx,
-			func(ctx context.Context) (err error) {
-				stored, err = registry.ReadStoredFigures(ctx, evalProjects(entries), entries, deployRepo, repo, ranges.window, ranges.compare)
-				return err
-			},
-			readFirsts,
-		); err != nil {
-			return nil, nil, err
+		stored, err := evals.ReadStoredFiguresIn(ctx, tx, evalProjects(entries), entries, deployRepo, repo, ranges.window, ranges.compare)
+		if err != nil {
+			return evalValues{}, err
 		}
 		for index, entry := range entries {
-			series, at, ok := stored.SeriesValues(entry, firsts[entry.Definition.EvalID], ranges.window, ranges.compare)
+			series, at, ok := stored.SeriesValues(entry, read.firsts[entry.Definition.EvalID], ranges.window, ranges.compare)
 			if !ok {
-				unstated = append(unstated, index)
+				read.unstated = append(read.unstated, index)
 				continue
 			}
-			values[index] = series
+			read.values[index] = series
 			if at != nil {
-				earliest(*at)
+				read.earliest(*at)
 			}
 		}
 	} else {
 		for index := range entries {
-			unstated = append(unstated, index)
+			read.unstated = append(read.unstated, index)
 		}
 	}
-	if len(unstated) > 0 {
-		rest := make([]evals.Entry, len(unstated))
-		for position, index := range unstated {
-			rest[position] = entries[index]
-		}
-		var rows []evals.WindowRow
-		reads := []func(context.Context) error{func(ctx context.Context) (err error) {
-			rows, err = registry.DayWindow(ctx, evalProjects(rest), rest, deployRepo, repos, ranges.window, ranges.compare)
-			return err
-		}}
-		if firsts == nil {
-			reads = append(reads, readFirsts)
-		}
-		if err := store.ReadSideBySide(ctx, reads...); err != nil {
-			return nil, nil, err
-		}
-		byEval := map[string][]evals.WindowRow{}
-		for _, row := range rows {
-			byEval[row.EvalID] = append(byEval[row.EvalID], row)
-			earliest(row.UpdatedAt)
-		}
-		for _, index := range unstated {
-			id := entries[index].Definition.EvalID
-			values[index] = evals.SeriesValuesOf(entries[index], byEval[id], firsts[id], ranges.window, ranges.compare)
-		}
+	if len(read.unstated) == 0 {
+		return read, nil
 	}
-	items := make([]evalItem, len(entries))
-	for index, entry := range entries {
+	rest := make([]evals.Entry, len(read.unstated))
+	for position, index := range read.unstated {
+		rest[position] = entries[index]
+	}
+	if read.rows, err = evals.DayWindowIn(ctx, tx, evalProjects(rest), rest, deployRepo, repos, ranges.window, ranges.compare); err != nil {
+		return evalValues{}, err
+	}
+	return read, nil
+}
+
+// earliest makes at v's oldest updated_at where it is older than the one v holds.
+func (v *evalValues) earliest(at time.Time) {
+	if v.oldest == nil || at.Before(*v.oldest) {
+		v.oldest = &at
+	}
+}
+
+// items is each of v's evals with its values, in the order read, and the answer's freshness: the
+// oldest updated_at of the rows its values fold, and the refresher's age. It folds the day rows of
+// the evals the stored figures did not answer (evals.SeriesValuesOf) and reads nothing, so it runs
+// once the snapshot v was read in is committed.
+func (v *evalValues) items() ([]evalItem, evalFreshness) {
+	byEval := map[string][]evals.WindowRow{}
+	for _, row := range v.rows {
+		byEval[row.EvalID] = append(byEval[row.EvalID], row)
+		v.earliest(row.UpdatedAt)
+	}
+	for _, index := range v.unstated {
+		id := v.entries[index].Definition.EvalID
+		v.values[index] = evals.SeriesValuesOf(v.entries[index], byEval[id], v.firsts[id], v.ranges.window, v.ranges.compare)
+	}
+	items := make([]evalItem, len(v.entries))
+	for index, entry := range v.entries {
 		items[index] = evalItem{
 			Definition: entry.Definition,
 			Owner:      evalOwnerOf(entry.Definition),
-			Series:     values[index],
-			Verdict:    evals.VerdictOf(entry, evals.WindowStatistics(values[index])),
+			Series:     v.values[index],
+			Verdict:    evals.VerdictOf(entry, evals.WindowStatistics(v.values[index])),
 		}
 	}
-	return items, oldest, nil
+	freshness := evalFreshness{RowsUpdatedAt: v.oldest}
+	if v.aged {
+		freshness.RefresherAgeSeconds = new(int(v.age / time.Second))
+	}
+	return items, freshness
 }
 
-// evalDeployRepo is the deploy repository the delivery settings name, whose rows a read of an eval
-// that reads it folds (evals.DeployRepoOf), "" where the deployment has set none. It is read beside
-// the evals it is read for, whose definitions it does not wait on; an eval that reads no deploy
-// repository reads the rows of none whatever it answers.
-func (s *server) evalDeployRepo(ctx context.Context) (string, error) {
-	settings, err := s.evalDeliverySettings(ctx)
-	if err != nil || settings == nil {
-		return "", err
+// evalDeployRepo is the deploy repository the delivery settings name, read in tx, whose rows a read
+// of an eval that reads it folds (evals.DeployRepoOf), "" where the deployment has set none; an
+// eval that reads no deploy repository reads the rows of none whatever it answers.
+func evalDeployRepo(ctx context.Context, tx pgx.Tx) (string, error) {
+	settings, err := delivery.GetSettings(ctx, tx)
+	if errors.Is(err, delivery.ErrNoSettings) {
+		return "", nil
 	}
-	return settings.DeployRepo, nil
+	return settings.DeployRepo, err
 }
 
 // evalProjects is the projects entries are evals of, in the order they first appear.
@@ -931,13 +932,16 @@ func evalOwnerOf(definition evals.Definition) evalOwner {
 }
 
 // getProjectEval answers GET /api/v1/projects/{key}/evals/{slug}: one page of the eval's versions,
-// newest first, read with its current definition and series in one snapshot
-// (evals.Store.EvalVersions, which reads the page's versions alone) side by side with the deploy
-// repository the values read (evalDeployRepo), the newest stating the window's values as the list
-// read states them, and the method its section of the project's `evals-md` holds
-// (evals.Store.Method), the values and the method read side by side. A query key the route does
-// not take is 400 INVALID_QUERY (undeclaredQueryKey), 404 PROJECT_NOT_FOUND for a project no row
-// holds, 404 EVAL_NOT_FOUND for a slug no eval of it holds.
+// newest first, read with its current definition and series (evals.EvalVersionsIn, which reads the
+// page's versions alone), the newest stating the window's values as the list read states them
+// (readEvalValues), and the method its section of the project's `evals-md` holds
+// (evals.Store.Method). One answer, one snapshot, as the list read's (readEvalList): the eval, its
+// versions, the deploy repository (evalDeployRepo) and the values' reads run in one read-only
+// repeatable-read transaction, committed before the folds. It is begun on a connection mark of its
+// own (store.ForConcurrentRead), so the method, which reads the document the definition names, is
+// read beside the values. A query key the route does not take is 400 INVALID_QUERY
+// (undeclaredQueryKey), 404 PROJECT_NOT_FOUND for a project no row holds, 404 EVAL_NOT_FOUND for a
+// slug no eval of it holds.
 func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -954,25 +958,30 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	registry := s.registry()
-	var entry evals.Entry
-	var versions evals.Page[evals.Definition]
-	var found bool
-	var deployRepo string
-	if err := store.ReadSideBySide(ctx,
-		func(ctx context.Context) (err error) {
-			entry, versions, found, err = registry.EvalVersions(ctx, evals.EvalID(project, slug), read.limit, read.offset)
-			return err
-		},
-		func(ctx context.Context) (err error) {
-			deployRepo, err = s.evalDeployRepo(ctx)
-			return err
-		},
-	); err != nil {
+	evalID := evals.EvalID(project, slug)
+	snapshot, err := store.ForConcurrentRead(ctx)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	tx, err := registry.BeginSnapshot(snapshot)
+	if err != nil {
+		s.writeHandlerError(w, fmt.Errorf("begin the read of eval %s: %w", evalID, err))
+		return
+	}
+	defer tx.Rollback(snapshot)
+	entry, versions, found, err := evals.EvalVersionsIn(snapshot, tx, evalID, read.limit, read.offset)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	if !found {
 		s.writeHandlerError(w, evalNotFound(project, slug))
+		return
+	}
+	deployRepo, err := evalDeployRepo(snapshot, tx)
+	if err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	answer := evalDetailResponse{
@@ -984,13 +993,18 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 	if slices.ContainsFunc(versions.Items, func(version evals.Definition) bool { return version.Version == entry.Definition.Version }) {
 		stated = []evals.Entry{entry}
 	}
-	var newest []evalItem
+	var values evalValues
 	var method string
 	var held bool
 	if err := store.ReadSideBySide(ctx,
-		func(ctx context.Context) (err error) {
-			newest, answer.Freshness, err = s.evalItemsAndFreshness(ctx, registry, stated, deployRepo, read.repos, read.ranges, time.Now().UTC())
-			return err
+		func(context.Context) (err error) {
+			if values, err = readEvalValues(snapshot, tx, stated, deployRepo, read.repos, read.ranges, time.Now().UTC()); err != nil {
+				return err
+			}
+			if err := tx.Commit(snapshot); err != nil {
+				return fmt.Errorf("end the read of eval %s: %w", evalID, err)
+			}
+			return nil
 		},
 		func(ctx context.Context) (err error) {
 			method, held, err = registry.Method(ctx, project, entry.Definition.DocBlock)
@@ -1000,6 +1014,8 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	newest, freshness := values.items()
+	answer.Freshness = freshness
 	for _, version := range versions.Items {
 		if version.Version != entry.Definition.Version {
 			answer.Items = append(answer.Items, evalItem{Definition: version, Owner: evalOwnerOf(version)})

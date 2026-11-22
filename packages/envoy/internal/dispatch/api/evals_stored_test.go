@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // evalShape is one read of the eval list the stored figures are checked over: its window, its
@@ -355,4 +356,99 @@ func TestTheStoredFiguresAnswerK12sHandFolds(t *testing.T) {
 		}
 	}
 	t.Logf("k12 over the stored figures: %d of %d hand folds bit for bit, over %d day rows", exact, folds, examined)
+}
+
+// TestOneEvalListAnswerReadsItsFiguresAndItsDayRowsFromOneSnapshot (failure 5 of
+// dispatch://INFRA-2916): one answer of the list read is one database moment. The refresher's pass
+// after a deploy's production job fails rewrites the day rows of its day and the stored figures
+// they fold in one transaction, and it commits, on another connection, the moment the read's first
+// statement of the stored range figures or of how far they are built ends. The answer the commit
+// landed in is the answer before it, and the next answer is the whole new state, deploy-frequency's
+// window in each the sum of its own days. A read whose statements read several moments answers,
+// in the answer the commit lands in, the window's old figures beside the new days: the mixed delta
+// a live evals view sent for half a second after a settings rewrite.
+func TestOneEvalListAnswerReadsItsFiguresAndItsDayRowsFromOneSnapshot(t *testing.T) {
+	database := storetest.Open(t)
+	commits := storetest.NewCommitBetweenReads("eval_range_figures", "eval_figures_built")
+	_, _, deps, served := newRegisteredTestServer(t, testServerOptions{store: storetest.TracedStore(t, database, commits)})
+	fixture, windows := seedEvalHistories(t, database, deps, 30)
+	end := windows[0].Spec.Now
+	if fixture.To.After(end) {
+		end = fixture.To
+	}
+	now := end.Add(-time.Minute)
+	registry := evals.New(database, deps.Docs, deps.Events)
+	shape := evalShape{name: "7 days", window: evalDaysEnding(7, measures.Midnight(now)), offered: true}
+	if built, err := registry.FiguresThrough(t.Context(), []string{fixture.Project}); err != nil || built[fixture.Project].Before(shape.window.To) {
+		t.Fatalf("%s's figures stand built through %v (%v), so the read of %s answers from the day rows", fixture.Project, built, err, shape.name)
+	}
+	// read is the list read of the delivery project's evals in shape, and its body without its
+	// freshness, which a refresher pass may move without moving a value.
+	read := func() (evalListResponse, []byte) {
+		t.Helper()
+		answer, _ := readEvalShape(t, served, []string{fixture.Project}, now, shape)
+		answer.Freshness = evalFreshness{}
+		body, err := json.Marshal(answer)
+		if err != nil {
+			t.Fatalf("encode %s: %v", shape.name, err)
+		}
+		return answer, body
+	}
+	// deploys is deploy-frequency's deploys over the window of answer, and the sum of its days'.
+	deploys := func(answer evalListResponse) (window, days float64) {
+		t.Helper()
+		values := seriesValues(t, findEval(t, answer.Items, fixture.Project, evals.SlugDeployFrequency), measures.SeriesDeploys)
+		if values.Window["deploys"] == nil {
+			t.Fatalf("deploy-frequency states no deploys over %s", shape.name)
+		}
+		for _, day := range values.Days {
+			days += measures.ValueOrZero(day.Statistics["deploys"])
+		}
+		return *values.Window["deploys"], days
+	}
+	before, beforeBody := read()
+	if window, days := deploys(before); window != days {
+		t.Fatalf("before the commit deploy-frequency's window holds %v deploys and its days %v", window, days)
+	}
+
+	var runID int64
+	for _, apply := range fixture.Applies {
+		if !apply.CompletedAt.Before(shape.window.From) && apply.CompletedAt.Before(shape.window.To) {
+			runID = apply.RunID
+		}
+	}
+	repo := ""
+	for _, run := range fixture.Runs {
+		if run.RunID == runID {
+			repo = run.Repo
+		}
+	}
+	if repo == "" {
+		t.Fatalf("no production apply of the history completed in %s..%s", shape.window.From, shape.window.To)
+	}
+	if _, err := database.Pool.Exec(t.Context(), `update delivery_run_jobs set conclusion = 'failure' where repo = $1 and run_id = $2 and name = any($3)`,
+		repo, runID, fixture.Settings.ProductionJobNames); err != nil {
+		t.Fatalf("fail the production job of run %d: %v", runID, err)
+	}
+	commits.Arm(func() { refreshEvalDays(t, registry, database, now) })
+	during, duringBody := read()
+	if !commits.Fired() {
+		t.Fatal("no statement of the list read read eval_range_figures or eval_figures_built, so no commit landed during it")
+	}
+	if !bytes.Equal(duringBody, beforeBody) {
+		window, days := deploys(during)
+		beforeWindow, beforeDays := deploys(before)
+		t.Errorf("the answer the commit landed in differs from the answer before it at byte %d of %d: deploy-frequency's window holds %v deploys and its days %v, where before it they held %v and %v",
+			firstDifference(duringBody, beforeBody), len(beforeBody), window, days, beforeWindow, beforeDays)
+	}
+
+	after, _ := read()
+	beforeWindow, _ := deploys(before)
+	window, days := deploys(after)
+	if window == beforeWindow {
+		t.Errorf("after the commit deploy-frequency's window holds %v deploys, as before it: the failed production job of run %d moved nothing", window, runID)
+	}
+	if window != days {
+		t.Errorf("after the commit deploy-frequency's window holds %v deploys and its days %v", window, days)
+	}
 }

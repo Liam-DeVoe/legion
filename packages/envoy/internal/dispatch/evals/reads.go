@@ -45,26 +45,31 @@ func (s *Store) Projects(ctx context.Context) ([]string, error) {
 	return keys, nil
 }
 
-// Current reads one page of the evals of projects through evals_current, ordered by project in
-// projects' order and then by slug byte by byte (`collate "C"`), so the order and each page of it
-// are the same whatever collation the database was made with (en_US or ICU puts production-deploy
-// before pr-open-to-merge), with each eval's current series: every eval of those projects,
-// or those of one kind where kind is not "". The page runs across the projects: Total is every
-// project's count, and offset counts from the first project's first eval. Its three statements
-// (the count, the page and the page's series) read one snapshot, in a read-only repeatable-read
-// transaction: a write that commits between two of them, such as a reading that registers its
-// eval, would otherwise answer a page holding the new eval under the total counted before it,
-// which a live view's delta would send as it stands. Each statement reads every project at once,
-// so a read of many projects costs what a read of one does.
+// Current is CurrentIn in a snapshot of its own (BeginSnapshot).
 func (s *Store) Current(ctx context.Context, projects []string, kind string, limit, offset int) (Page[Entry], error) {
-	if err := checkPage(limit, offset); err != nil {
-		return Page[Entry]{}, err
-	}
-	tx, err := s.beginSnapshot(ctx)
+	tx, err := s.BeginSnapshot(ctx)
 	if err != nil {
 		return Page[Entry]{}, fmt.Errorf("begin the read of the evals of %v: %w", projects, err)
 	}
 	defer tx.Rollback(ctx)
+	return CurrentIn(ctx, tx, projects, kind, limit, offset)
+}
+
+// CurrentIn reads in tx one page of the evals of projects through evals_current, ordered by
+// project in projects' order and then by slug byte by byte (`collate "C"`), so the order and each
+// page of it are the same whatever collation the database was made with (en_US or ICU puts
+// production-deploy before pr-open-to-merge), with each eval's current series: every eval of those
+// projects, or those of one kind where kind is not "". The page runs across the projects: Total is
+// every project's count, and offset counts from the first project's first eval. Its three
+// statements (the count, the page and the page's series) read tx's one snapshot (BeginSnapshot): a
+// write that commits between two of them, such as a reading that registers its eval, would
+// otherwise answer a page holding the new eval under the total counted before it, which a live
+// view's delta would send as it stands. Each statement reads every project at once, so a read of
+// many projects costs what a read of one does.
+func CurrentIn(ctx context.Context, tx pgx.Tx, projects []string, kind string, limit, offset int) (Page[Entry], error) {
+	if err := checkPage(limit, offset); err != nil {
+		return Page[Entry]{}, err
+	}
 	filter, args := `project_key = any($1::text[])`, []any{projects}
 	if kind != "" {
 		filter, args = filter+` and kind = $2`, append(args, kind)
@@ -124,21 +129,26 @@ func entriesOf(ctx context.Context, q delivery.Querier, definitions []Definition
 	return entries, nil
 }
 
-// EvalVersions reads one eval as Eval does and one page of the versions of its definition, newest
-// first, with how many versions it holds, in one read-only repeatable-read transaction, as
-// Current reads its statements: a register write committing between the reads would otherwise
-// answer a newest version that is not the definition read, which the eval's read states the
-// window's values for. The count and the page are one round trip, and the page reads the
-// versions it answers alone. found is false where no version holds evalID.
+// EvalVersions is EvalVersionsIn in a snapshot of its own (BeginSnapshot).
 func (s *Store) EvalVersions(ctx context.Context, evalID string, limit, offset int) (Entry, Page[Definition], bool, error) {
-	if err := checkPage(limit, offset); err != nil {
-		return Entry{}, Page[Definition]{}, false, err
-	}
-	tx, err := s.beginSnapshot(ctx)
+	tx, err := s.BeginSnapshot(ctx)
 	if err != nil {
 		return Entry{}, Page[Definition]{}, false, fmt.Errorf("begin the read of eval %s: %w", evalID, err)
 	}
 	defer tx.Rollback(ctx)
+	return EvalVersionsIn(ctx, tx, evalID, limit, offset)
+}
+
+// EvalVersionsIn reads in tx one eval as Eval does and one page of the versions of its definition,
+// newest first, with how many versions it holds, all in tx's one snapshot (BeginSnapshot), as
+// CurrentIn reads its statements: a register write committing between the reads would otherwise
+// answer a newest version that is not the definition read, which the eval's read states the
+// window's values for. The count and the page are one round trip, and the page reads the versions
+// it answers alone. found is false where no version holds evalID.
+func EvalVersionsIn(ctx context.Context, tx pgx.Tx, evalID string, limit, offset int) (Entry, Page[Definition], bool, error) {
+	if err := checkPage(limit, offset); err != nil {
+		return Entry{}, Page[Definition]{}, false, err
+	}
 	entry, found, err := readEval(ctx, tx, evalID)
 	if err != nil || !found {
 		return Entry{}, Page[Definition]{}, found, err
@@ -165,7 +175,7 @@ func (s *Store) EvalVersions(ctx context.Context, evalID string, limit, offset i
 // the newest version of each of its series, the primary series first, then by name, the two in
 // one snapshot. found is false where no version holds evalID.
 func (s *Store) Eval(ctx context.Context, evalID string) (Entry, bool, error) {
-	tx, err := s.beginSnapshot(ctx)
+	tx, err := s.BeginSnapshot(ctx)
 	if err != nil {
 		return Entry{}, false, fmt.Errorf("begin the read of eval %s: %w", evalID, err)
 	}
@@ -173,9 +183,11 @@ func (s *Store) Eval(ctx context.Context, evalID string) (Entry, bool, error) {
 	return readEval(ctx, tx, evalID)
 }
 
-// beginSnapshot begins a read-only repeatable-read transaction, whose statements read one
-// snapshot.
-func (s *Store) beginSnapshot(ctx context.Context) (pgx.Tx, error) {
+// BeginSnapshot begins a read-only repeatable-read transaction, whose statements read one
+// snapshot: the one database moment of an answer whose every read runs in it (CurrentIn,
+// EvalVersionsIn, FirstDaysIn, ReadStoredFiguresIn, DayWindowIn, RefresherAgeIn). Its caller
+// commits it once those reads are done.
+func (s *Store) BeginSnapshot(ctx context.Context) (pgx.Tx, error) {
 	return s.database.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 }
 
@@ -203,9 +215,14 @@ func readEval(ctx context.Context, tx pgx.Tx, evalID string) (Entry, bool, error
 	return Entry{Definition: definition, Series: nonNil(series)}, true, nil
 }
 
-// FirstDays reads, for each series of entries' evals that holds a day row of all its project's
-// repositories (repo the empty string), the first day it holds one, by eval id and then by
-// series: the day its input begins. From that day on a series has a row of every day the
+// FirstDays is FirstDaysIn on the pool.
+func (s *Store) FirstDays(ctx context.Context, entries []Entry, deployRepo string) (map[string]map[string]time.Time, error) {
+	return FirstDaysIn(ctx, s.database.Pool, entries, deployRepo)
+}
+
+// FirstDaysIn reads in q, for each series of entries' evals that holds a day row of all its
+// project's repositories (repo the empty string), the first day it holds one, by eval id and then
+// by series: the day its input begins. From that day on a series has a row of every day the
 // refresher has written, an explicit zero row on a day with no input, so a range that starts
 // before it reads "no data" and names it (R12). Each series is one probe of eval_days' primary
 // key, its first day, under its own eval's project and among its own writer's rows
@@ -213,7 +230,7 @@ func readEval(ctx context.Context, tx pgx.Tx, evalID string) (Entry, bool, error
 // deployRepo ("" where none are set; DeployRepoOf), so the evals of many projects are one read, a
 // row the other writer made moves no eval's first day, and an eval that reads the deploy
 // repository begins on that repository's own first day.
-func (s *Store) FirstDays(ctx context.Context, entries []Entry, deployRepo string) (map[string]map[string]time.Time, error) {
+func FirstDaysIn(ctx context.Context, q delivery.Querier, entries []Entry, deployRepo string) (map[string]map[string]time.Time, error) {
 	firsts := map[string]map[string]time.Time{}
 	if len(entries) == 0 {
 		return firsts, nil
@@ -224,7 +241,7 @@ func (s *Store) FirstDays(ctx context.Context, entries []Entry, deployRepo strin
 		projects[index], evalIDs[index], writers[index] = entry.Definition.ProjectKey, entry.Definition.EvalID, entry.Definition.writer()
 		deployRepos[index] = DeployRepoOf(entry.Definition, deployRepo)
 	}
-	rows, err := s.database.Pool.Query(ctx, `
+	rows, err := q.Query(ctx, `
 		select given.eval_id, s.series, first.day
 		from unnest($1::text[], $2::text[], $3::text[], $4::text[]) as given(project_key, eval_id, writer, deploy_repo)
 		cross join lateral (select series from eval_series_current s where s.eval_id = given.eval_id) s
@@ -328,17 +345,23 @@ func (s *Store) CountedIn(ctx context.Context, project, family, deployRepo strin
 	return items, nil
 }
 
-// DayWindow reads the listed day rows of entries, evals of projects, for a window of days and,
-// where compare is not nil, for a compare range too: the `union all` of one read of each range,
+// DayWindow is DayWindowIn on the pool, each of its statements reading the rows that stand when it
+// runs.
+func (s *Store) DayWindow(ctx context.Context, projects []string, entries []Entry, deployRepo string, repos []string, window Range, compare *Range) ([]WindowRow, error) {
+	return DayWindowIn(ctx, s.database.Pool, projects, entries, deployRepo, repos, window, compare)
+}
+
+// DayWindowIn reads in q the listed day rows of entries, evals of projects, for a window of days
+// and, where compare is not nil, for a compare range too: the `union all` of one read of each range,
 // each an index range of eval_days_window for each project, so the compare range is a second
 // windowed read of the same rows and never one read with two windows (R2, R12), and the evals of
-// many projects are one statement where its parameters fit in statementBytes (dayWindow says how
-// it cuts them where they do not). Each row says which range it answers for (RangeWindow,
-// RangeCompare). A range's days are the UTC dates d with From's date <= d < To's date. repos empty
-// reads the projects' own rows (repo is the empty string); repos named reads those repositories'
-// rows, a repository filter's fold. Each eval's rows are its own writer's (Definition.writer, R3):
-// a computed eval's the computation's, a logged eval's the readings write's, so an eval whose
-// source changed folds none of the rows the other writer made. And they are those of the deploy
+// many projects are one statement where its parameters fit in statementBytes (below, how it cuts
+// them where they do not). Each row says which range it answers for (RangeWindow, RangeCompare). A
+// range's days are the UTC dates d with From's date <= d < To's date. repos empty reads the
+// projects' own rows (repo is the empty string); repos named reads those repositories' rows, a
+// repository filter's fold. Each eval's rows are its own writer's (Definition.writer, R3): a
+// computed eval's the computation's, a logged eval's the readings write's, so an eval whose source
+// changed folds none of the rows the other writer made. And they are those of the deploy
 // repository its read reads, where the delivery settings name deployRepo ("" where none are set;
 // DeployRepoOf): of an eval keyed by the deploy repository that repository's rows, and of every
 // other the rows of none, so a move of the deploy repository is this selection (deploy_repos.go).
@@ -351,24 +374,20 @@ func (s *Store) CountedIn(ctx context.Context, project, family, deployRepo strin
 // last_at by (aggStatistics), comes only with a row of a `last` series in a read that names more
 // than one repository: only that read folds two rows of one series and day, which can tie, and
 // it sets no order. Every other row answers no write: null and the empty string.
-func (s *Store) DayWindow(ctx context.Context, projects []string, entries []Entry, deployRepo string, repos []string, window Range, compare *Range) ([]WindowRow, error) {
-	return dayWindow(ctx, s.database.Pool, projects, entries, deployRepo, repos, window, compare)
-}
-
-// dayWindow is DayWindow's read in q: the pool, or a transaction that writes the rows it reads,
-// as the stored figures' writes fold them (figures.go), so a fold of the rows a write left reads
-// them as a paint does. It names each eval and, for each series whose samples or last write it
-// reads, the pair (eval, series), which at MaxEvalSeries series of the largest names is about
-// 244 KB of one eval: so entries go in runs whose parameters take at most statementBytes as
-// statementChunks cuts them (the statement's own estimated by paramBytes and each eval's by
-// windowEntryBytes), a statement each, every one sent on q, and the rows they answer are their
-// rows together; an eval's rows all come from its own run's statement, which names it alone of
-// the runs. A read that fits sends the one statement it always did. Each statement reads q's
-// snapshot: a transaction at repeatable read has one for all of them, so the runs read the rows of
-// one moment, as one statement does; on the pool, or in a transaction at read committed, each
-// reads the rows that stand when it runs, as the list read's other reads, which run beside this
-// one, already do.
-func dayWindow(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepo string, repos []string, window Range, compare *Range) ([]WindowRow, error) {
+//
+// q is the pool; a transaction that writes the rows it reads, as the stored figures' writes fold
+// them (figures.go), so a fold of the rows a write left reads them as a paint does; or the snapshot
+// one answer of the eval list reads in (BeginSnapshot). The read names each eval and, for each
+// series whose samples or last write it reads, the pair (eval, series), which at MaxEvalSeries
+// series of the largest names is about 244 KB of one eval: so entries go in runs whose parameters
+// take at most statementBytes as statementChunks cuts them (the statement's own estimated by
+// paramBytes and each eval's by windowEntryBytes), a statement each, every one sent on q, and the
+// rows they answer are their rows together; an eval's rows all come from its own run's statement,
+// which names it alone of the runs. A read that fits sends the one statement it always did. Each
+// statement reads q's snapshot: in the list read's snapshot, as in any transaction at repeatable
+// read, every run reads the one moment the answer's other reads read, as one statement would; on
+// the pool, or in a transaction at read committed, each reads the rows that stand when it runs.
+func DayWindowIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepo string, repos []string, window Range, compare *Range) ([]WindowRow, error) {
 	if len(repos) == 0 {
 		repos = []string{""}
 	}
@@ -432,7 +451,7 @@ func dayWindow(ctx context.Context, q delivery.Querier, projects []string, entri
 	return days, nil
 }
 
-// windowEntryBytes is the most bytes entry adds to the parameters of dayWindow's statement, as pgx
+// windowEntryBytes is the most bytes entry adds to the parameters of DayWindowIn's statement, as pgx
 // encodes them in binary, 4 bytes of length before each element: its eval id in the evals' array,
 // and in the computed and the keyed evals' where it is one of them, and its id and a series' name
 // in the arrays of pairs for each series whose samples it reads and, where lastPairs (the read

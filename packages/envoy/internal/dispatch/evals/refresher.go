@@ -526,19 +526,25 @@ func (r *refresh) recordWalkIn(ctx context.Context, q executor, key walkKey, nex
 	return nil
 }
 
-// RefresherAge answers how long before now the refresher last read its feeds, as the oldest of its
-// two cursors' updated_at (the stored figures' own cursor, figuresCursor, is not one of them), and
-// false when no pass has committed on this database. Every pass stamps the event cursor with the
-// moment it ran as of, whether or not its feed held anything new, and the change cursor with the
-// moment one of its pages last read the change log to its end (commitPage). So the age is the time
-// since the last pass ran, or since a pass last read the change log to its end, whichever is older:
-// a pass catching up a backlog of changes reads as old as its last read of the whole log. It is not
-// how long ago the last change arrived: it is the freshness the eval list states of the computed
-// evals' day rows. A caller whose clock stands behind the writing process's reads a negative age, as
-// it would of any moment another process stamped.
+// RefresherAge is RefresherAgeIn on the pool.
 func (s *Store) RefresherAge(ctx context.Context, now time.Time) (time.Duration, bool, error) {
+	return RefresherAgeIn(ctx, s.database.Pool, now)
+}
+
+// RefresherAgeIn answers, read in q, how long before now the refresher last read its feeds, as the
+// oldest of its two cursors' updated_at (the stored figures' own cursor, figuresCursor, is not one
+// of them), and false when no pass has committed on this database. Every pass stamps the event
+// cursor with the moment it ran as of, whether or not its feed held anything new, and the change
+// cursor with the moment one of its pages last read the change log to its end (commitPage). So the
+// age is the time since the last pass ran, or since a pass last read the change log to its end,
+// whichever is older: a pass catching up a backlog of changes reads as old as its last read of the
+// whole log. It is not how long ago the last change arrived: it is the freshness the eval list
+// states of the computed evals' day rows, read in the snapshot of the rows it states it of
+// (BeginSnapshot). A caller whose clock stands behind the writing process's reads a negative age,
+// as it would of any moment another process stamped.
+func RefresherAgeIn(ctx context.Context, q delivery.Querier, now time.Time) (time.Duration, bool, error) {
 	var oldest *time.Time
-	if err := s.database.Pool.QueryRow(ctx, `select min(updated_at) from eval_days_cursor where name = any($1)`, refresherCursors).Scan(&oldest); err != nil {
+	if err := q.QueryRow(ctx, `select min(updated_at) from eval_days_cursor where name = any($1)`, refresherCursors).Scan(&oldest); err != nil {
 		return 0, false, fmt.Errorf("read the age of the eval day-row refresher's cursors: %w", err)
 	}
 	if oldest == nil {

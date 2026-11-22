@@ -876,7 +876,7 @@ func readFigureGroups(ctx context.Context, q delivery.Querier, scope figureScope
 	if cut.repo != "" {
 		repos = []string{cut.repo}
 	}
-	rows, err := dayWindow(ctx, q, []string{scope.project}, read, cut.deployRepo, repos, r, nil)
+	rows, err := DayWindowIn(ctx, q, []string{scope.project}, read, cut.deployRepo, repos, r, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -966,7 +966,7 @@ const statementBytes = 256 << 10
 //
 // The entries count each series' via-repository entry, which a logged eval's rows never carry
 // (writeDays sets none), and without which the bound would admit 446 series. A figures write reads
-// the rows it folds (readFigureGroups, through dayWindow) with one pair (eval, series) for each
+// the rows it folds (readFigureGroups, through DayWindowIn) with one pair (eval, series) for each
 // series whose fold reads its samples, 1,043 bytes at the largest keys, fewer than a series' 1,106
 // here, so that read's statement stays within the bound at this count too (244,062 bytes of pairs
 // for one eval), where at 446 series it would not.

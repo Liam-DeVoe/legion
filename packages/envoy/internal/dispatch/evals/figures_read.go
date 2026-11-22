@@ -6,8 +6,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The read of the stored figures (figures.go): the eval list's read of an offered range answers
@@ -65,16 +65,24 @@ type StoredFigures struct {
 	days            map[string][]storedDay
 }
 
-// ReadStoredFigures reads the stored figures a read of window and compare (nil for none) of repo
-// (the empty string for the projects' own rows) folds for entries, evals of projects, where the
-// delivery settings name deployRepo ("" where none are set): of an eval keyed by the deploy
-// repository the fold of that repository's rows, and of every other the fold of the rows of none
-// (DeployRepoOf). It reads side by side: the range rows of the window and of the compare range,
-// the `union all` of two ranges of eval_range_figures' primary key; and how far each project's
-// figures are built (FiguresThrough) and, one after the other in the same read, the day rows of
-// the window of the evals with a headline series, one range of eval_day_figures' primary key for
-// each project. The read is FiguresOffered's to make.
+// ReadStoredFigures is ReadStoredFiguresIn on the pool, each of its statements reading the rows
+// that stand when it runs.
 func (s *Store) ReadStoredFigures(ctx context.Context, projects []string, entries []Entry, deployRepo, repo string, window Range, compare *Range) (StoredFigures, error) {
+	return ReadStoredFiguresIn(ctx, s.database.Pool, projects, entries, deployRepo, repo, window, compare)
+}
+
+// ReadStoredFiguresIn reads in q the stored figures a read of window and compare (nil for none) of
+// repo (the empty string for the projects' own rows) folds for entries, evals of projects, where
+// the delivery settings name deployRepo ("" where none are set): of an eval keyed by the deploy
+// repository the fold of that repository's rows, and of every other the fold of the rows of none
+// (DeployRepoOf). It reads, one after the other: the range rows of the window and of the compare
+// range, the `union all` of two ranges of eval_range_figures' primary key; how far each project's
+// figures are built (figuresThrough); and the day rows of the window of the evals with a headline
+// series, one range of eval_day_figures' primary key for each project. A refresher pass rewrites
+// the three in one transaction, so in one answer's snapshot (BeginSnapshot), as the eval list
+// reads them, an eval's window figures are the fold of the days read beside them; on the pool each
+// statement reads the rows that stand when it runs. The read is FiguresOffered's to make.
+func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepo, repo string, window Range, compare *Range) (StoredFigures, error) {
 	read := StoredFigures{window: map[string]storedRange{}, compare: map[string]storedRange{}, days: map[string][]storedDay{}}
 	evalIDs := make([]string, len(entries))
 	var headlined []string
@@ -94,68 +102,56 @@ func (s *Store) ReadStoredFigures(ctx context.Context, projects []string, entrie
 		query += "\n\t\tunion all\n\t\t" + fmt.Sprintf(ranged, 8, 9)
 		args = append(args, rangeDays(*compare), compare.To)
 	}
-	err := store.ReadSideBySide(ctx,
-		func(ctx context.Context) error {
-			rows, err := s.database.Pool.Query(ctx, query, args...)
-			if err != nil {
-				return fmt.Errorf("read the stored range figures of %v: %w", projects, err)
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var days int32
-				var end time.Time
-				var evalID string
-				var row storedRange
-				if err := rows.Scan(&days, &end, &evalID, &row.key, &row.figures, &row.oldest); err != nil {
-					return fmt.Errorf("read the stored range figures of %v: %w", projects, err)
-				}
-				end, row.oldest = end.UTC(), row.oldest.UTC()
-				if int(days) == rangeDays(window) && end.Equal(window.To) {
-					read.window[evalID] = row
-				}
-				if compare != nil && int(days) == rangeDays(*compare) && end.Equal(compare.To) {
-					read.compare[evalID] = row
-				}
-			}
-			if err := rows.Err(); err != nil {
-				return fmt.Errorf("read the stored range figures of %v: %w", projects, err)
-			}
-			return nil
-		},
-		func(ctx context.Context) error {
-			built, err := s.FiguresThrough(ctx, projects)
-			if err != nil {
-				return err
-			}
-			read.built = built
-			if len(headlined) == 0 {
-				return nil
-			}
-			rows, err := s.database.Pool.Query(ctx, `
-				select eval_id, day, fold_key, figures from eval_day_figures
-				where project_key = any($1::text[]) and repo = $2 and day >= $3::date and day < $4::date and eval_id = any($5::text[])
-					and `+deployRepoCase("deploy_repo", "$6", "$7")+`
-			`, projects, repo, window.From, window.To, headlined, keyed, deployRepo)
-			if err != nil {
-				return fmt.Errorf("read the stored day figures of %v: %w", projects, err)
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var evalID string
-				var row storedDay
-				if err := rows.Scan(&evalID, &row.day, &row.key, &row.figures); err != nil {
-					return fmt.Errorf("read the stored day figures of %v: %w", projects, err)
-				}
-				row.day = row.day.UTC()
-				read.days[evalID] = append(read.days[evalID], row)
-			}
-			if err := rows.Err(); err != nil {
-				return fmt.Errorf("read the stored day figures of %v: %w", projects, err)
-			}
-			return nil
-		})
+	ranges, err := q.Query(ctx, query, args...)
 	if err != nil {
+		return StoredFigures{}, fmt.Errorf("read the stored range figures of %v: %w", projects, err)
+	}
+	defer ranges.Close()
+	for ranges.Next() {
+		var days int32
+		var end time.Time
+		var evalID string
+		var row storedRange
+		if err := ranges.Scan(&days, &end, &evalID, &row.key, &row.figures, &row.oldest); err != nil {
+			return StoredFigures{}, fmt.Errorf("read the stored range figures of %v: %w", projects, err)
+		}
+		end, row.oldest = end.UTC(), row.oldest.UTC()
+		if int(days) == rangeDays(window) && end.Equal(window.To) {
+			read.window[evalID] = row
+		}
+		if compare != nil && int(days) == rangeDays(*compare) && end.Equal(compare.To) {
+			read.compare[evalID] = row
+		}
+	}
+	if err := ranges.Err(); err != nil {
+		return StoredFigures{}, fmt.Errorf("read the stored range figures of %v: %w", projects, err)
+	}
+	if read.built, err = figuresThrough(ctx, q, projects); err != nil {
 		return StoredFigures{}, err
+	}
+	if len(headlined) == 0 {
+		return read, nil
+	}
+	days, err := q.Query(ctx, `
+		select eval_id, day, fold_key, figures from eval_day_figures
+		where project_key = any($1::text[]) and repo = $2 and day >= $3::date and day < $4::date and eval_id = any($5::text[])
+			and `+deployRepoCase("deploy_repo", "$6", "$7")+`
+	`, projects, repo, window.From, window.To, headlined, keyed, deployRepo)
+	if err != nil {
+		return StoredFigures{}, fmt.Errorf("read the stored day figures of %v: %w", projects, err)
+	}
+	defer days.Close()
+	for days.Next() {
+		var evalID string
+		var row storedDay
+		if err := days.Scan(&evalID, &row.day, &row.key, &row.figures); err != nil {
+			return StoredFigures{}, fmt.Errorf("read the stored day figures of %v: %w", projects, err)
+		}
+		row.day = row.day.UTC()
+		read.days[evalID] = append(read.days[evalID], row)
+	}
+	if err := days.Err(); err != nil {
+		return StoredFigures{}, fmt.Errorf("read the stored day figures of %v: %w", projects, err)
 	}
 	return read, nil
 }

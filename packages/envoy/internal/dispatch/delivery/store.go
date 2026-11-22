@@ -48,10 +48,10 @@ func ScanSettings(row pgx.Row) (DeliverySettings, error) {
 // API answers that delivery is not configured, rather than guessing a repository.
 var ErrNoSettings = errors.New("delivery settings are not configured")
 
-// GetSettings reads the one delivery_settings row, or ErrNoSettings when none has been written
-// yet.
-func GetSettings(ctx context.Context, pool *store.Pool) (DeliverySettings, error) {
-	settings, err := ScanSettings(pool.QueryRow(ctx, `select `+SettingsColumns+` from delivery_settings where singleton`))
+// GetSettings reads the one delivery_settings row in q (the pool, or a transaction a read of
+// several statements holds), or ErrNoSettings when none has been written yet.
+func GetSettings(ctx context.Context, q Querier) (DeliverySettings, error) {
+	settings, err := ScanSettings(q.QueryRow(ctx, `select `+SettingsColumns+` from delivery_settings where singleton`))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return DeliverySettings{}, ErrNoSettings

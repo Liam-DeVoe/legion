@@ -200,7 +200,7 @@ func (s *Store) projectEntries(ctx context.Context, project string, slugs []stri
 	for index, slug := range slugs {
 		ids[index] = EvalID(project, slug)
 	}
-	tx, err := s.beginSnapshot(ctx)
+	tx, err := s.BeginSnapshot(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin the read of %s's evals %v: %w", project, slugs, err)
 	}

@@ -435,14 +435,19 @@ func (s *Store) figuresStart(ctx context.Context, project string) (*time.Time, e
 	return &start, nil
 }
 
-// FiguresThrough reads, for each of projects whose stored figures are built, the last end day they
-// are built through (eval_figures_built): a read of a range of FigureLengths ending on or before it
-// may read the project's stored figures (figures.go), whichever build serves the read and whichever
-// folded them, and any other reads its day rows. A project is absent until the first whole walk of
-// its figures by any build is done (the first release that holds the stored figures, or a project
-// made later), and stays once it is, through every later release, roll and rollback.
+// FiguresThrough is figuresThrough on the pool.
 func (s *Store) FiguresThrough(ctx context.Context, projects []string) (map[string]time.Time, error) {
-	rows, err := s.database.Pool.Query(ctx, `select project_key, through from eval_figures_built where project_key = any($1)`, projects)
+	return figuresThrough(ctx, s.database.Pool, projects)
+}
+
+// figuresThrough reads in q, for each of projects whose stored figures are built, the last end day
+// they are built through (eval_figures_built): a read of a range of FigureLengths ending on or
+// before it may read the project's stored figures (figures.go), whichever build serves the read and
+// whichever folded them, and any other reads its day rows. A project is absent until the first
+// whole walk of its figures by any build is done (the first release that holds the stored figures,
+// or a project made later), and stays once it is, through every later release, roll and rollback.
+func figuresThrough(ctx context.Context, q delivery.Querier, projects []string) (map[string]time.Time, error) {
+	rows, err := q.Query(ctx, `select project_key, through from eval_figures_built where project_key = any($1)`, projects)
 	if err != nil {
 		return nil, fmt.Errorf("read how far the stored figures of %v are built: %w", projects, err)
 	}
