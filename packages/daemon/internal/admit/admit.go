@@ -1247,11 +1247,10 @@ func (a *Admission) consumeHandover(ctx context.Context, tx pgx.Tx, fact intake.
 	// acted on then, and the outbox's reads of GitHub between its Dispatch read and this apply
 	// leave time for a person's change of the repository to land first, which the older read
 	// would undo. The follow pass leaves a record a later event carried past its listing the same
-	// way (the daemon's followListing). A hand-over prepared against a repository the record no
-	// longer holds (intake.Handover.PreparedAgainst) corrects nothing either, and the engine owes
-	// the issue a follow (ApplyRepositoryChange): another correction moved the record after the
-	// preparation read it, such as a follow whose Dispatch read is at the outbox read's own
-	// sequence, which no sequence orders against it.
+	// way (the daemon's followListing). The change carries the repository the record held at the
+	// hand-over's preparation (intake.Handover.PreparedAgainst), so one prepared against a
+	// repository the record no longer holds corrects nothing and owes the issue a follow;
+	// ApplyRepositoryChange says why.
 	if fact.ResolvedRepo != "" && !stored.Outdates(record.ReadSeq, fact.Seq) {
 		change := intake.DispatchIssue{
 			Key:                   fact.Issue,
@@ -1323,6 +1322,9 @@ func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored rec
 	if err != nil {
 		return fmt.Errorf("read whether %s ran as a tree of its own: %w", stored.Key, err)
 	}
+	// LastDispatchSeq is compared here as the title and the rank beside it are, the stored value
+	// against the one this would write, so a write that changes nothing is skipped. Whether the
+	// observation is older than the record is the callers' question (record.Issue.Outdates).
 	if stored.Title == o.Title && stored.Rank == o.Rank && stored.Status == o.Status && stored.DispatchStatus == o.Shown &&
 		stored.HandedOver == o.HandedOver && sameParent(stored.Parent, record.ParentOf(o.Parent)) && stored.LastDispatchSeq == o.Seq &&
 		slices.Equal(stored.Ancestry, ancestry) {

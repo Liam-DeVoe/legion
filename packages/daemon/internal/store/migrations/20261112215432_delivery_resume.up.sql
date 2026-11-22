@@ -36,7 +36,7 @@
 -- other document answers no review of the one the person reviewed, so the kept decision is asked
 -- of its document as its relay is (workflow.SupersedingApproval). It is '' for an answer on an
 -- ask, for a notice that carried no document, and for every row kept before this migration, and
--- such a row is asked at its place in Dispatch's log alone.
+-- such a row is asked of whichever document the gate holds (workflow's keptSuperseded).
 --
 -- parked_decisions.version is the version of the document a kept spec decision's review is of
 -- (record.ParkedDecision.Version, from the notice's Version), which the parked-decision

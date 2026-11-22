@@ -2947,7 +2947,9 @@ type podDrift struct {
 // correction opens one round rather than one per claim, and the idle rule's repository hold
 // reads the pod through the same claim (podRepositoryDrifted). A runtime that answers nothing —
 // one whose processes share no such place, a pod that clones no repository — and a group no
-// claim of which records a process end the question there.
+// claim of which records a process end the question there. A read that fails reads podUnread, as
+// a failed drift read does: a round opened on it would record no repository for its whole life,
+// since the open fixes its terms (supervise.Claim.UpdateRepository).
 //
 // The pod's repository goes with the drift whatever the record holds, so every round records the
 // repository its pod was built from at its open, and not only a round a correction opened: a
@@ -2981,7 +2983,7 @@ func (s *supervision) groupDrift(ctx context.Context, issue string, group []supe
 		if ctx.Err() == nil {
 			s.log.Error("supervise: read the repository this issue's pod was built from", "issue", issue, "error", err)
 		}
-		return podDrift{reasons: reasons, reading: podRead}
+		return podDrift{reading: podUnread}
 	}
 	built, reason := s.repositoryDrift(ctx, issue, repository)
 	if reason != "" && !slices.Contains(reasons, reason) {

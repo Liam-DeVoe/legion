@@ -1658,14 +1658,18 @@ the hand-over that completes a child handed to Legion,
 or the pass over every recorded issue that the daemon makes once a boot is over.
 When GitHub does not answer that pass's reads of the repository (a failure, its rate limit, or no
 answer in time), the issue is told nothing and nothing waits on the record:
-the daemon reads the issue again from Dispatch's listing and GitHub, 30 s doubling to 10 min,
-until GitHub answers,
+the daemon reads the issue again from Dispatch's listing and GitHub until GitHub answers,
 and then moves it, or says why not with the line above, with no event of the issue and no restart.
+That read comes at once unless one already owed covers the issue (one owed for it, or the read of
+every recorded issue a boot asks for);
+otherwise, and after each read GitHub still does not answer, it comes at the latest at the next
+run of one backoff all owed reads share, 30 s doubling to 10 min, which starts again at 30 s only
+once no read is owed.
 A pass that read the record before another pass moved it moves nothing either, since two reads of
 Dispatch at one sequence cannot be ordered (a hand-over, or an event that arrives late, after a
 pass over the listing):
-the daemon reads that issue again from Dispatch's listing and GitHub at once, and the record ends
-on what Dispatch resolves then.
+the daemon owes that issue the same read of Dispatch's listing and GitHub, and the record ends on
+what Dispatch resolves then.
 The move parks nothing, reruns nothing and starts no new generation, so the issue keeps its phase
 and whatever runs for it.
 

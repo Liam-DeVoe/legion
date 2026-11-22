@@ -553,7 +553,7 @@ type ParkedDecision struct {
 	// move to another document while Ref stays the step's, and the approval of that document
 	// answers no review of this one. It is "" for an answer, resolution or reply on an ask, for a
 	// notice that carried none, and for a row kept before the column was added, and such a
-	// decision is asked at its place in Dispatch's log alone.
+	// decision is asked of whichever document the gate holds (workflow's keptSuperseded).
 	Artifact string
 	// Version is the version of that document the review is of (the notice's Version, which its
 	// relay carries too), so the kept decision is asked at the version the person reviewed as its

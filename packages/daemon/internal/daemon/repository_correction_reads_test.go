@@ -329,15 +329,15 @@ func handOverCorrection(t *testing.T, w *workflowRuntime, _ *repositoryDispatch)
 }
 
 // A correction whose reads GitHub does not answer writes nothing and says nothing, and its issue
-// is owed a follow (requestFollowOf) that the refresher makes at once and again on its backoff
-// (installReadRetry) while GitHub still does not answer, each pass reading the repository again
-// and writing nothing: the record stays where it was, with nothing waiting and nothing said. Once
-// GitHub answers, the follow corrects the record onto GitHub's spelling and default branch, with
-// no further event of the issue and no boot, as any correction does, and the follow is settled.
-// A live event and a hand-over owe it alike. The repository is one no record names, which nothing
-// else reads again. Control: with no follow owed for such a correction, nothing in the running
-// process read the change again, and the record stayed on the repository the issue left until
-// the issue's next event or the next boot.
+// is owed a follow (requestFollowOf) that the refresher makes at once, no other follow being owed
+// here, and again on its backoff (installReadRetry) while GitHub still does not answer, each pass
+// reading the repository again and writing nothing: the record stays where it was, with nothing
+// waiting and nothing said. Once GitHub answers, the follow corrects the record onto GitHub's
+// spelling and default branch, with no further event of the issue and no boot, as any correction
+// does, and the follow is settled. A live event and a hand-over owe it alike. The repository is
+// one no record names, which nothing else reads again. Control: with no follow owed for such a
+// correction, nothing in the running process read the change again, and the record stayed on the
+// repository the issue left until the issue's next event or the next boot.
 func TestACorrectionGitHubDidNotAnswerIsFollowedOnceGitHubAnswers(t *testing.T) {
 	const key = "LEGION-1041"
 	for _, tc := range []struct {

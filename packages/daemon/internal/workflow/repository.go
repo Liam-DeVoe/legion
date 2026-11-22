@@ -84,8 +84,8 @@ func (e *Engine) ResolveIssueRepository(fact intake.DispatchIssue) (Resolution, 
 // preparation made no such read — a boot listing's, which reads GitHub for no repository, or an
 // event's or a hand-over's whose preparation's reads GitHub did not answer — is Unread: nothing is
 // written and nothing is said, and the daemon's follow reads GitHub again (its followRecorded):
-// once a boot is over for the first, and for the others at once and again on its backoff until
-// GitHub answers.
+// once a boot is over for the first, and for the others until GitHub answers, at the times its
+// requestFollowOf gives.
 func (e *Engine) correctionResolution(fact intake.DispatchIssue) (Resolution, error) {
 	if fact.RepositoryRefusal != "" || fact.ResolvedRepo == "" {
 		return e.ResolveIssueRepository(fact)

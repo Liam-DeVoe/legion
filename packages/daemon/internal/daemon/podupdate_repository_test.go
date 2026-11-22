@@ -474,6 +474,38 @@ func TestACorrectionWhileAnImageRoundRunsNamesThePodsRepositoryWhenThePodGoes(t 
 	}
 }
 
+// A tick whose read of the pod's repository fails has read the pod no better than one whose drift
+// read fails, and opens no round however the image drifted (groupDrift, podUnread). A round opened
+// on it would record no repository (supervise.Claim.UpdateRepository) for its whole life, since
+// its terms are fixed at its open, and a correction landing while it ran would send each role to
+// its issue branch at the new pod's origin, which is the other repository. The next tick reads the
+// repository and opens the round with it recorded.
+func TestARoundOpensOnlyOnATickThatReadThePodsRepository(t *testing.T) {
+	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	rig.drifts(podUpdateDrift)
+	rig.rt.FailPodRepository(errors.New("the cluster did not answer for this pod"))
+
+	rig.tick()
+	for _, role := range roles {
+		rig.awaitPosted(role)
+		if c := rig.claimOf(role); c.UpdateRound != "" {
+			t.Errorf("after the tick whose repository read failed, the %s is in round %q for reasons %q with the repository %q, want no round",
+				role, c.UpdateRound, c.UpdateReasons, c.UpdateRepository)
+		}
+	}
+
+	rig.rt.FailPodRepository(nil)
+	rig.tick()
+	for _, role := range roles {
+		c := rig.awaitRound(role, podUpdateRound)
+		if c.UpdateReasons != podUpdateDrift || c.UpdateRepository != ghrepo.MustParse(podUpdateRepo) {
+			t.Errorf("the %s's round records the reasons %q and the repository %q, want %q and %s, its pod's",
+				role, c.UpdateReasons, c.UpdateRepository, podUpdateDrift, podUpdateRepo)
+		}
+	}
+}
+
 // A replacement that could not wait for a role writes on the issue what its read of the
 // workspace found (workspaceLostMessage), and that message says where the work is as the message
 // on a gone pod does. The round here opens for the image alone over a pod of podUpdateRepo, the

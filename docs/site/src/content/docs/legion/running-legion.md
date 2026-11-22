@@ -41,14 +41,18 @@ under `runtime: tmux` there is no pod to replace, and each pane works the reposi
 left until its next launch, which provisions it a workspace of the new repository on the daemon's
 host. When GitHub does not answer such a pass's reads (a failure, its rate limit, or no answer in
 time), the pass applies nothing and says nothing on the issue, and the daemon reads that issue
-again from Dispatch's listing and GitHub, 30 seconds doubling to 10 minutes, until GitHub
-answers, with no event of the issue and no restart: the change is then applied, or waits as
-below. A pass that read the record before another pass moved it applies nothing either, since
-two reads of Dispatch at one sequence cannot be ordered (a hand-over, or an event that arrives
-late, after a pass over the listing), and the daemon reads that issue again from Dispatch's
-listing and GitHub at once, so the record ends on what Dispatch resolves then; a daemon that
-stops before that read leaves it to its next boot, which reads again every recorded issue
-Dispatch resolves to another repository than its record names. A change onto a repository a
+again from Dispatch's listing and GitHub until GitHub answers, with no event of the issue and no
+restart: the change is then applied, or waits as below.
+That read comes at once unless one already owed covers the issue (one owed for it, or the read of
+every recorded issue a boot asks for); otherwise, and after each read GitHub still does not answer,
+it comes at the latest at the next run of one backoff all owed reads share, 30 seconds doubling to
+10 minutes, which starts again at 30 seconds only once no read is owed.
+A pass that read the record before another pass moved it applies nothing either, since two reads
+of Dispatch at one sequence cannot be ordered (a hand-over, or an event that arrives late, after a
+pass over the listing), and the daemon owes that issue the same read of Dispatch's listing and
+GitHub, so the record ends on what Dispatch resolves then; a daemon that stops before that read
+leaves it to its next boot, which reads again every recorded issue Dispatch resolves to another
+repository than its record names. A change onto a repository a
 role App is not installed on, or one GitHub does not have, is not applied; the record keeps what
 it has, the daemon says so once on the issue, and the record carries the waiting change
 (`repoChangePending` and `repoChangeReason` of `legion state --json`) until the issue's next
