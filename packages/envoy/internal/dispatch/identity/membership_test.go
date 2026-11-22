@@ -513,3 +513,33 @@ func TestDomainMembershipWhoseRefreshFailsAfterAnotherAccountSignedInLeavesThatA
 		t.Fatalf("the row after the old account's failure: %#v, want google-subject-B with refresh-B", membership)
 	}
 }
+
+// Under PasskeyRule, the rule a deployment with passkey sign-in runs, a full member's refresh that
+// Google refuses ends in OutsideRule.End, which PasskeyRule embeds: the person is held, the lists
+// are not asked, and the log line is that rule's own words with the reason, and nothing of a
+// membership of the domain.
+//
+// Control: delete OutsideRule.End, so DomainRule.End answers: the test fails on the log line.
+func TestPasskeyRuleEndsARefusedFullMemberInItsOwnWords(t *testing.T) {
+	var logs bytes.Buffer
+	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
+	rig := newDomainMembershipRig(t)
+	lister := &stubLister{}
+	rig.membership.Rule = PasskeyRule{OutsideRule: OutsideRule{DomainRule: DomainRule{Domain: memberDomain}, People: lister}}
+	rig.issuer.RevokeGrants()
+	rig.now = rig.now.Add(2 * time.Hour)
+	if outcome, err := rig.membership.ConfirmFor(context.Background(), memberEmail); !errors.Is(err, ErrNoIdentity) || outcome != RefreshHeld {
+		t.Fatalf("Confirm past the hour of a full member Google refuses: outcome %d, err = %v; want RefreshHeld and ErrNoIdentity", outcome, err)
+	}
+	if asked := lister.calls(); len(asked) != 0 {
+		t.Errorf("the lister was asked %q at a Google refresh, want no call", asked)
+	}
+	if ended, _ := rig.people.get(memberEmail); !ended.Held || ended.RefreshToken != "" || ended.Kind != model.MemberFull {
+		t.Errorf("the ended row = %#v, want a full member's, held, with no refresh token", ended)
+	}
+	logged := logs.String()
+	if !strings.Contains(logged, "sign-in ended: the hourly confirmation no longer admits the person") ||
+		!strings.Contains(logged, "invalid_grant") || strings.Contains(logged, "membership of the domain") {
+		t.Errorf("the end's log line = %q, want the rule's own words with the invalid_grant reason, and nothing of a membership of the domain", logged)
+	}
+}
