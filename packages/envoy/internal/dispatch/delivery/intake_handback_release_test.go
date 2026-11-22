@@ -368,7 +368,7 @@ type heldHandBack struct {
 // settled: in these rows, a publish still waiting for NATS.
 func (r heldHandBack) handBackPending() bool {
 	select {
-	case <-r.delivery.handBacksLanded():
+	case <-r.delivery.handBacks.handBacksLanded():
 		return false
 	default:
 		return true
@@ -1306,11 +1306,11 @@ func TestAFlushOfTheReplacementConnectionDoesNotConfirmAHandBackOnTheOneBefore(t
 	delivery := &intakeDelivery{nats: client}
 	delivery.handBack(msg)
 	select {
-	case <-delivery.handBacksLanded():
+	case <-delivery.handBacks.handBacksLanded():
 	case <-time.After(30 * time.Second):
 		t.Fatal("control: the hand-back's publish did not end within 30 s")
 	}
-	if !delivery.publishRecord().unconfirmed() {
+	if !delivery.handBacks.publishRecord().unconfirmed() {
 		t.Fatal("control: the hand-back was withheld rather than published, or a flush confirmed it while the link kept its -NAK")
 	}
 
@@ -1545,7 +1545,7 @@ func TestARoutineHandBackConfirmedAsItIsMadeLetsACleanStopAfterAReconnectRelease
 	held.mu.Unlock()
 	trace.name(delivery, "holder")
 	confirmed := testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool {
-		record := delivery.publishRecord()
+		record := delivery.handBacks.publishRecord()
 		return record.ended > 0 && !record.unconfirmed()
 	})
 

@@ -342,12 +342,12 @@ func namedDeliveryState(trace *stopTrace, delivery *intakeDelivery, name string)
 	return deliveryState(delivery)
 }
 
-// deliveryState is delivery's state, read under its lock: whether its stop has begun (stopping),
-// whether that stop has handed back the messages it held (released), whether the stop lets
-// hand-backs out (handBackAllowed), how many hand-backs are taken and not settled (taken), whether
-// it is sealed, how many hand-back publishes have ended and how many of those a flush confirmed
-// (ended, confirmed), how many messages it holds for the stop to hand back (held), and whether its
-// hold covers it (holdCovers).
+// deliveryState is delivery's state, read under its lock and its hand-back record's lock: whether
+// its stop has begun (stopping), whether that stop has handed back the messages it held
+// (released), whether the stop lets hand-backs out (handBackAllowed), how many hand-backs are
+// taken and not settled (taken), whether it is sealed, how many hand-back publishes have ended and
+// how many of those a flush confirmed (ended, confirmed), how many messages it holds for the stop
+// to hand back (held), and whether its hold covers it (holdCovers).
 func deliveryState(delivery *intakeDelivery) string {
 	if delivery == nil {
 		return "no delivery"
@@ -355,7 +355,9 @@ func deliveryState(delivery *intakeDelivery) string {
 	covers := delivery.holdCovers()
 	delivery.mu.Lock()
 	defer delivery.mu.Unlock()
+	delivery.handBacks.mu.Lock()
+	defer delivery.handBacks.mu.Unlock()
 	return fmt.Sprintf("stopping=%t released=%t handBackAllowed=%t taken=%d sealed=%t ended=%d confirmed=%d held=%d holdCovers=%t",
-		delivery.stopping.Load(), delivery.released, delivery.handBackAllowed, delivery.handingBack,
-		delivery.sealed, delivery.publishes.ended, delivery.publishes.confirmed, len(delivery.held), covers)
+		delivery.stopping.Load(), delivery.released, delivery.handBackAllowed, delivery.handBacks.handingBack,
+		delivery.handBacks.sealed, delivery.handBacks.publishes.ended, delivery.handBacks.publishes.confirmed, len(delivery.held), covers)
 }

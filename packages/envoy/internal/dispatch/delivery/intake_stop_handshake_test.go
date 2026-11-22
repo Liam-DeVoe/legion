@@ -243,7 +243,7 @@ func startGivenUpRow(t *testing.T) *stopRow {
 func (r *stopRow) requireNoHandBack(t *testing.T, delivery *intakeDelivery, naks func() int64) {
 	t.Helper()
 	select {
-	case <-delivery.handBacksLanded():
+	case <-delivery.handBacks.handBacksLanded():
 	case <-time.After(30 * time.Second):
 		t.Fatal("a hand-back publish was still waiting for NATS 30 s after the link came back")
 	}
@@ -610,7 +610,7 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 		testnats.AnswersWithin(t, 30*time.Second, "StopDelivering", stopped)
 		stopGiveUpArmed.Store(nil)
 		select {
-		case <-delivery.handBacksLanded():
+		case <-delivery.handBacks.handBacksLanded():
 		case <-time.After(30 * time.Second):
 			t.Fatal("the stop's hand-back was still waiting for NATS 30 s after the stop returned")
 		}
@@ -662,7 +662,7 @@ func TestAHandBackOutsideAStopReachesTheServerWhileAWriteHoldsTheLock(t *testing
 	testnats.RequireLockHeld(t, row.conn)
 	releaseWrite()
 	select {
-	case <-delivery.handBacksLanded():
+	case <-delivery.handBacks.handBacksLanded():
 	case <-time.After(30 * time.Second):
 		t.Fatal("the hand-back did not land within 30 s of the lock's release")
 	}
@@ -710,7 +710,7 @@ func TestAHandBackOnAReconnectingLinkLogsAtInfo(t *testing.T) {
 	close(linkCut)
 	delivery := row.delivery()
 	select {
-	case <-delivery.handBacksLanded():
+	case <-delivery.handBacks.handBacksLanded():
 	case <-time.After(30 * time.Second):
 		t.Fatal("the hand-back did not land within 30 s on the reconnecting link")
 	}
@@ -770,7 +770,7 @@ func TestACallNATSThatOutlivesItsWaitStillCompletesItsBookkeeping(t *testing.T) 
 		t.Fatal("the hand-back was never published")
 	}
 	select {
-	case <-delivery.handBacksLanded():
+	case <-delivery.handBacks.handBacksLanded():
 	case <-time.After(30 * time.Second):
 		t.Fatal("handBacksLanded never closed: the publish count was lost because callNATS skipped the call")
 	}
