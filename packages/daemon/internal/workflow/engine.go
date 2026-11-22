@@ -2608,7 +2608,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if len(beneath) > 0 {
 		return e.holdBeforeRetro(ctx, tx, issue, w, trigger, row.To, row.ToPlace, handoff, pr, reason, beneath)
 	}
-	from, err := e.arrive(ctx, tx, &issue, &w, trigger, row.To, row.ToPlace, PhaseStatus(row.To), nil, handoff, pr, reason)
+	from, written, err := e.arrive(ctx, tx, &issue, &w, trigger, row.To, row.ToPlace, PhaseStatus(row.To), nil, handoff, pr, reason)
 	if err != nil {
 		return err
 	}
@@ -2695,26 +2695,41 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if mergedAlready {
 		return e.closeMergedTelling(ctx, tx, issue, pr)
 	}
-	if row.To == phase.Done {
-		return e.leave(ctx, tx, issue, "done")
+	// The issue leaves the workflow where its tasks put it in done (putIssue): the move of the
+	// one task of an issue to done, and of the last task of a plan of several, whose others are
+	// each done. A task that does not merge is done at its last step while another task waits or
+	// runs, and the issue goes on.
+	if written.Phase == phase.Done {
+		return e.leave(ctx, tx, written, "done")
 	}
 	return nil
 }
 
 // arrive writes the move of issue into to on trigger, on w, the walk of its run, in the caller's
-// transaction, and answers the phase the issue moved from: the Dispatch status (Engine.status, ""
-// for none, with reason, the move's own, where moveReason posts one), the end of the step the issue
-// stood in (nameMoveEnd, on the issue as it stood: before the phase write, and before the start
-// that follows ends that run and begins its own), the task's move with the issue's phase
-// (moveTask), and the issue's write and its mark of movement. A hold, where one is given, overlays
-// the phase the task's new place derives, which its From names.
+// transaction, and answers the phase the issue moved from and the issue as written (putIssue): the
+// Dispatch status (Engine.status, "" for none, with reason, the move's own, where moveReason posts
+// one), the end of the step the issue stood in (nameMoveEnd, on the issue as it stood: before the
+// phase write, and before the start that follows ends that run and begins its own), the task's
+// move with the issue's phase (moveTask), and the issue's write and its mark of movement. A hold,
+// where one is given, overlays the phase the task's new place derives, which its From names. issue
+// may be a copy read for one task of a plan of several (view): it is left standing where that task
+// now stands, and the issue is written where its tasks put it, with the status of that phase
+// (putIssue), so the move posts its reason alone; a hold it is given holds the task too
+// (record.Store.HoldTask), whose hold the issue's derivation reads.
 func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *Walk, trigger TriggerKind, to phase.Phase, place record.TaskPlace, status string,
-	hold *record.Hold, handoff record.PhaseRow, pr *record.PullRequest, reason string) (phase.Phase, error) {
-	if err := e.status(ctx, tx, *issue, status, moveReason(trigger, issue.Phase, to, w.endingRole(issue.Phase), reason)); err != nil {
-		return "", err
+	hold *record.Hold, handoff record.PhaseRow, pr *record.PullRequest, reason string) (phase.Phase, record.Issue, error) {
+	viewed := issue.ViewTask != ""
+	if viewed {
+		if why := moveReason(trigger, issue.Phase, to, w.endingRole(issue.Phase), reason); why != "" {
+			if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: why}); err != nil {
+				return "", record.Issue{}, err
+			}
+		}
+	} else if err := e.status(ctx, tx, *issue, status, moveReason(trigger, issue.Phase, to, w.endingRole(issue.Phase), reason)); err != nil {
+		return "", record.Issue{}, err
 	}
 	if err := e.nameMoveEnd(ctx, *w, *issue, trigger, placeNamed(place, to), handoff); err != nil {
-		return "", err
+		return "", record.Issue{}, err
 	}
 	from := issue.Phase
 	state := record.TaskRunning
@@ -2722,13 +2737,19 @@ func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *
 		state = record.TaskDone
 	}
 	if err := e.moveTask(ctx, tx, issue, w, to, place, state); err != nil {
-		return "", err
+		return "", record.Issue{}, err
 	}
 	issue.Hold = nil
 	if hold != nil {
 		overlay := *hold
 		overlay.From = issue.Phase
 		issue.Phase, issue.Hold = phase.Held, &overlay
+		if viewed {
+			if err := e.store.HoldTask(ctx, tx, issue.Key, issue.Generation, w.Task, overlay.Reason); err != nil {
+				return "", record.Issue{}, err
+			}
+			w.State, w.HoldReason = record.TaskHeld, overlay.Reason
+		}
 	}
 	// This is the one write that moves an issue into a phase of its own, so it is where the issue's
 	// run earns record.Issue.TakenBack: it has stood in a phase. The mark is a fact about that run,
@@ -2738,23 +2759,36 @@ func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *
 	// its links say. Every other path that opens a run starts it clean: a child's re-entry into its
 	// tree (enterChild) and a child handed over as a root of its own without its run
 	// (admit.Admission.readmit). The invariant: no issue is exempt from the blocker check unless the
-	// run it is exempt for is the run it arrived with.
+	// run it is exempt for is the run it arrived with. A copy read for one task takes the mark where
+	// its write puts the issue in such a phase (putIssue).
 	if issue.CarriesRun() {
 		issue.TakenBack = true
 	}
-	if status != "" {
+	if status != "" && !viewed {
 		issue.Status = status
 	}
-	if err := e.writeIssueOn(ctx, tx, *issue, *w); err != nil {
-		return "", err
+	written := *issue
+	if viewed {
+		var err error
+		if written, err = e.putIssue(ctx, tx, *issue); err != nil {
+			return "", record.Issue{}, err
+		}
+		issue.Status, issue.TakenBack = written.Status, written.TakenBack
+	} else if err := e.writeIssueOn(ctx, tx, *issue, *w); err != nil {
+		return "", record.Issue{}, err
 	}
 	// The issue has moved: this is the write that takes it into another phase, the plainest
 	// movement there is (the rule, and what is left unmarked, in dispatchIssue).
 	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
-		return "", err
+		return "", record.Issue{}, err
 	}
-	e.logOnCommit(ctx, "workflow: phase changed", "issue", issue.Key, "tree", issue.Tree, "from", from, "to", to, "trigger", trigger, "status", issue.Status)
-	return from, nil
+	if !viewed {
+		e.logOnCommit(ctx, "workflow: phase changed", "issue", issue.Key, "tree", issue.Tree, "from", from, "to", to, "trigger", trigger, "status", issue.Status)
+	} else {
+		e.logOnCommit(ctx, "workflow: phase changed", "issue", issue.Key, "tree", issue.Tree, "task", w.Task, "from", from, "to", to, "trigger", trigger,
+			"status", written.Status, "issuePhase", written.Phase)
+	}
+	return from, written, nil
 }
 
 // holdBeforeRetro is the pass of a parent's last step into to, its retro, on a plan with no
@@ -2767,7 +2801,7 @@ func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *
 func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, trigger TriggerKind, to phase.Phase, place record.TaskPlace,
 	handoff record.PhaseRow, pr *record.PullRequest, reason string, beneath []string) error {
 	ended := w.endingRole(issue.Phase)
-	from, err := e.arrive(ctx, tx, &issue, &w, trigger, to, place, PhaseStatus(phase.Held), &record.Hold{Reason: record.HoldForChildren}, handoff, pr, reason)
+	from, _, err := e.arrive(ctx, tx, &issue, &w, trigger, to, place, PhaseStatus(phase.Held), &record.Hold{Reason: record.HoldForChildren}, handoff, pr, reason)
 	if err != nil {
 		return err
 	}

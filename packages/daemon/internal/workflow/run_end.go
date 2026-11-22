@@ -239,14 +239,23 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 			stood = *now
 		}
 		// The run's own walk, at its generation, names the phase its place is the step of, so the
-		// end is written for the step of that run's plan, whichever run the issue stands in now.
+		// end is written for the step of that run's plan, whichever run the issue stands in now:
+		// the walk of the run's task, read on the copy of the issue read for it (viewOn).
 		stood.Generation, stood.Hold = row.Generation, nil
-		w, err := e.walk(ctx, tx, stood)
+		ranPlan, err := e.store.Plan(ctx, tx, stood.Key, stood.Generation)
 		if err != nil {
 			return err
 		}
+		stood, w, onPlan, err := viewOn(stood, ranPlan, row.Place.Task)
+		if err != nil {
+			return err
+		}
+		stood.Hold = nil
 		var onWalk bool
-		if stood.Phase, onWalk = phaseAt(w, row.Place); !onWalk {
+		if onPlan {
+			stood.Phase, onWalk = phaseAt(w, row.Place)
+		}
+		if !onWalk {
 			if err := e.endOffWalk(ctx, tx, row, runs.endOf(run)); err != nil {
 				return err
 			}
@@ -289,10 +298,12 @@ type issueReader func(key string) (*record.Issue, error)
 
 // runOver is the end rule, the one answer to whether run is over. now is its issue as it stands
 // (nil for none), restarted whether a start of its place is about to begin, and read how its tree's
-// root is read. A run is over when its issue has no record, or stands at another place on the walk
-// of its run or in another generation (standingStep, which an issue its plan holds stands in no
-// step of); when a start of its place begins; or when its tree's root lingers, unless it is a
-// merge that can still land in that linger (mergeCanLand, whose closed lingers runs holds).
+// root is read. A run is over when its issue has no record, or the task of its run stands at
+// another place on the walk of its run or in another generation (standingStep, on the copy of the
+// issue read for that task, viewOn, which a task its plan no longer holds has none of, and which a
+// task its plan holds stands in no step of); when a start of its place begins; or when its tree's
+// root lingers, unless it is a merge that can still land in that linger (mergeCanLand, whose
+// closed lingers runs holds).
 func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run runAt, now *record.Issue, restarted bool, read issueReader) (bool, error) {
 	if restarted || now == nil {
 		return true, nil
@@ -300,11 +311,18 @@ func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run run
 	if now.Generation != run.generation {
 		return true, nil
 	}
-	w, err := e.walk(ctx, tx, *now)
+	stored, err := e.store.Plan(ctx, tx, now.Key, now.Generation)
 	if err != nil {
 		return false, err
 	}
-	if step, ok := standingStep(w, *now); !ok || step.place != run.place {
+	view, w, onPlan, err := viewOn(*now, stored, run.place.Task)
+	if err != nil {
+		return false, err
+	}
+	if !onPlan {
+		return true, nil
+	}
+	if step, ok := standingStep(w, view); !ok || step.place != run.place {
 		return true, nil
 	}
 	root := now
@@ -316,18 +334,19 @@ func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run run
 	if root == nil || !root.Lingers() {
 		return false, nil
 	}
-	if !awaitsMerge(*now) {
+	if !awaitsMerge(view) {
 		return true, nil
 	}
-	canLand, err := e.mergeCanLand(ctx, tx, runs, *now, *root)
+	canLand, err := e.mergeCanLand(ctx, tx, runs, view, *root)
 	return !canLand, err
 }
 
 // uncountedRunOpen is the boot's answer (OpenUncountedRuns) to whether issue, as read reads its
-// tree, stands in an open run that no start of this release counted, and that run: issue
-// stands in a step whose runs are recorded on the walk of its run (standingStep), the end rule does
-// not hold that run over (runOver), its tree is not the operator's, which runs no step of the
-// workflow (record.OperatorHoldsTree), and its generation started a run (generationStarted).
+// tree, stands in an open run that no start of this release counted, and that run: issue, the copy
+// of the issue read for one of its tasks where its plan holds several (viewsOf), stands in a step
+// whose runs are recorded on the walk of its run (standingStep), the end rule does not hold that
+// run over (runOver), its tree is not the operator's, which runs no step of the workflow
+// (record.OperatorHoldsTree), and its generation started a run (generationStarted).
 func (e *Engine) uncountedRunOpen(ctx context.Context, tx pgx.Tx, runs *factRuns, issue record.Issue, read issueReader) (runAt, bool, error) {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
