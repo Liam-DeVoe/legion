@@ -194,10 +194,21 @@ test("a writer inside the docs layer when its room fails is told, and the room r
   );
   expect(recovered.status).toBe(201);
 
-  const text = await getArtifactText(issue.primary_artifact_id);
-  console.log(`FAILED-ROOM document text=${JSON.stringify(text.markdown)}`);
-  // The room reloaded from its durable copy with the browser's own paragraph in it, which is the
-  // half of the recovery no status code shows.
-  expect(text.markdown).toContain("The browser typed this.");
+  // The browser's own paragraph is in the document the server serves, which is the half of the
+  // recovery no status code shows. Its append was the one cancelled, so the room never answered
+  // its frame as stored: the browser holds the edit and sends it again once it reconnects to the
+  // reloaded room, a reconnect its provider makes after a backoff of its own. So the text is read
+  // until it holds the paragraph, for at most 30 s.
+  let text = "";
+  await expect
+    .poll(
+      async () => {
+        text = (await getArtifactText(issue.primary_artifact_id)).markdown;
+        return text;
+      },
+      { timeout: 30_000 }
+    )
+    .toContain("The browser typed this.");
+  console.log(`FAILED-ROOM document text=${JSON.stringify(text)}`);
   await alice.close();
 });
