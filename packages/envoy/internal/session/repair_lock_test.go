@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The background retry holds repairMu through each of its attempts (retryRepair), and an attempt's
@@ -91,16 +92,14 @@ func TestTheHooksMoveDoesNotWaitOutTheRetrysAttempt(t *testing.T) {
 			started := time.Now()
 			rewatched := make(chan error, 1)
 			go func() { rewatched <- known.Rewatch(ctx, conn) }()
-			select {
-			case err := <-rewatched:
-				elapsed := time.Since(started)
-				if want := tc.returns(ctx); !errors.Is(err, want) {
-					t.Fatalf("Rewatch returned %v after %s, want %v", err, elapsed, want)
-				}
-				t.Logf("Rewatch returned %v %s after it began, with the retry's lock held", err, elapsed)
-			case <-time.After(time.Second + 100*time.Millisecond):
-				t.Fatal("Rewatch did not return within 1s of its run's end: it waited for the lock the retry's attempt holds")
+			// The test holds repairMu until its cleanup, so a Rewatch that waited for the lock the
+			// retry's attempt holds never answers: its answer, however late a loaded machine gives it,
+			// is the claim (testwait.Receive).
+			err := testwait.Receive(t, "Rewatch to return with the retry's lock held", rewatched)
+			if want := tc.returns(ctx); !errors.Is(err, want) {
+				t.Fatalf("Rewatch returned %v after %s, want %v", err, time.Since(started), want)
 			}
+			t.Logf("Rewatch returned %v %s after it began, with the retry's lock held", err, time.Since(started))
 		})
 	}
 }
