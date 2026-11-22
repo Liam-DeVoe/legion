@@ -1107,6 +1107,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 			Reason: "The first step of LEGION-209 took no plan of an earlier owner: version 1 of document 6a1f0c3e-2b7d-4e5a-9c81-3d4f5e6a7b80, given by legion-legion-legion-208-architect. It runs the default steps. To run a plan it did not take, give it again with register_plan as your own."},
 		{Kind: "retro-held", Role: claim.RoleImplementer, Phase: phase.Retro,
 			Reason: "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. A parent's head proves its children's merged work. Run each one to done, or park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed; Legion starts the retro when the last one leaves."},
+		{Kind: OwnerStepNotice, Role: claim.RoleImplementer, Phase: phase.Implementing,
+			Reason: "LEGION-208 implementing. Task: a. Step 1 of 2: implementer:owner. Steps: 1 implementer:owner, 2 reviewer, then Legion's retro, and its merge where the issue has a pull request."},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",

@@ -465,9 +465,10 @@ func (e *Engine) ownArchitectStarting(ctx context.Context, tx pgx.Tx, issue reco
 
 // startNamedStep writes the start of step, the step issue stands in (standingStep), under the agent
 // that step names (startAgent), the one place that decides who runs a start no phase worker's entry
-// names: a move into accepting, whose role is the architect, for which start starts no worker, or
-// into a merge GitHub has already made, which nobody runs and whose close ends it (transition), and
-// admission's promotion of a member whose worker it does not start (StartStepRecord).
+// names: a move into accepting of a run with no plan rows, whose role is the architect, which
+// starts no worker (Engine.start), a move into a merge GitHub has already made, which nobody runs
+// and whose close ends it (transition), and admission's promotion of a member whose worker it does
+// not start (StartStepRecord).
 func (e *Engine) startNamedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing) error {
 	agent, err := e.startAgent(ctx, tx, issue, step.at)
 	if err != nil {

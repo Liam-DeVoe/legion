@@ -2653,6 +2653,13 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // not `session-lost` because the kind is published as the notice's one-line message, and that
 // session was not lost: nothing of it was deleted. No earlier release decodes it, so the way back
 // of migration 20261120042902 deletes its unsent rows.
+//
+// `owner-step` is a step or a retro whose agent is the owner of the issue's task, told to the
+// owner, the issue's own architect (OwnerClaim), in place of a worker's start: the step's role
+// (none for the retro), the phase the issue stands in, and the step's task, the text a worker of
+// that step would be sent (workflow's Engine.start). No earlier release decodes it, so the way
+// back of the release that adds it deletes its unsent rows (docs/kubernetes.md, "Rolling back
+// below the release whose owner does a step").
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
@@ -2660,6 +2667,7 @@ var validNoticeKinds = []NoticeKind{
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
 	"session-lost", "session-forgotten", "session-store-fault", "task-stopped", "plan-not-taken", "retro-held",
+	OwnerStepNotice,
 }
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left

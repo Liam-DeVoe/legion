@@ -39,7 +39,10 @@ var testLines = [][]phase.Phase{
 // with no plan rows. The retro's move to merging is guarded by a pull request record, which an
 // issue with no plan rows always has at its retro (the implementer's move needs one, and a record
 // goes only at a new generation, which takes the issue back before its retro), so the row beside
-// it, to done with none, is never taken on today's line.
+// it, to done with none, is never taken on today's line. The row into accepting starts its agent,
+// as every row into a phase does: no code reads a row's effects but these tests (the engine's
+// start decides who starts), and that start, for an issue with no plan rows, is today's start
+// record of the architect alone.
 func todaysTable() []Row {
 	rows := []Row{
 		{From: phase.Admitted, Trigger: TriggerGateOpened, Guard: allow, To: phase.Planning, Effects: []EffectKind{EffectStart, EffectNotice}},
@@ -47,7 +50,7 @@ func todaysTable() []Row {
 		{From: phase.Implementing, Trigger: TriggerImplementationReady, Guard: func(s Snapshot) bool { return s.HasOpenOrMergedPR }, To: phase.Testing, Effects: []EffectKind{EffectStart, EffectNotice}},
 		{From: phase.Testing, Trigger: TriggerTesterPassed, Guard: allow, To: phase.Reviewing, Effects: []EffectKind{EffectStart, EffectNotice}},
 		{From: phase.Testing, Trigger: TriggerTesterFailed, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
-		{From: phase.Reviewing, Trigger: TriggerReviewApproved, Guard: allow, To: phase.Accepting, Effects: []EffectKind{EffectNotice}},
+		{From: phase.Reviewing, Trigger: TriggerReviewApproved, Guard: allow, To: phase.Accepting, Effects: []EffectKind{EffectStart, EffectNotice}},
 		{From: phase.Accepting, Trigger: TriggerSignOff, Guard: allow, To: phase.Retro, Effects: []EffectKind{EffectStart, EffectNotice}},
 		{From: phase.Reviewing, Trigger: TriggerReviewRejected, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
 		{From: phase.Retro, Trigger: TriggerRetroCompleted, Guard: func(s Snapshot) bool { return s.HasPullRequest }, To: phase.Merging, Effects: []EffectKind{EffectStart, EffectNotice}},

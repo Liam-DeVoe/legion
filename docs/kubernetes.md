@@ -2776,6 +2776,22 @@ A pod the rollback leaves running keeps its trimmer and the identifier that trim
 With the counts gone, nothing of these notices need come back except one kind: a notice of a filling volume is reported again by its trimmer at its next sweep that ends above the low mark once the newer release is pinned again, but the notice that a trimmer switched itself off is not, since that trimmer sends nothing more until its roles container restarts.
 The trimmer itself needs no statement either — `runtime.kubernetes.volume_trim` is a key an earlier loader refuses by name, so take the block out of `legion.yaml` before pinning that image, and a pod of the earlier release's own worker image runs no trimmer at all.
 
+#### Rolling back below the release whose owner does a step
+
+The release that lets the owner of an issue's task do a step of its own adds one architect notice kind, `owner-step`: a step or a retro whose agent is the owner, told to the issue's own architect with the step's task (`Engine.start` in `workflow/effects.go`).
+Name it by its contract entry rather than by its number: it is the release whose `packages/daemon/internal/api/version.go` carries the entry of the route `POST /legion/v1/steps/complete`.
+A daemon of any release before it knows no such kind, and it decodes an outbox payload strictly (`validNoticeKinds` in `record/outbox.go`), so an `owner-step` row still queued when that image is pinned can never be decoded.
+Such a row fails `GET /legion/v1/state` for the whole project on every attempt, by the chain the `volume-near-full` row above sets out (`WaitingNotices` in `record/store.go`, `pacedCatchUps` in `daemon/daemon.go`).
+
+No migration of that earlier release deletes these rows, so the delete is the operator's.
+Run this with every project's daemon on that database stopped, before the earlier image is pinned, with `<PROJECT>` the key of the project whose daemon rolls back:
+
+```sql
+delete from outbox where kind = 'notice' and payload->>'kind' = 'owner-step' and split_part(issue, '-', 1) = '<PROJECT>';
+```
+
+Each deleted row is a step or a retro of the owner that its owner is never told of.
+
 ### Pinning a release that drops what a running pod still uses
 
 A pod is built whole from the image pinned when it was launched, and no launch replaces a live pod for an image change alone:

@@ -2587,12 +2587,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
-	// Two moves start a step no phase worker's start begins, so it starts here, under the agent it
-	// names (startNamedStep): a merge GitHub has already made, which no merger runs and whose close
-	// ends it, and accepting, whose role is the architect, for which start above starts no worker
-	// and only starts a child's failed architect again (reviveArchitect), as every phase start of a
-	// child does.
-	if mergedAlready || row.To == phase.Accepting {
+	// A merge GitHub has already made starts a step no phase worker's start begins, so it starts
+	// here, under the agent it names (startNamedStep): no merger runs it, and its close ends it.
+	// Accepting is start's, as every other place is: the owner's, the fresh agent of acceptance's,
+	// and the architect's of a run with no plan rows.
+	if mergedAlready {
 		if step, ok := standingStep(w, issue); ok {
 			if err := e.startNamedStep(ctx, tx, issue, step); err != nil {
 				return err

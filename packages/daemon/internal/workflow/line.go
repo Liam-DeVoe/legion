@@ -525,12 +525,15 @@ func (w Walk) planStepAt(place record.TaskPlace) (record.PlanStep, bool) {
 }
 
 // RoleAt is the role that works the step of w's task at place: for a step, the worker of the
-// phase its role runs as (phase.RoleFor of plan.RunsAs: the architect for the owner's acceptance),
-// and the role itself where it runs as step, a role the deployment defines; at the retro the role
-// of the agent that does it (retroAgent: the role of the task's last step of the type
-// implementation, else the implementer, on whose row the owner's retro is recorded); the merger at
-// the merge; and "" at no act or at a place the task does not hold. On a task whose roles are
-// Legion's own it answers phase.RoleFor of the phase the place derives.
+// phase its role runs as (phase.RoleFor of plan.RunsAs), which is the role itself for every role
+// but acceptance, and the role itself where it runs as step, a role the deployment defines; for a
+// step of the role acceptance, the architect where the agent there is the owner (OwnerAt), who
+// signs it off, and the role acceptance where it is any other agent, the fresh agent of
+// acceptance; at the retro the role of the agent that does it (retroAgent: the role of the task's
+// last step of the type implementation, else the implementer, on whose row the owner's retro is
+// recorded); the merger at the merge; and "" at no act or at a place the task does not hold. On a
+// task whose roles are Legion's own and whose acceptance is the owner's it answers phase.RoleFor
+// of the phase the place derives.
 func (w Walk) RoleAt(place record.TaskPlace) claim.Role {
 	switch place.Kind {
 	case record.PlaceRetro:
@@ -543,10 +546,11 @@ func (w Walk) RoleAt(place record.TaskPlace) claim.Role {
 	if !ok {
 		return ""
 	}
-	if runs := plan.RunsAs(step.Role); runs != phase.Step {
-		return phase.RoleFor(runs)
+	runs := plan.RunsAs(step.Role)
+	if runs == phase.Step || (runs == phase.Accepting && !w.OwnerAt(place)) {
+		return claim.Role(step.Role)
 	}
-	return claim.Role(step.Role)
+	return phase.RoleFor(runs)
 }
 
 // endingRole is the role whose step a move of w's task out of from ends, read on the walk before

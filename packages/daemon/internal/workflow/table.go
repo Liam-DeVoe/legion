@@ -122,13 +122,12 @@ var stepRows = []struct {
 // implementing stands before the step
 // that fails, and a step with no implementing before it has none. Each row carries the places of
 // its two positions (placeAt), so a line that holds a phase at two places, two steps of roles the
-// deployment defines, has a row for each. A row into accepting starts nobody, because accepting's
-// role is the tree's architect; every other row into a phase of the line starts its role. No row
-// carries a status of its own: every status a row writes is its target phase's, which PhaseStatus
-// holds.
+// deployment defines, has a row for each. Every row into a phase of the line starts the agent of
+// the place it enters (startEffects). No row carries a status of its own: every status a row
+// writes is its target phase's, which PhaseStatus holds.
 func TableOf(line []phase.Phase) []Row {
 	rows := []Row{{From: phase.Admitted, Trigger: TriggerGateOpened, Guard: allow, To: line[0], ToPlace: placeAt(line, 0),
-		Effects: effectsInto(line[0])}}
+		Effects: startEffects}}
 	for _, step := range stepRows {
 		for at, from := range line {
 			if from != step.from {
@@ -142,14 +141,14 @@ func TableOf(line []phase.Phase) []Row {
 			}
 			to := line[next]
 			rows = append(rows, Row{From: from, Trigger: step.trigger, Guard: step.guard, To: to, FromPlace: placeAt(line, at),
-				ToPlace: placeAt(line, next), Effects: effectsInto(to)})
+				ToPlace: placeAt(line, next), Effects: startEffects})
 		}
 	}
 	retro, merge := record.TaskPlace{Kind: record.PlaceRetro}, record.TaskPlace{Kind: record.PlaceMerge}
 	if slices.Contains(line, phase.Retro) {
 		rows = append(rows,
 			Row{From: phase.Retro, Trigger: TriggerRetroCompleted, Guard: hasPullRequest, To: phase.Merging, FromPlace: retro, ToPlace: merge,
-				Effects: effectsInto(phase.Merging)},
+				Effects: startEffects},
 			Row{From: phase.Retro, Trigger: TriggerRetroCompleted, Guard: noPullRequest, To: phase.Done, FromPlace: retro, ToPlace: retro,
 				Effects: doneEffects})
 	}
@@ -197,7 +196,7 @@ func StoredTableOf(line []phase.Phase) []Row {
 					continue
 				}
 				rows = append(rows, Row{From: from, Trigger: step.trigger, Guard: step.guard, To: line[back], FromPlace: fromPlace,
-					ToPlace: to, Effects: effectsInto(line[back])})
+					ToPlace: to, Effects: startEffects})
 			}
 		}
 	}
@@ -230,14 +229,10 @@ func placeRank(place record.TaskPlace) int {
 	return 0
 }
 
-// effectsInto is what a row into to does beyond the move: it starts to's role and tells the
-// architect, except into accepting, whose role is the architect, which no row starts.
-func effectsInto(to phase.Phase) []EffectKind {
-	if to == phase.Accepting {
-		return []EffectKind{EffectNotice}
-	}
-	return []EffectKind{EffectStart, EffectNotice}
-}
+// startEffects are what a row into a phase of the line does beyond the move: it starts the agent
+// of the place it enters, accepting's among them (Engine.start: the owner is told its step, and
+// any other agent starts), and tells the architect.
+var startEffects = []EffectKind{EffectStart, EffectNotice}
 
 // backwardRows is the edge from every position of line back to each position of line before it,
 // by the line's own order: each phase of the line paired with every phase before it in the line,
@@ -257,7 +252,7 @@ func backwardRows(line []phase.Phase) []Row {
 	for at, from := range line {
 		for back, to := range line[:at] {
 			rows = append(rows, Row{From: from, Trigger: TriggerBackward, Guard: allow, To: to, FromPlace: placeAt(line, at),
-				ToPlace: placeAt(line, back), Effects: []EffectKind{EffectStart, EffectNotice}})
+				ToPlace: placeAt(line, back), Effects: startEffects})
 		}
 	}
 	return rows
