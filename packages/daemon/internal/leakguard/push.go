@@ -15,14 +15,17 @@ import (
 
 // gitPins is the configuration every git this package starts reads last: no hook and no
 // file-system monitor runs, whatever the repository's own configuration names; no replacement
-// object stands in for a commit, so the records read are the commits the push would send; and a
+// object stands in for a commit, so the records read are the commits the push would send; a
 // path is printed as it is, rather than with its non-ASCII bytes escaped, so that what the rules
-// read is the path the destination would hold.
+// read is the path the destination would hold; and no attributes file outside the repository
+// applies (core.attributesFile), so a person's global `-diff` cannot reach a read. A `-c` here
+// outranks the repository's configuration and GIT_CONFIG_COUNT and GIT_CONFIG_PARAMETERS alike.
 var gitPins = []string{
 	"--no-replace-objects",
 	"-c", "core.quotePath=false",
 	"-c", "core.hooksPath=/dev/null",
 	"-c", "core.fsmonitor=false",
+	"-c", "core.attributesFile=/dev/null",
 }
 
 // gitArgv is one git command with the pins in front of it, which is how every git of this
@@ -60,10 +63,14 @@ func (u Update) ref() string {
 // ParseUpdates reads git's pre-push lines, four fields a line, as a `legion leak-check` standing
 // in for a pre-push hook reads them from its own standard input. A line with another field count
 // is refused rather than guessed at: a check that misread its input would scan the wrong commits.
+// So is a line whose sha is not the full object name git writes, 40 or 64 lowercase hex digits
+// (objectName): every git the guard starts takes the sha as an argument, where a value beginning
+// with "-" would read as an option, and a refusal that quoted a value of other bytes could carry a
+// terminal's control bytes. The refusal names the line and never quotes the field.
 func ParseUpdates(r io.Reader) ([]Update, error) {
 	var updates []Update
 	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
+	for number := 1; scanner.Scan(); number++ {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
@@ -72,12 +79,24 @@ func ParseUpdates(r io.Reader) ([]Update, error) {
 		if len(fields) != 4 {
 			return nil, fmt.Errorf("a pre-push line holds %d fields, not the four git writes", len(fields))
 		}
+		if !objectName(fields[1]) || !objectName(fields[3]) {
+			return nil, fmt.Errorf("pre-push line %d holds a sha that is not the 40 or 64 lowercase hex digits git writes", number)
+		}
 		updates = append(updates, Update{LocalRef: fields[0], LocalSHA: fields[1], RemoteRef: fields[2], RemoteSHA: fields[3]})
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
 	return updates, nil
+}
+
+// objectName is whether sha is a full object name as git writes one to a pre-push hook: 40
+// lowercase hex digits under SHA-1, 64 under SHA-256, all zeros for a ref that is not there.
+func objectName(sha string) bool {
+	if len(sha) != 40 && len(sha) != 64 {
+		return false
+	}
+	return strings.Trim(sha, "0123456789abcdef") == ""
 }
 
 // PushRequest is one push: the repository it is made from, the remote it is made to, and what it
@@ -190,18 +209,18 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest) ([]Record, err
 // branch merged onto an older tip of the branch) would read every commit of the default branch
 // since that tip, not only the merge and the branch's own commits. A deletion adds no commit.
 //
-// An update that moves a ref to an object that is no commit once every annotated tag in front of
-// it is peeled off is an error (peelsToACommit), as a commit git could not read is.
+// The local sha is read as `<sha>^{commit}`: every annotated tag in front of it peeled off, and
+// a commit required at the end. A ref can hold a blob or a tree, or a tag of one, and git pushes
+// that object; rev-list given it bare lists no commit and exits 0, so the push would add nothing
+// to read and pass with the object's text unread. Given ^{commit}, git refuses with exit 128
+// ("expected commit type, but the object dereferences to blob type"), which Guard.git makes an
+// error of and Guard.Push a setup failure, as for any record git could not read. The "--" ends
+// the revisions, so git names the revision it refused and says nothing of a path.
 func (g *Guard) commits(ctx context.Context, req PushRequest, update Update) ([]string, error) {
 	if update.LocalSHA == "" || zeroSHA(update.LocalSHA) {
 		return nil, nil
 	}
-	if update.LocalSHA != update.RemoteSHA {
-		if err := g.peelsToACommit(ctx, req.Dir, update.LocalSHA); err != nil {
-			return nil, err
-		}
-	}
-	argv := []string{"rev-list", "--reverse", update.LocalSHA, "--not"}
+	argv := []string{"rev-list", "--reverse", update.LocalSHA + "^{commit}", "--not"}
 	held, err := g.holds(ctx, req.Dir, update.RemoteSHA)
 	if err != nil {
 		return nil, err
@@ -213,30 +232,12 @@ func (g *Guard) commits(ctx context.Context, req PushRequest, update Update) ([]
 	if req.Remote != "" {
 		remotes += "=" + req.Remote
 	}
-	argv = append(argv, remotes)
+	argv = append(argv, remotes, "--")
 	out, err := g.git(ctx, req.Dir, argv...)
 	if err != nil {
 		return nil, err
 	}
 	return strings.Fields(out), nil
-}
-
-// peelsToACommit fails unless sha, with every annotated tag in front of it peeled off, names a
-// commit. A ref can hold a blob or a tree, or a tag of one: git pushes that object, while rev-list
-// lists no commit for it and exits 0, so Guard.commits would read nothing and the object's text
-// would reach the destination unread. The rules read a push's commits alone, so such a push is
-// refused rather than passed: the type git answers for the peeled object is the test, anything but
-// "commit" refuses, and so does a type git could not read. A ref the destination holds at that sha
-// already is not asked about (Guard.commits), since the push sends nothing of it.
-func (g *Guard) peelsToACommit(ctx context.Context, dir, sha string) error {
-	out, err := g.git(ctx, dir, "cat-file", "-t", sha+"^{}")
-	if err != nil {
-		return err
-	}
-	if kind := strings.TrimSpace(out); kind != "commit" {
-		return fmt.Errorf("%s, which the push moves a ref to, is a %s once its tags are peeled, not a commit, and the private-name rules read a push's commits alone", short(sha), kind)
-	}
-	return nil
 }
 
 // holds is whether the repository has the commit sha names: false for a ref the push creates
@@ -373,8 +374,17 @@ func (g *Guard) addedPaths(ctx context.Context, dir, commit string, parents int)
 // holds. The "+++ b/<path>" that names the file is read only where a header stands, between a
 // "diff --" line and the hunk that follows it, so a line of content that reads like one is not
 // mistaken for the name of a file.
+//
+// Every file is read as text (--text). Without it git prints "Binary files … differ" and no line
+// at all for a file that holds a NUL byte, or whose path a `-diff` attribute or a driver with
+// `binary = true` covers, from the commit's own .gitattributes, .git/info/attributes or
+// core.attributesFile alike; the destination still gets the file, so its text would pass unread.
+// --text puts a file's bytes in the diff whatever the attributes say, which leaves them one way to
+// change what is read, a driver's textconv or an external diff command, and diff-tree runs
+// neither unless asked; --no-textconv and --no-ext-diff say so here rather than leave it to a
+// default.
 func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int) ([]Record, error) {
-	out, err := g.git(ctx, dir, diffTree(parents, "--unified=0", "--no-color", commit)...)
+	out, err := g.git(ctx, dir, diffTree(parents, "--unified=0", "--no-color", "--text", "--no-textconv", "--no-ext-diff", commit)...)
 	if err != nil {
 		return nil, err
 	}
