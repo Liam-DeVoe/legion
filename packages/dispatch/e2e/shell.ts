@@ -241,6 +241,12 @@ export const WRITE_KINDS_CHUNK = /\/assets\/kinds-[\w-]{8}\.js$/u;
  *  draws from, so no landmark shows they came down (`fetchedChunk`). */
 export const writesChunks = [PENDING_WRITES_CHUNK, KEPT_WRITES_CHUNK, WRITE_KINDS_CHUNK] as const;
 
+/** The new issue page's frame shell (`web/src/features/issue-page/frame-shell.tsx`, loaded
+ *  through `frame-chunk.ts`): the route chunk of both landings of a reader who turned that page
+ *  on (`e2e/landing-reads.e2e.ts`), and the chunk Settings starts as it draws the switch that
+ *  turns it on (`e2e/issue-page-switch.e2e.ts`). */
+export const FRAME_SHELL_CHUNK = /\/assets\/frame-shell-[\w-]{8}\.js$/u;
+
 /** The path of the editor library's own chunk (`@legion/proof-editor`, which
  *  `web/src/features/doc/document-chunks.ts`'s `loadEditorLibrary` imports), and not
  *  `lib-headless`, whose name begins the same way. */

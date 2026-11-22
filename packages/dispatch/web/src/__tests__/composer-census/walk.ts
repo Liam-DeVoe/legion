@@ -335,7 +335,7 @@ const CALL_WRAPPERS: Readonly<Record<string, CallWrapper>> = {
   },
   "features/issue-page/margin-slot.tsx#useMarginSlotFill()": {
     reason:
-      "the page's own fill of the margin's slot: the function a page last registered through useFillMarginSlot (MarginSlotProvider holds it in state), or undefined while none is registered, when SheetBody draws nothing in its place. Called during SheetBody's render, it answers what SheetBody draws, so what it is handed is drawn where the registered function draws its parameter, and mounts and unmounts with that place under SheetBody's own; the walk reads each function a caller of useFillMarginSlot hands it",
+      "the page's own fill of the margin's slot: the function a page last registered through useFillMarginSlot (the shell holds it in state, app.tsx's AppShell, as a test's MarginSlotProvider does), or undefined while none is registered, when SheetBody draws nothing in its place. Called during SheetBody's render, it answers what SheetBody draws, so what it is handed is drawn where the registered function draws its parameter, and mounts and unmounts with that place under SheetBody's own; the walk reads each function a caller of useFillMarginSlot hands it",
     registeredBy: "features/issue-page/margin-slot.tsx#useFillMarginSlot",
   },
 };

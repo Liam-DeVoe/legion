@@ -1,19 +1,24 @@
 import { createContext, type ReactNode, useContext, useEffect, useId, useReducer } from "react";
 
 /**
- * The names a page has already read for the references it draws, shared with every surface the
- * shell mounts beside it.
+ * The names a page has already read for the references it draws, shared with every surface of
+ * that page.
  *
  * A link to a block shows the block's own words, and reading them one link at a time is one
  * `GET /api/v1/references` per pointer - the read `GET /api/v1/reference-targets` makes once for
  * them all (its entry in `packages/envoy/internal/dispatch/api/routes_table.go`). A page that has
- * made that batched read publishes its answer here, and every link under the shell reads its own
+ * made that batched read publishes its answer here, and every link under the store reads its own
  * name from it instead of asking for it again. A page that publishes nothing leaves every link
  * exactly as it was, reading its own target.
  *
- * The store sits above the router, beside the margin's slot (`margin-slot.tsx`),
- * because the margin is mounted beside the router and its cards draw the same references as the
- * page's own column: a context inside the page would not reach them.
+ * The store is the new issue page's own, mounted at its root (`IssueOutlinePage.tsx`): that page
+ * is the one publisher (`useIssueTree.ts`) and its rows the one reader (`RowText.tsx`), the rows
+ * of its views and filters among them, and nothing the shell draws beside it - the margin,
+ * Details' fill included, the peek, the previews - reads a name from it. Mounted above the shell
+ * for one issue-page choice alone, it would make a change of that choice mount the whole shell
+ * again (`frame-context.ts`). A surface the shell draws that comes to read these names needs the
+ * store to reach it: Details' fill is drawn in the margin, beside the router, so its cards would
+ * need the store handed through the fill (`margin-slot.tsx`).
  *
  * More than one surface can publish at once: the page's own column and a sheet that draws the
  * outline beside it each read the tree and publish what they read. The store keeps one value per

@@ -270,7 +270,7 @@ function chunkTarget(program: Program, mod: Mod, decl: ts.Node, depth: number): 
 /** The component a chunk's loader imports, by its id: the export, of the module its
  *  `import("…")` names, that a name read off what the import answers names. The import is read
  *  in the module that holds it, wherever the loader is: a loader named by a constant of a module
- *  (`lazyChunk(loadIssuePage)`), a chunk named by its loader (`chunkComponent(frameShellChunk,
+ *  (`lazyChunk(loadIssuePage)`), a chunk named by its loader (`chunkComponent(pendingWritesChunk,
  *  …)`, `CHUNK`), and a loader that calls a function of a module making the import
  *  (`loadInboxChunk().then(…)`) are each followed to their declaration. */
 function loaderTarget(

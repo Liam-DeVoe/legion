@@ -18,8 +18,9 @@ import { type ComponentType, type LazyExoticComponent, lazy } from "react";
 // The shell now starts prefetches at a page's first paint - the search bar's, the Create issue
 // dialog's and the shortcut sheet's, the Markdown engine's warm, the writes host's three (the two
 // lists of writes and the kinds of write, `write-hosts.tsx`) and, on an address the landing read
-// takes for the Inbox, the Inbox peek's - so a bare chunk that failed in that window would reload
-// nothing.
+// takes for the Inbox, the Inbox peek's - and Settings starts the new issue page's frame as it
+// draws its switch (`features/issue-page/IssuePagePreference.tsx`), so a bare chunk that failed in
+// that window would reload nothing.
 //
 // So: a chunk a render waits on goes through `renderChunk`, a chunk nothing waits on through
 // `prefetchChunk`, and nothing imports a chunk through neither. A component a `Suspense` waits

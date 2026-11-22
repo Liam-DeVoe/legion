@@ -2,6 +2,7 @@ import { EMPTY_STATE_LINES } from "../web/src/features/issue-page/page-words";
 import { createIssue, createProject } from "./api";
 import { withIssuePage } from "./issue-page-option";
 import { openRail } from "./rail";
+import { FRAME_SHELL_CHUNK, fetchedChunk, recordTabReloads, tabReloads } from "./shell";
 import { expect, type Locator, type Page, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser, signIn, withAlice } from "./users";
@@ -388,4 +389,148 @@ test("with the setting on, an issue's loading, failure, absence and refused addr
   await page.goto(`/issues/${issue.key}/no-such-tab`);
   await expect(heading).toHaveText("Page not found");
   if (isPhone) await assertPageFits(page);
+});
+
+/** The Settings switch, on `page`. */
+function issuePageCheckbox(page: Page): Locator {
+  return page
+    .getByRole("region", { name: "Preview" })
+    .getByRole("checkbox", { exact: true, name: "New issue page" });
+}
+
+// The switch changes which issue page the reader is drawn and nothing above it: the shell, the
+// page the reader is on and every part drawn beside them stay mounted for both choices
+// (`AppShell`, `web/src/app.tsx`). So the checkbox the reader pressed is the one that keeps the
+// focus, in each direction. Two shells for the two choices would mount everything again at the
+// press, and the focus would land on the document's body.
+// SLOW(>=2s): a cold load of Settings, whose sections each read the server before the switch is
+// pressed twice.
+test("turning the new issue page on and off in Settings keeps the focus on its checkbox @phone", async ({
+  page,
+}, testInfo) => {
+  const isPhone = testInfo.project.name === "iphone";
+  if (!isPhone) await page.setViewportSize(desktop);
+  await page.goto("/settings");
+  const checkbox = issuePageCheckbox(page);
+  await checkbox.focus();
+  await page.keyboard.press("Space");
+  await expect(checkbox).toBeChecked();
+  await expect(checkbox).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(checkbox).not.toBeChecked();
+  await expect(checkbox).toBeFocused();
+  if (isPhone) await assertPageFits(page);
+});
+
+// A choice made in another tab reaches this one through the window's `storage` event
+// (`web/src/features/issue-page/stored-choice.ts`), and it too changes nothing above the issue
+// page: this tab's Settings stays mounted, with what the reader typed into its mapping form and
+// has not sent. Two shells for the two choices would mount this tab's whole page again at the
+// other tab's press, and the form would come back empty.
+// SLOW(>=2s): two tabs each load Settings cold, and the other tab's switch is pressed twice.
+test("another tab turning the new issue page on and off leaves this tab's unsent form text @phone", async ({
+  context,
+  page,
+}, testInfo) => {
+  const isPhone = testInfo.project.name === "iphone";
+  const second = await context.newPage();
+  for (const tab of [page, second]) {
+    if (!isPhone) await tab.setViewportSize(desktop);
+    await tab.goto("/settings");
+  }
+  const repository = page.getByRole("textbox", { exact: true, name: "Repository" });
+  await repository.fill("octo/unsent");
+
+  await issuePageCheckbox(second).check();
+  // This tab's own switch reads the choice the other tab stored, so the event has reached it.
+  await expect(issuePageCheckbox(page)).toBeChecked();
+  await expect(repository).toHaveValue("octo/unsent");
+  await issuePageCheckbox(second).uncheck();
+  await expect(issuePageCheckbox(page)).not.toBeChecked();
+  await expect(repository).toHaveValue("octo/unsent");
+  if (isPhone) await assertPageFits(page);
+});
+
+// The same for an agent token's value, which Settings shows once, as the token is minted, and
+// never again (`web/src/features/settings/AgentTokensSection.tsx`): a reader who had not copied
+// it yet when the other tab turned the new page on would have lost it for good.
+// SLOW(>=2s): two tabs each load Settings cold, and the token is minted through the server.
+test("another tab turning the new issue page on leaves this tab's shown-once agent token @phone", async ({
+  context,
+  page,
+}, testInfo) => {
+  const isPhone = testInfo.project.name === "iphone";
+  const second = await context.newPage();
+  for (const tab of [page, second]) {
+    if (!isPhone) await tab.setViewportSize(desktop);
+    await tab.goto("/settings");
+  }
+  await page.getByLabel("Token label").fill("Architect");
+  await page.getByRole("button", { name: "New token" }).click();
+  const shown = page
+    .getByRole("status")
+    .filter({ hasText: "Copy this token now." })
+    .locator("code")
+    .first();
+  // textContent waits for the code element to attach, and an element's text is never null, so
+  // the check below only narrows the type.
+  const token = await shown.textContent();
+  expect(token).toMatch(/^dsp_/);
+
+  await issuePageCheckbox(second).check();
+  await expect(issuePageCheckbox(page)).toBeChecked();
+  await expect(shown).toHaveText(token ?? "");
+});
+
+// The new page's frame is a chunk of its own (`web/src/features/issue-page/frame-chunk.ts`),
+// which the entry starts at boot only in a browser where some login chose the new page. So
+// Settings starts it as it draws the switch (`IssuePagePreference.tsx`): a reader who turns the
+// page on finds it in, or on its way, rather than waiting on a download only the press began.
+// SLOW(>=2s): a cold load of Settings, read until its frame's download is in the page's timing.
+test("Settings asks for the new issue page's frame before the reader turns it on @phone", async ({
+  page,
+}, testInfo) => {
+  const isPhone = testInfo.project.name === "iphone";
+  if (!isPhone) await page.setViewportSize(desktop);
+  await page.goto("/settings");
+  await expect(issuePageCheckbox(page)).not.toBeChecked();
+  await fetchedChunk(page, FRAME_SHELL_CHUNK);
+  if (isPhone) await assertPageFits(page);
+});
+
+// The new page's frame can fail to download while the browser is online - a deployment that
+// replaced the build the page loaded - with no recovery reload to follow: the tab's three reloads
+// are spent here, as a tab whose assets kept failing has spent them. The shell is then today's,
+// the one every reader who has not turned the new page on is drawn, which needs nothing of that
+// chunk (`web/src/app.tsx`): the reader stays signed in, with today's navigation, and the issue's
+// address draws the new page without its frame. A failure thrown into the render would reach the
+// app's top boundary (`web/src/main.tsx`), which replaces the whole app.
+// SLOW(>=2s): two loads of the issue, the first only to spend the tab's reloads in its own
+// storage.
+test("with the new issue page's frame failing to download online and no reload to follow, the reader gets today's shell, signed in @phone", async ({
+  context,
+  page,
+}, testInfo) => {
+  const isPhone = testInfo.project.name === "iphone";
+  const issue = await seedIssue();
+  if (!isPhone) await page.setViewportSize(desktop);
+  await page.goto(`/issues/${issue.key}`);
+  await expectTodaysPage(page);
+  const spent = await recordTabReloads(page, [3, 2, 1]);
+
+  await withIssuePage(context, "alice");
+  const refused: string[] = [];
+  await page.route(FRAME_SHELL_CHUNK, (route) => {
+    refused.push(route.request().url());
+    return route.abort();
+  });
+  await page.goto(`/issues/${issue.key}`);
+  await expect(newPageHeading(page)).toHaveText(issue.title);
+  expect(refused, "the new page's shell was never asked for").not.toEqual([]);
+  await expect(page.getByTestId("error-boundary")).toHaveCount(0);
+  await expect(page.getByTestId("icon-rail")).toHaveCount(0);
+  if (isPhone) await assertPageFits(page);
+  await openRail(page);
+  await expect(page.getByText("Signed in as alice")).toBeVisible();
+  expect(await tabReloads(page), "the failure reloaded the page").toEqual(spent);
 });

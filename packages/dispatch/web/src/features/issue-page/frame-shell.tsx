@@ -1,69 +1,78 @@
-import { type ComponentProps, type ReactNode, useMemo, useState } from "react";
-import { useLocation } from "react-router-dom";
+import type { ComponentProps, ReactNode } from "react";
 
 import { borderDefault, pagePaperBg, skeletonBg } from "../../theme/classes";
-import { MarginProvider } from "../margin/margin-context";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "../refs/ref-preview-card";
 import { parseIssuePath } from "../refs/routes";
-import { MD_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { IconRail } from "./IconRail";
-import { type MarginDrawer, type MarginDrawerPage, MarginSlotProvider } from "./margin-slot";
-import { ReferenceNamesProvider } from "./reference-names";
-import { type ShellNavigation, ShellNavigationContext } from "./shell-navigation";
-import { ShortcutHelpOpener } from "./shortcut-help-opener";
+import type { MarginDrawer, MarginDrawerPage } from "./margin-slot";
+import type { ShellNavigation } from "./shell-navigation";
 
 /**
- * The shell of a reader who turned the new issue page on: the frame that page draws in (R1, R12,
- * R14), around the shell `app.tsx` draws for every reader (`AppShell`).
+ * The frame the new issue page draws in (R1, R12, R14), for a reader who turned that page on:
+ * what it changes in the shell `app.tsx` draws for every reader (`AppShell`), on an issue's
+ * address and nowhere else.
  *
  * WHY A CHUNK. Every page of the dashboard parses the entry chunk before it draws anything, and
  * a reader who has not turned the new page on draws none of this: not the icon rail, not the
- * Details drawer's state, not the providers the new page reads, not the frame's skeleton. So
- * this module is a chunk of its own (`frame-chunk.ts`), which the shell's switch draws only for
- * that reader, and its imports - the rail, the margin's slot, the published reference names,
- * the shell's navigation for the page's header and the opener of the list of keys - are
- * imported by no module of the entry.
+ * Details drawer's rules, not the frame's skeleton. So this module is a chunk of its own
+ * (`frame-chunk.ts`), which the shell loads only for that reader, and its imports - the rail and
+ * the attribute that keeps reference cards off the page - are imported by no module of the entry.
  *
- * The frame changes the shell on an issue's address only (`ShellFrame`), and the providers wrap
- * everything the shell draws on every page (`FrameProviders`), as they did when the shell
- * mounted them itself: a move between an issue and another page then keeps every component the
- * shell draws, the live views among them. `AppShell` draws both with its own state, which stays
- * its own, and draws today's shell wherever the frame is undefined.
+ * WHY A FUNCTION THE SHELL CALLS, AND NOT A COMPONENT AROUND THE SHELL. A reader can turn the
+ * page on or off at any moment, in this tab or another (`stored-choice.ts`), and the shell must
+ * then stay mounted: a component of this chunk drawn around the shell for one choice alone would
+ * make React mount the whole shell again at the change, taking the focus, open dialogs, live views
+ * and every unsent field with it. So the shell draws itself the same way for both choices and
+ * calls `frameOf` in its own render, over state it keeps for the frame (`FrameInput`): what this
+ * answers is plain values the shell draws with, and the providers the page reads take them from
+ * the shell's one frame context (`frame-context.ts`).
  */
 
-/** What the frame's providers take from the shell's own state (`AppShell`). */
-export interface ShellState {
+/** What the frame is computed from: the address, and the shell's own state, which it keeps for
+ *  the frame - Details' and the navigation sheet's - so that a change of the choice keeps it. */
+export interface FrameInput {
+  /** The issue Details was opened on, if it is open: `AppShell` forgets it as the reader
+   *  leaves that issue, so every load opens Details closed and so does every move to another
+   *  issue, and coming back to the issue - by a link or by Back - finds it closed. */
+  readonly detailsFor: string | undefined;
+  /** What the new page's root hands Details: its words and its address rule
+   *  (`drawer-page.ts`), so that the shell imports neither. */
+  readonly drawerPage: MarginDrawerPage | undefined;
+  /** The address the shell is on. */
+  readonly location: { readonly pathname: string; readonly search: string };
   /** Whether the navigation's sheet is open. */
   readonly navigationOpen: boolean;
-  /** What a page's own Keys control does: what `?` does. */
-  readonly openHelp: () => void;
+  /** Whether the icon rail fits: the query that is Tailwind's `md` itself, in `rem`
+   *  (`MD_VIEWPORT_QUERY`), because the room the page makes for the rail is `md:pl-14`; a pixel
+   *  query would draw the rail over the page wherever the two disagree, which is every width from
+   *  768 to 959 px at a 20 px default font. */
+  readonly railFits: boolean;
+  readonly setDetailsFor: (issue: string | undefined) => void;
+  readonly setDrawerPage: (page: MarginDrawerPage | undefined) => void;
   readonly setNavigationOpen: (open: boolean) => void;
 }
 
-/** Draws `body`, everything the shell draws, inside the providers the new issue page reads. */
-export type FrameProviders = (body: ReactNode, shell: ShellState) => ReactNode;
-
 /** What the new issue page's frame changes in the shell, on an issue's address. */
 export interface ShellFrame {
+  /** The margin as Details, a drawer over the page. */
+  readonly drawer: MarginDrawer;
   /** What `<main>` holds while the page's code loads. */
   readonly fallback: ReactNode;
   /** `<main>`'s attributes in the frame: its references open no card on hover (R6). */
   readonly mainAttributes: Readonly<Record<string, string>>;
   /** `<main>`'s class in the frame. */
   readonly mainClass: string;
-  /** The icon rail where the sidebar stands, or nothing below `md`, where the page's header
-   *  draws the control that opens the navigation. */
+  /** What the page's header draws its `☰` from below `md`, where the frame draws neither the
+   *  shell's bar nor the rail; undefined from `md` up, where the rail draws that control. */
+  readonly navigation: ShellNavigation | undefined;
+  /** The icon rail where the sidebar stands, or nothing below `md`. */
   readonly rail: (props: ComponentProps<typeof IconRail>) => ReactNode;
   /** What Shift+M does in the frame: the margin is Details, which it opens and closes. */
   readonly toggleDetails: () => void;
 }
 
-export interface FrameShellProps {
-  /** Draws the shell with the frame of this address, `undefined` off an issue's address, and
-   *  the frame's providers. The shell is handed in rather than imported: `app.tsx` is the entry,
-   *  and this chunk is what the entry loads. */
-  readonly shell: (frame: ShellFrame | undefined, providers: FrameProviders) => ReactNode;
-}
+/** The frame of the address `input` names, `undefined` off an issue's address. */
+export type FrameOf = (input: FrameInput) => ShellFrame | undefined;
 
 /**
  * In the frame `<main>` has no padding of its own: the page's header, its view row, its Contents
@@ -105,94 +114,66 @@ function IssueFrameFallback(): ReactNode {
   );
 }
 
-/**
- * The providers mounted around everything the shell draws: the margin's own, and the four the
- * new issue page's frame reads (R12, R14). `drawer` is Details, which only
- * the frame passes: with it undefined the margin is the column it has always been, and no page
- * fills its slot. `navigationShown` says whether the page's header draws its `☰` from the
- * navigation, and the Keys control opens `openHelp`. A page publishes the names it read for its
- * references to everything under the shell, the margin beside the router among it
- * (`ReferenceNamesProvider`).
- */
-function ShellProviders({
-  children,
-  drawer,
-  navigationOpen,
-  navigationShown,
-  openHelp,
-  setNavigationOpen,
-}: ShellState & {
-  children: ReactNode;
-  drawer: MarginDrawer | undefined;
-  navigationShown: boolean;
-}): ReactNode {
-  // What the page's header draws its `☰` from below `md`, where the frame draws neither the
-  // shell's bar nor the rail; undefined wherever the shell draws a control of its own.
-  const navigation = useMemo<ShellNavigation | undefined>(
-    () =>
-      navigationShown ? { onOpen: () => setNavigationOpen(true), open: navigationOpen } : undefined,
-    [navigationOpen, navigationShown, setNavigationOpen]
-  );
-  return (
-    <MarginProvider>
-      <ReferenceNamesProvider>
-        <MarginSlotProvider drawer={drawer} drawsSlot={drawer !== undefined}>
-          <ShellNavigationContext.Provider value={navigation}>
-            <ShortcutHelpOpener.Provider value={openHelp}>{children}</ShortcutHelpOpener.Provider>
-          </ShellNavigationContext.Provider>
-        </MarginSlotProvider>
-      </ReferenceNamesProvider>
-    </MarginProvider>
-  );
+/** A drawer as the shell last handed it, with what it was made from. */
+interface HandedDrawer {
+  readonly detailsFor: string | undefined;
+  readonly drawer: MarginDrawer;
+  readonly drawerPage: MarginDrawerPage | undefined;
+  readonly issue: string | undefined;
 }
 
-export function FrameShell({ shell }: FrameShellProps): ReactNode {
-  const location = useLocation();
-  // The frame (R1, R14), computed here once: an issue's address, since this shell is drawn only
-  // for a reader who chose the new page. In it an icon rail of 56 px stands where the sidebar
-  // stands, from Tailwind's `md` up, and below that the page's header draws the control that
-  // opens the navigation (`ShellNavigationContext`); the margin is Details, a drawer over the
-  // page. The rail is drawn by the query that is `md` itself, in `rem`, because the room the
-  // page makes for it is `md:pl-14`: a pixel query draws the rail over the page wherever the two
-  // disagree, which is every width from 768 to 959 px at a 20 px default font. Every other page
-  // keeps the shell exactly as it is for every other reader.
-  const issueFrame = parseIssuePath(location.pathname, location.search) !== undefined;
-  const railFits = useMediaQuery(MD_VIEWPORT_QUERY);
-  // Whether Details is open, held for the issue it was opened on: every load opens it closed, and
-  // so does every move to another issue. Leaving the issue forgets it in the same render, so
-  // coming back to it - by a link or by Back - finds it closed, as a load does.
-  const detailsIssue = parseIssuePath(location.pathname)?.key;
-  const [detailsFor, setDetailsFor] = useState<string | undefined>(undefined);
-  if (detailsFor !== undefined && detailsFor !== detailsIssue) setDetailsFor(undefined);
-  // What the new page's root hands Details: its words and its address rule
-  // (`drawer-page.ts`), so that the shell imports neither.
-  const [drawerPage, setDrawerPage] = useState<MarginDrawerPage | undefined>(undefined);
-  const detailsDrawer = useMemo<MarginDrawer | undefined>(
-    () =>
-      issueFrame
-        ? {
-            open: detailsFor !== undefined && detailsFor === detailsIssue,
-            page: drawerPage,
-            setOpen: (open: boolean) => setDetailsFor(open ? detailsIssue : undefined),
-            setPage: setDrawerPage,
-          }
-        : undefined,
-    [detailsFor, detailsIssue, drawerPage, issueFrame]
-  );
-  const frame: ShellFrame | undefined =
-    detailsDrawer === undefined
-      ? undefined
-      : {
-          fallback: <IssueFrameFallback />,
-          mainAttributes: FRAME_MAIN_ATTRIBUTES,
-          mainClass: FRAME_MAIN_CLASS,
-          rail: (props) => (railFits ? <IconRail {...props} /> : null),
-          toggleDetails: () => detailsDrawer.setOpen(!detailsDrawer.open),
-        };
-  const providers: FrameProviders = (body, state) => (
-    <ShellProviders drawer={detailsDrawer} navigationShown={issueFrame && !railFits} {...state}>
-      {body}
-    </ShellProviders>
-  );
-  return shell(frame, providers);
+/**
+ * The last drawer each shell was handed, by that shell's own setter, which lives as long as the
+ * shell does: a frame computed again for something Details does not read - the navigation's
+ * sheet, the width, a move between two views of one issue - hands back the same drawer, as a
+ * memo of what it is made from would. The margin's effects and the page's callbacks run on the
+ * drawer, and would run again for nothing on a new one.
+ */
+const handedDrawers = new WeakMap<FrameInput["setDetailsFor"], HandedDrawer>();
+
+function drawerOf(
+  issue: string | undefined,
+  { detailsFor, drawerPage, setDetailsFor, setDrawerPage }: FrameInput
+): MarginDrawer {
+  const handed = handedDrawers.get(setDetailsFor);
+  if (
+    handed !== undefined &&
+    handed.detailsFor === detailsFor &&
+    handed.drawerPage === drawerPage &&
+    handed.issue === issue
+  ) {
+    return handed.drawer;
+  }
+  const drawer: MarginDrawer = {
+    open: detailsFor !== undefined && detailsFor === issue,
+    page: drawerPage,
+    setOpen: (open: boolean) => setDetailsFor(open ? issue : undefined),
+    setPage: setDrawerPage,
+  };
+  handedDrawers.set(setDetailsFor, { detailsFor, drawer, drawerPage, issue });
+  return drawer;
 }
+
+/**
+ * The frame (R1, R14): on an issue's address, since the shell asks only for a reader who chose
+ * the new page. In it an icon rail of 56 px stands where the sidebar stands, from Tailwind's
+ * `md` up, and below that the page's header draws the control that opens the navigation
+ * (`ShellNavigation`); the margin is Details, a drawer over the page. Every other page keeps the
+ * shell exactly as it is for every other reader.
+ */
+export const frameOf: FrameOf = (input) => {
+  const { location, navigationOpen, railFits, setNavigationOpen } = input;
+  if (parseIssuePath(location.pathname, location.search) === undefined) return undefined;
+  const drawer = drawerOf(parseIssuePath(location.pathname)?.key, input);
+  return {
+    drawer,
+    fallback: <IssueFrameFallback />,
+    mainAttributes: FRAME_MAIN_ATTRIBUTES,
+    mainClass: FRAME_MAIN_CLASS,
+    navigation: railFits
+      ? undefined
+      : { onOpen: () => setNavigationOpen(true), open: navigationOpen },
+    rail: (props) => (railFits ? <IconRail {...props} /> : null),
+    toggleDetails: () => drawer.setOpen(!drawer.open),
+  };
+};

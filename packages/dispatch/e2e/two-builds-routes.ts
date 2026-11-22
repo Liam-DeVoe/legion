@@ -66,12 +66,12 @@ export const lazyPieces = {
     "the map from a live event to the reads it refreshes (api/event-refresh.ts), which the live " +
     "feed asks for once the page it landed on has drawn (api/event-refresh-load.ts)",
   "frame-shell":
-    "the new issue page's frame shell (features/issue-page/frame-shell.tsx, named once in " +
-    "features/issue-page/frame-chunk.ts): its providers, its state, its fallback and the icon " +
-    "rail, which the shell is drawn through only for a reader whose stored issue-page choice is " +
-    "`outline`, and which the entry starts beside the landing read on every address once a " +
-    "stored choice reads `outline` (app.tsx, preloadRouteChunk); the rail it draws from `md` up " +
-    "is what shows it ran",
+    "the new issue page's frame (features/issue-page/frame-shell.tsx, named once in " +
+    "features/issue-page/frame-chunk.ts): the code the shell computes the frame from, its " +
+    "fallback and the icon rail, which the shell loads only for a reader whose stored " +
+    "issue-page choice is `outline`, and which the entry starts beside the landing read on every " +
+    "address once a stored choice reads `outline` (app.tsx, preloadRouteChunk); the rail it " +
+    "draws from `md` up is what shows it ran",
   "headless-markdown":
     "the headless Markdown renderer, @legion/proof-editor/headless, which every page warms at " +
     "boot (features/refs/markdown-engine.ts)",

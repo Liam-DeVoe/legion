@@ -5,6 +5,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -30,8 +31,10 @@ import { useInboxCount } from "./features/inbox/useInboxCount";
 import { CreateIssueDialogHost } from "./features/issue/CreateIssueDialogHost";
 import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
 import { issueTabChunk } from "./features/issue/tab-chunks";
-import { frameShellChunk } from "./features/issue-page/frame-chunk";
-import type { FrameProviders, ShellFrame } from "./features/issue-page/frame-shell";
+import { frameIfLoaded, loadFrame } from "./features/issue-page/frame-chunk";
+import { ShellFrameContext } from "./features/issue-page/frame-context";
+import type { FrameOf } from "./features/issue-page/frame-shell";
+import type { MarginDrawerPage, MarginFill } from "./features/issue-page/margin-slot";
 import {
   outlineChosenInThisBrowser,
   useStoredIssuePageChoice,
@@ -61,8 +64,12 @@ import {
 } from "./features/refs/routes";
 import { useRecordRecents } from "./features/search/recents";
 import { SearchPaletteHost } from "./features/search/SearchPaletteHost";
-import { chunkComponent } from "./features/shell/chunk-component";
-import { lazyChunk, prefetchChunk } from "./features/shell/chunk-loads";
+import {
+  importWhenOnline,
+  lazyChunk,
+  prefetchChunk,
+  renderChunk,
+} from "./features/shell/chunk-loads";
 import { holdUntilContentDraws } from "./features/shell/content-drawn";
 import { ErrorBoundary } from "./features/shell/ErrorBoundary";
 import { KeymapProvider } from "./features/shell/KeymapProvider";
@@ -78,6 +85,7 @@ import { ShortcutHelpHost } from "./features/shell/ShortcutHelpHost";
 import { SIGN_OUT_SETTLE_MS, SignInChannel } from "./features/shell/sign-in-channel";
 import {
   COMPACT_VIEWPORT_QUERY,
+  MD_VIEWPORT_QUERY,
   READING_PANE_QUERY,
   useDialog,
   useMediaQuery,
@@ -211,13 +219,13 @@ function issueDrawsDocument(route: IssueRoute): boolean {
  * (`readLanding`).
  */
 export function preloadRouteChunk(pathname: string): void {
-  // A reader who turned the new issue page on draws the whole shell, on every page, through a
-  // chunk of its own (`features/issue-page/frame-chunk.ts`), so it is started here on every
-  // address, beside the landing read, for the reason the page's chunk is. This runs before the
-  // sign-in check has answered, so the login whose choice the shell will read is not known yet:
-  // any login's choice stored in this browser that reads `outline` starts it. A browser where
-  // nobody chose the new page fetches none of it.
-  if (outlineChosenInThisBrowser()) prefetchChunk(frameShellChunk.load);
+  // A reader who turned the new issue page on is drawn the shell once its frame's chunk is in
+  // (`features/issue-page/frame-chunk.ts`, `ChosenShell` below), on every page, so it is started
+  // here on every address, beside the landing read, for the reason the page's chunk is. This runs
+  // before the sign-in check has answered, so the login whose choice the shell will read is not
+  // known yet: any login's choice stored in this browser that reads `outline` starts it. A
+  // browser where nobody chose the new page fetches none of it.
+  if (outlineChosenInThisBrowser()) prefetchChunk(loadFrame);
   switch (landingReadOf(pathname).page) {
     case "issue": {
       prefetchChunk(loadIssuePage);
@@ -275,8 +283,10 @@ export function preloadRouteChunk(pathname: string): void {
 // bar's, the Create issue dialog's and the shortcut sheet's after the same paint
 // (`features/search/SearchPaletteHost.tsx`, `features/issue/CreateIssueDialogHost.tsx`,
 // `features/shell/ShortcutHelpHost.tsx`), the two lists of writes'
-// and the kinds of write's once the page has drawn (`features/writes/write-hosts.tsx`) and the
-// boot warm of the Markdown engine (`features/shell/DeploymentResilience.tsx`). Left bare, a
+// and the kinds of write's once the page has drawn (`features/writes/write-hosts.tsx`), the new
+// issue page's frame once Settings draws its switch
+// (`features/issue-page/IssuePagePreference.tsx`) and the boot warm of the Markdown engine
+// (`features/shell/DeploymentResilience.tsx`). Left bare, a
 // route chunk that failed while one of those prefetches was still out would be read as that
 // prefetch's and reload nothing, leaving the reader in front of a page that cannot draw
 // (dispatch://INFRA-1109); `lazy` itself is refused here by the repository's `biome.json`.
@@ -597,40 +607,21 @@ function NavigationContents({
   );
 }
 
-/** Everything the shell draws, inside the new issue page's providers where the reader's shell
- *  has them (`providers`, from the frame-shell chunk), and as it is everywhere else. The state
- *  those providers read, the navigation's sheet and what `?` opens, is the shell's own. */
-function WithFrameProviders({
-  children,
-  navigationOpen,
-  openHelp,
-  providers,
-  setNavigationOpen,
-}: {
-  children: ReactNode;
-  navigationOpen: boolean;
-  openHelp: () => void;
-  providers: FrameProviders | undefined;
-  setNavigationOpen: (open: boolean) => void;
-}): ReactNode {
-  if (providers === undefined) return children;
-  return providers(children, { navigationOpen, openHelp, setNavigationOpen });
-}
-
 /**
- * The shell every signed-in page is drawn in. `frame` is what the new issue page's frame changes
- * in it, on an issue's address for a reader who chose that page, and `providers` are what that
- * reader's shell mounts around everything it draws, on every page; both come from the
- * frame-shell chunk (`features/issue-page/frame-shell.tsx`) and are undefined for every other
- * reader, whose shell is exactly what this draws without them.
+ * The shell every signed-in page is drawn in, drawn the same way for both issue-page choices.
+ * `frameOf` is the new issue page's frame (`features/issue-page/frame-shell.tsx`), for a reader
+ * who chose that page and whose frame's chunk is in: the shell computes from it, in its own
+ * render, what the frame changes on an issue's address, and keeps the state the frame reads. It
+ * is undefined for every other reader, and `null` for a reader whose frame failed to download
+ * (`ChosenShell`), whose shell is exactly what this draws without it.
+ * Nothing this draws depends on which of the two it is for but those values, so a change of the
+ * choice mounts nothing again (`features/issue-page/frame-context.ts` says why that matters).
  */
 function AppShell({
-  frame,
-  providers,
+  frameOf,
   user,
 }: {
-  frame: ShellFrame | undefined;
-  providers?: FrameProviders;
+  frameOf: FrameOf | null | undefined;
   user: AuthenticatedUser;
 }): ReactNode {
   const queryClient = useQueryClient();
@@ -665,9 +656,39 @@ function AppShell({
     String
   );
   const location = useLocation();
-  // Whether the shell draws the new issue page's frame: an issue's address, for a reader who
-  // chose the new page (`frame`). Every other page, and every other reader's issue page, keeps
-  // the shell below exactly as it was.
+  // The issue the address names, if any: the page the focus moves by, and the issue Details was
+  // opened on.
+  const issueKey = parseIssuePath(location.pathname)?.key;
+  // Details, the new issue page's margin as a drawer: the issue it was opened on while it is
+  // open, and what the page's root hands it (`FrameInput`, `features/issue-page/frame-shell.tsx`).
+  // The shell keeps both for the frame, so a change of the choice keeps them, and forgets the
+  // first in the render that leaves that issue.
+  const [detailsFor, setDetailsFor] = useState<string | undefined>(undefined);
+  if (detailsFor !== undefined && detailsFor !== issueKey) setDetailsFor(undefined);
+  const [drawerPage, setDrawerPage] = useState<MarginDrawerPage | undefined>(undefined);
+  // What a page put in the margin's slot (`features/issue-page/margin-slot.tsx`). A fill is a
+  // function, and React reads a function handed to a setter as an updater, so a registration
+  // always wraps it in one.
+  const [fill, setFill] = useState<MarginFill | undefined>(undefined);
+  const fillSlot = useCallback((next: MarginFill | undefined) => setFill(() => next), []);
+  const railFits = useMediaQuery(MD_VIEWPORT_QUERY);
+  // What the new issue page's frame changes in the shell: on an issue's address, for a reader who
+  // chose the new page and whose frame is in. Every other page, and every other reader's issue
+  // page, keeps the shell below exactly as it was.
+  const frame = useMemo(
+    () =>
+      frameOf?.({
+        detailsFor,
+        drawerPage,
+        location,
+        navigationOpen,
+        railFits,
+        setDetailsFor,
+        setDrawerPage,
+        setNavigationOpen,
+      }),
+    [detailsFor, drawerPage, frameOf, location, navigationOpen, railFits]
+  );
   const issueFrame = frame !== undefined;
   // The shell reserves a gutter for a rail only where that rail exists. The collapsed-margin
   // rail exists only where the route has a margin, so it is reserved from exactly the answer
@@ -765,9 +786,14 @@ function AppShell({
   const navigate = useNavigate();
   // The registry as described when `?` fired (focus still on the caller); `null` while closed.
   const [helpSnapshot, setHelpSnapshot] = useState<readonly KeyBindingDescription[] | null>(null);
-  // What a page's own Keys control does (the frame's providers hand it to the page): what `?`
-  // does.
+  // What a page's own Keys control does (the frame context hands it to the page): what `?` does.
   const openHelp = useCallback(() => setHelpSnapshot(appKeymap.describe()), []);
+  // What the shell hands the new issue page and the margin beside it, drawn at one place for
+  // every reader and every page (`features/issue-page/frame-context.ts`).
+  const frameValue = useMemo(
+    () => ({ drawer: frame?.drawer, fill, fillSlot, navigation: frame?.navigation, openHelp }),
+    [fill, fillSlot, frame, openHelp]
+  );
   const [createOpen, setCreateOpen] = useState(false);
   const routeProject = routeProjectOf(location.pathname);
   useKeymap("global", [
@@ -908,9 +934,7 @@ function AppShell({
   // genuine page change — a different issue, or a different top-level route —
   // should move focus to the main region.
   const pageIdentity =
-    parseIssuePath(location.pathname)?.key ??
-    parseProjectPath(location.pathname)?.project ??
-    location.pathname;
+    issueKey ?? parseProjectPath(location.pathname)?.project ?? location.pathname;
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-run only to move focus to main on a real page change
   useEffect(() => {
@@ -976,12 +1000,7 @@ function AppShell({
   }`;
 
   return (
-    <WithFrameProviders
-      navigationOpen={navigationOpen}
-      openHelp={openHelp}
-      providers={providers}
-      setNavigationOpen={setNavigationOpen}
-    >
+    <ShellFrameContext value={frameValue}>
       <div
         className={`${fillsViewport ? "flex h-screen flex-col supports-[height:100dvh]:h-dvh xl:flex-row" : "xl:flex"} ${canvasText}`}
         data-testid="app-shell"
@@ -1203,33 +1222,61 @@ function AppShell({
         <CreateIssueDialogHost onClose={() => setCreateOpen(false)} open={createOpen} />
         <RefPreviewLayer />
       </div>
-    </WithFrameProviders>
+    </ShellFrameContext>
   );
 }
 
-/** The shell of a reader who turned the new issue page on, drawn as the sign-in check's skeleton
- *  while its chunk is on its way. */
-const FrameShell = chunkComponent(frameShellChunk, <ShellSkeleton />);
-
 /**
- * The shell the reader's choice of issue page draws: today's for `tabs`, with the margin's
- * provider around it, and for `outline` the frame-shell chunk, which draws the same shell inside
- * the new page's providers and with its frame on an issue's address. Only the choice is read
- * here, never the address, so a move between an issue and another page keeps the shell mounted;
- * a change of the choice mounts the other shell.
+ * The shell, drawn once and at one place for both issue-page choices, and the frame's code it
+ * draws the new page's frame from (`features/issue-page/frame-chunk.ts`).
+ *
+ * ONE SHELL. The reader can change the choice at any moment, with Settings' switch in this tab
+ * or another (`features/issue-page/stored-choice.ts`). Only the frame's code handed to the shell
+ * changes with it, so the shell and everything it draws stay mounted: the checkbox the reader
+ * pressed keeps the focus, and every tab of the login keeps its open dialogs, its live views and
+ * what the reader typed and has not sent.
+ *
+ * THE FRAME'S CODE is a chunk of its own, asked for while the reader's choice is the new page:
+ * the entry starts it at boot (`preloadRouteChunk`), and Settings as it draws its switch
+ * (`IssuePagePreference.tsx`). The shell's first draw waits for it, under the skeleton the
+ * sign-in check draws, so a reader who chose the new page never sees today's shell drawn first
+ * and the frame a moment after it (R10). After that first draw nothing waits for it again: a
+ * reader who turns the page on is drawn today's shell until the code is in - on Settings, where
+ * the switch is, the frame changes nothing - and the frame then.
+ *
+ * A DOWNLOAD THAT FAILS while the browser is online goes to the chunk-failure recovery, as every
+ * chunk a reader waits on does (`renderChunk`), and the reload that asks for does not always
+ * follow: the reader can stay at the leave prompt of a write out, a page asks for one reload
+ * only, and the tab's budget of reloads can be spent. The shell is then today's, for the life of
+ * this shell, which needs nothing of that chunk: the reader stays signed in, with the navigation,
+ * the writes and the page, and an issue's address draws the new page with no frame around it.
+ * Nothing is thrown into the render for it: outside the page's error boundary a throw would
+ * reach the app's top one (`main.tsx`), which replaces the whole app, `AuthGate` with it
+ * (`features/shell/ChunkBoundary.tsx` says what that costs). Offline it waits for the network
+ * (`importWhenOnline`).
  */
 function ChosenShell({ user }: { user: AuthenticatedUser }): ReactNode {
-  if (useStoredIssuePageChoice(user.login) === "tabs") {
-    return (
-      <MarginProvider>
-        <AppShell frame={undefined} user={user} />
-      </MarginProvider>
+  const outline = useStoredIssuePageChoice(user.login) === "outline";
+  // The frame's code once its chunk is in, and `null` once its download has failed. A load that
+  // lands after the choice went back to today's page sets what nothing reads until the choice
+  // comes back, and React drops a set on a shell that has gone.
+  const [frameOf, setFrameOf] = useState<FrameOf | null | undefined>(frameIfLoaded);
+  useEffect(() => {
+    if (!outline || frameOf !== undefined) return;
+    void renderChunk(() => importWhenOnline(loadFrame)).then(
+      (loaded) => setFrameOf(() => loaded),
+      () => setFrameOf(null)
     );
+  }, [frameOf, outline]);
+  const [drawn, setDrawn] = useState(false);
+  if (!drawn) {
+    if (outline && frameOf === undefined) return <ShellSkeleton />;
+    setDrawn(true);
   }
   return (
-    <FrameShell
-      shell={(frame, providers) => <AppShell frame={frame} providers={providers} user={user} />}
-    />
+    <MarginProvider>
+      <AppShell frameOf={outline ? frameOf : undefined} user={user} />
+    </MarginProvider>
   );
 }
 

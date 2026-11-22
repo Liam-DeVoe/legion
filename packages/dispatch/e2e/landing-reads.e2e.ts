@@ -63,14 +63,15 @@
  * the transport - is asked for before the landing read is sent too; without that start, each
  * comes down only once the document mounts.
  *
- * A reader who turned the new issue page on draws the whole shell, on every page, through a chunk
- * of its own (`web/src/features/issue-page/frame-chunk.ts`): the frame shell, which holds the new
- * page's providers, its state, its fallback and its icon rail. The entry starts that chunk beside
- * the landing read on every address once any stored choice reads `outline` (`preloadRouteChunk`'s
- * first statement), so it is the route chunk of that reader's two landings: without the start,
- * the shell asks for it only once the landing read has answered (`ChosenShell`), and draws no
- * shell until it is in. The board is the second of them because the start is made on every
- * address: a start made in the issue arm alone would pass the issue landing and fail the board's.
+ * A reader who turned the new issue page on is drawn the shell once a chunk of its own is in
+ * (`web/src/features/issue-page/frame-chunk.ts`): the frame, which holds the code the shell
+ * computes the new page's frame from, its fallback and its icon rail. The entry starts that
+ * chunk beside the landing read on every address once any stored choice reads `outline`
+ * (`preloadRouteChunk`'s first statement), so it is the route chunk of that reader's two
+ * landings: without the start, the shell asks for it only once the landing read has answered
+ * (`ChosenShell`), and draws no shell until it is in. The board is the second of them because
+ * the start is made on every address: a start made in the issue arm alone would pass the issue
+ * landing and fail the board's.
  * R3's bound is the bound of the issue page every reader gets, and the new page is a preview a
  * reader turns on in Settings (dispatch://INFRA-1196), so the two landings of that reader are
  * held to the shell's one wave and to the start of their chunk, and their reads and waves are
@@ -87,7 +88,7 @@ import { documentEditor } from "./editor";
 import { inboxPane } from "./inbox-pane";
 import { seedCommentThread, THREAD_SESSION } from "./inbox-threads";
 import { withIssuePage } from "./issue-page-option";
-import { EDITOR_LIBRARY_CHUNK } from "./shell";
+import { EDITOR_LIBRARY_CHUNK, FRAME_SHELL_CHUNK } from "./shell";
 import {
   type Browser,
   type BrowserContext,
@@ -427,11 +428,6 @@ const DOCUMENT_CHUNKS: readonly DocumentChunk[] = [
   { name: "transport", pattern: /\/assets\/yjs-[\w-]{8}\.js$/u },
 ];
 
-/** The new issue page's frame shell (`web/src/features/issue-page/frame-shell.tsx`, loaded
- *  through `frame-chunk.ts`), the route chunk of both landings of a reader who turned that page
- *  on (`Landing.routeChunk`). */
-const FRAME_SHELL_CHUNK = /\/assets\/frame-shell-[\w-]{8}\.js$/u;
-
 /** The landing route, which answers one page's whole cold read: the viewer, the shell, and the
  *  part of the answer the page named by `?page=` draws (`web/src/api/queries.ts`). */
 const LANDING_PATH = "/api/v1/landing";
@@ -463,7 +459,7 @@ function landingsOf(world: World): Landing[] {
       landingFor(read, "board"),
   };
   // A reader who turned the new issue page on: each landing is a context of its own, so each
-  // stores that choice, and the frame shell is the route chunk of every page that reader opens.
+  // stores that choice, and the frame's chunk is the route chunk of every page that reader opens.
   const outlineReader: Pick<Landing, "prepare" | "routeChunk"> = {
     prepare: (context) => withIssuePage(context, "alice"),
     routeChunk: FRAME_SHELL_CHUNK,
@@ -535,7 +531,7 @@ function landingsOf(world: World): Landing[] {
     {
       address: `/issues/${world.issue}`,
       // The first landing's address, for a reader whose stored choice is the new issue page:
-      // the new page draws there, in the frame shell. Its own content is the page's column,
+      // the new page draws there, in its frame. Its own content is the page's column,
       // which the new page draws once its read of the issue has answered. The locator is
       // `issueRead`'s (`e2e/issue-page.ts`), which every row of `e2e/issue-page-d.e2e.ts` waits
       // for once it has landed on the new page.
@@ -545,10 +541,9 @@ function landingsOf(world: World): Landing[] {
       ownData: issueData,
     },
     {
-      // The board for the same reader: no issue's address, so the frame shell draws today's
-      // shell inside the new page's providers, and the board draws as it does for every reader,
-      // from its own content and data above. What this landing adds is the frame shell's start
-      // on an address that is no issue's.
+      // The board for the same reader: no issue's address, so the frame changes nothing in the
+      // shell, and the board draws as it does for every reader, from its own content and data
+      // above. What this landing adds is the frame chunk's start on an address that is no issue's.
       ...board,
       ...outlineReader,
       name: "board of an outline reader",

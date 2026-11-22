@@ -675,9 +675,9 @@ function visits(seed: Seeded): readonly Visit[] {
     { route: "*", shows: (page) => [heading(page, "Page not found")], url: "/no-such-page" },
     {
       // Only a reader with the new issue page turned on loads its chunk (`IssueOutlinePage`), and
-      // only that reader's shell is drawn through the frame shell's chunk
+      // only that reader's shell loads the frame's chunk
       // (`web/src/features/issue-page/frame-chunk.ts`), so no visit above loads either. The frame
-      // shell holds the icon rail, which it draws from Tailwind's `md` up: the window here is the
+      // draws the icon rail from Tailwind's `md` up: the window here is the
       // project's Desktop Chrome one, 1280 px wide, and the rail among the landmarks is what
       // shows that chunk ran. This visit is last because the init script stays on the walk's one
       // context: an issue visit after it would draw the new page rather than today's.
