@@ -37,14 +37,15 @@
  *    between the seed and the shot, the Activity tab and a priority's margin head their lists by
  *    the day ("Today", "Yesterday"), and `<EarlierApproval>` draws the seeded day's own date.
  *    Nothing else in this suite freezes a clock for a whole page; `page.clock.install()` is used
- *    by rows that drive time themselves. Here each row installs it at the one instant the seed
- *    names (`seededAt`): the database's clock, which stamped every row of the corpus, read once
- *    the corpus was written, and the live registry's heartbeats are pinned to that instant too.
- *    So every relative label reads the same gap on every run, whatever the run's pace. The seed
- *    writes its whole corpus inside one UTC day (`e2e/visual-seed.ts`) and the two projects read
- *    pages in UTC (e2e/playwright.config.ts), so a day heading reads the same at whatever hour
- *    the run happens. A fixed literal would not do: the server stamps the corpus with its own
- *    clock, and its sweeps judge those stamps against that clock.
+ *    by rows that drive time themselves. Here each row fixes `Date` at the one instant the seed
+ *    names (`seededAt`, `page.clock.setFixedTime`): the database's clock, which stamped every
+ *    row of the corpus, read once the corpus was written, and the live registry's heartbeats are
+ *    pinned to that instant too. So every relative label reads the same gap on every run,
+ *    whatever the run's pace. The seed writes its whole corpus inside one UTC day
+ *    (`e2e/visual-seed.ts`), the page's `Date` never leaves that instant, and the two projects
+ *    read pages in UTC (e2e/playwright.config.ts), so a day heading reads the same at whatever
+ *    hour the run happens. A fixed literal would not do: the server stamps the corpus with its
+ *    own clock, and its sweeps judge those stamps against that clock.
  *    The `<time>` elements (`web/src/features/refs/Timestamp.tsx`, `web/src/features/inbox/
  *    Inbox.tsx`, `web/src/features/inbox/EarlierApproval.tsx`) are masked as well. The cost is
  *    that the text of a timestamp is in no baseline; its place, its size and the layout around
@@ -162,8 +163,11 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
     //
     // The instant itself and not one past it, because a day heading compares the day of each
     // stamp with the day of this clock: a clock set a minute past a corpus written in the last
-    // minute before midnight heads that corpus "Yesterday".
-    await page.clock.install({ time: new Date(seed.seededAt) });
+    // minute before midnight heads that corpus "Yesterday". And fixed there, not started there:
+    // a clock that runs from the instant crosses a midnight that falls inside the row's few
+    // seconds, and heads the corpus "Yesterday" the same way. `setFixedTime` holds `Date` at the
+    // instant and leaves the page's timers running, so every wait that settles a page still ends.
+    await page.clock.setFixedTime(new Date(seed.seededAt));
     await page.goto(route.path(seed));
     for (const colorScheme of SCHEMES) {
       await page.emulateMedia({ colorScheme });
