@@ -61,10 +61,10 @@ func protocolInfo(info *nats.ConsumerInfo) *jetstream.ConsumerInfo {
 	return out
 }
 
-// durableNames is the protocol over the listener's durable named durable, on client. Its naming and
-// metadata are the family table's for a durable's key (consumernames.DurableNaming), the ones an
-// operator's reader judges the record and the consumer by (consumernames.CheckFamily,
-// consumernames.OwnsFamily): Prefix(DurableKey(durable)) is durable.
+// durableNames is the protocol over the listener's durable named durable, on client. Its naming,
+// metadata and key rule are the family table's for a durable's key (consumernames.DurableNaming),
+// the ones an operator's reader judges the key, the record and the consumer by
+// (consumernames.CheckFamily, consumernames.OwnsFamily): Prefix(DurableKey(durable)) is durable.
 func durableNames(client *bus.Client, durable string) *consumernames.Names {
 	host, _ := os.Hostname()
 	naming := consumernames.DurableNaming()
@@ -81,7 +81,7 @@ func durableNames(client *bus.Client, durable string) *consumernames.Names {
 			}
 			return info.Config.Metadata[bus.StreamIDMetadataKey], nil
 		},
-		CheckKey: consumernames.CheckDurableKey,
+		CheckKey: naming.CheckKey,
 		Metadata: naming.Metadata,
 		Owner:    fmt.Sprintf("%s/%s/%d", durable, host, os.Getpid()),
 		// The candidate as the server answers it, against the whole configuration the durable's

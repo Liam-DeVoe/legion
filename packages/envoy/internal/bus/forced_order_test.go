@@ -93,6 +93,15 @@ type forcedRig struct {
 
 func newForcedRig(t *testing.T, topo forcedTopology, ownerOptions ...ConnectOption) *forcedRig {
 	t.Helper()
+	r := startForcedRig(t, topo, ownerOptions...)
+	r.makeSelection(t)
+	return r
+}
+
+// startForcedRig is the rig before its selection bucket: the servers, the stream's owner and the
+// test's own connection.
+func startForcedRig(t *testing.T, topo forcedTopology, ownerOptions ...ConnectOption) *forcedRig {
+	t.Helper()
 	r := &forcedRig{Servers: forcedorder.Start(t, topo)}
 	for _, srv := range r.Servers.Servers {
 		r.urls = append(r.urls, srv.URL())
@@ -105,9 +114,24 @@ func newForcedRig(t *testing.T, topo forcedTopology, ownerOptions ...ConnectOpti
 	r.owner = owner
 	r.conn = testnats.Connect(t, r.URL)
 	t.Cleanup(r.conn.Close)
-	r.consumers = forcedSessionConsumers(t, r.urls, r.conn, topo.Replicas)
 	return r
 }
+
+// makeSelection makes the rig's selection bucket and the build's SessionConsumers over it
+// (forcedSessionConsumers), then waits until every running member has applied the bucket's stream
+// and one leads it (testnats.Cluster.AwaitStreamApplied), before any call reads the bucket: a meta
+// leader that applies the bucket after its create answered refuses the first read "stream not
+// found" (TestForcedOrderASelectionBucketIsReadOnlyOnceTheMetaLeaderHasAppliedIt).
+func (r *forcedRig) makeSelection(t *testing.T) {
+	t.Helper()
+	r.consumers = forcedSessionConsumers(t, r.urls, r.conn, r.Topology.Replicas)
+	if r.Cluster != nil {
+		r.Cluster.AwaitStreamApplied(t, natsserver.DEFAULT_GLOBAL_ACCOUNT, forcedSelectionStream)
+	}
+}
+
+// forcedSelectionStream is the selection bucket's stream.
+const forcedSelectionStream = "KV_envoy_session_consumers"
 
 // The forcedorder steps on the notification stream, read on the rig's own connection.
 
