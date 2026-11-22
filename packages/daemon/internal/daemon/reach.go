@@ -341,11 +341,21 @@ func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
 		}
 		if k.relaunching[c.Token] {
 			// This daemon's relaunch of c is in flight: the row the sweep read is that relaunch's
-			// own writes, its record before the stop and its launch's, a fresh session not yet
-			// recorded among them, so nothing is read of it and nothing judged. Only the
-			// relaunch's answer moves the record (relaunchClaim). For its pod's other claims it
-			// reaches no Envoy meanwhile.
-			readings[c.Token] = read{k.recordOf(c), reachMarked}
+			// own writes, its record before the stop and its launch's, a fresh session or none
+			// among them, so none of it is read as the episode's end. Only the relaunch's answer
+			// moves the record (relaunchClaim). The one reading that ends a workflow claim's
+			// episode meanwhile is Envoy's: the session the record names registered again, so the
+			// claim is back in reach, and a refusal that answers later writes no line. The
+			// controller is not back until it says ready after the relaunch and holds its role
+			// (controllerBack), which only the relaunch's answer can show, so nothing of it is
+			// judged. For its pod's other claims a claim not back reaches no Envoy meanwhile.
+			rec := k.recordOf(c)
+			if k.registeredAgain(c, rec, now) {
+				readings[c.Token] = read{rec, reachRegistered}
+				watched = append(watched, c)
+				continue
+			}
+			readings[c.Token] = read{rec, reachMarked}
 			continue
 		}
 		rec, verdict := k.reading(c, now)
@@ -694,6 +704,17 @@ func (k *reachKeeper) relaunchClaim(ctx context.Context, c supervise.Claim, sinc
 func (k *reachKeeper) controllerBack(c supervise.Claim, rec supervise.Reach) bool {
 	return supervise.SaidReady(c.State) && c.LastReady.After(rec.RelaunchedAt) &&
 		k.sessions[c.Session].HoldsRole(string(c.Token))
+}
+
+// registeredAgain is whether workflow claim c, whose relaunch by this daemon is in flight, is back
+// in reach by Envoy's list: c records the session its record rec names, and that session
+// registered within the last 20 minutes. The controller never is (sweep). The caller holds mu.
+func (k *reachKeeper) registeredAgain(c supervise.Claim, rec supervise.Reach, now time.Time) bool {
+	if c.Role == claim.RoleController || c.Session == "" || c.Session != rec.Session {
+		return false
+	}
+	lastSeen := k.seen[c.Session]
+	return !lastSeen.IsZero() && now.Sub(lastSeen) <= supervise.UnreachableAfter
 }
 
 // carriesItsEpisode is whether c, the daemon's own controller, has left the session rec marks
