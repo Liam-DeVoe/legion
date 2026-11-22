@@ -1,18 +1,20 @@
 kind: Fixed
 body: |-
   A role claim's renewal of its claimant's session record writes back none of the fields of a
-  record the stream leader holds no writer's record for. Such a record - one an earlier build
-  wrote naming no key, or a RePublish the server stored at the session's key - may be another
-  session's or a writer's choice; the renewal reads it through a direct get, confirms it by a
-  leader read, and over a record the leader does not confirm it writes back only the machine, the
-  self-subscription and the projects of the claim's own token. The record's title, directory,
-  delivery, delivery epoch, client instance, capabilities, repository gap mark and display fields
-  (host, tmux place, consumer start, plugin and plugin version) are all cleared, so a RePublish
-  cannot bind another session's projects, pause a relay with a non-consumer delivery, or name a
-  machine or pane through a claim. A record that names its own key keeps its projects, as a
-  registration does. Where that write loses a compare-and-swap to a writer's record that landed in
-  between, the retry reads that record from the leader and keeps its gap mark, so a relay's mark is
-  not dropped and the session does not miss the notice it owes.
+  RePublish the server stored at the session's own key. The renewal reads the record through a
+  direct get, confirms it by a leader read, and where the leader holds no writer's record bound to
+  the key it writes back only the machine, the self-subscription and the projects of the claim's own
+  token. The record's title, directory, delivery, delivery epoch, client instance, capabilities,
+  repository gap mark and display fields (host, tmux place, consumer start, plugin and plugin
+  version) are all cleared, so a RePublish cannot bind another session's projects, pause a relay with
+  a non-consumer delivery, or name a machine or pane through a claim. A record an earlier build wrote
+  naming no key is not a RePublish at the session's key and is never cleared this way: the renewal
+  keeps its title and its other fields, and only its projects become the claim token's, as a
+  registration's do. Where the session's own writer's record stands when the renewal writes - a
+  registration, and a relay's gap mark or a consumer delivery on it, that landed between the
+  confirmation and the write, in either order - the renewal keeps that record's gap mark and delivery
+  mode rather than clearing a live session's own, so a relay's mark is not dropped and the session
+  does not miss the notice it owes.
 time: 2026-11-21T09:05:04Z
 custom:
     Issue: pr4858
