@@ -361,7 +361,9 @@ def install_jj(job):
 def install_omp(job):
     return reads(
         (".github/actions/install-omp/**", at(job, "./.github/actions/install-omp")),
-        (".omp-pin", ".github/actions/install-omp/action.yml:16 pin=$(<.omp-pin)"),
+        (".omp-pin", ".github/actions/install-omp/action.yml:28 pin=$(<.omp-pin)"),
+        (f"{DAEMON}/docker/worker.Dockerfile", ".github/actions/install-omp/action.yml:39 reads ARG OMP_SHA256, the "
+                                               "sha256 the release archive is held to"),
     )
 
 
@@ -1139,7 +1141,7 @@ AIRLOCK_JOB = "airlock-lean"
 AIRLOCK_LEAN = f"{ENVOY}/internal/cipher/proxyrules/lean"
 AIRLOCK_PKGS = ["./internal/cipher/proxyrules/"]
 AIRLOCK_SEED_STEP = "Compare the Go airlock with the model over the seed corpus"
-AIRLOCK_SEED_SCRIPT = "go test -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelReadsAHostlessEntryWithGuidance)$' ./internal/cipher/proxyrules/"
+AIRLOCK_SEED_SCRIPT = "go test -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelRefusesAHostlessEntry)$' ./internal/cipher/proxyrules/"
 AIRLOCK_FUZZ_STEP = "Fuzz the Go airlock against the model"
 AIRLOCK_FUZZ_SCRIPT = "go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/cipher/proxyrules/"
 AIRLOCK_BUILD_STEP = "Build the Lean model"
@@ -2502,11 +2504,14 @@ SCRIPT_TEST_GATES = [
          "directory it is given (go-tagged-tests.sh:97), so a second serverchange test, a rename of that "
          "function or a compound //go:build line there changes what this step prints"),
     ]),
+    harness("ci_router_outputs_test", "Test the router outputs' label terms", f"{SCRIPTS}/ci-router-outputs.test.sh", [
+        (f"{SCRIPTS}/ci_router_outputs.py", "the script under test"),
+    ]),
     harness("ci_ok_test", "Test ci-ok's verdict", f"{SCRIPTS}/ci-ok.test.sh", [
         (f"{SCRIPTS}/ci-ok.sh", "the script under test"),
-        (f"{SCRIPTS}/ci-ok.jq", "ci-ok.sh:145-198 runs its program with `jq -L \"$script_dir\"` and `include \"ci-ok\"`"),
+        (f"{SCRIPTS}/ci-ok.jq", "ci-ok.sh:173-232 runs its program with `jq -L \"$script_dir\"` and `include \"ci-ok\"`"),
         (f"{SCRIPTS}/runner-shutdown.sh",
-         "ci-ok.sh:99 sources it, and the harness drives it with a stand-in gh: it is what reads "
+         "ci-ok.sh:119 sources it, and the harness drives it with a stand-in gh: it is what reads "
          "a failure the platform caused off this run's check runs"),
         (f"{SCRIPTS}/gh-read.sh", "runner-shutdown.sh:104 sources it for its bounded gh reads"),
     ]),
@@ -2743,7 +2748,7 @@ GATES = [
                                          "agentmodels_omp_test.go:175 --stage-skills"),
         ("skills/**", f"{at(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP)}: internal/daemon/agentmodels_omp_test.go:175 "
                       "prepack stages skills/<name>"),
-    ) + install_jj(PLUGIN_PACK_JOB) + install_omp(PLUGIN_PACK_JOB)
+    ) + install_omp(PLUGIN_PACK_JOB)
       + setup_go(PLUGIN_PACK_JOB, f"{DAEMON}/go.mod") + bun_job(PLUGIN_PACK_JOB)),
 
     # The private-name port harness, in a job of its own: one step, which builds the `legion`
@@ -2864,8 +2869,8 @@ GATES = [
     ], reads=reads(
         ("docs/site/**", f"{at_docs('Typecheck the docs site')}, screenshots (docs/site/media/shots.ts) and build (generate.ts + astro build) in docs/site"),
         ("packages/dispatch/**", f"{at_docs('Build the Dispatch dashboard the screenshots show')}; docs/site/media/harness.ts:18-21,100 boots packages/dispatch/e2e/harness-start.ts"),
-        ("packages/proof-editor/src/**", "packages/dispatch/web/vite.config.ts:127-144 aliases (build:web)"),
-        (CONTRACTS_SRC, "packages/dispatch/web/vite.config.ts:117-126; docs/site/generators/dispatch-tools.ts:7"),
+        ("packages/proof-editor/src/**", "packages/dispatch/web/vite.config.ts:124-144 aliases (build:web)"),
+        (CONTRACTS_SRC, "packages/dispatch/web/vite.config.ts:117-123; docs/site/generators/dispatch-tools.ts:7"),
         # This gate is the one reader of envoy-client's sources that does not compile
         # cipher-client with them: every generator entry resolves to src/dispatch-command.ts,
         # whose program holds no cipher-client source (`bunx tsc --listFilesOnly`, 0 of 7), so
@@ -3002,7 +3007,7 @@ GATES = [
         ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:144-149"),
         (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-envoy/src/skills-guard.test.ts:208-212 reads every .md of skillAndPromptRoots (:30-33)"),
     ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; extensions/envoy.ts:19-131 imports")
-      + install_jj("pi-envoy") + install_omp("pi-envoy") + bun_job("pi-envoy")),
+      + install_omp("pi-envoy") + bun_job("pi-envoy")),
 
     gate("pi_legion", "pi-legion", runs=[
         script_run("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts",
@@ -3051,7 +3056,7 @@ GATES = [
     # says what they are). No go command runs here.
     gate("dispatch_ui", "dispatch-ui", reads=reads(
         ("packages/dispatch/**", f"{at('dispatch-ui', 'Typecheck dispatch dashboard')}, test, build, check:classes and check:asset-sizes in packages/dispatch"),
-        ("packages/proof-editor/**", f"{at('dispatch-ui', 'Typecheck proof editor')} and test; packages/dispatch/web/vite.config.ts:127-150"),
+        ("packages/proof-editor/**", f"{at('dispatch-ui', 'Typecheck proof editor')} and test; packages/dispatch/web/vite.config.ts:124-150"),
         # packages/contracts/src is no read of this table's: which of its modules this job compiles
         # is what its two tsc programs list, so check-ts-filters.sh writes them into the filter's
         # listed block and holds the block to them (ci_ts_programs.py, LISTED), and rule 9's second
@@ -3153,12 +3158,12 @@ GATES = [
         ("packages/dispatch/**", f"{BROWSER_SUITE_STEPS} run the suite, "
          f"{at_browser('Build dispatch dashboard')} builds the SPA the rows read, and "
          f"{at_browser(BROWSER_MERGE_STEP, BROWSER_MERGE)} merges their reports, in packages/dispatch"),
-        ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:127-150 (build:web)"),
+        ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:124-150 (build:web)"),
         # packages/contracts/src is no read of this table's either: the filter's listed block holds
         # the modules dispatch_ui's tsc programs compile and the dispatch command's bundle loads,
         # which check-ts-filters.sh writes, and ci_ts_programs.py's LISTED says why this suite
         # loads those and no other; each job's `Build contracts for dispatch e2e` step runs
-        # `build:dispatch`, whose four entries compile nothing outside dispatch_ui's.
+        # `build:dispatch`, whose three entries compile nothing outside dispatch_ui's.
         ("packages/envoy-client/bin/dispatch.ts", "packages/dispatch/e2e/inbox-cli.e2e.ts:328 runs it through e2e/dispatch-cli.ts:8"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
@@ -3601,12 +3606,12 @@ GATES = [
         ]),
     ], reads=reads(
         ("packages/dispatch/**", at(TWO_BUILDS_JOB, "Browser-test each build's page against the other build's server")),
-        ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:127-150 (build:web)"),
+        ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:124-150 (build:web)"),
         # packages/contracts/src is no read of this table's either: the filter's listed block holds
         # the modules dispatch_ui's tsc programs compile and the dispatch command the Go step runs
         # loads, which check-ts-filters.sh writes, and ci_ts_programs.py's LISTED says why this job
         # loads that union and no other. Its `Build contracts for dispatch e2e` step runs
-        # `build:dispatch`, whose four entries compile nothing outside it, and reads the package's
+        # `build:dispatch`, whose three entries compile nothing outside it, and reads the package's
         # manifest, which bun_job declares.
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds the server's port through it"),
@@ -3638,7 +3643,7 @@ GATES = [
 
     gate("airlock_lean", AIRLOCK_JOB, exact=[
         pinned_step(AIRLOCK_JOB, AIRLOCK_SEED_STEP, ENVOY, AIRLOCK_SEED_SCRIPT, [
-            (ENVOY, AIRLOCK_PKGS, "the proxyrules package's model comparisons: FuzzAirlock over the committed seed corpus, TestModelAgreesOnHostShapes and TestTheModelReadsAHostlessEntryWithGuidance", {}),
+            (ENVOY, AIRLOCK_PKGS, "the proxyrules package's model comparisons: FuzzAirlock over the committed seed corpus, TestModelAgreesOnHostShapes and TestTheModelRefusesAHostlessEntry", {}),
         ]),
         pinned_step(AIRLOCK_JOB, AIRLOCK_FUZZ_STEP, ENVOY, AIRLOCK_FUZZ_SCRIPT, [
             (ENVOY, AIRLOCK_PKGS, "the same tests, fuzzed against the model for 120 seconds", {}),
