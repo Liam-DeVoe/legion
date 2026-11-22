@@ -2921,7 +2921,8 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 // than the one bound that still applies to it (runtime.PromptTooLarge): the start frame a pod's
 // launcher reads, which the sandbox runtime measures before anything starts. Nothing was
 // started, and every later try would compose the same text from the same files and be refused
-// the same way until the deployment changes them, which takes a restart of the daemon. So it is
+// the same way until the deployment changes them, which takes a restart of the daemon, or, for a
+// role of the issue's plan, until a later version of the plan changes its prompt. So it is
 // charged no launch failure and not tried again: the claim fails at once, under the cause the
 // charged path at its limit would name (launchNow), with the refusal's sentence — the role, the
 // prompt's size and the limit — as its failure and as LastStartFailure, which read_state serves as

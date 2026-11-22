@@ -828,8 +828,8 @@ func SessionFromVolume(file, root string) (string, error) {
 // the launch that wrote it, so it stands in for no later launch's flag. A profile with no
 // `default` role is not refused here: Oh My Pi launches silently on a built-in model instead,
 // which is the deployment's to notice (deploy/kubernetes/operator-route/README.md, "Changing a
-// role's model"). Where the spec names a model (a role of the deployment's `model`,
-// runtime.SpawnSpec.Model), that model is named in the same place.
+// role's model"). Where the spec names a model (a role of the deployment's `model`, or the `model`
+// of a role of the issue's plan: runtime.SpawnSpec.Model), that model is named in the same place.
 func (l launch) agentArgv(agent []string) []string {
 	if l.runsClaude() {
 		return l.claudeArgv()
