@@ -23,6 +23,7 @@ import {
 import type * as EnvoyConfigModule from "../envoy-config";
 import {
   askgateSetting,
+  commandTimeoutMs,
   type EnvoyConfig,
   type EnvoyHarness,
   envoyConfigPath,
@@ -1316,6 +1317,76 @@ describe("a ! command in envoy.json", () => {
     expect(gone(Number(readFileSync(pidFile, "utf-8").trim()))).toBe(true);
     expect(left).toEqual([]);
   }, 20_000);
+
+  // A test that holds a command on its own gate while it waits on other processes sets the bound
+  // to its own timeout (claude-envoy's answers-hook rows); any other value keeps the 10 s.
+  test("runs for as long as ENVOY_COMMAND_TIMEOUT_MS says, whole ms from 1 to 2^31 - 1, when it is set", () => {
+    const bounds: [string | undefined, number][] = [
+      [undefined, 10_000],
+      ["300", 300],
+      ["1", 1],
+      ["2147483647", 2_147_483_647],
+      // Bun 1.4.4's spawnSync wraps a timeout of 2^31 ms or more.
+      ["2147483648", 10_000],
+      ["4294967296", 10_000],
+      ["4294967297", 10_000],
+      ["99999999999999999999", 10_000],
+      // In Bun, `timeout: 0` is no limit at all.
+      ["0", 10_000],
+      ["", 10_000],
+      [" ", 10_000],
+      ["-1", 10_000],
+      ["1.5", 10_000],
+      ["0300", 10_000],
+      ["1e3", 10_000],
+      [" 300", 10_000],
+      ["300 ", 10_000],
+      ["0x12c", 10_000],
+      ["soon", 10_000],
+    ];
+    expect(
+      bounds.map(([bound]) => [bound, commandTimeoutMs({ ENVOY_COMMAND_TIMEOUT_MS: bound })])
+    ).toEqual(bounds);
+
+    const home = tempDir();
+    const read = (bound: string, command: string) => {
+      // A file of its own for each read, since a command's outcome is kept by command and file.
+      const file = writeFile(path.join(tempDir(), "envoy.json"), {
+        dispatch: { ...dispatchOn, token: `!${command}` },
+      });
+      const env = { ...commandEnvironment(home), ENVOY_COMMAND_TIMEOUT_MS: bound };
+      return {
+        file,
+        settings: dispatchSettings(env, readEnvoyConfig(file, env, { cwd: tempDir() })),
+      };
+    };
+    const short = read("300", `sleep 5 # ${home}`);
+    expect(short.settings).toEqual({
+      enabled: false,
+      notice: null,
+      error: `${short.file}: dispatch.token's command did not finish within 0.3 s, and does not run again in this process`,
+    });
+    // A value refused keeps the 10 s itself, not merely no other bound: a 30 s command ends, named
+    // as having run out of 10 s, and not before 10 s.
+    for (const bound of ["0", ""]) {
+      const started = Date.now();
+      const refused = read(bound, `sleep 30 # ${bound === "" ? "empty" : bound} ${home}`);
+      const elapsed = Date.now() - started;
+      expect(refused.settings).toEqual({
+        enabled: false,
+        notice: null,
+        error: `${refused.file}: dispatch.token's command did not finish within 10 s, and does not run again in this process`,
+      });
+      expect(elapsed).toBeGreaterThanOrEqual(10_000);
+    }
+    // The longest bound Bun keeps, and the values it would wrap, all let a 0.5 s command finish.
+    for (const bound of ["2147483647", "2147483648", "4294967296", "4294967297"]) {
+      expect(read(bound, `sleep 0.5; printf ${USER_TOKEN}`).settings).toMatchObject({
+        enabled: true,
+        token: USER_TOKEN,
+      });
+    }
+  }, 45_000);
 
   test("whose field a variable overrides, or whose section is off, is not run", () => {
     const home = tempDir();
