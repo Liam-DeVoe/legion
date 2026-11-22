@@ -21,6 +21,7 @@ import {
 } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
+import { blockIdOfNode } from "./decision-review";
 import { artifactsBySlug } from "./issue-artifacts";
 import type {
   IssueTreeReads,
@@ -132,7 +133,7 @@ export interface TreeContext {
    *  (`ReferenceTarget.name`), with a typed block's directive left out (`blockWords`); `""` for
    *  a target the read has not answered for and for one nothing answers to now. It is a block's
    *  source, cut at 480 runes and unread, so no chip draws it: it is where a node's citations
-   *  are read from beside its words, and a block's words where the read sent no reading. */
+   *  are read from beside its words (`addDocumentChips`). */
   readonly excerptOf: (reference: string) => string;
   readonly key: string;
   /** The node `reference` names, as this issue addresses it; undefined for anything else. */
@@ -141,9 +142,6 @@ export interface TreeContext {
   readonly specSlug: string;
   /** The slug of one document of the issue, by its artifact id. */
   readonly slugOf: (artifactId: string) => string | undefined;
-  /** The server's reading of what `reference` points at, where the batched reference read sent
-   *  one: a typed block's own inner content, whole, references kept (`ReferenceTarget.text_tree`). */
-  readonly treeOf: (reference: string) => DisplayTree | undefined;
   /** The reader's login, which an open question waits on where its turn is theirs; undefined
    *  until the login resolves, and nothing waits on nobody. */
   readonly viewer: string | undefined;
@@ -266,10 +264,7 @@ export function treeContext(
   const kinds = new Map<string, NodeType>();
   for (const node of reads.tree?.nodes ?? []) {
     if (node.document !== undefined && node.issue === undefined && types.includes(node.supertag)) {
-      kinds.set(
-        blockNodeId(node.document.slug, node.block_id ?? node.id),
-        node.supertag as NodeType
-      );
+      kinds.set(blockNodeId(node.document.slug, blockIdOfNode(node)), node.supertag as NodeType);
     }
   }
   const nodeIdOfReference = nodeIdOf(reads.issue);
@@ -335,7 +330,6 @@ export function treeContext(
     nodeIdOf: nodeIdOfReference,
     specSlug,
     slugOf: (artifactId: string) => slugs.get(artifactId),
-    treeOf: (reference: string) => names.get(reference)?.text_tree,
     viewer: reads.viewer,
   };
 }
@@ -607,15 +601,32 @@ export function askState(ask: Ask): AskState | undefined {
 }
 
 /**
+ * Who decided a decision node, as the page names an author: the far end of its `decided_by`
+ * tuple, which the tree read answers with that person or session as context
+ * (`tree-read/tree-nodes.ts`' `draftDecision`): a session for an agent (`session:<id>`) and a
+ * person by login (`person:<login>`), which every other read names as a `user` actor. The end
+ * names no title the session stamped, so the session carries no origin, and one the registry no
+ * longer lists is named as any session nothing names (`AgentName.tsx`'s `drawnSessionName`).
+ * Undefined where the decision names nobody, or an end of another kind.
+ */
+export function deciderOf(
+  end: { readonly id: string; readonly kind: string } | null
+): Actor | undefined {
+  if (end === null) return undefined;
+  if (end.kind === "session") return { id: end.id, kind: "session" };
+  return end.kind === "person" ? { id: end.id, kind: "user" } : undefined;
+}
+
+/**
  * The gaps on one statement: the ones the coverage read carries that the page draws
  * (`coverageGapKind`), and `shaped_disagreement` where the statement has an origin - the node its
  * own `from` names - and a decision that says it shaped the statement (`shapers`, each by its
  * node id) is not that origin: the two edges disagree, and the page draws that rather than
  * picking one. The node its `from` names saying it shaped it is the two edges agreeing, which
- * draws none, and an absent `from` is no gap of its own (R10). A decision is what the decisions
- * read's entries hold one to be (`isDecisionEntry`): an open or a declined ask decided nothing.
- * `tree-read/tree-nodes.ts`' `draftRequirement` reads both edges from the tree read: the
- * statement's `from` attribute and the `shaped` tuples that end at it from a decision.
+ * draws none, and an absent `from` is no gap of its own (R10). `tree-read/tree-nodes.ts`'
+ * `draftRequirement` reads both edges from the tree read: the statement's `from` attribute, and
+ * the `shaped` tuples that end at it from a decision node - a `decision` node, or an ask the read
+ * answers a person's decision on (`isDecisionNode`); an open or a declined ask decided nothing.
  */
 export function requirementGaps(
   coverage: readonly string[],

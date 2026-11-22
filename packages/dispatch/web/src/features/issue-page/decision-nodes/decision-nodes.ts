@@ -1,3 +1,4 @@
+import { primarySpec } from "../../../api/issue-cache";
 import type { Decision, DecisionLink, DisplayTree, IssueDetails } from "../../../api/types";
 import { buildDispatchReference, parseDispatchReference } from "../../refs/routes";
 import { wordsOf } from "../../refs/tree-fragment";
@@ -51,7 +52,7 @@ export interface DecisionNode extends Decision {
  *  an ask node is (`askOfNode`). The page's reads (`IssueTreeReads`) pass as they are. */
 export type DecisionReads = Pick<IssueTreeReads, "asks"> & {
   readonly issue: Pick<IssueDetails, "key"> &
-    Partial<Pick<IssueDetails, "artifacts" | "open_asks">>;
+    Partial<Pick<IssueDetails, "artifacts" | "open_asks" | "primary_artifact_id">>;
 };
 
 /** The answer and the reads, looked up by the read's own ids: what `decisionNodes` reads them
@@ -61,6 +62,9 @@ export interface Lookup {
   /** The row of the issue's asks that the ask node is (`askOfNode`). */
   readonly askOf: (node: TreeAnswerNode) => TreeAsk | undefined;
   readonly key: string;
+  /** The slug of the issue's spec (`primarySpec`), `""` where the reads name none: a tie to a
+   *  block of it is named as the spec's own (`tieTargetReference`). */
+  readonly specSlug: string;
   readonly nodeOf: (readId: string) => TreeAnswerNode | undefined;
   /** The tuples of the answer that start at the node `readId` names, in the answer's order. */
   readonly tuplesFrom: (readId: string) => readonly TreeTuple[];
@@ -257,7 +261,8 @@ function blockAndWords(
 
 /**
  * An answered ask's `shaped` ties as the decisions read answers a decision's links: each naming
- * the node the tie reaches by the address the outline's chip names it by (`tieReference`), and
+ * the node the tie reaches by the address the outline's chip names it by (`tieReference` with
+ * `tieTargetReference`, a block of the spec as `spec#b-<id>`), and
  * not stale, since the answer says no tie is. A tie reaches a block - `shaped` is a `block[]` -
  * and the members of the link no reader reads are the ones the tuple holds no value for: the
  * ask's own time and no version.
@@ -265,10 +270,13 @@ function blockAndWords(
 function shapedLinks(node: TreeAnswerNode, lookup: Lookup): DecisionLink[] {
   return lookup.tuplesFrom(node.id).flatMap((tuple) => {
     if (tuple.kind !== "shaped") return [];
-    const ref = tieReference(tuple.to.id, lookup.nodeOf, (target) => referenceOf(target, lookup));
+    const ref = tieReference(tuple.to.id, lookup.nodeOf, (target) =>
+      tieTargetReference(target, lookup.key, lookup.askOf(target), lookup.specSlug)
+    );
     if (ref === undefined) return [];
     return [
       {
+        changed_since_tie: false,
         created_at: node.made_at ?? "",
         created_version: 0,
         from_block: node.block_id ?? node.id,
@@ -342,6 +350,28 @@ export function nodeReference(
       });
 }
 
+/**
+ * The address a tie names the node it reaches by, which a decision's links and the outline's
+ * chips (`tree-read/tree-nodes.ts`' `chipTo`) both read, so the two name one node by one
+ * address: a typed block of this issue's spec that is no ask as the spec's own
+ * (`spec#b-<id>`), as the server's reads and the outline's chips name one, and every other node
+ * by its own address (`nodeReference`). `specSlug` is the spec's slug, `""` where the caller
+ * holds none, which names every block by its document's slug.
+ */
+export function tieTargetReference(
+  node: TreeAnswerNode,
+  key: string,
+  ask: Pick<TreeAsk, "id"> | undefined,
+  specSlug: string
+): string | undefined {
+  const asked = node.supertag === "ask" && askIdOf(node, ask) !== undefined;
+  const ofThisIssue = node.issue === undefined || node.issue === key;
+  if (!asked && ofThisIssue && specSlug !== "" && node.document?.slug === specSlug) {
+    return buildDispatchReference({ block: { id: node.block_id ?? node.id }, key, kind: "spec" });
+  }
+  return nodeReference(node, key, ask);
+}
+
 /** The id of the ask an ask node is: that of `ask`, the row of the issue's asks it is
  *  (`askOfNode`), else the node's own where it is no block of a document, whose id would be the
  *  block's. */
@@ -411,6 +441,11 @@ function lookupOf(answer: TreeAnswer, reads: DecisionReads): Lookup {
     askOf: askOfNode(reads),
     key: reads.issue.key,
     nodeOf: (readId) => nodes.get(readId),
+    specSlug:
+      primarySpec({
+        artifacts: reads.issue.artifacts ?? null,
+        primary_artifact_id: reads.issue.primary_artifact_id ?? "",
+      })?.slug ?? "",
     tuplesFrom: (readId) => tuples.get(readId) ?? [],
   };
 }

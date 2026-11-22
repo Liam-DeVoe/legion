@@ -12,16 +12,14 @@ import { requirementBlockId, specBlockRef } from "./issue-layout-seed-text";
 import { presetCount, presetToggle } from "./issue-page";
 import { blockNode } from "./issue-page-g";
 import { expectActivePreset, pickPreset } from "./issue-page-i";
+import { drawnRowReadings, type RowReading, steadily } from "./issue-page-t";
 import {
   type DecisionsRead,
   type DecisionsReadWatch,
-  drawnRowReadings,
   type Gate,
   OWED_BY,
-  type RowReading,
-  steadily,
   type TreeView,
-} from "./issue-page-t";
+} from "./issue-page-t-tree";
 import type { ApiRequests } from "./traffic";
 
 /**

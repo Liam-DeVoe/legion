@@ -97,6 +97,7 @@ export function issueDetails(): IssueDetails & { artifacts: Artifact[] } {
 /** One `shaped` tie, from a decision to the node its link names. */
 export function shaped(ref: string): DecisionLink {
   return {
+    changed_since_tie: false,
     created_at: "2026-11-14T10:00:00Z",
     created_version: 1,
     from_block: "d1",

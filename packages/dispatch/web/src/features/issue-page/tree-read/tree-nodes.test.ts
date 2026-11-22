@@ -2,6 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 
 import { api } from "../../../api/client";
+import { primarySpec } from "../../../api/issue-cache";
 import type {
   Artifact,
   Ask,
@@ -13,7 +14,13 @@ import type {
   RequirementCoverage,
 } from "../../../api/types";
 import { buildDispatchReference } from "../../refs/routes";
-import { decisionNodes } from "../decision-nodes/decision-nodes";
+import {
+  askOfNode,
+  decisionNodes,
+  nodeReference,
+  nodesById,
+  tieTargetReference,
+} from "../decision-nodes/decision-nodes";
 import { decisionNodeChanges } from "../decision-review";
 import {
   assemble,
@@ -266,6 +273,7 @@ function question(id: string, extra: Partial<Ask> = {}): Ask {
 /** A decision's link to the node `ref` addresses, as the decisions read answers one. */
 function linkTo(ref: string): DecisionLink {
   return {
+    changed_since_tie: false,
     created_at: "2026-11-05T00:00:00Z",
     created_version: 1,
     from_block: "d1",
@@ -739,13 +747,13 @@ test("an ask's shaped ties are chips on its row, each naming a node the ask shap
         answered: true,
         gone: false,
         name: "Words of r1.",
-        ref: `dispatch://${KEY}/artifact/spec#b-r1`,
+        ref: `dispatch://${KEY}/spec#b-r1`,
       },
       {
         answered: true,
         gone: false,
         name: "Words of r2.",
-        ref: `dispatch://${KEY}/artifact/spec#b-r2`,
+        ref: `dispatch://${KEY}/spec#b-r2`,
       },
     ],
     reference: `dispatch://${KEY}/ask/ask-1`,
@@ -834,9 +842,40 @@ test("a decision node's address is the outline's", () => {
   expect(ties.map((link) => link.to.ref)).toContain(
     buildDispatchReference({ id: "ask-4", key: KEY, kind: "ask" })
   );
+  // Each tie names its target as the chip the outline draws for that tie on the decision's own
+  // row does (`tieTargetReference`): a block of the spec as the spec's own.
   expect(ties.map((link) => link.to.ref)).toEqual(
-    ties.map((link) => drafts.get(idOf(link.to.id))?.reference)
+    decisions.flatMap((one) => {
+      const chips = drafts.get(idOf(one.node.id))?.chips.map((chip) => chip.ref) ?? [];
+      return (one.links ?? []).map((link) => chips.find((ref) => ref === link.to.ref) ?? "none");
+    })
   );
+  // Each tie names a node the outline draws a row for, the row of that node, and names it as the
+  // tie rule names that node (`tieTargetReference`): a spec block's row carries the spec's slug
+  // (`artifact/spec#b-r1`) and the tie the spec's own address (`spec#b-r1`).
+  const nodes = nodesById(tree);
+  const askOf = askOfNode(reads);
+  const specSlug = primarySpec(reads.issue)?.slug ?? "";
+  for (const link of ties) {
+    const target = nodes.get(link.to.id);
+    const row = drafts.get(idOf(link.to.id));
+    expect(
+      {
+        drawn: target !== undefined && row !== undefined,
+        row: row?.reference,
+        tie:
+          target === undefined
+            ? undefined
+            : tieTargetReference(target, KEY, askOf(target), specSlug),
+      },
+      `the tie to ${link.to.id}`
+    ).toEqual({
+      drawn: true,
+      row:
+        target === undefined ? "a node of the answer" : nodeReference(target, KEY, askOf(target)),
+      tie: link.to.ref,
+    });
+  }
 });
 
 // R5: a role's blocks come from the tree read in the shape the blocks read answered them: the
@@ -1378,6 +1417,182 @@ test("an ask drawn in its block's row names what the ask shaped there", () => {
     chips: row?.chips.map((chip) => chip.ref),
   }).toEqual({
     children: ["c-under-ask"],
-    chips: [shaped],
+    // A chip addresses a block of the spec as `spec#b-<id>`; the block's own row by the spec's
+    // slug (`shaped`).
+    chips: [`dispatch://${KEY}/spec#b-r1`],
   });
+});
+
+// R1, root R4: a plan task's `needs` is a chip for each task its attribute names, as the outline
+// drew one for every pointer. The read answers a tuple only where it holds the far end, so a
+// pointer at a task a write removed has none: its chip is named by the batched reference read,
+// which answers the removed task as gone ("Deleted"); a task the read ties is named by its words.
+test("a plan task's needs pointer the read ties no node to is still a chip, named by the reference read", () => {
+  const needed = `dispatch://${KEY}/artifact/plan-md#b-t1`;
+  const removed = `dispatch://${KEY}/artifact/plan-md#b-t9`;
+  const tree = answer(
+    [
+      block("t1", "plan_task", KEY, PLAN, 0),
+      block("t2", "plan_task", KEY, PLAN, 1, { attributes: { needs: `${needed} ${removed}` } }),
+    ],
+    [tuple("needs", "t2", "t1")]
+  );
+  const { root } = drawn(tree, {
+    issue: issueDetails(),
+    targets: [{ gone: true, kind: "block", name: "", ref: removed }],
+  });
+
+  expect(
+    nodeOf(root, blockNodeId("plan-md", "t2"))?.chips.map((chip) => ({
+      gone: chip.gone,
+      label: chip.label,
+      name: chip.name,
+      ref: chip.ref,
+    }))
+  ).toEqual([
+    { gone: false, label: "needs", name: "Words of t1.", ref: needed },
+    { gone: true, label: "needs", name: "", ref: removed },
+  ]);
+});
+
+// R1, root R4, as the route answers a plan task: the store states no `block[]` attribute as a
+// value, so the read sends no `needs` in a node's `attributes`, and a `needs` tuple only where the
+// answer holds its far end by the address the tuple names - none for a task a write removed, and
+// none where the tuple names the task by its document's address and the answer keys the node by
+// the issue's tree. The pointers are listed on the block's own reading, its one typed node, as the
+// blocks read listed them: each is a chip labelled "needs", a task the answer holds named by its
+// words and a task a write removed named by the reference read, which answers it as gone
+// ("Deleted", no address).
+test("a plan task's needs the read sends on its reading alone are chips, a removed task's gone", () => {
+  const needed = `dispatch://${KEY}/artifact/plan-md#b-t1`;
+  const removed = `dispatch://${KEY}/artifact/plan-md#b-t9`;
+  // The reading the route sends of a whole `plan_task` block: its one typed node, the block's
+  // attributes on it, a `block[]` attribute as the list of its references.
+  const typed = (id: string, attrs: Record<string, readonly string[]>) => ({
+    content: [
+      {
+        attrs: { blockId: id, ...attrs },
+        content: reading(`Words of ${id}.`).content,
+        type: "plan_task",
+      },
+    ],
+    type: "doc",
+  });
+  const tree = answer([
+    block("t1", "plan_task", KEY, PLAN, 0, { attributes: {}, text_tree: typed("t1", {}) }),
+    block("t2", "plan_task", KEY, PLAN, 1, {
+      attributes: {},
+      text_tree: typed("t2", { needs: [needed, removed] }),
+    }),
+  ]);
+  const { root } = drawn(tree, {
+    issue: issueDetails(),
+    targets: [
+      {
+        gone: false,
+        kind: "block",
+        name: "Words of t1.",
+        ref: needed,
+        text_tree: reading("Words of t1."),
+      },
+      { gone: true, kind: "block", name: "", ref: removed },
+    ],
+  });
+
+  expect(
+    nodeOf(root, blockNodeId("plan-md", "t2"))?.chips.map((chip) => ({
+      gone: chip.gone,
+      label: chip.label,
+      name: chip.name,
+      ref: chip.ref,
+    })),
+    "t2's needs are no chips"
+  ).toEqual([
+    { gone: false, label: "needs", name: "Words of t1.", ref: needed },
+    { gone: true, label: "needs", name: "", ref: removed },
+  ]);
+});
+
+// R1: a chip naming a block of the issue's spec addresses it as the server's reads and the
+// outline's chips do, `spec#b-<id>`, which the page draws as the spec's own path; a chip naming a
+// block of any other document addresses it by its slug, and a block's own row is addressed by its
+// document's slug, the spec's too, as the outline addressed every block it drew.
+test("a chip naming a block of the issue's spec addresses it as the spec, a row and another document's block by its slug", () => {
+  const { root } = drawn(
+    answer(
+      [
+        block("summary", "callout", KEY, SPEC, 0),
+        block("t1", "plan_task", KEY, PLAN, 0),
+        decisionNode("d1", KEY),
+      ],
+      [tuple("shaped", "d1", "summary"), tuple("shaped", "d1", "t1")]
+    )
+  );
+
+  expect(
+    nodeOf(root, "d1")?.chips.map((chip) => chip.ref),
+    "a chip naming a block of the spec addresses it by its document's slug"
+  ).toEqual([`dispatch://${KEY}/spec#b-summary`, `dispatch://${KEY}/artifact/plan-md#b-t1`]);
+  expect(nodeOf(root, blockNodeId("spec", "summary"))?.reference).toBe(
+    `dispatch://${KEY}/artifact/spec#b-summary`
+  );
+});
+
+// R1: an `ask` block's row draws its question as the asks read holds it, as the outline drew an
+// ask: the read's reading of the block is of its whole content, and the options it lists are the
+// asks read's, which the row's body draws apart.
+test("an ask block's row draws the asks read's question, not the options its block lists", () => {
+  const words = "At which width does the identity block condense?";
+  const whole = {
+    content: [
+      {
+        attrs: { blockId: "q-open" },
+        content: [
+          { content: [{ text: words, type: "text" }], type: "paragraph" },
+          {
+            content: [
+              "1024 px: the phone layout begins there.",
+              "1280 px: the row keeps labels.",
+            ].map((item) => ({
+              content: [{ content: [{ text: item, type: "text" }], type: "paragraph" }],
+              type: "list_item",
+            })),
+            type: "bullet_list",
+          },
+        ],
+        type: "ask",
+      },
+    ],
+    type: "doc",
+  };
+  const tree = answer([
+    block("q-open", "ask", KEY, SPEC, 0, {
+      text: `:::ask{#q-open}\n${words}\n:::`,
+      text_tree: whole,
+    }),
+  ]);
+  const { root } = drawn(tree, {
+    asks: [
+      {
+        ...question("ask-q", {
+          artifact_id: SPEC.id,
+          block_id: "q-open",
+          options: [
+            { description: "the phone layout begins there.", label: "1024 px" },
+            { description: "the row keeps labels.", label: "1280 px" },
+          ],
+          question: words,
+        }),
+        question_tree: reading(words),
+      },
+    ],
+    issue: issueDetails(),
+  });
+  const row = nodeOf(root, blockNodeId("spec", "q-open"));
+
+  expect(row === undefined ? undefined : [nodeWords(row), row.tree]).toEqual([
+    words,
+    reading(words),
+  ]);
+  expect(row?.options?.map((option) => option.label)).toEqual(["1024 px", "1280 px"]);
 });

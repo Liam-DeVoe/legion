@@ -90,7 +90,7 @@ async function partsOver(
   decisions: TreeAnswer | undefined
 ): Promise<DecisionsParts> {
   const hook = await mountOver(client, children, decisions);
-  const parts = hook.result.current;
+  const { parts } = hook.result.current;
   hook.unmount();
   return parts;
 }
@@ -271,15 +271,60 @@ test("a Change stands under the decision it was asked on, where another decision
   expect(parts.review[0]).not.toHaveProperty("change");
 });
 
+// R8: each read the seam watches takes the page's freshness: events refresh it, never its age.
+// The stage mounts the view again on every press of Decisions, so under the app's own defaults,
+// whose `staleTime` is 30 s (`main.tsx`), a press more than 30 s after the page loaded would
+// otherwise read all three again. Here the three answers - the tree read, which the decisions
+// come from, the asks and the comments - were given 31 s ago; the seam reads no document's
+// blocks.
+test("answers older than the app's staleTime are not read again as the seam mounts", async () => {
+  const made = [decision("minor")];
+  const names = ["getIssueTree", "listIssueAsks", "listComments"] as const;
+  // Each of the three reads, held, so a read the mount started reaches no server.
+  const reads = names.map((read) =>
+    spyOn(api, read).mockReturnValue(Promise.withResolvers<never>().promise)
+  );
+  // Any request at all, past those three.
+  const request = spyOn(globalThis, "fetch");
+  try {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+    });
+    const given = { updatedAt: Date.now() - 31_000 };
+    client.setQueryData(issueTreeKey(KEY), treeAnswer(made), given);
+    client.setQueryData(["asks", KEY], [], given);
+    client.setQueryData(["comments", KEY], [], given);
+    const hook = await mountOver(
+      client,
+      [statement("s1"), openAsk("q-open"), decisionNode("minor")],
+      treeAnswer(made)
+    );
+    expect(hook.result.current.readsHeld).toBe(true);
+    expect(
+      Object.fromEntries(names.map((read, index) => [read, reads[index]?.mock.calls]))
+    ).toEqual({
+      getIssueTree: [],
+      listComments: [],
+      listIssueAsks: [],
+    });
+    expect(request).not.toHaveBeenCalled();
+    hook.unmount();
+  } finally {
+    for (const read of reads) read.mockRestore();
+    request.mockRestore();
+  }
+});
+
 // A decisions view that holds no decision gives no decision and no error, and the view draws
 // the questions alone; so does a view that has not answered yet over a tree read that holds no
 // decision node, which is the read the page's tree is built from. Such a read holds its answer
-// all the same (`known`). While any one of the seam's reads has not answered, the questions are
-// drawn all the same. The view knows what the issue holds once the tree read and the asks have
-// answered, which say which questions and decisions there are; the decisions view only stands
-// over the tree read's decisions and the comments say nothing of an entry, so the view knows
-// while those are out. Either of the first two refused before it first answers is the seam's to
-// name, with a retry of its own, so the body can say so without naming a read.
+// all the same (`readsHeld`). While any one of the seam's reads has not answered, the questions
+// are drawn all the same. The view knows what the issue holds once the tree read and the asks
+// have answered, which say which questions and decisions there are; the decisions view only
+// stands over the tree read's decisions and the comments say nothing of an entry, so the view
+// knows while those are out. Either of the first two refused before it first answers is the
+// seam's to name, with a retry of its own, so the body can say so without naming a read; one
+// refused only on a later read keeps the answer it gave, and is none.
 test("an empty decisions member gives the questions alone and no error", async () => {
   const children = [statement("s1"), openAsk("q-open")];
   for (const [read, decisions] of [
@@ -287,7 +332,7 @@ test("an empty decisions member gives the questions alone and no error", async (
     ["no view yet", undefined],
   ] as const) {
     const drawn = entriesOf(children, decisions);
-    // The hook throws nothing on this read: the promise of its parts settles with them.
+    // The hook throws nothing on this read: the promise of its answer settles with it.
     await expect(drawn).resolves.toBeDefined();
     expect({ parts: idsOf(await drawn), read }).toEqual({
       parts: {
@@ -325,14 +370,14 @@ test("an empty decisions member gives the questions alone and no error", async (
       client.removeQueries({ exact: true, queryKey: key });
       const hook = await mountOver(client, children, undefined);
       const reading = () => ({
-        known: hook.result.current.known,
-        open_questions: idsOf(hook.result.current).open_questions,
+        open_questions: idsOf(hook.result.current.parts).open_questions,
         out: key,
+        readsHeld: hook.result.current.readsHeld,
       });
-      expect(reading()).toEqual({ known: knownWhileOut, open_questions: ["q-open"], out: key });
+      expect(reading()).toEqual({ open_questions: ["q-open"], out: key, readsHeld: knownWhileOut });
       expect(started).not.toHaveBeenCalled();
       await act(async () => client.setQueryData(key, answer));
-      expect(reading()).toEqual({ known: true, open_questions: ["q-open"], out: key });
+      expect(reading()).toEqual({ open_questions: ["q-open"], out: key, readsHeld: true });
       hook.unmount();
     } finally {
       started.mockRestore();
@@ -342,61 +387,97 @@ test("an empty decisions member gives the questions alone and no error", async (
   // Each of the two reads the view's failed-read lines name is refused in turn before it first
   // answers, with the other read in the cache: the tree read, which the view's rows come from,
   // and the asks. The page's own read refuses it, since the seam sends none. The refused read
-  // holds no answer, so the seam says it failed (`failed`, `asksFailed`) and the view does not
-  // know what the issue holds; its retry asks that read again, which is refused again, and asks
-  // the other read nothing.
+  // holds no answer, so the seam says it is unreadable and the view does not know what the issue
+  // holds; its retry asks that read again, which is refused again, and asks the other read
+  // nothing. The read stays refused while the retry runs, and once that run is refused too; no
+  // entry moves, so the parts are the very object they were before the retry.
   const refused = [
     {
-      failed: "failed",
       key: issueTreeKey(KEY),
       other: "listIssueAsks",
-      read: (client: QueryClient) => client.prefetchQuery(issueTreeQuery(KEY)),
+      read: "decisions",
+      refuse: (client: QueryClient) => client.prefetchQuery(issueTreeQuery(KEY)),
       request: "getIssueTree",
-      retry: "retry",
     },
     {
-      failed: "asksFailed",
       key: ["asks", KEY],
       other: "getIssueTree",
-      read: (client: QueryClient) =>
+      read: "asks",
+      refuse: (client: QueryClient) =>
         client.prefetchQuery({
           queryFn: () => api.listIssueAsks(KEY, "all"),
           queryKey: ["asks", KEY],
         }),
       request: "listIssueAsks",
-      retry: "asksRetry",
     },
   ] as const;
-  for (const { failed, key, other, read, request, retry } of refused) {
+  for (const { key, other, read, refuse, request } of refused) {
     const asked = spyOn(api, request).mockRejectedValue(new Error("refused"));
     const notAsked = spyOn(api, other);
     try {
       const client = heldClient(held.asks, held.comments, held.tree);
       client.removeQueries({ exact: true, queryKey: key });
-      await read(client);
+      await refuse(client);
       const hook = await mountOver(client, children, undefined);
       const reading = () => ({
-        asksFailed: hook.result.current.asksFailed,
-        failed: hook.result.current.failed,
-        known: hook.result.current.known,
-        read: request,
+        read,
+        readsHeld: hook.result.current.readsHeld,
+        unreadable: hook.result.current.unreadable,
       });
-      const unreadable = {
-        asksFailed: failed === "asksFailed",
-        failed: failed === "failed",
-        known: false,
-        read: request,
-      };
+      const unreadable = { read, readsHeld: false, unreadable: [read] };
       await waitFor(() => expect(reading()).toEqual(unreadable));
       expect(asked).toHaveBeenCalledTimes(1);
-      await act(async () => hook.result.current[retry]());
+      const before = hook.result.current.parts;
+      await act(async () => hook.result.current.retry(read));
       await waitFor(() => expect(asked).toHaveBeenCalledTimes(2));
       await waitFor(() => expect(reading()).toEqual(unreadable));
+      expect(hook.result.current.parts).toBe(before);
       expect(notAsked).not.toHaveBeenCalled();
       hook.unmount();
     } finally {
       asked.mockRestore();
       notAsked.mockRestore();
+    }
+  }
+
+  // Each of the two reads has answered, and a refetch of it then fails. While the refetch runs
+  // the seam says that read is being read again, and the parts are the very object they were
+  // before it started, so nothing the body works out from them is worked out again; once it has
+  // failed, the read still holds the answer it gave, which the view draws from, so it is not
+  // unreadable, draws no line, and the reads still hold.
+  const refetched = [
+    { key: issueTreeKey(KEY), read: "decisions", request: "getIssueTree" },
+    { key: ["asks", KEY], read: "asks", request: "listIssueAsks" },
+  ] as const;
+  for (const { key, read, request } of refetched) {
+    const answer = Promise.withResolvers<never>();
+    const asked = spyOn(api, request).mockReturnValue(answer.promise);
+    try {
+      const client = heldClient(held.asks, held.comments, held.tree);
+      const hook = await mountOver(client, children, treeAnswer([]));
+      const reading = () => ({
+        read,
+        readsHeld: hook.result.current.readsHeld,
+        retrying: hook.result.current.retrying,
+        unreadable: hook.result.current.unreadable,
+      });
+      const holds = { read, readsHeld: true, retrying: [], unreadable: [] };
+      expect(reading()).toEqual(holds);
+      const before = hook.result.current.parts;
+      await act(async () => hook.result.current.retry(read));
+      await waitFor(() => expect(reading()).toEqual({ ...holds, retrying: [read] }));
+      expect(hook.result.current.parts).toBe(before);
+      await act(async () => {
+        answer.reject(new Error("refused"));
+        await answer.promise.catch(() => undefined);
+      });
+      await waitFor(() => expect(hook.result.current.retrying).toEqual([]));
+      expect(client.getQueryState(key)?.status).toBe("error");
+      expect(reading()).toEqual(holds);
+      expect(asked).toHaveBeenCalledTimes(1);
+      hook.unmount();
+    } finally {
+      asked.mockRestore();
     }
   }
 });

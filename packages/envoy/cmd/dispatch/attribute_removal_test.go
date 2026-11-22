@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // askOpener is the opening line of an ask block, at any depth and under any quote or list prefix.
@@ -624,12 +625,16 @@ func thirdDocumentHolds(t *testing.T, ctx context.Context, database *pgx.Conn, a
 // row of the block blockID on rowDocument, each value as the row holds it: the state; for an
 // answered ask, who answered, when, the options chosen and the words; and, where copied is the
 // address of rowDocument, the row's ask and that address, the block being a copy. It never holds
-// invalid, which no stored version holds.
+// invalid, which no stored version holds. The row is read as every read of a document's asks reads
+// it (refs.AsksOfDocumentSQL): keyed by the room rowDocument is edited in, the tree artifact of
+// its issue's room for a document converted into it, and naming a block rowDocument holds, so it
+// answers for a converted and an unconverted document alike.
 func requireBlockInStepWithRow(t *testing.T, ctx context.Context, database *pgx.Conn, markdown, blockID, rowDocument, copied string) {
 	t.Helper()
 	var askID, state string
 	var answer []byte
-	if err := database.QueryRow(ctx, `select id::text, state, answer from asks where block_artifact_id = $1::uuid and block_id = $2`,
+	if err := database.QueryRow(ctx, `select a.id::text, a.state, a.answer from asks a
+		where `+refs.AsksOfDocumentSQL("a", "$1::uuid")+` and a.block_id = $2`,
 		rowDocument, blockID).Scan(&askID, &state, &answer); err != nil {
 		t.Fatalf("read the ask row of the block %s: %v", blockID, err)
 	}

@@ -131,6 +131,12 @@ export function decisionBlockId(
   return route !== undefined && "block" in route ? route.block?.id : undefined;
 }
 
+/** The block id the tree read names `node` by: a typed block's own (`block_id`), else the node's
+ *  id, which names a node that is no block. */
+export function blockIdOfNode(node: Pick<TreeAnswerNode, "block_id" | "id">): string {
+  return node.block_id ?? node.id;
+}
+
 /**
  * Each Change of a decision node, by the comment's node, to the decision node it changes: every
  * comment whose first maker - the first of the authors the read lists for it - is a person, that

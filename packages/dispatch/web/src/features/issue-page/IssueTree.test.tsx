@@ -54,7 +54,7 @@ import type { TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import * as nodeCaret from "./node-caret";
 import { EDITOR_BOX_ATTRIBUTE, MAC_PLATFORM } from "./node-caret";
-import { readComment, TWO_THREADS, waitInAct } from "./outline-fixtures";
+import { framesByHand, readComment, TWO_THREADS, waitInAct } from "./outline-fixtures";
 import {
   OutlineRequestProvider,
   useAskOutline,
@@ -85,7 +85,7 @@ import { ProvidersSlot } from "./slots/providers";
 import { SLOT_FILLED, StageSlot, VIEW_SLOTS, type ViewSlots } from "./slots/stage";
 import { addressesAsShortForms } from "./tree-drafts";
 import { TAB_STOP_ROW } from "./tree-focus";
-import { treeAnswer, treeNode } from "./tree-read/tree-fixtures";
+import { commentNode, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode } from "./tree-read/tree-read";
 import { issueAsksQuery } from "./useIssueTree";
 import type { OnEditing, OnEditor } from "./useNodeEditing";
@@ -574,41 +574,6 @@ async function nextFrame(): Promise<void> {
   const frame = Promise.withResolvers<void>();
   requestAnimationFrame(() => frame.resolve());
   await act(async () => frame.promise);
-}
-
-/** Holds every frame asked for from here on until `run` runs them - the ones named, or every one
- *  still asked for - as the next frame would; a frame cancelled first is not run. `asked` names
- *  the frames asked for and not run yet, and `restore` gives the frames back to happy-dom. */
-function framesByHand(): {
-  readonly asked: () => number[];
-  readonly restore: () => void;
-  readonly run: (frames?: readonly number[]) => Promise<void>;
-} {
-  const asked = new Map<number, FrameRequestCallback>();
-  let last = 0;
-  const request = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-    last += 1;
-    asked.set(last, callback);
-    return last;
-  });
-  const cancel = spyOn(window, "cancelAnimationFrame").mockImplementation((frame) => {
-    asked.delete(frame);
-  });
-  return {
-    asked: () => [...asked.keys()],
-    restore: () => {
-      request.mockRestore();
-      cancel.mockRestore();
-    },
-    run: (frames = [...asked.keys()]) =>
-      act(async () => {
-        for (const frame of frames) {
-          const callback = asked.get(frame);
-          asked.delete(frame);
-          callback?.(performance.now());
-        }
-      }),
-  };
 }
 
 /** Stands in for the browser's size observers, since happy-dom lays nothing out and observes no
@@ -8819,13 +8784,7 @@ function treeReadOf(
   const agentsOnly = agentsOnlyIds(comments, undefined, []);
   const turns = comments
     .filter((comment) => !agentsOnly.has(comment.id))
-    .map((comment) =>
-      treeNode(comment.id, "comment", comment.reply_to ?? KEY, {
-        author: [comment.author],
-        made_at: comment.created_at,
-        text: comment.body,
-      })
-    );
+    .map((comment) => commentNode(comment));
   const held = [...nodes, ...turns];
   return treeAnswer(held.length === 0 ? [] : [treeNode(KEY, "issue", null), ...held]);
 }
@@ -8898,7 +8857,7 @@ test("the outline says the issue holds nothing only once the reads its nodes com
   }
 });
 
-/** The address of the spec's one block, `t1`, that `spyOnSpecBlock` and `specStep` answer, which
+/** The address of the spec's one block, `t1`, that the tree read answers (`specBlock`), which
  *  the names read names it by; its node is `spec#b-t1`. */
 const SPEC_BLOCK = buildDispatchReference({
   block: { id: "t1" },
@@ -8907,36 +8866,18 @@ const SPEC_BLOCK = buildDispatchReference({
   slug: "spec",
 });
 
-/** Spies the blocks read: the spec holds one block, `t1` (`SPEC_BLOCK`), of `type`, and every
- *  other document none. */
-function spyOnSpecBlock(type: string) {
-  return spyOn(api, "getArtifactBlocks").mockImplementation(
-    (id: string) =>
-      Promise.resolve(
-        id === specDocument.id
-          ? [
-              {
-                attributes: [],
-                from: 0,
-                id: "t1",
-                references: { asks: 0, comments: 0 },
-                to: 1,
-                token: "t1",
-                type,
-              },
-            ]
-          : []
-      ) as never
-  );
-}
-
-/** The spec's one block, `t1` (`SPEC_BLOCK`), as the tree read answers it: a step of the spec,
- *  with `words` as its words, as the read answers every block's. */
-function specStep(words: string): TreeAnswerNode {
-  return treeNode("t1", "plan_task", KEY, {
+/** The spec's one block, `t1` (`SPEC_BLOCK`), as the tree read answers it: a block of `supertag`
+ *  in the spec, with `words` as its words, as the read answers every block's. */
+function specBlock(supertag: string, words: string): TreeAnswerNode {
+  return treeNode("t1", supertag, KEY, {
     document: { artifact_id: specDocument.id, position: 0, slug: specDocument.slug },
     text: words,
   });
+}
+
+/** The spec's one block as a step of the spec (`specBlock`). */
+function specStep(words: string): TreeAnswerNode {
+  return specBlock("plan_task", words);
 }
 
 /** The step's words (`specStep`), which hold the words filter's `lanterns`. */
@@ -8985,9 +8926,7 @@ test("under a words filter the outline does not say nothing holds the words whil
       `${buildIssuePath({ key: KEY, kind: "issue" })}?q=lanterns`,
       [],
       BodySlot,
-      issueDetails(),
-      [],
-      [specStep(STEP_WORDS)]
+      { issue: issueDetails(), nodes: [specStep(STEP_WORDS)] }
     );
     // The names are read once every other read of the tree has answered.
     await waitFor(() => expect(names, "the names were never read").toHaveBeenCalled());
@@ -9015,10 +8954,10 @@ test("under a words filter the outline does not say nothing holds the words whil
 });
 
 // And once the names are held the line is drawn where no node holds the words: the step's words,
-// which the names read gives, do not hold the filter's word, so nothing does.
+// which the tree read and the names read give alike, do not hold the filter's word, so nothing
+// does.
 test("under a words filter the outline says nothing holds the words once the names read has answered with words that do not hold them", async () => {
   setViewport(1440);
-  const blocks = spyOnSpecBlock("plan_task");
   // The names read, held out until the case answers it with the step's words.
   const held = Promise.withResolvers<never>();
   const names = spyOn(api, "getReferenceTargets").mockReturnValue(held.promise);
@@ -9027,7 +8966,7 @@ test("under a words filter the outline says nothing holds the words once the nam
       `${buildIssuePath({ key: KEY, kind: "issue" })}?q=lanterns`,
       [],
       BodySlot,
-      issueDetails()
+      { issue: issueDetails(), nodes: [specStep("Sweep the hall first.")] }
     );
     await waitFor(() => expect(names, "the names were never read").toHaveBeenCalled());
     await nextFrame();
@@ -9052,18 +8991,16 @@ test("under a words filter the outline says nothing holds the words once the nam
       "the step was drawn though its words do not hold the filter's"
     ).toHaveLength(0);
   } finally {
-    blocks.mockRestore();
     names.mockRestore();
   }
 });
 
 // With no filter on the outline's line reads no words, so it does not wait on the names. The
-// spec holds its summary alone, which is no row of the outline, so the issue holds nothing to
-// draw, and the outline says so while the names read is still out. That read names the issue's
-// own key, which the root's words write, and the summary's address.
+// spec holds its summary alone, a callout, which is no row of the outline, so the issue holds
+// nothing to draw, and the outline says so while the names read is still out. That read names
+// the issue's own key, which the root's words write, and the summary's address.
 test("with no filter the outline says the issue holds nothing while the names read is out", async () => {
   setViewport(1440);
-  const blocks = spyOnSpecBlock("callout");
   // The names read, held out for the whole case.
   const names = spyOn(api, "getReferenceTargets").mockReturnValue(
     Promise.withResolvers<never>().promise
@@ -9073,7 +9010,10 @@ test("with no filter the outline says the issue holds nothing while the names re
       buildIssuePath({ key: KEY, kind: "issue" }),
       [],
       BodySlot,
-      issueDetails()
+      {
+        issue: issueDetails(),
+        nodes: [specBlock("callout", "What this is. Why it matters. What is different when done.")],
+      }
     );
     await waitFor(() => expect(names, "the names were never read").toHaveBeenCalled());
     await waitFor(() =>
@@ -9087,7 +9027,6 @@ test("with no filter the outline says the issue holds nothing while the names re
       "the names read is not out"
     ).toBe(1);
   } finally {
-    blocks.mockRestore();
     names.mockRestore();
   }
 });
@@ -9127,17 +9066,10 @@ test("the outline mounted again past 30 s reads none of the reads it waits on ag
     spyOn(api, "listIssueAsks").mockResolvedValue([] as never),
     spyOn(api, "listComments").mockResolvedValue([] as never),
     spyOn(api, "listIssueMessages").mockResolvedValue([] as never),
-    spyOn(api, "getIssueTree").mockResolvedValue({
-      converted: false,
-      cursor: null,
-      nodes: [],
-      tree: null,
-      tuples: [],
-      view_of: null,
-    } as never),
+    spyOn(api, "getIssueTree").mockResolvedValue(treeAnswer([])),
   ];
   const sent = () => reads.reduce((all, read) => all + read.mock.calls.length, 0);
-  // The reader, whom the rows read under the app's `staleTime`, and the names, answered so that
+  // The reader, whom the rows read with the tree's freshness, and the names, answered so that
   // neither reaches the network.
   const others = [
     spyOn(api, "whoAmI").mockResolvedValue({ kind: "user", login: "alice" } as never),
@@ -9214,9 +9146,15 @@ function renderAddressedBody(
   path: string,
   comments: readonly Comment[] | undefined,
   Slot: (props: SlotProps) => ReactNode = BodySlot,
-  issue: IssueDetails = { ...issueDetails(), artifacts: [] },
-  unread: readonly QueryKey[] = [],
-  nodes: readonly TreeAnswerNode[] = []
+  {
+    issue = { ...issueDetails(), artifacts: [] },
+    nodes = [],
+    unread = [],
+  }: {
+    readonly issue?: IssueDetails | undefined;
+    readonly nodes?: readonly TreeAnswerNode[];
+    readonly unread?: readonly QueryKey[];
+  } = {}
 ) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -9412,7 +9350,10 @@ test("an address naming an item no node holds draws the item's failure once the 
 // its failure again and taking the focus again. The following keeps the landing it settled on
 // while the reads are out again: the line stays drawn, with the focus on it and the same alert.
 // The page reads no document's blocks: a document added to the issue reaches it as the tree read
-// sent again, as the document's creation reads it, which is the read out here.
+// sent again, as the document's creation reads it, which is the read out here. Sent again, that
+// read keeps the answer it holds, and with it the reads held (`TreeRead.blocksHeld`); no path of
+// the page drops that answer today, so the case drops it (`resetQueries`) to hold the reads out
+// again while it is read.
 test("an item's failed line stays drawn, with the focus on it and the same alert, while a document added to the issue has its blocks read", async () => {
   setViewport(1440);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
@@ -9433,11 +9374,11 @@ test("an item's failed line stays drawn, with the focus on it and the same alert
     const alert = body.view.getByRole("alert");
 
     // The issue's read answers with a document added, its spec, and the tree read is sent again
-    // for it, and is out; no decisions document stands beside it, a decision being a block of the
-    // spec.
+    // for it with its answer dropped, and is out; no decisions document stands beside it, a
+    // decision being a block of the spec.
     body.redraw(issueDetails());
     await act(async () => {
-      void body.client.invalidateQueries({ queryKey: issueTreeQuery(KEY).queryKey });
+      void body.client.resetQueries({ exact: true, queryKey: issueTreeQuery(KEY).queryKey });
     });
     await waitFor(() =>
       expect(tree, "the tree was never read again for the added document").toHaveBeenCalled()
@@ -9506,25 +9447,29 @@ test("an address naming a turn only agents wrote in lands on its nearest drawn a
 
 // The class search of #4205's 6586a4be, on the class of the landing's line held while a document
 // is read: the landing on the nearest drawn ancestor of a turn only agents wrote in was dropped
-// while a document added to the issue had its blocks read, which holds the tree's reads out
+// while a document added to the issue had its blocks read, which held the tree's reads out
 // again (`readsHeld`), since its following settles on no landing of the old page's. The tree was
 // drawn with no address to land on, and once the reads answered the landing's key came back as
 // a new landing's would: a zoom the reader had made after the landing was left, as a following
-// leaves a zoom its node is outside of. The landing stays while the reads are out, so the
-// reader's zoom stands, with the focus where they put it. The page reads no document's blocks:
-// a document added to the issue reaches it as the tree read sent again, as the document's
-// creation reads it, which is the read out here.
+// leaves a zoom its node is outside of. The landing stays, so the reader's zoom stands, with the
+// focus where they put it. The page reads no document's blocks: a document added to the issue
+// reaches it as the tree read sent again, as the document's creation reads it, which is the read
+// out here. Sent again, that read keeps the answer it holds (`TreeRead.blocksHeld`), so the reads
+// stay held while it is out, and the following keeps the landing it has found besides
+// (`Following.found`). The reads are never out again with the zoomed row drawn: every node of the
+// tree comes from that one read, and with its answer dropped the row, and the zoom on it, go.
 //
 // The ancestor is the issue, the outline's tab stop, as it is for every agents-only turn the
 // server stores (`agents-only.ts`'s `agentsOnlyIds`). A comment thread is agents-only only where
 // no turn of it is under a question (`underQuestion`) and none is a person's, and the tree draws
-// an ask only where it is a question (`tree-drafts.ts`'s `addAsks`): no agents-only comment hangs
-// under a drawn ask, and the walk up from one (`address-target.ts`'s `agentsOnlyAncestor`) meets
-// turns of its own thread, then an approval request, which is no node, or nothing, and ends at
-// the issue. A message thread is agents-only only where no turn of it is a person's, and the
-// server lists each root - `in_reply_to` null - with every message transitively replying to it
-// (`api/messages.go`'s `listIssueRootMessagesQuery` and `hydrateMessageThreads`): a message
-// answering a drawn message is a turn of that message's thread, which a person wrote in.
+// an ask only where it is a question (`tree-read/tree-nodes.ts`'s `draftAsk`): no agents-only
+// comment hangs under a drawn ask, and the walk up from one (`address-target.ts`'s
+// `agentsOnlyAncestor`) meets turns of its own thread, then an approval request, which is no node,
+// or nothing, and ends at the issue. A message thread is agents-only only where no turn of it is a
+// person's, and the server lists each root - `in_reply_to` null - with every message
+// transitively replying to it (`api/messages.go`'s `listIssueRootMessagesQuery` and
+// `hydrateMessageThreads`): a message answering a drawn message is a turn of that message's
+// thread, which a person wrote in.
 test("an agents-only turn's landing on the issue, kept while a document added to the issue has its blocks read, leaves the reader's zoom after it standing", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -9803,13 +9748,9 @@ test("the line that names no row of a block, drawn in place of the outline after
   const answer = Promise.withResolvers<never[]>();
   const messages = spyOn(api, "listIssueMessages").mockReturnValue(answer.promise as never);
   try {
-    const { view } = renderAddressedBody(
-      `/issues/${KEY}#b-no-such-block`,
-      TWO_THREADS,
-      BodySlot,
-      undefined,
-      [["issue-messages", KEY]]
-    );
+    const { view } = renderAddressedBody(`/issues/${KEY}#b-no-such-block`, TWO_THREADS, BodySlot, {
+      unread: [["issue-messages", KEY]],
+    });
     await waitFor(() => expect(messages).toHaveBeenCalled());
     await user.tab();
     await moveOnFromFirstRow(user, view.container);
@@ -10132,14 +10073,10 @@ test("a failed asks read draws its line over the tree and opens the page on its 
   asks.mockRejectedValueOnce(serverDown());
   const messages = spyOn(api, "listIssueMessages").mockResolvedValue([] as never);
   try {
-    const { view } = renderAddressedBody(
-      `/issues/${KEY}`,
-      TWO_THREADS,
-      StageSlot,
-      undefined,
-      [["asks", KEY]],
-      [questionNode(WAITING_QUESTION)]
-    );
+    const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, {
+      nodes: [questionNode(WAITING_QUESTION)],
+      unread: [["asks", KEY]],
+    });
     const { container } = view;
     const { inTree, line, overTree, retry } = await failedLines(container, 1, "asks");
     expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.asks_unreadable);
@@ -10201,14 +10138,10 @@ test("a failed read's line stays drawn, busy, with the focus on its Retry while 
   asks.mockRejectedValueOnce(serverDown());
   const messages = spyOn(api, "listIssueMessages").mockResolvedValue([] as never);
   try {
-    const { view } = renderAddressedBody(
-      `/issues/${KEY}`,
-      TWO_THREADS,
-      StageSlot,
-      undefined,
-      [["asks", KEY]],
-      [questionNode(WAITING_QUESTION)]
-    );
+    const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, {
+      nodes: [questionNode(WAITING_QUESTION)],
+      unread: [["asks", KEY]],
+    });
     const { container } = view;
     const { line, retry } = await failedLines(container, 1, "asks");
     await waitFor(
@@ -10289,14 +10222,10 @@ test("a read whose refresh failed while it holds its answer draws no line, and a
   const asks = spyOn(api, "listIssueAsks").mockResolvedValue([WAITING_QUESTION] as never);
   const messages = spyOn(api, "listIssueMessages").mockResolvedValue([] as never);
   try {
-    const body = renderAddressedBody(
-      `/issues/${KEY}`,
-      TWO_THREADS,
-      StageSlot,
-      undefined,
-      [["asks", KEY]],
-      [questionNode(WAITING_QUESTION)]
-    );
+    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, {
+      nodes: [questionNode(WAITING_QUESTION)],
+      unread: [["asks", KEY]],
+    });
     // jest-dom: the focus is on the question's row or a control in it, which focusPlace names.
     await waitFor(
       () =>
@@ -10369,14 +10298,10 @@ test("a failed results read draws its line over the tree, and the page opens on 
   const asks = spyOn(api, "listIssueAsks").mockResolvedValue([WAITING_QUESTION] as never);
   const results = spyOn(api, "getIssueResults").mockRejectedValue(serverDown());
   try {
-    const { view } = renderAddressedBody(
-      `/issues/${KEY}`,
-      TWO_THREADS,
-      StageSlot,
-      undefined,
-      [["asks", KEY], issueResultsQuery(KEY).queryKey],
-      [questionNode(WAITING_QUESTION)]
-    );
+    const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, {
+      nodes: [questionNode(WAITING_QUESTION)],
+      unread: [["asks", KEY], issueResultsQuery(KEY).queryKey],
+    });
     const { container } = view;
     const { inTree, line, overTree } = await failedLines(container, 1, "results");
     expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.results_unreadable);
@@ -10417,10 +10342,9 @@ test("with the asks and the results reads failed, the page opens on the asks' Re
   const asks = spyOn(api, "listIssueAsks").mockRejectedValue(serverDown());
   const results = spyOn(api, "getIssueResults").mockRejectedValue(serverDown());
   try {
-    const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
-      ["asks", KEY],
-      issueResultsQuery(KEY).queryKey,
-    ]);
+    const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, {
+      unread: [["asks", KEY], issueResultsQuery(KEY).queryKey],
+    });
     const { container } = view;
     await failedLines(container, 2, "asks and results");
     expect(
@@ -10463,14 +10387,11 @@ test("with the asks read failed, the page opens on a question that waits on the 
     open_asks: [{ ...WAITING_QUESTION, last_reply: null, options: [] }],
   };
   try {
-    const { view } = renderAddressedBody(
-      `/issues/${KEY}`,
-      TWO_THREADS,
-      StageSlot,
+    const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, {
       issue,
-      [["asks", KEY]],
-      [questionNode(WAITING_QUESTION)]
-    );
+      nodes: [questionNode(WAITING_QUESTION)],
+      unread: [["asks", KEY]],
+    });
     const { container } = view;
     const { line } = await failedLines(container, 1, "asks");
     expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.asks_unreadable);
@@ -10508,14 +10429,10 @@ test("a failed asks read that answers with a question that waits before its Retr
   const results = spyOn(api, "getIssueResults").mockRejectedValue(serverDown());
   const frames = framesByHand();
   try {
-    const body = renderAddressedBody(
-      `/issues/${KEY}`,
-      TWO_THREADS,
-      StageSlot,
-      undefined,
-      [["asks", KEY], issueResultsQuery(KEY).queryKey],
-      [questionNode(WAITING_QUESTION)]
-    );
+    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, {
+      nodes: [questionNode(WAITING_QUESTION)],
+      unread: [["asks", KEY], issueResultsQuery(KEY).queryKey],
+    });
     const { container } = body.view;
     await failedLines(container, 2, "asks and results");
     // jest-dom: no row and no Retry holds the focus, which focusPlace says as "no row".
@@ -10568,14 +10485,10 @@ test("a failed comments read opens the page on its Retry where no question waits
   const asks = spyOn(api, "listIssueAsks").mockResolvedValue([elsewhere] as never);
   const comments = spyOn(api, "listComments").mockRejectedValue(serverDown());
   try {
-    const { view } = renderAddressedBody(
-      `/issues/${KEY}`,
-      undefined,
-      StageSlot,
-      undefined,
-      [["asks", KEY]],
-      [questionNode(elsewhere)]
-    );
+    const { view } = renderAddressedBody(`/issues/${KEY}`, undefined, StageSlot, {
+      nodes: [questionNode(elsewhere)],
+      unread: [["asks", KEY]],
+    });
     const { container } = view;
     const { line, retry } = await failedLines(container, 1, "comments");
     expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.comments_unreadable);
@@ -10614,9 +10527,9 @@ test("a failed names read's line stays drawn, with the focus on its Retry, while
   const asks = spyOn(api, "listIssueAsks").mockRejectedValueOnce(serverDown());
   const out = Promise.withResolvers<never>();
   try {
-    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
-      ["asks", KEY],
-    ]);
+    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, {
+      unread: [["asks", KEY]],
+    });
     const { container } = body.view;
     await failedLines(container, 2, "asks and names");
     await waitFor(
@@ -10690,14 +10603,10 @@ test("a failed names read's line stays drawn, with the focus on its Retry, while
   const asksOut = Promise.withResolvers<never>();
   const namesOut = Promise.withResolvers<never>();
   try {
-    const body = renderAddressedBody(
-      `/issues/${KEY}`,
-      TWO_THREADS,
-      StageSlot,
-      undefined,
-      [["asks", KEY]],
-      [questionNode(WAITING_QUESTION)]
-    );
+    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, {
+      nodes: [questionNode(WAITING_QUESTION)],
+      unread: [["asks", KEY]],
+    });
     const { container } = body.view;
     // The asks' line is drawn first, over the names'.
     const { retry: asksRetry } = await failedLines(container, 2, "asks and names");
@@ -10788,14 +10697,10 @@ test("a failed one more names read's line stays drawn, with the focus on its Ret
     return Promise.resolve(stepNamed(source)) as never;
   });
   try {
-    const body = renderAddressedBody(
-      `/issues/${KEY}`,
-      [],
-      StageSlot,
-      issueWithNotes(),
-      [],
-      [specStep(STEP_WORDS)]
-    );
+    const body = renderAddressedBody(`/issues/${KEY}`, [], StageSlot, {
+      issue: issueWithNotes(),
+      nodes: [specStep(STEP_WORDS)],
+    });
     const { container } = body.view;
     await failedLines(container, 1, "one more names");
     expect(
@@ -10892,14 +10797,10 @@ test("a failed one more names read's line stays drawn, with the focus on its Ret
     return Promise.resolve(stepNamed(`Hang the lanterns as ${cited} says.`)) as never;
   });
   try {
-    const body = renderAddressedBody(
-      `/issues/${KEY}`,
-      [],
-      StageSlot,
-      issueWithNotes(),
-      [],
-      [specStep(STEP_WORDS)]
-    );
+    const body = renderAddressedBody(`/issues/${KEY}`, [], StageSlot, {
+      issue: issueWithNotes(),
+      nodes: [specStep(STEP_WORDS)],
+    });
     const { container } = body.view;
     await failedLines(container, 1, "one more names");
     expect(
@@ -10977,14 +10878,11 @@ test("a failed one more names read's line stays drawn, with the focus on its Ret
   const asks = spyOn(api, "listIssueAsks").mockRejectedValueOnce(serverDown());
   const asksOut = Promise.withResolvers<never>();
   try {
-    const body = renderAddressedBody(
-      `/issues/${KEY}`,
-      [],
-      StageSlot,
-      issueWithNotes(),
-      [issueAsksQuery(KEY).queryKey],
-      [specStep(STEP_WORDS)]
-    );
+    const body = renderAddressedBody(`/issues/${KEY}`, [], StageSlot, {
+      issue: issueWithNotes(),
+      nodes: [specStep(STEP_WORDS)],
+      unread: [issueAsksQuery(KEY).queryKey],
+    });
     const { container } = body.view;
     await failedLines(container, 2, "asks and one more names");
     expect(
@@ -11068,14 +10966,10 @@ test("a names line both names reads stand failed by keeps its alert and the focu
     return Promise.resolve(stepNamed(`Hang the lanterns as ${cited} says.`)) as never;
   });
   try {
-    const body = renderAddressedBody(
-      `/issues/${KEY}`,
-      [],
-      StageSlot,
-      issueWithNotes(),
-      [],
-      [specStep(STEP_WORDS)]
-    );
+    const body = renderAddressedBody(`/issues/${KEY}`, [], StageSlot, {
+      issue: issueWithNotes(),
+      nodes: [specStep(STEP_WORDS)],
+    });
     const { container } = body.view;
     await failedLines(container, 1, "one more names");
     await framesPass();
@@ -11168,7 +11062,7 @@ function renderStage(path: string, preset: Preset, filled: boolean, issue?: Issu
     path,
     TWO_THREADS,
     (props) => <StageSlot {...props} filled={{ ...SLOT_FILLED, [preset]: filled }} views={views} />,
-    issue
+    { issue }
   );
 }
 
@@ -11310,12 +11204,15 @@ test("a block or the children an address names that the tree holds none of draw 
 });
 
 // The class search of #4205's 6586a4be: the line `/children` draws on an issue with none left the
-// page while a document added to the issue had its blocks read, which holds the tree's reads out
-// again (`readsHeld`), though the children come with the issue's own read alone
-// (`tree-drafts.ts`'s `addChildren`); it was drawn anew once that read answered, and took the
-// focus again. The line stays drawn while the reads are out, with the focus on it. The page reads
-// no document's blocks: a document added to the issue reaches it as the tree read sent again, as
-// the document's creation reads it, which is the read out here.
+// page while a document added to the issue had its blocks read, which held the tree's reads out
+// again (`readsHeld`), though the children came with the issue's own read alone then; it was
+// drawn anew once that read answered, and took the focus again. The line stays drawn while the
+// reads are out, with the focus on it. The page reads no document's blocks: a document added to
+// the issue reaches it as the tree read sent again, as the document's creation reads it, which is
+// the read out here, and the children come with that read too (`tree-read/tree-nodes.ts`'s
+// `draftChild`). Sent again, that read keeps the answer it holds, and with it the reads held
+// (`TreeRead.blocksHeld`); no path of the page drops that answer today, so the case drops it
+// (`resetQueries`) to hold the reads out again while it is read.
 test("the line that the issue has no children stays drawn, with the focus on it, while a document added to the issue has its blocks read", async () => {
   setViewport(1440);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
@@ -11331,11 +11228,11 @@ test("the line that the issue has no children stays drawn, with the focus on it,
     );
 
     // The issue's read answers with a document added, its spec, and the tree read is sent again
-    // for it, and is out; no decisions document stands beside it, a decision being a block of the
-    // spec.
+    // for it with its answer dropped, and is out; no decisions document stands beside it, a
+    // decision being a block of the spec.
     body.redraw(issueDetails());
     await act(async () => {
-      void body.client.invalidateQueries({ queryKey: issueTreeQuery(KEY).queryKey });
+      void body.client.resetQueries({ exact: true, queryKey: issueTreeQuery(KEY).queryKey });
     });
     await waitFor(() =>
       expect(tree, "the tree was never read again for the added document").toHaveBeenCalled()

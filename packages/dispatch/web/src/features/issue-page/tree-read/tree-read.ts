@@ -206,13 +206,12 @@ export const viewQuery = (key: string, view: TreeView) =>
 
 /** One role's blocks from the tree read, answered as the blocks read of that role's document
  *  answered them (`artifactBlocksQuery`), so a caller's lines that read these members stay as
- *  they are. The state is the tree read's own. */
+ *  they are. The state is the tree read's own; whether that read runs is read apart, by the views
+ *  that draw it (`useTreeReadRunning`). */
 export interface TreeBlocksRead {
   readonly data: TreeBlock[] | undefined;
   readonly errorUpdateCount: number;
   readonly isError: boolean;
-  readonly isFetching: boolean;
-  readonly isSuccess: boolean;
   readonly refetch: () => Promise<unknown>;
 }
 
@@ -267,7 +266,6 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
     data: answer,
     errorUpdateCount,
     isError,
-    isFetching,
     isPending,
     isSuccess,
     refetch,
@@ -283,12 +281,10 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
           data: blocks(role),
           errorUpdateCount,
           isError,
-          isFetching,
-          isSuccess,
           refetch,
         })
       ),
-    [blocks, errorUpdateCount, isError, isFetching, isSuccess, refetch]
+    [blocks, errorUpdateCount, isError, refetch]
   );
   return useMemo(
     () => ({
@@ -302,6 +298,14 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
     }),
     [answer, blocksOf, errorUpdateCount, isPending, isSuccess, refetch]
   );
+}
+
+/** Whether the tree read of issue `key` runs (TanStack Query's `isFetching`): its first read, a
+ *  refresh, or a Retry. An observer of its own beside `useTreeRead`'s, which reads none of it, so
+ *  a reader of the tree is drawn again as each read of it starts and ends only where it reads
+ *  this: a view that draws a failed read's Retry busy while it runs. */
+export function useTreeReadRunning(key: string): boolean {
+  return useQuery(issueTreeQuery(key)).isFetching;
 }
 
 /** `make`'s value for each role, made on the first ask for that role and the same value on

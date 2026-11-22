@@ -1,7 +1,6 @@
 import { type RefObject, useLayoutEffect, useMemo, useState } from "react";
 
 import type { IssueDetails } from "../../api/types";
-import { pageQuietText } from "../../theme/classes";
 import { shortForm } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import { drawnLine, firstLineOf, type TreeNode } from "./issue-tree";
@@ -10,16 +9,6 @@ import { NODE_TYPE_NAMES, type NodeType } from "./page-words";
 import { withoutDirectiveLines } from "./RowText";
 import { rowReferences } from "./row-references";
 import { treeContext } from "./tree-drafts";
-
-/** A small heading in capitals over the words it names, as the prototype's `.cap` draws one:
- *  the head's "In short", the Contents list's heading and the Spec view's column heads. */
-export const CAP = `text-xs leading-4 font-semibold tracking-[0.08em] uppercase ${pageQuietText}`;
-
-/** A leading label: a first word of at most five characters, holding a digit and ending in
- *  `.` (`R1.`, `12.`, `1.2.`), which opens a sentence and ends none. A copy of the pattern
- *  `issue-tree.ts`'s `firstLineOf` keeps to itself, imported in its place once that module
- *  exports it. */
-export const LEADING_LABEL = /^(?=\S*\d)\S{0,4}\.(?=\s|$)/u;
 
 /**
  * What the Contents pane reads once for every entry it draws on one line (R1, R14): how wide its
@@ -256,7 +245,8 @@ const NO_TOKEN = "\ufffd";
  * form, as a link to it reads until its title resolves (`shortForm`). A one-line place names a
  * reference by the page's name wherever the page knows one, and by its short form only where it
  * does not. So the words `standIn` is given hold each bare address as its author wrote it
- * (`lineWordsRaw`, `plainWordsRaw`), since one already written short leaves it nothing to name.
+ * (`lineWordsRaw`, and a person's quote's `firstBlockWordsRaw`), since one already written short
+ * leaves it nothing to name.
  * A statement's name opens with its label where its spec numbers its statements ("R2. Every
  * address…"), so a cut made after the naming ended its author's sentence at that label, inside
  * the name.

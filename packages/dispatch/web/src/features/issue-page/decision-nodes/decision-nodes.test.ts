@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 
 import type { Ask, Decision, DecisionKeep, DecisionLink, DisplayTree } from "../../../api/types";
+import { issueDetails } from "../decisions-filter/decisions-fixtures";
+import { buildIssueTree } from "../issue-tree";
+import { blockNodeId } from "../tree-drafts";
+import { nodesInOrder } from "../tree-keys";
 import {
   type TreeNodeExtra,
   treeAnswer,
@@ -111,6 +115,7 @@ function blockRef(slug: string, id: string): string {
 /** A decision's link to the node `ref` addresses, as the decisions read answers one. */
 function linkTo(ref: string, stale = false): DecisionLink {
   return {
+    changed_since_tie: false,
     created_at: "2026-11-05T00:00:00Z",
     created_version: 1,
     from_block: "d1",
@@ -336,6 +341,7 @@ test("a person's decision is its answered ask", () => {
   const ask4 = held(tree, "ask-4");
   /** The link an ask's `shaped` tie to `r1` is, as the decisions read answers a link. */
   const shapedR1 = (from: TreeAnswerNode): DecisionLink => ({
+    changed_since_tie: false,
     created_at: from.made_at ?? "",
     created_version: 0,
     from_block: from.block_id ?? from.id,
@@ -496,6 +502,38 @@ test("a shaped tie to a block id two documents share names the block it reaches,
   expect(decisionNodes(tree, reads).map((one) => one.links?.map((link) => link.to.ref))).toEqual([
     [blockRef("spec", "r1")],
   ]);
+});
+
+// R1, root R4: a person's decision's `shaped` tie and the chip the outline draws for that tie on
+// the answered ask's row name a block of the issue's spec by one address, the spec's own
+// (`spec#b-<id>`, `tieTargetReference`), as the server's reads name one. Every reader that
+// compares a decision's link with a chip, or draws either, then reads the same address.
+test("a person's decision's shaped tie and the outline's chip name a spec block by one address", () => {
+  const issue = issueDetails();
+  const tree = answer(
+    [block("r1", "requirement", SPEC, 0), block("q1", "ask", SPEC, 1)],
+    [tuple("shaped", "q1", "r1")]
+  );
+  const asks = [
+    question("ask-1", {
+      answer: { at: "2026-11-06T12:00:00Z", selected: ["REST"], text: null, user: "alice" },
+      artifact_id: SPEC.artifact_id,
+      block_artifact: { id: SPEC.artifact_id, primary: true, slug: SPEC.slug },
+      block_id: "q1",
+      state: "answered",
+    }),
+  ];
+  const links = decisionNodes(tree, { asks, issue }).map((one) =>
+    one.links?.map((link) => link.to.ref)
+  );
+  const row = nodesInOrder(buildIssueTree({ asks, issue, tree })).find(
+    (one) => one.id === blockNodeId(SPEC.slug, "q1")
+  );
+
+  expect({ chips: row?.chips.map((chip) => chip.ref), links }).toEqual({
+    chips: [`dispatch://${KEY}/spec#b-r1`],
+    links: [[`dispatch://${KEY}/spec#b-r1`]],
+  });
 });
 
 // A decision is unsure where its agent wrote its uncertainty as high -

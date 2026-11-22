@@ -22,23 +22,19 @@ import {
   decisionsPartRows,
   decisionsPartsDrawn,
 } from "./issue-page-q";
+import { drawnRowReadings, fixtureSeed, keyedRows, seedKeys, steadily } from "./issue-page-t";
 import {
   blocksReads,
   convertedGate,
   decisionNodesGate,
   decisionsReadOf,
-  drawnRowReadings,
-  fixtureSeed,
   heldAnswer,
-  keyedRows,
   owedUnless,
-  seedKeys,
-  steadily,
   type TreeView,
   treeAnswerOf,
   treeReadGate,
   treeReads,
-} from "./issue-page-t";
+} from "./issue-page-t-tree";
 import {
   askOfNode,
   askRowId,

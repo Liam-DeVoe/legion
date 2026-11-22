@@ -286,10 +286,12 @@ var storeWriteCallSites = map[string]string{
 	// rows read again under them, then the version nodes and their facts, in one graphstore.Write
 	// per batch (graphcensus' TestTheVersionBatchTakesTheStoreLockOrder).
 	"graphcensus/census_versions.go#writeVersionBatch": "graphcensus#TestTheVersionBatchTakesTheStoreLockOrder",
-	// The same nodes written by the block-index pass that drains a mark, for the versions of the
-	// documents it covers that hold none (docs' indexRenderedVersion: the reconciliation's drain on
-	// either mark, and a request's version write that drains this build's mark first, leaving out
-	// its own version and writing none where more than missingVersionNodesBound are missing): under
+	// The same nodes written by the block-index pass that drains a mark, or that reads the store's
+	// statement of its document stale, for the versions of the documents it covers that hold none
+	// (docs' indexRenderedVersion: the reconciliation's drain on either mark, and a request's
+	// version write that drains this build's mark first or finds the statement stale
+	// (refs.BlockIndexing.Corrects), leaving out its own version and writing none where more than
+	// missingVersionNodesBound are missing): under
 	// the owner lock its caller took first, which every writer of a version node takes, the version
 	// rows read in the pass's read phase (PlanMissingVersionNodes), then, queued after the nodes of
 	// the pass, the version nodes and their facts in one graphstore.QueueWrite at the sentinel, the

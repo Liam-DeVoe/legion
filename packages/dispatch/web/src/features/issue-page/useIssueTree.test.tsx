@@ -70,6 +70,7 @@ import { BodySlot } from "./slots/body";
 import { ProvidersSlot } from "./slots/providers";
 import { nodesInOrder } from "./tree-keys";
 import {
+  commentNode,
   treeAnswer as fixtureAnswer,
   type TreeNodeExtra,
   treeNode,
@@ -144,13 +145,7 @@ function treeAnswer(
     [
       answerNode(KEY, "issue", { parent: null }),
       task,
-      ...comments.map((one) =>
-        answerNode(one.id, "comment", {
-          author: [one.author],
-          made_at: one.created_at,
-          text: one.body,
-        })
-      ),
+      ...comments.map((one) => commentNode(one, KEY)),
       ...(more.nodes ?? []),
     ],
     more.tuples
@@ -438,6 +433,39 @@ test("a names read that fails for a tree that grew keeps the names in hand, and 
     expect(taskWords(view.result.current.tree.root)).toBe(TASK_WORDS);
     view.unmount();
   } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// A names read moved to a set of addresses whose query already failed holds no answer there, and
+// the failure that query holds is new to the names line, which says it again (`useLineRefusals`).
+test("a names read moved to a set of addresses whose query already failed says its failure again", async () => {
+  // Where set, a names read stays out until it settles; every one of them fails.
+  let out: Promise<void> | undefined;
+  const stubs = stubTreeReads(async () => {
+    await out;
+    throw new Error("the names read failed");
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  const held = Promise.withResolvers<void>();
+  try {
+    const view = renderHook(() => useIssueTree(issue).namesFailure, { wrapper });
+    await waitFor(() => expect(view.result.current?.failure).toBe(1));
+    // A comment arrives with the tree read's next answer, and the names read of the tree's new
+    // set fails too.
+    await act(async () => client.setQueryData(issueTreeKey(KEY), treeAnswer([comment])));
+    await waitFor(() => expect(view.result.current?.failure).toBe(2));
+    // The comment goes: the read moves back to the first set, whose query failed, and is out.
+    out = held.promise;
+    await act(async () => client.setQueryData(issueTreeKey(KEY), treeAnswer([])));
+    await waitFor(() => expect(view.result.current?.retrying).toBe(true));
+    expect(view.result.current?.failure, "the first set's failure was not said again").toBe(3);
+    view.unmount();
+  } finally {
+    held.resolve();
     for (const stub of stubs) stub.mockRestore();
   }
 });
@@ -3791,11 +3819,7 @@ test("the outline's tree that took the focus for want of a row hands it to the f
     ...treeAnswer([]),
     nodes: [answerNode(KEY, "issue", { parent: null }), ...nodes],
   });
-  const reply = answerNode(comment.id, "comment", {
-    author: [comment.author],
-    made_at: comment.created_at,
-    text: comment.body,
-  });
+  const reply = commentNode(comment, KEY);
   let reads = 0;
   (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () => {
     reads += 1;

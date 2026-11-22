@@ -14,7 +14,7 @@ import * as outlineReads from "./outline-reads";
 import { BodySlot } from "./slots/body";
 import { ProvidersSlot } from "./slots/providers";
 import { nodesInOrder } from "./tree-keys";
-import { treeAnswer, treeNode } from "./tree-read/tree-fixtures";
+import { commentNode, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
@@ -57,16 +57,7 @@ function bodyReads(held: Held): typeof useOutlineReadsItself {
 function treeOf(comments: readonly Comment[]): TreeAnswer {
   const key = issueDetails().key;
   return treeAnswer(
-    [
-      treeNode(key, "issue", null),
-      ...comments.map((comment) =>
-        treeNode(comment.id, "comment", comment.reply_to ?? key, {
-          author: [comment.author],
-          made_at: comment.created_at,
-          text: comment.body,
-        })
-      ),
-    ],
+    [treeNode(key, "issue", null), ...comments.map((comment) => commentNode(comment))],
     [],
     { issue: key }
   );
@@ -180,9 +171,9 @@ function renderReads(issue: IssueDetails, client: QueryClient, held: Held) {
 // The page's first focus waits until every read the rows come from has answered, so it lands
 // once where no read still out draws rows above it (`IssueTree`'s opening). A read that answers
 // with a failure has answered too: waiting for a read to hold data, a failed one held the first
-// focus back for ever. Each of the five reads counts, and so does the tree read, which the outline
-// reads in place of each document's blocks: the case leaves one of each out in turn, answers the
-// other, and then fails the one left out.
+// focus back for ever. Each of the five reads counts, and so does the tree read, which every node
+// of the outline comes from: the case leaves one of each out in turn, answers the other, and then
+// fails the one left out.
 test("the outline's reads are settled once each read and the tree read have answered, a failure among them", async () => {
   for (const last of ["messages", "tree"] as const) {
     const issue = issueDetails();

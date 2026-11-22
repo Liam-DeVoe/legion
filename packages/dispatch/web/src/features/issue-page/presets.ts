@@ -1,5 +1,6 @@
 import type { DisplayTree } from "../../api/types";
 import { wordsOf } from "../refs/tree-fragment";
+import { blockIdOfNode } from "./decision-review";
 import {
   drawnLine,
   firstLineOf,
@@ -349,13 +350,12 @@ function heldFilterView(
   const parentOf = new Map<TreeAnswerNode, TreeNode>();
   const latest = new Map<string, TreeNode>();
   for (const node of nodes) {
-    const nearest =
-      node.parent === null ? undefined : (latest.get(node.parent.id) ?? treeNodeOf(node.parent.id));
+    const above = node.parent;
+    const nearest = above === null ? undefined : (latest.get(above.id) ?? treeNodeOf(above.id));
     const parent =
-      node.parent === null || nearest?.type === node.parent.supertag
+      above === null || nearest?.type === above.supertag
         ? nearest
-        : (ofRead.get(node.parent.id)?.find((one) => one.type === node.parent?.supertag) ??
-          nearest);
+        : (ofRead.get(above.id)?.find((one) => one.type === above.supertag) ?? nearest);
     if (parent !== undefined) parentOf.set(node, parent);
     const tree = treeOf.get(node);
     if (tree !== undefined) latest.set(node.id, tree);
@@ -500,7 +500,7 @@ function viewLines(
   const add = (rowId: string, node: TreeAnswerNode | undefined, type: PresetLine["type"]) => {
     const row = rowOf(rowId)?.id;
     if (node?.supertag !== type || row === undefined || !drawn.has(row)) return;
-    const id = node.block_id ?? node.id;
+    const id = blockIdOfNode(node);
     const held = lines.get(row);
     if (held?.some((line) => line.id === id) === true) return;
     const tree = readingOf(node);

@@ -15,9 +15,8 @@ import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
 import { isDecisionEntry, withEntries } from "../issue/decision-entries";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 
-/** What a stale block says when the reader rests on it: its own text changed after a decision tied
- *  it (`shapedNodeChanged`). */
-export const STALE_BLOCK_TITLE = "This block changed after a decision that shaped it.";
+/** What a stale block says when the reader rests on it. */
+export const STALE_BLOCK_TITLE = "A decision that shaped this block changed after it.";
 
 /** One block of the spec as its `part_of` edge reads it: the version in which its text last
  *  changed (none where the server never recorded one) and the head of its text. */
@@ -45,43 +44,42 @@ export const issueDecisionsQuery = (issueKey: string, enabled: boolean) => ({
   queryKey: ["decisions", issueKey] as const,
 });
 
-/** Whether the spec node a decision shaped changed after the decision tied it: its text last
- *  changed in a version whose event (`text_changed_event`) is later than the event that wrote the
- *  `shaped` tuple (`event`). Where either event is absent - a tie or a version no event recorded -
- *  the server's own comparison by the database's clock (`stale`) says it. */
-export function shapedNodeChanged(link: DecisionLink): boolean {
-  const event = link.event ?? null;
-  const changed = link.text_changed_event ?? null;
-  return event !== null && changed !== null ? changed > event : link.stale;
-}
-
 /** The address of issue `issueKey`'s spec as the server names a document (`dispatch://<KEY>/spec`),
  *  which a `shaped` link's `to.document` holds for a block of the spec. */
 export function issueSpecAddress(issueKey: string): string {
   return `dispatch://${issueKey}/spec`;
 }
 
-/** Whether a `shaped` link reaches a block of the document whose address is `address`: the
- *  document the server answers as holding the block (`to.document`). The node id is no test of it:
- *  a block of a document converted into its issue's room is the room's node, `<KEY>/tree#<id>`,
- *  whichever of the room's documents holds it. */
-export function linkReachesDocument(link: DecisionLink, address: string): boolean {
-  return link.to.document === address;
+/** Whether a `shaped` link reaches a block of the document whose address is `address` and whose
+ *  ref_key is `refKey`: the document the server answers as holding the block (`to.document`).
+ *  Where the server names that document, the node id is no test of it: a block of a document
+ *  converted into its issue's room is the room's node, `<KEY>/tree#<id>`, whichever of the room's
+ *  documents holds it. A server of the release before names no document, and every block node it
+ *  answers is its own document's, `<refKey>#<id>`, so there the node id says it.
+ *
+ *  kept for one release: compat-objects */
+export function linkReachesDocument(link: DecisionLink, address: string, refKey?: string): boolean {
+  if (link.to.document !== undefined) return link.to.document === address;
+  return refKey !== undefined && link.to.id.startsWith(`${refKey}#`);
 }
-/** Every spec block a decision shaped whose text changed after the decision tied it, each once,
- *  in the order the read names them: the `shaped` links of the Decisions read's decisions
- *  (isDecisionEntry). With `address`, only the blocks of the document at that address
- *  (linkReachesDocument). */
-export function staleSpecBlocks(decisions: IssueDecisions | undefined, address?: string): string[] {
+
+/** Every spec block a stale link of any decision names, each once, in the order the read names
+ *  them: the `shaped` links of the Decisions read's decisions (isDecisionEntry). A link is stale
+ *  when its decision changed after it first linked the block and the block has not changed since
+ *  (`DecisionLink.stale`). With `address`, only the blocks of the document at that address, whose
+ *  ref_key is `refKey` (linkReachesDocument). */
+export function staleSpecBlocks(
+  decisions: IssueDecisions | undefined,
+  address?: string,
+  refKey?: string
+): string[] {
   const stale: string[] = [];
   for (const entry of decisions?.entries ?? []) {
     if (!isDecisionEntry(entry)) continue;
     for (const link of entry.shaped ?? []) {
       const blockId = link.to.block_id;
-      if (address !== undefined && !linkReachesDocument(link, address)) continue;
-      if (shapedNodeChanged(link) && blockId !== undefined && !stale.includes(blockId)) {
-        stale.push(blockId);
-      }
+      if (address !== undefined && !linkReachesDocument(link, address, refKey)) continue;
+      if (link.stale && blockId !== undefined && !stale.includes(blockId)) stale.push(blockId);
     }
   }
   return stale;
@@ -203,12 +201,12 @@ export function useSpecMarks({
   );
   const marks = useMemo(() => {
     if (!enabled) return NO_MARKS;
-    const stale = staleSpecBlocks(decisions.data, specReference);
+    const stale = staleSpecBlocks(decisions.data, specReference, artifact.ref_key);
     const changedIds = changed?.blockIds ?? [];
     return stale.length === 0 && changedIds.length === 0
       ? NO_MARKS
       : specBlockMarks(stale, changedIds);
-  }, [changed, decisions.data, enabled, specReference]);
+  }, [artifact.ref_key, changed, decisions.data, enabled, specReference]);
   useSendMarkOnce({
     mark:
       enabled && readAtOpen !== undefined && shownVersion !== undefined

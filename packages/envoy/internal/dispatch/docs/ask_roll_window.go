@@ -154,6 +154,8 @@ func keptAskState(ask model.Ask, copied string) func(*pmdoc.Node) bool {
 // writer that reads no ask row (storableVersionTree, the decisions step's writePresent): the rest
 // stays as the live tree holds it, which every write of an ask's state keeps in step with it
 // (keptAskState).
+//
+// kept for one release: stored-ask-state
 func withoutUnkeptAskAttributes(node *pmdoc.Node) bool {
 	changed := false
 	for _, name := range answerWords {
@@ -172,6 +174,8 @@ func withoutUnkeptAskAttributes(node *pmdoc.Node) bool {
 // onItsNode is ask, a row of the asks table, with its state and answer as its node holds them
 // (askNodeAnswers, read into nodes by ask id): the values keptAskState writes once the fleet is one
 // build, each one the node holds no value of left empty, so the write takes it off the block.
+//
+// kept for one release: stored-ask-state
 func onItsNode(ask model.Ask, nodes map[string]askNodeAnswer) model.Ask {
 	held := nodes[ask.ID]
 	ask.State, ask.Answer = held.state, nil
@@ -208,13 +212,19 @@ func rollWindowAskAttributes(twoBuilds bool, ask model.Ask, copied string) func(
 // rollWindowAskAttributesWithheld is rollWindowAskAttributes's write for a block whose answer the
 // document has no room for: the block says who answered it and when, and carries neither the
 // options chosen nor the words (answerWords), as the release before wrote such a block.
+//
+// kept for one release: roll-window-attributes
 func rollWindowAskAttributesWithheld(ask model.Ask, copied string) func(*pmdoc.Node) bool {
 	return rollWindowAskWrite(ask, copied, false)
 }
 
 // rollWindowAskWrite is the write both of those make, with the answer's words where words. A value
 // ask does not hold - no state, no answerer, no time, as an ask read off a node that holds none of
-// them (onItsNode) - is taken off the block rather than written empty.
+// them (onItsNode) - is taken off the block rather than written empty. It serves both kept writes,
+// so it goes with the last of them.
+//
+// kept for one release: roll-window-attributes
+// kept for one release: stored-ask-state
 func rollWindowAskWrite(ask model.Ask, copied string, words bool) func(*pmdoc.Node) bool {
 	return func(node *pmdoc.Node) bool {
 		desired := pmdoc.Attrs{}
@@ -375,8 +385,10 @@ func withoutStoredAskAttributes(node *pmdoc.Node) bool {
 // attributes are kept in step with ask while another build serves (rollWindowAskAttributes), and
 // once the fleet is one build only those a version keeps (keptAskState).
 func askReadableWrite(twoBuilds bool, ask model.Ask, copied string) func(*pmdoc.Node) bool {
+	// kept for one release: roll-window-attributes
 	keep := rollWindowAskAttributes(twoBuilds, ask, copied)
 	if keep == nil {
+		// kept for one release: stored-ask-state
 		keep = keptAskState(ask, copied)
 	}
 	return func(node *pmdoc.Node) bool {
@@ -387,6 +399,8 @@ func askReadableWrite(twoBuilds bool, ask model.Ask, copied string) func(*pmdoc.
 
 // askReadableWriteWithheld is askReadableWrite while another build serves, for a block whose
 // answer the document has no room for (rollWindowAskAttributesWithheld).
+//
+// kept for one release: roll-window-attributes
 func askReadableWriteWithheld(ask model.Ask, copied string) func(*pmdoc.Node) bool {
 	keep := rollWindowAskAttributesWithheld(ask, copied)
 	return func(node *pmdoc.Node) bool {
