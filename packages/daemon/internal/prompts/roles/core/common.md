@@ -6,4 +6,4 @@ Nothing needed for correctness is deferred. A correctness finding is fixed in th
 
 The carry rule: a passing result stays current across every push since the head it was recorded at, while each of those pushes changes no code that runs, and across a merge of the base only to a check that neither the files the base brought in nor the merge's resolution can reach.
 
-Give a person no date or time estimate unless it names the work left and what it rests on, a measured rate or a step whose length is known; with nothing measured, say what is left and what decides it, and after an estimate proves wrong, say why it was wrong and what changed, not only a new date.
+Give a person no estimated date or duration: say what work is left and what decides when it ends.
