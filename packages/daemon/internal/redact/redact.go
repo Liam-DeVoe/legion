@@ -38,6 +38,7 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -74,8 +75,10 @@ const AddressError = "(the request failed; its error is not printed: the address
 // that head where the port goes (`http://user:4821/<tail>@host`). A host that is not ASCII is dialed
 // by its ASCII form (`xn--…`, its ASCII letters kept, lower-cased), which no replacement of the host
 // as written finds, so such an error is NotASCIIHostError alone; and an address the dialer refused
-// as no host and port is AddressError alone, since *net.AddrError quotes the part it refused. A host
-// and port of "" (no credential, or none parsed) leave the text as the URL rule writes it.
+// as no host and port is AddressError alone, since *net.AddrError quotes the part it refused. The
+// port is masked as written and as the dialer writes it back, a number with no leading zeros
+// (`:0048213` is dialed and printed as `:48213`). A host and port of "" (no credential, or none
+// parsed) leave the text as the URL rule writes it.
 func HostShown(host, port string, err error) string {
 	text := URLCredentials(err.Error())
 	if host == "" && port == "" {
@@ -93,6 +96,9 @@ func HostShown(host, port string, err error) string {
 	}
 	if port != "" {
 		text = portShown(text, port)
+		if n, err := strconv.Atoi(port); err == nil && strconv.Itoa(n) != port {
+			text = portShown(text, strconv.Itoa(n))
+		}
 	}
 	return text
 }

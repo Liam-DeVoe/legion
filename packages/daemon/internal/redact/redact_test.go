@@ -9,9 +9,11 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net"
+	"net/http"
 	"net/url"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -262,6 +264,36 @@ func TestHostShownPrintsNoHostOfAURLWithCredentials(t *testing.T) {
 	invalid := &net.OpError{Op: "dial", Net: "tcp", Err: &net.AddrError{Err: "invalid port", Addr: "98765432"}}
 	if got := HostShown("legion", "98765432", invalid); got != AddressError {
 		t.Errorf("an address the dialer refused = %q, want %q", got, AddressError)
+	}
+}
+
+// A port written with leading zeros (a password's head of digits that url.Parse read as the port,
+// `0048213`) is dialed as a number and printed without them: a real request to a closed port
+// written so prints neither the port as written nor its digits, and the password stays out. The
+// password is made up.
+func TestRequestErrorMasksAPortWrittenWithLeadingZeros(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	route := "http://op:" + "madeuphead0123" + "@127.0.0.1:00" + port + "/x"
+	response, err := http.Get(route)
+	if err == nil {
+		response.Body.Close()
+		t.Fatal("the request to a closed port got an answer")
+	}
+	shown := RequestError("the server", route, err).Error()
+	if !strings.Contains(shown, "dial tcp "+URLWithCredentials+":"+URLWithCredentials+": ") {
+		t.Errorf("RequestError = %q, want the dial's host and port written as the mark", shown)
+	}
+	for _, part := range []string{":" + port, ":00" + port, "madeuphead"} {
+		if strings.Contains(shown, part) {
+			t.Errorf("RequestError = %q, which holds %q", shown, part)
+		}
 	}
 }
 
