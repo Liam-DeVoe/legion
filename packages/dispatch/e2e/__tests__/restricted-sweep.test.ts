@@ -17,7 +17,9 @@
  *
  *  The control's commit is read from git: the merge base of HEAD and DISPATCH_E2E_SWEEP_BASE_BRANCH
  *  (`origin/main` by default; the branch the read check's pull request targets while it is open),
- *  or the commit DISPATCH_E2E_SWEEP_BASE names.
+ *  or the commit DISPATCH_E2E_SWEEP_BASE names. With neither variable set and a merge base that
+ *  holds no restricted members, as main's does, it is the pinned build (`pinnedControlBuild`),
+ *  fetched from origin where the clone lacks its tag.
  *
  *  WHY THE STACK ROWS ARE SKIPPED WITHOUT A POSTGRES PROVIDER. They start two whole stacks, each a
  *  Postgres, a Go server and the fakes, and build the control's server, which is minutes of work
@@ -519,6 +521,41 @@ describe.skipIf(hostTool("git") === null)("the commit the control builds", () =>
       new RegExp(
         `${base}, holds no restricted members .*DISPATCH_E2E_SWEEP_BASE.*DISPATCH_E2E_SWEEP_BASE_BRANCH`
       )
+    );
+  });
+
+  test("is the pinned build where the merge base has no restricted members and no variable names one", () => {
+    const repository = new Repository();
+    const base = repository.commit("before restricted members", { "README.md": "before\n" });
+    repository.git("branch", "below");
+    const pinned = repository.commit("restricted members", restrictedMembers);
+    repository.git("tag", "-a", "-m", "the pinned control", "archive/pinned", pinned);
+    repository.git("reset", "-q", "--hard", base);
+    repository.commit("restricted members and the read check", {
+      ...restrictedMembers,
+      ...theReadCheck,
+    });
+    expect(noReadCheckBase(repository.directory, undefined, "below", "archive/pinned")).toBe(
+      pinned
+    );
+    // Control: with no pinned build the same merge base is refused, as the row above.
+    expect(() => noReadCheckBase(repository.directory, undefined, "below")).toThrow(
+      `${base}, holds no restricted members`
+    );
+  });
+
+  test("is refused, naming the pinned build, where the pinned build cannot be fetched", () => {
+    const repository = new Repository();
+    const base = repository.commit("before restricted members", { "README.md": "before\n" });
+    repository.git("branch", "below");
+    repository.commit("restricted members and the read check", {
+      ...restrictedMembers,
+      ...theReadCheck,
+    });
+    expect(() =>
+      noReadCheckBase(repository.directory, undefined, "below", "archive/absent")
+    ).toThrow(
+      `${base}, holds no restricted members, and the pinned build archive/absent is not in this clone`
     );
   });
 
