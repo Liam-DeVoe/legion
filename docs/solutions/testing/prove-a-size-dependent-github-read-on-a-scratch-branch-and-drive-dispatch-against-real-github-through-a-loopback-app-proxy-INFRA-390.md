@@ -32,7 +32,7 @@ related_issues:
   from the gh `hosts.yml` that `$GH_CONFIG_DIR` names, with yaml.v3. Never log the token or the
   decode error, because a YAML error can quote the file.
 - **The implementer owns the scratch branch.** The review App has `push: false` on cybermonklabs/legion.
-  The implementer creates the branch, leaves it for the tester and the reviewer, and deletes it at
+  The implementer creates the branch, leaves it for the task's later steps, and deletes it at
   retro. Record the creation and the deletion as comments on the pull request. A retro is not
   always the last one: when the issue comes back, point a new ref at the same commit
   (`POST git/refs` with its SHA; GitHub still holds the unreferenced commit) so the proofs read

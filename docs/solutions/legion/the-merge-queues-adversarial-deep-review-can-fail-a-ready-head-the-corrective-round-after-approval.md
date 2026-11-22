@@ -69,8 +69,8 @@ round could neither recreate the directory nor write a handoff file:
 - **The task's later steps run again in its order.** The reviewer re-approves by SHA ("Approved:
   `83709677…` — supersedes my approval at `7db2b5db`"), and the tester runs another round at that
   head. Retro then extends its documents with one more `docs/solutions/`-only commit, and only
-  then does the merger re-post READY. The
-  docs-only-above-approval rule still holds for that final commit.
+  then does the merger re-post READY. The docs-only-above-approval rule of that time held for that
+  final commit. Retro now commits nothing.
 - **The round's own proof has to reach the failure branch the review read.** Both prior proofs
   drove the success path; the finding lived on the `StopFailed` branch. The tester's
   `LEGION_TMUX_PATH` wrapper (fail `kill-pane` with a non-proving stderr while a flag file exists)

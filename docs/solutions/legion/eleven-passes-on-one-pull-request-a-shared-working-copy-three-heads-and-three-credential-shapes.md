@@ -96,10 +96,10 @@ the two rebase comments named that line; the architect ruled no tester delta was
 What generalises: **a rebase changes the fingerprint; what the reviewer judges is the diff of the
 two diffs.** Compute both sides against their own fork points, `diff` the two outputs, and post
 the non-markdown lines in the rebase comment. If they are empty or a handful of lines you can
-explain, the approval is a confirmation; if not, it is a round. And **retro commits after
-approval**, so approved ≠ current by design — the merger's `jj diff --from <approved> --to <tip>
---summary` must list only `docs/solutions/` paths, which is why nothing else may move in retro.
-Before sjawhar/legion#2354 that diff also listed retro's removal of `.legion/<issue>/`.
+explain, the approval is a confirmation; if not, it is a round. And on this branch **retro
+committed after approval**, so approved ≠ current by design. The merger's `jj diff --from
+<approved> --to <tip> --summary` had to list only `docs/solutions/` paths, so nothing else could
+move in retro. Before sjawhar/legion#2354 that diff also listed retro's removal of `.legion/<issue>/`.
 
 ## 3. One active phase per issue, from the worker's seat
 

@@ -1,5 +1,5 @@
 ---
-title: "A root's re-admission erases its child's approval, so an unchanged diff is reviewed again as a confirmation, and that approval starts retro"
+title: "A root's re-admission erases its child's approval, so an unchanged diff is reviewed again as a confirmation, and one more retro follows that approval"
 category: legion
 tags:
   - re-admission
@@ -21,7 +21,7 @@ related_issues:
   - "LEGION-578"
 ---
 
-# A root's re-admission erases its child's approval, so an unchanged diff is reviewed again as a confirmation, and that approval starts retro
+# A root's re-admission erases its child's approval, so an unchanged diff is reviewed again as a confirmation, and one more retro follows that approval
 
 Extends docs/solutions/legion/a-conflict-round-that-changes-the-fingerprint-is-a-counted-review-round-and-its-approval-starts-a-second-retro-LEGION-578.md.
 

@@ -101,8 +101,8 @@ Two pull requests with disjoint code can still conflict through `docs/solutions/
 edits the same few hazard and runbook files, so a retro commit is shared surface even when the
 fixes are not. This PR's retro touched the shared-repo hazards doc that LEGION-45 had just
 extended on `main`, and the merge queue refused the `READY` as `CONFLICTING`; #1041 and #1042 hit
-the same thing within ten minutes the same evening. Expect a rebase after retro when another tree
-retro'd on the same doc since your fork point, and fetch before publishing `READY`.
+the same thing within ten minutes the same evening. Retro now commits nothing and pushes nothing,
+so it no longer adds this conflict.
 
 The second rebase then conflicted where nobody predicted — not the docs file (jj merged it) but
 three product files `main` had rewritten meanwhile: `packages/workspace/src/workspace.test.ts`

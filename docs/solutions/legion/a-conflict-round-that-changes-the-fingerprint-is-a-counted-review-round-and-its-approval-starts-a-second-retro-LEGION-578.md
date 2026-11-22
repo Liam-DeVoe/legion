@@ -1,5 +1,5 @@
 ---
-title: "A conflict round that changes the fingerprint is a counted review round, and its approval starts a second retro"
+title: "A conflict round that changes the fingerprint is a counted review round, and a second retro follows its approval"
 category: legion
 tags:
   - forward-merge
@@ -16,7 +16,7 @@ related_issues:
   - "sjawhar/legion#1846"
 ---
 
-# A conflict round that changes the fingerprint is a counted review round, and its approval starts a second retro
+# A conflict round that changes the fingerprint is a counted review round, and a second retro follows its approval
 
 - A forward merge of `main` whose unchanged-diff fingerprint changes is a full round
   (`skill://legion-worker/references/conflicts-and-rewrites.md`), and the daemon counts its

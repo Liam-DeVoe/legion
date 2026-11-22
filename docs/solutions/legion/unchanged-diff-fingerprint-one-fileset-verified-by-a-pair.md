@@ -123,7 +123,7 @@ it without anyone editing a line of the branch:
 The rule is the rule: a different fingerprint is a round, not a confirmation, even when the
 delta is prose. What the implementer owes the other roles in that case is attribution — run the
 fingerprint per file (split the `--git` output on `diff --git` and hash each file's lines) and
-name the files and the sentences that differ in the rebase comment, so the tester and reviewer
+name the files and the sentences that differ in the rebase comment, so the task's later steps
 can scope their round to those files instead of re-verifying everything. When one file owned the
 conflict, the cheaper attribution is the same command with the retired harness test added to the
 exclusion — equal hashes before and after prove
