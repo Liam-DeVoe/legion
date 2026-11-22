@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -65,7 +66,8 @@ var corpusRefusals = []corpusRefusal{
 // token was refused: <the policy's error>." Each is the format the policy writes it with, filled
 // with values of the shape cipher-client's slots take; the format must stand in the policy's
 // source. The refusal that quotes an error text of its own (`not a person's Google identity token
-// (%v)`) is not among them: cipher-client withholds it.
+// (%v)`) is not among them: cipher-client withholds it. Every other refusal the policy writes as
+// `fmt.Errorf("%w: …")` is (TestEveryPolicyRefusalIsInTheCorpus).
 type policyRefusal struct {
 	format string
 	args   []any
@@ -89,8 +91,11 @@ var policyRefusals = []policyRefusal{
 	{"%w: %s's tokens all name the session %s, which every pod of it may use, so its pods are registered for no name", []any{exchange.ErrSessionFixed, corpusAccount, "legion-broker"}, policySource},
 	{"%w: the registration of %s names a session of %d bytes; %s", []any{exchange.ErrSessionInvalid, corpusAccount, 230, corpusSessionRule}, policySource},
 	{"%w: %s ran %s, whose job is written in %s; an entry lists the workflow a job runs in", []any{exchange.ErrNoEntry, corpusRepository, corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, "cybermonklabs/actions/.github/workflows/build.yaml@refs/heads/main"}, policySource},
-	{"%w: the subject token's workflow_ref %s is not %s/<path>@%s: its repository, the path of its workflow file and its ref", []any{exchange.ErrClaimMissing, corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, corpusRepository, corpusRef}, policySource},
+	{"%w: the subject token's workflow_ref %s is not %s/<path>@%s: its repository, the path of its workflow file and its ref", []any{exchange.ErrClaimMissing, "example-org/other/" + corpusWorkflow + "@" + corpusRef, corpusRepository, corpusRef}, policySource},
 	{"%w: no entry lists the workflow %s of %s on %s", []any{exchange.ErrNoEntry, corpusWorkflow, corpusRepository, corpusRef}, policySource},
+	{"%w: the result entries of the workflow %s of %s under the ref patterns %s all match %s; list the workflow under patterns no ref matches two of", []any{exchange.ErrTwoEntries, corpusWorkflow, corpusRepository, "refs/heads/*, refs/heads/main", corpusRef}, policySource},
+	{"%w: the subject token's %s claim is not %s", []any{exchange.ErrClaimMissing, "sha", "40 lowercase hex digits"}, policySource},
+	{"%w: the subject token's %s claim is not %s", []any{exchange.ErrClaimMissing, "run_id", "a positive decimal number a signed 64-bit integer holds"}, policySource},
 	{"%w: the subject token carries no email claim, so it names no account (ask for it with format=full)", []any{exchange.ErrClaimMissing}, policySource},
 	{"%w: no entry lists the Google account %s", []any{exchange.ErrNoEntry, corpusMachine}, policySource},
 	{"%w: %s presented a token whose email_verified is not true", []any{exchange.ErrEmailNotVerified, corpusMachine}, policySource},
@@ -284,5 +289,42 @@ func TestEachCorpusHintStandsInTheBrokersSource(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), corpusRateLimit) {
 		t.Errorf("api/handlers_oauth.go holds no rate-limit message %q", corpusRateLimit)
+	}
+}
+
+// The policy's refusals the corpus must hold: every format the policy writes a refusal with as
+// fmt.Errorf("%w: …"), so a refusal the broker sends and the corpus leaves out fails here, rather
+// than reaching cipher-client with no row that shows its pattern takes the broker's text. The one
+// refusal cipher-client withholds is the exception, and it must still stand in the source.
+func TestEveryPolicyRefusalIsInTheCorpus(t *testing.T) {
+	withheld := map[string]bool{"%w: the subject token is not a person's Google identity token (%v)": true}
+	listed := map[string]bool{}
+	for _, refusal := range policyRefusals {
+		listed[refusal.format] = true
+	}
+	raw, err := os.ReadFile(policySource)
+	if err != nil {
+		t.Fatalf("read %s: %v", policySource, err)
+	}
+	written := regexp.MustCompile(`fmt\.Errorf\(("%w: (?:[^"\\]|\\.)*")`)
+	matches := written.FindAllStringSubmatch(string(raw), -1)
+	if len(matches) == 0 {
+		t.Fatalf("%s holds no fmt.Errorf(\"%%w: …\"): the scan reads nothing", policySource)
+	}
+	seen := map[string]bool{}
+	for _, match := range matches {
+		format, err := strconv.Unquote(match[1])
+		if err != nil {
+			t.Fatalf("%s: %s does not unquote: %v", policySource, match[1], err)
+		}
+		seen[format] = true
+		if !listed[format] && !withheld[format] {
+			t.Errorf("%s writes the refusal %q, which policyRefusals does not hold: add it, filled as cipher-client's slots take it, and run UPDATE_REFUSAL_CORPUS=1 go test -run TestTheRefusalCorpusIsWhatTheBrokerWrites ./internal/cipher/oauth", policySource, format)
+		}
+	}
+	for format := range withheld {
+		if !seen[format] {
+			t.Errorf("%s no longer writes the withheld refusal %q: take it out of this test's list", policySource, format)
+		}
 	}
 }
