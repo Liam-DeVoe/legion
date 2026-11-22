@@ -106,6 +106,13 @@ func NewReaderInScope(ctx context.Context, q Queryer, writer model.Actor, fromKi
 	return reader
 }
 
+// ServerURL is the deployment the reader reads its mentions with, whose dashboard URLs are
+// references: what a write that cuts the head of the same text an edge shows cuts it against
+// (EditedTargets).
+func (r *Reader) ServerURL() string {
+	return r.serverURL
+}
+
 // writtenBy is the Reader of the same write for a text of r's source that writer wrote rather
 // than r's own writer - an ask's answer, which its answerer wrote beside the asker's question
 // (askPartPairs). Its short ids resolve for writer, and what does not depend on the writer - the

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Tests for `dispatch-browser-latest-blobs.sh`: the merge job of dispatch-browser.yaml must judge
 # a re-run on the attempt that ran, so each case builds a download directory of real directories
-# and files - the shape `actions/download-artifact` leaves without `merge-multiple` - and reads
-# what the script wrote.
+# and files - the two shapes `actions/download-artifact` leaves without `merge-multiple`, a
+# directory named for each artifact when several match and the one artifact's own files when
+# one does - and reads what the script wrote.
 #
 # The file contents stand in for the Playwright blob zips: this script picks files, it does not
 # read them, so a line of text per file is what tells one attempt's copy from another's. That a
@@ -40,21 +41,33 @@ fixture() {
   echo "$root"
 }
 
-# leg <root> <leg> <attempt> <mark>: the artifact one leg's upload leaves at one attempt - a
-# directory named for the artifact, holding the leg's blob report and the row count beside it.
-# <mark> is written into both files, so the output says which attempt's copy arrived.
+# leg <root> <leg> <attempt> <mark> [<prefix>]: the artifact one leg's upload leaves at one
+# attempt - a directory named for the artifact, holding the leg's blob report and the row count
+# beside it. <mark> is written into both files, so the output says which attempt's copy arrived.
+# <prefix> is the lane's artifact prefix, `dispatch-browser-blob-` unless a case names another.
 leg() {
-  local dir="$1/down/dispatch-browser-blob-$2-$3"
+  local dir="$1/down/${5:-dispatch-browser-blob-}$2-$3"
   mkdir -p "$dir/blob-report" "$dir/rows"
   printf '%s\n' "$4" > "$dir/blob-report/report-$2.zip"
   printf '%s\n' "$4" > "$dir/rows/$2.txt"
 }
 
-# run_select <root>: runs the script under test over that case's directories, setting `out` to
+# lone_leg <root> <leg> <mark>: the same artifact when it is the only one the download matched,
+# which actions/download-artifact extracts into the download directory itself and not into a
+# directory named for it (the script's head names the note that cites the action's source), so
+# the leg's blob report and row count sit at the top.
+lone_leg() {
+  mkdir -p "$1/down/blob-report" "$1/down/rows"
+  printf '%s\n' "$3" > "$1/down/blob-report/report-$2.zip"
+  printf '%s\n' "$3" > "$1/down/rows/$2.txt"
+}
+
+# run_select <root> [<prefix>]: runs the script under test over that case's directories with the
+# lane's artifact prefix, `dispatch-browser-blob-` unless a case names another, setting `out` to
 # its combined output and `status` to its exit code. Not a subshell, so both survive the call.
 run_select() {
   set +e
-  out=$("$select_script" "$1/down" "$1/out" 2>&1)
+  out=$("$select_script" "$1/down" "$1/out" "${2:-dispatch-browser-blob-}" 2>&1)
   status=$?
   set -e
 }
@@ -139,6 +152,74 @@ run_select "$root"
 check "a file where a directory was expected fails too" "$(is "$status" 1)"
 check "naming it" "$(contains "$out" 'down/dispatch-browser-blob-shard-1-1 is not a leg')"
 
+echo "case: one artifact, which the download extracts into the download directory itself"
+# How many artifacts the download's pattern matches, over every attempt of the run, is the
+# run's: one leg that uploaded a blob on one attempt makes one, and with one match
+# actions/download-artifact leaves no directory named for it. Read as an entry's name,
+# blob-report/ is no leg's artifact, and the step failed a merge job that had a blob to merge.
+root=$(fixture one-artifact)
+lone_leg "$root" shard-1 lone
+run_select "$root"
+check "exits 0" "$(is "$status" 0)"
+check "prints no error" "$(is "$(contains "$out" '::error::')" false)"
+check "the output holds that artifact's blob" "$(is "$(held "$root" blob-report/report-shard-1.zip)" lone)"
+check "and its rows" "$(is "$(held "$root" rows/shard-1.txt)" lone)"
+check "and no other file" "$(is "$(find "$root/out" -type f | wc -l)" 2)"
+check "says which layout it read" \
+  "$(contains "$out" 'holds blob-report/ and rows/ at its top, which is how actions/download-artifact extracts an artifact when exactly one matched')"
+check "and names the files it took" \
+  "$(contains "$out" 'taken whole: blob-report/report-shard-1.zip, rows/shard-1.txt\.$')"
+lone_out=$root/out
+root=$(fixture one-artifact-named)
+leg "$root" shard-1 1 lone
+run_select "$root"
+check "the same artifact in a directory named for it writes the same files" \
+  "$(diff -r "$lone_out" "$root/out" > /dev/null && echo true || echo false)"
+
+echo "case: the references lane's lone artifact is taken whole as well"
+# The layout of one artifact is the download's, not the lane's: the references lane's merge job
+# downloads its own prefix's blobs, and one matched is extracted at the top as the other lanes'
+# is, with no prefix on disk to read.
+root=$(fixture one-artifact-references)
+lone_leg "$root" shard-3 refs
+run_select "$root" dispatch-references-blob-
+check "exits 0" "$(is "$status" 0)"
+check "the output holds that artifact's blob" "$(is "$(held "$root" blob-report/report-shard-3.zip)" refs)"
+check "and its rows" "$(is "$(held "$root" rows/shard-3.txt)" refs)"
+
+echo "case: a lone artifact that holds no blob report keeps its rows"
+# A leg whose browser step wrote its row count and no blob uploads rows/ alone. Read in either
+# layout, the count is copied and the blob directory stays empty.
+root=$(fixture one-artifact-rows-only)
+mkdir -p "$root/down/rows"
+printf 'rows-only\n' > "$root/down/rows/shard-2.txt"
+run_select "$root"
+check "exits 0" "$(is "$status" 0)"
+check "copies its rows" "$(is "$(held "$root" rows/shard-2.txt)" rows-only)"
+check "and no blob" "$(is "$(find "$root/out/blob-report" -mindepth 1 | wc -l)" 0)"
+check "and says it found rows/ alone" "$(contains "$out" 'down holds rows/ at its top')"
+
+echo "case: beside a lone artifact's two directories, any other entry fails"
+# A leg's artifact holds blob-report/ and rows/ and nothing else, and when several artifacts
+# match none of them is extracted at the top. So an entry beside those two is a layout this
+# step does not know, and it fails rather than merge around it.
+root=$(fixture one-artifact-stray)
+lone_leg "$root" shard-1 lone
+printf 'stray\n' > "$root/down/notes.txt"
+mkdir -p "$root/down/dispatch-browser-blob-shard-2-1/blob-report"
+run_select "$root"
+check "fails" "$(is "$status" 1)"
+check "names the stray file" "$(contains "$out" 'down/notes.txt is not part of a leg.s blob report')"
+check "and the stray directory" \
+  "$(contains "$out" 'down/dispatch-browser-blob-shard-2-1 is not part of a leg.s blob report')"
+check "and merges nothing" "$(is "$(find "$root/out" -type f | wc -l)" 0)"
+
+root=$(fixture one-artifact-blob-file)
+printf 'stray\n' > "$root/down/blob-report"
+run_select "$root"
+check "a blob-report that is a file and not a directory fails too" "$(is "$status" 1)"
+check "naming it" "$(contains "$out" 'down/blob-report is not part of a leg.s blob report')"
+
 echo "case: an empty download directory writes empty output and does not fail"
 # The merge step after this one fails when there is nothing to merge, and the merge job's first
 # reading names the legs that owed a blob, which is what says why.
@@ -189,12 +270,37 @@ check "its blob lands under its own name" \
 check "and its rows travel with it" \
   "$(is "$(held "$root" 'rows/alone-chromium hidpi.txt')" spaced)"
 
+echo "case: the references lane's prefix reads its own blobs and refuses the other lanes'"
+# ci.yaml's dispatch-browser and dispatch-references jobs can both call dispatch-browser.yaml in
+# one run, and an artifact name is unique within a run, so the references lane names its blobs
+# under a prefix of its own and its merge job passes that prefix here. A blob of the other
+# prefix in its download directory is a download pattern that took another lane's rows, which
+# fails rather than merging them into this lane's report.
+root=$(fixture references-prefix)
+leg "$root" shard-1 1 references-first dispatch-references-blob-
+leg "$root" shard-1 2 references-second dispatch-references-blob-
+leg "$root" shard-4 1 references-shard-4 dispatch-references-blob-
+run_select "$root" dispatch-references-blob-
+check "exits 0" "$(is "$status" 0)"
+check "the output holds attempt 2's blob" "$(is "$(held "$root" blob-report/report-shard-1.zip)" references-second)"
+check "and the other leg's" "$(is "$(held "$root" blob-report/report-shard-4.zip)" references-shard-4)"
+check "says which attempt it took" "$(contains "$out" '^shard-1: attempt 2, passing over attempt(s) 1$')"
+
+root=$(fixture references-prefix-other-lane)
+leg "$root" shard-1 1 references-blob dispatch-references-blob-
+leg "$root" shard-1 1 pull-request-blob
+run_select "$root" dispatch-references-blob-
+check "a blob of the other lanes' prefix fails" "$(is "$status" 1)"
+check "naming it" "$(contains "$out" 'down/dispatch-browser-blob-shard-1-1 is not a leg')"
+check "and the name it must have" "$(contains "$out" 'dispatch-references-blob-<leg>-<attempt>')"
+check "and merges nothing" "$(is "$(grep -rl references-blob "$root/out" | wc -l)" 0)"
+
 echo "case: a call that names no directories"
 set +e
 out=$("$select_script" 2>&1)
 status=$?
 set -e
 check "fails" "$(is "$status" 1)"
-check "says what it takes" "$(contains "$out" '<download-dir> <out-dir>')"
+check "says what it takes" "$(contains "$out" '<download-dir> <out-dir> <prefix>')"
 
 summary "dispatch-browser-latest-blobs.sh"

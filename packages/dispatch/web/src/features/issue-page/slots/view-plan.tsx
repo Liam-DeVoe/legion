@@ -10,12 +10,12 @@ import { useOutlineEditing } from "../IssuePresetPanels";
 import { issueAddress } from "../issue-address";
 import { artifactsBySlug } from "../issue-artifacts";
 import { NoTooltips } from "../NoTooltips";
+import { useViewReads } from "../outline-reads";
 import { useOutlineRequest } from "../outline-request";
 import { EMPTY_STATE_LINES } from "../page-words";
 import { type PlanFailedRead, PlanFilterBody, type PlanReads } from "../plan-filter/PlanFilterBody";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
-import { useIssueTree } from "../useIssueTree";
 
 /**
  * The Plan view: the plan's tasks as a chart of time, with one control in the view's first line
@@ -30,7 +30,11 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
   const { hash, search } = useLocation();
   const spec = primarySpec(issue);
   const address = issueAddress(route, search, hash, spec?.slug);
-  const { root } = useIssueTree(issue);
+  // What the page publishes of its batched names read, which the body hands its rows in the
+  // render that draws them (`published`), so none of them reads a reference the page asks for;
+  // and the outline's names line while those reads stand failed (`names`), which the body draws
+  // over its tree, since every reference its bars and steps draw waits on those names.
+  const { names, published, root } = useViewReads(issue);
   // The view waits on the reads of the two documents it draws from, and on no other: the plan's
   // blocks, which are its tasks, and the spec's, which are the statements a task serves. It is
   // these two reads and not `useIssueTree`'s `blocksHeld`, which counts the Verification and
@@ -137,8 +141,10 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
           // The words filter's Escape comes before the view is left.
           holdsEscape={address.filter !== ""}
           isClosed={isClosed}
+          namesLine={names}
           onEditing={onEditing}
           plan={plan}
+          published={published}
           reads={reads}
           {...(request === undefined ? {} : { request })}
           reveal={reveal}

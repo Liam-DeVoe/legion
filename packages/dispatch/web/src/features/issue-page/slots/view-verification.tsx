@@ -9,9 +9,9 @@ import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
+import { useViewReads } from "../outline-reads";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
-import { useIssueTree } from "../useIssueTree";
 import {
   type FailedRead,
   queryTyped,
@@ -26,7 +26,11 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
   // with the checks that serve it and each check beside its newest result.
   const { hash, search } = useLocation();
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
-  const { root } = useIssueTree(issue);
+  // What the page publishes of its batched names read, which the body hands its rows in the
+  // render that draws them (`published`), so none of them reads a reference the page asks for;
+  // and the outline's names line while those reads stand failed (`names`), which the body draws
+  // over its tree, since every reference its rows draw waits on those names.
+  const { names, published, root } = useViewReads(issue);
   const { checks, reads } = useVerificationReads(issue.key);
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the view holds no row for still draws it, as the outline resolves
@@ -51,6 +55,8 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
         <VerificationFilterBody
           checks={checks}
           context={view.context}
+          namesLine={names}
+          published={published}
           reads={reads}
           view={view.root}
           whole={whole}

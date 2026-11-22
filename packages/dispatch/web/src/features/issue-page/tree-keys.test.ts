@@ -50,10 +50,24 @@ function issue(): TreeNode {
       node("spec#b-answered", "ask"),
     ]),
     node("spec#b-d1", "decision", [], {
-      chips: [{ answered: true, gone: false, name: "R1", ref: "dispatch://CORE-1/spec#b-r1@v3" }],
+      chips: [
+        {
+          answered: true,
+          gone: false,
+          reading: { words: "R1" },
+          ref: "dispatch://CORE-1/spec#b-r1@v3",
+        },
+      ],
     }),
     node("spec#b-d2", "decision", [], {
-      chips: [{ answered: true, gone: false, name: "R1", ref: "dispatch://CORE-1/spec#b-r1" }],
+      chips: [
+        {
+          answered: true,
+          gone: false,
+          reading: { words: "R1" },
+          ref: "dispatch://CORE-1/spec#b-r1",
+        },
+      ],
     }),
   ]);
 }
@@ -116,7 +130,14 @@ test("the decision behind a check is the one that informed the requirement it se
     node("spec#b-r1", "requirement", [check], { reference: "dispatch://CORE-1/spec#b-r1" }),
     node("spec#b-r2", "requirement", [unserved], { reference: "dispatch://CORE-1/spec#b-r2" }),
     node("spec#b-d1", "decision", [], {
-      chips: [{ answered: true, gone: false, name: "R1", ref: "dispatch://CORE-1/spec#b-r1" }],
+      chips: [
+        {
+          answered: true,
+          gone: false,
+          reading: { words: "R1" },
+          ref: "dispatch://CORE-1/spec#b-r1",
+        },
+      ],
     }),
   ]);
   expect(decisionBehind(root, "verification-md#b-c1")?.id).toBe("spec#b-d1");
