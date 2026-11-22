@@ -439,8 +439,8 @@ func (r *cutoverRig) roots() []cutoverIssue {
 // the completion's time) and the entry a start is built from.
 type cutoverMergerRow struct {
 	handoff, summary, completed string
-	entry                                int64
-	task                                 string
+	entry                       int64
+	task                        string
 }
 
 // mergerRow reads issue's merger phases row.

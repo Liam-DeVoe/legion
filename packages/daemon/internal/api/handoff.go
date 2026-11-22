@@ -139,9 +139,10 @@ func (a *completionAnswer) answered() int {
 // when the caller is not the role the check records — and every other call is a phase completion.
 // The issue's phase is not what decides it: under `production_check: tester` a merged close
 // spares the tester's claim and opens a look behind its running testing turn, and that turn's own
-// verdict — pass or fail, which a check report also names — would be recorded as a report on
-// production nobody made. A phase completion is held to its commit (the implementer's and the
-// merger's, and the tester's, the head it tested: TESTED_HEAD_REQUIRED), the Dispatch handoff
+// completion — which a tester's plugin below CheckStatesContract still sends with pass or fail, as
+// a check report names a verdict — would be recorded as a report on production nobody made. A
+// phase completion is held to its commit (the implementer's and the merger's, and the tester's,
+// the head it tested: TESTED_HEAD_REQUIRED), the Dispatch handoff
 // record a file-backed phase ends with (handoffRecord), the refusal of a verdict
 // (VERDICT_NOT_TAKEN), the wake no phase carries (CHECK_WAKE_UNEXPECTED), the
 // run and the phase entry its claim serves, the implementer's in implementing to an open pull
