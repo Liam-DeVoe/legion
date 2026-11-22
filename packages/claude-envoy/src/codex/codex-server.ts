@@ -393,6 +393,10 @@ export async function runCodexEnvoyServer(): Promise<void> {
     (entry) => {
       self = entry
     },
+    undefined,
+    undefined,
+    // The tell gate: a look that fails once the stop has begun writes no warning.
+    warn,
   )
   if (owning === undefined) {
     await stopped.promise
