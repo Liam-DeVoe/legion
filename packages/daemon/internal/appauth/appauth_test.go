@@ -391,6 +391,58 @@ func TestAWalksBundlesOfARoleOfAPlanAreTheirIssues(t *testing.T) {
 	}
 }
 
+// A version of a plan taken between the memo's read of a role's App and the build's own read of
+// it leaves no bundle under an App it was not minted as. LEGION-43's coder is of the type testing,
+// the review App's, when the memo reads it, and the hook commits a version that makes it
+// implementation before the build reads it, so the build mints the implement App's bundle.
+// LEGION-47's coder, of the type testing, then asks the same walk for the review App's bundle,
+// and gets one minted as the review App. LEGION-43's coder asked again reads the implement App
+// and is served the bundle already built, which is held under the App it was minted as.
+func TestAPlanVersionTakenDuringABuildLeavesNoBundleUnderAnotherApp(t *testing.T) {
+	repo := ghrepo.MustParse("sjawhar/legion")
+	committed := false
+	plans := func(_ context.Context, issue string, role claim.Role) (Planned, error) {
+		if role != "coder" {
+			return Planned{}, nil
+		}
+		if issue == "LEGION-43" && committed {
+			return Planned{Defines: true, Type: plan.TypeImplementation}, nil
+		}
+		return Planned{Defines: true, Type: plan.TypeTesting}, nil
+	}
+	apps := RoleApps{Plan: plans}
+	credential := GitHubCredential(sourceOf(ownerTokens{}, installedEverywhere("sjawhar/legion")), servesOneOf("sjawhar/legion"), ghrepo.Renames{}, nil, nil,
+		apps, quietBundleLog())
+	var built []string
+	commitThenBuild := func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		if issue == "LEGION-43" {
+			committed = true
+		}
+		built = append(built, issue+"/"+string(role))
+		return credential(ctx, issue, role, repo)
+	}
+	bundles := NewBundles(commitThenBuild, apps)
+	for _, ask := range []struct {
+		issue string
+		app   string
+	}{
+		{"LEGION-43", "implement"},
+		{"LEGION-47", "review"},
+		{"LEGION-43", "implement"},
+	} {
+		bundle, err := bundles.Bundle(context.Background(), ask.issue, "coder", repo)
+		if err != nil {
+			t.Fatalf("the bundle of coder on %s: %v", ask.issue, err)
+		}
+		if rendered := bundle.Dirs["sjawhar"]; rendered.App != ask.app {
+			t.Errorf("coder on %s is served a bundle of the %q App, want %q", ask.issue, rendered.App, ask.app)
+		}
+	}
+	if want := []string{"LEGION-43/coder", "LEGION-47/coder"}; !slices.Equal(built, want) {
+		t.Errorf("the walk built %v, want %v: each bundle held under the App it was minted as", built, want)
+	}
+}
+
 func TestTokensMintsRefreshesAndCachesIdentity(t *testing.T) {
 	key, privatePEM := testAppKey(t)
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)

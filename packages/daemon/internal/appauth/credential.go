@@ -154,7 +154,8 @@ type Bundles struct {
 
 // bundleKey is what one bundle of a walk is held under: the App role it is minted as, with the role
 // itself for a role that is none of Legion's, and the repository it is built for, lowercased as
-// GitHub compares a repository's two halves.
+// GitHub compares a repository's two halves. A built bundle is held under the App its own
+// directories name (ghconfig.Rendered.App), which the build's one read of the role's App decided.
 type bundleKey struct {
 	app  AppRole
 	role claim.Role
@@ -176,6 +177,12 @@ func NewBundles(credential runtime.GitHubCredential, apps RoleApps) *Bundles {
 // issue, so its bundle is shared by every issue of the walk, and so is a role two plans define
 // with types of one App. A role nothing defines fails here, naming itself, and builds nothing. A
 // walk is one goroutine, so the memo needs no lock of its own.
+//
+// The memo reads the role's App to find a bundle already built, and the build reads it again to
+// mint one, each in a transaction of its own (RoleApps.Plan). A version of the plan taken between
+// the two reads can change the App. So a new bundle is held under the App the build minted it as,
+// which its directories name, and never under the App the memo read first. A later ask that reads
+// the App the build read is served that bundle, and no ask that reads another App is.
 func (b *Bundles) Bundle(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 	key := bundleKey{repo: strings.ToLower(repo.String())}
 	if app, err := AppRoleFor(role, nil, Planned{}); err == nil {
@@ -194,6 +201,7 @@ func (b *Bundles) Bundle(ctx context.Context, issue string, role claim.Role, rep
 	if err != nil {
 		return ghconfig.Bundle{}, err
 	}
+	key.app = AppRole(built.Dirs[built.Default].App)
 	b.built[key] = built
 	return built, nil
 }
