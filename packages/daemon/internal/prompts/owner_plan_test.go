@@ -592,3 +592,46 @@ func TestSignOffMovesTheTaskToItsNextStepInTheRoleParts(t *testing.T) {
 		})
 	}
 }
+
+// `accepting`, `retro` and `merging` hold no slot and take a merge forward wherever the task places
+// the acceptance, so no part says the review comes before them (record.PastReview reads the three
+// phases, never the review's place). A parent is held before its retro wherever its last step is not
+// the owner's acceptance, and a planner's plan goes to the steps after it, whichever they are. Each
+// part is read alone, by its name. This shows the text is loaded, never that an agent follows it.
+func TestNoPartPutsTheAcceptancePastTheReview(t *testing.T) {
+	for _, tc := range []struct {
+		part       string
+		read       func(*testing.T) string
+		want, gone []string
+	}{
+		{
+			"go/architect-common.md", func(t *testing.T) string { return goPart(t, "architect-common.md") },
+			[]string{
+				"a stop in `accepting`, `retro` or `merging` holds none, and a stop in any other phase keeps the slot it holds",
+				"a parent whose task passed its last step, which is not your `acceptance:owner` step",
+				"the issue stands in `accepting`, `retro` or `merging` (`merge-next`)",
+				"moves the issue on to its task's next step with no further notice",
+			},
+			[]string{"past its review", "Past review", "a stop before `accepting` keeps it", "no `acceptance:owner` step to wait in"},
+		},
+		{
+			"go/worker-common.md", func(t *testing.T) string { return goPart(t, "worker-common.md") },
+			[]string{"In `accepting`, `retro` or `merging`, where the task has a reviewer step, the reviewer is asked as well"},
+			[]string{"Past review"},
+		},
+		{
+			"roles/core/reviewer.md", func(t *testing.T) string { return rolePart(t, "core/reviewer.md") },
+			[]string{"while the issue stands in `accepting`, `retro` or `merging`"},
+			[]string{"past its review"},
+		},
+		{
+			"roles/planner.md", func(t *testing.T) string { return rolePart(t, "planner.md") },
+			[]string{"hands the choice to the steps after yours, unseen"},
+			[]string{"hands the choice to whoever implements it"},
+		},
+	} {
+		t.Run(tc.part, func(t *testing.T) {
+			holdsAndRetires(t, tc.part, tc.read(t), tc.want, tc.gone)
+		})
+	}
+}
