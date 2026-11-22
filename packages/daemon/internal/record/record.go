@@ -2839,16 +2839,16 @@ func RaisedLater(at time.Time, entry int64, thanAt time.Time, than int64) bool {
 // at, whose steps are steps. A role can stand at two steps of a task, one agent doing both, and
 // each run of a step keeps a row of its own (StepTask, StepPlace), so the row read is the row of
 // one of the role's places in the task: its step at at where the step there is the role's; else
-// its latest place before at, the retro, the implementer's (phase.RoleFor), and the merge, the
-// merger's, standing after every step; else its first place after at, so a read or a write before
-// the role's first step reaches the row of that step, as the one row of a role did; and place 0
-// where the task gives the role no place, so every write of such a role lands on one row. Where
-// the row of that place does not stand yet, the role's row of no step (StepTask "", a row a new
-// generation cleared or the release before wrote) is the role's row, as it was before a step was
-// written on it, and the step's entry moves it to the step (workflow's enter). Where neither
-// stands, it is the zero row stamped with role, task and that place, which a caller that writes it
-// back writes as that row. For an issue with no plan rows (task ""), each role has one row,
-// PhaseRowOf's.
+// its latest place before at, the retro, the role of its agent's run (RetroAgentOf), and the
+// merge, the merger's, standing after every step; else its first place after at, so a read or a
+// write before the role's first step reaches the row of that step, as the one row of a role did;
+// and place 0 where the task gives the role no place, so every write of such a role lands on one
+// row. Where the row of that place does not stand yet, the role's row of no step (StepTask "", a
+// row a new generation cleared or the release before wrote) is the role's row, as it was before a
+// step was written on it, and the step's entry moves it to the step (workflow's enter). Where
+// neither stands, it is the zero row stamped with role, task and that place, which a caller that
+// writes it back writes as that row. For an issue with no plan rows (task ""), each role has one
+// row, PhaseRowOf's.
 //
 // It is the one reading of a role's row where a walk is known: the engine's (workflow's phaseRow,
 // enter and reportsBefore) and the completion route's, which knows the place it was handed. A
@@ -2858,7 +2858,7 @@ func PhaseRowAt(rows []PhaseRow, role claim.Role, task string, at TaskPlace, ste
 	if task == "" {
 		return PhaseRowOf(rows, role)
 	}
-	place := rolePlace(role, at, steps)
+	place := rolePlace(role, task, at, steps)
 	var noStep *PhaseRow
 	for i, row := range rows {
 		switch {
@@ -2875,10 +2875,11 @@ func PhaseRowAt(rows []PhaseRow, role claim.Role, task string, at TaskPlace, ste
 	return PhaseRow{Role: role, StepTask: task, StepPlace: place}
 }
 
-// rolePlace is the place (PhaseRow.StepPlace) of the row of role PhaseRowAt reads at at, on a
-// task whose steps are steps: from 1 for a step, 0 for the retro, the merge and a role the task
-// gives no place.
-func rolePlace(role claim.Role, at TaskPlace, steps []PlanStep) int {
+// rolePlace is the place (PhaseRow.StepPlace) of the row of role PhaseRowAt reads at at, on task,
+// whose steps are steps: from 1 for a step, 0 for the retro, the merge and a role the task gives
+// no place. The retro is a place of the role its agent runs as (RetroAgentOf), the role of the
+// task's last step of the type implementation, so the row read there is the row its entry raises.
+func rolePlace(role claim.Role, task string, at TaskPlace, steps []PlanStep) int {
 	// Each place of role, by its rank on the task's line: a step's place from 1, then the retro,
 	// then the merge.
 	type stand struct{ rank, place int }
@@ -2888,7 +2889,7 @@ func rolePlace(role claim.Role, at TaskPlace, steps []PlanStep) int {
 			stands = append(stands, stand{rank: step.Position, place: step.Position})
 		}
 	}
-	if role == phase.RoleFor(phase.Retro) {
+	if _, retro := RetroAgentOf(task, steps); role == claim.Role(retro) {
 		stands = append(stands, stand{rank: len(steps) + 1})
 	}
 	if role == phase.RoleFor(phase.Merging) {
