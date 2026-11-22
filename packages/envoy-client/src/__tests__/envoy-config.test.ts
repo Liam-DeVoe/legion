@@ -31,6 +31,7 @@ import {
 import type * as EnvoyConfigModule from "../envoy-config";
 import {
   askgateSetting,
+  commandTimeoutMs,
   type EnvoyConfig,
   type EnvoyHarness,
   envoyConfigPath,
@@ -1446,17 +1447,17 @@ describe("a ! command in envoy.json", () => {
       Number(existsSync(pidFile) ? readFileSync(pidFile, "utf-8").trim() : "") || 0;
     let dispatch: DispatchWithToken | undefined;
     // The limit is a timer, and the fake clock holds it: the command runs in real time, and the
-    // row moves the clock to the limit once the command is under way, so no span of the read is
-    // measured. The read arms the timer in the same run as its spawn, so once the command has
-    // written its child's pid the timer is set. The error names the limit from the runner's own
-    // `COMMAND_TIMEOUT_MS`, so a limit other than the 10 s moved here fails the value check: the
-    // command then ends on its own at 30 s and gives its output.
+    // row moves the clock to the limit (`commandTimeoutMs`, the runner's own) once the command is
+    // under way, so no span of the read is measured. The read arms the timer in the same run as
+    // its spawn, so once the command has written its child's pid the timer is set. The error names
+    // the limit the runner read, so with `ENVOY_COMMAND_TIMEOUT_MS` unset a limit other than 10 s
+    // fails the value check.
     const left = await inScratchTmp(async () => {
       jest.useFakeTimers();
       try {
         const reading = dispatchSettings(env, config);
         await turnsUntil(() => childPid() > 0, "the command to start its child");
-        jest.advanceTimersByTime(10_000);
+        jest.advanceTimersByTime(commandTimeoutMs(env));
         dispatch = await reading;
       } finally {
         jest.useRealTimers();
@@ -1472,6 +1473,77 @@ describe("a ! command in envoy.json", () => {
     await processEnded(childPid());
     expect(left).toEqual([]);
   }, 60_000);
+
+  // A test that holds a command on its own gate while it waits on other processes sets the bound
+  // to its own timeout (claude-envoy's answers-hook rows); any other value keeps the 10 s.
+  test("runs for as long as ENVOY_COMMAND_TIMEOUT_MS says, whole ms from 1 to 2^31 - 1, when it is set", async () => {
+    const bounds: [string | undefined, number][] = [
+      [undefined, 10_000],
+      ["300", 300],
+      ["1", 1],
+      ["2147483647", 2_147_483_647],
+      // Bun 1.4.4's `setTimeout` cuts a delay of 2^31 ms or more to 1 ms.
+      ["2147483648", 10_000],
+      ["4294967296", 10_000],
+      ["4294967297", 10_000],
+      ["99999999999999999999", 10_000],
+      // A 0 ms limit would end every command at once.
+      ["0", 10_000],
+      ["", 10_000],
+      [" ", 10_000],
+      ["-1", 10_000],
+      ["1.5", 10_000],
+      ["0300", 10_000],
+      ["1e3", 10_000],
+      [" 300", 10_000],
+      ["300 ", 10_000],
+      ["0x12c", 10_000],
+      ["soon", 10_000],
+    ];
+    expect(
+      bounds.map(([bound]) => [bound, commandTimeoutMs({ ENVOY_COMMAND_TIMEOUT_MS: bound })])
+    ).toEqual(bounds);
+
+    const home = tempDir();
+    const read = async (bound: string, command: string) => {
+      // A file of its own for each read, since a command's outcome is kept by command and file.
+      const file = writeFile(path.join(tempDir(), "envoy.json"), {
+        dispatch: { ...dispatchOn, token: `!${command}` },
+      });
+      const env = { ...commandEnvironment(home), ENVOY_COMMAND_TIMEOUT_MS: bound };
+      return {
+        file,
+        settings: await dispatchSettings(env, await readEnvoyConfig(file, env, { cwd: tempDir() })),
+      };
+    };
+    const short = await read("300", `sleep 5 # ${home}`);
+    expect(short.settings).toEqual({
+      enabled: false,
+      notice: null,
+      error: `${short.file}: dispatch.token's command did not finish within 0.3 s, and does not run again in this process`,
+    });
+    // A value refused keeps the 10 s itself, not merely no other bound: a 30 s command ends, named
+    // as having run out of 10 s, and not before 10 s.
+    for (const bound of ["0", ""]) {
+      const started = Date.now();
+      const refused = await read(bound, `sleep 30 # ${bound === "" ? "empty" : bound} ${home}`);
+      const elapsed = Date.now() - started;
+      expect(refused.settings).toEqual({
+        enabled: false,
+        notice: null,
+        error: `${refused.file}: dispatch.token's command did not finish within 10 s, and does not run again in this process`,
+      });
+      expect(elapsed).toBeGreaterThanOrEqual(10_000);
+    }
+    // The longest bound the runner keeps, and the values `setTimeout` would cut to 1 ms, all let a
+    // 0.5 s command finish.
+    for (const bound of ["2147483647", "2147483648", "4294967296", "4294967297"]) {
+      expect((await read(bound, `sleep 0.5; printf ${USER_TOKEN}`)).settings).toMatchObject({
+        enabled: true,
+        token: USER_TOKEN,
+      });
+    }
+  }, 45_000);
 
   // A read waits for its command without holding the process, so the process can end while the
   // command runs, by any path: its own exit, Oh My Pi's handlers for SIGINT, SIGTERM and SIGHUP and
