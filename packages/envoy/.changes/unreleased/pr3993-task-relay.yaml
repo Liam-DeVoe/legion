@@ -7,7 +7,9 @@ body: |-
   whole read, so the record of a delete marker a daemon purged leaves the listener's memory then.
   envoy-infra grants the daemon's NATS user create, update, read, write and purge of the bucket,
   the listener's user its reads, and no session user anything of it; the broker's NATS auth
-  service answers a daemon's and a listener's connection with the same grants (`natsgrant`).
+  service answers a daemon's and a listener's connection with the same grants (`natsgrant`). An
+  edge listener (`ENVOY_EDGE_PROJECTS`) runs no task relay, and its user's grant holds none of the
+  bucket's reads, so a session at the edge is relayed no task value.
   Roll out in this order: the envoy-infra release first, then this listener, then each project's
   Legion daemon and worker image together. Applying the envoy-infra release replaces the VM of a
   `gcp:NatsHub` that has a `listener`, a `listenerMachineId` or a `daemon: true` user, once, with
