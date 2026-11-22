@@ -327,7 +327,7 @@ func TestHoldReleaseAfterAStreamsCensus(t *testing.T) {
 	stub := func(context.Context, *nats.Conn) ([]streams.ConsumerShape, error) { return nil, nil }
 
 	// No reader: UNKNOWN, and a stop entry that left nothing changed.
-	code, _, stderr := h.streamsRun(nil, "census", "--family", "session")
+	code, _, stderr := h.streamsRun(nil, "census")
 	id := h.row().HoldID
 	_, err := h.s.Records.PutCutover(ctx, "session", "done", id)
 	require.NoError(t, err)
@@ -399,7 +399,7 @@ func TestHoldTheCensusReadsTheRecordedFreshNames(t *testing.T) {
 	h.seedProtectedStreams()
 	ctx := context.Background()
 	stub := func(context.Context, *nats.Conn) ([]streams.ConsumerShape, error) { return nil, nil }
-	args := []string{"census", "--family", "session", "--dispatch-database-file", "/run/dispatch-db", "--daemon-database", "P=/run/daemon-db"}
+	args := []string{"census", "--dispatch-database-file", "/run/dispatch-db", "--daemon-database", "P=/run/daemon-db"}
 
 	// The first census sets its hold and stops at its convert check, which streams.Census refuses
 	// with a zero report, so it prints none; the session family's cutover row is then written done

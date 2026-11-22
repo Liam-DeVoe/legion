@@ -120,10 +120,10 @@ Every command writes an `intent` entry before its first change, and then `done`,
 what it left. Once `hold release` or `hold abort` is `done`, the hold has ended and no command is
 admitted in it: "the hold has ended: hold release is done".
 
-`streams census` reads and reconciles every daemon family the broker's cutover rows hold (each
-`daemon/<P>` row), as hub-restore's abort does, beside the `--family` values that name no daemon
-(`session`, `dispatch`). `--family daemon/<P>` is optional; when any is given, the values must be
-exactly the rows' daemon families, or the census is UNKNOWN, naming each one missing or extra,
+`streams census` reads and reconciles every family the broker's cutover rows hold (`session`,
+`dispatch` and each `daemon/<P>`), as hub-restore's abort reads the daemon ones, and its convert
+check refuses one whose row is not `done`. `--family` is optional; when any is given, the values
+must be exactly the rows' families, or the census is UNKNOWN, naming each one missing or extra,
 before it reads or removes anything.
 
 ## Abort

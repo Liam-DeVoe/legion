@@ -3513,11 +3513,11 @@ headed `envoy-infra streams update` or `envoy-infra streams census`.
   records that alone tell an orphan from a selected name went with the store, which is no evidence
   to delete anything. A `LEFT` line is neither a change nor a failure. The census writes, so it runs
   only while the row is `held`; `check` is the read-only word. The writer hold's census reads and
-  reconciles the daemon families of the broker's cutover rows, every `daemon/<P>` row, as
-  hub-restore's abort does, beside the `--family` values that name no daemon (`session`,
-  `dispatch`). `--family daemon/<P>` values are a check of the operator's intent: when any is given
-  and they are not exactly the rows' daemon families, the census is `UNKNOWN`, naming each family a
-  row holds that they leave out and each value no row holds, before it reads or removes anything.
+  reconciles every family of the broker's cutover rows, `session`, `dispatch` and each
+  `daemon/<P>`, as hub-restore's abort reads the daemon ones, and its convert check refuses one
+  whose row is not `done`. `--family` is optional: when any is given, the values must be exactly
+  the rows' families, or the census is `UNKNOWN`, naming each family a row holds that they leave out
+  and each value no row holds, before it reads or removes anything.
 
 `check`'s token file holds the measurement job's platform token, presented as user `service`. Its
 settings are `--replicas`, `--stream-max-bytes` and `--session-max-age`, which default to

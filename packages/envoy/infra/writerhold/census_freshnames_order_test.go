@@ -33,7 +33,7 @@ func TestHoldTheCensusReadsTheFreshNamesAfterItsBarrier(t *testing.T) {
 	}
 	readers := CensusReaders{Recorded: stub, FreshNames: reader, Stores: noStores}
 
-	code, _, _ := h.streamsRunReaders(readers, "census", "--family", "session")
+	code, _, _ := h.streamsRunReaders(readers, "census")
 	require.Equal(t, 1, code, "the census before the family is converted")
 	require.Zero(t, calls, "a census refused at its convert check read the fresh names")
 	holdID = h.row().HoldID

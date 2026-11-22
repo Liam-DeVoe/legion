@@ -77,9 +77,9 @@ func TestHoldTheCensusReadsTheDaemonFamiliesFromTheCutoverRows(t *testing.T) {
 		return h.streamsRunReaders(CensusReaders{Recorded: stub, FreshNames: names, Stores: stores.reconcile}, args...)
 	}
 
-	// The first census sets its hold and stops at its convert check; the cutover rows of session,
-	// daemon/A and daemon/B are then written done under that hold.
-	code, _, _ := census("session")
+	// The first census sets its hold and stops at its convert check (no cutover row, so no family);
+	// the cutover rows of session, daemon/A and daemon/B are then written done under that hold.
+	code, _, _ := census()
 	require.Equal(t, 1, code, "the census before any family is converted")
 	id := h.row().HoldID
 	for _, family := range []string{"session", "daemon/A", "daemon/B"} {
@@ -109,8 +109,8 @@ func TestHoldTheCensusReadsTheDaemonFamiliesFromTheCutoverRows(t *testing.T) {
 		require.NotContains(t, h.journalCommands(id), CommandStreamsCensus+" done", row.name)
 	}
 
-	// No --family daemon/<P>: the census reads and reconciles every daemon family the rows hold.
-	args := []string{"census", "--hold", id, "--family", "session", "--daemon-consumer", "legion-b=notifications.b.>",
+	// No --family: the census reads and reconciles every family the rows hold.
+	args := []string{"census", "--hold", id, "--daemon-consumer", "legion-b=notifications.b.>",
 		"--daemon-database", "A=/dev/null", "--daemon-database", "B=/dev/null"}
 	code, stdout, stderr := h.streamsRunReaders(CensusReaders{Recorded: stub, FreshNames: names, Stores: stores.reconcile}, args...)
 	require.Zero(t, code, "the census of the rows' daemon families: %s", stderr)
