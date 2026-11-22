@@ -1547,10 +1547,11 @@ func (r *dispatchBrokerRig) pluginScript(clients *rigClients, role *rigRole, run
 }
 
 // daemonRefs are the objects the daemon's script reads that its run with a token of P made, or
-// that the role's did: the document it uploads, read back as an approval, and the role's
-// handoff record.
+// that the role's did: the document it uploads, read back as an approval, the role's handoff
+// record, and the role's document that its plugin's doc-edit gave a second version, whose two
+// versions the script reads the changes between.
 type daemonRefs struct {
-	document, handoff string
+	document, handoff, edited string
 }
 
 // daemonScript is K4's script through the daemon's client: one call of each method of
@@ -1618,6 +1619,8 @@ func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daem
 	call("EventsAfter", true, func() error { _, err := client.EventsAfter(ctx, issueKey, 0); return err })
 	call("MessageBodiesSince", true, func() error { _, err := client.MessageBodiesSince(ctx, issueKey, since); return err })
 	call("Approval", true, func() error { _, err := client.Approval(ctx, refs.document); return err })
+	call("ApprovedVersionBefore", true, func() error { _, err := client.ApprovedVersionBefore(ctx, refs.document, 2); return err })
+	call("ArtifactChanges", true, func() error { _, err := client.ArtifactChanges(ctx, refs.edited, 1, 2); return err })
 	call("Handoff", true, func() error { _, err := client.Handoff(ctx, refs.handoff); return err })
 	return writes
 }
@@ -1651,7 +1654,7 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 	var withP []rigWrite
 	withP = append(withP, r.commandScript(role, env, "P", refs, r.directMessage(role.session))...)
 	withP = append(withP, r.pluginScript(clients, role, "P", refs, role.session)...)
-	daemon := &daemonRefs{handoff: refs.handoff}
+	daemon := &daemonRefs{handoff: refs.handoff, edited: refs.documents["plugin"]}
 	withP = append(withP, r.daemonScript(daemonClient, daemon, since)...)
 	// K4's words: with the daemon's token for P the script makes one of each kind of write the
 	// daemon's Dispatch client has a method for. A method the client gains and the script does not
