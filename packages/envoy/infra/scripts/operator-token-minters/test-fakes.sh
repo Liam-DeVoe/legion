@@ -383,8 +383,10 @@ EOF
 # (ListMembershipsResponse: resources, nextPageToken, unreachable), one membership a page, the
 # unreachable locations on the first page alone; and GET projects/<p>/locations/-/scopes
 # (ListScopesResponse: scopes, nextPageToken) from the world's scopes.json, one scope a page. The
-# bearer token must come in through the configuration curl reads on stdin (-K -), never on the
-# command line. ---
+# bearer token and the page token must come in through the configuration curl reads on stdin
+# (-K -), never on the command line. Each page token holds a backslash and then a double quote,
+# so a script that writes it into that configuration unescaped reads back another token, which
+# this fake refuses. ---
 fake curl <<'EOF'
 config="$(cat)"
 url="" token=""
@@ -394,7 +396,7 @@ for ((i = 1; i <= $#; i++)); do
     --data-urlencode)
       i=$((i + 1))
       kv="${!i}"
-      [ "${kv%%=*}" != pageToken ] || token="${kv#*=}"
+      [ "${kv%%=*}" != pageToken ] || { echo "fake curl: the page token is on the command line" >&2; exit 2; }
       ;;
     --max-time | -K) i=$((i + 1)) ;;
     -*) ;;
@@ -405,6 +407,15 @@ done
 # The scheme is held apart from the fake token so no line of this file reads as a credential.
 scheme=Bearer
 [[ "$config" == *"header = \"Authorization: $scheme example-access-token\""* ]] || { echo "fake curl: no bearer token on stdin" >&2; exit 2; }
+# A page token, as curl reads a quoted configuration value: \" is a double quote and \\ a backslash.
+page_line="$(grep '^data-urlencode = "pageToken=' <<<"$config" || true)"
+if [ -n "$page_line" ]; then
+  quoted="${page_line#data-urlencode = \"pageToken=}"
+  [ "${quoted: -1}" = '"' ] || { echo "fake curl: the page token's configuration line does not end its quote: $page_line" >&2; exit 2; }
+  read_token="$(printf '%s' "${quoted%\"}" | sed -e 's/\\\(["\\]\)/\1/g')"
+  token="${read_token#p\\\"}"
+  [[ "$read_token" == p\\\"* && "$token" =~ ^[0-9]+$ ]] || { echo "fake curl: the page token read back as $read_token, which this fake never sent" >&2; exit 2; }
+fi
 fleet_project="$(jq -r .project "$world/fleet.json")"
 deny() {
   printf '{"error": {"code": 403, "message": "Permission %s denied on %s", "status": "PERMISSION_DENIED"}}\n' "'$1'" "'$2'"
@@ -415,7 +426,7 @@ project_of="${url#https://gkehub.googleapis.com/v1/projects/}"
 if [ "$url" = "https://gkehub.googleapis.com/v1/projects/$fleet_project/locations/-/scopes" ]; then
   [ ! -e "$world/refuse-scopes" ] || deny gkehub.scopes.list "projects/$fleet_project/locations/-/scopes"
   { if [ -e "$world/scopes.json" ]; then cat "$world/scopes.json"; else echo '[]'; fi; } |
-    jq --argjson at "${token:-0}" '. as $s | {scopes: [$s[$at] // empty]} + (if $at + 1 < ($s | length) then {nextPageToken: "\($at + 1)"} else {} end)'
+    jq --argjson at "${token:-0}" '. as $s | {scopes: [$s[$at] // empty]} + (if $at + 1 < ($s | length) then {nextPageToken: "p\\\"\($at + 1)"} else {} end)'
   exit 0
 fi
 if [ "$url" != "https://gkehub.googleapis.com/v1/projects/$fleet_project/locations/-/memberships" ] || [ -e "$world/refuse-fleet" ]; then
@@ -429,6 +440,6 @@ jq --argjson at "${token:-0}" '
        uniqueId: "uid-\(.id)", state: {code: "READY"},
        endpoint: (if .gke then {gkeCluster: {resourceLink: "//container.googleapis.com/projects/\(.gke.project)/locations/\(.gke.location)/clusters/\(.gke.cluster)"}}
                   else {kubernetesMetadata: {kubernetesApiServerVersion: "v1.33.0"}} end)}]}
-  + (if $at + 1 < $n then {nextPageToken: "\($at + 1)"} else {} end)
+  + (if $at + 1 < $n then {nextPageToken: "p\\\"\($at + 1)"} else {} end)
   + (if $at == 0 and (($w.unreachable // []) | length) > 0 then {unreachable: $w.unreachable} else {} end)' "$world/fleet.json"
 EOF

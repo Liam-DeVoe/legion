@@ -156,8 +156,7 @@ fleet_memberships() {
 # projects/$POOL_PROJECT/locations/-/COLLECTION, each page's JSON a line of PAGES. Returns 1 with
 # HUB_ERROR, naming PERMISSION, when the listing was refused or a page is not JSON.
 hub_list() {
-  local token page="" pages=0 status why
-  local -a query
+  local token page="" quoted_page pages=0 status why
   HUB_ERROR=""
   if ! have curl; then
     HUB_ERROR="curl is not on PATH"
@@ -174,13 +173,21 @@ hub_list() {
       HUB_ERROR="the listing of projects/$POOL_PROJECT/locations/-/$1 did not end within 1000 pages"
       return 1
     fi
-    query=(--data-urlencode pageSize=100)
-    [ -z "$page" ] || query+=(--data-urlencode "pageToken=$page")
+    if [[ "$page" == *[[:cntrl:]]* ]]; then
+      HUB_ERROR="the GKE Hub API's listing of projects/$POOL_PROJECT/locations/-/$1 gave a next page token holding a control character, which this check does not send back"
+      return 1
+    fi
     status=0
-    # The token goes in through curl's configuration on stdin, never on a command line.
-    printf 'header = "Authorization: Bearer %s"\n' "$token" |
-      curl -sS --fail-with-body --max-time 60 -G -K - "${query[@]}" \
-        "https://gkehub.googleapis.com/v1/projects/$POOL_PROJECT/locations/-/$1" >"$WORK/hub-page.json" 2>"$WORK/hub.err" || status=$?
+    # The access token, and the page token beside it, go in through curl's configuration on
+    # stdin, never on a command line. The page token is quoted for that configuration: each
+    # backslash and double quote in it is escaped with a backslash.
+    quoted_page="${page//\\/\\\\}"
+    quoted_page="${quoted_page//\"/\\\"}"
+    {
+      printf 'header = "Authorization: Bearer %s"\n' "$token"
+      [ -z "$page" ] || printf 'data-urlencode = "pageToken=%s"\n' "$quoted_page"
+    } | curl -sS --fail-with-body --max-time 60 -G -K - --data-urlencode pageSize=100 \
+      "https://gkehub.googleapis.com/v1/projects/$POOL_PROJECT/locations/-/$1" >"$WORK/hub-page.json" 2>"$WORK/hub.err" || status=$?
     if [ "$status" -ne 0 ]; then
       why="$(jq -r '[.error.code, .error.status, .error.message] | map(select(. != null) | tostring) | join(" ")' "$WORK/hub-page.json" 2>/dev/null |
         sed -n '1{s/[[:cntrl:]]/ /g;p;}')" || true
