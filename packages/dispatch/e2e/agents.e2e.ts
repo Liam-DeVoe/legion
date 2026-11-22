@@ -634,23 +634,21 @@ test("opening a row marks read the newer of two replies written in one milliseco
     { attempt: 1, body: "Answer B" },
     plannerActor
   )) as Message;
-  // Alice's follow-up moves exchange A above B in the server's order, so the page meets the older
-  // reply first: a comparison to the millisecond would keep it.
-  const followUp = await createAgentMessage(planner.session_id, {
-    body: "Follow-up on A",
-    delivery: "aside",
-    in_reply_to: answerA.id,
-  });
   const second = Math.floor((Date.now() - 120_000) / 1000) * 1000;
   const at = (offsetSeconds: number, fraction = "") =>
     `${new Date(second + offsetSeconds * 1000).toISOString().slice(0, 19)}${fraction}Z`;
   const replyA = at(0, ".123456");
   const replyB = at(0, ".1235");
-  await setCreatedAt("messages", askA.id, at(-60));
+  // Exchange A stands above B in the server's order, so the page meets the older reply first: a
+  // comparison to the millisecond would keep it. A conversation moves by its newest message, its
+  // root's included (`listAgentConversation`'s `moved`), so A's question is stamped after both
+  // replies. No reply of alice's moves it: her own reply under the thread would mark Answer A read
+  // (inboxwrite.Record), and no later reply of the session's: that one would be the newest reply,
+  // which opening the row marks read through in place of Answer B.
+  await setCreatedAt("messages", askA.id, at(30));
   await setCreatedAt("messages", askB.id, at(-30));
   await setCreatedAt("messages", answerA.id, replyA);
   await setCreatedAt("messages", answerB.id, replyB);
-  await setCreatedAt("messages", followUp.id, at(30));
   // The fixture holds only if the server lists A first, with both replies unread.
   expect(
     (await getAgentConversation(planner.session_id)).map((read) => [
