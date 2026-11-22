@@ -46,9 +46,7 @@
       "right": "container.secrets.get on //cloudresourcemanager.googleapis.com/projects/example-project through roles/container.admin, granted at //cloudresourcemanager.googleapis.com/projects/example-project",
       "role": "roles/container.admin",
       "resource": "//cloudresourcemanager.googleapis.com/projects/example-project",
-      "permissions": [
-        "container.secrets.get"
-      ],
+      "permissions": ["container.secrets.get"],
       "granted_at": "//cloudresourcemanager.googleapis.com/projects/example-project"
     }
   ],
