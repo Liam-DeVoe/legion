@@ -914,14 +914,12 @@ func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
 	// before the probe starts, and the gate then cancels having run nothing.
 	go func() {
 		defer cancel()
-		for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); {
-			// Read here rather than through attempts: a helper that fails the test belongs to the
-			// test's own goroutine, and this one only needs to know the probe started.
-			if raw, err := os.ReadFile(filepath.Join(f.dir, "count")); err == nil && strings.TrimSpace(string(raw)) == "1" {
-				return
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
+		// Read here rather than through attempts: a helper that fails the test belongs to the
+		// test's own goroutine, and this one only needs to know the probe started.
+		testwait.Holds(30*time.Second, testwait.Poll, func() bool {
+			raw, err := os.ReadFile(filepath.Join(f.dir, "count"))
+			return err == nil && strings.TrimSpace(string(raw)) == "1"
+		})
 	}()
 
 	started := time.Now()
