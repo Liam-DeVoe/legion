@@ -100,10 +100,10 @@ export const ownerOf = (item: PriorityItem): string =>
  *
  * Each column is at least as wide as its header whole: its label and its filter button, at their
  * widest below 1280 px, where each is a 44 px touch target, with the gap between them and the
- * cell's padding, 64 px over the label. Measured in Chromium (builds Job
- * infra-3221-t16c-measure-rp2nn): Order's label is 43 px in a 44 px button, Triage, Todo's 86,
- * Closed, 7 days' 102 and Newest event's 97. While the table is sorted by a column, the layout
- * adds the sort mark (`SORT_MARK_WIDTH`) where `markOutsideMin` says the minimum leaves it out.
+ * cell's padding, 64 px over the label. Measured in Chromium: Order's label is 43 px in a 44 px
+ * button, Triage, Todo's 86, Closed, 7 days' 102 and Newest event's 97. While the table is sorted
+ * by a column, the layout adds the sort mark (`SORT_MARK_WIDTH`) where `markOutsideMin` says the
+ * minimum leaves it out.
  */
 export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
   {

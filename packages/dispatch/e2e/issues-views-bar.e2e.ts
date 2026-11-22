@@ -4,14 +4,16 @@
 // that draws one, the Board's columns and rails, its cards against the table's rows, and every
 // key move and drop by Status and by Legion phase.
 //
-// ACME is seeded with the helpers ported from #3578's head 02a7b3c67e (`seedLegionFixture` with
-// `startFakeLegionDaemon`, `seedLegionMetricsCorpus`, `pushLegionObservation`), PLAIN is a
-// project with no Legion setting, and the priority pages read a priority written through the API.
+// ACME is seeded with `seedLegionFixture`, its daemon named at a `startFakeLegionDaemon`, with
+// `seedLegionMetricsCorpus`, and with `pushLegionObservations` and `pushLegionObservation`,
+// PLAIN is a project with no Legion setting, and the priority pages read a priority written
+// through the API.
 // Every expected row, column and count is computed in the row from the seed through the API
 // (`GET /api/v1/issues` and the board route), never with the web code's filters. A row that
 // measures a position on ACME seeds a failed read first and holds every board frame after the
 // first (`seedMeasuredAcme`).
-import type { LegionBoardResponse as Board, IssueSummary } from "../web/src/api/types";
+import type { IssueSummary } from "../web/src/api/types";
+import { CONTROL } from "../web/src/components/control-names";
 import { issueStatusScale } from "../web/src/theme/classes";
 import {
   createIssue,
@@ -22,17 +24,19 @@ import {
   listIssuesWhere,
   patchIssue,
 } from "./api";
+import { control, controlRow } from "./filters";
 import {
   ACME,
   cardsOf,
   drawnColumns,
   issuesTable,
   mouseDrag,
+  queueSorted,
   rowKeys,
   seedAcme,
   seedMeasuredAcme,
 } from "./issues-views-shared";
-import { pushLegionObservation, seedFailedLegionRead } from "./legion-seed";
+import { pushLegionObservation, pushLegionObservations, seedFailedLegionRead } from "./legion-seed";
 import { expandedState } from "./settled";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -473,9 +477,11 @@ async function seedK14(): Promise<K14Seed> {
   const second = await made("Implemented beside the widgets", "in_progress", 0);
   const testing = await made("Tested with no card", "testing", 0);
   const unset = await made("Sorted with no priority", "triage", null);
-  for (const key of queue) await pushLegionObservation(key, "phase", '"admitted"');
-  await pushLegionObservation(second, "phase", '"implementing"');
-  await pushLegionObservation("", "admission", admission(queue));
+  await pushLegionObservations([
+    ...queue.map((issue) => ({ issue, field: "phase", value: '"admitted"', ago: "0 seconds" })),
+    { issue: second, field: "phase", value: '"implementing"', ago: "0 seconds" },
+    { issue: "", field: "admission", value: admission(queue), ago: "0 seconds" },
+  ]);
   const board = await getLegionBoard(ACME);
   const cards = cardsOf(board);
   expect(
@@ -487,21 +493,6 @@ async function seedK14(): Promise<K14Seed> {
   ]);
   expect(cards.get(second)?.column).toBe("implementing");
   return { todo, queue, implementing: ["ACME-1", second], testing, unset };
-}
-
-/** The open issues of `issues` sorted as Open's Queue sort orders them: by their Place where the
- *  board gives one, then by rank. */
-function queueSorted(issues: readonly IssueSummary[], board: Board): IssueSummary[] {
-  const cards = cardsOf(board);
-  const place = (issue: IssueSummary) => cards.get(issue.key)?.card.waiting_place ?? undefined;
-  return [...issues].sort((a, b) => {
-    const left = place(a);
-    const right = place(b);
-    if (left !== undefined && right !== undefined) return left - right;
-    if (left !== undefined) return -1;
-    if (right !== undefined) return 1;
-    return a.rank < b.rank ? -1 : a.rank > b.rank ? 1 : 0;
-  });
 }
 
 // SLOW(>=2s): seven pages read for their display menus, on two projects and the priority pages.
@@ -626,9 +617,7 @@ test("the Board of a view draws the table's rows in the view's sort, its status 
         ])
       );
     await expect(
-      page.locator('[data-control="control-row"] [data-control="chip"]').filter({
-        hasText: /Priority/,
-      })
+      control(controlRow(page), CONTROL.chip).filter({ hasText: /Priority/ })
     ).toHaveCount(1);
 
     // view=open by Status: the open statuses in main's order, Icebox a rail after Triage with a
@@ -823,12 +812,16 @@ test("by Legion phase only a drop within Queue writes, the column follows the da
   test.setTimeout(150_000);
   const context = await asUser(browser, "alice");
   const daemon = await seedAcme();
-  // The failed-read alert is there from the start, so no frame of the sampler's moves the Board;
-  // the board's frames pass, since the admission block this row pushes reaches the page live.
-  await seedFailedLegionRead(ACME, "the daemon did not answer its state route");
   const page = await context.newPage();
   try {
     const seed = await seedK14();
+    // The failed read is seeded after the seed's good read, so it is the daemon's newest read and
+    // its alert is there from the start: no frame of the sampler's failed reads moves the Board.
+    // The board's frames pass, since the admission block this row pushes reaches the page live.
+    await seedFailedLegionRead(ACME, "the daemon did not answer its state route");
+    const failedRead = page
+      .getByRole("alert")
+      .filter({ hasText: "The last read of the Legion daemon failed" });
     const [q1, q2] = seed.queue;
     const [i1, i2] = seed.implementing;
     if (q1 === undefined || q2 === undefined || i1 === undefined || i2 === undefined)
@@ -837,6 +830,7 @@ test("by Legion phase only a drop within Queue writes, the column follows the da
     // The Board by Legion phase of the P0 issues, from the Group by menu.
     await page.goto(`/projects/${ACME}/issues?f.priority=0&layout=board`);
     await expect(page.locator("[data-board-card]").first()).toBeVisible();
+    await expect(failedRead).toBeVisible();
     await page.getByRole("button", { exact: true, name: "Group by" }).click();
     await page
       .getByRole("dialog", { name: "Group by" })
@@ -865,6 +859,11 @@ test("by Legion phase only a drop within Queue writes, the column follows the da
       .toEqual([q1, q2]);
     await pushLegionObservation("", "admission", admission([q2, q1]));
     await expect.poll(() => columnCards(page, "queue")).toEqual([q2, q1]);
+    // That push is a good read, which takes the alert away; a failed read seeded after it brings
+    // the alert back before the refused moves, so the sampler's own failed read moves nothing
+    // under them.
+    await seedFailedLegionRead(ACME, "the daemon did not answer its state route");
+    await expect(failedRead).toBeVisible();
 
     // Every other move is refused in one short sentence and writes nothing.
     const patches: string[] = [];
@@ -964,9 +963,7 @@ test("under a sort by Created a drop within Todo is refused naming the sort and 
     await page.getByRole("option", { name: new RegExp(`^${LABEL}`) }).click();
     await page.keyboard.press("Escape");
     await expect.poll(() => new URL(page.url()).searchParams.getAll("label")).toEqual([LABEL]);
-    await expect(
-      page.locator('[data-control="control-row"] [data-control="chip"]').filter({ hasText: LABEL })
-    ).toHaveCount(1);
+    await expect(control(controlRow(page), CONTROL.chip).filter({ hasText: LABEL })).toHaveCount(1);
     const [labelled] = seed.todo;
     await expect
       .poll(async () => (await drawnColumns(page)).flatMap((one) => one.cards))

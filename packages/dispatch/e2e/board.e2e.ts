@@ -3,6 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { createIssue, createProject, getIssue, listIssues, patchIssue, putIssueState } from "./api";
 import { pickFilterOption } from "./filters";
 import { nextFrames } from "./frames";
+import { boardAtRest, clicksDelivered } from "./issues-views-shared";
 import {
   expectReadWhileHeld,
   holdIssuePatches,
@@ -32,54 +33,6 @@ function patchOf(page: Page, key: string) {
       response.request().method() === "PATCH" &&
       new URL(response.url()).pathname === `/api/v1/issues/${key}`
   );
-}
-
-/**
- * Waits until no card is mid-flight. dnd-kit lands every reorder it did not animate itself - the
- * rollback and refetch after a rejected rank included - with a 200 ms transform transition, and a
- * card later in the DOM paints over the ones it crosses, so a press during that flight lifts
- * whichever card is passing the point rather than the one measured there.
- */
-async function boardAtRest(page: Page): Promise<void> {
-  await page.getByRole("region", { name: "Project board" }).evaluate(async (board) => {
-    for (;;) {
-      const running = board.getAnimations({ subtree: true });
-      if (running.length === 0) {
-        return;
-      }
-      await Promise.allSettled(running.map((animation) => animation.finished));
-    }
-  });
-}
-
-/**
- * Waits until a click reaches its target again. dnd-kit's pointer sensors stop every click at the
- * document (capture phase) from the lift until a 50 ms timer after the drop, and a busy main
- * thread runs that timer late, so a control clicked straight after a drop is silently ignored.
- * The probe is a node under `body` outside the React root: only that suppressor can stop it.
- */
-async function clicksDelivered(page: Page): Promise<void> {
-  await page.evaluate(async () => {
-    const probe = document.body.appendChild(document.createElement("div"));
-    let delivered = false;
-    probe.addEventListener("click", () => {
-      delivered = true;
-    });
-    try {
-      for (;;) {
-        delivered = false;
-        probe.dispatchEvent(new MouseEvent("click"));
-        if (delivered) {
-          return;
-        }
-        const turn = Promise.withResolvers<void>();
-        setTimeout(turn.resolve, 0);
-        await turn.promise;
-      }
-    } finally {
-      probe.remove();
-    }
-  });
 }
 
 /** Drags with the mouse from the middle of `source` to `target` (a card or a column). */

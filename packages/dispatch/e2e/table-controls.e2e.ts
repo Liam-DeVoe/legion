@@ -3756,10 +3756,10 @@ async function drawnItems(items: Locator, list: string): Promise<DrawnItem[]> {
  * follow the font - are `"lines"`.
  *
  * dispatch://INFRA-3221 changes two of the lists on purpose, so their parts and widths below are
- * this row's own reading of that change (builds Job infra-3221-t15-r3-7zphw), each box's height
- * still the base's: a Board card's open asks name what they count ("1 open ask"), and the
- * project List draws Open's columns in a project with no Legion daemon, with no Epic column and
- * Open asks before Assignee, so its rows are narrower.
+ * this row's own reading of that change, each box's height still the base's: a Board card's open
+ * asks name what they count ("1 open ask"), and the project List draws Open's columns in a
+ * project with no Legion daemon, with no Epic column and Open asks before Assignee, so its rows
+ * are narrower.
  */
 const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly ItemAtTheBase[]>>> = {
   chromium: {

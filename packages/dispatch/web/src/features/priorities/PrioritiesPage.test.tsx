@@ -847,9 +847,9 @@ test("the priorities table stacks its title's header in a box under 640 px", asy
 
 // dispatch://INFRA-3221/comment/141bbad2-b75e-4bb4-b0a7-b5b1af541a3c: Order's minimum holds its
 // header whole, its label and its filter button, and while the table is sorted by it, as the
-// table opens, its sort mark too. Measured in Chromium (builds Job infra-3221-t16c-measure-rp2nn):
-// the label is 43 px, in a 44 px button below 1280 px, and 52 px with the mark; the filter button
-// is 44 px there, the gap between them 4 px and the cell's padding 16 px.
+// table opens, its sort mark too. Measured in Chromium: the label is 43 px, in a 44 px button
+// below 1280 px, and 52 px with the mark; the filter button is 44 px there, the gap between them
+// 4 px and the cell's padding 16 px.
 test("the priorities table draws its Order header whole, sorted by it and not", async () => {
   const user = userEvent.setup();
   // On `Element.prototype`, which owns the method (see above).

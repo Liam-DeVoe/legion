@@ -1,3 +1,5 @@
+import { setTimeout as sleep } from "node:timers/promises";
+
 import {
   AGENT_STREAM_LIMITS,
   type DispatchEvent,
@@ -518,15 +520,18 @@ export async function listIssues(project: string, options: ApiOptions = {}) {
 }
 
 /** `GET /api/v1/issues` with the narrowings a view of the Issues tab reads by (`open`, `status`,
- *  `sort`, `limit`, `offset`, `closed_since`, `closed_before`), as the issues it lists: the whole
- *  list where the query names no page, and the page's own issues where it does. A row computes
- *  the rows and the order a view must list from this, not from the web code's filters. */
+ *  `sort`, `closed_since`, `closed_before`), as the whole list of the issues it lists: it names
+ *  no page, so the route answers the list rather than a page object. A row computes the rows and
+ *  the order a view must list from this, not from the web code's filters. */
 export async function listIssuesWhere(
-  query: Query<"/api/v1/issues", "get">,
+  query: Omit<Query<"/api/v1/issues", "get">, "limit" | "offset">,
   options: ApiOptions = {}
 ) {
   const answered = await get("/api/v1/issues", { query }, options);
-  return Array.isArray(answered) ? answered : (answered.issues ?? []);
+  if (!Array.isArray(answered)) {
+    throw new Error("GET /api/v1/issues answered a page where the whole list was asked for");
+  }
+  return answered;
 }
 
 // The five priority routes. A priority belongs to no project, so each of these reads or writes
@@ -1287,34 +1292,30 @@ export function getLegionWorkTimeItems(
   );
 }
 
-/** Waits until `GET /api/v1/projects/{key}/evals/legion-work-time` answers 200, for up to
- *  `timeout`, and fails with the last answer. A project created through the API gets the eval
- *  catalogue in the transaction that creates it; a project a fixture writes by SQL gets it on a
- *  later pass of the eval refresher (`evals.Store.RunRefresher`), which an event or a delivery
- *  change wakes and which starts a pass at most `evals.RefresherGap` (10 s) after the one before
- *  it. Until then the route answers 404 EVAL_NOT_FOUND, and so does the items route. */
-export async function waitForLegionWorkTimeEval(
-  project: string,
-  timeout = 60_000,
-  login = "alice"
-): Promise<void> {
+/** Waits until `GET /api/v1/projects/{key}/evals/legion-work-time` answers 200, for up to 60 s,
+ *  and fails with the last answer. A project created through the API gets the eval catalogue in
+ *  the transaction that creates it; a project a fixture writes by SQL gets it on a later pass of
+ *  the eval refresher (`evals.Store.RunRefresher`), which an event or a delivery change wakes and
+ *  which starts a pass at most `evals.RefresherGap` (10 s) after the one before it. Until then
+ *  the route answers 404 EVAL_NOT_FOUND, and so does the items route. */
+export async function waitForLegionWorkTimeEval(project: string): Promise<void> {
   const path = routeUrl("/api/v1/projects/{key}/evals/{slug}", {
     key: project,
     slug: legionWorkTimeEval,
   });
-  const deadline = Date.now() + timeout;
+  const deadline = Date.now() + 60_000;
   for (;;) {
-    const response = await fetch(new URL(path, baseUrl), { headers: await userHeaders(login) });
+    const response = await fetch(new URL(path, baseUrl), { headers: await userHeaders() });
     const answer = await response.text();
     if (response.status === 200) return;
     if (Date.now() > deadline) {
       throw new Error(
-        `GET ${path} did not answer 200 within ${timeout / 1000} s; it last answered ${response.status} ${answer}`
+        `GET ${path} did not answer 200 within 60 s; it last answered ${response.status} ${answer}`
       );
     }
-    const tick = Promise.withResolvers<void>();
-    setTimeout(tick.resolve, 250);
-    await tick.promise;
+    // A poll's pause between two reads of the eval route, bounded by the deadline above: the
+    // eval lands when a refresher pass ends, and a read each quarter second finds it soon after.
+    await sleep(250);
   }
 }
 

@@ -974,9 +974,9 @@ test("a view's layout shows its own columns in its order, with each header and i
 });
 
 test("Time per phase keeps a minimum that holds its label, its Share and Hours control and its filter, on a phone too", () => {
-  // Measured in a browser (T16's builds Job infra-3221-t16-measure2-6tbbs), sorted: the label
-  // and its mark, the Share and Hours control and the filter fill 268 px with 44 px buttons and
-  // 256 px with 32 px ones. A cell adds 16 px of padding from `md`, 12 px below it.
+  // Measured in a browser, sorted: the label and its mark, the Share and Hours control and the
+  // filter fill 268 px with 44 px buttons and 256 px with 32 px ones. A cell adds 16 px of
+  // padding from `md`, 12 px below it.
   expect(columnMinimums(true).phase_hours).toBe(268 + 16);
   expect(columnMinimums(false).phase_hours).toBe(256 + 16);
   // A phone has 44 px buttons too, and no narrower minimum of its own for this header.

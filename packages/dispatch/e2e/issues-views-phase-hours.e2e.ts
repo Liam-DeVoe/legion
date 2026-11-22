@@ -3,24 +3,34 @@
 // edges, each phase's fixed fill in both colour schemes, and the bars and totals of Hours on
 // each page.
 //
-// WIDGETS is seeded with `seedLegionFactsFixture` as ported from #3578's head 02a7b3c67e, with
-// two issues more, so 26 open issues carry Legion work: each has a role event and phase
-// observations in three phases at least, and the facts consumer's row (`waitForIssueFacts`, up
-// to 75 s, the one wait of this row). Issue P walks every phase from Design to Held and holds an
-// ask open on the way, so its facts carry ten parts; the row adds an eleventh, Other, to every
-// board frame P is in with `page.routeWebSocket`, since phase observations of `breakdownParts`
-// leave no hour to Other (metrics/breakdown.go). Each expected value is read from the board
-// route.
+// WIDGETS is seeded with `seedLegionFactsFixture`, with two issues more, so 26 open issues carry
+// Legion work: each has a role event and phase observations in three phases at least, and the
+// facts consumer's row (`waitForIssueFacts`, up to 75 s, the one wait of this row). Issue P walks
+// every phase from Design to Held and holds an ask open on the way, so its facts carry ten parts;
+// the row adds an eleventh, Other, to every board frame P is in with `page.routeWebSocket`, since
+// phase observations of `breakdownParts` leave no hour to Other (metrics/breakdown.go). Each
+// expected value is read from the board route.
 import type { LegionBoardResponse as Board } from "../web/src/api/types";
 import { getLegionBoard } from "./api";
-import { type BoardFrame, issuesTable, routeLive, rowKeys } from "./issues-views-shared";
+import {
+  type BoardFrame,
+  hoursWords,
+  issuesTable,
+  routeLive,
+  rowKeys,
+} from "./issues-views-shared";
 import {
   LEGION_FACTS_PROJECT,
+  roleEventStatement,
   seedLegionFactsFixture,
   waitForIssueFacts,
-  writeRoleEvent,
 } from "./legion-facts-seed";
-import { settledCounters, startFakeLegionDaemon } from "./legion-seed";
+import {
+  SEED_ACTOR,
+  settledCounters,
+  startFakeLegionDaemon,
+  writeEventsForFacts,
+} from "./legion-seed";
 import { sql } from "./psql";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -72,10 +82,6 @@ function rgb(hex: string): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
-/** Hours as Time per phase writes them: one decimal under 10 hours, whole above. */
-const hoursWords = (hours: number): string =>
-  `${hours < 10 ? hours.toFixed(1) : Math.round(hours)} h`;
-
 /** The facts the board holds for `key`, with the Other hours the row adds to P's frames. */
 function hoursOf(board: Board, key: string): Record<string, number> {
   const held = { ...(board.issues?.[key]?.hours_by_phase ?? {}) };
@@ -124,11 +130,10 @@ async function writeEvent(
  *  phases. Answers every key. */
 async function seedPhases(daemonUrl: string): Promise<string[]> {
   const fixture = await seedLegionFactsFixture(daemonUrl);
-  const actor = `'{"kind":"user","id":"alice"}'`;
   await sql(
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank, created_at) VALUES
-       ('${P}', '${WIDGETS}', 25, 'Walk the widget through every phase', 'in_progress', 1, ${actor}, '0012m', now() - interval '30 hours'),
-       ('${SECOND}', '${WIDGETS}', 26, 'Plan the gadget follow-up', 'in_progress', 2, ${actor}, '0026', now() - interval '30 hours')`,
+       ('${P}', '${WIDGETS}', 25, 'Walk the widget through every phase', 'in_progress', 1, ${SEED_ACTOR}, '0012m', now() - interval '30 hours'),
+       ('${SECOND}', '${WIDGETS}', 26, 'Plan the gadget follow-up', 'in_progress', 2, ${SEED_ACTOR}, '0026', now() - interval '30 hours')`,
     ...settledCounters(WIDGETS)
   );
   const observed: string[] = [];
@@ -173,9 +178,11 @@ async function seedPhases(daemonUrl: string): Promise<string[]> {
     `SELECT pg_notify('dispatch_legion_state', '${WIDGETS}')`
   );
   const keys = [...fixture.keys, P, SECOND];
-  for (const key of fixture.keys) await writeRoleEvent(key, "implementer", "12 hours");
-  await writeRoleEvent(SECOND, "planner", "10 hours");
-  await writeRoleEvent(P, "architect", "21 hours");
+  await writeEventsForFacts(
+    ...fixture.keys.map((key) => roleEventStatement(key, "implementer", "12 hours")),
+    roleEventStatement(SECOND, "planner", "10 hours"),
+    roleEventStatement(P, "architect", "21 hours")
+  );
   const session = `{"kind":"session","id":"s-architect-${P}","origin":{"session_title":"Legion architect · ${P}"}}`;
   const ask = `{"id":"00000000-0000-4000-8000-000000000025"}`;
   await writeEvent(P, "ask.opened", session, ask, "15 hours 30 minutes");
@@ -236,21 +243,21 @@ test("Time per phase opens on Share, its tooltip names each of P's eleven parts 
 }) => {
   test.setTimeout(180_000);
   const daemon = await startFakeLegionDaemon();
-  const keys = await seedPhases(daemon.url);
-  expect(keys.length, "the open issues with Legion work").toBeGreaterThanOrEqual(26);
-  await expect
-    .poll(
-      async () => {
-        const hours = (await getLegionBoard(WIDGETS)).issues?.[P]?.hours_by_phase ?? {};
-        return Object.keys(hours)
-          .filter((key) => (hours[key] ?? 0) > 0)
-          .sort();
-      },
-      { message: "P's hours_by_phase on the board", timeout: 30_000 }
-    )
-    .toEqual([...P_KEYS].sort());
   const context = await asUser(browser, "alice");
   try {
+    const keys = await seedPhases(daemon.url);
+    expect(keys.length, "the open issues with Legion work").toBeGreaterThanOrEqual(26);
+    await expect
+      .poll(
+        async () => {
+          const hours = (await getLegionBoard(WIDGETS)).issues?.[P]?.hours_by_phase ?? {};
+          return Object.keys(hours)
+            .filter((key) => (hours[key] ?? 0) > 0)
+            .sort();
+        },
+        { message: "P's hours_by_phase on the board", timeout: 30_000 }
+      )
+      .toEqual([...P_KEYS].sort());
     const page = await context.newPage();
     await routeLive(page, { edit: addOther });
     // Tall enough that the table draws every row of its page: it draws only the rows in view.

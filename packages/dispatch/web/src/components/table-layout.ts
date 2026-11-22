@@ -19,8 +19,8 @@ import { readLayout, type StoredColumns, writeLayout } from "./table-storage";
 
 /** How much wider a header is while the table is sorted by its column: the sort mark `DataTable`
  *  draws after the label, ▲ or ▼ at `text-xs`, which Chromium draws 9.23 px wide (measured on
- *  every sorted header of every table, builds Job infra-3221-t16c-measure-rp2nn), rounded up to
- *  a whole pixel. A sorted column's minimum takes it on (`LayoutColumns.sortedMinimums`). */
+ *  every sorted header of every table), rounded up to a whole pixel. A sorted column's minimum
+ *  takes it on (`LayoutColumns.sortedMinimums`). */
 export const SORT_MARK_WIDTH = 10;
 
 /** The columns a table pins at its left edge while it scrolls sideways, and how they fit the

@@ -755,9 +755,8 @@ const EMBEDDED_WIDTHS: Readonly<Partial<Record<ColumnId, EmbeddedWidth>>> = {
   queue: { size: 96, min: 124 },
   // On a phone its header whole, sorted by it or not: its sort button, a 44 px touch target
   // that holds Key and the mark (38 px), its 44 px filter button and the cell's 12 px padding
-  // (measured, builds Job infra-3221-t16c-accept-2784l, where 88 px spilled the filter 12 px
-  // past the cell). A phone-wide box in a window 1280 px wide or wider, with 32 px filter
-  // buttons, needs 90 px sorted.
+  // (measured: at 88 px the filter spilled 12 px past the cell). A phone-wide box in a window
+  // 1280 px wide or wider, with 32 px filter buttons, needs 90 px sorted.
   key: { size: 104, min: 108, phone: 100 },
   title: { size: 380, min: 116, phone: 120 },
   status: { size: 128, min: 132 },

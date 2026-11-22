@@ -16,10 +16,10 @@
 // that the board names WIDGETS-4 held for its children rather than that some card somewhere is.
 //
 // acme/widgets-shaped placeholders throughout (AGENTS.md: "This repository is public").
-import { settledCounters, writeEventsForFacts } from "./legion-seed";
-import { sql } from "./psql";
+import { setTimeout as sleep } from "node:timers/promises";
 
-const SEED_ACTOR = `'{"kind":"user","id":"alice"}'`;
+import { SEED_ACTOR, settledCounters, writeEventsForFacts } from "./legion-seed";
+import { sql } from "./psql";
 
 /** The project this fixture's board belongs to. It is not `legion-seed.ts`'s ACME, so a row may
  *  seed both boards and read each by its own project. */
@@ -31,7 +31,7 @@ export const LEGION_FACTS_PROJECT = "WIDGETS";
  *  `legionfacts.Freshness` (60 s) of the event that moved it
  *  (`packages/envoy/internal/dispatch/legionfacts/consumer.go`). So 75 s is that minute, one more
  *  pass gap, and a few seconds for the pass itself. */
-export const issueFactsWait = 75_000;
+const issueFactsWait = 75_000;
 
 /** What the slot an issue holds of its own is used for (`legion.SlotUse`). */
 type SlotUse = "working" | "between_turns" | "held_children" | "held_person" | "held_idle";
@@ -265,36 +265,38 @@ export async function seedLegionFactsFixture(daemonUrl: string): Promise<LegionF
   };
 }
 
-/** One event of a Legion role working `issue`, `ago` before now (a Postgres interval): a comment
- *  by a session titled `Legion <role> · <issue>`, which makes the issue carry Legion phase work
- *  and is where its work time starts (`legion.RoleSessionWorks`). The facts consumer then writes
- *  the issue's row (`waitForIssueFacts`).
+/** The statement that writes one event of a Legion role working `issue`, `ago` before now (a
+ *  Postgres interval): a comment by a session titled `Legion <role> · <issue>`, which makes the
+ *  issue carry Legion phase work and is where its work time starts (`legion.RoleSessionWorks`).
+ *  The facts consumer then writes the issue's row (`waitForIssueFacts`).
  *
  *  The event takes the issue's next seq, as an event the broker writes does: one statement moves
  *  `last_seq` on by one and writes the event under it, so a later write through the API appends
  *  the event after this one. The session is one of its own per role and issue, since a session's
- *  newest title is the one the consumer reads (`session_titles`). It goes in through
- *  `writeEventsForFacts`, so the consumer reads it however late in the row it comes. */
-export async function writeRoleEvent(issue: string, role: string, ago: string): Promise<void> {
+ *  newest title is the one the consumer reads (`session_titles`). A row that writes several hands
+ *  them to one `writeEventsForFacts`, so the consumer reads them however late in the row they
+ *  come. */
+export function roleEventStatement(issue: string, role: string, ago: string): string {
   const actor = `{"kind":"session","id":"s-${role}-${issue}","origin":{"session_title":"Legion ${role} · ${issue}"}}`;
-  await writeEventsForFacts(
-    `WITH next AS (UPDATE issues SET last_seq = last_seq + 1 WHERE key = '${issue}' RETURNING last_seq)
+  return `WITH next AS (UPDATE issues SET last_seq = last_seq + 1 WHERE key = '${issue}' RETURNING last_seq)
      INSERT INTO events (issue_key, seq, type, actor, payload, notify, created_at)
        SELECT '${issue}', last_seq, 'comment.created', '${actor}'::jsonb, '{}'::jsonb, false,
          now() - interval '${ago}'
-       FROM next`
-  );
+       FROM next`;
+}
+
+/** Writes one role event (`roleEventStatement`) through `writeEventsForFacts`, so the consumer
+ *  reads it however late in the row it comes. */
+export async function writeRoleEvent(issue: string, role: string, ago: string): Promise<void> {
+  await writeEventsForFacts(roleEventStatement(issue, role, ago));
 }
 
 /** Waits until the facts consumer has written the `issue_facts` row of every one of `issues`, for
- *  up to `timeout` (`issueFactsWait`, the consumer's pace), and fails naming the issues still
- *  without one. Each issue needs a role event or a handoff first (`writeRoleEvent`). */
-export async function waitForIssueFacts(
-  issues: readonly string[],
-  timeout = issueFactsWait
-): Promise<void> {
+ *  up to `issueFactsWait` (the consumer's pace), and fails naming the issues still without one.
+ *  Each issue needs a role event or a handoff first (`writeRoleEvent`). */
+export async function waitForIssueFacts(issues: readonly string[]): Promise<void> {
   const wanted = issues.map((issue) => `'${issue}'`).join(", ");
-  const deadline = Date.now() + timeout;
+  const deadline = Date.now() + issueFactsWait;
   for (;;) {
     const written = new Set(
       (await sql(`SELECT issue_key FROM issue_facts WHERE issue_key IN (${wanted})`))
@@ -305,11 +307,11 @@ export async function waitForIssueFacts(
     if (missing.length === 0) return;
     if (Date.now() > deadline) {
       throw new Error(
-        `the facts consumer wrote no issue_facts row of ${missing.join(", ")} within ${timeout / 1000} s`
+        `the facts consumer wrote no issue_facts row of ${missing.join(", ")} within ${issueFactsWait / 1000} s`
       );
     }
-    const tick = Promise.withResolvers<void>();
-    setTimeout(tick.resolve, 250);
-    await tick.promise;
+    // A poll's pause between two reads of `issue_facts`, bounded by the deadline above: a row
+    // lands when a consumer pass ends, and a read each quarter second finds it soon after.
+    await sleep(250);
   }
 }

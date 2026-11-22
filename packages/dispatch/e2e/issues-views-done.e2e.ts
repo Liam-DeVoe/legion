@@ -4,13 +4,16 @@
 // read of `legion-work-time` held, failed and answering 404, the addresses of today's list, the
 // list route's sort by `closed_at`, and every parameter the Evals tab's links write.
 //
-// ACME is seeded with the helpers ported from #3578's head 02a7b3c67e (`seedLegionFixture` with
-// `startFakeLegionDaemon`, `seedLegionMetricsCorpus`), and its done issues written by SQL with
-// the closes each row reads. A row that reads Legion work writes a role event for each issue
-// and waits for the facts consumer's row (`waitForIssueFacts`, up to 75 s), one such wait in a
-// row. Each expected row, order and count is computed in the row from the seed through the API
-// (`GET /api/v1/issues`, the board route and the items route), never with the web code's filters.
+// ACME is seeded with `seedLegionFixture`, its daemon named at a `startFakeLegionDaemon`, and
+// with `seedLegionMetricsCorpus`, and its done issues written by SQL with the closes each row
+// reads. A row that reads Legion work writes a role event for each issue and waits for the facts
+// consumer's row (`waitForIssueFacts`, up to 75 s), one such wait in a row. Each expected row,
+// order and count is computed in the row from the seed through the API (`GET /api/v1/issues`,
+// the board route and the items route), never with the web code's filters.
+import { setTimeout as sleep } from "node:timers/promises";
+
 import type { LegionBoardResponse as Board, EvalItemRow, IssueSummary } from "../web/src/api/types";
+import { CONTROL } from "../web/src/components/control-names";
 import {
   baseUrl,
   claimIssue,
@@ -25,11 +28,16 @@ import {
   userHeaders,
   waitForLegionWorkTimeEval,
 } from "./api";
+import { control, controlRow } from "./filters";
 import {
   ACME,
   type BoardFrame,
+  boardFacts,
   cardsOf,
+  type Facts,
+  hoursWords,
   issuesTable,
+  itemFacts,
   listingReads,
   type Recorded,
   recordRequests,
@@ -40,9 +48,10 @@ import {
   tabCount,
   tabName,
   tabNames,
+  workWords,
 } from "./issues-views-shared";
 import { waitForIssueFacts, writeRoleEvent } from "./legion-facts-seed";
-import { settledCounters } from "./legion-seed";
+import { SEED_ACTOR, settledCounters } from "./legion-seed";
 import { sql } from "./psql";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -50,7 +59,6 @@ import { asUser } from "./users";
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
 const LOS_ANGELES = { timezoneId: "America/Los_Angeles" };
-const SEED_ACTOR = `'{"kind":"user","id":"alice"}'`;
 
 /** The first moment of the UTC day `ms` falls in. */
 const midnight = (ms: number) => Math.floor(ms / DAY) * DAY;
@@ -124,32 +132,6 @@ function itemsDiffer(requests: readonly Recorded[], windows: readonly ItemsWindo
   });
 }
 
-/** One issue's Legion facts as a row compares them, from the board's `issues` map or an items
- *  row of `legion-work-time`. */
-interface Facts {
-  readonly work_hours: number;
-  readonly work_first_at: string | null;
-  readonly review_rounds: number;
-  readonly tree_depth: number;
-  readonly root_key: string;
-  readonly hours_by_phase: Readonly<Record<string, number>>;
-}
-
-function itemFacts(row: EvalItemRow): Facts {
-  const cols = row.cols ?? {};
-  const hours: Record<string, number> = {};
-  for (const [name, value] of Object.entries(cols))
-    if (name.startsWith("hours_") && typeof value === "number") hours[name.slice(6)] = value;
-  return {
-    work_hours: Number(cols.work_hours),
-    work_first_at: typeof cols.work_first_at === "string" ? cols.work_first_at : null,
-    review_rounds: Number(cols.review_rounds),
-    tree_depth: Number(cols.tree_depth),
-    root_key: String(cols.root_key),
-    hours_by_phase: hours,
-  };
-}
-
 /** The facts of each of `issues`: the board's for a key its map holds, else its row in the items
  *  route over the UTC day of its close; none for an issue with neither. */
 async function factsOf(issues: readonly IssueSummary[]): Promise<Map<string, Facts | undefined>> {
@@ -157,9 +139,9 @@ async function factsOf(issues: readonly IssueSummary[]): Promise<Map<string, Fac
   const facts = new Map<string, Facts | undefined>();
   const days = new Map<number, Map<string, EvalItemRow>>();
   for (const issue of issues) {
-    const held = board.issues?.[issue.key];
+    const held = boardFacts(board, issue.key);
     if (held !== undefined) {
-      facts.set(issue.key, { ...held, hours_by_phase: held.hours_by_phase ?? {} });
+      facts.set(issue.key, held);
       continue;
     }
     if (issue.closed_at === null) {
@@ -189,13 +171,6 @@ const legionPick = (facts: Facts | undefined) =>
 
 /** The done issues of ACME, newest close first, as the list route answers them. */
 const doneIssues = () => listIssuesWhere({ project: ACME, sort: "-closed_at", status: ["done"] });
-
-/** Waits `ms` milliseconds. */
-function sleep(ms: number): Promise<void> {
-  const done = Promise.withResolvers<void>();
-  setTimeout(done.resolve, ms);
-  return done.promise;
-}
 
 /** k6's done issues on ACME, beside the metrics corpus's two: 60 closed over the last 30 days
  *  and two around the end of the seventh day after D, a UTC day 20 days back: one closed at
@@ -246,9 +221,11 @@ test("a fresh load of Done reads the open count, one page of its rows, the board
   try {
     await seedDoneCorpus();
     await waitForLegionWorkTimeEval(ACME);
-    const open = await listIssuesWhere({ open: true, project: ACME });
-    const done = await doneIssues();
-    const board = await getLegionBoard(ACME);
+    const [open, done, board] = await Promise.all([
+      listIssuesWhere({ open: true, project: ACME }),
+      doneIssues(),
+      getLegionBoard(ACME),
+    ]);
     const firstPage = done.slice(0, 25);
     const windows = windowsOf(firstPage, board);
     const reads = await itemsReadCount(windows);
@@ -261,7 +238,12 @@ test("a fresh load of Done reads the open count, one page of its rows, the board
       const requests = recordRequests(page);
       const frames: BoardFrame[] = [];
       await routeLive(page, {
-        first: () => sleep(5_000),
+        first: async () => {
+          // The hold this row loads under: the board's first snapshot waits 5 s, so the rows and
+          // the counts are read and drawn without it, and the items reads, which wait for the
+          // board's map, go out only once it has passed.
+          await sleep(5_000);
+        },
         seen: (frame, isBoard) => {
           if (isBoard) frames.push(frame);
         },
@@ -274,6 +256,9 @@ test("a fresh load of Done reads the open count, one page of its rows, the board
         .poll(() => itemsReads(requests.list).length, { timeout: 30_000 })
         .toBeGreaterThanOrEqual(reads);
       await expect.poll(() => tabNames(page)).toEqual([...tabs]);
+      // An absence window, not a wait for a state: every read the row expects has answered, and
+      // a listing or items read the load must not make, which the checks below refuse, would go
+      // out in the render that an answer it follows causes, well inside this second.
       await sleep(1_000);
       await requests.settled();
       await test.info().attach(`${name}: every request of the load`, {
@@ -346,13 +331,13 @@ test("a fresh load of Done reads the open count, one page of its rows, the board
     let listed = 0;
     for (let turn = 0; turn < 10; turn++) {
       await expect(issuesTable(second).locator("tbody tr[data-issue-row]").first()).toBeVisible();
-      listed += (await rowKeys(issuesTable(second))).length;
+      const keys = await rowKeys(issuesTable(second));
+      listed += keys.length;
       const next = second.getByRole("button", { name: "Next ›" });
       // The pager draws Next from the rows it draws, and the row wait above drew this page.
       if ((await next.getAttribute("aria-disabled")) === "true") break;
-      const before = (await rowKeys(issuesTable(second)))[0];
       await next.click();
-      await expect.poll(async () => (await rowKeys(issuesTable(second)))[0]).not.toBe(before);
+      await expect.poll(async () => (await rowKeys(issuesTable(second)))[0]).not.toBe(keys[0]);
     }
     expect(listed, "the rows Closed lists across its pages").toBe(done.length);
     await second.getByRole("tab", { name: /^Open/ }).click();
@@ -407,6 +392,8 @@ test("Done's next page, a Closed window picked in its panel and a 28-day window 
       first: async () => {
         if (!holdSnapshot) return;
         released = false;
+        // The hold under test: the board's first snapshot waits 5 s, and Open's rows and the
+        // Queue filter's loading state must show within it, while `released` is still false.
         await sleep(5_000);
         released = true;
       },
@@ -414,6 +401,9 @@ test("Done's next page, a Closed window picked in its panel and a 28-day window 
     await page.setViewportSize(TALL);
     const table = issuesTable(page);
     const reads = async (step: string) => {
+      // An absence window, not a wait for a state: each step's check drew the rows its reads
+      // answered, and a listing the step must not read, the full listing above all, would go out
+      // in the render that an answer it follows causes, well inside this half second.
       await sleep(500);
       await requests.settled();
       const listings = listingReads(requests.list, ACME);
@@ -727,6 +717,9 @@ test("while the items read of Done's rows is held or failing, Done narrowed to L
     };
     await expect(page.getByRole("status", { name: "Loading issues" })).toBeVisible();
     await expect.poll(() => items.calls).toBeGreaterThan(0);
+    // An absence window, not a wait for a state: the items read stays held through this second,
+    // and no tab counting 0, no list without R and no empty-state line may show in it; the page
+    // would draw any of them in the render after its reads went out, well inside a second.
     await sleep(1_000);
     await neverWrong("while the read is held");
     await expect(page.getByRole("status", { name: "Loading issues" })).toBeVisible();
@@ -989,8 +982,7 @@ function inOrder(
 }
 
 /** The control row's chips, by their words. */
-const chipTexts = (page: Page) =>
-  page.locator('[data-control="control-row"] [data-control="chip"]').allTextContents();
+const chipTexts = (page: Page) => control(controlRow(page), CONTROL.chip).allTextContents();
 
 // SLOW(>=2s): the facts consumer's rows of five issues and the eval refresher's pass, up to 75 s,
 // then fourteen addresses of Done read row by row.
@@ -1152,28 +1144,33 @@ test("Open sorts by Time waiting, Time in Legion phase and Worker state as the b
     );
     await expect(table.locator(`tr[data-issue-row="${corpus.old}"]`)).toBeVisible();
     await expect.poll(() => itemsReads(requests.list).length).toBeGreaterThan(0);
-    await sleep(500);
+    const spans = () =>
+      itemsReads(requests.list).map((read) => [
+        Date.parse(read.url.searchParams.get("from") ?? ""),
+        Date.parse(read.url.searchParams.get("to") ?? ""),
+      ]);
+    const unheld = done.filter((one) => board.issues?.[one.key] === undefined);
+    await expect
+      .poll(
+        () => {
+          const read = spans();
+          return unheld
+            .filter(
+              (issue) =>
+                !read.some(
+                  ([from, to]) => closeOf(issue) >= (from ?? 0) && closeOf(issue) < (to ?? 0)
+                )
+            )
+            .map((issue) => issue.key);
+        },
+        { message: "the closes no items window holds" }
+      )
+      .toEqual([]);
     await requests.settled();
-    const spans = itemsReads(requests.list).map((read) => [
-      Date.parse(read.url.searchParams.get("from") ?? ""),
-      Date.parse(read.url.searchParams.get("to") ?? ""),
-    ]);
-    for (const [from, to] of spans)
+    for (const [from, to] of spans())
       expect((to ?? 0) - (from ?? 0), "an items window over 84 days").toBeLessThanOrEqual(84 * DAY);
-    for (const issue of done.filter((one) => board.issues?.[one.key] === undefined))
-      expect(
-        spans.some(([from, to]) => closeOf(issue) >= (from ?? 0) && closeOf(issue) < (to ?? 0)),
-        `no items window holds ${issue.key}'s close`
-      ).toBe(true);
-    const old = (await factsOf(done)).get(corpus.old);
+    const old = (await factsOf(done.filter((one) => one.key === corpus.old))).get(corpus.old);
     if (old === undefined) throw new Error("the items route holds no row of the issue 40 days old");
-    const minutes = Math.floor(Math.max(0, old.work_hours) * 60);
-    const spanWords =
-      minutes < 60
-        ? `${minutes} m`
-        : minutes < 24 * 60
-          ? `${Math.floor(minutes / 60)} h ${minutes % 60} m`
-          : `${Math.floor(minutes / 1440)} d ${Math.floor(minutes / 60) % 24} h`;
     const total = Object.values(old.hours_by_phase).reduce(
       (sum, one) => (one > 0 ? sum + one : sum),
       0
@@ -1183,10 +1180,8 @@ test("Open sorts by Time waiting, Time in Legion phase and Worker state as the b
       .toEqual({
         "Legion tree": `text:${old.tree_depth === 0 ? "Root" : old.root_key}`,
         "Review rounds": `text:${old.review_rounds}`,
-        "Time per phase": `text:${
-          total > 0 ? `Time per phase, ${total < 10 ? total.toFixed(1) : Math.round(total)} h` : ""
-        }`,
-        "Work time": `text:${spanWords}`,
+        "Time per phase": `text:${total > 0 ? `Time per phase, ${hoursWords(total)}` : ""}`,
+        "Work time": `text:${workWords(old.work_hours)}`,
       });
   } finally {
     await context.close();

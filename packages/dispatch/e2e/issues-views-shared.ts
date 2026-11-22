@@ -1,14 +1,21 @@
-// What the rows of the Issues tab's views share (dispatch://INFRA-3221, Verification k6 to k9,
-// k13, k14): ACME as the rows seed it, the live socket's board frames held, changed or counted
-// with `page.routeWebSocket`, the requests a page makes, the tabs, the rows and the Board's
-// columns as the page draws them, a saved view, and a whole-card drag on the Board.
+// What the rows of the Issues tab's views share (dispatch://INFRA-3221, Verification k2 to k10,
+// k12 to k14 and k19): ACME as the rows seed it, the live socket's board frames held, changed or
+// counted with `page.routeWebSocket`, the requests a page makes, the tabs, the rows, a column's
+// filter and the Board's columns as the page draws them, Open's Queue order, an issue's Legion
+// facts and the words the page writes a span or hours in, a saved view, and a whole-card drag on
+// the Board, whose two waits `board.e2e.ts` uses too.
 //
-// ACME is seeded with the helpers ported from #3578's head 02a7b3c67e (`seedLegionFixture` with
-// `startFakeLegionDaemon`, `seedLegionMetricsCorpus`). The fake daemon answers 404 to every
-// route, so every pass of the sampler records a failed read and sends each open board a new
-// frame; a row that measures a position seeds a failed read first and holds every board frame
-// after the first (`seedMeasuredAcme`).
-import type { LegionBoardResponse as Board, LegionBoardCard as Card } from "../web/src/api/types";
+// ACME is seeded with `seedLegionFixture`, its daemon named at a `startFakeLegionDaemon`, and
+// with `seedLegionMetricsCorpus`. The fake daemon answers 404 to every route, so every pass of
+// the sampler records a failed read and sends each open board a new frame; a row that measures a
+// position seeds a failed read first and holds every board frame after the first
+// (`seedMeasuredAcme`).
+import type {
+  LegionBoardResponse as Board,
+  LegionBoardCard as Card,
+  EvalItemRow,
+  IssueSummary,
+} from "../web/src/api/types";
 import {
   type FakeLegionDaemon,
   LEGION_PROJECT,
@@ -17,9 +24,14 @@ import {
   seedLegionMetricsCorpus,
   startFakeLegionDaemon,
 } from "./legion-seed";
+import { settledState } from "./settled";
 import { expect, type Locator, type Page, type WebSocketRoute } from "./test";
 
 export const ACME = LEGION_PROJECT;
+
+/** `cols=` with every column the table has. */
+export const EVERY_COL =
+  "priority,queue,key,title,status,legion_phase,assignee,author,labels,claim,asks,created,updated,closed,roles,activity,waited,waiting_reason,time_in_phase,work_hours,review_rounds,legion,phase_hours";
 
 /** ACME as every ACME row seeds it: its five issues with their cards, the closed tree of the
  *  metrics corpus, and its daemon named at a fake that answers 404. */
@@ -189,6 +201,111 @@ export function cardsOf(board: Board): Map<string, { column: string; label: stri
   );
 }
 
+/** `issues` as Open's Queue sort orders them: the issues with a Place on `board` by their Place,
+ *  then the rest by rank, ties in the listing's own order. */
+export function queueSorted(issues: readonly IssueSummary[], board: Board): IssueSummary[] {
+  const cards = cardsOf(board);
+  const place = (issue: IssueSummary) => cards.get(issue.key)?.card.waiting_place ?? undefined;
+  return [...issues].sort((a, b) => {
+    const left = place(a);
+    const right = place(b);
+    if (left !== undefined && right !== undefined) return left - right;
+    if (left !== undefined) return -1;
+    if (right !== undefined) return 1;
+    return a.rank < b.rank ? -1 : a.rank > b.rank ? 1 : 0;
+  });
+}
+
+/** One issue's Legion facts as a row compares them, from the board's `issues` map or from an
+ *  items row of `legion-work-time`. */
+export interface Facts {
+  readonly work_hours: number;
+  readonly work_first_at: string | null;
+  readonly review_rounds: number;
+  readonly tree_depth: number;
+  readonly root_key: string;
+  readonly hours_by_phase: Readonly<Record<string, number>>;
+}
+
+/** An items row's facts, read from its columns as the route serves them. */
+export function itemFacts(row: EvalItemRow): Facts {
+  const cols = row.cols ?? {};
+  const hours: Record<string, number> = {};
+  for (const [name, value] of Object.entries(cols))
+    if (name.startsWith("hours_") && typeof value === "number") hours[name.slice(6)] = value;
+  return {
+    work_hours: Number(cols.work_hours),
+    work_first_at: typeof cols.work_first_at === "string" ? cols.work_first_at : null,
+    review_rounds: Number(cols.review_rounds),
+    tree_depth: Number(cols.tree_depth),
+    root_key: String(cols.root_key),
+    hours_by_phase: hours,
+  };
+}
+
+/** The facts the board's `issues` map holds for `key`, or undefined where it holds none. */
+export function boardFacts(board: Board, key: string): Facts | undefined {
+  const held = board.issues?.[key];
+  return held === undefined ? undefined : { ...held, hours_by_phase: held.hours_by_phase ?? {} };
+}
+
+/** A span of whole minutes in the page's words: minutes under an hour, hours and minutes under a
+ *  day, then days and hours. */
+export function spanWords(minutes: number): string {
+  if (minutes < 60) return `${minutes} m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ${minutes % 60} m`;
+  return `${Math.floor(hours / 24)} d ${hours % 24} h`;
+}
+
+/** The Work time words of a span of `hours`: its whole minutes, none under zero, as `spanWords`
+ *  writes them. */
+export const workWords = (hours: number): string => spanWords(Math.floor(Math.max(0, hours) * 60));
+
+/** Hours as Time per phase writes them: one decimal under 10 hours, whole above. */
+export const hoursWords = (hours: number): string =>
+  `${hours < 10 ? hours.toFixed(1) : Math.round(hours)} h`;
+
+/** One filter's options as its list draws them: each option's words and count, in order. */
+export interface FilterRead {
+  readonly opens: "list" | "dialog";
+  readonly options: readonly (readonly [string, number])[];
+}
+
+/** Opens column `name`'s filter from its header and reads it, then shuts it. A filter of picks
+ *  opens a list of options, each named `<words>, <n> issue(s)`; Key, Title and Closed open a
+ *  panel instead, which reads as no options. */
+export async function readFilter(page: Page, name: string): Promise<FilterRead> {
+  const trigger = page.getByRole("button", {
+    name: new RegExp(`^Filter ${name}(?:: \\d+ picked)?$`),
+  });
+  await trigger.click();
+  const list = page.getByRole("listbox", { name: `${name} options` });
+  const panel = page.getByRole("dialog", { name: `Filter ${name}` });
+  const opened = await settledState(`the ${name} filter`, [
+    ["list", list],
+    ["panel", panel],
+  ]);
+  if (opened === "panel") {
+    await page.keyboard.press("Escape");
+    await expect(panel).toHaveCount(0);
+    return { opens: "dialog", options: [] };
+  }
+  const names = await list
+    .getByRole("option")
+    .evaluateAll((options) => options.map((option) => option.getAttribute("aria-label") ?? ""));
+  await page.keyboard.press("Escape");
+  await expect(list).toHaveCount(0);
+  return {
+    opens: "list",
+    options: names.map((named) => {
+      // An option whose rows are not read yet (Done on Open) says so in place of a count: -1.
+      const match = named.match(/^(.*), (?:(\d+) issues?|not loaded)$/);
+      return [match?.[1] ?? named, match === null ? Number.NaN : Number(match[2] ?? -1)] as const;
+    }),
+  };
+}
+
 /** One column or rail of the Board as it draws: its id, its title, whether it is a rail, the
  *  count its header draws (NaN where it draws none) and its cards in their order. */
 export interface DrawnColumn {
@@ -225,6 +342,14 @@ export function drawnColumns(page: Page): Promise<DrawnColumn[]> {
         };
       })
     );
+}
+
+/** The count a Board column's header draws, NaN where it draws none. */
+export async function columnCount(page: Page, id: string): Promise<number> {
+  const header = page
+    .locator(`section[data-board-column="${id}"]`)
+    .getByTestId("board-column-header");
+  return Number(((await header.textContent()) ?? "").match(/(\d+)\s*$/)?.[1] ?? Number.NaN);
 }
 
 /** Saves the view the page is on under `name` from the control row's Save view. */
@@ -291,8 +416,10 @@ export const listingReads = (requests: readonly Recorded[], project: string): Re
       request.url.searchParams.get("project") === project
   );
 
-/** Waits until no card of the Board is mid-flight: dnd-kit lands every reorder with a 200 ms
- *  transform transition, and a press during that flight lifts whichever card is passing. */
+/** Waits until no card of the Board is mid-flight. dnd-kit lands every reorder it did not animate
+ *  itself - the rollback and refetch after a rejected rank included - with a 200 ms transform
+ *  transition, and a card later in the DOM paints over the ones it crosses, so a press during
+ *  that flight lifts whichever card is passing the point rather than the one measured there. */
 export async function boardAtRest(page: Page): Promise<void> {
   await page.getByRole("region", { name: "Project board" }).evaluate(async (board) => {
     for (;;) {
@@ -303,9 +430,11 @@ export async function boardAtRest(page: Page): Promise<void> {
   });
 }
 
-/** Waits until a click reaches its target again: dnd-kit's pointer sensors stop every click from
- *  the lift until a 50 ms timer after the drop. The probe is a node outside the React root. */
-async function clicksDelivered(page: Page): Promise<void> {
+/** Waits until a click reaches its target again. dnd-kit's pointer sensors stop every click at
+ *  the document (capture phase) from the lift until a 50 ms timer after the drop, and a busy main
+ *  thread runs that timer late, so a control clicked straight after a drop is silently ignored.
+ *  The probe is a node under `body` outside the React root: only that suppressor can stop it. */
+export async function clicksDelivered(page: Page): Promise<void> {
   await page.evaluate(async () => {
     const probe = document.body.appendChild(document.createElement("div"));
     let delivered = false;

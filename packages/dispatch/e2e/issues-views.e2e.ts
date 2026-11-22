@@ -3,17 +3,13 @@
 // saves, per login and per project; the page's words, tooltips and counts; and the Title column's
 // width on a desktop and its place on a phone.
 //
-// ACME is seeded with the helpers ported from #3578's head 02a7b3c67e (`seedLegionFixture` with
-// `startFakeLegionDaemon`, `seedLegionMetricsCorpus`), and PLAIN is a project with no Legion
-// setting. Each expected row, order and count is computed in the row from the seed through the
-// API (`GET /api/v1/issues` and the board route), never with the web code's filters. A row that
-// measures a position on ACME seeds a failed read of its daemon first and holds every board frame
-// after the first, so neither the sampler's own failed read nor its frame moves what it measures.
-import type {
-  LegionBoardResponse as Board,
-  LegionBoardCard as Card,
-  IssueSummary,
-} from "../web/src/api/types";
+// ACME is seeded with `seedLegionFixture`, its daemon named at a `startFakeLegionDaemon`, and
+// with `seedLegionMetricsCorpus`, and PLAIN is a project with no Legion setting. Each expected
+// row, order and count is computed in the row from the seed through the API (`GET /api/v1/issues`
+// and the board route), never with the web code's filters. A row that measures a position on
+// ACME seeds a failed read of its daemon first and holds every board frame after the first, so
+// neither the sampler's own failed read nor its frame moves what it measures.
+import type { LegionBoardResponse as Board, IssueSummary } from "../web/src/api/types";
 import { CONTROL } from "../web/src/components/control-names";
 import { setLiveSessions } from "./agents";
 import {
@@ -32,34 +28,28 @@ import {
 } from "./api";
 import { seedSessionGroupsFixture } from "./delivery-seed";
 import { control, controlRow } from "./filters";
-import { issueFactsWait, waitForIssueFacts, writeRoleEvent } from "./legion-facts-seed";
 import {
-  type FakeLegionDaemon,
-  LEGION_PROJECT,
-  pushLegionObservation,
-  seedFailedLegionRead,
-  seedLegionFixture,
-  seedLegionMetricsCorpus,
-  startFakeLegionDaemon,
-} from "./legion-seed";
-import { settledState } from "./settled";
+  ACME,
+  type BoardParts,
+  cardsOf,
+  EVERY_COL,
+  issuesTable,
+  readFilter,
+  routeLive,
+  rowKeys,
+  saveView,
+  seedAcme,
+  seedMeasuredAcme,
+  tabName,
+  tabNames,
+} from "./issues-views-shared";
+import { waitForIssueFacts, writeRoleEvent } from "./legion-facts-seed";
+import { pushLegionObservation } from "./legion-seed";
 import { drawnControlNames, straysBetween, surfaceControls, topOf } from "./table-controls";
-import {
-  type BrowserContext,
-  expect,
-  type Locator,
-  type Page,
-  test,
-  type WebSocketRoute,
-} from "./test";
+import { type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser, signIn } from "./users";
 
-const ACME = LEGION_PROJECT;
 const PLAIN = "PLAIN";
-
-/** `cols=` with every column the table has. */
-const EVERY_COL =
-  "priority,queue,key,title,status,legion_phase,assignee,author,labels,claim,asks,created,updated,closed,roles,activity,waited,waiting_reason,time_in_phase,work_hours,review_rounds,legion,phase_hours";
 
 /** Open's and Done's headers in a project with a Legion daemon, after Select: the pinned ones,
  *  then the view's other default columns in the Design's order. */
@@ -143,15 +133,6 @@ const PHASE_WORDS: readonly (readonly [string, string])[] = [
   ["other", "Other"],
 ];
 
-/** ACME as every ACME row here seeds it: its five issues with their cards, the closed tree of the
- *  metrics corpus, and its daemon named at a fake that answers 404. */
-async function seedAcme(): Promise<FakeLegionDaemon> {
-  const daemon = await startFakeLegionDaemon();
-  await seedLegionFixture(daemon.url);
-  await seedLegionMetricsCorpus();
-  return daemon;
-}
-
 /** A project with no Legion setting, with open issues in four statuses, two of them Todo
  *  issues labelled legion, and two done ones. */
 async function seedPlain(): Promise<void> {
@@ -215,34 +196,6 @@ function queueOrder(issues: readonly IssueSummary[], board: Board | undefined): 
       return a.index - b.index;
     })
     .map(({ issue }) => issue.key);
-}
-
-/** Every card of the board by its issue, with the column that holds it. */
-function cardsOf(board: Board): Map<string, { column: string; card: Card }> {
-  return new Map(
-    (board.columns ?? []).flatMap((column) =>
-      (column.cards ?? []).map((card) => [card.key, { column: column.id, card }] as const)
-    )
-  );
-}
-
-/** A tab's accessible name: the view's name, its count where it shows one, and its mark. */
-const tabName = (name: string, count?: number, changed = false) =>
-  `${name}${count === undefined ? "" : `, ${count} ${count === 1 ? "issue" : "issues"}`}${changed ? ", changed" : ""}`;
-
-/** The view tabs' accessible names, in their order. */
-function tabNames(page: Page): Promise<string[]> {
-  return page
-    .getByRole("tablist", { name: "Views" })
-    .getByRole("tab")
-    .evaluateAll((tabs) => tabs.map((tab) => tab.getAttribute("aria-label") ?? ""));
-}
-
-/** The keys of the rows `table` draws, in their order. */
-function rowKeys(table: Locator): Promise<string[]> {
-  return table
-    .locator("tbody tr[data-issue-row]")
-    .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-issue-row") ?? ""));
 }
 
 /** The header labels of `table`, in their order, without the controls each holds; Select's,
@@ -400,35 +353,6 @@ function readCells(table: Locator): Promise<Record<string, Record<string, string
   });
 }
 
-/** One filter's options, each `[words, count]`, opened from its header and shut again; an empty
- *  list for a filter that opens a panel rather than a list. */
-async function readFilter(page: Page, name: string): Promise<(readonly [string, number])[]> {
-  await page
-    .getByRole("button", { name: new RegExp(`^Filter ${name}(?:: \\d+ picked)?$`) })
-    .click();
-  const list = page.getByRole("listbox", { name: `${name} options` });
-  const panel = page.getByRole("dialog", { name: `Filter ${name}` });
-  const opened = await settledState(`the ${name} filter`, [
-    ["list", list],
-    ["panel", panel],
-  ]);
-  if (opened === "panel") {
-    await page.keyboard.press("Escape");
-    await expect(panel).toHaveCount(0);
-    return [];
-  }
-  const names = await list
-    .getByRole("option")
-    .evaluateAll((options) => options.map((option) => option.getAttribute("aria-label") ?? ""));
-  await page.keyboard.press("Escape");
-  await expect(list).toHaveCount(0);
-  return names.map((named) => {
-    // An option whose rows are not read yet (Done on Open) says so in place of a count: -1.
-    const match = named.match(/^(.*), (?:(\d+) issues?|not loaded)$/);
-    return [match?.[1] ?? named, match === null ? Number.NaN : Number(match[2] ?? -1)] as const;
-  });
-}
-
 /** Every column the Columns menu lists, with the muted line under its name where it has one. */
 async function columnsMenu(page: Page): Promise<{ name: string; line: string | null }[]> {
   await page.getByRole("button", { exact: true, name: "Columns" }).click();
@@ -470,74 +394,6 @@ function tooltipLines(page: Page): Promise<string[]> {
   });
 }
 
-/** What a frame of a Legion board subscription carries that a row rewrites: a snapshot's body,
- *  and a delta's columns and its entries of the `issues` map. */
-interface BoardParts {
-  columns?: Board["columns"];
-  issues?: Record<string, unknown> | null;
-}
-
-/** A board frame as it reaches the page: its subscription, and a snapshot's body or a delta's
- *  fields and map entries. */
-interface BoardFrame {
-  readonly type?: string;
-  readonly sub?: string;
-  readonly body?: Board;
-  readonly set?: BoardParts;
-  readonly maps?: BoardParts;
-}
-
-/** Passes every frame of the page's live sockets on, through `edit` where it is a frame of a
- *  Legion board subscription; `hold` drops each board frame after a subscription's first. */
-async function routeBoardFrames(
-  page: Page,
-  { edit, hold = false }: { edit?: (frame: BoardFrame) => void; hold?: boolean }
-): Promise<void> {
-  await page.routeWebSocket(/\/ws\/live$/u, (route: WebSocketRoute) => {
-    const server = route.connectToServer();
-    const boards = new Set<string>();
-    const answered = new Set<string>();
-    route.onMessage((message) => {
-      const frame = JSON.parse(String(message)) as {
-        readonly type?: string;
-        readonly sub?: string;
-        readonly view?: { readonly kind?: string };
-      };
-      if (frame.type === "subscribe" && frame.view?.kind === "legion" && frame.sub !== undefined)
-        boards.add(frame.sub);
-      server.send(message);
-    });
-    server.onMessage((message) => {
-      const frame = JSON.parse(String(message)) as BoardFrame;
-      if (
-        frame.sub === undefined ||
-        !boards.has(frame.sub) ||
-        (frame.type !== "snapshot" && frame.type !== "delta")
-      ) {
-        route.send(message);
-        return;
-      }
-      if (hold && answered.has(frame.sub)) return;
-      answered.add(frame.sub);
-      if (edit === undefined) {
-        route.send(message);
-        return;
-      }
-      edit(frame);
-      route.send(JSON.stringify(frame));
-    });
-  });
-}
-
-/** ACME seeded for a row that measures where things draw: a failed read of its daemon first, so
- *  the alert under the tabs is there from the start, and every board frame after the first held. */
-async function seedMeasuredAcme(page: Page): Promise<FakeLegionDaemon> {
-  const daemon = await seedAcme();
-  await seedFailedLegionRead(ACME, "the daemon did not answer its state route");
-  await routeBoardFrames(page, { hold: true });
-  return daemon;
-}
-
 // SLOW(>=2s): two projects seeded, each opened at eleven addresses and read row by row.
 test("Open and Done are the two tabs, every older view address opens Open, and each view lists the rows, order and headers the API gives", async ({
   browser,
@@ -549,7 +405,7 @@ test("Open and Done are the two tabs, every older view address opens Open, and e
     await seedPlain();
     const page = await context.newPage();
     await page.setViewportSize({ height: 1400, width: 1280 });
-    const table = page.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(page);
     const rowCount = async () => Number(await table.getAttribute("aria-rowcount")) - 1;
     for (const project of [ACME, PLAIN]) {
       const legion = project === ACME;
@@ -640,7 +496,7 @@ test("at 1440 by 900 with the sidebar open both of ACME's views scroll sideways 
   const daemon = await seedMeasuredAcme(page);
   try {
     await page.setViewportSize({ height: 900, width: 1440 });
-    const table = page.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(page);
     const box = page.getByTestId("issues-table-scroll");
     for (const [view, first] of [
       ["open", ["Created by", "Open asks"]],
@@ -712,7 +568,7 @@ test("Done's header and Open's first row stay where they are through a narrowing
     const done = await listIssuesWhere({ project: ACME, sort: "-closed_at", status: ["done"] });
     const open = await listIssuesWhere({ open: true, project: ACME });
     const urgent = done.filter((issue) => issue.priority === 0);
-    const table = page.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(page);
     const clear = page.getByRole("button", { exact: true, name: "Clear filters" });
     for (const { height, width } of [
       { height: 900, width: 1280 },
@@ -795,7 +651,7 @@ test("a view saved from Open with status=triage draws as a tab after Done and li
     const page = await context.newPage();
     await page.goto(`/projects/${ACME}/issues?status=triage`);
     await expect(page.getByRole("tablist", { name: "Views" })).toBeVisible();
-    const table = page.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(page);
     await expect
       .poll(async () => (await rowKeys(table)).sort())
       .toEqual(triage.map((issue) => issue.key).sort());
@@ -898,7 +754,7 @@ test("a table layout and a Board choice stored before the views open as Open's l
     );
     await expect(page.getByRole("region", { name: "Project board" })).toBeVisible();
     await page.getByRole("button", { exact: true, name: "Table" }).click();
-    const table = page.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(page);
     await expect(table).toBeVisible();
     const labels = await headerLabels(table);
     expect(labels).not.toContain("Labels");
@@ -908,16 +764,6 @@ test("a table layout and a Board choice stored before the views open as Open's l
     await daemon.close();
   }
 });
-
-/** Saves the view the page is on under `name` from the control row's Save view. */
-async function saveView(page: Page, name: string): Promise<void> {
-  await page.getByRole("button", { exact: true, name: "Save view" }).click();
-  const panel = page.getByRole("dialog", { name: "Save view" });
-  await panel.getByLabel("Name of the view").fill(name);
-  await panel.getByRole("button", { exact: true, name: "Save" }).click();
-  await expect(panel).toHaveCount(0);
-  await expect(page.getByRole("tab", { name: new RegExp(`^${name}(?:,|$)`) })).toBeVisible();
-}
 
 /** The address's parameters a saved view keeps, as a sorted list of `key=value`. */
 const viewParams = (url: string) =>
@@ -991,7 +837,7 @@ test("a saved view keeps its filter, sort, grouping, columns and layout through 
     expect(viewParams(page.url())).toEqual(saved);
     await expect.poll(() => boardCards(page)).toEqual(cards);
     await page.getByRole("button", { exact: true, name: "Table" }).click();
-    const table = page.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(page);
     expect(await headerLabels(table)).not.toContain("Labels");
     await page.getByRole("button", { exact: true, name: "Board" }).click();
 
@@ -1123,7 +969,7 @@ test("a saved view is kept per login in the reader's browser, and its link opens
     await expect.poll(() => boardCards(other)).toEqual(cards);
 
     const open = await listIssuesWhere({ open: true, project: ACME });
-    const table = other.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(other);
     await other.goto(mineUrl);
     const bobs = open
       .filter((issue) => issue.created_by?.kind === "user" && issue.created_by.id === "bob")
@@ -1186,7 +1032,7 @@ test("the Issues tab's tabs, headers and words are short, the Legion headers are
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    const table = page.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(page);
     for (const width of [1280, 390]) {
       await page.setViewportSize({ height: 900, width });
       for (const view of ["open", "done"]) {
@@ -1277,7 +1123,7 @@ test("no choice of a filter, the Columns menu, the display menus, the selection 
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    const table = page.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(page);
     for (const width of [1280, 390]) {
       await page.setViewportSize({ height: 900, width });
       await page.goto(`/projects/${ACME}/issues?cols=${EVERY_COL}`);
@@ -1285,7 +1131,7 @@ test("no choice of a filter, the Columns menu, the display menus, the selection 
       await expect(table.locator("tbody tr[data-issue-row]").first()).toBeVisible();
       const where = `at ${width}`;
       for (const name of FILTERED) {
-        const options = await readFilter(page, name);
+        const { options } = await readFilter(page, name);
         for (const [words] of options) {
           expect(words, `${where}: ${name}`).not.toMatch(/epic/i);
           if (name !== "Queue" && !(name === "Legion phase" && words === "Queue"))
@@ -1403,7 +1249,7 @@ test("each measure header's tooltip gives its method and the sort hint, on hover
     await page.setViewportSize({ height: 1000, width: 1440 });
     await page.goto(`/projects/${ACME}/issues?cols=${EVERY_COL}`);
     await expect(page.getByRole("tablist", { name: "Views" })).toBeVisible();
-    const table = page.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(page);
     await expect(table.locator("tbody tr[data-issue-row]").first()).toBeVisible();
     const sortButton = (label: string) =>
       header(table, label).getByRole("button", { exact: true, name: label });
@@ -1477,7 +1323,7 @@ test("a Board card's Time in Legion phase, Work time, open asks and claim say wh
   const context = await asUser(browser, "alice");
   try {
     await writeRoleEvent("ACME-1", "implementer", "2 hours");
-    await waitForIssueFacts(["ACME-1"], issueFactsWait);
+    await waitForIssueFacts(["ACME-1"]);
     await createAsk(
       "ACME-1",
       { question: "Which widget ships first?" },
@@ -1588,7 +1434,7 @@ test("the sort buttons of the priority pages carry no title and give the sort hi
 
     await page.goto(`/projects/${ACME}/issues`);
     await expect(page.getByRole("tablist", { name: "Views" })).toBeVisible();
-    const table = page.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(page);
     const created = table.locator('tr[data-issue-row="ACME-2"] time').first();
     await expect(created).toBeVisible();
     const at = await created.getAttribute("datetime");
@@ -1657,7 +1503,7 @@ test("a missing measure draws an empty cell, sorts last and counts under None, a
     const [m, z, c] = ["ACME-1", "ACME-2", "ACME-4"];
     await writeRoleEvent(m, "implementer", "2 hours");
     await writeRoleEvent(z, "architect", "45 minutes");
-    await waitForIssueFacts([m, z], issueFactsWait);
+    await waitForIssueFacts([m, z]);
     const n = (await createIssue({ project: ACME, title: "No Legion work and no card" })).key;
     const rewrite = (board: BoardParts) => {
       for (const column of board.columns ?? [])
@@ -1683,7 +1529,7 @@ test("a missing measure draws an empty cell, sorts last and counts under None, a
       if (zFacts != null) zFacts.review_rounds = 0;
     };
     const page = await context.newPage();
-    await routeBoardFrames(page, {
+    await routeLive(page, {
       edit: (frame) => {
         if (frame.body !== undefined) rewrite(frame.body);
         rewrite({ columns: frame.set?.columns, issues: frame.maps?.issues });
@@ -1692,7 +1538,7 @@ test("a missing measure draws an empty cell, sorts last and counts under None, a
     await page.setViewportSize({ height: 1400, width: 1920 });
     await page.goto(`/projects/${ACME}/issues?cols=${EVERY_COL}`);
     await expect(page.getByRole("tablist", { name: "Views" })).toBeVisible();
-    const table = page.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(page);
     await expect(table.locator(`tr[data-issue-row="${n}"]`)).toBeVisible();
 
     // The route as the page is sent it.
@@ -1738,28 +1584,28 @@ test("a missing measure draws an empty cell, sorts last and counts under None, a
     };
     const none = (picked: (key: string) => boolean) =>
       open.filter((issue) => picked(issue.key)).length;
-    const workTime = await readFilter(page, "Work time");
+    const workTime = (await readFilter(page, "Work time")).options;
     expect(workTime.find(([words]) => words === "None")?.[1]).toBe(
       none((key) => work(key) === undefined)
     );
-    const rounds = await readFilter(page, "Review rounds");
+    const rounds = (await readFilter(page, "Review rounds")).options;
     expect(rounds.find(([words]) => words === "0")?.[1]).toBe(
       none((key) => factsOf(key)?.review_rounds === 0)
     );
     expect(rounds.find(([words]) => words === "None")?.[1]).toBe(
       none((key) => factsOf(key) === undefined)
     );
-    const waited = await readFilter(page, "Time waiting");
+    const waited = (await readFilter(page, "Time waiting")).options;
     expect(waited.find(([words]) => words === "None")?.[1]).toBe(
       none((key) => cards.get(key)?.card.waiting?.since == null)
     );
-    const inPhase = await readFilter(page, "Time in Legion phase");
+    const inPhase = (await readFilter(page, "Time in Legion phase")).options;
     expect(inPhase.find(([words]) => words === "None")?.[1]).toBe(
       none((key) => cards.get(key)?.card.phase_since == null)
     );
     // Time per phase offers the phases with hours, in the board's order with Other last, and no
     // None; M, whose hours are gone, and N count under none of them.
-    const phases = await readFilter(page, "Time per phase");
+    const phases = (await readFilter(page, "Time per phase")).options;
     const counted = new Map<string, number>();
     for (const issue of open) {
       const held = new Set(
@@ -1822,7 +1668,7 @@ test("each count on the tabs, the pager, the bar, the Board's columns and the gr
     const done = await listIssuesWhere({ project: ACME, status: ["done"] });
     const page = await context.newPage();
     await page.setViewportSize({ height: 1000, width: 1440 });
-    const table = page.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(page);
     await page.goto(`/projects/${ACME}/issues`);
     await expect(page.getByRole("tablist", { name: "Views" })).toBeVisible();
     await page.getByRole("tab", { name: /^Done/ }).click();
@@ -1918,7 +1764,7 @@ test("on a desktop a Title width the reader drags is the width drawn after a rel
   try {
     await page.setViewportSize({ height: 900, width: 1400 });
     await page.goto(`/projects/${ACME}/issues`);
-    const table = page.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(page);
     await expect(table.locator("tbody tr[data-issue-row]").first()).toBeVisible();
     const title = header(table, "Title");
     await expect(title).toBeVisible();
@@ -2005,7 +1851,7 @@ test("on a phone Select and Key are pinned, Title follows them to the table's ri
   try {
     await page.setViewportSize({ height: 844, width: 390 });
     await page.goto(`/projects/${ACME}/issues`);
-    const table = page.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(page);
     await expect(table.locator("tbody tr[data-issue-row]").first()).toBeVisible();
     const box = page.getByTestId("issues-table-scroll");
     const title = header(table, "Title");

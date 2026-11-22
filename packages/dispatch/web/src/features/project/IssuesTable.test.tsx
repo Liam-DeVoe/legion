@@ -1152,9 +1152,9 @@ test("an embedded table pins Select, Key and Title on a 390 px phone", async () 
 
 // dispatch://INFRA-3221/comment/141bbad2-b75e-4bb4-b0a7-b5b1af541a3c, with R13's leave to widen a
 // width that cuts its header: on a phone the embedded tables' Key holds its header whole, sorted
-// by it and not. Measured in Chromium (builds Job infra-3221-t16c-accept-2784l): its sort button
-// is a 44 px touch target, which holds Key with its mark (38 px), its filter button 44 px, and the
-// cell's padding 12 px below `md`; 88 px left the filter 12 px past the cell.
+// by it and not. Measured in Chromium: its sort button is a 44 px touch target, which holds Key
+// with its mark (38 px), its filter button 44 px, and the cell's padding 12 px below `md`; 88 px
+// left the filter 12 px past the cell.
 test("on a phone an embedded table's Key holds its header whole, sorted by it and not", async () => {
   const needs = 44 + 44 + 12;
   const unsorted = await headerLayout(390);

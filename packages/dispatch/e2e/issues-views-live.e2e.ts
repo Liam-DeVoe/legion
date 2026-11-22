@@ -6,8 +6,8 @@
 // the Work time a facts write and a close move reaches an open page with no reload; and a live
 // socket held after its first snapshot changes nothing until a reload.
 //
-// ACME is seeded with the helpers ported from #3578's head 02a7b3c67e (`seedLegionFixture` with
-// `startFakeLegionDaemon`, `seedLegionMetricsCorpus`, `pushLegionObservation`), WIDGETS with
+// ACME is seeded with `seedLegionFixture`, its daemon named at a `startFakeLegionDaemon`, with
+// `seedLegionMetricsCorpus` and with `pushLegionObservation`, WIDGETS with
 // `seedLegionFactsFixture`. Each facts wait (up to 75 s) and each close step (up to 135 s) is a
 // row of its own (the plan's D16). A row that measures a position on ACME seeds a failed read of
 // its daemon first and holds every board frame after the first (`seedMeasuredAcme`).
@@ -28,12 +28,14 @@ import {
   ACME,
   boardDrawn,
   cardsOf,
+  columnCount,
   issuesTable,
   routeLive,
   rowKeys,
   seedAcme,
   seedMeasuredAcme,
   tabCount,
+  workWords,
 } from "./issues-views-shared";
 import {
   LEGION_FACTS_PROJECT,
@@ -457,17 +459,6 @@ test("in the table a row the pointer rests on keeps its top through writes above
 const card = (page: Page, key: string) => page.locator(`[data-board-card="${key}"]`);
 const cardTop = (page: Page, key: string) =>
   card(page, key).evaluate((node) => node.getBoundingClientRect().top);
-/** The count a Board column's header draws. */
-const columnCount = async (page: Page, id: string) =>
-  Number(
-    (
-      (await page
-        .locator(`section[data-board-column="${id}"] [data-testid="board-column-header"]`)
-        .textContent()) ?? ""
-    )
-      .trim()
-      .match(/(\d+)$/)?.[1] ?? Number.NaN
-  );
 const columnCards = (page: Page, id: string) =>
   page
     .locator(`section[data-board-column="${id}"] [data-board-card]`)
@@ -796,14 +787,6 @@ test("on /delivery a new merge's row is the first row and in view at the list's 
   }
 });
 
-/** The Work time words of a span of `hours`: minutes under an hour, hours and minutes after. */
-const workWords = (hours: number) => {
-  const minutes = Math.floor(Math.max(0, hours) * 60);
-  if (minutes < 60) return `${minutes} m`;
-  if (minutes < 24 * 60) return `${Math.floor(minutes / 60)} h ${minutes % 60} m`;
-  return `${Math.floor(minutes / 1440)} d ${Math.floor(minutes / 60) % 24} h`;
-};
-
 /** A page that counts its loads. */
 async function countedPage(context: BrowserContext, address: string) {
   const page = await context.newPage();
@@ -830,9 +813,10 @@ function workText(page: Page, key: string): Promise<string> {
 }
 
 /** WIDGETS's first card, an open issue in Implementing, with an implementer's role event of 70
- *  minutes ago and its facts row; a table page and a Board page of A open on it. */
-async function factsWrite(context: BrowserContext) {
-  const fixture = await seedLegionFactsFixture((await startFakeLegionDaemon()).url);
+ *  minutes ago and its facts row, the project's daemon named at `daemonUrl`; a table page and a
+ *  Board page of A open on it. */
+async function factsWrite(context: BrowserContext, daemonUrl: string) {
+  const fixture = await seedLegionFactsFixture(daemonUrl);
   const key = fixture.keys[0] ?? "";
   expect(cardsOf(await getLegionBoard(WIDGETS)).get(key)?.column).toBe("implementing");
   await seedFailedLegionRead(WIDGETS, "the daemon did not answer its state route");
@@ -859,9 +843,10 @@ test("a facts write reaches an open table and an open Board: the issue's Work ti
   browser,
 }) => {
   test.setTimeout(180_000);
+  const daemon = await startFakeLegionDaemon();
   const context = await asUser(browser, "alice");
   try {
-    const { key, table, board } = await factsWrite(context);
+    const { key, table, board } = await factsWrite(context, daemon.url);
     await expect.poll(() => workText(table.page, key)).toMatch(/^1 h \d+ m$/);
     await expect
       .poll(async () => ((await cardWork(board.page, key)) ?? "").trim())
@@ -869,6 +854,7 @@ test("a facts write reaches an open table and an open Board: the issue's Work ti
     expect([table.loads.count, board.loads.count]).toEqual([1, 1]);
   } finally {
     await context.close();
+    await daemon.close();
   }
 });
 
@@ -878,9 +864,10 @@ test("a second role event's facts write moves the open table's and the open Boar
   browser,
 }) => {
   test.setTimeout(240_000);
+  const daemon = await startFakeLegionDaemon();
   const context = await asUser(browser, "alice");
   try {
-    const { key, table, board } = await factsWrite(context);
+    const { key, table, board } = await factsWrite(context, daemon.url);
     await expect.poll(() => workText(table.page, key)).toMatch(/^1 h \d+ m$/);
     const before = (
       await sql(
@@ -918,6 +905,7 @@ test("a second role event's facts write moves the open table's and the open Boar
     expect(newest).toBe(`issue_facts ${WIDGETS} ${key}`);
   } finally {
     await context.close();
+    await daemon.close();
   }
 });
 
@@ -972,10 +960,10 @@ test("the close of an issue the board never shows fills its Work time on an open
 }) => {
   test.setTimeout(270_000);
   const daemon = await startFakeLegionDaemon();
-  await seedLegionFactsFixture(daemon.url);
-  await wakeEvalRefresher();
   const context = await asUser(browser, "alice");
   try {
+    await seedLegionFactsFixture(daemon.url);
+    await wakeEvalRefresher();
     await waitForLegionWorkTimeEval(WIDGETS);
     const done = await countedPage(
       context,
@@ -998,10 +986,10 @@ test("the close of an issue the board never shows fills its Work time on an open
 }) => {
   test.setTimeout(270_000);
   const daemon = await startFakeLegionDaemon();
-  await seedLegionFactsFixture(daemon.url);
-  await wakeEvalRefresher();
   const context = await asUser(browser, "alice");
   try {
+    await seedLegionFactsFixture(daemon.url);
+    await wakeEvalRefresher();
     await waitForLegionWorkTimeEval(WIDGETS);
     const open = await countedPage(
       context,

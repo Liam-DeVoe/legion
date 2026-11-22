@@ -986,8 +986,7 @@ test("a priority's page offers no versions and no delete, and the parked list sa
 // The priority pages with less text (dispatch://INFRA-3221, Verification k17, at v64): each read
 // at 1280 and 390 px set beside what the same read gives at the base, the stage A base B
 // (1dc37c1ef909), on this file's seed. The base's reads are written down here as they were read
-// there (Job infra-3221-t16b-p17b-snsk6, 2026-11-17); every read the check lets differ is written
-// with the head's value and its reason.
+// there; every read the check lets differ is written with the head's value and its reason.
 
 /** One column's header as the base drew it: its words and its width, in px. */
 type BaseColumn = readonly [string, number];
@@ -1354,7 +1353,7 @@ test("on /priorities at 1280 and 390 px each heading reads its name and one coun
         ...BASE_GROUP_BY.slice(1),
       ]);
       const columns = await menuChoices(page, unplacedScope, "columns-menu");
-      expect(columns).not.toContain(expect.stringMatching(/^Epic/));
+      expect(columns).not.toContainEqual(expect.stringMatching(/^Epic/));
       expect(columns.at(-1)).toBe("Closed");
 
       // No heading or column header names the four statuses In progress or running, and no

@@ -28,7 +28,9 @@ import type { AddressInfo } from "node:net";
 
 import { sql } from "./psql";
 
-const SEED_ACTOR = `'{"kind":"user","id":"alice"}'`;
+/** The actor the Legion seeds and the Issues tab's rows write their issues and settings by SQL
+ *  as: alice, as the SQL text of its JSON. */
+export const SEED_ACTOR = `'{"kind":"user","id":"alice"}'`;
 
 /** The project the Settings section's daemon field names a daemon for, and whose board the
  *  fixture below seeds. */
@@ -164,7 +166,7 @@ const OBSERVATIONS: readonly Observation[] = [
  *  places 1 and 2 of the daemon's line and ready, ACME-5 blocked by ACME-1; ACME-1 in
  *  Implementing, its slot working; ACME-2 in Waiting on a person, its slot held for the person
  *  since the ask began. The header counts 2 of 4 slots in use, 2 trees and 3 in the queue. */
-export async function seedLegionBoardProject(): Promise<void> {
+async function seedLegionBoardProject(): Promise<void> {
   await seedLegionProject();
   await sql(
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank) VALUES

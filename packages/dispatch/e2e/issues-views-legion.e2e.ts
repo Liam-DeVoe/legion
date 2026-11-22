@@ -4,18 +4,13 @@
 // route, the board's `issues` map or the items route of `legion-work-time`; and every column's
 // filter, its picks and what each pick writes to the address.
 //
-// ACME is seeded with the helpers ported from #3578's head 02a7b3c67e (`seedLegionFixture` with
-// `startFakeLegionDaemon`, `seedLegionMetricsCorpus`, `pushLegionObservation`), and WIDGETS with
+// ACME is seeded with `seedLegionFixture`, its daemon named at a `startFakeLegionDaemon`, with
+// `seedLegionMetricsCorpus` and with `pushLegionObservation`, and WIDGETS with
 // `seedLegionFactsFixture`. Each expected value is computed in the row from the seed through the
 // API (`GET /api/v1/issues`, the board route, the items route), never with the web code's
 // filters. A row that reads an issue's Legion work writes a role event on it and waits for the
 // facts consumer's row (`waitForIssueFacts`, up to 75 s), each such wait a row of its own.
-import type {
-  LegionBoardResponse as Board,
-  LegionBoardCard as Card,
-  EvalItemRow,
-  IssueSummary,
-} from "../web/src/api/types";
+import type { LegionBoardResponse as Board, IssueSummary } from "../web/src/api/types";
 import { setLiveSessions } from "./agents";
 import {
   claimIssue,
@@ -32,29 +27,45 @@ import {
   waitForLegionWorkTimeEval,
 } from "./api";
 import {
-  issueFactsWait,
+  ACME,
+  boardFacts,
+  cardsOf,
+  columnCount,
+  drawnColumns,
+  EVERY_COL,
+  type Facts,
+  type FilterRead,
+  hoursWords,
+  issuesTable,
+  itemFacts,
+  queueSorted,
+  readFilter,
+  routeLive,
+  rowKeys,
+  seedAcme,
+  spanWords,
+  tabNames,
+  workWords,
+} from "./issues-views-shared";
+import {
   LEGION_FACTS_PROJECT,
+  roleEventStatement,
   seedLegionFactsFixture,
   waitForIssueFacts,
   writeRoleEvent,
 } from "./legion-facts-seed";
 import {
-  type FakeLegionDaemon,
-  LEGION_PROJECT,
   type Observation,
   pushLegionObservation,
   pushLegionObservations,
   seedFailedLegionRead,
-  seedLegionFixture,
-  seedLegionMetricsCorpus,
   startFakeLegionDaemon,
+  writeEventsForFacts,
 } from "./legion-seed";
 import { sql } from "./psql";
-import { expandedState, settledState } from "./settled";
-import { expect, type Locator, type Page, test, type WebSocketRoute } from "./test";
+import { expandedState } from "./settled";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
-
-const ACME = LEGION_PROJECT;
 
 /** The board's eleven columns, in the order the route sends them, with their labels. */
 const BOARD_COLUMNS: readonly (readonly [string, string])[] = [
@@ -88,10 +99,6 @@ const BOARD_FED_HEADERS = [
 /** `cols=` with Status and every column id of the Design's columns table (k5). */
 const LEGION_COLS =
   "status,closed,legion_phase,queue,asks,roles,activity,waited,waiting_reason,time_in_phase,work_hours,review_rounds,legion,phase_hours";
-
-/** `cols=` with every column the table has (k19, which opens each one's filter). */
-const EVERY_COL =
-  "priority,queue,key,title,status,legion_phase,assignee,author,labels,claim,asks,created,updated,closed,roles,activity,waited,waiting_reason,time_in_phase,work_hours,review_rounds,legion,phase_hours";
 
 /** The statuses in `main`'s order, with the words the Status cell draws for each. */
 const STATUS_WORDS: Readonly<Record<string, string>> = {
@@ -153,15 +160,6 @@ const DURATIONS: readonly (readonly [string, string, number])[] = [
 const wordOf = (pairs: readonly (readonly [string, string])[], value: string): string =>
   pairs.find(([id]) => id === value)?.[1] ?? value;
 
-/** A span of whole minutes in the page's words: minutes under an hour, hours and minutes under a
- *  day, then days and hours. */
-function spanWords(minutes: number): string {
-  if (minutes < 60) return `${minutes} m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} h ${minutes % 60} m`;
-  return `${Math.floor(hours / 24)} d ${hours % 24} h`;
-}
-
 /** The two readings a time since `since` may be drawn with: at `nowMs`, and a minute before it,
  *  since the page draws its own clock a moment before the row reads its. */
 function sinceWords(since: string, nowMs: number): string[] {
@@ -170,47 +168,10 @@ function sinceWords(since: string, nowMs: number): string[] {
   );
 }
 
-/** Hours as Time per phase writes its total: one decimal under 10 hours, whole above. */
-const hoursWords = (hours: number): string =>
-  `${hours < 10 ? hours.toFixed(1) : Math.round(hours)} h`;
-
 /** The duration pick of a length of `ms`, None for no length. */
 function durationPick(ms: number | undefined): string {
   if (ms === undefined) return "none";
   return DURATIONS.find(([, , below]) => ms < below)?.[0] ?? "over-7d";
-}
-
-/** One issue's Legion facts as a row compares them, from the board's `issues` map or from an
- *  items row of `legion-work-time`. */
-interface Facts {
-  readonly work_hours: number;
-  readonly work_first_at: string | null;
-  readonly review_rounds: number;
-  readonly tree_depth: number;
-  readonly root_key: string;
-  readonly hours_by_phase: Readonly<Record<string, number>>;
-}
-
-/** An items row's facts, read from its columns as the route serves them. */
-function itemFacts(row: EvalItemRow): Facts {
-  const cols = row.cols ?? {};
-  const hours: Record<string, number> = {};
-  for (const [name, value] of Object.entries(cols))
-    if (name.startsWith("hours_") && typeof value === "number") hours[name.slice(6)] = value;
-  return {
-    work_hours: Number(cols.work_hours),
-    work_first_at: typeof cols.work_first_at === "string" ? cols.work_first_at : null,
-    review_rounds: Number(cols.review_rounds),
-    tree_depth: Number(cols.tree_depth),
-    root_key: String(cols.root_key),
-    hours_by_phase: hours,
-  };
-}
-
-/** The facts the board's `issues` map holds for `key`, or undefined where it holds none. */
-function boardFacts(board: Board, key: string): Facts | undefined {
-  const held = board.issues?.[key];
-  return held === undefined ? undefined : { ...held, hours_by_phase: held.hours_by_phase ?? {} };
 }
 
 /** The work time a facts row measured, or undefined where none was: no facts, or `work_first_at`
@@ -237,42 +198,9 @@ const phaseTotal = (facts: Facts | undefined): number =>
     0
   );
 
-/** Every card of the board by its issue, with the column that holds it. */
-function cardsOf(board: Board): Map<string, { column: string; label: string; card: Card }> {
-  return new Map(
-    (board.columns ?? []).flatMap((column) =>
-      (column.cards ?? []).map(
-        (card) => [card.key, { column: column.id, label: column.label, card }] as const
-      )
-    )
-  );
-}
-
 /** The keys of one column's cards, in the board's order. */
 function columnKeys(board: Board, id: string): string[] {
   return (board.columns?.find((column) => column.id === id)?.cards ?? []).map((card) => card.key);
-}
-
-/** Open issues as Open's Queue sort orders them: the issues with a Place by their Place, then the
- *  rest by rank, ties in the listing's own order. */
-function queueOrder(issues: readonly IssueSummary[], board: Board | undefined): IssueSummary[] {
-  const places = new Map(
-    [...(board === undefined ? [] : cardsOf(board))].flatMap(([key, placed]) =>
-      placed.card.waiting_place === null ? [] : [[key, placed.card.waiting_place] as const]
-    )
-  );
-  return issues
-    .map((issue, index) => ({ issue, index }))
-    .sort((a, b) => {
-      const left = places.get(a.issue.key);
-      const right = places.get(b.issue.key);
-      if (left !== undefined && right !== undefined) return left - right;
-      if (left !== undefined) return -1;
-      if (right !== undefined) return 1;
-      if (a.issue.rank !== b.issue.rank) return a.issue.rank < b.issue.rank ? -1 : 1;
-      return a.index - b.index;
-    })
-    .map(({ issue }) => issue);
 }
 
 /** What one cell of a row draws: its text, the moment of its time, the keys of its links, and,
@@ -313,13 +241,6 @@ function readRows(table: Locator): Promise<Record<string, Record<string, CellRea
   });
 }
 
-/** The keys of the rows `table` draws, in their order. */
-function rowKeys(table: Locator): Promise<string[]> {
-  return table
-    .locator("tbody tr[data-issue-row]")
-    .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-issue-row") ?? ""));
-}
-
 /** Where a cell's drawn value differs from `expected`, one line naming the issue, the column, what
  *  is drawn and what the route gives; nothing where it matches one of `expected`'s readings. */
 function differs(
@@ -353,12 +274,7 @@ function factsDiffer(
   );
   return [
     ...zero,
-    ...differs(
-      key,
-      "Work time",
-      cells?.["Work time"],
-      work === undefined ? "" : spanWords(Math.floor(Math.max(0, work) * 60))
-    ),
+    ...differs(key, "Work time", cells?.["Work time"], work === undefined ? "" : workWords(work)),
     ...differs(
       key,
       "Review rounds",
@@ -448,15 +364,6 @@ function cardCellsDiffer(
   ];
 }
 
-/** ACME as every row here seeds it: its five issues with their cards, the closed tree of the
- *  metrics corpus, and its daemon named at a fake that answers 404. */
-async function seedAcme(): Promise<FakeLegionDaemon> {
-  const daemon = await startFakeLegionDaemon();
-  await seedLegionFixture(daemon.url);
-  await seedLegionMetricsCorpus();
-  return daemon;
-}
-
 /** The admission block of `seedLegionFixture` with `extra` added to what a blocker link holds,
  *  and the waiting line and slots `more` gives, as a read a minute later finds it. */
 function admission(more: {
@@ -485,50 +392,19 @@ async function seedQueueAndTree(): Promise<void> {
     parent: "ACME-1",
   });
   await patchIssue(child.key, { status: "todo" });
-  await pushLegionObservation(child.key, "phase", '"admitted"');
   const held = await createIssue({ project: ACME, title: "Held behind the gadgets ask" });
   await patchIssue(held.key, { status: "todo" });
-  await pushLegionObservation(held.key, "phase", '"admitted"');
-  await pushLegionObservation(
-    "",
-    "admission",
-    admission({ blocked: [{ issue: held.key, blockedBy: ["ACME-2"] }] })
-  );
+  await pushLegionObservations([
+    { issue: child.key, field: "phase", value: '"admitted"', ago: "0 seconds" },
+    { issue: held.key, field: "phase", value: '"admitted"', ago: "0 seconds" },
+    {
+      issue: "",
+      field: "admission",
+      value: admission({ blocked: [{ issue: held.key, blockedBy: ["ACME-2"] }] }),
+      ago: "0 seconds",
+    },
+  ]);
   expect([child.key, held.key], "ACME's next keys after the seed").toEqual(["ACME-8", "ACME-9"]);
-}
-
-/** The view tabs' accessible names: each name, its count where it shows one, and its mark. */
-function tabNames(page: Page): Promise<string[]> {
-  return page
-    .getByRole("tablist", { name: "Views" })
-    .getByRole("tab")
-    .evaluateAll((tabs) => tabs.map((tab) => tab.getAttribute("aria-label") ?? ""));
-}
-
-/** The Board's columns, by id and title, in their order; its rails left out. */
-function boardColumns(page: Page): Promise<{ id: string; title: string; cards: string[] }[]> {
-  return page
-    .getByRole("region", { name: "Project board" })
-    .locator("section[data-board-column]")
-    .evaluateAll((sections) =>
-      sections
-        .filter((section) => !(section.getAttribute("aria-label") ?? "").endsWith("(collapsed)"))
-        .map((section) => ({
-          id: section.getAttribute("data-board-column") ?? "",
-          title: section.getAttribute("aria-label") ?? "",
-          cards: [...section.querySelectorAll("[data-board-card]")].map(
-            (card) => card.getAttribute("data-board-card") ?? ""
-          ),
-        }))
-    );
-}
-
-/** The count a Board column's header draws. */
-async function columnCount(page: Page, id: string): Promise<number> {
-  const header = page
-    .locator(`section[data-board-column="${id}"]`)
-    .getByTestId("board-column-header");
-  return Number(((await header.textContent()) ?? "").match(/(\d+)\s*$/)?.[1] ?? Number.NaN);
 }
 
 /** The (i) hint's terms and values, opened from its trigger, with the moment its read time names. */
@@ -555,81 +431,6 @@ async function columnsMenuNames(page: Page): Promise<string[]> {
   return names;
 }
 
-/** One filter's options as its list draws them: each option's words and count, in order. */
-interface FilterRead {
-  readonly opens: "list" | "dialog";
-  readonly options: readonly (readonly [string, number])[];
-}
-
-/** Opens column `name`'s filter from its header and reads it, then shuts it. A filter of picks
- *  opens a list of options, each named `<words>, <n> issue(s)`; Key, Title and Closed open a
- *  panel instead. */
-async function readFilter(page: Page, name: string): Promise<FilterRead> {
-  const trigger = page.getByRole("button", {
-    name: new RegExp(`^Filter ${name}(?:: \\d+ picked)?$`),
-  });
-  await trigger.click();
-  const list = page.getByRole("listbox", { name: `${name} options` });
-  const panel = page.getByRole("dialog", { name: `Filter ${name}` });
-  const opened = await settledState(`the ${name} filter`, [
-    ["list", list],
-    ["panel", panel],
-  ]);
-  if (opened === "panel") {
-    await page.keyboard.press("Escape");
-    await expect(panel).toHaveCount(0);
-    return { opens: "dialog", options: [] };
-  }
-  const names = await list
-    .getByRole("option")
-    .evaluateAll((options) => options.map((option) => option.getAttribute("aria-label") ?? ""));
-  await page.keyboard.press("Escape");
-  await expect(list).toHaveCount(0);
-  return {
-    opens: "list",
-    options: names.map((named) => {
-      // An option whose rows are not read yet (Done on Open) says so in place of a count: -1.
-      const match = named.match(/^(.*), (?:(\d+) issues?|not loaded)$/);
-      return [match?.[1] ?? named, match === null ? Number.NaN : Number(match[2] ?? -1)] as const;
-    }),
-  };
-}
-
-/** Holds every board frame after the first snapshot on each live socket the page opens, so the
- *  board the page draws is the first snapshot it was sent. A frame of another type passes. */
-async function holdLaterBoardFrames(page: Page): Promise<void> {
-  await page.routeWebSocket(/\/ws\/live$/u, (route: WebSocketRoute) => {
-    const server = route.connectToServer();
-    const boards = new Set<string>();
-    const answered = new Set<string>();
-    route.onMessage((message) => {
-      const frame = JSON.parse(String(message)) as {
-        readonly type?: string;
-        readonly sub?: string;
-        readonly view?: { readonly kind?: string };
-      };
-      if (frame.type === "subscribe" && frame.view?.kind === "legion" && frame.sub !== undefined)
-        boards.add(frame.sub);
-      server.send(message);
-    });
-    server.onMessage((message) => {
-      const frame = JSON.parse(String(message)) as {
-        readonly type?: string;
-        readonly sub?: string;
-      };
-      const board =
-        frame.sub !== undefined &&
-        boards.has(frame.sub) &&
-        (frame.type === "snapshot" || frame.type === "delta");
-      if (board && frame.sub !== undefined) {
-        if (answered.has(frame.sub)) return;
-        answered.add(frame.sub);
-      }
-      route.send(message);
-    });
-  });
-}
-
 // SLOW(>=2s): ACME seeded with two more issues through later reads, then Open read in the table
 // with the Queue filter and on the Board by Legion phase.
 test("Open's Legion queue lists the Queue column's cards in the board's order, and its Board by Legion phase draws the board's eleven columns", async ({
@@ -650,7 +451,7 @@ test("Open's Legion queue lists the Queue column's cards in the board's order, a
     const open = await listIssuesWhere({ project: ACME, open: true });
     const cards = cardsOf(board);
     // The Legion queue: every issue with a Place, and every card of the Queue column.
-    const queued = queueOrder(
+    const queued = queueSorted(
       open.filter(
         (issue) =>
           cards.get(issue.key)?.card.waiting_place != null ||
@@ -662,7 +463,7 @@ test("Open's Legion queue lists the Queue column's cards in the board's order, a
     const page = await context.newPage();
     await page.setViewportSize({ height: 1600, width: 1440 });
     await page.goto(`/projects/${ACME}/issues?f.queue=Queued`);
-    const table = page.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(page);
     await expect(table).toBeVisible();
     await expect.poll(() => rowKeys(table)).toEqual(queued);
     const rows = await readRows(table);
@@ -676,13 +477,17 @@ test("Open's Legion queue lists the Queue column's cards in the board's order, a
     await expect(page.getByRole("region", { name: "Project board" })).toBeVisible();
     const routeColumns = (board.columns ?? []).map((column) => [column.id, column.label]);
     await expect
-      .poll(async () => (await boardColumns(page)).map(({ id, title }) => [id, title]))
+      .poll(async () =>
+        (await drawnColumns(page))
+          .filter((column) => !column.rail)
+          .map(({ id, title }) => [id, title])
+      )
       .toEqual(routeColumns);
     expect(routeColumns, "the board route's columns").toEqual(BOARD_COLUMNS);
     const openKeys = new Set(open.map((issue) => issue.key));
     // The poll above settled the columns this loop walks, and the Board draws their cards with
     // them.
-    for (const drawn of await boardColumns(page)) {
+    for (const drawn of (await drawnColumns(page)).filter((column) => !column.rail)) {
       const expected = columnKeys(board, drawn.id).filter((key) => openKeys.has(key));
       if (drawn.id === "queue") expect(drawn.cards, "the Queue column's cards").toEqual(expected);
       else
@@ -711,7 +516,7 @@ test("a Board card draws the Legion fields the board route gives it and no slot 
     await writeRoleEvent("ACME-1", "implementer", "2 hours");
     await writeRoleEvent("ACME-2", "architect", "45 minutes");
     await writeRoleEvent("ACME-9", "architect", "30 minutes");
-    await waitForIssueFacts(three, issueFactsWait);
+    await waitForIssueFacts(three);
 
     const page = await context.newPage();
     await page.setViewportSize({ height: 1200, width: 1440 });
@@ -752,8 +557,7 @@ test("a Board card draws the Legion fields the board route gives it and no slot 
         fields["phase-time"] = sinceWords(card.phase_since, Date.now()).map(
           (time) => `Time in Legion phase ${time}`
         );
-      if (work !== undefined)
-        fields["work-time"] = [`Work time ${spanWords(Math.floor(Math.max(0, work) * 60))}`];
+      if (work !== undefined) fields["work-time"] = [`Work time ${workWords(work)}`];
       if (roles.length > 0) fields.roles = [`Workers ${roles.join(", ")}`];
       if (blockers.length > 0) fields["blocked-by"] = [`Blocked by ${blockers.join(", ")}`];
       if (card.waiting_on !== null) {
@@ -1041,7 +845,7 @@ test("the (i) hint reads the board's capacity, trees and read time, a failed rea
            VALUES ('${key}', '${daemon.url}', '{"kind":"user","id":"alice"}', now())`
       );
       const other = await context.newPage();
-      await holdLaterBoardFrames(other);
+      await routeLive(other, { hold: true });
       await other.goto(`/projects/${key}/issues`);
       await expect(other.getByRole("tablist", { name: "Views" })).toBeVisible();
       await other.getByRole("button", { exact: true, name: "Legion daemon" }).click();
@@ -1193,10 +997,7 @@ test("each Legion cell of ACME's open and done rows equals its route's value, an
     for (const [key, role, ago] of ACME_ROLE_EVENTS) await writeRoleEvent(key, role, ago);
     await writeRoleEvent(other.key, "implementer", "40 minutes");
     await Promise.all([
-      waitForIssueFacts(
-        [...ACME_ROLE_EVENTS.map(([key]) => key), other.key, "ACME-6", "ACME-7"],
-        issueFactsWait
-      ),
+      waitForIssueFacts([...ACME_ROLE_EVENTS.map(([key]) => key), other.key, "ACME-6", "ACME-7"]),
       waitForLegionWorkTimeEval(ACME),
     ]);
 
@@ -1207,7 +1008,7 @@ test("each Legion cell of ACME's open and done rows equals its route's value, an
     });
     await page.setViewportSize({ height: 1600, width: 1920 });
     await page.goto(`/projects/${ACME}/issues?cols=${LEGION_COLS}`);
-    const table = page.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(page);
     await expect(table.locator(`tr[data-issue-row="${other.key}"]`)).toBeVisible();
     // ACME-4 is first in the daemon's line: its Queue cell is its Place.
     await expect.poll(async () => (await readRows(table))["ACME-4"]?.Queue?.text).toBe("#1");
@@ -1319,13 +1120,13 @@ test("each Legion cell of WIDGETS' open rows equals the board route's card and f
     await writeRoleEvent("WIDGETS-5", "implementer", "50 minutes");
     await writeRoleEvent("WIDGETS-14", "reviewer", "60 minutes");
     await Promise.all([
-      waitForIssueFacts(["WIDGETS-1", "WIDGETS-5", "WIDGETS-14"], issueFactsWait),
+      waitForIssueFacts(["WIDGETS-1", "WIDGETS-5", "WIDGETS-14"]),
       waitForLegionWorkTimeEval(LEGION_FACTS_PROJECT),
     ]);
     const page = await context.newPage();
     await page.setViewportSize({ height: 2400, width: 1920 });
     await page.goto(`/projects/${LEGION_FACTS_PROJECT}/issues?cols=${LEGION_COLS}`);
-    const table = page.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(page);
     await expect(table.locator('tr[data-issue-row="WIDGETS-24"]')).toBeVisible();
     const open = await listIssuesWhere({ open: true, project: LEGION_FACTS_PROJECT });
     const carded = open.filter((issue) => fixture.keys.includes(issue.key));
@@ -1367,7 +1168,7 @@ test("Status and Legion phase are two columns, the Legion phase filter offers th
   try {
     const page = await context.newPage();
     await page.setViewportSize({ height: 1400, width: 1920 });
-    const table = page.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(page);
     // The Legion queue: ACME-4 and ACME-3 in the daemon's line, then ACME-5, a Queue card with no
     // Place, which reads In Legion queue with no number.
     await page.goto(`/projects/${ACME}/issues?f.queue=Queued`);
@@ -1456,7 +1257,7 @@ test("Start next moves the Todo issues labelled legion apart from the Place, ref
   try {
     const page = await context.newPage();
     await page.setViewportSize({ height: 1200, width: 1440 });
-    const table = page.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(page);
     // The Legion queue holds ACME-4, ACME-3 and ACME-5; none is labelled legion.
     await page.goto(`/projects/${ACME}/issues?f.queue=Queued`);
     await expect.poll(() => rowKeys(table)).toEqual(["ACME-4", "ACME-3", "ACME-5"]);
@@ -1491,8 +1292,8 @@ test("Start next moves the Todo issues labelled legion apart from the Place, ref
     await page.getByRole("checkbox", { exact: true, name: "Select ACME-4" }).check();
     await startNext.click();
     // The region also holds the board header's alert whenever ACME's last daemon read failed,
-    // which the minute's sampler read can leave between rows (its reads of ACME answered 404 in
-    // Job infra-3221-r23e): the refusal is the alert that names Start next.
+    // which the minute's sampler read of the fake daemon, answered 404, can leave between rows:
+    // the refusal is the alert that names Start next.
     await expect(
       page
         .getByRole("region", { exact: true, name: "Project issues" })
@@ -1704,8 +1505,11 @@ async function seedFilterCorpus(): Promise<Record<string, string>> {
     ago: "1 minute",
   });
   await pushLegionObservations(observations);
-  for (const [name, seeded] of Object.entries(CORPUS))
-    if (seeded.role !== undefined) await writeRoleEvent(key(name), seeded.role[0], seeded.role[1]);
+  await writeEventsForFacts(
+    ...Object.entries(CORPUS).flatMap(([name, seeded]) =>
+      seeded.role === undefined ? [] : [roleEventStatement(key(name), ...seeded.role)]
+    )
+  );
   await createAsk(
     key("W2"),
     { question: "Which gadget should the tests cover?" },
@@ -1886,11 +1690,11 @@ test("every column but Select opens a filter, each offering its picks in order w
   const context = await asUser(browser, "alice");
   try {
     const keys = await seedFilterCorpus();
-    await waitForIssueFacts(factsKeys(keys), issueFactsWait);
+    await waitForIssueFacts(factsKeys(keys));
     const page = await context.newPage();
     await page.setViewportSize({ height: 2000, width: 1920 });
     await page.goto(`/projects/${ACME}/issues?cols=${EVERY_COL}`);
-    const table = page.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(page);
     await expect(table.locator(`tr[data-issue-row="${keys.N1}"]`)).toBeVisible();
     // Every filter opens; the options are read as each opens, and compared once all have.
     const read = new Map<string, FilterRead>();
@@ -1982,11 +1786,11 @@ test("each pick of a Legion filter writes its own value to the address, lists th
   const context = await asUser(browser, "alice");
   try {
     const keys = await seedFilterCorpus();
-    await waitForIssueFacts(factsKeys(keys), issueFactsWait);
+    await waitForIssueFacts(factsKeys(keys));
     const open = await listIssuesWhere({ project: ACME, open: true });
     const page = await context.newPage();
     await page.setViewportSize({ height: 2000, width: 1920 });
-    const table = page.getByRole("table", { name: "Project issues table" });
+    const table = issuesTable(page);
     const base = `/projects/${ACME}/issues?cols=${EVERY_COL}`;
     for (const [name, words, param, value] of K19_PICKS) {
       await page.goto(base);
