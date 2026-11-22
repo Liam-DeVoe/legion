@@ -4,13 +4,14 @@
  * pull.sql (a transcript, by path), tasks.sql (first user messages that hold some terms),
  * sessions.sql (the paths of the files a count row names by hash), session-head.sql (the head
  * of each session a case or a load task names by its path's SHA-256), session-paths.sql (the
- * path of each session a load task names by its path's SHA-256) and subagents.sql (a subagent
- * with a recorded skill listing of each top-level session a path hash names). Each placeholder is
- * the name of a value inside double braces, and each is filled with one whole SQL value: a number,
- * a string literal with its quotes (`sqlString`), or a text array of such literals
- * (`sqlTextArray`: tasks.sql's terms, and the hashes of sessions.sql, session-head.sql,
- * session-paths.sql and subagents.sql), so
- * no value can end the literal it is in. The filled text goes into the store's read command
+ * path of each session a load task names by its path's SHA-256), subagents.sql (a subagent with a
+ * recorded skill listing of each top-level session a path hash names, started between two times)
+ * and digest-times.sql (the prompt builds of each session's root). Each placeholder is the name of
+ * a value inside double braces, and each is filled with one whole SQL value: a number, a string
+ * literal with its quotes (`sqlString`), a text array of such literals (`sqlTextArray`: tasks.sql's
+ * terms, and the hashes of sessions.sql, session-head.sql, session-paths.sql and
+ * digest-times.sql), or a string literal of a JSON array cast to jsonb (subagents.sql's sessions),
+ * so no value can end the literal it is in. The filled text goes into the store's read command
  * unchanged.
  *
  *   bun scripts/skill-cuts/countsql.ts --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD>
@@ -220,23 +221,32 @@ export function sessionPathsSql(pathHashes: readonly string[]): string {
   return fillTemplate(readTemplate("session-paths.sql"), { hashes: pathHashArray(pathHashes) });
 }
 
-/** subagents.sql filled for the top-level sessions' path hashes `pathHashes` (`pathHashArray`). */
-export function subagentsSql(pathHashes: readonly string[]): string {
-  return fillTemplate(readTemplate("subagents.sql"), { hashes: pathHashArray(pathHashes) });
-}
-
-/** digest-times.sql filled for the subagent sessions `sessions`: each one's path hash and start
- *  (an ISO time), as one JSON array literal. */
-export function digestTimesSql(
-  sessions: readonly { readonly hash: string; readonly before: string }[]
+/** subagents.sql filled for the top-level sessions `sessions`: each one's path hash
+ *  (`pathHashArray`) and the times its subagent's start must be at or after (`from`) and before
+ *  (`to`), each an ISO time or null for no bound, as one JSON array literal. Throws on a time of
+ *  any other form. */
+export function subagentsSql(
+  sessions: readonly {
+    readonly hash: string;
+    readonly from: string | null;
+    readonly to: string | null;
+  }[]
 ): string {
   pathHashArray(sessions.map((each) => each.hash));
-  const bad = sessions.find((each) => Number.isNaN(Date.parse(each.before)));
-  if (bad !== undefined) throw new Error(`${JSON.stringify(bad.before)} is not a time`);
-  const value = JSON.stringify(sessions.map(({ hash, before }) => ({ hash, before })));
-  return fillTemplate(readTemplate("digest-times.sql"), {
-    sessions: `${sqlString(value)}::jsonb`,
-  });
+  for (const { from, to } of sessions) {
+    for (const time of [from, to]) {
+      if (time !== null && Number.isNaN(Date.parse(time))) {
+        throw new Error(`${JSON.stringify(time)} is not a time`);
+      }
+    }
+  }
+  const value = JSON.stringify(sessions.map(({ hash, from, to }) => ({ hash, from, to })));
+  return fillTemplate(readTemplate("subagents.sql"), { sessions: `${sqlString(value)}::jsonb` });
+}
+
+/** digest-times.sql filled for the sessions' path hashes `pathHashes` (`pathHashArray`). */
+export function digestTimesSql(pathHashes: readonly string[]): string {
+  return fillTemplate(readTemplate("digest-times.sql"), { hashes: pathHashArray(pathHashes) });
 }
 
 const USAGE =

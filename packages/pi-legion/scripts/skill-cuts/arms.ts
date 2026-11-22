@@ -43,6 +43,48 @@
  * `skillFile(arm, file)` answers one new read the same way, at the arm's `installedDir`, and is
  * what replay.ts answers a reply's read with; cases.ts's `skillReadFile(arm.skill, target)` says
  * which file a read reads.
+ *
+ * A skill can reach a session other than by its listing line and its reads, and each arm puts its
+ * own text there too (`Injection`, `arm.injections`):
+ *
+ * - **A plugin's block.** The Envoy plugin puts dispatch-first into every request of a session
+ *   with Dispatch (PLUGIN_INJECTED; packages/pi-envoy/extensions/envoy.ts): a user message of one
+ *   text part, stamped 0, after the leading compaction summaries, unless the message there already
+ *   opens with the marker (pi-envoy's `withDispatchFirst`), its text `readDispatchFirstContext` of
+ *   the plugin's own `skills/dispatch-first/SKILL.md` (packages/envoy-client/src/dispatch-first.ts),
+ *   read as the plugin loads, so a plugin that finds no such file does not load. Oh My Pi stores
+ *   nothing a `context` handler returns, so no transcript holds the block, and a capture runs with
+ *   Dispatch off (capture.ts). So for a case of dispatch-first whose profile installs the plugin,
+ *   each arm but `none` puts the block, from the arm's SKILL.md through the plugin's own function,
+ *   at that place in its messages (taking out any block there), and `none` puts none. Whether the
+ *   session had Dispatch is taken from the case where the case says (`dispatchOf`): a Legion
+ *   role's session, or a subagent of one, had it, and so did a session whose messages hold the
+ *   dispatch-first block or a Dispatch call; a dev box's session that shows neither is taken to
+ *   have had it. Each arm carries that answer and why (`arm.dispatch`, which a capture records),
+ *   and the block goes in on each answer. context.ts installs a hidden stand-in of the file where
+ *   the arm has no copy under that name (`none`), so the plugin loads in every arm and lists
+ *   nothing more.
+ * - **An autoloaded block.** Oh My Pi gives a subagent each skill its agent definition's
+ *   `autoloadSkills` names as a `custom` message of type `skill-prompt` (SKILL_PROMPT) before its
+ *   task, `display: false`, its details the skill's name and path (packages/coding-agent/src/task/
+ *   executor.ts lines 5573-5607 at the pin, the tag v18.18.6-sami.20261119-162325 of
+ *   cybermonklabs/oh-my-pi), its text `prompt.render` of prompts/skills/autoload.md trimmed
+ *   (extensibility/skills.ts lines 968-976): the SKILL.md less its frontmatter, trimmed (lines
+ *   901-906), a blank line, `---`, a blank line and `Skill: <path>`, all of it then put through
+ *   Oh My Pi's `format` (packages/utils/src/prompt.ts lines 192-308 and 544-548; `formatPrompt`).
+ *   The transcript keeps that message, so the case's messages hold it: each arm but `none`
+ *   rebuilds its text from the arm's SKILL.md under the recorded path (`autoloadedText`), and
+ *   `none` leaves the message out.
+ *
+ * In `ours`, each block carries our text in their skill's place: the plugin's block is the
+ * plugin's own function of our SKILL.md, and an autoloaded block is rebuilt from our SKILL.md
+ * under the recorded path with our name as its skill directory's last part, its details naming
+ * our skill and that path.
+ *
+ * A case whose messages hold a block of its skill that the runner cannot rebuild for each arm
+ * (`injectionFault`: a `skill-prompt` message of the skill in another form, such as one the user
+ * invoked with `/skill:`, or a message that opens with the plugin's marker away from where the
+ * plugin puts its block) is refused: buildArm throws InjectionRefused naming it.
  */
 import {
   cpSync,
@@ -55,6 +97,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import {
+  DISPATCH_FIRST_MARKER,
+  readDispatchFirstContext,
+} from "@legion/envoy-client/dispatch-first";
 import {
   readTargets,
   type SessionMessage,
@@ -74,6 +120,56 @@ import type { Arm as ScoreArm } from "./score";
 
 /** The name of an arm, as run records carry it. */
 export type ArmName = ScoreArm;
+
+/** The name a profile gives the Envoy plugin: its directory's (build.ts names each plugin after
+ *  its directory, `packages/pi-envoy` in cybermonklabs/legion). */
+export const ENVOY_PLUGIN = "pi-envoy";
+
+/** The skill a plugin puts into a session's requests itself, under the name the plugin reads its
+ *  file by, and that plugin (see the file's header). */
+export const PLUGIN_INJECTED = { skill: "dispatch-first", plugin: ENVOY_PLUGIN } as const;
+
+/** The custom message type of a skill's text Oh My Pi puts into a session
+ *  (SKILL_PROMPT_MESSAGE_TYPE, packages/tui/src/chat/messages.ts line 21 at the pin). */
+export const SKILL_PROMPT = "skill-prompt";
+
+/** A block of the case's skill that reaches its session beside the listing line and the reads,
+ *  and where the arm's messages hold it (`at`; null for `none`, which holds none): one a plugin
+ *  puts into each request (`plugin`, as a profile names it; `name`, the skill's name the plugin
+ *  reads its file under), or one Oh My Pi autoloads into a subagent (`path`, the SKILL.md path the
+ *  block names, as recorded). */
+export type Injection =
+  | {
+      readonly by: "plugin";
+      readonly plugin: string;
+      readonly name: string;
+      readonly at: number | null;
+    }
+  | { readonly by: "autoload"; readonly path: string; readonly at: number | null };
+
+/** What buildArm, and a capture, throw for a case that holds a block of its skill the runner
+ *  cannot give each arm's text, its message naming the case: behaviour refuses the case on it
+ *  (cli.ts). `kind` is `autoload-no-block` for a capture's: a subagent whose agent autoloads the
+ *  skill and whose messages hold no autoloaded block of it (capture.ts); buildArm's sets none, and
+ *  `injectionFaults` gives the kind of each of its faults. */
+export class InjectionRefused extends Error {
+  constructor(
+    message: string,
+    readonly kind?: "autoload-no-block"
+  ) {
+    super(message);
+  }
+}
+
+/** Whether a case's session had Dispatch, which the Envoy plugin's block rests on, where that
+ *  answer comes from, and why (`dispatchOf`): `legion-role` for a Legion role's session or a
+ *  subagent of one; `transcript` for a session whose messages hold the dispatch-first block or a
+ *  Dispatch call; `assumed` for a dev box's session that shows neither, which the runner takes to
+ *  have had Dispatch. */
+export interface DispatchAnswer {
+  readonly from: "legion-role" | "transcript" | "assumed";
+  readonly why: string;
+}
 
 /** One arm of a case. */
 export interface Arm {
@@ -97,6 +193,12 @@ export interface Arm {
    * copy of the arm's skill's source (`testedCopy(profileSkills, skill)`) is installed from
    * `skillDir`. */
   readonly profileSkills: ProfileSkill[];
+  /** Each block of the skill that reaches the session beside its listing line and its reads, and
+   *  where this arm holds it (Injection). Absent, or empty, when the case has none. */
+  readonly injections?: readonly Injection[];
+  /** Whether the case's session had Dispatch, and why (`dispatchOf`): what the plugin's block of
+   *  `injections` rests on. Absent for an arm built from no case (a load test's). */
+  readonly dispatch?: DispatchAnswer;
   /** In `ours` only: the case's skill (`theirs`), which the arm does not install; whether our text
    *  replaced a skill of our name that the profile held (`replacedOwn`); and the path inside the
    *  skill of each history read of theirs removed because ours has no file there
@@ -337,7 +439,8 @@ function oursArm(
   });
   return {
     ...arm,
-    messages: withoutReads(messages, lacking),
+    ...withInjections(c, withoutReads(messages, lacking), skillDir, ours.name),
+    dispatch: dispatchOf(c),
     ours: {
       theirs: c.skill,
       replacedOwn,
@@ -346,11 +449,391 @@ function oursArm(
   };
 }
 
-/** The arm `name` of case `c`, from the skill directories `dirs`. `minus` writes its copy of the
- * old directory to `<scratch>/minus`, replacing one there. Throws naming the case when a
- * skillReads index is not a read of a `skill://<skill>` file, or when `dirs` lacks the arm's
- * directory. */
+/** A table row and a table's separator row, as Oh My Pi's `format` finds them. */
+const TABLE_ROW = /^\|.*\|$/;
+const TABLE_SEP = /^\|[-:\s|]+\|$/;
+
+/** A table separator row with each cell `---`, `:---`, `---:` or `:---:`, as `format` writes it. */
+function compactSeparator(line: string): string {
+  const cells = line
+    .split("|")
+    .filter((cell) => cell.trim() !== "")
+    .map((cell) => {
+      const trimmed = cell.trim();
+      const left = trimmed.startsWith(":");
+      const right = trimmed.endsWith(":");
+      return left && right ? ":---:" : left ? ":---" : right ? "---:" : "---";
+    });
+  return `|${cells.join("|")}|`;
+}
+
+/**
+ * `content` as Oh My Pi's `format` leaves a rendered prompt (packages/utils/src/prompt.ts lines
+ * 192-308 at the pin, with its defaults: no ASCII-symbol or RFC 2119 rewrite): each line less its
+ * trailing whitespace; a line that opens a ``` or ~~~ fence, and each line inside one, kept as it
+ * is; elsewhere a run of two or more blank lines dropped whole, a single blank line dropped where
+ * it opens the text, the blank lines before a closing tag line (`</name>`) dropped, and a table
+ * row's cells less their padding (a separator row's each `---`, `:---`, `---:` or `:---:`); then
+ * the text's last blank lines dropped.
+ */
+export function formatPrompt(content: string): string {
+  const lines = content.split("\n");
+  const result: string[] = [];
+  const dropBlanks = () => {
+    while (result.length > 0 && result.at(-1) === "") result.pop();
+  };
+  const blank = (line: string | undefined) => line !== undefined && !/\S/.test(line);
+  let fenced = false;
+  for (let i = 0; i < lines.length; i++) {
+    let line = (lines[i] ?? "").trimEnd();
+    // The indent: spaces and tabs, or any leading whitespace where a character above ASCII
+    // follows them, as `format` measures it.
+    let s = 0;
+    let first = line.charCodeAt(0);
+    while (first === 32 || first === 9) first = line.charCodeAt(++s);
+    if (first >= 128) {
+      s = line.length - line.trimStart().length;
+      first = line.charCodeAt(s);
+    }
+    if (
+      (first === 96 || first === 126) &&
+      (line.startsWith("```", s) || line.startsWith("~~~", s))
+    ) {
+      fenced = !fenced;
+      result.push(line);
+      continue;
+    }
+    if (fenced) {
+      result.push(line);
+      continue;
+    }
+    const rest = line.slice(s);
+    // A closing tag line, `</name>` of `a`-`z`, `-` and `_`.
+    const closing = first === 60 && /^<\/[a-z_-]+>$/.test(rest);
+    if (first === 124 && TABLE_SEP.test(rest)) {
+      line = `${line.slice(0, s)}${compactSeparator(rest)}`;
+    } else if (first === 124 && TABLE_ROW.test(rest)) {
+      line = `${line.slice(0, s)}${rest
+        .split("|")
+        .map((cell) => cell.trim())
+        .join("|")}`;
+    }
+    if (s >= line.length) {
+      const next = lines[i + 1];
+      if (next === undefined || blank(next)) {
+        dropBlanks();
+        while (blank(lines[i + 1])) i++;
+        continue;
+      }
+      if (result.length === 0 || result.at(-1) === "") continue;
+    }
+    if (closing) dropBlanks();
+    result.push(line);
+  }
+  dropBlanks();
+  return result.join("\n");
+}
+
+/** The body of a SKILL.md's text as Oh My Pi reads it for an autoloaded block
+ *  (`loadSkillPromptBody`: `parseFrontmatter` with `repair: false`, packages/utils/src/
+ *  frontmatter.ts lines 148-163 at the pin): CRLF as LF, the text after the first `\n---` past
+ *  an opening `---` (the whole text when it opens with none, or has no such line), trimmed. */
+function skillBody(content: string): string {
+  const text = content.replace(/\r\n?/g, "\n");
+  const end = text.startsWith("---") ? text.indexOf("\n---", 3) : -1;
+  return (end === -1 ? text : text.slice(end + 4)).trim();
+}
+
+/** The text of Oh My Pi's autoloaded block of the SKILL.md in `skillDir`, naming `file` as its
+ *  path: prompts/skills/autoload.md rendered with no arguments (`<body>`, a blank line, `---`, a
+ *  blank line, `Skill: <file>`), put through `formatPrompt` and trimmed. */
+export function autoloadedText(skillDir: string, file: string): string {
+  const body = skillBody(readFileSync(path.join(skillDir, "SKILL.md"), "utf8"));
+  return formatPrompt(`${body}\n\n---\n\nSkill: ${file}\n`).trim();
+}
+
+/** `details.name` and `details.path` of a message, where they are strings. */
+function detailsOf(message: SessionMessage): { name?: string; path?: string } {
+  const { details } = message;
+  if (typeof details !== "object" || details === null) return {};
+  const name: unknown = Reflect.get(details, "name");
+  const file: unknown = Reflect.get(details, "path");
+  return {
+    ...(typeof name === "string" ? { name } : {}),
+    ...(typeof file === "string" ? { path: file } : {}),
+  };
+}
+
+/** Whether `message` is a `skill-prompt` message of `skill`, in any form. */
+function isSkillPrompt(message: SessionMessage, skill: string): boolean {
+  return (
+    message.role === "custom" &&
+    message.customType === SKILL_PROMPT &&
+    detailsOf(message).name === skill
+  );
+}
+
+/** The SKILL.md path an autoloaded block of `skill` names, when `message` is one in the form Oh My
+ *  Pi writes it (see the file's header): a `skill-prompt` message of the skill the user did not
+ *  invoke, of one text part that ends `Skill: <its details.path>` after a blank line, `---` and a
+ *  blank line. Else undefined. */
+function autoloadedPath(message: SessionMessage, skill: string): string | undefined {
+  if (!isSkillPrompt(message, skill) || message.attribution === "user") return undefined;
+  const file = detailsOf(message).path;
+  const [part, ...more] = message.content ?? [];
+  if (file === undefined || file === "" || more.length > 0 || part?.type !== "text") {
+    return undefined;
+  }
+  return part.text?.endsWith(`\n\n---\n\nSkill: ${file}`) === true ? file : undefined;
+}
+
+/** Where the Envoy plugin puts its block among `messages`: after the leading compaction
+ *  summaries (pi-envoy's `withDispatchFirst`). */
+function blockPlace(messages: readonly SessionMessage[]): number {
+  const at = messages.findIndex((message) => message.role !== "compactionSummary");
+  return at === -1 ? messages.length : at;
+}
+
+/** Whether `message` opens with the plugin's marker: a user or custom message whose first part's
+ *  text does, as the plugin finds its own block (pi-envoy's `leadingText`). */
+function opensWithMarker(message: SessionMessage | undefined): boolean {
+  return (
+    (message?.role === "user" || message?.role === "custom") &&
+    message.content?.[0]?.text?.startsWith(DISPATCH_FIRST_MARKER) === true
+  );
+}
+
+/** Whether the plugin of PLUGIN_INJECTED puts the case's skill into its session's requests: the
+ *  case's skill is the one it reads, listed under that bare name, and the profile installs it. */
+function pluginInjects(c: Pick<Case, "skill" | "profile">): boolean {
+  return (
+    c.skill === PLUGIN_INJECTED.skill &&
+    c.profile.plugins.some((plugin) => plugin.name === PLUGIN_INJECTED.plugin)
+  );
+}
+
+/** Where a command starts in shell text, as skill-scenarios/score.ts's AT_COMMAND finds it: at a
+ *  line's start, or after `;`, `&`, `|`, `(`, `$(` or a backquote, past any variable assignments,
+ *  the words that open a command inside a compound one, and `command`, `exec` or `env`. */
+const AT_COMMAND = String.raw`(?:^|[;&|(\x60]|\$\()[ \t]*(?:[A-Za-z_]\w*=\S*[ \t]+)*(?:(?:then|do|else|elif|!|\{)[ \t]+)*(?:(?:command|exec|env)[ \t]+)?`;
+/** A `dispatch` command at a command's place, and its subcommand. */
+const DISPATCH_COMMAND = new RegExp(String.raw`${AT_COMMAND}dispatch[ \t]+([a-z][a-z-]*)`, "m");
+/** A here-document: the rest of the line that opens it, then its body up to the line that ends
+ *  it (score.ts's HEREDOC). Its body is data for the command that opens it. */
+const HEREDOC = /(<<-?[ \t]*(['"]?)(\w+)\2[^\n]*\n)[\s\S]*?^[ \t]*\3[ \t]*$/gm;
+
+/** The subcommand of the first `dispatch` command `command` (a `bash` call's) runs, its continued
+ *  lines joined and its here-document bodies left out, or undefined when it runs none. */
+function dispatchCommand(command: string): string | undefined {
+  const code = command.replace(/\\\r?\n/g, " ").replace(HEREDOC, "$1");
+  return DISPATCH_COMMAND.exec(code)?.[1];
+}
+
+/** What `message` shows of Dispatch, as the end of a sentence that starts "its message <index>",
+ *  or undefined when it shows none: a user, custom or developer message whose text holds the
+ *  dispatch-first block (its marker, which opens the Envoy plugin's block and Claude Code's
+ *  session-start hook output of it alike: packages/claude-envoy/hooks/session-hook.ts), or an
+ *  assistant message that calls a Dispatch tool by name (`dispatch_<command>`), writes a Dispatch
+ *  tool device (`xd://dispatch_<command>`) or runs a `dispatch` command in a `bash` call. A tool
+ *  result is no evidence: a read of a file that quotes the marker holds it. */
+function dispatchShown(message: SessionMessage): string | undefined {
+  if (message.role === "user" || message.role === "custom" || message.role === "developer") {
+    return message.content?.some((part) => part.text?.includes(DISPATCH_FIRST_MARKER) === true)
+      ? `holds the dispatch-first block (${DISPATCH_FIRST_MARKER}), which a host puts only into a session with Dispatch`
+      : undefined;
+  }
+  if (message.role !== "assistant") return undefined;
+  for (const part of message.content ?? []) {
+    if (part.type !== "toolCall") continue;
+    const name = part.name ?? "";
+    const field = (key: string): string => {
+      const value: unknown =
+        typeof part.arguments === "object" && part.arguments !== null
+          ? Reflect.get(part.arguments, key)
+          : undefined;
+      return typeof value === "string" ? value : "";
+    };
+    if (/^dispatch_[a-z_]+$/.test(name)) return `calls the Dispatch tool ${name}`;
+    if (name === "write" && field("path").startsWith("xd://dispatch_")) {
+      return `writes the Dispatch tool device ${field("path")}`;
+    }
+    const command = name === "bash" ? dispatchCommand(field("command")) : undefined;
+    if (command !== undefined) return `runs \`dispatch ${command}\` in a bash call`;
+  }
+  return undefined;
+}
+
+/** The Legion store (`legion:<project>`) a case's session is of: from its context
+ *  (`legion:<project>:<role>`), or, for a subagent (`subagent:<agent>`), from the evidence item
+ *  `subagent <agent>` build.ts writes, whose text names the store's context; undefined for a dev
+ *  box's session, or a subagent whose evidence names no Legion store. */
+export function legionStore(c: Pick<Case, "context" | "evidence">): string | undefined {
+  const own = /^(legion:[^:\s]+):/.exec(c.context)?.[1];
+  if (own !== undefined) return own;
+  const agent = /^subagent:(.+)$/.exec(c.context)?.[1];
+  if (agent === undefined) return undefined;
+  const item = c.evidence?.find((each) => each.item === `subagent ${agent}`);
+  return /\bthe store's context is (legion:[\w-]+)/.exec(item?.source ?? "")?.[1];
+}
+
+/** Whether `c`'s session had Dispatch, and why (DispatchAnswer): a Legion role's session, or a
+ *  subagent of one (`legionStore`), had it; so did a session one of whose messages shows it
+ *  (`dispatchShown`, the first such message); any other, a dev box's, is taken to have had it. */
+export function dispatchOf(c: Pick<Case, "context" | "messages" | "evidence">): DispatchAnswer {
+  const agent = /^subagent:(.+)$/.exec(c.context)?.[1];
+  const store = legionStore(c);
+  if (store !== undefined) {
+    return {
+      from: "legion-role",
+      why:
+        agent === undefined
+          ? `its context ${c.context} is a Legion role's session, and a Legion role works its issue through Dispatch`
+          : `it is the session of the subagent ${agent} of a Legion role's session: its evidence item "subagent ${agent}" says the store's context is ${store}`,
+    };
+  }
+  for (const [index, message] of c.messages.entries()) {
+    const shown = dispatchShown(message);
+    if (shown !== undefined) return { from: "transcript", why: `its message ${index} ${shown}` };
+  }
+  const whose =
+    agent === undefined
+      ? `its context is ${c.context}`
+      : `it is the session of the subagent ${agent}, whose evidence names no Legion store`;
+  return {
+    from: "assumed",
+    why: `${whose}, and none of its messages holds the dispatch-first block or a Dispatch call, so the runner takes it that the session had Dispatch`,
+  };
+}
+
+/** `messages` with the plugin's block (see the file's header) of the skill in `skillDir` at its
+ *  place, less any block there already, or with none when `skillDir` is undefined; and where the
+ *  block went (null for none). */
+export function withPluginBlock(
+  messages: readonly SessionMessage[],
+  skillDir: string | undefined
+): { messages: SessionMessage[]; at: number | null } {
+  const at = blockPlace(messages);
+  const kept =
+    messages[at]?.role === "user" && opensWithMarker(messages[at])
+      ? messages.toSpliced(at, 1)
+      : [...messages];
+  if (skillDir === undefined) return { messages: kept, at: null };
+  const text = readDispatchFirstContext(path.join(skillDir, "SKILL.md"));
+  const block: SessionMessage = { role: "user", content: [{ type: "text", text }], timestamp: 0 };
+  return { messages: kept.toSpliced(at, 0, block), at };
+}
+
+/** One reason the arms of a case cannot each give the session their own text of its skill
+ *  (`injectionFaults`): what kind of block it is, and the sentence that says so. */
+export interface InjectionBlockFault {
+  readonly kind: "user-invoked" | "other-shape" | "plugin-block-misplaced";
+  readonly text: string;
+}
+
+/** Each reason the arms of `c` cannot each give the session their own text of its skill, none
+ *  when they can, with its kind: each `skill-prompt` message of the skill that is not an
+ *  autoloaded block in the form Oh My Pi writes one, one the user invoked with `/skill:`
+ *  (`user-invoked`) or one with arguments or another shape (`other-shape`), and, where the plugin
+ *  puts the skill into the requests, each message that opens with its marker away from where it
+ *  puts its block (`plugin-block-misplaced`). */
+export function injectionFaults(
+  c: Pick<Case, "skill" | "profile" | "messages">
+): InjectionBlockFault[] {
+  const faults: InjectionBlockFault[] = [];
+  for (const [index, message] of c.messages.entries()) {
+    if (isSkillPrompt(message, c.skill) && autoloadedPath(message, c.skill) === undefined) {
+      const invoked = message.attribution === "user";
+      faults.push({
+        kind: invoked ? "user-invoked" : "other-shape",
+        text: `its message ${index} is a ${SKILL_PROMPT} message of ${c.skill}${invoked ? ", one the user invoked," : ""} not in the form of Oh My Pi's autoloaded block (one text part that ends "Skill: <its details.path>")`,
+      });
+    }
+  }
+  if (pluginInjects(c)) {
+    const at = blockPlace(c.messages);
+    for (const [index, message] of c.messages.entries()) {
+      if (index === at && message.role === "user") continue;
+      if (opensWithMarker(message)) {
+        faults.push({
+          kind: "plugin-block-misplaced",
+          text: `its message ${index} opens with ${DISPATCH_FIRST_MARKER} away from where the ${PLUGIN_INJECTED.plugin} plugin puts its block (message ${at}, after the leading compaction summaries)`,
+        });
+      }
+    }
+  }
+  return faults;
+}
+
+/** Why the arms of `c` cannot each give the session their own text of its skill, or undefined
+ *  when they can: the text of each of its `injectionFaults`, joined by "; ". */
+export function injectionFault(
+  c: Pick<Case, "skill" | "profile" | "messages">
+): string | undefined {
+  const faults = injectionFaults(c);
+  return faults.length === 0 ? undefined : faults.map((fault) => fault.text).join("; ");
+}
+
+/** `messages`, an arm's, with each block of `c`'s skill that reaches the session beside its
+ *  listing line and its reads given the text of the skill in `skillDir`, or left out when it is
+ *  undefined (`none`): each autoloaded block rebuilt under its recorded path, and the plugin's
+ *  block put in where the plugin puts it into the case's session. With `ours` (our skill's name,
+ *  in the arm of ours), an autoloaded block is ours: it names our SKILL.md at the recorded path
+ *  with our name as its skill directory's last part, its details our name and that path. */
+function withInjections(
+  c: Case,
+  messages: readonly SessionMessage[],
+  skillDir: string | undefined,
+  ours?: string
+): { messages: SessionMessage[]; injections: Injection[] } {
+  const injections: Injection[] = [];
+  // Each autoloaded block the arm holds, by its message, with the path it names.
+  const rebuilt = new Map<SessionMessage, string>();
+  let out: SessionMessage[] = [];
+  for (const message of messages) {
+    const recorded = autoloadedPath(message, c.skill);
+    if (recorded === undefined) out.push(message);
+    else if (skillDir === undefined) injections.push({ by: "autoload", path: recorded, at: null });
+    else {
+      const file =
+        ours === undefined
+          ? recorded
+          : path.join(path.dirname(path.dirname(recorded)), ours, path.basename(recorded));
+      const block = {
+        ...message,
+        ...(ours === undefined
+          ? {}
+          : { details: { ...Object(message.details), name: ours, path: file } }),
+        content: [{ type: "text", text: autoloadedText(skillDir, file) }],
+      };
+      rebuilt.set(block, file);
+      out.push(block);
+    }
+  }
+  if (pluginInjects(c)) {
+    const placed = withPluginBlock(out, skillDir);
+    out = placed.messages;
+    injections.push({
+      by: "plugin",
+      plugin: PLUGIN_INJECTED.plugin,
+      name: PLUGIN_INJECTED.skill,
+      at: placed.at,
+    });
+  }
+  for (const [index, message] of out.entries()) {
+    const file = rebuilt.get(message);
+    if (file !== undefined) injections.push({ by: "autoload", path: file, at: index });
+  }
+  return { messages: out, injections };
+}
+
+/** The arm `name` of case `c`, from the skill directories `dirs`, with whether its session had
+ * Dispatch (`dispatchOf`). `minus` writes its copy of the old directory to `<scratch>/minus`,
+ * replacing one there. Throws naming the case when a skillReads index is not a read of a
+ * `skill://<skill>` file, or when `dirs` lacks the arm's directory, and InjectionRefused when the
+ * case holds a block of its skill the arms cannot each give their text (`injectionFault`). */
 export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string): Arm {
+  const fault = injectionFault(c);
+  if (fault !== undefined) throw new InjectionRefused(`case ${c.id}: ${fault}`);
   const targets = readTargets(c.messages);
   const reads = new Map(
     c.skillReads
@@ -387,8 +870,9 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
       skill: c.skill,
       skillDir: undefined,
       installedDir,
-      messages,
+      ...withInjections(c, messages, undefined),
       profileSkills: structuredClone(c.profile.skills.filter((skill) => !tested(skill))),
+      dispatch: dispatchOf(c),
     };
   }
 
@@ -410,5 +894,5 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
     const shown = read.header ?? path.join(installedDir, read.file);
     return structuredClone(answered(message, arm, { ...read, shown }));
   });
-  return { ...arm, messages };
+  return { ...arm, ...withInjections(c, messages, skillDir), dispatch: dispatchOf(c) };
 }

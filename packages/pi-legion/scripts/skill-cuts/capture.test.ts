@@ -2,10 +2,16 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { readDispatchFirstContext } from "@legion/envoy-client/dispatch-first";
 import { linkOmpNatives } from "@legion/pi-shared/test/omp-natives";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { SessionEntry, type SessionMessage, stripSkillHeader } from "../skill-scenarios/transcript";
-import { type Arm, type ArmName, buildArm } from "./arms";
+import {
+  SessionEntry,
+  type SessionMessage,
+  skillHeaderPath,
+  stripSkillHeader,
+} from "../skill-scenarios/transcript";
+import { type Arm, type ArmName, buildArm, type DispatchAnswer } from "./arms";
 import {
   armPromptBlocks,
   armRecordedPrompt,
@@ -1514,6 +1520,207 @@ export default function bootProbe(pi) {
         what: "a context file's path in the checkout",
         count: 1,
       });
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  // Catches: a none arm of dispatch-first that removes the file the Envoy plugin reads as it
+  // loads ("Failed to load extension"), old and new arms whose bodies hold no block of the
+  // skill though the plugin puts it into every request of a session with Dispatch, and a record
+  // that does not say whether the session had Dispatch, which that block rests on.
+  test(
+    "a dispatch-first case's none arm loads the Envoy plugin and sends no block of the skill; its old and new arms each send the plugin's block of their own text; each record says whether the session had Dispatch, and why",
+    async () => {
+      await captures();
+      const plugins = builtPlugins(["pi-envoy"]);
+      const skill = readFileSync(
+        path.join(dir, "repos/acme/skills", COMMIT, "skills/dispatch-first/SKILL.md"),
+        "utf8"
+      );
+      const cut = skill.replace(
+        "## Search before you act",
+        "## Search the made-up tracker before you act"
+      );
+      expect(cut).not.toBe(skill);
+      const dirs = { old: path.join(dir, "df-old"), new: path.join(dir, "df-new") };
+      writeTree(dirs.old, { "SKILL.md": skill });
+      writeTree(dirs.new, { "SKILL.md": cut });
+      const base = f1Case("dispatch-first-1");
+      const lines = skill.trimEnd().split("\n");
+      const c: Case = {
+        ...base,
+        skill: "dispatch-first",
+        line: {
+          text: "## Search before you act",
+          lineNumber: lines.indexOf("## Search before you act") + 1,
+          lineCount: lines.length,
+        },
+        profile: { ...base.profile, skills: [...base.profile.skills, DISPATCH_FIRST], plugins },
+        // F1's prompt, then a read of skill://dispatch-first and its result.
+        messages: [
+          structuredClone(messages[0] ?? {}),
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "toolu_df",
+                name: "read",
+                arguments: { path: "skill://dispatch-first" },
+              },
+            ],
+            stopReason: "toolUse",
+            timestamp: Number(messages[0]?.timestamp) + 1000,
+          },
+          {
+            role: "toolResult",
+            toolCallId: "toolu_df",
+            toolName: "read",
+            content: [
+              {
+                type: "text",
+                text: `[Skill file: /skills/dispatch-first/SKILL.md]\n${skill.trimEnd()}`,
+              },
+            ],
+            isError: false,
+            timestamp: Number(messages[0]?.timestamp) + 2000,
+          },
+        ],
+        skillReads: [2],
+      };
+      const sent = new Map<string, string[]>();
+      // Whether the session had Dispatch, which the block rests on: a dev box's session whose
+      // messages show neither the block nor a Dispatch call (arms.ts's `dispatchOf`).
+      const assumed: DispatchAnswer = {
+        from: "assumed",
+        why: "its context is devbox, and none of its messages holds the dispatch-first block or a Dispatch call, so the runner takes it that the session had Dispatch",
+      };
+      // none first: the plugin must load without the skill's own copy.
+      for (const name of ["none", "old", "new"] as const) {
+        const { body, record } = await captureBody(
+          c,
+          buildArm(c, name, dirs, path.join(dir, "arms-dispatch")),
+          {
+            omp: binary(),
+            outDir: path.join(dir, "out-dispatch"),
+            scratchDir: path.join(dir, "scratch"),
+            cacheDir: path.join(dir, "cache"),
+            source: localSource(path.join(dir, "repos")),
+            models: path.join(dir, "models.yml"),
+            hints,
+            session: SESSION,
+          }
+        );
+        // The plugin loads in every arm, none among them.
+        expect({ arm: name, errors: record.extensionErrors }).toEqual({ arm: name, errors: [] });
+        expect(record.context.plugins.map((plugin) => [plugin.name, plugin.as])).toEqual([
+          ["pi-envoy", "extension"],
+        ]);
+        expect(record.pluginTools.envoy).toContain("envoy_send");
+        expect({ arm: name, dispatch: record.dispatch }).toEqual({ arm: name, dispatch: assumed });
+        const blocks = texts(body.messages).filter((text) =>
+          text.includes("<dispatch-first-skill>")
+        );
+        sent.set(name, blocks);
+        if (name === "none") {
+          expect(blocks).toEqual([]);
+          // The hidden stand-in the plugin loads with reaches no part of the body.
+          expect(JSON.stringify(body)).not.toContain("dispatch-first");
+          expect(skillListing(body).has("dispatch-first")).toBe(false);
+          expect(record.context.skills).toContainEqual({
+            name: "dispatch-first",
+            from: "stand-in",
+          });
+          expect(record.injections).toEqual([
+            { by: "plugin", plugin: "pi-envoy", name: "dispatch-first", at: null },
+          ]);
+          continue;
+        }
+        // The block as the plugin writes it of the arm's file, in the first user message, where
+        // the plugin puts it.
+        const block = readDispatchFirstContext(path.join(dirs[name], "SKILL.md"));
+        expect(blocks).toHaveLength(1);
+        expect(blocks[0]).toEndWith(block);
+        const first = (body.messages as { role: string; content: unknown }[])[0];
+        expect(first?.role).toBe("user");
+        expect(texts(first?.content)).toContain(blocks[0] ?? "");
+        expect(skillListing(body).get("dispatch-first")).toStartWith(
+          "Use for the dispatch-first work, stand-in hint "
+        );
+        expect(record.injections).toEqual([
+          { by: "plugin", plugin: "pi-envoy", name: "dispatch-first", at: 0 },
+        ]);
+      }
+      expect(sent.get("old")?.[0]).toContain("## Search before you act");
+      expect(sent.get("new")?.[0]).toContain("## Search the made-up tracker before you act");
+      expect(sent.get("new")?.[0]).not.toContain("## Search before you act");
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  // Catches: a subagent case of a skill Oh My Pi autoloads into it whose arms send the recorded
+  // text of that block, each, and none sends it too.
+  test(
+    "a subagent case's autoloaded block of the skill reaches each arm's body with that arm's text, and none's body holds none",
+    async () => {
+      await captures();
+      const installed = path.dirname(skillHeaderPath(messages[2]?.content?.[0]?.text ?? "") ?? "");
+      const autoloadPath = `${installed}/SKILL.md`;
+      const bodyOf = (text: string) => text.slice(text.indexOf("\n---", 3) + 4).trim();
+      const block: SessionMessage = {
+        role: "custom",
+        customType: "skill-prompt",
+        content: [{ type: "text", text: `${bodyOf(OLD_SKILL)}\n\n---\n\nSkill: ${autoloadPath}` }],
+        display: false,
+        details: { name: "alpha", path: autoloadPath },
+        attribution: "agent",
+        timestamp: Number(messages[0]?.timestamp) - 1000,
+      };
+      const base = f1Case("autoload-1");
+      const c: Case = {
+        ...base,
+        context: "subagent:alpha-runner",
+        profile: {
+          ...base.profile,
+          contextFiles: [],
+          systemPrompt: SUBAGENT_PROMPT,
+          tools: SUBAGENT_TOOLS,
+        },
+        messages: [block, ...messages.slice(0, 7)],
+        skillReads: [3, 5],
+      };
+      const dirs = { old: path.join(dir, "old"), new: path.join(dir, "new") };
+      // new first: the old arm's text is the recorded one.
+      for (const name of ["new", "none", "old"] as const) {
+        const { body, record } = await captureBody(
+          c,
+          buildArm(c, name, dirs, path.join(dir, "arms-autoload")),
+          {
+            omp: binary(),
+            outDir: path.join(dir, "out-autoload"),
+            scratchDir: path.join(dir, "scratch"),
+            cacheDir: path.join(dir, "cache"),
+            source: localSource(path.join(dir, "repos")),
+            models: path.join(dir, "models.yml"),
+            hints,
+            session: SESSION,
+          }
+        );
+        const autoloadedTexts = texts(body.messages).filter((text) =>
+          text.includes(`Skill: ${autoloadPath}`)
+        );
+        if (name === "none") {
+          expect(autoloadedTexts).toEqual([]);
+          expect(record.injections).toEqual([{ by: "autoload", path: autoloadPath, at: null }]);
+          expect(record.dispatch?.from).toBe("assumed");
+          continue;
+        }
+        const own = name === "old" ? OLD_SKILL : NEW_SKILL;
+        expect(autoloadedTexts).toHaveLength(1);
+        expect(autoloadedTexts[0]).toEndWith(`${bodyOf(own)}\n\n---\n\nSkill: ${autoloadPath}`);
+        expect(record.injections).toEqual([{ by: "autoload", path: autoloadPath, at: 0 }]);
+        expect(autoloadedTexts[0]?.includes("Then stop.")).toBe(name === "new");
+      }
     },
     ROW_TIMEOUT_MS
   );

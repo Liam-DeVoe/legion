@@ -16,6 +16,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { SessionEntry, type SessionMessage, stripSkillHeader } from "../skill-scenarios/transcript";
 import { type ArmName, buildArm } from "./arms";
+import { LISTING_MEASURE, ListingMeasure } from "./build";
 import { capturePaths } from "./capture";
 import { type Case, pathHash } from "./cases";
 import {
@@ -27,6 +28,7 @@ import {
   main,
   noVerdict,
   ompBinary,
+  runnerDigest,
   textDigest,
 } from "./cli";
 import { loadConfig } from "./config";
@@ -44,12 +46,15 @@ import {
 import { sendOrder } from "./replay";
 import {
   FRESH_RUNS,
+  LISTING_MEASURE_ITEM,
+  listingStanding,
   lossChance,
   MAX_EXTRA_RUNS,
   MIN_INFORMATIVE_CASES,
   meanDifference,
   type RunRecord,
   SCREEN_RUNS,
+  STAGE_RUNS,
   scoreSkill,
   smallestDrop,
 } from "./score";
@@ -889,10 +894,10 @@ describe("behaviour", () => {
     expect(reported.code).toBe(0);
     const lines = reported.stdout.split("\n");
     expect(lines).toContain(
-      "case c00: dropped: the judge controls do not hold: the violating step is judged pass (fail wanted)"
+      "case c00: dropped at screen: the judge controls do not hold: the violating step is judged pass (fail wanted); screen: not run"
     );
     expect(lines).toContain(
-      "case c01: dropped: the judge controls do not hold: the real step is judged fail (pass wanted)"
+      "case c01: dropped at screen: the judge controls do not hold: the real step is judged fail (pass wanted); screen: not run"
     );
     expect(lines).toContain(
       "case c02: screen: old 10/10, new 0/10, none 0/10: informative, flagged (3 runs with no verdict, run again); confirm: old 40/40, new 0/40: a loss; control: old 40/40, minus 0/40, twin 40/40: the planted-loss control (old against minus) is a loss, the false-loss control (old against twin) is no loss"
@@ -905,14 +910,14 @@ describe("behaviour", () => {
     );
     expect(lines).toContain("case c09: not run");
     expect(lines).toContain(
-      "cases: 6 screened, 6 informative, 6 flagged, 6 confirmed losses; 2 dropped (2 by the judge controls, 0 model-not-served, 0 unreadable-directory), 1 unscreened, 1 not run"
+      `cases: 6 screened, 6 informative, 6 flagged, 6 confirmed losses; 2 dropped (2 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}), 1 unscreened, 1 not run`
     );
     expect(lines).toContain(
       `judge controls failed, by control (a case can fail more than one): the real step not judged pass 1, the violating step not judged fail 1, the reply "${NOTHING_REPLY}" not judged fail 0`
     );
     expect(lines).toContain("control case: c02");
     expect(lines).toContain(
-      "verdict: loss: in c02, c04, c05, c06, c07, c08 the cut's text passes at least 10 fewer of 40 fresh runs than the old text, and the planted-loss control (case c02) is a loss and its false-loss control is no loss"
+      `verdict: loss: in c02, c04, c05, c06, c07, c08 the cut's text passes at least 10 fewer of 40 fresh runs than the old text, and the planted-loss control (case c02) is a loss and its false-loss control is no loss${unmeasured(6, 6)}`
     );
     // Each informative case passed old 10, new 0 and none 0 of its screen runs.
     const each = falseLossChance({ old: 10, new: 0, none: 0 });
@@ -1126,7 +1131,7 @@ describe("behaviour", () => {
       "controls, scored by the confirm rule (a loss when the other arm passes at least 10 fewer of 40 fresh runs than old): old 40/40, minus 0/40, twin 40/40; the planted-loss control (old less minus, 40) is a loss, as it must be; the false-loss control (old less twin, the same text twice, 0) is no loss, as it must be"
     );
     expect(kept).toContain(
-      "verdict: no loss detected by the registered rule: no confirmed case is a loss (0 flagged of 6 informative), and the planted-loss control (case c04) is a loss and its false-loss control is no loss"
+      `verdict: no loss detected by the registered rule: no confirmed case is a loss (0 flagged of 6 informative), and the planted-loss control (case c04) is a loss and its false-loss control is no loss${unmeasured(6, 6)}`
     );
 
     from = recorder.requests.length;
@@ -1140,7 +1145,7 @@ describe("behaviour", () => {
       twin: 40,
     });
     expect((await cli(report(planted))).stdout.split("\n")).toContain(
-      `verdict: none: deleting the planted line ${JSON.stringify(OTHER_LINE)} showed no detectable change (planted-loss control not a loss)`
+      `verdict: none: deleting the planted line ${JSON.stringify(OTHER_LINE)} showed no detectable change (planted-loss control not a loss)${unmeasured(6, 6)}`
     );
     // A control made with one planted line is not taken for one made with another.
     const other = await cli(behaviour("control", planted));
@@ -1178,7 +1183,7 @@ describe("behaviour", () => {
       twin: 0,
     });
     const refused = (await cli(report(falseLoss))).stdout.split("\n");
-    expect(refused).toContain("verdict: none: false-loss control a loss");
+    expect(refused).toContain(`verdict: none: false-loss control a loss${unmeasured(6, 6)}`);
     expect(refused).toContain(
       "controls, scored by the confirm rule (a loss when the other arm passes at least 10 fewer of 40 fresh runs than old): old 40/40, minus 0/40, twin 0/40; the planted-loss control (old less minus, 40) is a loss, as it must be; the false-loss control (old less twin, the same text twice, 40) is a loss, so the skill gets no verdict"
     );
@@ -1285,16 +1290,17 @@ describe("behaviour", () => {
       "model-not-served: its model anthropic/claude-opus-5-5 is none the gateway serves (the configuration's servedModels: anthropic/claude-sonnet-5-5, openai/gpt-6.1-sol)"
     );
     expect(c.controls).toBeNull();
+    expect(c.droppedAt).toBe("screen");
     expect(c.stages.screen).toBeUndefined();
     expect(requests.filter((request) => request.body.includes("Case c-unserved"))).toEqual([]);
     expect(ran.code).toBe(0);
     const reported = await cli(report(s));
     expect(reported.code).toBe(0);
     expect(reported.stdout).toContain(
-      "case c-unserved: dropped: model-not-served: its model anthropic/claude-opus-5-5 is none the gateway serves"
+      "case c-unserved: dropped at screen: model-not-served: its model anthropic/claude-opus-5-5 is none the gateway serves"
     );
     expect(reported.stdout).toContain(
-      "; 1 dropped (0 by the judge controls, 1 model-not-served, 0 unreadable-directory), "
+      `; 1 dropped (0 by the judge controls, 1 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}), `
     );
   }, 300_000);
 
@@ -1382,6 +1388,7 @@ process.stdout.write(JSON.stringify(answers[route]));
     expect(c.dropped).toBe(dropped);
     expect(c.controls?.hold).toBe(true);
     expect(c.stages).toEqual({});
+    expect(c.droppedAt).toBe("screen");
     expect(first.stdout).toContain(`case c04: dropped: ${dropped};`);
     expect(routes().filter((route) => route.includes("/tarball/"))).toEqual([]);
     expect(routes()).toHaveLength(5);
@@ -1395,9 +1402,9 @@ process.stdout.write(JSON.stringify(answers[route]));
 
     const reported = await cli(report(s));
     expect(reported.code).toBe(0);
-    expect(reported.stdout).toContain(`case c04: dropped: ${dropped}\n`);
+    expect(reported.stdout).toContain(`case c04: dropped at screen: ${dropped}; screen: not run\n`);
     expect(reported.stdout).toContain(
-      "; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory), "
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, 0 listing-misses, ${NO_INJECTION}), `
     );
   }, 120_000);
 
@@ -1476,7 +1483,7 @@ process.stdout.write(JSON.stringify(answers[route]));
     const tooFew = `fewer than ${MIN_INFORMATIVE_CASES} informative cases: 2`;
     const reported = await cli([...report(s), "--reading-models", file]);
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
-    expect(reported.stdout.split("\n")).toContain(`verdict: none: ${tooFew}`);
+    expect(reported.stdout.split("\n")).toContain(`verdict: none: ${tooFew}${unmeasured(2, 2)}`);
     const from = recorder.requests.length;
     const confirm = await cli(comparedArgs("confirm", s, "none", "--reading-models", file));
     expect({ code: confirm.code, stderr: confirm.stderr }).toEqual({ code: 0, stderr: "" });
@@ -1532,7 +1539,7 @@ process.stdout.write(JSON.stringify(answers[route]));
     expect(plain).toContain(
       "reading sessions by model: not given (no --reading-models), so the verdict names no models"
     );
-    expect(plain).toContain(keeps);
+    expect(plain).toContain(`${keeps}${unmeasured(6, 6)}`);
 
     // c08's model counts under the served model of its id, and so do its reading sessions.
     const reported = await cli([...report(s), "--reading-models", file]);
@@ -1546,7 +1553,7 @@ process.stdout.write(JSON.stringify(answers[route]));
       "  gateway/claude-sonnet-5-5: 1 session, served by the gateway",
       "  with no model (its file's head names none): 1; not queried (in no models query's rows): 1",
       "screened session cases by the served model they ran on: anthropic/claude-sonnet-5-5 5 cases, openai/gpt-6.1-sol 1 case",
-      `${keeps}; it speaks for the reading sessions on anthropic/claude-sonnet-5-5 (7 sessions), openai/gpt-6.1-sol (2 sessions); not for the 2 sessions on models the gateway does not serve`,
+      `${keeps}; it speaks for the reading sessions on anthropic/claude-sonnet-5-5 (7 sessions), openai/gpt-6.1-sol (2 sessions); not for the 2 sessions on models the gateway does not serve${unmeasured(6, 6)}`,
     ]) {
       expect(lines).toContain(line);
     }
@@ -1591,7 +1598,7 @@ process.stdout.write(JSON.stringify(answers[route]));
       opus,
     ]);
     expect(withOpus.stdout.split("\n")).toContain(
-      `${keeps}; it speaks for the reading sessions on anthropic/claude-sonnet-5-5 (7 sessions), openai/gpt-6.1-sol (2 sessions); not for the 2 sessions on models the gateway does not serve; nor for the 3 sessions on served models no screened session case ran on`
+      `${keeps}; it speaks for the reading sessions on anthropic/claude-sonnet-5-5 (7 sessions), openai/gpt-6.1-sol (2 sessions); not for the 2 sessions on models the gateway does not serve; nor for the 3 sessions on served models no screened session case ran on${unmeasured(6, 6)}`
     );
   }, 300_000);
 
@@ -1946,7 +1953,7 @@ describe("behaviour: the compared arm", () => {
       "case c05: screen: old 10/10, new 0/10, none 0/10: informative, flagged; confirm: old 40/40, new 0/40: a loss"
     );
     expect(lines).toContain(
-      "verdict: loss: in c04, c05, c06, c07, c08, c09 the cut's text passes at least 10 fewer of 40 fresh runs than the old text, and the planted-loss control (case c04) is a loss and its false-loss control is no loss"
+      `verdict: loss: in c04, c05, c06, c07, c08, c09 the cut's text passes at least 10 fewer of 40 fresh runs than the old text, and the planted-loss control (case c04) is a loss and its false-loss control is no loss${unmeasured(6, 6)}`
     );
     const percent = (x: number) => `${(100 * x).toFixed(2)}%`;
     expect(lines).toContain(
@@ -2018,7 +2025,7 @@ describe("behaviour: the compared arm", () => {
     expect(kept.stdout).toContain("case c04: confirm: old 40/40, ours 40/40: no loss");
   }, 120_000);
 
-  test("confirm --case refuses an id the case file does not hold", async () => {
+  test("confirm --case refuses an id the case file does not hold, and --again beside it", async () => {
     const s = withOurs(
       scenario("confirm-case-missing", LOSS_SKILL(), [{ id: "c04" }]),
       "ours",
@@ -2031,6 +2038,9 @@ describe("behaviour: the compared arm", () => {
     const screen = await cli(comparedArgs("screen", s, "ours", "--case", "c04"));
     expect(screen.code).toBe(2);
     expect(screen.stderr).toContain("--case is for behaviour confirm only");
+    const again = await cli(comparedArgs("confirm", s, "ours", "--case", "c04", "--again", "c04"));
+    expect(again.code).toBe(2);
+    expect(again.stderr).toContain("--again and --case exclude each other");
     expect(requestsSince(from)).toHaveLength(0);
     expect(existsSync(s.out)).toBe(false);
   }, 60_000);
@@ -2075,7 +2085,7 @@ describe("behaviour: the compared arm", () => {
       "  c09 old 0.9: 40 points (87.52%)",
       "median smallest drop: 35 points over the 6 screened cases; 35 points over the 6 informative cases",
       "models of the cases: anthropic/claude-sonnet-5-5 5 cases, openai/gpt-6.1-sol 1 case",
-      "verdict: loss: no skill loses against their skill on 6 cases (c04, c05, c06, c07, c08, c09): in each, no skill passes at least 10 fewer of 40 fresh runs than their skill, and the planted-loss control (case c04) is a loss and its false-loss control is no loss",
+      `verdict: loss: no skill loses against their skill on 6 cases (c04, c05, c06, c07, c08, c09): in each, no skill passes at least 10 fewer of 40 fresh runs than their skill, and the planted-loss control (case c04) is a loss and its false-loss control is no loss${unmeasured(6, 6)}`,
     ]) {
       expect(lines).toContain(line);
     }
@@ -2088,7 +2098,7 @@ describe("behaviour: the compared arm", () => {
     write(kept.out, 35);
     const keeps = (await cli(report(kept))).stdout.split("\n");
     expect(keeps).toContain(
-      "verdict: no loss of no skill detected by the registered rule: no confirmed case is a loss (6 flagged of 6 informative), and the planted-loss control (case c04) is a loss and its false-loss control is no loss"
+      `verdict: no loss of no skill detected by the registered rule: no confirmed case is a loss (6 flagged of 6 informative), and the planted-loss control (case c04) is a loss and its false-loss control is no loss${unmeasured(6, 6)}`
     );
     expect(keeps).toContain("limits: not given (no --limits)");
   }, 60_000);
@@ -2253,7 +2263,7 @@ describe("behaviour: written cases and the report's descriptions", () => {
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
     const lines = reported.stdout.split("\n");
     expect(lines).toContain(
-      `verdict: none: fewer than ${MIN_INFORMATIVE_CASES} informative cases: 2`
+      `verdict: none: fewer than ${MIN_INFORMATIVE_CASES} informative cases: 2${unmeasured(2, 2)}`
     );
     expect(reported.stdout).not.toContain(reason);
     expect(lines).toContain("cases by kind: 2 session (0 informative), 2 written (2 informative)");
@@ -2402,7 +2412,7 @@ describe("behaviour: written cases and the report's descriptions", () => {
     for (const line of [
       "screened session cases by the served model they ran on: anthropic/claude-sonnet-5-5 3 cases",
       "written tasks: 3 on openai/gpt-6.1-sol (screened written cases: each a written task in a recorded session's context, never a reading session)",
-      `${keeps}; it speaks for the reading sessions on anthropic/claude-sonnet-5-5 (7 sessions); not for the 2 sessions on models the gateway does not serve; nor for the 2 sessions on served models no screened session case ran on`,
+      `${keeps}; it speaks for the reading sessions on anthropic/claude-sonnet-5-5 (7 sessions); not for the 2 sessions on models the gateway does not serve; nor for the 2 sessions on served models no screened session case ran on${unmeasured(6, 6)}`,
     ]) {
       expect(lines).toContain(line);
     }
@@ -2419,7 +2429,7 @@ describe("behaviour: written cases and the report's descriptions", () => {
     for (const line of [
       "screened session cases by the served model they ran on: none",
       "written tasks: 4 on anthropic/claude-sonnet-5-5, 2 on openai/gpt-6.1-sol (screened written cases: each a written task in a recorded session's context, never a reading session)",
-      `${keeps.replace("case c04", "case w04")}; it speaks for no reading sessions: its screened cases are all written tasks, never reading sessions`,
+      `${keeps.replace("case c04", "case w04")}; it speaks for no reading sessions: its screened cases are all written tasks, never reading sessions${unmeasured(6, 6)}`,
     ]) {
       expect(only).toContain(line);
     }
@@ -2436,6 +2446,371 @@ describe("behaviour: written cases and the report's descriptions", () => {
       "; recorded by 0 of the 2 stages of the results, another judge by 0, none by 2 (judged before the judge's identity was recorded)"
     );
   }, 60_000);
+});
+
+/** A made-up drop of a case whose context needs a directory no read gives. */
+const UNREADABLE =
+  "unreadable-directory: acme/skills at 0123456789abcdef: skills/beta cannot be read: GitHub cuts the tree of skills/beta short even one level at a time";
+/** The report's count of `injection-unrebuildable` drops, by kind, when there is none. */
+const NO_INJECTION =
+  "0 injection-unrebuildable (user-invoked 0, other-shape 0, plugin-block-misplaced 0, autoload-no-block 0)";
+
+/** A finished stage of case `caseId`, made with the texts of `s` (and by `runner`, when given),
+ *  each arm of `passes` passing that many of the stage's judged runs. */
+function plantedStage(
+  s: Scenario,
+  caseId: string,
+  stage: "screen" | "confirm" | "control",
+  passes: Record<string, number>,
+  runner?: string
+): Record<string, unknown> {
+  const runs = Object.entries(passes).flatMap(([arm, passed]) =>
+    Array.from({ length: STAGE_RUNS[stage] }, (_, n) => ({
+      caseId,
+      arm,
+      stage,
+      verdict: n < passed ? "pass" : "fail",
+      reason: "planted",
+      run: n + 1,
+      round: 1,
+      sendPlace: n,
+      userId: null,
+      id: null,
+      skillRounds: null,
+      reply: null,
+      replaySpent: [],
+      judgeSpent: [],
+    }))
+  );
+  return {
+    state: "counted",
+    sends: SENDS,
+    texts: { old: textDigest(s.old), new: textDigest(s.new) },
+    plantedLine: null,
+    captures: {},
+    seeds: ["planted"],
+    runs,
+    usd: 0,
+    ...(runner === undefined ? {} : { runner }),
+  };
+}
+
+/** Writes case `caseId`'s result under `s.out`, checked against cli.ts's CaseResult: `fields` over
+ *  a result with no drop, no judge controls and no stage. */
+function plantResult(s: Scenario, caseId: string, fields: Record<string, unknown>): void {
+  const file = caseResultFile(s.out, caseId);
+  mkdirSync(path.dirname(file), { recursive: true });
+  const result = CaseResult.parse({
+    caseId,
+    skill: "alpha",
+    cut: "acme-skills-1",
+    dropped: null,
+    controls: null,
+    stages: {},
+    peakRssBytes: null,
+    ...fields,
+  });
+  writeFileSync(file, JSON.stringify(result));
+}
+
+/** The screen of a case that is informative and not flagged: old 10, new 10, none 0 of 10. */
+const KEPT = { old: SCREEN_RUNS, new: SCREEN_RUNS, none: 0 };
+/** The screen of a case that is informative and flagged: old 10, new 0, none 0 of 10. */
+const FLAGGED = { old: SCREEN_RUNS, new: 0, none: 0 };
+
+/** Plants under `s.out` the screens of `ids`, each informative and not flagged (KEPT), and the
+ *  control runs of `control` among them, whose two controls hold. */
+function plantSix(s: Scenario, ids: readonly string[], control: string): void {
+  for (const id of ids) {
+    plantResult(s, id, {
+      stages: {
+        screen: plantedStage(s, id, "screen", KEPT),
+        ...(id === control
+          ? {
+              control: plantedStage(s, id, "control", {
+                old: FRESH_RUNS,
+                minus: 0,
+                twin: FRESH_RUNS,
+              }),
+            }
+          : {}),
+      },
+    });
+  }
+}
+
+/** A case's evidence holding one listing measure as build.ts writes it (ListingMeasure): of
+ *  `kind`, its recorded listing holding `recorded` names, of which the rebuilt one misses
+ *  `missing`. */
+function listingEvidence(
+  kind: "session listing" | "subagent listing" | "not measurable",
+  recorded: number | null,
+  missing: string[]
+): { item: string; source: string }[] {
+  const measure = ListingMeasure.parse({
+    kind,
+    recorded,
+    listed: 12,
+    missing,
+    added: [],
+    missingShare: recorded === null || recorded === 0 ? null : missing.length / recorded,
+    sessionDigest: "46874d907e557998",
+    rebuiltDigest: null,
+    subagent: null,
+    why: "the made-up session records no system prompt, only its digest",
+  });
+  return [{ item: LISTING_MEASURE, source: JSON.stringify(measure) }];
+}
+
+/** The cases of `s` again in its cases file, each id of `evidence` with that evidence. */
+function withEvidence(
+  s: Scenario,
+  evidence: Record<string, { item: string; source: string }[]>
+): void {
+  const cases = s.cases.map((c) => {
+    const given = evidence[c.id];
+    return given === undefined ? c : { ...c, evidence: given };
+  });
+  writeFileSync(s.casesFile, cases.map((c) => `${JSON.stringify(c)}\n`).join(""));
+}
+
+/** The end of a verdict's line where `count` of `screened` cases' listings were not measured. */
+const unmeasured = (count: number, screened: number) =>
+  `; the listing of ${count} of its ${screened} screened cases could not be measured`;
+
+// The architect's rules for dropped cases, the listing measure and pooled confirms
+// (2026-11-22): the results are planted as the runner writes them, so no row calls a model but
+// the one that runs a third confirm, against the stand-in.
+describe("behaviour: dropped cases, the listing rule and pooled confirms", () => {
+  const ids = (count: number) =>
+    Array.from({ length: count }, (_, n) => ({ id: `c${String(n + 1).padStart(2, "0")}` }));
+  const SIX = ["c01", "c02", "c03", "c04", "c05", "c06"];
+
+  test("a flagged case dropped at confirm is listed with its screen passes, and its skill gets no verdict that names it", async () => {
+    const s = scenario("dropped-confirm", LOSS_SKILL(), ids(7));
+    plantSix(s, SIX, "c01");
+    // c07's screen flagged it, and its confirm's capture needed a directory no read gives. A
+    // result written before the runner recorded the stage of a drop names none: one whose screen
+    // flagged it and that has no confirm runs was dropped at confirm.
+    plantResult(s, "c07", {
+      dropped: UNREADABLE,
+      stages: { screen: plantedStage(s, "c07", "screen", FLAGGED) },
+    });
+    const ran = await cli(report(s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = ran.stdout.split("\n");
+    expect(lines).toContain(
+      `case c07: dropped at confirm: ${UNREADABLE}; screen: old 10/10, new 0/10, none 0/10: informative, flagged`
+    );
+    expect(lines).toContain(
+      `cases: 7 screened, 7 informative, 1 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, 0 listing-misses, ${NO_INJECTION}), 0 unscreened, 0 not run`
+    );
+    expect(lines).toContain(
+      `verdict: none: flagged case c07 could not be confirmed (${UNREADABLE})${unmeasured(7, 7)}`
+    );
+  });
+
+  test("a flagged case dropped at confirm leaves another case's confirmed loss standing as the skill's loss, and is listed", async () => {
+    const s = scenario("dropped-confirm-loss", LOSS_SKILL(), ids(8));
+    plantSix(s, SIX, "c01");
+    plantResult(s, "c07", {
+      dropped: UNREADABLE,
+      droppedAt: "confirm",
+      stages: { screen: plantedStage(s, "c07", "screen", FLAGGED) },
+    });
+    plantResult(s, "c08", {
+      stages: {
+        screen: plantedStage(s, "c08", "screen", FLAGGED),
+        confirm: plantedStage(s, "c08", "confirm", { old: FRESH_RUNS, new: 0 }),
+      },
+    });
+    const ran = await cli(report(s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = ran.stdout.split("\n");
+    expect(lines).toContain(
+      `case c07: dropped at confirm: ${UNREADABLE}; screen: old 10/10, new 0/10, none 0/10: informative, flagged`
+    );
+    expect(lines).toContain(
+      `verdict: loss: in c08 the cut's text passes at least 10 fewer of 40 fresh runs than the old text, and the planted-loss control (case c01) is a loss and its false-loss control is no loss${unmeasured(8, 8)}`
+    );
+  });
+
+  test("a dropped control case gives its place to the next informative case by the control rule, and report and control name both", async () => {
+    const s = scenario("dropped-control", LOSS_SKILL(), ids(6));
+    plantSix(s, SIX.slice(1), "c02");
+    // c01 comes first in the control rule's order (every gap is 10, and it has the lowest id);
+    // a capture of its control runs needed a directory no read gives. Written before the runner
+    // recorded the stage of a drop: a screened case its screen did not flag was dropped at
+    // control.
+    plantResult(s, "c01", {
+      dropped: UNREADABLE,
+      stages: { screen: plantedStage(s, "c01", "screen", KEPT) },
+    });
+    const ran = await cli(report(s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = ran.stdout.split("\n");
+    expect(lines).toContain(
+      `case c01: dropped at control: ${UNREADABLE}; screen: old 10/10, new 10/10, none 0/10: informative, not flagged`
+    );
+    expect(lines).toContain(
+      "control case: c02, in place of c01 (dropped at control), which the control rule chose before it"
+    );
+    expect(lines).toContain(
+      `verdict: no loss detected by the registered rule: no confirmed case is a loss (0 flagged of 6 informative), and the planted-loss control (case c02) is a loss and its false-loss control is no loss${unmeasured(6, 6)}`
+    );
+    const from = recorder.requests.length;
+    const control = await cli(behaviour("control", s));
+    expect({ code: control.code, stderr: control.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(control.stdout).toContain(
+      "the control case is c02, in place of c01 (dropped at control), which the control rule chose before it;"
+    );
+    expect(control.stdout).toContain("case c02: control runs made before, skipped");
+    expect(requestsSince(from)).toHaveLength(0);
+  });
+
+  test("a planted record of a case dropped at confirm that its screen did not flag is refused, naming the case (exit 1)", async () => {
+    const s = scenario("dropped-unflagged", LOSS_SKILL(), ids(6));
+    plantSix(
+      s,
+      SIX.filter((id) => id !== "c03"),
+      "c01"
+    );
+    plantResult(s, "c03", {
+      dropped: UNREADABLE,
+      droppedAt: "confirm",
+      stages: { screen: plantedStage(s, "c03", "screen", KEPT) },
+    });
+    const refusal = `case c03 is recorded as dropped at confirm, but its screen did not flag it, and only flagged cases are confirmed: its records are refused, not scored (its drop: ${UNREADABLE})`;
+    const ran = await cli(report(s));
+    expect(ran.code).toBe(1);
+    expect(ran.stderr).toContain(refusal);
+    expect(ran.stdout).toBe("");
+    const from = recorder.requests.length;
+    const confirm = await cli(behaviour("confirm", s));
+    expect(confirm.code).toBe(1);
+    expect(confirm.stderr).toContain(refusal);
+    expect(requestsSince(from)).toHaveLength(0);
+  });
+
+  test("a case whose rebuilt listing misses more than 10% of its session's recorded names is dropped: report lists and counts it, screen drops it before any call, and the verdict line counts the listings not measured", async () => {
+    const s = scenario("listing", LOSS_SKILL(), ids(7));
+    withEvidence(s, {
+      ...Object.fromEntries(
+        SIX.slice(0, 5).map((id) => [id, listingEvidence("session listing", 10, ["beta"])])
+      ),
+      c06: listingEvidence("not measurable", null, []),
+      c07: listingEvidence("subagent listing", 20, ["beta", "gamma", "delta"]),
+    });
+    plantSix(s, [...SIX, "c07"], "c01");
+    const ran = await cli(report(s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = ran.stdout.split("\n");
+    const misses =
+      "listing-misses: its rebuilt listing misses 3 of the 20 names of the recorded subagent listing (15.0%), more than 10%: beta, gamma, delta";
+    expect(lines).toContain(
+      `case c07: dropped at screen: ${misses}; screen: old 10/10, new 10/10, none 0/10: informative, not flagged`
+    );
+    expect(lines).toContain(
+      `cases: 6 screened, 6 informative, 0 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 1 listing-misses, ${NO_INJECTION}), 0 unscreened, 0 not run`
+    );
+    expect(lines).toContain(
+      `verdict: no loss detected by the registered rule: no confirmed case is a loss (0 flagged of 6 informative), and the planted-loss control (case c01) is a loss and its false-loss control is no loss${unmeasured(1, 6)}`
+    );
+
+    // A case not screened yet is dropped by screen before any call.
+    const fresh = scenario("listing-screen", LOSS_SKILL(), [{ id: "c-misses" }]);
+    withEvidence(fresh, {
+      "c-misses": listingEvidence("session listing", 9, ["beta"]),
+    });
+    answer = behaviourStandIn;
+    const from = recorder.requests.length;
+    const screen = await cli(behaviour("screen", fresh));
+    expect({ code: screen.code, stderr: screen.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(requestsSince(from)).toHaveLength(0);
+    const dropped = result(fresh.out, "c-misses");
+    expect([dropped.dropped, dropped.droppedAt, dropped.stages]).toEqual([
+      "listing-misses: its rebuilt listing misses 1 of the 9 names of the recorded session listing (11.1%), more than 10%: beta",
+      "screen",
+      {},
+    ]);
+  });
+
+  test("the listing rule reads the listing measure build.ts writes, under the name it writes it", () => {
+    expect(LISTING_MEASURE_ITEM).toBe(LISTING_MEASURE);
+    expect(listingStanding(listingEvidence("subagent listing", 30, ["beta", "gamma"]))).toEqual({
+      state: "measured",
+      recorded: 30,
+      missing: 2,
+    });
+  });
+
+  test("report names a case whose three confirms on one runner were pooled, with each result and the pooled passes; a fourth confirm is refused, naming the case", async () => {
+    const s = scenario("pooled", LOSS_SKILL(), ids(7));
+    plantSix(s, SIX, "c01");
+    const runner = runnerDigest();
+    const confirm = (cut: number) =>
+      plantedStage(s, "c07", "confirm", { old: FRESH_RUNS, new: cut }, runner);
+    plantResult(s, "c07", {
+      stages: { screen: plantedStage(s, "c07", "screen", FLAGGED), confirm: confirm(29) },
+      earlierConfirms: [confirm(30), confirm(31)],
+    });
+    const ran = await cli(report(s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = ran.stdout.split("\n");
+    expect(lines).toContain(
+      "case c07: screen: old 10/10, new 0/10, none 0/10: informative, flagged; confirm 1: old 40/40, new 30/40: a loss; confirm 2: old 40/40, new 31/40: no loss; confirm 3: old 40/40, new 29/40: a loss; pooled: old 120/120, new 90/120, 30 fewer: a loss"
+    );
+    expect(lines).toContain(
+      "pooled confirms (two confirms at one case's texts on one runner disagreed, so a third ran, and the case is a loss when the cut's text passes at least 30 fewer of the 120 pooled runs than the old text): c07 (confirms of old 40, 40, 40 and new 30, 31, 29 of 40 each; pooled old 120/120, new 90/120, 30 fewer: a loss)"
+    );
+    expect(lines).toContain(
+      `verdict: loss: in c07, over 3 pooled confirms, at least 30 fewer of 120, and the planted-loss control (case c01) is a loss and its false-loss control is no loss${unmeasured(7, 7)}`
+    );
+    const from = recorder.requests.length;
+    const fourth = await cli(behaviour("confirm", s, "--again", "c07"));
+    expect(fourth.code).toBe(2);
+    expect(fourth.stderr).toContain(
+      "--again c07: case c07 has 3 confirms at these texts on this runner, which the rule pools, and no fourth confirm runs"
+    );
+    expect(requestsSince(from)).toHaveLength(0);
+  });
+
+  test("confirm runs a third confirm of a case whose two confirms on one runner disagree, and report pools the three", async () => {
+    const s = scenario("third", LOSS_SKILL(), ids(7));
+    plantSix(s, SIX, "c01");
+    recordCaptures(s, ["old", "new"]);
+    answer = behaviourStandIn;
+    const runner = runnerDigest();
+    const confirm = (cut: number) =>
+      plantedStage(s, "c07", "confirm", { old: FRESH_RUNS, new: cut }, runner);
+    plantResult(s, "c07", {
+      stages: { screen: plantedStage(s, "c07", "screen", FLAGGED), confirm: confirm(31) },
+      earlierConfirms: [confirm(30)],
+    });
+    const before = await cli(report(s));
+    expect(before.stdout.split("\n")).toContain(
+      "verdict: not yet: two confirms on one runner disagree in c07, so a third confirm of each is due (behaviour confirm)"
+    );
+    const ran = await cli(behaviour("confirm", s, "--concurrency", "32"));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(ran.stdout).toContain(
+      "case c07: its last two confirms at these texts on one runner disagree, one a loss and one not, so a third confirm runs, and the three are pooled"
+    );
+    const c07 = result(s.out, "c07");
+    const earlier = (c07.earlierConfirms ?? []).map((each) =>
+      passes({ ...c07, stages: { confirm: each } }, "confirm")
+    );
+    expect(earlier).toEqual([
+      { old: FRESH_RUNS, new: 30 },
+      { old: FRESH_RUNS, new: 31 },
+    ]);
+    expect([c07.stages.confirm?.state, c07.stages.confirm?.runner]).toEqual(["counted", runner]);
+    expect(passes(c07, "confirm")).toEqual({ old: FRESH_RUNS, new: 0 });
+    const after = await cli(report(s));
+    expect(after.stdout).toContain(
+      "c07 (confirms of old 40, 40, 40 and new 30, 31, 0 of 40 each; pooled old 120/120, new 61/120, 59 fewer: a loss)"
+    );
+  });
 });
 
 describe("refusals before any model call", () => {
@@ -2497,6 +2872,167 @@ describe("refusals before any model call", () => {
     const reported = await cli(report(s).map((arg) => (arg === s.out ? inCheckout : arg)));
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
   }, 60_000);
+});
+
+// The architect's rule (2026-11-22T07:48:46Z): a case whose block of its skill the arms cannot
+// each rebuild is dropped and counted under its kind, and the rest of the cases file runs; before,
+// the whole file was refused.
+describe("behaviour: a case whose block of its skill the arms cannot each rebuild", () => {
+  // Catches: a case run with the recorded text of its skill in every arm because its messages
+  // hold a block of it the arms do not rebuild, and the whole file refused for one such case.
+  test("is dropped at screen before any model call, listed and counted by kind, and the rest of the file runs", async () => {
+    const s = scenario("invoked-block", LOSS_SKILL(), [{ id: "c-invoked" }, { id: "c-plain" }]);
+    const [invoked, plain] = s.cases;
+    recordCaptures({ ...s, cases: s.cases.filter((c) => c.id === "c-plain") }, [
+      "old",
+      "new",
+      "none",
+    ]);
+    // A `/skill:alpha` prompt the user typed: a skill-prompt message in the user's form.
+    const typed: SessionMessage = {
+      role: "custom",
+      customType: "skill-prompt",
+      content: [{ type: "text", text: "# Alpha\n\nThe user's prompt." }],
+      display: true,
+      details: { name: "alpha", path: "/skills/alpha/SKILL.md" },
+      attribution: "user",
+      timestamp: 1795139983600,
+    };
+    writeFileSync(
+      s.casesFile,
+      [
+        {
+          ...invoked,
+          messages: [typed, ...(invoked?.messages ?? [])],
+          skillReads: (invoked?.skillReads ?? []).map((index) => index + 1),
+        },
+        plain,
+      ]
+        .map((c) => `${JSON.stringify(c)}\n`)
+        .join("")
+    );
+    answer = behaviourStandIn;
+    const from = recorder.requests.length;
+    const ran = await cli(behaviour("screen", s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const fault =
+      "injection-unrebuildable: user-invoked: its message 0 is a skill-prompt message of alpha, one the user invoked, not in the form of Oh My Pi's autoloaded block";
+    expect(ran.stdout).toContain(`case c-invoked: dropped: ${fault}`);
+    const requests = requestsSince(from);
+    expect(requests.filter((request) => request.body.includes("Case c-invoked"))).toEqual([]);
+    expect(requests.length).toBeGreaterThan(0);
+    const dropped = result(s.out, "c-invoked");
+    expect([dropped.droppedAt, dropped.injectionKinds, dropped.controls, dropped.stages]).toEqual([
+      "screen",
+      ["user-invoked"],
+      null,
+      {},
+    ]);
+    expect(dropped.dropped).toStartWith(fault);
+    expect(result(s.out, "c-plain").stages.screen?.state).toBe("counted");
+
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = reported.stdout.split("\n");
+    expect(lines.find((line) => line.startsWith("case c-invoked: "))).toStartWith(
+      `case c-invoked: dropped at screen: ${fault}`
+    );
+    expect(reported.stdout).toContain(
+      "; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 1 injection-unrebuildable (user-invoked 1, other-shape 0, plugin-block-misplaced 0, autoload-no-block 0)), "
+    );
+    // The other stages read the file too, and refuse it no more.
+    const confirm = await cli(behaviour("confirm", s));
+    expect({ code: confirm.code, stderr: confirm.stderr }).toEqual({ code: 0, stderr: "" });
+  });
+
+  test("a case whose capture finds its subagent's agent autoloads the skill and its messages hold no block of it is dropped as autoload-no-block, and the rest of the file runs", async () => {
+    const s = scenario("autoload-block", LOSS_SKILL(), [{ id: "c-autoload" }, { id: "c-plain" }]);
+    const [autoload, plain] = s.cases;
+    recordCaptures({ ...s, cases: s.cases.filter((c) => c.id === "c-plain") }, [
+      "old",
+      "new",
+      "none",
+    ]);
+    const commit = "0123456789abcdef";
+    const agents = {
+      repo: "acme/legion",
+      commit,
+      path: "packages/agents-pack",
+      name: "agents-pack",
+    };
+    writeFileSync(
+      s.casesFile,
+      [
+        {
+          ...autoload,
+          context: "subagent:alpha-reviewer",
+          profile: { ...autoload?.profile, plugins: [agents] },
+        },
+        plain,
+      ]
+        .map((c) => `${JSON.stringify(c)}\n`)
+        .join("")
+    );
+    // The repositories the context reads: the made-up skills, and a plugin whose agent
+    // alpha-reviewer autoloads alpha.
+    const repos = path.join(s.dir, "repos");
+    writeSkill(path.join(repos, "acme", "skills", commit), {
+      "skills/alpha/SKILL.md": f1File(2),
+      "skills/beta/SKILL.md": "---\nname: beta\ndescription: Use for the beta greeting.\n---\n",
+    });
+    writeSkill(path.join(repos, "acme", "legion", commit), {
+      "packages/agents-pack/agents/reviewer.md":
+        "---\nname: alpha-reviewer\ndescription: Reviews with alpha.\nautoloadSkills: [alpha]\n---\n\nReview.\n",
+    });
+    // An Oh My Pi that answers --version: the context is built before it runs any capture.
+    const omp = path.join(s.dir, "omp");
+    writeFileSync(omp, "#!/bin/sh\necho 'omp 0.0.0 (stand-in)'\n", { mode: 0o755 });
+    const models = path.join(s.dir, "models.yml");
+    writeFileSync(models, "providers: {}\n");
+    // The session's head saved already, so no store is read.
+    const hash = pathHash("/sessions/c-autoload.jsonl");
+    mkdirSync(path.join(s.out, "sessions"), { recursive: true });
+    writeFileSync(
+      path.join(s.out, "sessions", `store_a-${hash}.json`),
+      JSON.stringify({
+        store: "store_a",
+        pathHash: hash,
+        held: false,
+        cwd: null,
+        start: null,
+        firstUser: null,
+        reminders: [],
+        bytes: 0,
+        badLines: 0,
+        readAt: "2026-11-22T00:00:00.000Z",
+      })
+    );
+    answer = behaviourStandIn;
+    const ran = await cli(
+      behaviour(
+        "screen",
+        s,
+        ...["--models", models, "--omp", omp, "--repos", repos],
+        ...["--cache-dir", path.join(s.dir, "cache")]
+      )
+    );
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const fault = `injection-unrebuildable: autoload-no-block: case c-autoload: its agent alpha-reviewer (packages/agents-pack/agents/reviewer.md of acme/legion at ${commit}) autoloads alpha, and its messages hold no autoloaded block of it`;
+    const dropped = result(s.out, "c-autoload");
+    expect(dropped.dropped).toStartWith(fault);
+    expect([dropped.droppedAt, dropped.injectionKinds, dropped.controls?.hold]).toEqual([
+      "screen",
+      ["autoload-no-block"],
+      true,
+    ]);
+    expect(result(s.out, "c-plain").stages.screen?.state).toBe("counted");
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(reported.stdout).toContain(`case c-autoload: dropped at screen: ${fault}`);
+    expect(reported.stdout).toContain(
+      "; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 1 injection-unrebuildable (user-invoked 0, other-shape 0, plugin-block-misplaced 0, autoload-no-block 1)), "
+    );
+  });
 });
 
 /** The run records of `informative` cases screened as informative (old and new pass each run,

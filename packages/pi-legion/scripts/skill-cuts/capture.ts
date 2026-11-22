@@ -66,6 +66,18 @@
  * be those blocks byte for byte, or the capture is refused; a recorded tool the body does not
  * define, or one it defines beyond them, is kept in the record (`tools`).
  *
+ * **An injected skill.** A skill that reaches the session other than by its listing line and its
+ * reads (arms.ts's `Injection`) reaches the capture in the arm's messages, which carry each
+ * arm's own text of it: the Envoy plugin's dispatch-first block, which the plugin itself puts in
+ * no capture, Dispatch being off here, and a subagent's autoloaded block. The record lists each
+ * (`injections`), and beside them whether the case's session had Dispatch and why (`dispatch`,
+ * arms.ts's `dispatchOf`), which the plugin's block rests on. A subagent's case whose agent
+ * definition (context.ts's `agent`) autoloads the skill, and whose messages hold no autoloaded
+ * block of it though no compaction summary opens them, holds the block in a form the runner
+ * cannot rebuild: its capture throws InjectionRefused of kind `autoload-no-block`, naming the
+ * case, before Oh My Pi runs. A saved capture of an arm with such a block whose record lists none
+ * was made before arms gave it their own text, and is refused (`savedCapture`).
+ *
  * **The digests.** The record holds the session's `system-prompt-digest` (`sessionDigest`, from
  * the case) and the capture's own, `promptDigest`, which is Oh My Pi's algorithm
  * (packages/coding-agent/src/session/session-tools.ts, `systemPromptDigest`): a wyhash chain over
@@ -114,7 +126,14 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import { linkOmpNatives } from "@legion/pi-shared/test/omp-natives";
 import { z } from "zod";
-import type { Arm, ArmName } from "./arms";
+import {
+  type Arm,
+  type ArmName,
+  type DispatchAnswer,
+  ENVOY_PLUGIN,
+  type Injection,
+  InjectionRefused,
+} from "./arms";
 import type { Case } from "./cases";
 import { json, writeWhole } from "./common";
 import { buildContext, type ContextRecord, cacheKey, legionRole, type RepoSource } from "./context";
@@ -151,9 +170,6 @@ const CAPTURE_TRIES = 3;
 const STAND_IN_SESSION = "session-1";
 const STAND_IN_MACHINE = "machine-1";
 const STAND_IN_STREAM = "stream-1";
-/** The name a profile gives the Envoy plugin: its directory's (build.ts names each plugin after
- *  its directory, `packages/pi-envoy` in cybermonklabs/legion). */
-const ENVOY_PLUGIN = "pi-envoy";
 
 /** An Oh My Pi run that ended with no model request a capture can take. */
 class RunEnded extends Error {}
@@ -442,6 +458,13 @@ export interface CaptureRecord {
   };
   /** The harness-string rule's record (HarnessRecord). */
   readonly harness: HarnessRecord;
+  /** Each block of the case's skill that reaches the session beside its listing line and its
+   *  reads, and where this arm's messages hold it (arms.ts's `Injection`). */
+  readonly injections: readonly Injection[];
+  /** Whether the case's session had Dispatch, and why (the arm's `dispatch`, arms.ts's
+   *  `dispatchOf`): what the plugin's block of `injections` rests on. Null for an arm built from
+   *  no case (a load test's); absent from a capture saved before this field. */
+  readonly dispatch?: DispatchAnswer | null;
 }
 
 /** A saved capture: the body, its record, and their files; `made` is true when this call made it,
@@ -477,11 +500,13 @@ export function capturePaths(
 
 /** The capture saved at `files` (`capturePaths`), read back, or undefined when either file is
  *  missing. Throws for a capture whose record holds no harness-string record: it was made before
- *  that rule, so its body holds the capture's own paths and date. */
-export function savedCapture(files: {
-  readonly body: string;
-  readonly record: string;
-}): Capture | undefined {
+ *  that rule, so its body holds the capture's own paths and date; and, given the `arm` it stands
+ *  for, for a capture whose record lists no injected block (`injections`) while the arm has one:
+ *  it was made before arms gave such a block their own text. */
+export function savedCapture(
+  files: { readonly body: string; readonly record: string },
+  arm?: Pick<Arm, "injections">
+): Capture | undefined {
   let record: string;
   let body: string;
   try {
@@ -495,6 +520,11 @@ export function savedCapture(files: {
   if (!Object.hasOwn(parsed, "harness")) {
     throw new Error(
       `the capture ${files.body} was made before the harness-string rule, so its body holds the capture's own paths and date: make it again under a new --out`
+    );
+  }
+  if ((arm?.injections ?? []).length > 0 && !Object.hasOwn(parsed, "injections")) {
+    throw new Error(
+      `the capture ${files.body} was made before each arm gave its own text to a block of the skill a plugin or an agent definition puts into the session, so its body holds the recorded text: make it again under a new --out`
     );
   }
   return {
@@ -1238,10 +1268,11 @@ function extensionErrors(profileDir: string, stderr: string): string[] {
 }
 
 /** What a capture reads of a case: its id, skill, model and thinking level, its context and
- *  profile, and the session's digest. A load test's task (load.ts) is one of these too. */
+ *  profile, the session's digest, and the evidence context.ts reads whose session it is. A load
+ *  test's task (load.ts) is one of these too. */
 export type CaptureCase = Pick<
   Case,
-  "id" | "skill" | "model" | "thinking" | "context" | "profile" | "sessionDigest"
+  "id" | "skill" | "model" | "thinking" | "context" | "profile" | "sessionDigest" | "evidence"
 >;
 
 /**
@@ -1261,7 +1292,7 @@ export async function captureBody(
   const pane = role !== undefined && role.role !== "controller" ? role : undefined;
   const issue = pane?.isRoot === true ? CAPTURE_TREE : CAPTURE_ISSUE;
   const files = capturePaths(options.outDir, c.id, arm.name);
-  const saved = savedCapture(files);
+  const saved = savedCapture(files, arm);
   if (saved !== undefined) return saved;
   const { omp, models } = options;
   if (omp === undefined || models === undefined) {
@@ -1282,6 +1313,21 @@ export async function captureBody(
     root,
   });
   const contextMs = Math.round(performance.now() - contextStarted);
+  // A subagent whose agent definition autoloads the case's skill got a block of it before its
+  // task (arms.ts). Messages that hold none the arm found, and that no compaction summary opens
+  // (one that would have dropped it), hold it in a form the runner cannot rebuild: every arm would
+  // send the recorded text.
+  const agent = context.record.agent;
+  if (
+    agent?.autoloadSkills.includes(c.skill) === true &&
+    !(arm.injections ?? []).some((each) => each.by === "autoload") &&
+    arm.messages[0]?.role !== "compactionSummary"
+  ) {
+    throw new InjectionRefused(
+      `case ${c.id}: its agent ${agent.name} (${agent.path} of ${agent.repo} at ${agent.commit}) autoloads ${c.skill}, and its messages hold no autoloaded block of it in the form Oh My Pi writes one, though no compaction summary opens them, so its arms cannot each give it their own text`,
+      "autoload-no-block"
+    );
+  }
   const home = path.join(root, "home");
   const profileDir = path.join(home, ".omp", "profiles", PROFILE);
   const agentDir = path.join(profileDir, "agent");
@@ -1816,6 +1862,8 @@ export async function captureBody(
         ],
       },
       hookDropped: hookCounts(hookLog),
+      injections: arm.injections ?? [],
+      dispatch: arm.dispatch ?? null,
       exit,
       runs,
       timings: {

@@ -10,10 +10,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { readDispatchFirstContext } from "@legion/envoy-client/dispatch-first";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
 import { skillHeaderPath } from "../skill-scenarios/transcript";
+import { LISTING_MEASURE, ListingMeasure } from "./build";
 import {
   armPromptBlocks,
   type CaptureRecord,
@@ -734,6 +736,111 @@ const SUBAGENT = z
       .find((entry) => z.looseObject({ type: z.literal("session_init") }).safeParse(entry).success)
   );
 
+/** A made-up dispatch-first, which the Envoy plugin reads as it loads and puts into each request
+ *  of a session with Dispatch; its entry in a profile; and the Envoy plugin's entry. */
+const DISPATCH_FIRST_SKILL =
+  "---\nname: dispatch-first\ndescription: Use when a task of the made-up project needs its tracker searched first.\n---\n\n# Dispatch first\n\nSearch the made-up tracker before you act.\n";
+const DISPATCH_FIRST_ENTRY = {
+  repo: "acme/skills",
+  commit: COMMIT,
+  path: "skills/dispatch-first",
+  name: "dispatch-first",
+};
+const ENVOY_ENTRY = {
+  repo: "acme/legion",
+  commit: COMMIT,
+  path: "packages/pi-envoy",
+  name: "pi-envoy",
+};
+
+/** Saves under `out` each task's Oh My Pi capture, where the command reads it back: F2's body
+ *  with the task's text as its one message, and the fields of its record that the load test
+ *  reads. */
+function saveCaptures(out: string, lines: readonly { id: string; text: string }[]): void {
+  for (const { id, text } of lines) {
+    const files = loadCapturePaths(out, "omp", id);
+    writeTree(path.dirname(files.body), {
+      [path.basename(files.body)]: JSON.stringify({
+        ...F2,
+        messages: [{ role: "user", content: [{ type: "text", text }] }],
+      }),
+      [path.basename(files.record)]: JSON.stringify({
+        listing: [
+          { name: "alpha", hint: "Use for the alpha checklist." },
+          { name: "beta", hint: "Use for the beta greeting." },
+        ],
+        // A header the gateway's client never adds itself, so a run carries it only when the
+        // capture's headers go with it.
+        requestHeaders: { "anthropic-version": "2023-06-01", "anthropic-beta": "made-up-beta-1" },
+        hintCalls: [],
+        // A saved capture holds the harness-string rule's record, or it is refused.
+        harness: { head: null, replaced: [] },
+      }),
+    });
+  }
+}
+
+/** One item of a profile's evidence, as a build-tasks summary keeps it. */
+interface EvidenceItem {
+  readonly item: string;
+  readonly source: string;
+}
+
+/** A listing measure as build.ts writes it into a task profile's evidence (ListingMeasure): its
+ *  session's recorded listing holding `recorded` names, `missing` of them not in the rebuilt
+ *  listing; with `recorded` null, not measurable. */
+function measureItem(recorded: number | null, missing: string[] = []): EvidenceItem {
+  const measure = ListingMeasure.parse({
+    kind: recorded === null ? "not measurable" : "session listing",
+    recorded,
+    listed: 2,
+    missing,
+    added: [],
+    missingShare: recorded === null || recorded === 0 ? null : missing.length / recorded,
+    sessionDigest: null,
+    rebuiltDigest: null,
+    subagent: null,
+    why:
+      recorded === null
+        ? "the made-up session records no system prompt, and the store holds no subagent of it"
+        : "the made-up session recorded its system prompt",
+  });
+  return { item: LISTING_MEASURE, source: JSON.stringify(measure) };
+}
+
+/** Writes beside the tasks file `tasks` the summary build-tasks writes (`<tasks>.summary.json`):
+ *  the evidence of each session task's profile (`sessions`, by task id) and of the context
+ *  session's (`context`), which each written task takes, each its one listing measure. */
+function writeTasksSummary(
+  tasks: string,
+  sessions: Record<string, EvidenceItem>,
+  context: EvidenceItem
+): void {
+  writeFileSync(
+    `${tasks}.summary.json`,
+    JSON.stringify({
+      command: "build-tasks",
+      skill: "alpha",
+      profiles: {
+        dir: path.dirname(tasks),
+        contextSession: {
+          store: "store_a",
+          hash: "made-up-context",
+          pathHash: pathHash("/sessions/context.jsonl"),
+          context: "devbox",
+          secretsRemoved: 0,
+          evidence: [context],
+        },
+        tasks: Object.entries(sessions).map(([task, measure]) => ({
+          task,
+          from: "session",
+          evidence: [measure],
+        })),
+      },
+    })
+  );
+}
+
 describe("skill-cuts load with saved captures", () => {
   const dir = path.join(scratch, "saved");
   const out = path.join(dir, "out");
@@ -768,31 +875,11 @@ describe("skill-cuts load with saved captures", () => {
       { id: "near-1", text: NEAR, label: "near-miss", source: "written" },
     ];
     writeFileSync(tasks, lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
+    // The build-tasks summary beside it: both tasks' listings measured, none missing a name.
+    writeTasksSummary(tasks, { "need-1": measureItem(10) }, measureItem(10));
     writeFileSync(profile, JSON.stringify(BETA_PROFILE));
     writeFileSync(profileA, JSON.stringify(GAMMA_PROFILE));
-    // Each task's capture, saved where the command reads it back: F2's body with the task's text
-    // as its one message, and the fields of its record that the load test reads.
-    for (const { id, text } of lines) {
-      const files = loadCapturePaths(out, "omp", id);
-      writeTree(path.dirname(files.body), {
-        [path.basename(files.body)]: JSON.stringify({
-          ...F2,
-          messages: [{ role: "user", content: [{ type: "text", text }] }],
-        }),
-        [path.basename(files.record)]: JSON.stringify({
-          listing: [
-            { name: "alpha", hint: "Use for the alpha checklist." },
-            { name: "beta", hint: "Use for the beta greeting." },
-          ],
-          // A header the gateway's client never adds itself, so a run carries it only when the
-          // capture's headers go with it.
-          requestHeaders: { "anthropic-version": "2023-06-01", "anthropic-beta": "made-up-beta-1" },
-          hintCalls: [],
-          // A saved capture holds the harness-string rule's record, or it is refused.
-          harness: { head: null, replaced: [] },
-        }),
-      });
-    }
+    saveCaptures(out, lines);
     answer = (body) => {
       const text = texts(body.messages).find((each) => reads.has(each)) ?? "";
       const n = (answered.get(text) ?? 0) + 1;
@@ -1006,6 +1093,201 @@ describe("skill-cuts load with saved captures", () => {
   });
 });
 
+// The listing rule (the architect, 2026-11-22T03:04Z): every load applies it, from the listing
+// measure of each task's profile in the tasks file's build-tasks summary.
+describe("skill-cuts load applies the listing rule", () => {
+  const NEED_2 = "List the alpha steps of the made-up project.";
+  /** A load test under `scratch/<name>`: alpha against `lines` (session tasks of store_a unless
+   *  written), each in BETA_PROFILE's context with its capture saved, and the arguments that run
+   *  it; the stand-in answers a run of each text with a read of skill://alpha in its first `reads`
+   *  runs. */
+  const listingTest = (
+    name: string,
+    lines: readonly { id: string; text: string; label: TaskLabel; written?: true }[],
+    reads: ReadonlyMap<string, number>
+  ) => {
+    const dir = path.join(scratch, name);
+    const made = setup(dir);
+    const skill = path.join(dir, "alpha");
+    writeTree(skill, { "SKILL.md": ALPHA_SKILL, "references/x.md": ALPHA_X });
+    const tasks = path.join(dir, "tasks.jsonl");
+    writeFileSync(
+      tasks,
+      lines
+        .map(({ id, text, label, written }) =>
+          JSON.stringify(
+            written
+              ? { id, text, label, source: "written" }
+              : { id, text, label, source: "session", store: "store_a", pathHash: pathHash(id) }
+          )
+        )
+        .map((line) => `${line}\n`)
+        .join("")
+    );
+    const profile = path.join(dir, "profile.json");
+    writeFileSync(profile, JSON.stringify(BETA_PROFILE));
+    const out = path.join(dir, "out");
+    saveCaptures(out, lines);
+    const answered = new Map<string, number>();
+    answer = (body) => {
+      const text = texts(body.messages).find((each) => reads.has(each)) ?? "";
+      const n = (answered.get(text) ?? 0) + 1;
+      answered.set(text, n);
+      return n <= (reads.get(text) ?? 0) ? READ_ALPHA : TEXT;
+    };
+    const args = [
+      ...["load", "--config", made.config, "--key-file", made.keyFile, "--skill", skill],
+      ...["--tasks", tasks, "--host", "omp", "--profile", profile, "--out", out],
+      ...["--omp", path.join(dir, "no-omp-runs-here"), "--scratch", path.join(dir, "scratch")],
+      ...["--cache-dir", path.join(dir, "cache")],
+    ];
+    return { tasks, out, args };
+  };
+  /** The summary `out` holds, as far as these rows read it. */
+  const summaryOf = (out: string) =>
+    z
+      .looseObject({
+        tasks: z.array(z.looseObject({ id: z.string(), made: z.number(), dropped: z.unknown() })),
+        listing: z.unknown(),
+        verdict: z.unknown(),
+        verdicts: z.unknown(),
+      })
+      .parse(JSON.parse(readFileSync(path.join(out, "summary.json"), "utf8")));
+  /** The requests the stand-in took since `from` whose body holds `text`. */
+  const sentWith = (from: number, text: string) =>
+    recorder.requests.slice(from).filter((request) => request.body.includes(text)).length;
+
+  test("a task whose rebuilt listing misses more than 10% of its session's recorded names is dropped with that reason: in the summary's tasks, not run, counted, and out of the verdict", async () => {
+    const { tasks, out, args } = listingTest(
+      "listing-drop",
+      [
+        { id: "need-1", text: NEED, label: "need" },
+        { id: "near-1", text: NEAR, label: "near-miss", written: true },
+        { id: "need-2", text: NEED_2, label: "need" },
+      ],
+      new Map([
+        [NEED, 2],
+        [NEAR, 2],
+        [NEED_2, 0],
+      ])
+    );
+    writeTasksSummary(
+      tasks,
+      { "need-1": measureItem(10), "need-2": measureItem(10, ["beta", "gamma"]) },
+      measureItem(10, ["beta"])
+    );
+    const from = recorder.requests.length;
+    const ran = await cli(args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const misses =
+      "listing-misses: its rebuilt listing misses 2 of the 10 names of the recorded session listing (20.0%), more than 10%: beta, gamma";
+    expect(ran.stdout).toContain(`task need-2 (need, from a session): dropped, not run: ${misses}`);
+    expect(ran.stdout).toContain(
+      `the listing rule (${tasks}.summary.json): 2 tasks' listings measured, 0 not measurable, 1 tasks dropped`
+    );
+    expect(sentWith(from, NEED_2)).toBe(0);
+    expect(sentWith(from, NEED)).toBe(3);
+    const summary = summaryOf(out);
+    expect(summary.tasks.map((task) => [task.id, task.made, task.dropped])).toEqual([
+      ["need-1", 3, null],
+      ["near-1", 3, null],
+      ["need-2", 0, misses],
+    ]);
+    expect(summary.listing).toEqual({
+      summary: `${tasks}.summary.json`,
+      measured: 2,
+      notMeasurable: 0,
+      dropped: 1,
+    });
+    expect(summary.verdict).toEqual({
+      descriptionFault: true,
+      reason: "a description fault: tasks near-1",
+    });
+  });
+
+  test("the verdict is made with and without the tasks whose listing could not be measured; where the two agree it stands, with their count", async () => {
+    const { tasks, out, args } = listingTest(
+      "listing-agree",
+      [
+        { id: "need-1", text: NEED, label: "need" },
+        { id: "near-1", text: NEAR, label: "near-miss", written: true },
+      ],
+      new Map([
+        [NEED, 2],
+        [NEAR, 0],
+      ])
+    );
+    writeTasksSummary(tasks, { "need-1": measureItem(10) }, measureItem(null));
+    const ran = await cli(args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const reason =
+      "no description fault in 2 tasks; the listing of 1 of its 2 tasks could not be measured, and without them the verdict is the same";
+    expect(ran.stdout).toContain(`the skill alpha: ${reason}`);
+    const summary = summaryOf(out);
+    expect(summary.verdict).toEqual({ descriptionFault: false, reason });
+    expect(summary.verdicts).toEqual({
+      withUnmeasured: { descriptionFault: false, reason: "no description fault in 2 tasks" },
+      withoutUnmeasured: { descriptionFault: false, reason: "no description fault in 1 tasks" },
+    });
+  });
+
+  test("where the verdicts with and without the tasks whose listing could not be measured differ, there is no verdict, and the summary holds both", async () => {
+    const { tasks, out, args } = listingTest(
+      "listing-differ",
+      [
+        { id: "need-1", text: NEED, label: "need" },
+        { id: "near-1", text: NEAR, label: "near-miss", written: true },
+      ],
+      new Map([
+        [NEED, 2],
+        [NEAR, 2],
+      ])
+    );
+    writeTasksSummary(tasks, { "need-1": measureItem(10) }, measureItem(null));
+    const ran = await cli(args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const reason =
+      "no verdict: depends on tasks whose listing could not be measured (1 of its 2 tasks): with them, a description fault: tasks near-1; without them, no description fault in 1 tasks";
+    expect(ran.stdout).toContain(`the skill alpha: ${reason}`);
+    const summary = summaryOf(out);
+    expect(summary.verdict).toEqual({ descriptionFault: null, reason });
+    expect(summary.verdicts).toEqual({
+      withUnmeasured: { descriptionFault: true, reason: "a description fault: tasks near-1" },
+      withoutUnmeasured: { descriptionFault: false, reason: "no description fault in 1 tasks" },
+    });
+  });
+
+  test("where the listing rule drops most tasks of a load, the command stops before any run and says so with the numbers (exit 3)", async () => {
+    const { tasks, out, args } = listingTest(
+      "listing-most",
+      [
+        { id: "need-1", text: NEED, label: "need" },
+        { id: "near-1", text: NEAR, label: "near-miss", written: true },
+        { id: "need-2", text: NEED_2, label: "need" },
+      ],
+      new Map()
+    );
+    writeTasksSummary(
+      tasks,
+      { "need-1": measureItem(10, ["beta", "gamma", "delta"]), "need-2": measureItem(10) },
+      measureItem(10, ["beta", "gamma"])
+    );
+    const from = recorder.requests.length;
+    const ran = await cli(args);
+    expect(ran.code).toBe(3);
+    expect(ran.stderr).toContain(
+      `skill-cuts: stopped: the listing rule drops 2 of the 3 tasks of ${tasks}, more than half (need-1, near-1): the rebuilt listing of each misses more than 10% of the names its session's recorded listing holds, so the test stops before any run, and the architect decides such a load; 1 tasks' listings were measured and 0 could not be`
+    );
+    expect(recorder.requests.length).toBe(from);
+    const tasksOf = summaryOf(out).tasks;
+    expect(tasksOf.map((task) => [task.id, task.made, task.dropped !== null])).toEqual([
+      ["need-1", 0, true],
+      ["near-1", 0, true],
+      ["need-2", 0, false],
+    ]);
+  });
+});
+
 test("the skill's name is read as Oh My Pi reads its frontmatter: a value that holds ': ' does not stop the read", () => {
   const named = path.join(scratch, "colon", "folder");
   writeTree(named, {
@@ -1132,6 +1414,92 @@ describe("skill-cuts load refuses or stops on its own rules", () => {
     ]) {
       expect(ran.stderr).toContain(fault);
     }
+    expect(recorder.requests.length).toBe(before);
+  });
+
+  // Catches: a load test of a skill a plugin or an agent definition puts into the session made
+  // where the test cannot give each name the block the session had, or where the copy the plugin
+  // would put in is not the tested text.
+  test("a skill a plugin or an agent definition puts into the session is refused where it cannot be load tested, naming the profile, before any model call", async () => {
+    const dir = path.join(scratch, "injected-refusals");
+    const { common } = hostInputs(dir, undefined, { "SKILL.md": DISPATCH_FIRST_SKILL });
+    const before = recorder.requests.length;
+    // dispatch-first on Claude Code, whose Envoy plugin puts it in from a hook no load test runs.
+    const claudeProfile = path.join(dir, "claude.json");
+    writeFileSync(
+      claudeProfile,
+      JSON.stringify({
+        ...BETA_PROFILE,
+        claude: {
+          marketplace: "acme-market",
+          plugins: [{ name: "acme-tools", skills: ["beta"] }],
+          skillPlugin: "acme-tools",
+        },
+      })
+    );
+    const onClaude = await cli([
+      "load",
+      ...common,
+      ...["--host", "claude", "--profile", claudeProfile, "--claude", "/nowhere/claude"],
+    ]);
+    expect(onClaude.code).toBe(2);
+    expect(onClaude.stderr).toContain(
+      "dispatch-first cannot be load tested on Claude Code: Claude Code's Envoy plugin puts it into each session with Dispatch from its session-start hook"
+    );
+    // dispatch-first under another name, beside a copy of its own name the plugin would read.
+    const both = path.join(dir, "both.json");
+    writeFileSync(
+      both,
+      JSON.stringify({
+        ...BETA_PROFILE,
+        skills: [...BETA_PROFILE.skills, DISPATCH_FIRST_ENTRY],
+        plugins: [ENVOY_ENTRY],
+      })
+    );
+    const renamed = await cli([
+      "load",
+      ...common,
+      ...["--host", "omp", "--profile", both, "--name", "omega"],
+    ]);
+    expect(renamed.code).toBe(2);
+    expect(renamed.stderr).toContain(
+      `${both}: it installs dispatch-first beside the skill tested under omega, and the pi-envoy plugin would put that copy into each request, not the tested text`
+    );
+
+    // alpha in a subagent profile whose agent definition autoloads it.
+    const agentDir = path.join(scratch, "injected-agent");
+    const agent = hostInputs(agentDir);
+    writeTree(path.join(agentDir, "repos", "acme", "legion", COMMIT), {
+      "packages/agents-pack/agents/alpha-reviewer.md":
+        "---\nname: alpha-reviewer\ndescription: Reviews with alpha.\nautoloadSkills: [alpha]\n---\n\nReview.\n",
+    });
+    const subagent = path.join(agentDir, "subagent.json");
+    writeFileSync(
+      subagent,
+      JSON.stringify({
+        ...BETA_PROFILE,
+        plugins: [
+          {
+            repo: "acme/legion",
+            commit: COMMIT,
+            path: "packages/agents-pack",
+            name: "agents-pack",
+          },
+        ],
+        context: "subagent:alpha-reviewer",
+        systemPrompt: SUBAGENT.systemPrompt,
+        tools: SUBAGENT.tools,
+      })
+    );
+    const autoloaded = await cli([
+      "load",
+      ...agent.common,
+      ...["--host", "omp", "--profile", subagent, "--name", "omega"],
+    ]);
+    expect(autoloaded.code).toBe(2);
+    expect(autoloaded.stderr).toContain(
+      `${subagent}: its agent alpha-reviewer (packages/agents-pack/agents/alpha-reviewer.md of acme/legion at ${COMMIT}) autoloads alpha, so the subagent gets its text before its task whatever its listing says, and under the name omega it would autoload none`
+    );
     expect(recorder.requests.length).toBe(before);
   });
 
@@ -1775,6 +2143,33 @@ function hostInputs(
   return { out, common };
 }
 
+/** Builds the Envoy plugin of this checkout into the made-up acme/legion at COMMIT under `repos`,
+ *  as the worker image ships it: its bundle in `dist/`, and a manifest that names the bundle and
+ *  `dist/skills`, where it reads dispatch-first as it loads. */
+function writeEnvoyPlugin(repos: string): void {
+  const dest = path.join(repos, "acme/legion", COMMIT, "packages/pi-envoy");
+  const externals = ["pi-ai", "pi-coding-agent", "pi-tui", "pi-utils"];
+  const built = Bun.spawnSync(
+    [
+      ...["bun", "build", "extensions/envoy.ts", "--outdir", path.join(dest, "dist")],
+      ...["--target", "bun", "--format", "esm"],
+      ...externals.flatMap((name) => ["--external", `@oh-my-pi/${name}`]),
+    ],
+    { cwd: path.resolve(import.meta.dir, "../../../pi-envoy"), stderr: "pipe" }
+  );
+  expect({
+    code: built.exitCode,
+    stderr: built.exitCode === 0 ? "" : built.stderr.toString(),
+  }).toEqual({ code: 0, stderr: "" });
+  writeTree(dest, {
+    "package.json": JSON.stringify({
+      name: "@acme/pi-envoy",
+      files: ["dist"],
+      omp: { extensions: ["dist/envoy.js"], skills: ["dist/skills"] },
+    }),
+  });
+}
+
 describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () => {
   test(
     "captures the first request of a one-message history, lists the renamed skill under its hint, and counts a read of skill://<name> as a load",
@@ -1822,6 +2217,51 @@ describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () 
       ]);
       expect(ran.stdout).toContain(
         "no verdict: the load test's rule takes 3 runs a task, and this test runs 1"
+      );
+    },
+    HOST_ROW_TIMEOUT_MS
+  );
+
+  // Catches: a load test of dispatch-first under another name whose capture fails as the Envoy
+  // plugin finds no file of that name to read, or that lists the skill under its own name, or
+  // sends no block of it though the plugin puts one into each request.
+  test(
+    "a skill the Envoy plugin puts into each request is captured under another name with the plugin's block of the tested text, the plugin loading on a hidden stand-in of its file, and listed under that name only",
+    async () => {
+      const dir = path.join(scratch, "omp-dispatch-first");
+      const { out, common } = hostInputs(dir, undefined, { "SKILL.md": DISPATCH_FIRST_SKILL });
+      writeEnvoyPlugin(path.join(dir, "repos"));
+      const models = path.join(dir, "models.yml");
+      writeFileSync(models, ANTHROPIC_MODELS);
+      const profile = path.join(dir, "profile.json");
+      writeFileSync(profile, JSON.stringify({ ...BETA_PROFILE, plugins: [ENVOY_ENTRY] }));
+      answer = () => TEXT;
+      const ran = await cli([
+        "load",
+        ...common,
+        ...["--name", "omega", "--host", "omp", "--profile", profile],
+        ...["--omp", String(omp), "--models", models],
+      ]);
+      expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+      const files = loadCapturePaths(out, "omp", "need-1");
+      const body = JSON.parse(readFileSync(files.body, "utf8"));
+      const record = JSON.parse(readFileSync(files.record, "utf8")) as CaptureRecord;
+      // The plugin loaded, reading the hidden stand-in, which the listing does not name.
+      expect(record.extensionErrors).toEqual([]);
+      expect(record.pluginTools.envoy).toContain("envoy_send");
+      expect(record.context.skills).toContainEqual({ name: "dispatch-first", from: "stand-in" });
+      expect([...skillListing(body).keys()].sort()).toEqual(["beta", "omega"]);
+      // The block is the plugin's of the tested text, the same as under the skill's own name: its
+      // frontmatter, which holds the name, is not in it.
+      const block = readDispatchFirstContext(path.join(dir, "tested", "SKILL.md"));
+      expect(body.messages[0]?.role).toBe("user");
+      expect(texts(body.messages[0]?.content)).toContain(block);
+      expect(texts(body.messages).some((text) => text.includes(NEED))).toBe(true);
+      expect(record.injections).toEqual([
+        { by: "plugin", plugin: "pi-envoy", name: "dispatch-first", at: 0 },
+      ]);
+      expect(ran.stdout).toContain(
+        `load: the pi-envoy plugin puts dispatch-first into each request in the context of ${profile}: each capture carries its block, built from the tested text, before the task's text, the same under the name omega`
       );
     },
     HOST_ROW_TIMEOUT_MS

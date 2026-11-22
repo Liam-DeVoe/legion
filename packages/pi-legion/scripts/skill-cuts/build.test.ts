@@ -99,6 +99,9 @@ const POWERS_MADE = "2026-11-20T00:30:00.000Z";
 const KIT_V1 = "8".repeat(40);
 /** acme/dots before POWERS_AT: its plugin list pins @acme/kit 1.0.0, and it holds no pool yet. */
 const DOTS_OLD = "9".repeat(40);
+/** When acme/fresh and acme/newproj got their first commit: after every made-up session's start,
+ *  so GitHub gives no commit of either at or before a session's start. */
+const FRESH_MADE = "2026-11-20T03:00:00.000Z";
 /** The release tags GitHub lists of each made-up repository. */
 const TAGS: Readonly<Record<string, readonly string[]>> = {
   "acme/skills": ["pi-acme-v1.0.0"],
@@ -712,12 +715,19 @@ if (query.includes("omp_session_files_parts pt") && place) {
     .sort((a, b) => (a.path < b.path ? -1 : 1));
 } else if (query.includes("'subagents', r.subagents")) {
   kind = "subagents";
-  // For each file of a path hash the query names, the files one level below its directory: the
-  // earliest by header timestamp (then path) whose session_init line holds <skills>, and counts.
-  const hashes = new Set(literals(query.slice(query.indexOf("ANY"))));
+  // For each session and times the query names, the files one level below its directory: the
+  // earliest by header timestamp (then path) whose session_init line holds <skills> and whose
+  // start is at or after \`from\` and before \`to\`, or none, and counts.
+  const wanted = JSON.parse(literals(query.slice(query.indexOf("jsonb_array_elements(")))[0]);
   const sha = (p) => createHash("sha256").update(p).digest("hex");
+  const seen = new Set();
   rows = [];
-  for (const parent of Object.keys(store.files).filter((p) => hashes.has(sha(p)) && p.endsWith(".jsonl"))) {
+  for (const { hash, from, to } of wanted) {
+    const key = [hash, from, to].join("\\u0000");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const parent = Object.keys(store.files).find((p) => sha(p) === hash && p.endsWith(".jsonl"));
+    if (parent === undefined) continue;
     const dir = parent.slice(0, -".jsonl".length) + "/";
     const children = Object.entries(store.files)
       .filter(([p]) => p.startsWith(dir) && !p.slice(dir.length).includes("/") && p.endsWith(".jsonl"))
@@ -727,33 +737,43 @@ if (query.includes("omp_session_files_parts pt") && place) {
         const init = lines.find((line) => line.includes('"type":"session_init"') && line.includes("<skills>"));
         return { path: p, start: header === undefined ? null : JSON.parse(header).timestamp ?? null, init };
       });
-    const recorded = children
-      .filter((child) => child.init !== undefined)
+    if (children.length === 0) continue;
+    const recorded = children.filter((child) => child.init !== undefined);
+    const at = (child) => Date.parse(child.start ?? "");
+    const under = recorded
+      .filter((child) => (from === null || at(child) >= Date.parse(from)) && (to === null || at(child) < Date.parse(to)))
       .sort((a, b) => ((a.start ?? "") + "\\u0000" + a.path < (b.start ?? "") + "\\u0000" + b.path ? -1 : 1));
-    const first = recorded[0];
-    if (first !== undefined) {
-      rows.push({ parent: sha(parent), hash: sha(first.path), start: first.start, init: first.init, subagents: children.length, recorded: recorded.length });
-    }
+    const first = under[0];
+    rows.push({
+      parent: hash,
+      from,
+      to,
+      hash: first === undefined ? null : sha(first.path),
+      start: first === undefined ? null : first.start,
+      init: first === undefined ? null : first.init,
+      subagents: children.length,
+      recorded: recorded.length,
+      under: under.length,
+    });
   }
-  rows.sort((a, b) => (a.parent < b.parent ? -1 : 1));
+  const order = (row) => [row.parent, row.from ?? "", row.to ?? ""].join("\\u0000");
+  rows.sort((a, b) => (order(a) < order(b) ? -1 : 1));
 } else if (query.includes("AS digest_times")) {
   kind = "digests";
-  // For each subagent the query names, its root (the topmost directory named as a top-level
-  // session's, and .jsonl) and the root's digest lines' timestamps before the subagent's start.
-  const wanted = JSON.parse(literals(query.slice(query.indexOf("jsonb_array_elements(")))[0]);
+  // For each session the query names, its root (the topmost directory named as a top-level
+  // session's, and .jsonl; or the file itself, below no such directory) and the time and digest
+  // of each of the root's digest lines, earliest first.
+  const hashes = new Set(literals(query.slice(query.indexOf("unnest("))));
   const sha = (p) => createHash("sha256").update(p).digest("hex");
   rows = [];
-  for (const { hash, before } of wanted) {
-    const file = Object.keys(store.files).find((p) => sha(p) === hash);
-    if (file === undefined) continue;
+  for (const file of Object.keys(store.files).filter((p) => hashes.has(sha(p)))) {
     const dir = /^(.*?\\/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9-]+Z_[0-9a-f-]+)\\//.exec(file)?.[1];
-    const root = dir === undefined ? undefined : dir + ".jsonl";
-    const text = root === undefined ? undefined : store.files[root];
-    const digests = [...(text ?? "").matchAll(/"customType":"system-prompt-digest","data":"[^"]*","id":"[^"]*","parentId":(?:"[^"]*"|null),"timestamp":"([^"]+)"/g)]
-      .map((m) => m[1])
-      .filter((at) => Date.parse(at) < Date.parse(before))
-      .sort((a, b) => Date.parse(a) - Date.parse(b));
-    rows.push({ hash, root: root === undefined ? null : sha(root), rootHeld: text !== undefined, before, digests });
+    const root = dir === undefined ? file : dir + ".jsonl";
+    const text = store.files[root];
+    const digests = [...(text ?? "").matchAll(/"customType":"system-prompt-digest","data":"([^"]*)","id":"[^"]*","parentId":(?:"[^"]*"|null),"timestamp":"([^"]+)"/g)]
+      .map((m) => ({ at: m[2], digest: m[1] }))
+      .sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || (a.digest < b.digest ? -1 : 1));
+    rows.push({ hash: sha(file), root: sha(root), rootHeld: text !== undefined, digests });
   }
   rows.sort((a, b) => (a.hash < b.hash ? -1 : 1));
 } else if (query.includes("encode(sha256(convert_to(f.path")) {
@@ -1049,9 +1069,11 @@ const SLOT_RULE =
  *  clones acme/pack into vendor/acme-pack at PACK_PIN, a pool its skills-sources.json feeds to Oh
  *  My Pi through its extension. acme/powers holds a package whose `pi` manifest declares its
  *  skills/ (power-one and power-two); acme/pack holds pack-one and pack-later at SHA, and pack-one
- *  and pack-two at PACK_PIN (PINNED). acme/alpha-set is a skill set's repository: a package named
- *  alpha-set whose `pi` manifest declares its skills/, which hold its own alpha beside acme/skills's
- *  (setTarget). */
+ *  and pack-two at PACK_PIN (PINNED). acme/fresh and acme/newproj got their first commit at
+ *  FRESH_MADE: acme/fresh holds fresh-one, which a dev box's installer installs from then on, and
+ *  acme/newproj holds its own skill nova in `.claude/skills/` and a CLAUDE.md. acme/alpha-set is a
+ *  skill set's repository: a package named alpha-set whose `pi` manifest declares its skills/,
+ *  which hold its own alpha beside acme/skills's (setTarget). */
 const INSTALLER = [
   "#!/usr/bin/env bash",
   'for skill in "$REPO"/skills/*/; do',
@@ -1263,6 +1285,11 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
     "package.json": JSON.stringify({ name: "acme-one", pi: { skills: ["."] } }),
     "SKILL.md": skillMd("one-skill"),
   },
+  "acme/fresh": { "skills/fresh-one/SKILL.md": skillMd("fresh-one") },
+  "acme/newproj": {
+    ".claude/skills/nova/SKILL.md": projectSkillMd("nova"),
+    "CLAUDE.md": "# Made-up rules of a new project\n\nKeep each change small.\n",
+  },
 };
 
 /** The ref the copies output read acme/pack at, later than the sessions (repositories.tsv). */
@@ -1447,6 +1474,9 @@ const io = (lines: string[]): BuildIo => ({
       if (repo === "acme/powers" && until < Date.parse(POWERS_MADE)) return ok("null\n");
       if (repo === "acme/powers" && until < Date.parse(POWERS_AT)) return ok(`${POWERS_OLD}\n`);
       if (repo === "acme/dots" && until < Date.parse(POWERS_AT)) return ok(`${DOTS_OLD}\n`);
+      // acme/fresh and acme/newproj have no commit before FRESH_MADE.
+      const fresh = repo === "acme/fresh" || repo === "acme/newproj";
+      if (fresh && until < Date.parse(FRESH_MADE)) return ok("null\n");
       return ok(`${PINNED[`${repo}@${ref}`]?.sha ?? SHA}\n`);
     }
     if (route === "repos/acme/infra/contents/legion/projects/10-ACME.yaml") {
@@ -2320,10 +2350,12 @@ describe("build-cases over every made-up session", () => {
         .map((line) => `${line.db} ${line.kind}`)
         .sort()
     ).toEqual([
-      // The subagent case's root's prompt builds' times, one query (digest-times.sql).
+      // The prompt builds of each case's root, a subagent's and a top-level session's own, one
+      // query a store (digest-times.sql).
       "store_a digests",
       "store_a heads",
       "store_a subagents",
+      "store_b digests",
       "store_b heads",
       "store_b subagents",
     ]);
@@ -2433,12 +2465,20 @@ describe("build-cases over every made-up session", () => {
     expect(g?.evidence?.find((each) => each.item === "no session head")?.source).toBe(
       "the store store_b holds no file of the session now (session-head.sql), so its working directory is not known: the session repository is the one the old evidence names"
     );
-    // One query a store, for the heads alone; each head saved beside the new case file.
+    // One query a store for each of the heads, the prompt builds and the subagents; each head
+    // saved beside the new case file.
     expect(
       psqlLines(logBefore)
         .map((line) => `${line.db} ${line.kind}`)
         .sort()
-    ).toEqual(["store_a heads", "store_a subagents", "store_b heads", "store_b subagents"]);
+    ).toEqual([
+      "store_a digests",
+      "store_a heads",
+      "store_a subagents",
+      "store_b digests",
+      "store_b heads",
+      "store_b subagents",
+    ]);
     const headFile = `${devbox.source.store}-${devbox.source.pathHash}.json`;
     expect(existsSync(path.join(`${fresh}.sessions`, headFile))).toBe(true);
     const summary = JSON.parse(readFileSync(`${fresh}.summary.json`, "utf8")) as {
@@ -3266,6 +3306,13 @@ test("a subagent whose dev box pins packages by npm versions gets each package a
   expect(evidence["read times of acme/dots"]).toStartWith(
     `its plugin lists, installers and settings at ${DOTS_OLD} (the root's last prompt build ${ROOT_BUILD}), its pool directories at ${SHA}`
   );
+  // context.ts reads the commit of a subagent's pool directories from this item's source by this
+  // phrase: the two must not drift.
+  expect(
+    /\bits pool directories at ([0-9a-f]{7,40})\b/.exec(
+      evidence["read times of acme/dots"] ?? ""
+    )?.[1]
+  ).toBe(SHA);
   const versionOf = (name: string) =>
     Object.entries(evidence).find(([item]) => item.startsWith(`version of package:${name} `))?.[1];
   expect(versionOf("@acme/kit")).toStartWith(
@@ -5645,7 +5692,7 @@ test("build-tasks with no bound writes the pinned bytes: the tasks, the summary,
     "model summary": "fd2cf470c0eaa72f67f8a326ecfaeafd58a63ed82764f9aae296cfffc84bff8b",
     "model printed": "bf894d108dd96d68557fc836907c898f504618a57f906e073f786c51c1144dc3",
     "profiles tasks": "6978ce55a25eb77c1f126e1b0e35e0f4899d63975797aee26b9e32d53ff3dea0",
-    "profiles summary": "4cc377ae6cdbf24ad93bd56c6b9677a51cd164ac79c33a8f90d093b0177681c5",
+    "profiles summary": "103bdb79ab65b005bfaa24089b6352153918942fd8ca2d7cd47dc8023668ffc6",
     "profiles printed": "6e4a4b3f3da89a2faa7e4e21ab71ad7d844a05da52f0aa836ebc41b6baee1532",
     "profiles profiles": "26bf1079e50926d2c9e1bdc9482bca041b0a71392fb091f4352c437ab81932c4",
   });
@@ -6028,6 +6075,233 @@ test("build-tasks --reprofile gives each written task the profile of the --conte
   expect(summary.counts).toMatchObject({ changed: 8, unchanged: 2 });
 }, 120_000);
 
+/** A copy of the suite's copies output in `<setupDir>/<name>`, with `rows` added at the end of
+ *  each file they name. */
+function copiesWith(
+  name: string,
+  rows: Readonly<Record<string, readonly (readonly (string | number)[])[]>>
+): string {
+  const dir = path.join(setupDir, name);
+  mkdirSync(dir, { recursive: true });
+  for (const file of [
+    "prefix-table.tsv",
+    "installers.tsv",
+    "manifests.tsv",
+    "loaders.tsv",
+    "skill-copies.tsv",
+    "repositories.tsv",
+  ]) {
+    const added = (rows[file] ?? []).map((row) => `${row.join("\t")}\n`).join("");
+    writeFileSync(
+      path.join(dir, file),
+      `${readFileSync(path.join(copiesDir, file), "utf8")}${added}`
+    );
+  }
+  return dir;
+}
+
+/** The start of F1, so of every session built from it. */
+const F1_START = "2026-11-20T01:59:41.780Z";
+
+/** The rows of a copies output where acme/home is the dev box's repository and, by the copies
+ *  output's time, its installer installs fresh-one from acme/fresh, whose first commit
+ *  (FRESH_MADE) came after every session's start. */
+const FRESH_TARGET = {
+  "manifests.tsv": [
+    ["acme/home", "installers/omp.sh", "installer-script", "tree", 4, "links skills", ""],
+    ["acme/home", ".claude/settings.json", "claude-settings", "tree", 0, "none", ""],
+  ],
+  "installers.tsv": [
+    [
+      "acme/home",
+      "installers/omp.sh",
+      "installer-script",
+      "installs",
+      "gh-skill:fresh-one",
+      "omp",
+      "fresh-one",
+      "acme/fresh",
+      "skills/fresh-one",
+      "",
+    ],
+  ],
+  "skill-copies.tsv": [["acme/fresh", "skills/fresh-one", "fresh-one", 1, "no", "no", "", "", ""]],
+  "repositories.tsv": [["acme/fresh", "main", SHA, "no", "no", "", 1, "whole", 1, ""]],
+};
+
+/** The evidence item that leaves acme/fresh out of a profile of a session built from F1. */
+const FRESH_LEFT_OUT = {
+  item: `left out: acme/fresh, which has no commit at or before the session's start ${F1_START}`,
+  source: `main, the ref repositories.tsv names, has no commit at or before the session's start; gh api repos/acme/fresh/commits?sha=main&until=${F1_START} gives no commit of main (from gh api repos/acme/fresh): GitHub holds no commit of acme/fresh then, so nothing of it was installed then, and the profile installs nothing of it`,
+};
+
+// Catches: a repository the dev box's installers install by the copies output's time, whose first
+// commit came after the session's start, failing the whole build: GitHub gives no commit of it at
+// or before that start.
+test("a dev-box session that started before the first commit of a repository its dev box's installers install later gets its profile: that repository is left out with the evidence, and no profile lists a skill of it", async () => {
+  const copies = copiesWith("copies-fresh", FRESH_TARGET);
+  const from = await profiledTasks();
+  const dir = path.join(scratch, "fresh-target", "profiles");
+  const context = `store_a:${fileHash("/sessions/task-4.jsonl")}`;
+  const said: string[] = [];
+  const code = await main(
+    [
+      "build-tasks",
+      "--config",
+      config,
+      "--copies",
+      copies,
+      "--count",
+      countDir,
+      "--reprofile",
+      from,
+      "--profiles-out",
+      dir,
+      "--context-session",
+      context,
+    ],
+    io(said)
+  );
+  expect({ code, said: code === EXIT.ok ? "" : said.join("\n") }).toEqual({
+    code: EXIT.ok,
+    said: "",
+  });
+  const evidence = (reprofileSummary(dir).profiles.contextSession?.evidence ?? []) as Item[];
+  expect(evidence).toContainEqual(FRESH_LEFT_OUT);
+  expect(evidence.filter((each) => each.item.includes("acme/fresh"))).toEqual([FRESH_LEFT_OUT]);
+  // Each session task's profile is built the same way.
+  for (const record of reprofileSummary(dir).profiles.tasks) {
+    if (record.from === "session") expect(record.differs.added).toContainEqual(FRESH_LEFT_OUT);
+  }
+  // No profile written holds a skill of acme/fresh; each holds acme/home's linked skills.
+  for (const task of tasksOf(path.join(dir, "tasks.jsonl"))) {
+    const profile = JSON.parse(readFileSync(String(task.profile), "utf8"));
+    const repos = profile.skills.map((skill: { repo: string }) => skill.repo);
+    expect(repos).not.toContain("acme/fresh");
+    expect(repos).toContain("acme/home");
+  }
+}, 120_000);
+
+// Catches: the same repository leaving each case of build-cases --reprofile out, as a GitHub read
+// the profile needs that failed, where only that repository is left out of the profile.
+test("build-cases --reprofile of a dev-box case whose session started before the first commit of a repository its dev box's installers install later writes the case: that repository is left out with the evidence, and the profile holds no skill of it", async () => {
+  const good = (await profileCases()).find(
+    (c) => c.source.pathHash === pathHash(sessionPath("good"))
+  ) as Case;
+  const dir = path.join(scratch, "fresh-target-cases");
+  const from = path.join(dir, "old.jsonl");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(from, `${JSON.stringify(good)}\n`);
+  const fresh = path.join(dir, "reprofiled.jsonl");
+  const lines: string[] = [];
+  const code = await main(
+    [
+      "build-cases",
+      "--config",
+      config,
+      "--old",
+      old,
+      "--copies",
+      copiesWith("copies-fresh", FRESH_TARGET),
+      "--count",
+      countDir,
+      "--reprofile",
+      from,
+      "--out",
+      fresh,
+    ],
+    io(lines)
+  );
+  expect({ code, said: code === EXIT.ok ? "" : lines.join("\n") }).toEqual({
+    code: EXIT.ok,
+    said: "",
+  });
+  const [c] = loadCases(fresh, old);
+  expect(c?.id).toBe(good.id);
+  expect(c?.evidence).toContainEqual(FRESH_LEFT_OUT);
+  const repos = c?.profile.skills.map((skill) => skill.repo);
+  expect(repos).not.toContain("acme/fresh");
+  expect(repos).toContain("acme/home");
+}, 120_000);
+
+// Catches: a session repository with no commit at the session's start failing the whole build, or
+// a later commit of it read in its place.
+test("a session whose working directory is a checkout of a repository with no commit at its start gets its profile without that repository's project skills and context files; the evidence says why, and the listing measure counts the missing project skill", async () => {
+  const copies = copiesWith("copies-newproj", {
+    "repositories.tsv": [["acme/newproj", "main", SHA, "no", "no", "", 1, "recursive", 1, ""]],
+  });
+  // The good session in a checkout of acme/newproj, whose first commit (FRESH_MADE) came after
+  // the session's start, and a subagent of it whose recorded listing holds acme/newproj's nova.
+  const session = "/sessions/newproj.jsonl";
+  const store = changedStore("newproj-store", (files) => {
+    const storeA = files.store_a ?? {};
+    storeA[session] = inDirectory(sessionText("good"), "/home/dev/src/newproj");
+    storeA["/sessions/newproj/Helper.jsonl"] = sessionText("subagent").replace(
+      "- beta: Use for the beta greeting.\\n",
+      "- beta: Use for the beta greeting.\\n- nova: Use when the project asks for nova.\\n"
+    );
+  });
+  const from = await profiledTasks();
+  const dir = path.join(scratch, "newproj-context", "profiles");
+  const callsBefore = ghCalls.length;
+  const said: string[] = [];
+  const code = await main(
+    [
+      "build-tasks",
+      "--config",
+      store,
+      "--copies",
+      copies,
+      "--count",
+      countDir,
+      "--reprofile",
+      from,
+      "--profiles-out",
+      dir,
+      "--context-session",
+      `store_a:${fileHash(session)}`,
+    ],
+    io(said)
+  );
+  expect({ code, said: code === EXIT.ok ? "" : said.join("\n") }).toEqual({
+    code: EXIT.ok,
+    said: "",
+  });
+  const evidence = (reprofileSummary(dir).profiles.contextSession?.evidence ?? []) as Item[];
+  const items = evidence.map((each) => each.item);
+  expect(items).toContain("session repository acme/newproj");
+  expect(evidence).toContainEqual({
+    item: `left out: acme/newproj, which has no commit at or before the session's start ${F1_START}`,
+    source: `main, the ref repositories.tsv names, has no commit at or before the session's start; gh api repos/acme/newproj/commits?sha=main&until=${F1_START} gives no commit of main (from gh api repos/acme/newproj): GitHub holds no commit of acme/newproj then, so its project skills and context files are not read, and the profile names no session repository`,
+  });
+  const written = tasksOf(from).find((task) => task.source === "written");
+  const profile = JSON.parse(readFileSync(path.resolve(dir, `${written?.id}.json`), "utf8"));
+  expect(profile.sessionRepository).toBeUndefined();
+  expect(profile.workingDirectory).toBeUndefined();
+  expect(
+    [...profile.skills, ...profile.contextFiles].filter(
+      (each: { repo: string }) => each.repo === "acme/newproj"
+    )
+  ).toEqual([]);
+  // No later commit of acme/newproj is read in its place: only its commit at the start is asked
+  // for, and no tree or file of it.
+  const asked = ghCalls
+    .slice(callsBefore)
+    .filter((args) =>
+      args.some((arg) => arg.startsWith("repos/acme/newproj/") || arg === "name=newproj")
+    );
+  expect(asked.length).toBeGreaterThan(0);
+  expect(
+    asked.every((args) => args.some((arg) => arg.startsWith("repos/acme/newproj/commits?")))
+  ).toBe(true);
+  // The subagent's recorded listing holds nova, which the profile does not list.
+  const measure = ListingMeasure.parse(
+    JSON.parse(evidence.find((each) => each.item === LISTING_MEASURE)?.source ?? "{}")
+  );
+  expect(measure.kind).toBe("subagent listing");
+  expect(measure.missing).toContain("nova");
+}, 120_000);
+
 test("build-tasks --reprofile keeps the old profile of a task whose session its store holds no longer, and of each written task when the context session is gone, each with an evidence item that says so; a store read that fails fails the run", async () => {
   const from = await profiledTasks();
   const task4 = "/sessions/task-4.jsonl";
@@ -6148,6 +6422,300 @@ test("build-tasks drops a candidate whose pull gives no row as pull-failed and o
   ];
   expect(await main(args(profiled, ...profiles), io([]))).toBe(EXIT.ok);
   expect(drops(profiled)).toEqual(wanted);
+}, 120_000);
+
+/** The start of the made-up long-lived sessions of the read-time rows: before acme/newproj's first
+ *  commit (FRESH_MADE). */
+const LONG_START = "2026-11-20T02:50:00.000Z";
+/** Their prompt builds' system-prompt-digest lines: the first reply's, one after a reload past
+ *  FRESH_MADE, and a later one. */
+const LONG_BUILDS = [
+  { at: "2026-11-20T02:50:30.000Z", digest: "5e1d000000000001" },
+  { at: "2026-11-20T03:10:00.000Z", digest: "5e1d000000000002" },
+  { at: "2026-11-20T04:00:00.000Z", digest: "5e1d000000000003" },
+];
+/** The path of the made-up long-lived session `id`, named as Oh My Pi names a top-level one. */
+const longPath = (id: string) =>
+  `/sessions/newproj/2026-11-20T02-50-00-000Z_0a1b2c3d-0000-4000-8000-0000000000${id}.jsonl`;
+
+/** `text`, a session's transcript, with its header's working directory `cwd` and start `start`,
+ *  and with `digests` as its system-prompt-digest lines in place of its own. */
+function longSession(
+  text: string,
+  start: string,
+  digests: readonly { at: string; digest: string }[]
+): string {
+  const lines = text
+    .split("\n")
+    .filter((line) => line !== "" && !line.includes('"customType":"system-prompt-digest"'))
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  const header = lines.findIndex((line) => line.type === "session");
+  lines[header] = { ...lines[header], timestamp: start, cwd: "/home/dev/src/newproj" };
+  lines.splice(
+    header + 1,
+    0,
+    ...digests.map(({ at, digest }, n) => ({
+      type: "custom",
+      customType: "system-prompt-digest",
+      data: digest,
+      id: `5e1d00${n}0`,
+      parentId: null,
+      timestamp: at,
+    }))
+  );
+  return lines.map((line) => `${JSON.stringify(line)}\n`).join("");
+}
+
+/** A subagent's transcript that started at `start`, whose recorded listing holds alpha, beta and,
+ *  with `nova`, acme/newproj's nova. */
+const longSubagent = (start: string, nova: boolean) =>
+  longSession(
+    nova
+      ? sessionText("subagent").replace(
+          "- beta: Use for the beta greeting.\\n",
+          "- beta: Use for the beta greeting.\\n- nova: Use when the project asks for nova.\\n"
+        )
+      : sessionText("subagent"),
+    start,
+    []
+  );
+
+/** The earliest subagent of the long-lived sessions, spawned under their first build, and one
+ *  spawned under their second. */
+const EARLY_SPAWN = "2026-11-20T02:55:00.000Z";
+const LATER_SPAWN = "2026-11-20T03:15:00.000Z";
+
+/** The stand-in store of the read-time rows: session a1 with a subagent under each of its first
+ *  two builds, b2 with only the first, and c3 with only the second; each a checkout of
+ *  acme/newproj. */
+function longStore(): string {
+  return changedStore("long-store", (files) => {
+    const storeA = files.store_a ?? {};
+    for (const id of ["a1", "b2", "c3"]) {
+      const file = longPath(id);
+      const dir = file.slice(0, -".jsonl".length);
+      storeA[file] = longSession(sessionText("good"), LONG_START, LONG_BUILDS);
+      if (id !== "c3") storeA[`${dir}/Early.jsonl`] = longSubagent(EARLY_SPAWN, false);
+      if (id !== "b2") storeA[`${dir}/Later.jsonl`] = longSubagent(LATER_SPAWN, true);
+    }
+  });
+}
+
+/** The copies output of the read-time rows: the suite's, with acme/newproj listed. */
+const longCopies = () =>
+  copiesWith("copies-long", {
+    "repositories.tsv": [["acme/newproj", "main", SHA, "no", "no", "", 1, "recursive", 1, ""]],
+  });
+
+/** The good session's case moved to the long-lived session `id`: its step's message at `step`,
+ *  under the prompt whose digest is `digest`. */
+async function longCase(id: string, session: string, step: string, digest: string | null) {
+  const good = (await profileCases()).find(
+    (c) => c.source.pathHash === pathHash(sessionPath("good"))
+  ) as Case;
+  return {
+    ...good,
+    id,
+    source: { ...good.source, pathHash: pathHash(longPath(session)) },
+    sessionStart: LONG_START,
+    sessionDigest: digest,
+    realStep: { ...good.realStep, timestamp: Date.parse(step) },
+  };
+}
+
+/** build-cases --reprofile of the read-time rows' cases, run once: their rebuilt cases by id. */
+let longCases: Promise<Map<string, Case>> | undefined;
+function reprofiledLong(): Promise<Map<string, Case>> {
+  longCases ??= (async () => {
+    const cases = [
+      // Its step after the second line: that build's.
+      await longCase("long-second", "a1", "2026-11-20T03:20:00.000Z", LONG_BUILDS[1]?.digest ?? ""),
+      // The first reply under the second build, whose line came after its message's time.
+      await longCase("long-own", "a1", "2026-11-20T03:05:00.000Z", LONG_BUILDS[1]?.digest ?? ""),
+      // Its step before every line.
+      await longCase("long-before", "a1", "2026-11-20T02:50:10.000Z", null),
+      // Its step after the second line, in a session with no subagent under that build.
+      await longCase("long-none", "b2", "2026-11-20T03:20:00.000Z", LONG_BUILDS[1]?.digest ?? ""),
+    ];
+    const from = path.join(scratch, "long", "old.jsonl");
+    mkdirSync(path.dirname(from), { recursive: true });
+    writeFileSync(from, cases.map((c) => `${JSON.stringify(c)}\n`).join(""));
+    const out = path.join(scratch, "long", "reprofiled.jsonl");
+    const lines: string[] = [];
+    const args = ["build-cases", "--config", longStore(), "--old", old, "--copies", longCopies()];
+    const code = await main(
+      [...args, "--count", countDir, "--reprofile", from, "--out", out],
+      io(lines)
+    );
+    expect({ code, said: code === EXIT.ok ? "" : lines.join("") }).toEqual({
+      code: EXIT.ok,
+      said: "",
+    });
+    return new Map(loadCases(out, old).map((c) => [c.id, c]));
+  })();
+  return longCases;
+}
+
+/** Case `id`'s evidence, by item. */
+const longEvidence = async (id: string) =>
+  Object.fromEntries(
+    ((await reprofiledLong()).get(id)?.evidence ?? []).map((each) => [each.item, each.source])
+  );
+
+/** Case `id`'s listing measure. */
+const longMeasure = async (id: string) =>
+  ListingMeasure.parse(JSON.parse((await longEvidence(id))[LISTING_MEASURE] ?? "{}"));
+
+/** The names of the skills of case `id`'s profile, with their repositories. */
+const longSkills = async (id: string) =>
+  ((await reprofiledLong()).get(id)?.profile.skills ?? []).map(
+    (each) => `${each.name} ${each.repo}`
+  );
+
+// Catches: a top-level case of a long-lived session read at the session's start, not at the prompt
+// its step ran under, so its profile lacks what the box gained before that build.
+test("a top-level case whose step comes after its session's second system-prompt-digest line is read at that line's time, and its listing is measured against the earliest subagent spawned under that build", async () => {
+  const [, second, third] = LONG_BUILDS;
+  // acme/newproj's first commit came after the session's start and before that build.
+  expect(await longSkills("long-second")).toContain("nova acme/newproj");
+  expect(await longMeasure("long-second")).toMatchObject({
+    kind: "subagent listing",
+    subagent: { pathHash: pathHash(`${longPath("a1").slice(0, -6)}/Later.jsonl`) },
+  });
+  const evidence = await longEvidence("long-second");
+  expect(evidence["read times"]).toStartWith(
+    `the step's message is at 2026-11-20T03:20:00.000Z, and the last system-prompt-digest line at or before it is at ${second?.at}; so it is the build of line 2 of the session's 3 system-prompt-digest lines, at ${second?.at}, digest ${second?.digest}, and each repository, a pool's too, is read at ${second?.at}: Oh My Pi 18.18.6 writes a system-prompt-digest line`
+  );
+  expect(evidence[`commit ${SHA} of acme/skills`]).toEndWith(
+    `at or before the prompt build its step ran under ${second?.at}: gh api repos/acme/skills/commits?sha=main&until=${second?.at}`
+  );
+  expect((await longMeasure("long-second")).why).toContain(
+    `spawned under the prompt build its profile is read at (from its line, at ${second?.at}, to the next line, at ${third?.at})`
+  );
+}, 120_000);
+
+// Catches: the first reply under a new build read at the build before it: its message's time comes
+// before the line Oh My Pi writes as that reply ends.
+test("a top-level case whose step was the first reply under a build, its message before that build's line, is read at that line, which holds the case's digest", async () => {
+  const [first, second] = LONG_BUILDS;
+  expect(await longSkills("long-own")).toContain("nova acme/newproj");
+  const evidence = await longEvidence("long-own");
+  expect(evidence["read times"]).toStartWith(
+    `the step's message is at 2026-11-20T03:05:00.000Z; the last system-prompt-digest line at or before it, at ${first?.at}, holds ${first?.digest}, not the case's digest ${second?.digest}, and the next, at ${second?.at}, holds it: the step was the first reply under that build; so it is the build of line 2 of the session's 3 system-prompt-digest lines, at ${second?.at}`
+  );
+}, 120_000);
+
+// Catches: a case whose step precedes every line read at a later build, or measured against a
+// subagent of a later build.
+test("a top-level case whose step precedes every system-prompt-digest line of its session is read at the session's start, its first build, and measured against a subagent spawned under that build", async () => {
+  const [first, second] = LONG_BUILDS;
+  const evidence = await longEvidence("long-before");
+  expect(evidence["read times"]).toStartWith(
+    `the step's message is at 2026-11-20T02:50:10.000Z, before every system-prompt-digest line of the session; so it is the session's first build (its line is the first of the session's 3 system-prompt-digest lines, at ${first?.at}, digest ${first?.digest}), and each repository, a pool's too, is read at the session's start ${LONG_START}`
+  );
+  // acme/newproj had no commit at the session's start.
+  expect(
+    evidence[
+      `left out: acme/newproj, which has no commit at or before the session's start ${LONG_START}`
+    ]
+  ).toBeDefined();
+  expect(await longSkills("long-before")).not.toContain("nova acme/newproj");
+  expect(await longMeasure("long-before")).toMatchObject({
+    kind: "subagent listing",
+    subagent: { pathHash: pathHash(`${longPath("a1").slice(0, -6)}/Early.jsonl`) },
+  });
+  expect((await longMeasure("long-before")).why).toContain(
+    `spawned under the session's first prompt build, the one its profile is read at (before the second line, at ${second?.at})`
+  );
+}, 120_000);
+
+// Catches: a top-level session measured against a subagent of another build when none was spawned
+// under the build its profile is read at.
+test("a top-level case whose session spawned no subagent with a recorded listing under the build its profile is read at is not measurable, and says why; a subagent of an earlier build is not used", async () => {
+  const measure = await longMeasure("long-none");
+  expect(measure).toMatchObject({ kind: "not measurable", recorded: null, subagent: null });
+  expect(measure.why).toEndWith(
+    `the store holds no subagent of it whose recorded prompt holds a skill listing spawned under the prompt build its profile is read at (from its line, at ${LONG_BUILDS[1]?.at}, to the next line, at ${LONG_BUILDS[2]?.at}) (subagents.sql: 1 of its 1 subagents record one, 0 of them spawned then), and the listing of a subagent spawned under another build is never used`
+  );
+}, 120_000);
+
+// Catches: a context session read at its start while its listing measure takes a subagent spawned
+// under a later build, so the measure compares two times.
+test("a context session is read at the build its measured subagent was spawned under, the earliest whose recorded prompt holds a listing, and its measure compares that build with itself", async () => {
+  const from = await profiledTasks();
+  const dir = path.join(scratch, "long-context", "profiles");
+  const said: string[] = [];
+  const code = await main(
+    [
+      "build-tasks",
+      "--config",
+      longStore(),
+      "--copies",
+      longCopies(),
+      "--count",
+      countDir,
+      "--reprofile",
+      from,
+      "--profiles-out",
+      dir,
+      "--context-session",
+      `store_a:${fileHash(longPath("c3"))}`,
+    ],
+    io(said)
+  );
+  expect({ code, said: code === EXIT.ok ? "" : said.join("\n") }).toEqual({
+    code: EXIT.ok,
+    said: "",
+  });
+  const second = LONG_BUILDS[1];
+  const later = pathHash(`${longPath("c3").slice(0, -6)}/Later.jsonl`);
+  // acme/newproj, which had its first commit by then, gives the profile nova, which the subagent's
+  // recorded listing holds: no name is missing.
+  const written = tasksOf(from).find((task) => task.source === "written");
+  const profile = JSON.parse(readFileSync(path.resolve(dir, `${written?.id}.json`), "utf8"));
+  expect(profile.skills.map((each: { name: string }) => each.name)).toContain("nova");
+  const evidence = (reprofileSummary(dir).profiles.contextSession?.evidence ?? []) as Item[];
+  const sources = Object.fromEntries(evidence.map((each) => [each.item, each.source]));
+  const measure = ListingMeasure.parse(JSON.parse(sources[LISTING_MEASURE] ?? "{}"));
+  expect(measure).toMatchObject({ kind: "subagent listing", missing: [] });
+  expect(measure.subagent?.pathHash).toBe(later);
+  expect(sources["read times"]).toStartWith(
+    `its subagent ${later}, the earliest whose recorded prompt holds a skill listing and the one its listing measure uses, started at ${LATER_SPAWN}, under the build of the last system-prompt-digest line before then (${second?.at}); so it is the build of line 2 of the session's 3 system-prompt-digest lines, at ${second?.at}, digest ${second?.digest}, and each repository, a pool's too, is read at ${second?.at}`
+  );
+}, 120_000);
+
+// Catches: a task the reader picked from a session measured as if the store held no subagent of
+// its session, when the store was never asked: its session's path was not known there.
+test("build-tasks in the reader's mode measures a task from a session against the subagent of that session the store gives, and says the store holds none only after asking it", async () => {
+  const store = changedStore("reader-subagent", (files) => {
+    (files.store_a ?? {})["/sessions/task-4/Helper.jsonl"] = sessionText("subagent");
+  });
+  const out = path.join(scratch, "reader-subagent", "tasks.jsonl");
+  const dir = path.join(scratch, "reader-subagent", "profiles");
+  const said: string[] = [];
+  const args = tasksArgs(out, ...profileFlags(dir)).map((arg) => (arg === config ? store : arg));
+  expect(await main(args, io(said))).toBe(EXIT.ok);
+  const summary = JSON.parse(readFileSync(`${out}.summary.json`, "utf8")) as {
+    profiles: { tasks: { task: string; evidence?: Item[] }[] };
+  };
+  const measureOf = (session: string) => {
+    const task = tasksOf(out).find((each) => each.pathHash === pathHash(session));
+    const note = summary.profiles.tasks.find((each) => each.task === task?.id);
+    const item = note?.evidence?.find((each) => each.item === LISTING_MEASURE);
+    return ListingMeasure.parse(JSON.parse(item?.source ?? "{}"));
+  };
+  // task-4's session started Helper, whose recorded listing holds alpha and beta.
+  expect(measureOf("/sessions/task-4.jsonl")).toMatchObject({
+    kind: "subagent listing",
+    recorded: 2,
+    subagent: { pathHash: pathHash("/sessions/task-4/Helper.jsonl") },
+  });
+  // task-3's session started none, and the store, asked, says so.
+  const none = measureOf("/sessions/task-3.jsonl");
+  expect(none.kind).toBe("not measurable");
+  expect(none.why).toEndWith(
+    "the store holds no subagent of it (subagents.sql, asked for those spawned under the session's first prompt build, the one its profile is read at (no later line))"
+  );
 }, 120_000);
 
 describe("GithubReads", () => {

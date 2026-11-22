@@ -50,7 +50,8 @@ bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
   [--after-case <command>] [--request-log <file>] \
   [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] \
   [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] \
-  [--reading-models <file>] [--limits <file>]
+  [--reading-models <file>] [--limits <file>] \
+  [--again <case id>]...    (--again: confirm only, not with --case)
 ```
 
 One skill per run: `--old` is that skill's own directory (their skill), and `--cases` holds that
@@ -75,7 +76,10 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   case whose model the gateway does not serve (none of the configuration's `servedModels` has its
   id, the text after its last `/`) is dropped before any call as `model-not-served`; a case on a
   served model runs as that served `provider/model`, so an Anthropic model behind another
-  gateway prefix runs as `anthropic/<id>`. With `--reading-models` (the skill's
+  gateway prefix runs as `anthropic/<id>`. A case whose listing measure (its `listing measure`
+  evidence item, under `build-cases` below) misses more than 10% of the names its session's
+  recorded listing holds is dropped before any call too, as `listing-misses`, with the count and
+  the names. With `--reading-models` (the skill's
   `<cut or set id>/models/<skill>.json` that `attribute` writes: its reading sessions by model),
   a skill with fewer than 6 reading sessions on models the gateway serves gets no session case
   screened: with no written case it is refused before any call (exit 2), it gets no verdict, with
@@ -85,11 +89,21 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   none, is theirs, never that refusal. A session case whose screen began before the refusal
   applied is passed over too: its runs count for nothing, and `confirm`, `control` and `report`
   take the screen as finished without it.
-- `confirm`: 40 fresh runs of old and the compared arm for each flagged case. `confirm --case
+- `confirm`: 40 fresh runs of old and the compared arm for each flagged case that is not dropped.
+  Each confirm records the runner that made it: a digest of the runner's code (each file of this
+  directory but its tests, its test data and this README). Where a case's last two confirms at the
+  same texts on one runner disagree, one a loss and one not, `confirm` runs a third, and the three
+  are pooled (INFRA-323's decision "The behaviour test's pass rule"): the case is a loss when the
+  compared arm passes at least 30 fewer of the 120 runs than the old text, the same bound of 10
+  for each 40. Confirms made on different runners (before and after a fix) or at other texts are
+  not pooled: only the last confirm's runner and texts count. `--again <case id>` asks for one
+  more confirm of a flagged case whose confirm is finished, on this runner; it is refused (exit
+  2), naming the case, where the case already has three confirms at these texts on this runner
+  (no fourth runs) or two that agree (a third runs only where two disagree). `confirm --case
   <id>` makes 40 fresh runs of old and the compared arm on that one case, with no flag gate and
   no gate of 6 informative cases, and no screen or judge controls: give it its own `--out`. It
-  refuses an id the case file does not hold, and a case whose model the gateway does not serve
-  (exit 2).
+  refuses an id the case file does not hold, a case whose model the gateway does not serve, and
+  `--again` beside it (exit 2).
 - `control`: on the skill's control case, 40 runs each of three arms: old; `minus` (old without
   each line of the case's file that is the case's line, trimmed, or without each line that is
   `--planted-line`; a rule written twice is still the rule, so every copy goes; a link in the old
@@ -103,21 +117,42 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
 - In every stage, a case one of whose captures needs a directory no read can give (the commit
   holds no such directory, or GitHub cuts a level of its tree short even read alone) is dropped
   as `unreadable-directory`, its drop naming the repository, the commit and the path; a run
-  started again skips it, and a dropped case is never informative. A read that fails for another
-  reason, after its retries, fails the command (exit 1), and the next run reads it again.
-- `report`: the compared arm, each case's passes and runs per arm and stage, the cases of each
-  kind (`source.kind` `session` or `written`; a case with none is a session case) and the
-  informative cases of each, the control case's passes of old, `minus` and
-  `twin` and what each control says, each model of the cases with its cases, the skill's verdict
-  and its reason, the drops per judge control and the drops counted as
-  `model-not-served` and as `unreadable-directory`, an estimate of the procedure's false-loss
-  chance at the cases run (exact binomial under identical old and compared texts, the pass rates
-  taken from each case's own screen; its assumptions are printed with it),
+  started again skips it. Each drop records the stage that made it (`droppedAt`; a result written
+  before that field is read as dropped at screen when its screen runs are not counted, else at
+  confirm when its screen flagged it and it has no confirm runs, else at control). No dropped case
+  leaves the score (the architect, 2026-11-22): a case dropped at screen is not informative, and
+  not screened; a case dropped at confirm or control keeps its screen's passes, and any confirm
+  made before the drop. A flagged case that can no longer be confirmed leaves its skill no "no
+  loss detected" verdict: the skill gets no verdict, `flagged case <id> could not be confirmed
+  (<reason>)`, unless another of its cases is a confirmed loss, which stands as the skill's loss.
+  A dropped control case gives its place to the next informative case of the control rule's order
+  (the largest old − none gap, a tie to the lower id), chosen by that rule and by no result; with
+  none left, the skill gets no verdict, and the reason names each dropped one. A drop at confirm
+  of a case its screen did not flag cannot happen, since only flagged cases are confirmed: results
+  that show one are refused, naming the case, by `report` and by every stage command (exit 1), not
+  scored. A read that fails for another reason, after its retries, fails the command (exit 1), and
+  the next run reads it again.
+- `report`: the compared arm; each case's passes and runs per arm and stage; for a dropped case,
+  the stage that dropped it, why, and the passes of each stage it ran (its screen's passes where
+  the screen ran); for a case with more than one confirm, each confirm numbered (one on another
+  runner or at other texts marked not counted) and, for three pooled ones, their pooled passes,
+  and a `pooled confirms` line naming each such case with its three results and the pooled
+  numbers; the cases of each kind (`source.kind` `session` or `written`; a case with none is a
+  session case) and the informative cases of each, the control case's passes of old, `minus` and
+  `twin` and what each control says, and each dropped case the control case took the place of;
+  each model of the cases with its cases, the skill's verdict and its reason, ending with how many
+  of the skill's screened cases have a listing measure that could not be measured; the drops per
+  judge control and the drops counted as `model-not-served`, as `unreadable-directory`, as
+  `listing-misses` and as `injection-unrebuildable`, the last by kind (a case under each kind it
+  holds); an estimate of the procedure's false-loss chance at the cases run (exact binomial under
+  identical old and compared texts, the pass rates taken from each case's own screen; its
+  assumptions are printed with it),
   a table of the chance it finds a loss of 10 to 40 points in one informative case, each screened
   case's smallest drop ("The smallest drop" below), the spend
   at list price, the peak memory, how many captures' system-prompt digests differ from their
   session's, and the text of `--limits <file>` as it is (the limits a result states, so no limit
-  is written into the runner), or that none was given. Beside the verdict, as descriptions that
+  is written into the runner), or that none was given. A screened case is one whose screen runs
+  are counted and that is not dropped at screen. Beside the verdict, as descriptions that
   change no rule: each kind's screened cases (their ids), how many are informative, and each
   screen arm's passes summed over them; the mean over the screened cases of old's screen pass
   rate less the compared arm's, over all of them and over each kind's, with a 95% interval
@@ -136,7 +171,8 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   needs only `--config`, `--out`, `--old` and `--cases`; its compared arm is the one its results
   record (a `--new` or `--ours` it is given must be that one). With the cut compared, `keeps`
   prints as "no loss detected by the registered rule" and a loss names the cases where the cut's
-  text passes at least 10 fewer of 40 fresh runs than the old text. With no skill compared, the
+  text passes at least 10 fewer of 40 fresh runs than the old text, and those where it passes at
+  least 30 fewer of 120 over three pooled confirms. With no skill compared, the
   report says once
   that the arm with no skill informs and clears nothing; `loss` prints as "no skill loses against
   their skill on <n> cases" and `keeps` as "no loss of no skill detected by the registered rule".
@@ -145,7 +181,7 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   profile's own <name>)"), names on each case's line the history reads the arm of ours removed,
   and gives ours against old twice: over all screened cases, and over the screened cases with no
   removed read (each arm's screen passes, and the confirm passes and the count of losses where
-  confirm runs were made). With
+  confirm runs were made, three pooled confirms counted as their 120 runs). With
   `--reading-models` it also prints each model of that file with its sessions and whether the
   gateway serves it, the sessions whose file names no model and those in no models query's rows,
   and the served models the screened session cases ran on, each with its cases; a verdict then
@@ -211,9 +247,13 @@ has no such file, the read call and its result are removed as the arm with no sk
 and the stage records the read's path (`ours.removedReads`). So a renamed unchanged copy of their
 skill gives old's texts but for the name. In a reply, a read of `skill://<ours>/…` is answered
 from our directory, and a read of their skill gets Oh My Pi's `Unknown skill: <theirs>` text; both
-are answered, not judged. The capture lists our skill under its own name and description, and a
-subagent's recorded listing names ours in their skill's line. Its captures are kept under
-`<out>/captures/ours-<digest of our directory>/`.
+are answered, not judged. A block of their skill that reaches the session beside its listing and
+its reads ("A skill can reach a session other than by its listing line" below) carries our text
+in its place: the Envoy plugin's dispatch-first block is the plugin's function of our SKILL.md,
+and an autoloaded block is rebuilt from our SKILL.md under the recorded path with our name as its
+skill directory's last part, its details naming our skill and that path. The capture lists our
+skill under its own name and description, and a subagent's recorded listing names ours in their
+skill's line. Its captures are kept under `<out>/captures/ours-<digest of our directory>/`.
 
 #### The judge reads no skill name
 
@@ -390,6 +430,20 @@ its line and the summary's `dropped` give the reason (`unreadable-directory: ` a
 repository, the commit and the path), a run started again skips it while its profile file keeps
 the same bytes, and the verdict rule counts it as a task with no runs.
 
+Every load applies the listing rule (the architect, 2026-11-22), so no one applies it by hand.
+Each task's listing measure comes from the tasks file's build-tasks summary
+(`<tasks>.summary.json`): a session task's own profile's `listing measure` evidence item, and a
+written task's context session's; a task with no summary beside its file is not measurable. A
+task whose rebuilt listing misses more than 10% of the names its session's recorded listing holds
+is dropped before any run (`listing-misses: ` with the count and the names): its line and the
+summary's task give the reason, the summary's `listing` counts the tasks measured, not
+measurable and dropped, and no verdict reads it. Where the rule drops more than half of a load's
+tasks, the command stops before any run (exit 3) and says so with the numbers: the architect
+decides such a load. The skill's verdict is made twice, with and without the tasks whose listing
+could not be measured, both in the summary's `verdicts`. Where they agree it stands, its reason
+giving how many tasks were not measured; where they differ there is no verdict (`no verdict:
+depends on tasks whose listing could not be measured`, with both results).
+
 ### `copies`
 
 ```
@@ -458,7 +512,8 @@ pins its plugins' sources in turn, so the pins are read again until no new one a
 rows of these units reach the table only when the configuration's `targets` name their
 repositories. `build-cases` and `build-tasks` read a pinned repository at the ref its installer
 names at the session's start; where `repositories.tsv` names a ref (a pin's tag) made after the
-session's start, they read the repository's default branch then.
+session's start, they read the repository's default branch then, and leave the repository out,
+with that evidence, when that branch has no commit then either.
 
 ### `attribute`
 
@@ -954,7 +1009,16 @@ text's lines that the session's own read of that file held (a session whose read
 shipped at the session's start: each repository of a unit is read at its last commit at or before
 that start (its tree, its `SKILL.md` files and its manifests) and resolved by `copies.ts`'s rules,
 so every skill of the profile is in its repository at the commit the case names, and the case's
-evidence says which skills the later copies output lists that the unit did not ship then. A read
+evidence says which skills the later copies output lists that the unit did not ship then. A
+repository GitHub holds no commit of at or before the time it is read at (the session's start, or
+a subagent's root's last prompt build) did not exist then, so nothing of it was installed then:
+the profile leaves it out, and the evidence item `left out: <repo>, which has no commit at or
+before the session's start <time>` gives the `gh api` read. Such a repository is often one the dev
+box's installers began to install after the session's start, which the later copies output
+lists. When it is the session repository, its project skills and context files are not read and
+the profile names no session repository; no later commit is read in its place, so the listing
+measure counts any of its project skills the session listed as missing. Any other failed GitHub
+read still fails the profile. A read
 whose skill none of its units ships at that start, because the later copies output names a unit
 as its manifest names it later (a marketplace or a plugin renamed since: the read's Oh My Pi
 plugin cache directory, `<marketplace>___<plugin>___<version>`, shows the old name), is placed by
@@ -1053,6 +1117,47 @@ In a load run, a read of another source's copy of the name (`skill://<namespace>
 path under `namespaced/<namespace>/skills/`, where a capture installs it) is no load of the tested
 skill; a read of `skill://<name>` or of the tested copy's path is.
 
+A skill can reach a session other than by its listing line and a read, and each arm then gives the
+session its own text of it there too (`arms.ts`). The Envoy plugin puts dispatch-first into every
+request of a session with Dispatch: a user message after the leading compaction summaries, built
+from the plugin's own `skills/dispatch-first/SKILL.md`, which it reads as it loads. No transcript
+keeps that block, and a capture runs with Dispatch off, so each arm but `none` puts the block, built
+from its own SKILL.md by the plugin's own function, where the plugin puts it; `none` puts none, and
+gets a hidden stand-in of the file (`hide: true`), so the plugin still loads and the listing names
+nothing more. A case does not record whether its session had Dispatch; the runner takes it that it
+did. Oh My Pi gives a subagent each skill its agent definition's `autoloadSkills` names as a
+`skill-prompt` message before its task (task/executor.ts, lines 5573-5607), and the transcript
+keeps it: each arm but `none` rebuilds that message from its own SKILL.md under the recorded path,
+as Oh My Pi renders it (the body, a blank line, `---`, a blank line and `Skill: <path>`, put through
+Oh My Pi's prompt format, which takes the padding out of a table's cells), and `none` leaves it
+out. A case that holds such a block in a form the runner cannot rebuild is dropped, never run, and
+the rest of the cases file runs (the architect, 2026-11-22): `behaviour screen` drops it before any
+model call, at screen, as `injection-unrebuildable: <kind>: <the fault>`, where the kind is
+`user-invoked` (a `/skill:` prompt the user typed), `other-shape` (a block with arguments or in
+another form) or `plugin-block-misplaced` (a dispatch-first block away from where the plugin puts
+it); a subagent whose agent autoloads the skill but whose messages hold no block of it and open
+with no compaction summary is dropped the same way when its capture is made, as
+`autoload-no-block`, at the stage of that capture. `report` lists each such case as it lists every
+dropped case, and its dropped line counts them by kind. Each capture's record lists the blocks
+it carries (`injections`), and a saved capture of such an arm made before these rules is refused.
+
+In the load test such a skill gets the same block under every name it is tested under, so its runs
+measure whether the agent reads a skill whose text it already holds. Under another name a
+dispatch-first in a profile that installs the Envoy plugin is captured with the plugin's block of
+the tested text and the hidden stand-in, and a profile that also installs a copy under its own name
+is refused: the plugin would put that copy in. The load test refuses dispatch-first on Claude Code,
+whose Envoy plugin puts it into a session from a session-start hook the test does not run, and a
+subagent profile whose agent definition (read from the profile's plugins at their commits)
+autoloads the tested skill: the subagent has its text before its task whatever the listing says.
+In any other profile such a skill is listed and tested like any other.
+
+On 2026-11-22 the commits of cybermonklabs/legion the cases use (155 of them) have one skill a
+plugin puts into the session, dispatch-first (the Envoy plugin), and two an agent definition
+autoloads, `thermonuclear-code-quality` and `thermonuclear-deep-review` (each by the agent of its
+name in `packages/pi-legion/agents/`). Both set `disable-model-invocation`, so no host lists them,
+and the load test refuses them. The other plugins the profiles install hold skills, and one of them
+agents, but inject and autoload none, and no agent of Oh My Pi's own autoloads a skill.
+
 A subagent's profile (a session that recorded its prompt) is read at two times. Oh My Pi 18.18.6
 gives a subagent the skills its parent loaded (task/structured-subagent.ts, lines 806-818 and
 895-902), a subagent of a subagent its parent's, and the subagent rescans only the skill
@@ -1105,8 +1210,8 @@ name a model's hint for the skill or a preview of its description (system-prompt
 981-983; extensibility/skill-descriptions.ts, lines 448-476), never the frontmatter's text. The
 summaries of `build-cases`, `build-cases --reprofile`, `build-tasks --profiles-out` and
 `build-tasks --reprofile` count the measures of each kind and sum the missing and added names
-(`listing`); a task that keeps its old profile is `not measurable`, with why. Nothing is dropped
-by the measure: a report applies its rules.
+(`listing`); a task that keeps its old profile is `not measurable`, with why. The measure drops
+nothing here: `behaviour` and `load` apply the listing rule to it (above, under each command).
 
 `--reprofile` builds the profiles of an existing case file again that way, from the cases and
 their sessions' heads (no transcript pulled, no reader call), and writes a new file in which only
@@ -1182,9 +1287,13 @@ since the build would read neither. A session gives a context as a session gives
 successful read of the skill must be placed at the cut repository's copy by `attribute.ts`'s
 rules, the model and thinking level are those in effect at that read, its context (`devbox`,
 its Legion role, or a subagent's recorded prompt and tools) is rebuilt as build-cases rebuilds a
-case's, and its profile is built at its start from its reads up to and including that read, as a
-session case's is from the reads before its step. The summary's `contextSession` names it, how it
-was chosen, and each session passed over before it with why (a drop reason and its detail, or
+case's, and its profile is built from its reads up to and including that read, as a session
+case's is from the reads before its step, at the time `--reprofile` reads a written case's (a
+written case records no time of its step): a top-level session's at its start, its first prompt
+build, and its listing measured against the earliest subagent of it spawned under that build; a
+subagent's at its root's last prompt build before its start. The summary's `contextSession` names
+it, how it was chosen, and each session passed over before it with why (a drop reason and its
+detail, or
 `model-not-served` for a session on a model the gateway does not serve). A case's `model` is the
 context session's when the gateway serves it; else the served model with the most reading
 sessions of the skill in `--reading-models` (the skill's `<cut or set id>/models/<skill>.json`);
@@ -1359,8 +1468,9 @@ message's text.
 
 0 done (a control held); 1 failed (every reply of a reader refused, a control that did not hold, a
 call, a load test's task or an `--after-case` command that failed, an item line of `proposals` that
-does not parse, an item it leaves with no entry, or a skill `results-index` finds with no nearest
-row, cases file or result); 2 refused before any model
-call or store read (among the refusals, an `--out` inside a git or jj checkout, from `behaviour`'s
-stage commands, `load` and `build-cases`); 3 stopped (the budget is spent, or the peak memory
-passed 1 GiB, 1.5 GiB for `copies`); 4 stopped by build-cases' stop rule.
+does not parse, an item it leaves with no entry, a skill `results-index` finds with no nearest
+row, cases file or result, or `behaviour` results that show a drop no stage makes); 2 refused
+before any model call or store read (among the refusals, an `--out` inside a git or jj checkout,
+from `behaviour`'s stage commands, `load` and `build-cases`); 3 stopped (the budget is spent, the
+peak memory passed 1 GiB, 1.5 GiB for `copies`, or the listing rule dropped more than half of a
+load's tasks); 4 stopped by build-cases' stop rule.

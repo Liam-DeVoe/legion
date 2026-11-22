@@ -63,6 +63,29 @@
  *   `off` sets `CLAUDE_CODE_DISABLE_THINKING`, a level of `claude --effort` goes as that flag,
  *   and `auto` leaves Claude Code's own default.
  *
+ * A skill that reaches a session other than by its listing line and a read (arms.ts's
+ * `Injection`) is in that session's context whatever its listing says, so for it a load test
+ * measures whether the agent reads a skill whose text it already holds. Each name it is tested
+ * under gets the same block:
+ *
+ * - The Envoy plugin's dispatch-first (arms.ts's PLUGIN_INJECTED), in a profile that installs the
+ *   plugin, on Oh My Pi: each capture's messages carry the plugin's block before the task's text,
+ *   built from the tested directory as the plugin builds it (`withPluginBlock`; its frontmatter,
+ *   which holds the name, is not in it), and under another name a hidden stand-in of the file the
+ *   plugin reads keeps it loading (context.ts). A profile that also installs a copy under the
+ *   skill's own name while it is tested under another is refused: the plugin would put that copy
+ *   into the requests, not the tested text. On Claude Code it is refused: Claude Code's Envoy
+ *   plugin puts it into a session with Dispatch from its session-start hook
+ *   (packages/claude-envoy/hooks/session-hook.ts), which a load test's Claude Code does not run,
+ *   and a profile does not say whether its session had that plugin.
+ * - A skill a subagent's agent definition autoloads (`autoloadSkills`, read from the profile's
+ *   plugins at their commits, context.ts's `subagentDefinition`): a `subagent:<agent>` profile
+ *   whose agent autoloads the skill is refused on Oh My Pi, before any model call. The subagent
+ *   gets the skill's text before its task whatever the listing says, and under another name its
+ *   agent would autoload none.
+ *
+ * In any other profile such a skill is listed like any other and tested as one.
+ *
  * Then that one body is sent `--runs` times to the gateway (gateway.ts), with the `anthropic-*`
  * headers the host sent beside it, on the route of its API: an `anthropic/<id>` model's body goes
  * to the Messages route, and an `openai/<id>` model's (Oh My Pi only; its hints still come from an
@@ -98,6 +121,8 @@
  * per run, LoadRun, which names its task's profile file and that SHA-256 too, its session id and
  * its place in its send order), `captures/` (each task's body, the body as the host sent it, and
  * its record) and `sessions/`.
+ * The refusals above for a skill a plugin or an agent definition puts into the session are made
+ * before any model call, each naming the profile.
  * A task whose run file holds its runs is skipped, so a command started again goes on from what
  * was saved. A task whose context needs a directory no read can give (context.ts's
  * UnreadableDirectory: the commit holds no such directory, or GitHub cuts a level of its tree short
@@ -117,6 +142,19 @@
  * task's line ends with the seconds of its phases: its capture (its context build, and the
  * GitHub reads in it with their count), the runs of its profile's tasks, its writes, the rest,
  * and the total.
+ *
+ * The listing rule (the architect, 2026-11-22T03:04Z), so that no one applies it by hand: each
+ * task's listing measure is read from the tasks file's build-tasks summary
+ * (`<tasks>.summary.json`: a session task's own profile's evidence, a written task's context
+ * session's; `taskListings`), and a task with no summary beside its file is not measurable. A task
+ * whose rebuilt listing misses more than MAX_LISTING_MISSING_PERCENT of the names its session's
+ * recorded listing holds (score.ts's `listingStanding`) is dropped before any run, its reason in
+ * the summary's task and the counts in its `listing`; it is not run and no verdict reads it. Where
+ * the rule drops more than half of the tasks, the command stops before any run and says so with
+ * the numbers (exit 3): the architect decides such a load. The skill's verdict is made with and
+ * without the tasks whose listing could not be measured (`listedOutcome`), both in the summary's
+ * `verdicts`: where they agree it stands, with how many tasks were not measured; where they
+ * differ there is no verdict, since it depends on those tasks.
  */
 import { createHash } from "node:crypto";
 import {
@@ -131,7 +169,7 @@ import {
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
-import type { Arm } from "./arms";
+import { type Arm, type Injection, PLUGIN_INJECTED, withPluginBlock } from "./arms";
 import {
   anthropicHeaders,
   type CaptureCase,
@@ -158,12 +196,14 @@ import {
 import { Case, listedName, Profile, type ProfileSkill, type Thinking } from "./cases";
 import { json, Refused, Stopped, schemaFaults, writeWhole } from "./common";
 import {
+  type AgentDefinition,
   buildContext,
   type ContextRecord,
   cacheKey,
   type RepoSource,
   readFrontmatter,
   skillFrontmatter,
+  subagentDefinition,
   UNREADABLE_DIRECTORY,
   UnreadableDirectory,
 } from "./context";
@@ -185,7 +225,10 @@ import { type RecordedRequest, startRecorder } from "./recorder";
 import { sendOrder } from "./replay";
 import {
   descriptionFault,
+  type ListingStanding,
   LOAD_RUNS,
+  listingStanding,
+  MAX_LISTING_MISSING_PERCENT,
   NEAR_MISS_MAX_LOADS,
   NEED_MIN_LOADS,
   TaskLabel,
@@ -414,6 +457,58 @@ function loadTasks(file: string): Task[] {
   return tasks;
 }
 
+/** One item of a profile's evidence, as a build-tasks summary keeps it. */
+const EvidenceItem = z.strictObject({ item: z.string(), source: z.string() });
+/** What the load test reads of a tasks file's summary (`<tasks>.summary.json`, as build-tasks and
+ *  `build-tasks --reprofile` write it, build.ts): the evidence of each session task's profile, and
+ *  of the context session's profile, which each written task takes. */
+const TasksSummary = z.looseObject({
+  profiles: z
+    .looseObject({
+      contextSession: z
+        .looseObject({ evidence: z.array(EvidenceItem).optional() })
+        .nullable()
+        .optional(),
+      tasks: z.array(
+        z.looseObject({ task: z.string(), evidence: z.array(EvidenceItem).optional() })
+      ),
+    })
+    .optional(),
+});
+
+/** Each task's standing by the listing measure of its profile (score.ts's `listingStanding`), as
+ *  the tasks file's summary gives it: a session task's own profile's, a written task's context
+ *  session's. With no summary beside the tasks file, each task is not measurable. Throws a refusal
+ *  when the summary is not JSON or no build-tasks summary. */
+function taskListings(tasksFile: string, tasks: readonly Task[]): Map<string, ListingStanding> {
+  const file = `${tasksFile}.summary.json`;
+  if (!existsSync(file)) {
+    const why = `the tasks file has no build-tasks summary (${file}) to give its listing measure`;
+    const standing: ListingStanding = { state: "not measurable", why };
+    return new Map(tasks.map((task) => [task.id, standing]));
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) {
+    throw new Refused(`the tasks file's summary ${file} is not JSON: ${messageFor(error)}`);
+  }
+  const summary = TasksSummary.safeParse(raw);
+  if (!summary.success) {
+    throw new Refused(`${file} is no build-tasks summary: ${schemaFaults(summary.error)}`);
+  }
+  const profiles = summary.data.profiles;
+  const noted = new Map((profiles?.tasks ?? []).map((note) => [note.task, note.evidence]));
+  return new Map(
+    tasks.map((task) => [
+      task.id,
+      listingStanding(
+        task.source === "written" ? profiles?.contextSession?.evidence : noted.get(task.id)
+      ),
+    ])
+  );
+}
+
 /** A profile file as a load test read it: its absolute path, the SHA-256 of its bytes, its
  *  profile, and the skill the test looks for under it (for Claude Code, in the plugin its layout
  *  puts the tested skill in). */
@@ -537,6 +632,69 @@ function taskProfiles(
     );
   }
   return profiled;
+}
+
+/** Whether the plugin of arms.ts's PLUGIN_INJECTED puts the skill `own` (the tested skill's own
+ *  name) into each request of a session of `profile` on Oh My Pi: `own` is the skill it reads, and
+ *  the profile installs the plugin. */
+function pluginInjects(profile: Profile, own: string): boolean {
+  return (
+    own === PLUGIN_INJECTED.skill &&
+    profile.plugins.some((plugin) => plugin.name === PLUGIN_INJECTED.plugin)
+  );
+}
+
+/**
+ * Why a load test of the skill `own`, tested under `name`, cannot be made in the context of a
+ * profile of `profiled` (see the file's header), or undefined when it can in each: on Claude Code,
+ * a skill the Envoy plugin puts into its session; on Oh My Pi, a profile that installs that plugin
+ * and a copy under `own` while the skill is tested under another name, and a `subagent:<agent>`
+ * profile whose agent autoloads `own`. A profile whose plugins' repositories cannot be read here is
+ * left to its tasks' captures, which read the same repositories and report that by their rules.
+ */
+async function injectedRefusal(
+  profiled: readonly ProfiledTask[],
+  o: Pick<LoadOptions, "host" | "source" | "cacheDir">,
+  own: string,
+  name: string
+): Promise<string | undefined> {
+  if (o.host === "claude" && own === PLUGIN_INJECTED.skill) {
+    return `${own} cannot be load tested on Claude Code: Claude Code's Envoy plugin puts it into each session with Dispatch from its session-start hook (packages/claude-envoy/hooks/session-hook.ts), which a load test's Claude Code does not run, and a profile does not say whether its session had that plugin`;
+  }
+  if (o.host !== "omp") return undefined;
+  const faults: string[] = [];
+  const read = new Set<string>();
+  for (const { profile } of profiled) {
+    if (read.has(profile.file)) continue;
+    read.add(profile.file);
+    const { context } = profile.profile;
+    if (
+      name !== own &&
+      pluginInjects(profile.profile, own) &&
+      profile.profile.skills.some((skill) => listedName(skill) === own)
+    ) {
+      faults.push(
+        `${profile.file}: it installs ${own} beside the skill tested under ${name}, and the ${PLUGIN_INJECTED.plugin} plugin would put that copy into each request, not the tested text`
+      );
+    }
+    if (!context.startsWith("subagent:")) continue;
+    let agent: AgentDefinition | null;
+    try {
+      agent = await subagentDefinition({ id: profile.file, context, profile: profile.profile }, o);
+    } catch {
+      // Each task's capture reads the same repositories, and reports the failure by its rules.
+      continue;
+    }
+    if (agent?.autoloadSkills.includes(own) === true) {
+      const renamed = name === own ? "" : `, and under the name ${name} it would autoload none`;
+      faults.push(
+        `${profile.file}: its agent ${agent.name} (${agent.path} of ${agent.repo} at ${agent.commit}) autoloads ${own}, so the subagent gets its text before its task whatever its listing says${renamed}`
+      );
+    }
+  }
+  return faults.length === 0
+    ? undefined
+    : `${own} cannot be load tested in the context of each profile, since a plugin or an agent definition puts it into the session there: ${faults.join("; ")}`;
 }
 
 /** The frontmatter `name` of the skill in `dir`, read as Oh My Pi reads a skill's frontmatter
@@ -688,6 +846,50 @@ export function skillOutcome(
     reason: fault
       ? `a description fault: tasks ${faulty.join(", ")}`
       : `no description fault in ${tasks.length} tasks`,
+  };
+}
+
+/** The skill's verdict under the listing rule (the architect, 2026-11-22T03:04Z): made twice, from
+ *  all `tasks` (`withUnmeasured`) and from those whose listing was measured
+ *  (`withoutUnmeasured`, no verdict when none was). Where no task is unmeasured, or the first is
+ *  no verdict yet, it is the first; where the two agree, the first, its reason giving how many
+ *  tasks were not measured; where they differ, no verdict, its reason giving both. */
+export function listedOutcome(
+  tasks: readonly {
+    readonly id: string;
+    readonly label: TaskLabel;
+    readonly outcome: TaskOutcome;
+    readonly measured: boolean;
+  }[],
+  wanted: number
+): { verdict: LoadVerdict; withUnmeasured: LoadVerdict; withoutUnmeasured: LoadVerdict } {
+  const withUnmeasured = skillOutcome(tasks, wanted);
+  const measured = tasks.filter((task) => task.measured);
+  const withoutUnmeasured: LoadVerdict =
+    measured.length === 0
+      ? { descriptionFault: null, reason: "no verdict: no task's listing was measured" }
+      : skillOutcome(measured, wanted);
+  const unmeasured = tasks.length - measured.length;
+  const both = { withUnmeasured, withoutUnmeasured };
+  if (unmeasured === 0 || withUnmeasured.descriptionFault === null) {
+    return { verdict: withUnmeasured, ...both };
+  }
+  const count = `${unmeasured} of its ${tasks.length} tasks`;
+  if (withoutUnmeasured.descriptionFault === withUnmeasured.descriptionFault) {
+    return {
+      verdict: {
+        descriptionFault: withUnmeasured.descriptionFault,
+        reason: `${withUnmeasured.reason}; the listing of ${count} could not be measured, and without them the verdict is the same`,
+      },
+      ...both,
+    };
+  }
+  return {
+    verdict: {
+      descriptionFault: null,
+      reason: `no verdict: depends on tasks whose listing could not be measured (${count}): with them, ${withUnmeasured.reason}; without them, ${withoutUnmeasured.reason}`,
+    },
+    ...both,
   };
 }
 
@@ -1064,6 +1266,7 @@ class LoadTest {
    *  context.ts installs an arm's own skill from `skillDir` and reads no repository for it. */
   caseOf(id: string, text: string, profile: LoadProfile): { c: CaptureCase; arm: Arm } {
     const { name, renamedFrom, model, thinking } = this.settings;
+    const ownName = renamedFrom ?? name;
     const own: ProfileSkill = {
       repo: "local/skill-directory",
       commit: this.settings.skillText,
@@ -1080,6 +1283,22 @@ class LoadTest {
       ...(recorded === undefined ? {} : { systemPrompt: recorded }),
       skills: [...profile.skills, own],
     };
+    const task = {
+      role: "user",
+      content: [{ type: "text", text }],
+      attribution: "user",
+      timestamp: Date.now(),
+    };
+    // The Envoy plugin's block of the tested text before the task's, under every name, where the
+    // profile installs the plugin (see the file's header).
+    const placed =
+      this.o.host === "omp" && pluginInjects(profile, ownName)
+        ? withPluginBlock([task], this.skillDir)
+        : undefined;
+    const injections: Injection[] =
+      placed === undefined
+        ? []
+        : [{ by: "plugin", plugin: PLUGIN_INJECTED.plugin, name: ownName, at: placed.at }];
     return {
       c: {
         id,
@@ -1095,15 +1314,9 @@ class LoadTest {
         skill: name,
         skillDir: this.skillDir,
         installedDir: path.join("/skills", name),
-        messages: [
-          {
-            role: "user",
-            content: [{ type: "text", text }],
-            attribution: "user",
-            timestamp: Date.now(),
-          },
-        ],
+        messages: placed?.messages ?? [task],
         profileSkills: caseProfile.skills,
+        injections,
       },
     };
   }
@@ -1160,9 +1373,9 @@ class LoadTest {
   async ompCapture(task: Task, profile: TaskProfile): Promise<Captured> {
     const files = loadCapturePaths(this.o.out, "omp", task.id);
     const { models } = this.o;
-    let capture = savedCapture(files);
+    const { c, arm } = this.caseOf(task.id, task.text, profile.profile);
+    let capture = savedCapture(files, arm);
     if (capture === undefined && models !== undefined) {
-      const { c, arm } = this.caseOf(task.id, task.text, profile.profile);
       capture = await captureBody(c, arm, {
         omp: this.o.omp,
         outDir: path.dirname(files.body),
@@ -1720,6 +1933,22 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   }
   const tasks = loadTasks(o.tasksFile);
   const profiled = taskProfiles(tasks, o, name);
+  const injected = await injectedRefusal(profiled, o, own, name);
+  if (injected !== undefined) throw new Refused(injected);
+  // Each task's standing by its listing measure, and the tasks the listing rule drops: never run.
+  const listings = taskListings(o.tasksFile, tasks);
+  const listingDrops = new Map(
+    [...listings].flatMap(([id, standing]) =>
+      standing.state === "dropped" ? [[id, standing.reason] as const] : []
+    )
+  );
+  const standings = [...listings.values()];
+  const listingCounts = {
+    summary: `${o.tasksFile}.summary.json`,
+    measured: standings.filter((standing) => standing.state === "measured").length,
+    notMeasurable: standings.filter((standing) => standing.state === "not measurable").length,
+    dropped: listingDrops.size,
+  };
   // With no --hint-model the hint model is the model itself, and Oh My Pi's hints are written on
   // the Messages route only, so each capture to be made would fail.
   if (
@@ -1748,9 +1977,10 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   };
 
   const summaryFile = path.join(o.out, "summary.json");
-  // Each task dropped for a directory of its context no read can give, by its id, with why: one an
-  // earlier command dropped under this profile is not tried again.
-  const dropped = new Map<string, string>();
+  // Each task dropped, by its id, with why: by the listing rule, before any run; or for a
+  // directory of its context no read can give, which an earlier command dropped under this
+  // profile and which is not tried again.
+  const dropped = new Map<string, string>(listingDrops);
   if (existsSync(summaryFile)) {
     let raw: unknown;
     try {
@@ -1786,7 +2016,13 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
           `${o.out} holds task ${task.id} made under a profile of other bytes (SHA-256 ${before.profileDigest ?? "not recorded"}) than ${profile.file} (SHA-256 ${profile.digest}): give the task that profile again, or use another --out`
         );
       }
-      if (typeof before?.dropped === "string" && before.profileDigest === profile.digest) {
+      // A listing drop is the listing rule's again on this run's summary, never a saved one.
+      if (
+        typeof before?.dropped === "string" &&
+        before.dropped.startsWith(UNREADABLE_DIRECTORY) &&
+        before.profileDigest === profile.digest &&
+        !dropped.has(task.id)
+      ) {
         dropped.set(task.id, before.dropped);
       }
     }
@@ -1817,12 +2053,26 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   };
   for (const task of tasks) readHintDollars(task);
   /** Writes the summary as the runs stand; returns the skill's verdict and the test's dollars so
-   *  far at list price, its runs' and its hints'. */
+   *  far at list price, its runs' and its hints'. The verdict leaves out each task the listing
+   *  rule dropped, and is made with and without the tasks whose listing was not measured
+   *  (`listedOutcome`), both in the summary. */
   const writeSummary = (): { verdict: LoadVerdict; usd: number } => {
-    const verdict = skillOutcome(
-      tasks.map((task) => ({ id: task.id, label: task.label, outcome: outcomeOf(task) })),
+    const listed = listedOutcome(
+      tasks.flatMap((task) =>
+        listingDrops.has(task.id)
+          ? []
+          : [
+              {
+                id: task.id,
+                label: task.label,
+                outcome: outcomeOf(task),
+                measured: listings.get(task.id)?.state === "measured",
+              },
+            ]
+      ),
       o.runs
     );
+    const verdict = listed.verdict;
     const runs = [...runsOf.values()].flat();
     const runsUsd = runs.reduce((sum, run) => sum + run.usage.usd, 0);
     let hintsUsd = 0;
@@ -1847,8 +2097,14 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
           profileDigest: profile.digest,
           ...outcomeOf(task),
           dropped: dropped.get(task.id) ?? null,
+          listing: listings.get(task.id) ?? null,
         })),
+        listing: listingCounts,
         verdict,
+        verdicts: {
+          withUnmeasured: listed.withUnmeasured,
+          withoutUnmeasured: listed.withoutUnmeasured,
+        },
         spend: { runsUsd, hintsUsd, usd: runsUsd + hintsUsd },
         peakRssBytes: peak,
         requestLog: o.requestLog,
@@ -1858,10 +2114,18 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     return { verdict, usd: runsUsd + hintsUsd };
   };
   writeSummary();
+  if (listingDrops.size * 2 > tasks.length) {
+    throw new Stopped(
+      `the listing rule drops ${listingDrops.size} of the ${tasks.length} tasks of ${o.tasksFile}, more than half (${[...listingDrops.keys()].join(", ")}): the rebuilt listing of each misses more than ${MAX_LISTING_MISSING_PERCENT}% of the names its session's recorded listing holds, so the test stops before any run, and the architect decides such a load; ${listingCounts.measured} tasks' listings were measured and ${listingCounts.notMeasurable} could not be; written to ${summaryFile}`
+    );
+  }
 
   const count = (label: TaskLabel) => tasks.filter((task) => task.label === label).length;
   test.say(
     `the skill ${name} on ${o.host === "omp" ? "Oh My Pi" : "Claude Code"}, model ${settings.model}, thinking ${o.thinking}: ${count("need")} need and ${count("near-miss")} near-miss tasks, ${o.runs} runs each`
+  );
+  test.say(
+    `the listing rule (${listingCounts.summary}): ${listingCounts.measured} tasks' listings measured, ${listingCounts.notMeasurable} not measurable, ${listingCounts.dropped} tasks dropped, each missing more than ${MAX_LISTING_MISSING_PERCENT}% of the names its session's recorded listing holds`
   );
   const byFile = new Map<string, { profile: TaskProfile; ids: string[] }>();
   for (const { task, profile } of profiled) {
@@ -1873,6 +2137,11 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     test.say(
       `${ids.length === 1 ? "task" : "tasks"} ${ids.join(", ")} run in the context ${profile.profile.context} of the profile ${profile.file} (SHA-256 ${profile.digest})`
     );
+    if (o.host === "omp" && pluginInjects(profile.profile, own)) {
+      test.say(
+        `the ${PLUGIN_INJECTED.plugin} plugin puts ${own} into each request in the context of ${profile.file}: each capture carries its block, built from the tested text, before the task's text${name === own ? "" : `, the same under the name ${name}`}, so its runs measure whether the agent reads a skill whose text it already holds`
+      );
+    }
   }
   if (settings.renamedFrom !== null) {
     test.say(
@@ -1895,7 +2164,9 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
       const saved = runsOf.get(task.id) ?? [];
       const drop = dropped.get(task.id);
       if (drop !== undefined) {
-        test.say(`${what(task)}: dropped before, skipped: ${drop}`);
+        test.say(
+          `${what(task)}: ${listingDrops.has(task.id) ? "dropped, not run" : "dropped before, skipped"}: ${drop}`
+        );
         continue;
       }
       if (saved.length >= o.runs) {

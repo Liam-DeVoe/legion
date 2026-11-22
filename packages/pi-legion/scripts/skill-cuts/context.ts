@@ -10,7 +10,11 @@
  *   `source` and kept under the cache (`skills/<key of repo, commit, path>`). A second copy of a
  *   name, whose text differs (a profile skill's `namespace`), goes in
  *   `namespaced/<namespace>/skills/<name>`, one more skills directory of its own
- *   (`namespacedDirs`), so Oh My Pi lists it as `<namespace>/<name>`.
+ *   (`namespacedDirs`), so Oh My Pi lists it as `<namespace>/<name>`. A skill a plugin reads as
+ *   it loads and puts into the session itself (arms.ts's `Injection` of a plugin: the Envoy
+ *   plugin's dispatch-first) gets a hidden stand-in at `skills/<name>` where the arm installs no
+ *   copy under that name (`none`, or a load test under another name), so the plugin loads in
+ *   every arm and Oh My Pi lists nothing more (`from: "stand-in"`).
  * - `plugins/<name>/`: each plugin of `profile.plugins` that is an Oh My Pi extension (its
  *   directory holds a `package.json` with an `omp` field), built as the worker image builds the
  *   Legion plugins: the repository at the commit (`trees/<key of repo, commit>`), its packages
@@ -25,7 +29,11 @@
  *   profile's skills already hold. A plugin that cannot be installed (its manifest cannot be
  *   parsed, its build fails, or a plugin of its name is installed already) is left out, with its
  *   reason; a plugin whose repository cannot be read stops the case with the reason, as a failed
- *   role-prompt read does, so every arm of a case has the same plugins.
+ *   role-prompt read does, so every arm of a case has the same plugins. For a subagent's context
+ *   (`subagent:<agent>`), the record names the agent definition the subagent ran (`agent`,
+ *   `agentIn`) and the skills it autoloads, read in Oh My Pi's order: a dev box's user agents,
+ *   the directory its installers link as `~/.omp/agent/agents`, at the commit of the subagent's
+ *   start (`userAgents`), then each plugin's `agents/`; capture.ts checks the arm against it.
  * - `work/`: the checkout of the session repository. Each of its context files (a file named
  *   `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` or `copilot-instructions.md`, REPOSITORY_CONTEXT_FILES,
  *   at its default branch's commit at the session's start) is written there at its path in the
@@ -63,9 +71,10 @@
  * does not hold, or one GitHub cuts short even one level at a time, is an UnreadableDirectory,
  * which stops the context; no source reads a whole repository in its place. Repository and owner
  * names come only from the case. Every cache entry is `<cacheDir>/<kind>s/<key>` (`skills`,
- * `trees`, `plugins`, `composes`, and `files` for each single file read), made into a fresh path
- * and renamed into place. `record` says what was used: each commit and cache key, each plugin
- * left out, and each build with its time and whether the cache already held it.
+ * `trees`, `plugins`, `composes`, `files` for each single file read, and `dirs` for another
+ * directory of a repository: a dev box's installers and the agents they link), made into a fresh
+ * path and renamed into place. `record` says what was used: each commit and cache key, each
+ * plugin left out, and each build with its time and whether the cache already held it.
  */
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -74,6 +83,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -83,7 +93,7 @@ import {
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { mapLimit } from "../skill-scenarios/production-dispatch";
-import type { Arm } from "./arms";
+import { type Arm, legionStore } from "./arms";
 import { type Case, listedName, testedCopy } from "./cases";
 import { firstLine, GhRetries } from "./common";
 import {
@@ -91,6 +101,7 @@ import {
   blobBatches,
   blobQuery,
   graphqlArgs,
+  joinPath,
   parseJson,
   type TreeEntry,
 } from "./copies";
@@ -161,7 +172,7 @@ export const UNREADABLE_DIRECTORY = "unreadable-directory";
 /** One build the context needed: what it is, its cache key, whether the cache held it already,
  *  and how long it took, in milliseconds. */
 export interface Build {
-  readonly kind: "skill" | "tree" | "plugin" | "compose" | "file";
+  readonly kind: "skill" | "tree" | "plugin" | "compose" | "file" | "dir";
   readonly key: string;
   readonly hit: boolean;
   readonly ms: number;
@@ -172,9 +183,11 @@ export interface ContextRecord {
   readonly source: string;
   readonly skills: readonly {
     readonly name: string;
-    /** The arm's own directory, or the repository directory and its cache key. */
+    /** The arm's own directory, the repository directory and its cache key, or a hidden stand-in
+     *  of a skill a plugin reads as it loads (see the file's header). */
     readonly from:
       | "arm"
+      | "stand-in"
       | { readonly repo: string; readonly commit: string; readonly path: string; key: string };
   }[];
   readonly plugins: readonly {
@@ -210,6 +223,10 @@ export interface ContextRecord {
         readonly parts: readonly string[];
       }
     | null;
+  /** For a subagent's context, the agent definition it ran, with the skills it autoloads
+   *  (`agentIn`): the dev box's user agent of its name, else the profile's plugins'; null for
+   *  another context or an agent neither defines. */
+  readonly agent: AgentDefinition | null;
   /** What of the real session's context the capture does not reproduce. */
   readonly leftOut: readonly string[];
   readonly builds: readonly Build[];
@@ -217,6 +234,20 @@ export interface ContextRecord {
    *  reason (`RepoSource.reads`; empty for a source that reads no GitHub). A context built at the
    *  same time from the same source adds its own. */
   readonly githubRetries: Readonly<Record<string, number>>;
+}
+
+/** A subagent's agent definition: its name, where it is (the repository and commit of a plugin
+ *  of the profile, or of the dev box's repository for a user agent, and the file's path in that
+ *  repository), for a user agent the installer line that links its directory as Oh My Pi's user
+ *  agents directory (`linkedBy`, `<script>:<line>`), and the skills its `autoloadSkills` names,
+ *  which Oh My Pi puts into the subagent's session before its task (arms.ts). */
+export interface AgentDefinition {
+  readonly name: string;
+  readonly repo: string;
+  readonly commit: string;
+  readonly path: string;
+  readonly linkedBy?: string;
+  readonly autoloadSkills: readonly string[];
 }
 
 /** A skill the context installs: its name, its directory, its frontmatter `description`, and
@@ -258,8 +289,9 @@ export interface ContextOptions {
   readonly root: string;
 }
 
-/** What a context reads of a case: its id, its context and its profile. */
-export type ContextCase = Pick<Case, "id" | "context" | "profile">;
+/** What a context reads of a case: its id, its context, its profile, and its evidence, which
+ *  says whose session a subagent's is (arms.ts's `legionStore`). */
+export type ContextCase = Pick<Case, "id" | "context" | "profile" | "evidence">;
 
 /** The hex SHA-256 of `parts`, each ended by a NUL, cut to 32 characters: a cache key. */
 export function cacheKey(...parts: string[]): string {
@@ -501,6 +533,20 @@ const GH_MAX_RATE_WAIT_MS = 15 * 60_000;
  *  again, as common.ts's `GhRetries` sends a read that failed for a transient reason. */
 const GH_READ_TIMEOUT_MS = 120_000;
 const GH_TARBALL_TIMEOUT_MS = 900_000;
+/** The most files a skill at a repository's root (a profile path of `.`) is read with: a root of
+ *  more is a repository, not a skill's directory, and is never read whole for one. */
+export const ROOT_SKILL_FILES = 200;
+
+/** The refusal of a skill at the root of `repo` at `commit` whose root holds `count` files, or
+ *  `count` and more (`more`): more than ROOT_SKILL_FILES. */
+function rootTooLarge(repo: string, commit: string, count: number, more: boolean): never {
+  throw new UnreadableDirectory(
+    repo,
+    commit,
+    ".",
+    `${repo} at ${commit}: its root holds ${count}${more ? " or more" : ""} files, more than the ${ROOT_SKILL_FILES} a skill at a repository's root is read with`
+  );
+}
 
 /** What `ghSource` takes beside the binary, each a test's when given: the wait before a read is
  *  sent again, and where each retry is said (`Bun.sleep` and standard error by default). */
@@ -518,8 +564,12 @@ export interface GhOptions {
  * recursive tree short (`truncated`: a repository of too many entries), a directory is read
  * alone (`walk`): its tree found by one-level reads from the root along its path, then its own
  * recursive tree, or each of its levels read alone where GitHub cuts that short too, and each of
- * its blobs read alone over REST; `prefetch` reads nothing ahead for such a commit. Only
- * `tree(repo, commit, "")`, a plugin's checkout, reads a whole repository. `prefetch` reads the
+ * its blobs read alone over REST; `prefetch` reads nothing ahead for such a commit. A skill at the
+ * repository's root (`.`) is its root's files, read the same way, at their whole paths: from the
+ * commit's tree, or, where GitHub cuts it short, the root walked one level at a time; a root of
+ * more than ROOT_SKILL_FILES files is an UnreadableDirectory, and `prefetch` reads none of it
+ * ahead. Only `tree(repo, commit, "")`, a plugin's checkout, reads a whole repository, from its
+ * tarball. `prefetch` reads the
  * blobs of many directories of one commit in GraphQL batches, `object(oid: …)` up to BLOB_BATCH
  * blobs and BLOB_BATCH_BYTES bytes a call, with `-f owner=<owner> -f name=<repo>` so the pod's gh
  * sends it with that owner's token (as copies.ts does); a blob a batch does not give whole
@@ -676,9 +726,13 @@ export function ghSource(
   // The blob entries under `dir` of `repo` at `commit`, a commit whose recursive tree GitHub cuts
   // short, at their paths in the repository, with no whole repository read: `dir`'s tree found by
   // one-level reads from the root along its path, then its own recursive tree, or, where GitHub
-  // cuts that short too, each of its levels read alone, four at once. Throws UnreadableDirectory
-  // when the commit holds no such directory, or GitHub cuts a level short even read alone.
+  // cuts that short too, each of its levels read alone, four at once. `dir` `.` is the root, whose
+  // own recursive tree is the commit's that GitHub cut short: its levels are read alone from the
+  // first, and the walk stops with a refusal once it has found more than ROOT_SKILL_FILES files.
+  // Throws UnreadableDirectory when the commit holds no such directory, or GitHub cuts a level
+  // short even read alone.
   const walk = async (repo: string, commit: string, dir: string): Promise<BlobEntry[]> => {
+    const root = dir === ".";
     // One level of the tree `sha`, which is the tree of `at` ("" the root).
     const level = async (sha: string, at: string): Promise<TreeEntry[]> => {
       const read = await treeRead(repo, sha, false);
@@ -692,27 +746,29 @@ export function ghSource(
     };
     let sha = commit;
     let at = "";
-    for (const name of dir.split("/")) {
-      const entry = (await level(sha, at)).find((each) => each.path === name);
-      if (entry?.type !== "tree") {
-        throw new UnreadableDirectory(
-          repo,
-          commit,
-          dir,
-          `${repo} at ${commit} holds no directory ${dir}`
-        );
+    if (!root) {
+      for (const name of dir.split("/")) {
+        const entry = (await level(sha, at)).find((each) => each.path === name);
+        if (entry?.type !== "tree") {
+          throw new UnreadableDirectory(
+            repo,
+            commit,
+            dir,
+            `${repo} at ${commit} holds no directory ${dir}`
+          );
+        }
+        sha = entry.sha;
+        at = at === "" ? name : `${at}/${name}`;
       }
-      sha = entry.sha;
-      at = at === "" ? name : `${at}/${name}`;
-    }
-    const whole = await treeRead(repo, sha, true);
-    if (!whole.truncated) {
-      return whole.tree
-        .filter((entry) => entry.type === "blob")
-        .map((entry) => ({ ...entry, path: `${dir}/${entry.path}` }));
+      const whole = await treeRead(repo, sha, true);
+      if (!whole.truncated) {
+        return whole.tree
+          .filter((entry) => entry.type === "blob")
+          .map((entry) => ({ ...entry, path: `${dir}/${entry.path}` }));
+      }
     }
     const files: BlobEntry[] = [];
-    for (let trees = [{ sha, at: dir }]; trees.length > 0; ) {
+    for (let trees = [{ sha, at }]; trees.length > 0; ) {
       const levels = await mapLimit(trees, 4, async (tree) => ({
         parent: tree.at,
         entries: await level(tree.sha, tree.at),
@@ -720,13 +776,22 @@ export function ghSource(
       trees = [];
       for (const { parent, entries } of levels) {
         for (const entry of entries) {
-          const where = { ...entry, path: `${parent}/${entry.path}` };
+          const where = { ...entry, path: parent === "" ? entry.path : `${parent}/${entry.path}` };
           if (entry.type === "tree") trees.push({ sha: entry.sha, at: where.path });
           else if (entry.type === "blob") files.push(where);
         }
       }
+      if (root && files.length > ROOT_SKILL_FILES) {
+        rootTooLarge(repo, commit, files.length, trees.length > 0);
+      }
     }
     return files;
+  };
+  // The prefix of the paths of the files under `dir` in the repository: `<dir>/`, or none for
+  // `.`, the root.
+  const prefixOf = (dir: string): string => {
+    const inside = dir.replace(/\/+$/, "");
+    return inside === "." ? "" : `${inside}/`;
   };
   // Each blob a GraphQL batch gave whole, by its id: its bytes, and the files of the directories
   // read ahead still to be written from it, each as `<repo>@<commit>\0<dir>/\0<path>` (a file under
@@ -772,7 +837,9 @@ export function ghSource(
       if (truncated) return release;
       // Each blob to read, by its id.
       const wanted = new Map<string, BlobEntry>();
-      for (const prefix of dirs.map((dir) => `${dir.replace(/\/+$/, "")}/`)) {
+      for (const prefix of dirs.map(prefixOf)) {
+        // A root of more files than a skill at the root is read with is refused in `tree`.
+        if (prefix === "" && entries.length > ROOT_SKILL_FILES) continue;
         for (const entry of entries) {
           if (!/^[0-9a-f]{40}$/.test(entry.sha) || !entry.path.startsWith(prefix)) continue;
           const key = `${repo}@${commit}\0${prefix}\0${entry.path}`;
@@ -819,10 +886,13 @@ export function ghSource(
       if (dir === "") return tarball(repo, commit, dest);
       const { entries, truncated } = await listingOf(repo, commit);
       const inside = dir.replace(/\/+$/, "");
-      const prefix = `${inside}/`;
+      const prefix = prefixOf(inside);
       const files = truncated
         ? await walk(repo, commit, inside)
         : entries.filter((entry) => entry.path.startsWith(prefix));
+      if (prefix === "" && files.length > ROOT_SKILL_FILES) {
+        rootTooLarge(repo, commit, files.length, false);
+      }
       if (files.length === 0) {
         throw new UnreadableDirectory(
           repo,
@@ -1185,6 +1255,324 @@ function retriesSince(
   );
 }
 
+/** A plugin of a profile. */
+type ProfilePlugin = Case["profile"]["plugins"][number];
+
+/** The checkout of the repository of `c`'s profile plugin `plugin` at its commit, through the
+ *  cache. A read that failed stops the case, naming the plugin, as a failed role-prompt read does,
+ *  so every arm of a case has the same plugins. */
+async function pluginCheckout(
+  c: ContextCase,
+  plugin: ProfilePlugin,
+  builds: Builds,
+  source: RepoSource
+): Promise<string> {
+  try {
+    return await checkout(builds, source, plugin.repo, plugin.commit);
+  } catch (error) {
+    throw new Error(
+      `case ${c.id}: the repository of the plugin ${plugin.name}, ${plugin.repo} at ${plugin.commit}, could not be read: ${messageFor(error)}`
+    );
+  }
+}
+
+/** Where a dev box's installer scripts are in its repository (build.ts's DEVBOX_INSTALLERS_RULE:
+ *  `installers/*.sh`). */
+const INSTALLERS = "installers";
+/** Oh My Pi's user agents directory as an installer names the place it links: `.omp/agent/agents`
+ *  under the home, written `$HOME`, `${HOME}` or `~`. Oh My Pi reads the `*.md` files there before
+ *  any plugin's agents (packages/coding-agent/src/task/discovery.ts, lines 93-120 at the pin), at
+ *  each subagent's start (task/structured-subagent.ts, lines 538-541). */
+const USER_AGENTS = /^(?:\$\{?HOME\}?|~)\/\.omp\/agent\/agents\/?$/;
+/** An installer line that links `<from>` at `<to>`: `ensure_link <from> <to>` (the helper a
+ *  dotfiles repository's installers/lib.sh defines), or `ln` and its flags. */
+const LINK_LINE = /^\s*(?:ensure_link|ln((?:\s+-[A-Za-z-]+)+))\s+(\S+)\s+(\S+)\s*(?:#.*)?$/;
+
+/** The shell variables an installer script assigns on a line of their own, the last of each name
+ *  winning, as copies.ts's `shellVariables` reads them: a quoted string, a command substitution
+ *  in quotes, or one bare word. */
+function scriptVariables(text: string): Map<string, string> {
+  const vars = new Map<string, string>();
+  for (const match of text.matchAll(
+    /^\s*(?:local\s+|export\s+|readonly\s+)?([A-Za-z_]\w*)=(\S.*)$/gm
+  )) {
+    const value = (match[2] ?? "").trim();
+    if (/^"\$\(.*\)"$|^"[^"]*"$|^'[^']*'$|^[^\s"'(]+$/.test(value)) {
+      vars.set(match[1] ?? "", value.replace(/^(["'])(.*)\1$/s, "$2"));
+    }
+  }
+  return vars;
+}
+
+/** An installer's path word with its quotes taken off and each variable the script assigns put
+ *  in, five deep at most: the text it comes to, and the path in the repository it names
+ *  (`inRepository`) when that text opens with a variable the script does not assign or one that
+ *  computes the script's own directory, either taken as the repository's root as copies.ts's
+ *  `shellPath` takes it; HOME names the home, no repository's path. */
+function installerPath(
+  word: string,
+  vars: ReadonlyMap<string, string>,
+  depth = 0
+): { readonly text: string; readonly inRepository?: string } {
+  const text = word.replace(/["']/g, "");
+  const lead = /^\$\{?([A-Za-z_]\w*)\}?(.*)$/.exec(text);
+  if (lead === null) return { text };
+  const [, name = "", rest = ""] = lead;
+  const value = vars.get(name);
+  if (value !== undefined && depth < 5 && !/dirname|BASH_SOURCE|pwd/.test(value)) {
+    return installerPath(value + rest, vars, depth + 1);
+  }
+  return name === "HOME" ? { text } : { text, inRepository: joinPath(rest.replace(/^\/+/, "")) };
+}
+
+/** The directory of its repository an installer script links as Oh My Pi's user agents
+ *  directory (USER_AGENTS), and the line (from 1) that links it; undefined when it links none. A
+ *  link of the repository's root is none: it holds no agents directory of its own. */
+function agentsLink(text: string): { readonly dir: string; readonly line: number } | undefined {
+  const vars = scriptVariables(text);
+  for (const [index, line] of text.split("\n").entries()) {
+    const link = LINK_LINE.exec(line);
+    if (link === null) continue;
+    const flags = link[1]?.trim().split(/\s+/);
+    if (flags?.some((flag) => flag === "--symbolic" || /^-[A-Za-z]*s/.test(flag)) === false) {
+      continue;
+    }
+    const from = installerPath(link[2] ?? "", vars).inRepository;
+    if (from && USER_AGENTS.test(installerPath(link[3] ?? "", vars).text)) {
+      return { dir: from, line: index + 1 };
+    }
+  }
+  return undefined;
+}
+
+/** The directory `dir` of `repo` at `commit`, through the cache (`dirs/<key>`): an empty directory
+ *  when no try can read a file under it (UnreadableDirectory), as Oh My Pi finds no file there.
+ *  Another failed read throws. */
+function repoDirectory(
+  builds: Builds,
+  source: RepoSource,
+  repo: string,
+  commit: string,
+  dir: string
+): Promise<string> {
+  return builds.entry("dir", cacheKey(repo, commit, dir), async (dest) => {
+    const release = await source.prefetch?.(repo, commit, [dir]);
+    try {
+      await source.tree(repo, commit, dir, dest);
+    } catch (error) {
+      if (!(error instanceof UnreadableDirectory)) throw error;
+      rmSync(dest, { recursive: true, force: true });
+      mkdirSync(dest, { recursive: true });
+    } finally {
+      release?.();
+    }
+  });
+}
+
+/** A directory of agent definitions Oh My Pi reads for a subagent: where it is written here
+ *  (`dir`), the repository, commit and path it is read from, and, for the dev box's user agents,
+ *  the installer line that links it (`linkedBy`). */
+interface AgentDir {
+  readonly dir: string;
+  readonly repo: string;
+  readonly commit: string;
+  readonly path: string;
+  readonly linkedBy?: string;
+}
+
+/** The commit at which a subagent's session read the pool directories of `repo`, the last
+ *  commit at or before its start, as the evidence item `read times of <repo>` that build.ts writes
+ *  for a pool's host names it: the commit after "its pool directories at" in its text. Undefined
+ *  when the case has no such item. */
+function poolCommit(c: ContextCase, repo: string): string | undefined {
+  const item = c.evidence?.find(
+    (each) => each.item.toLowerCase() === `read times of ${repo}`.toLowerCase()
+  );
+  return /\bits pool directories at ([0-9a-f]{7,40})\b/.exec(item?.source ?? "")?.[1];
+}
+
+/** The link that an installer script of `repo` at `commit` makes of a directory of the repository
+ *  as Oh My Pi's user agents directory (`agentsLink`, the first script in name order that makes
+ *  one), or undefined. Throws naming the case when the installers cannot be read. */
+async function installersLink(
+  c: ContextCase,
+  builds: Builds,
+  source: RepoSource,
+  repo: string,
+  commit: string
+): Promise<{ readonly path: string; readonly linkedBy: string } | undefined> {
+  let installers: string;
+  try {
+    installers = await repoDirectory(builds, source, repo, commit, INSTALLERS);
+  } catch (error) {
+    throw new Error(
+      `case ${c.id}: the installers of ${repo} at ${commit} could not be read: ${messageFor(error)}`
+    );
+  }
+  const scripts = readdirSync(installers, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".sh"))
+    .map((entry) => entry.name)
+    .sort((a, b) => a.localeCompare(b));
+  for (const script of scripts) {
+    const link = agentsLink(readFileSync(path.join(installers, script), "utf8"));
+    if (link !== undefined)
+      return { path: link.dir, linkedBy: `${INSTALLERS}/${script}:${link.line}` };
+  }
+  return undefined;
+}
+
+/**
+ * The dev box's user agents of `c`'s profile: the directory that a repository of the profile links
+ * as Oh My Pi's user agents directory (USER_AGENTS) from one of its installer scripts
+ * (`installers/*.sh`; a dotfiles repository's installers/omp.sh links its `omp/agents` there).
+ * Oh My Pi reads that directory at each subagent's start, so the installers and the directory are
+ * read at the commit of the subagent's start: the one the case's evidence names for the
+ * repository's pool directories (`poolCommit`), else the one commit the profile holds the
+ * repository at. None for a Legion store's session (arms.ts's `legionStore`), which runs no dev
+ * box's installers, or when no repository of the profile links one. None, with why (`leftOut`),
+ * when the profile holds a linking repository at more than one commit and the evidence names
+ * neither, or when more than one repository links one, since a dev box runs one repository's
+ * installers. Throws naming the repository when its installers or that directory cannot be read.
+ */
+async function userAgents(
+  c: ContextCase,
+  builds: Builds,
+  source: RepoSource
+): Promise<{ readonly dir?: AgentDir; readonly leftOut: readonly string[] }> {
+  if (legionStore(c) !== undefined) return { leftOut: [] };
+  // Each repository of the profile, with each commit the profile holds it at.
+  const held = new Map<string, string[]>();
+  for (const each of [...c.profile.skills, ...c.profile.plugins, ...c.profile.contextFiles]) {
+    const commits = held.get(each.repo) ?? [];
+    if (!commits.includes(each.commit)) commits.push(each.commit);
+    held.set(each.repo, commits);
+  }
+  const links: { repo: string; commit: string; path: string; linkedBy: string }[] = [];
+  const leftOut: string[] = [];
+  for (const [repo, commits] of held) {
+    const atStart = poolCommit(c, repo);
+    const found: { commit: string; path: string; linkedBy: string }[] = [];
+    for (const commit of atStart === undefined ? commits : [atStart]) {
+      const link = await installersLink(c, builds, source, repo, commit);
+      if (link !== undefined) found.push({ commit, ...link });
+    }
+    if (atStart === undefined && commits.length > 1 && found.length > 0) {
+      leftOut.push(
+        `the user agents of a dev box: the profile holds ${repo} at ${commits.join(" and ")}, its ${found.map((link) => `${link.linkedBy} at ${link.commit}`).join(" and ")} ${found.length === 1 ? "links" : "each link"} a directory as Oh My Pi's user agents directory, and no evidence item "read times of ${repo}" names the commit of the subagent's start, when Oh My Pi reads that directory, so the context reads none`
+      );
+      continue;
+    }
+    links.push(...found.map((link) => ({ repo, ...link })));
+  }
+  if (links.length > 1) {
+    leftOut.push(
+      `the user agents of a dev box: ${links.map((link) => `${link.repo}'s ${link.linkedBy}`).join(" and ")} each link a directory as Oh My Pi's user agents directory, and a dev box runs one repository's installers, so the context reads none of them`
+    );
+  }
+  const [link] = links;
+  if (link === undefined || leftOut.length > 0) return { leftOut };
+  try {
+    return {
+      dir: { ...link, dir: await repoDirectory(builds, source, link.repo, link.commit, link.path) },
+      leftOut,
+    };
+  } catch (error) {
+    throw new Error(
+      `case ${c.id}: ${link.path} of ${link.repo} at ${link.commit}, which ${link.linkedBy} links as Oh My Pi's user agents directory, could not be read: ${messageFor(error)}`
+    );
+  }
+}
+
+/** The directories of agent definitions `c`'s subagent context reads, in Oh My Pi's order
+ *  (task/discovery.ts, lines 93-120 at the pin: the user's, then each extension package's): the
+ *  dev box's user agents (`userAgents`), then the `agents/` of each of `plugins` (the profile's,
+ *  each with its checkout); with what of them the context leaves out. None for another context. */
+async function agentDirs(
+  c: ContextCase,
+  plugins: readonly { readonly plugin: ProfilePlugin; readonly tree: string }[],
+  builds: Builds,
+  source: RepoSource
+): Promise<{ readonly dirs: readonly AgentDir[]; readonly leftOut: readonly string[] }> {
+  if (!c.context.startsWith("subagent:")) return { dirs: [], leftOut: [] };
+  const user = await userAgents(c, builds, source);
+  return {
+    dirs: [
+      ...(user.dir === undefined ? [] : [user.dir]),
+      ...plugins.map(({ plugin, tree }) => ({
+        dir: path.join(tree, plugin.path, "agents"),
+        repo: plugin.repo,
+        commit: plugin.commit,
+        path: path.posix.join(plugin.path, "agents"),
+      })),
+    ],
+    leftOut: user.leftOut,
+  };
+}
+
+/**
+ * The agent definition a subagent context (`subagent:<agent>`) runs, as Oh My Pi finds it
+ * (task/discovery.ts at the pin, lines 53-74 and 157-162): the first `*.md` file, in name order,
+ * of the first of `dirs` (`agentDirs`, in Oh My Pi's order) whose frontmatter `name` is the agent
+ * and that gives a `description` (discovery/helpers.ts's `parseAgentFields`), with the skills its
+ * `autoloadSkills` names (a list, or names split at commas; each trimmed). A file that cannot be
+ * read (a link that names nothing) is passed over, as Oh My Pi drops it. Null for another
+ * context, or for an agent no directory defines: one of Oh My Pi's own (none of which autoloads a
+ * skill at the pin), or a project's (`.omp/agents`), which a profile does not hold.
+ */
+function agentIn(context: string, dirs: readonly AgentDir[]): AgentDefinition | null {
+  const agent = /^subagent:(.+)$/.exec(context)?.[1];
+  if (agent === undefined) return null;
+  for (const at of dirs) {
+    if (!existsSync(at.dir)) continue;
+    const files = readdirSync(at.dir, { withFileTypes: true })
+      .filter((entry) => (entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith(".md"))
+      .map((entry) => entry.name)
+      .sort((a, b) => a.localeCompare(b));
+    for (const file of files) {
+      let text: string;
+      try {
+        text = readFileSync(path.join(at.dir, file), "utf8");
+      } catch {
+        continue;
+      }
+      const frontmatter = readFrontmatter(text);
+      if (frontmatter.name !== agent || typeof frontmatter.description !== "string") continue;
+      const named = frontmatter.autoloadSkills;
+      const listed = Array.isArray(named)
+        ? named.filter((each): each is string => typeof each === "string")
+        : typeof named === "string"
+          ? named.split(",")
+          : [];
+      return {
+        name: agent,
+        repo: at.repo,
+        commit: at.commit,
+        path: path.posix.join(at.path, file),
+        ...(at.linkedBy === undefined ? {} : { linkedBy: at.linkedBy }),
+        autoloadSkills: listed.map((each) => each.trim()).filter((each) => each !== ""),
+      };
+    }
+  }
+  return null;
+}
+
+/** The agent definition `c`'s subagent context runs (`agentIn`), read from the dev box's user
+ *  agents and its profile's plugins at their commits through the cache, as buildContext reads
+ *  them; null for a context that is no subagent's. Throws as buildContext does when a repository
+ *  it reads cannot be read. */
+export async function subagentDefinition(
+  c: ContextCase,
+  options: Pick<ContextOptions, "source" | "cacheDir">
+): Promise<AgentDefinition | null> {
+  if (!c.context.startsWith("subagent:")) return null;
+  const builds = new Builds(options.cacheDir);
+  const trees: { readonly plugin: ProfilePlugin; readonly tree: string }[] = [];
+  for (const plugin of c.profile.plugins) {
+    trees.push({ plugin, tree: await pluginCheckout(c, plugin, builds, options.source) });
+  }
+  return agentIn(c.context, (await agentDirs(c, trees, builds, options.source)).dirs);
+}
+
 /** Writes the context of `c`'s arm `arm` under `options.root`, replacing one written there. */
 export async function buildContext(
   c: ContextCase,
@@ -1291,9 +1679,26 @@ export async function buildContext(
   } finally {
     for (const release of releases) release();
   }
+  // The file a plugin reads the skill it injects from as it loads, where the arm installs no copy
+  // of the skill under that name (`none`; a load test under another name): a hidden stand-in, so
+  // the plugin loads and the listing names nothing more. No model reads it: an arm answers each
+  // read of the skill itself (arms.ts).
+  for (const injection of arm.injections ?? []) {
+    if (injection.by !== "plugin") continue;
+    const dir = path.join(skillsDir, injection.name);
+    if (existsSync(dir)) continue;
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, "SKILL.md"),
+      `---\nname: ${injection.name}\ndescription: A stand-in the skill-cuts runner installs where an arm has no copy of this skill, so the ${injection.plugin} plugin, which reads this file as it loads, loads.\nhide: true\n---\n`
+    );
+    skillRecords.push({ name: injection.name, from: "stand-in" });
+    skills.push({ name: injection.name, dir, ...skillFrontmatter(dir) });
+  }
 
   const extensions: string[] = [];
   const pluginRecords: ContextRecord["plugins"][number][] = [];
+  const trees: { readonly plugin: ProfilePlugin; readonly tree: string }[] = [];
   for (const plugin of c.profile.plugins) {
     const where = {
       name: plugin.name,
@@ -1302,16 +1707,8 @@ export async function buildContext(
       path: plugin.path,
     };
     const key = cacheKey(plugin.repo, plugin.commit, plugin.path);
-    let tree: string;
-    try {
-      tree = await checkout(builds, source, plugin.repo, plugin.commit);
-    } catch (error) {
-      // A read that failed stops the case, as a failed role-prompt read does, so every arm of a
-      // case has the same plugins.
-      throw new Error(
-        `case ${c.id}: the repository of the plugin ${plugin.name}, ${plugin.repo} at ${plugin.commit}, could not be read: ${messageFor(error)}`
-      );
-    }
+    const tree = await pluginCheckout(c, plugin, builds, source);
+    trees.push({ plugin, tree });
     let step = "its package.json does not parse";
     try {
       const manifestFile = path.join(tree, plugin.path, "package.json");
@@ -1386,6 +1783,8 @@ export async function buildContext(
     }
   }
   if (prompts.length > 0) writeFileSync(promptFile, prompts.join("\n\n"));
+  const agents = await agentDirs(c, trees, builds, source);
+  leftOut.push(...agents.leftOut);
 
   return {
     skillsDir,
@@ -1402,6 +1801,7 @@ export async function buildContext(
       plugins: pluginRecords,
       contextFiles: fileRecords,
       rolePrompt: roleRecord,
+      agent: agentIn(c.context, agents.dirs),
       leftOut,
       builds: builds.list,
       githubRetries: retriesSince(retriedBefore, source.reads?.().retries ?? {}),
