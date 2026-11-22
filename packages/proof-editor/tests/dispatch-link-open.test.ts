@@ -1,5 +1,5 @@
-import { expect, test } from "bun:test";
-import { TextSelection } from "@milkdown/kit/prose/state";
+import { expect, spyOn, test } from "bun:test";
+import { Plugin, TextSelection } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import type {
   CreateProofEditorOptions,
@@ -451,6 +451,154 @@ test("a drag that leaves the editor and comes back to the press opens nothing, a
         ],
         releasedOutside: true,
         stayed: true,
+      });
+    },
+    { openLink }
+  );
+});
+
+/** Reconfigures the editor with one more plugin, as the collab cursor's install
+ *  (`installCollabCursorsWhenReady`) and Dispatch's hold on a block's edits (`holdEditsToBlock`)
+ *  do while a press can be under way: ProseMirror destroys every plugin view and makes them anew,
+ *  and its own press goes on. */
+function reconfigure(view: EditorView): void {
+  view.updateState(
+    view.state.reconfigure({ plugins: [...view.state.plugins, new Plugin({ view: () => ({}) })] })
+  );
+}
+
+// dispatch://INFRA-2160, R1: the editor's note of a press on a link lasts as long as ProseMirror's
+// own press, through a reconfigure of the editor's plugins while the button is held: a drag
+// across the reconfigure is a drag, and a click across it a click.
+test("a drag on a link across a reconfigure of the editor's plugins opens nothing, and a click across one opens the link", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    LINKS,
+    ({ view }) => {
+      const issue = linkOf(view, "the other issue");
+
+      // The press, the plugins reconfigured, the pointer 5 px on, and the release and the click
+      // there.
+      dispatch(issue, "mousedown", pointer(60));
+      reconfigure(view);
+      dispatch(issue, "mousemove", held(65));
+      dispatch(issue, "mouseup", pointer(65));
+      const dragged = offer(view, issue, "click", pointer(65)).handled;
+
+      // The same press and release, the pointer staying where it went down.
+      dispatch(issue, "mousedown", pointer(60));
+      reconfigure(view);
+      dispatch(issue, "mouseup", pointer(60));
+      const clicked = offer(view, issue, "click", pointer(60)).handled;
+
+      expect({ clicked, connected: issue.isConnected, dragged, opened }).toEqual({
+        clicked: true,
+        // The reconfigures drew the link anew neither time.
+        connected: true,
+        dragged: false,
+        opened: [["dispatch://CORE-2", false]],
+      });
+    },
+    { openLink }
+  );
+});
+
+// dispatch://INFRA-2160, R1: a press on a link stops hearing the page once the view is destroyed
+// during it, as ProseMirror's own press does.
+test("a view destroyed during a press on a link hears the page's pointer no more", async () => {
+  await withMarksEditor(
+    LINKS,
+    async ({ handle, view }) => {
+      const issue = linkOf(view, "the other issue");
+      const page = view.dom.ownerDocument;
+      const adds = spyOn(page, "addEventListener");
+      const removes = spyOn(page, "removeEventListener");
+      try {
+        dispatch(issue, "mousedown", pointer(60));
+        // What the press listens to on the page: the editor's note. happy-dom lays nothing out,
+        // so ProseMirror finds the press at no position and makes no press of its own.
+        const heard = adds.mock.calls.filter(
+          ([type]) => type === "mousemove" || type === "mouseup"
+        );
+        void handle.destroy();
+        await Promise.resolve();
+
+        let thrown: unknown;
+        try {
+          dispatch(page.body, "mousemove", held(260));
+          dispatch(page.body, "mouseup", pointer(260));
+        } catch (error) {
+          thrown = error;
+        }
+        const left = heard.filter(
+          ([type, listener]) =>
+            !removes.mock.calls.some(([gone, removed]) => gone === type && removed === listener)
+        );
+
+        expect({
+          destroyed: view.isDestroyed,
+          heard: heard.map(([type]) => type).sort(),
+          left,
+          thrown,
+        }).toEqual({
+          destroyed: true,
+          heard: ["mousemove", "mouseup"],
+          left: [],
+          thrown: undefined,
+        });
+      } finally {
+        adds.mockRestore();
+        removes.mockRestore();
+      }
+    },
+    { openLink: recordedOpener().openLink }
+  );
+});
+
+// dispatch://INFRA-2160, R1: the press is the link's, not its element's. A mark change around the
+// link while the button is held, such as a collaborator's bold over its words, makes ProseMirror
+// draw the link as a new anchor, and the release and the click on that anchor are on the link
+// pressed: a drag across the redraw is a drag, and a click across it a click.
+test("a drag on a link that ProseMirror draws anew during it opens nothing, and a click across the redraw opens the link", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    LINKS,
+    ({ view }) => {
+      const strong = view.state.schema.marks.strong;
+      if (strong === undefined) throw new Error("no strong mark");
+
+      // The press, "the other issue" (19 to 34) bolded, the pointer 5 px on, and the release and
+      // the click on the anchor drawn for the link then.
+      const pressed = linkOf(view, "the other issue");
+      dispatch(pressed, "mousedown", pointer(60));
+      view.dispatch(view.state.tr.addMark(19, 34, strong.create()));
+      const bolded = linkOf(view, "the other issue");
+      const around = bolded.parentElement?.tagName;
+      dispatch(bolded, "mousemove", held(65));
+      dispatch(bolded, "mouseup", pointer(65));
+      const dragged = offer(view, bolded, "click", pointer(65)).handled;
+
+      // The same press and release, the pointer staying where it went down, the bold taken off
+      // between them.
+      dispatch(bolded, "mousedown", pointer(60));
+      view.dispatch(view.state.tr.removeMark(19, 34, strong));
+      const unbolded = linkOf(view, "the other issue");
+      dispatch(unbolded, "mouseup", pointer(60));
+      const clicked = offer(view, unbolded, "click", pointer(60)).handled;
+
+      expect({
+        around,
+        clicked,
+        dragged,
+        opened,
+        pressedConnected: [pressed.isConnected, bolded.isConnected],
+      }).toEqual({
+        around: "STRONG",
+        clicked: true,
+        dragged: false,
+        opened: [["dispatch://CORE-2", false]],
+        // Each mark change drew the link as a new anchor, in place of the one pressed.
+        pressedConnected: [false, false],
       });
     },
     { openLink }
