@@ -658,11 +658,11 @@ var indexPasses = map[string]string{
 	// import of an approved level writes the level's statements and components, and holds what it
 	// cannot resolve, from the versions the person's approval names, reading the same spec and holds
 	// only to leave alone what they hold already; and the repair issue's hook names the child a
-	// create makes on each hold the import kept, read again under that create's owner lock. None
-	// reads one side of a projection to mend the other.
+	// create makes on each hold the import kept, read again under that create's owner lock and the
+	// repository's lock. None reads one side of a projection to mend the other.
 	"specstore/apply.go#Apply":           "the change request the approval covers, and the approved spec and the open holds it reads under the repository's lock",
 	"specstore/import.go#Import":         "the level and its notes the person's approval names, and the approved spec and the holds it reads under the repository's lock",
-	"api/spec_import.go#repairIssueHook": "the holds the level's import kept, read again under the create's owner lock, and the issue the create makes",
+	"api/spec_import.go#repairIssueHook": "the holds the level's import kept, read again under the create's owner lock and the repository's lock, and the issue the create makes",
 	// A run of the command bar: its interaction node, its author's node and their tuples, written
 	// from the POST alone before the going_requests row that projects them, and each frame's value,
 	// written from the frame its writer hands it before the going_events row that projects it.
