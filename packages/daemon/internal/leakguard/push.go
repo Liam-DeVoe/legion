@@ -444,11 +444,19 @@ func (g *Guard) git(ctx context.Context, dir string, args ...string) (string, er
 	return g.gitWith(ctx, dir, nil, args...)
 }
 
-// gitWith is git with its standard output read by stdout as git writes it, where stdout is not
-// nil, rather than answered whole: a push's diff is read so.
+// gitWith is git with its standard output read by stdout as git writes it (Guard.readOutput),
+// where stdout is not nil, rather than answered whole: a push's added paths and diff are read so.
 func (g *Guard) gitWith(ctx context.Context, dir string, stdout func(io.Reader) error, args ...string) (string, error) {
 	var stderr bytes.Buffer
-	status, out, err := g.run(ctx, child{argv: gitArgv(args...), dir: dir, stderr: &stderr, stdout: stdout})
+	c := child{argv: gitArgv(args...), dir: dir, stderr: &stderr}
+	var status int
+	var out string
+	var err error
+	if stdout == nil {
+		status, out, err = g.run(ctx, c)
+	} else {
+		status, err = g.readOutput(ctx, c, stdout)
+	}
 	if err != nil {
 		return "", procgroup.Said(err, gitSaid(stderr.String()))
 	}

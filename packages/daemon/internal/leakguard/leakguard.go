@@ -25,9 +25,10 @@
 //
 // The rule pass of a push reads git's output as git writes it, the added paths and the diff, and
 // scans each record as it arrives (pass), and a refusal names at most 1000 lines, counting the
-// rest (refusalLines). So the pass holds one line of git's output, the record in hand and the
-// detector's cost of scanning it, whatever the size of the push's files; what grows with the push
-// is the list of its commits, about one line of a commit's id each, and one commit's message.
+// rest (refusalLines). So the pass holds one line of git's output, the record in hand, the
+// detector's cost of scanning it, and one commit's author, committer and message, whatever the
+// size of the push's files; what grows with the push is the list of its commits, about one line
+// of a commit's id each.
 //
 // The guard sets neither PUBLIC_LEAK_CHECK_REPO_NAMES nor PUBLIC_LEAK_CHECK_INTERNAL for the
 // shared check. That is a decision of this issue's approved spec, not an omission: with those two

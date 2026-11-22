@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -415,12 +414,6 @@ type child struct {
 	// (Guard.ghToken), and a git read of a push's records to quote git's error without the push's
 	// content (Guard.git). Nil answers the two together.
 	stderr io.Writer
-	// stdout, where it is not nil, reads the child's standard output as the child writes it,
-	// from a pipe the child holds the other end of, and run answers none of it: a push's diff is
-	// read this way (Guard.gitWith), so that no copy of the whole output is held. It reads to the
-	// end of the pipe, or until the context ends; an error it answers closes the pipe, which ends
-	// the child's writes, and is run's error.
-	stdout func(io.Reader) error
 }
 
 // program is where name is, read from the base environment's PATH rather than from this
@@ -439,19 +432,31 @@ func program(base []string, name string) string {
 }
 
 // run runs c under ctx and answers its exit status and everything it printed, out and err
-// together unless c.stderr takes err or c.stdout reads out. The error is a child that could not be
-// run at all: one that did not start, one the end of ctx stopped, which is a *stoppedError, or one
-// a signal ended, which has no status; and, after those, an error c.stdout answered. A status is
-// an answer, and no status is not.
-//
-// c.stdout reads the pipe exec's StdoutPipe gives, in this goroutine and before Wait, as
-// StdoutPipe requires, so a reader still scanning the end of a diff never loses what it had not
-// read yet. A descendant that left the child's process group (setsid) can hold the pipe open after
-// the child is gone, and neither the group's stop nor exec's WaitDelay, which run during Wait,
-// would end a read made before it, so the read has two ends of its own (pipeReader): ctx's end,
-// and the child's exit and then procgroup.WaitDelay, the wait exec gives the same descendant of a
-// child whose output it copies itself.
+// together unless c.stderr takes err. The error is a child that could not be run at all: one that
+// did not start, one the end of ctx stopped, which is a *stoppedError, or one a signal ended,
+// which has no status. A status is an answer, and no status is not.
 func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
+	cmd, killed := g.command(ctx, c)
+	var printed bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &printed, &printed
+	if c.stderr != nil {
+		cmd.Stderr = c.stderr
+	}
+	started := time.Now()
+	err := procgroup.Err(cmd.Run())
+	switch {
+	case killed():
+		return 0, printed.String(), stopped(ctx, c, started)
+	case err != nil:
+		return 0, printed.String(), err
+	}
+	return cmd.ProcessState.ExitCode(), printed.String(), nil
+}
+
+// command is c as a command under ctx, not yet started, in a process group of its own, and the
+// killed answer of procgroup.Configure for it: whether the end of ctx stopped it. Its standard
+// output and error are the caller's to set.
+func (g *Guard) command(ctx context.Context, c child) (*exec.Cmd, func() bool) {
 	// One read of the base environment for the child, which both the program lookup and the
 	// child's own environment are built from.
 	base := g.base()
@@ -463,143 +468,20 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	// procgroup before any other SysProcAttr field, as its doc requires: it replaces the whole
 	// struct. It also makes the bound reach a helper the child started, which for the shared
 	// check is the git it runs against the remote.
-	killed := procgroup.Configure(cmd)
-	var printed bytes.Buffer
-	cmd.Stderr = &printed
-	if c.stderr != nil {
-		cmd.Stderr = c.stderr
-	}
-	var out *os.File
-	if c.stdout == nil {
-		cmd.Stdout = &printed
-	} else {
-		pipe, err := cmd.StdoutPipe()
-		if err != nil {
-			return 0, "", err
-		}
-		file, ok := pipe.(*os.File)
-		if !ok {
-			return 0, "", fmt.Errorf("exec's standard output pipe is a %T, which takes no read deadline", pipe)
-		}
-		out = file
-	}
-	started := time.Now()
-	err := cmd.Start()
-	var readErr error
-	if err == nil {
-		if out != nil {
-			reader := &pipeReader{ctx: ctx, file: out}
-			stop := context.AfterFunc(ctx, func() { _ = out.SetReadDeadline(time.Now()) })
-			read := make(chan struct{})
-			go reader.endAfterExit(cmd.Process.Pid, read)
-			readErr = c.stdout(reader)
-			close(read)
-			stop()
-			// A reader that stopped early leaves the child writing into a pipe nobody reads:
-			// closed, its next write fails and it ends, rather than blocking the wait below.
-			// Wait closes it again, which changes nothing.
-			_ = out.Close()
-		}
-		err = cmd.Wait()
-	}
-	err = procgroup.Err(err)
-	switch {
-	// A read the context's end stopped is a stop like the group's: the child may have exited
-	// before the context ended, and exec then runs no Cancel, so killed alone would not see it.
-	case killed(), readErr != nil && ctx.Err() != nil:
-		stopped := &stoppedError{
-			program:   filepath.Base(c.argv[0]),
-			ran:       time.Since(started),
-			cancelled: errors.Is(ctx.Err(), context.Canceled),
-		}
-		if deadline, ok := ctx.Deadline(); ok {
-			stopped.bound = deadline.Sub(started)
-		}
-		return 0, printed.String(), stopped
-	case readErr != nil:
-		return 0, printed.String(), readErr
-	case err != nil:
-		return 0, printed.String(), err
-	}
-	return cmd.ProcessState.ExitCode(), printed.String(), nil
+	return cmd, procgroup.Configure(cmd)
 }
 
-// pipeReader is a child's standard output as run hands it to child.stdout: the pipe, read as it
-// is written, until the pipe's end, ctx's end, or the child's exit and procgroup.WaitDelay after
-// it (endAfterExit), whichever comes first.
-//
-// Once the child has exited and that wait has passed, nothing the child wrote can still be on its
-// way: what it wrote is in the pipe's buffer, and only a descendant that outlived it can write
-// more. So from then on each read takes what the buffer holds without waiting (drain), and an
-// empty buffer is the end of the output. A reader that was still scanning what the child wrote
-// reads all of it; what it does not wait for is a descendant that holds the pipe open, which is
-// what exec's own copy does not wait for either.
-type pipeReader struct {
-	ctx    context.Context
-	file   *os.File
-	exited atomic.Bool
-}
-
-func (r *pipeReader) Read(p []byte) (int, error) {
-	if !r.exited.Load() {
-		n, err := r.file.Read(p)
-		if !errors.Is(err, os.ErrDeadlineExceeded) || r.ctx.Err() != nil || !r.exited.Load() {
-			return n, err
-		}
+// stopped is the *stoppedError of c, started at started, which the end of ctx stopped.
+func stopped(ctx context.Context, c child, started time.Time) *stoppedError {
+	stop := &stoppedError{
+		program:   filepath.Base(c.argv[0]),
+		ran:       time.Since(started),
+		cancelled: errors.Is(ctx.Err(), context.Canceled),
 	}
-	return r.drain(p)
-}
-
-// drain is one read of what the pipe's buffer holds now, without waiting: io.EOF where it holds
-// nothing, and ctx's error once ctx has ended. The deadline endAfterExit set is cleared first,
-// since a read past its deadline reads nothing at all; one it sets again after the clear is
-// cleared again.
-func (r *pipeReader) drain(p []byte) (int, error) {
-	raw, err := r.file.SyscallConn()
-	if err != nil {
-		return 0, err
+	if deadline, ok := ctx.Deadline(); ok {
+		stop.bound = deadline.Sub(started)
 	}
-	for {
-		if err := r.ctx.Err(); err != nil {
-			return 0, os.ErrDeadlineExceeded
-		}
-		if err := r.file.SetReadDeadline(time.Time{}); err != nil {
-			return 0, err
-		}
-		var n int
-		var readErr error
-		err := raw.Read(func(fd uintptr) bool {
-			n, readErr = syscall.Read(int(fd), p)
-			return true
-		})
-		switch {
-		case errors.Is(err, os.ErrDeadlineExceeded), errors.Is(readErr, syscall.EINTR):
-			continue
-		case err != nil:
-			return 0, err
-		case errors.Is(readErr, syscall.EAGAIN), readErr == nil && n == 0:
-			return 0, io.EOF
-		case readErr != nil:
-			return 0, readErr
-		}
-		return n, nil
-	}
-}
-
-// endAfterExit waits for the child pid to exit, without reaping it (exitedNoReap: Wait reaps
-// it), and procgroup.WaitDelay after that ends the read: it marks the reader as past the child's
-// exit and sets the pipe's read deadline to now, which ends a read waiting on a descendant. It
-// does nothing where read is closed first, the reader having read to the pipe's end on its own.
-func (r *pipeReader) endAfterExit(pid int, read <-chan struct{}) {
-	if !exitedNoReap(pid, read) {
-		return
-	}
-	select {
-	case <-read:
-	case <-time.After(procgroup.WaitDelay):
-		r.exited.Store(true)
-		_ = r.file.SetReadDeadline(time.Now())
-	}
+	return stop
 }
 
 // stoppedError is a child that the end of the caller's context stopped before it exited: its

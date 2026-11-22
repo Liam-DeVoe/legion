@@ -145,17 +145,16 @@ func TestEveryAddedLineIsReadWholeAsGitWritesIt(t *testing.T) {
 }
 
 // A push with no deadline at all, as git's pre-push hook runs one, is answered once git itself
-// has exited, though a process git started has left git's process group (setsid) and holds git's
-// standard output, the diff's pipe, open for 30 s: each read of git's output ends one
-// procgroup.WaitDelay after git exits, the wait exec gives such a process when it copies a
-// child's output itself. The answer is the one a push with no such process gets.
+// has exited, though a process git started in the background holds git's standard output, the
+// diff's pipe, open for 30 s: each read of git's output ends one procgroup.WaitDelay after git
+// exits, the wait exec gives such a process when it copies a child's output itself. With no
+// deadline nothing stops git's process group, so the process need not leave the group to outlive
+// git, and the test needs nothing a system may lack. The answer is the one a push with no such
+// process gets.
 func TestAReadEndsAfterGitExitsThoughAnEscapedProcessHoldsThePipe(t *testing.T) {
-	if _, err := exec.LookPath("setsid"); err != nil {
-		t.Skip("no setsid on this machine")
-	}
 	push := aPushOf(t, map[string]string{"notes.md": "a line of nothing\nthe runner answers at " + theHost + "\n"})
 	want := refusal(t, push.through(guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public))).Lines
-	guard := gitFirst(t, "setsid sleep 30 2>/dev/null &\nexec '"+fixturegit.CompiledGit(t)+"' \"$@\"\n")
+	guard := gitFirst(t, "sleep 30 2>/dev/null &\nexec '"+fixturegit.CompiledGit(t)+"' \"$@\"\n")
 	started := time.Now()
 	err := guard.Push(context.Background(), push.req)
 	if took := time.Since(started); took > 20*time.Second {

@@ -2,13 +2,14 @@ kind: Fixed
 body: |-
   The leak guard's private-name pass over a push no longer holds the push's whole diff and every
   record of it before it scans them. It reads git's added paths and diff as git writes them and
-  scans each one as it arrives, so it holds a few records' worth whatever the size of the push's
-  files, where a push adding 25,000 files of 1.25 GB took 6.1 GiB before; what grows with the push
-  is the list of its commit ids. The report is the same, but a refusal now names at most 1000
-  lines and counts the rest in a last line of its own, so a push of many lines at a path a rule
-  refuses no longer prints one line for each. A read of git's output ends with the push's bound,
-  and one `WaitDelay` after git exits, even when a process git started holds the pipe open. A path
-  holding a space is now reported without the tab git ends its `+++` line with.
+  scans each one as it arrives, so it holds a few records' worth and one commit's author,
+  committer and message, whatever the size of the push's files, where a push adding 25,000 files
+  of 1.25 GB took 6.1 GiB before; what grows with the push is the list of its commit ids. The
+  report is the same, but a refusal now names at most 1000 lines and counts the rest in a last
+  line of its own, so a push of many lines at a path a rule refuses no longer prints one line for
+  each. A read of git's output ends with the push's bound, and one `WaitDelay` after git exits,
+  even when a process git started holds the pipe open, as exec's own copy of a child's output
+  does. A path holding a space is now reported without the tab git ends its `+++` line with.
 time: 2026-11-21T20:45:09Z
 custom:
     Issue: leak-guard-streaming

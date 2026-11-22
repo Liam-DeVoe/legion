@@ -87,46 +87,41 @@ func compile() (built *rules, err error) {
 	return &rules{detector: detector, names: names}, nil
 }
 
-// scan adds the report of records to rep: one line per refusal, naming the record and the class
-// and nothing else. The same class against the same record is one line however many times it
-// matches, since the report says what a record names rather than how often, and a record's
+// scan adds the report of one record to rep: one line per refusal, naming the record and the
+// class and nothing else. The same class against the same record is one line however many times
+// it matches, since the report says what a record names rather than how often, and a record's
 // classes are sorted because the engine reads its rules out of a map and would otherwise order
 // two of them differently from one run to the next. Past refusalLines, rep counts a line rather
-// than holding it, so a scan holds no more lines than that whatever the records.
+// than holding it.
 //
-// Each record is scanned on its own, with Detect of a fragment rather than DetectSource of a
+// The record is scanned on its own, with Detect of a fragment rather than DetectSource of a
 // source: the detector accumulates the findings of a source, and a scan of several records
 // through it would report the first record's finding against every record after it.
-func (r *rules) scan(ctx context.Context, records []Record, rep *report) error {
-	for _, record := range records {
-		var of []string
-		seen := map[string]bool{}
-		for _, finding := range r.detector.DetectContext(ctx, detect.Fragment{Raw: record.Text, FilePath: record.Label}) {
-			line := r.mask(record.Label) + ": " + finding.Description
-			if !seen[line] {
-				seen[line] = true
-				of = append(of, line)
-			}
-		}
-		slices.Sort(of)
-		for _, line := range of {
-			rep.add(line)
-		}
-		// A context that ended stops the detector's own scan loop and leaves it answering no
-		// findings, which would read as a record that holds nothing. A bound that ran out is a
-		// setup failure instead, so the write is refused rather than passed.
-		if err := ctx.Err(); err != nil {
-			return err
+func (r *rules) scan(ctx context.Context, record Record, rep *report) error {
+	var of []string
+	seen := map[string]bool{}
+	for _, finding := range r.detector.DetectContext(ctx, detect.Fragment{Raw: record.Text, FilePath: record.Label}) {
+		line := r.mask(record.Label) + ": " + finding.Description
+		if !seen[line] {
+			seen[line] = true
+			of = append(of, line)
 		}
 	}
-	return nil
+	slices.Sort(of)
+	for _, line := range of {
+		rep.add(line)
+	}
+	// A context that ended stops the detector's own scan loop and leaves it answering no
+	// findings, which would read as a record that holds nothing. A bound that ran out is a setup
+	// failure instead, so the write is refused rather than passed.
+	return ctx.Err()
 }
 
 // pass is one rule pass over records that arrive one at a time, as a push's diff is read: it
 // scans each record as it arrives and keeps nothing of it but its refusal lines, so its memory is
 // the record in hand, the detector's own cost of scanning it, and at most refusalLines refusal
 // lines and a count of the rest. Whatever reads the records holds one line of its own beside
-// that. None of it grows with the size of the push.
+// that. None of it grows with the size of the push's files.
 type pass struct {
 	ctx    context.Context
 	engine *rules
@@ -139,7 +134,7 @@ type pass struct {
 // add scans one record.
 func (p *pass) add(record Record) error {
 	if p.err == nil {
-		p.err = p.engine.scan(p.ctx, []Record{record}, &p.report)
+		p.err = p.engine.scan(p.ctx, record, &p.report)
 	}
 	return p.err
 }
