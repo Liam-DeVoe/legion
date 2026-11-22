@@ -1,6 +1,6 @@
 import { parseBlockPointerValue } from "@legion/contracts";
 
-import { primarySpec, roleDocument } from "../../api/issue-cache";
+import { artifactAtAddress, primarySpec, roleDocument } from "../../api/issue-cache";
 import type {
   Actor,
   Artifact,
@@ -17,7 +17,7 @@ import type {
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import type { ReferenceNameReading } from "../refs/reference-names";
 import { referenceSpans } from "../refs/reference-spans";
-import { buildDispatchReference, parseNodeReference } from "../refs/routes";
+import { buildDispatchReference, issueOrDocumentTitle, parseNodeReference } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { firstWordedBlock } from "../refs/tree-fragment";
 import { agentsOnlyIds } from "./agents-only";
@@ -252,11 +252,11 @@ export function coverageStatements(
  * names (`targetNaming`) both, so a chip and a link name one target by one rule and cannot drift
  * apart.
  *
- * A chip carries how its target is named (`NodeChip.reading`), and never the words: the page
- * publishes each reading and the shared reader projects it (`refs/reference-names.tsx`), as a
- * title drawn over one record, so no word of a name is written by a reader of this page's own,
- * and markup is never a word of one (R21). The name is the one a link to the target reads (R8),
- * and a chip cuts it again where it draws it (`issue-tree.ts`'s `chipName`).
+ * A chip carries how its target is named (`NodeChip.reading`), and never the target's words:
+ * the page publishes each reading and the shared reader projects it (`refs/reference-names.tsx`),
+ * as a title drawn over one record, so no word of a name is written by a reader of this page's
+ * own, and markup is never a word of one (R21). The name is the one a link to the target reads
+ * (R8), and a chip cuts it again where it draws it (`issue-tree.ts`'s `chipName`).
  *
  * - **A target nothing answers to now** by nothing, which the chip draws as gone. A short
  *   reference two or more targets carry the id of is such a target, which the read answers
@@ -265,7 +265,7 @@ export function coverageStatements(
  * - **A block** - the reference names one, or the read answers that its target is one - by the
  *   server's reading of its whole text (`ReferenceTarget.text_tree`), as a link to it titles it
  *   (R8); a chip names it by the first block of that reading that holds any words instead, so a
- *   decision's chip is its own heading (`refs/reference-names.tsx`'s `blockLineReading`). Where
+ *   decision's chip is its own heading (`refs/reference-names.tsx`'s `chipLineReading`). Where
  *   the read answered and sent no reading, or one that holds no words, a block of this issue
  *   whose document the tree read is named by the page's word for its kind (`NODE_TYPE_NAMES`),
  *   never by its id (R22), and so is one whose words project to none (`fallback`); another
@@ -274,8 +274,16 @@ export function coverageStatements(
  *   as not yet named (`NodeChip.answered`). The read's `name` for a block is its stored excerpt,
  *   which is the block's source: a typed block's directive and the markdown its words are
  *   written in are markup and no word of it (R21).
- * - **A whole document** - a `spec` or an `artifact` reference naming no block - by the page's
- *   word for it (`documentWord`), and never by its file name.
+ * - **A whole document** - a `spec` or an `artifact` reference naming no block - by the name a
+ *   link to it reads (R8, `issueOrDocumentTitle`): an issue's spec by the issue's title, and any
+ *   other document by its own name, which is its file name, each read as one text run
+ *   (`titleReading`), as a title is. This issue's documents are titled by the issue read, and
+ *   another issue's by the batched read: its spec by that issue's title where the read answered
+ *   for the issue, and its document by the read's name for it. A document nothing titles is
+ *   named by the page's word for a document. The reading carries the page's word for the
+ *   document as well (`ReferenceNameReading.chipWord`, `documentWord`), which every chip draws
+ *   in place of its name, a tie's and one in place in a node's words: a chip never draws a
+ *   document's file name (decision 39).
  * - **An issue** - the read answers that its target is one - by its title, which is no markdown,
  *   read as one text run (`titleReading`), so nothing in it is parsed. The issue and each child
  *   the issue read lists are named by their whole titles, which that read holds, so their chips
@@ -294,7 +302,6 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
   const key = reads.issue.key;
   const artifacts = reads.issue.artifacts ?? [];
   const slugs = new Map(artifacts.map((artifact) => [artifact.id, artifact.slug]));
-  const documents = artifactsBySlug(reads.issue);
   const spec = primarySpec(reads.issue);
   const specSlug = spec?.slug ?? "";
   const names = new Map((reads.targets ?? []).map((target) => [target.ref, target]));
@@ -322,6 +329,15 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
       child.title,
     ]),
   ]);
+  // The issue `issueKey` as a link to it is titled: by its whole title where the issue read holds
+  // it, and else by the batched read's name for it, where that read answered for the issue.
+  const titledIssue = (issueKey: string): { readonly title: string } | undefined => {
+    const reference = buildDispatchReference({ key: issueKey, kind: "issue" });
+    const whole = titles.get(reference);
+    if (whole !== undefined) return { title: whole };
+    const answered = names.get(reference);
+    return answered?.kind === "issue" && !answered.gone ? { title: answered.name } : undefined;
+  };
   const readingOf = (
     reference: string,
     target: ReferenceTarget | undefined
@@ -338,14 +354,21 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
       }
       return word === undefined ? { tree: whole } : { fallback: word, tree: whole };
     }
-    // Another issue's document is named by no role of this issue's.
-    if (route?.kind === "spec") {
-      return { words: documentWord(reads.issue, route.key === key ? spec : undefined) };
-    }
-    // A block of it returned above, so this is the document itself.
-    if (route?.kind === "artifact") {
-      const document = route.key === key ? documents.get(route.slug) : undefined;
-      return { words: documentWord(reads.issue, document) };
+    // A block of it returned above, so this is the document itself: one of this issue's by the
+    // issue read, and another issue's by what the batched read answered for it.
+    if (route?.kind === "spec" || route?.kind === "artifact") {
+      const own =
+        route.key !== key
+          ? undefined
+          : route.kind === "spec"
+            ? spec
+            : artifactAtAddress(artifacts, route.slug);
+      const answered = target?.kind === "artifact" ? target : undefined;
+      return documentReading(
+        reads.issue,
+        own,
+        issueOrDocumentTitle(route, titledIssue(route.key), own ?? answered)
+      );
     }
     if (target === undefined) return undefined;
     if (target.kind === "ask" || target.kind === "comment" || target.kind === "message") {
@@ -393,11 +416,32 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
 }
 
 /**
- * The page's word for one document of the issue, which a chip naming the whole document draws:
- * the name of the filter that draws what it holds (`PRESET_NAMES`) for the spec and for the
- * plan, Verification and decisions documents, and the page's word for a document
- * (`NODE_TYPE_NAMES.document`) for any other, another issue's included (`undefined`). A
- * document's own name is its file name, `spec.md`, which is no word a reader reads it by (R21).
+ * How the page names a whole document: by `title`, the title a link to it reads
+ * (`issueOrDocumentTitle`), read as one text run (`titleReading`), which the page publishes for
+ * every plain line to read (R8), with the page's word for it (`documentWord`), which every chip
+ * draws in that name's place (`chipWord`), since a chip never draws a document's file name
+ * (decision 39). `own` is the document of `issue` the reference names, if any. A document
+ * nothing titles is published by that word as well.
+ */
+function documentReading(
+  issue: IssueDetails,
+  own: Pick<Artifact, "id"> | undefined,
+  title: string | undefined
+): ReferenceNameReading {
+  const chipWord = documentWord(issue, own);
+  return title === undefined
+    ? { chipWord, words: chipWord }
+    : { chipWord, tree: titleReading(title) };
+}
+
+/**
+ * The page's word for one document of the issue, which a chip naming the whole document draws
+ * (`documentReading`): the name of the filter that draws what it holds (`PRESET_NAMES`) for the
+ * spec and for the plan, Verification and decisions documents, and the page's word for a
+ * document (`NODE_TYPE_NAMES.document`) for any other, another issue's included (`undefined`),
+ * since another issue's document plays no part of this one. A link and every line read a
+ * document by its own name, which is its file name, `spec.md` (R8); a chip never draws it
+ * (decision 39).
  *
  * Which document plays which part is the issue read's answer and nothing else: the id it names
  * for each (`primary_artifact_id`, `plan_artifact_id`, `verification_artifact_id`,
@@ -502,13 +546,14 @@ function orderConversation(drafts: Map<string, Draft>): void {
 /**
  * A chip that opens each document of the issue a node's own words cite (R3): a document is no
  * node of the outline, so a block that names one carries a chip of its own for it, which opens
- * the document at its own address in place of the outline (`NodeRow.tsx`'s `Chip`). The chip is
- * named by the page's word for the document, as every chip naming a whole document is
- * (`documentWord`): the filter's name for the spec and for the plan, Verification and decisions
- * documents, and "document" for any other, never the file name the issue's own read carries. It
+ * the document at its own address in place of the outline (`NodeRow.tsx`'s `Chip`). The chip
+ * draws the page's word for the document, as every chip naming a whole document does
+ * (`documentReading`): the filter's name for the spec and for the plan, Verification and
+ * decisions documents, and "document" for any other, never its file name (decision 39). It
  * addresses the document as `artifact/<slug>` - the spec too, whose `spec` reference is the Spec
- * filter's address. A citation of one block of a document names that block, which the text's
- * own link opens, and no chip.
+ * filter's address - and carries the name a link to that address reads, the document's file
+ * name. A citation of one block of a document names that block, which the text's own link opens,
+ * and no chip.
  */
 function addDocumentChips(
   drafts: Map<string, Draft>,
@@ -533,14 +578,19 @@ function addDocumentChips(
         route.kind === "artifact" ? route.slug : route.kind === "spec" ? context.specSlug : "";
       const artifact = bySlug.get(slug);
       if (artifact === undefined) continue;
-      const ref = buildDispatchReference({ key: context.key, kind: "artifact", slug });
+      const address = { key: context.key, kind: "artifact", slug } as const;
+      const ref = buildDispatchReference(address);
       if (draft.chips.some((chip) => chip.ref === ref)) continue;
       draft.chips = [
         ...draft.chips,
         {
           answered: true,
           gone: false,
-          reading: { words: documentWord(reads.issue, artifact) },
+          reading: documentReading(
+            reads.issue,
+            artifact,
+            issueOrDocumentTitle(address, reads.issue, artifact)
+          ),
           ref,
         },
       ];

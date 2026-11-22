@@ -18,11 +18,7 @@ import type {
   ReferenceTarget,
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import {
-  type ReferenceNameReading,
-  ReferenceNamesProvider,
-  useKnownReferences,
-} from "../refs/reference-names";
+import { ReferenceNamesProvider, useKnownReferences } from "../refs/reference-names";
 import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
 import { Publisher, publishedNames } from "./projection-fixture";
@@ -1156,9 +1152,7 @@ test("A plan with no role that the issue names by its id has its blocks read and
     expect(api.getArtifactBlocks).toHaveBeenCalledWith(roleless.id);
     // A comment citing the whole plan carries a chip that names it as the plan.
     const chips = nodesInOrder(view.result.current).find((node) => node.id === comment.id)?.chips;
-    const words = (reading: ReferenceNameReading | undefined) =>
-      reading !== undefined && "words" in reading ? reading.words : undefined;
-    expect(chips?.map((chip) => ({ name: words(chip.reading), ref: chip.ref }))).toEqual([
+    expect(chips?.map((chip) => ({ name: chip.reading?.chipWord, ref: chip.ref }))).toEqual([
       { name: PRESET_NAMES.plan, ref: cites },
     ]);
     view.unmount();

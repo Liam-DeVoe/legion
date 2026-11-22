@@ -229,10 +229,12 @@ export function rowReferences(
 /**
  * What a row draws a reference as, from `names`, the name each reference has as a link reads it
  * (`RowText.tsx`'s names, by `useReferenceNames`): a whole document by the page's word for it,
- * the one the page published (`tree-drafts.ts`'s `documentWord`) or, until it has, the word for
- * a document (`node-row-chip.ts`'s `documentWord`); an issue by its key, then its title; a party
- * by the name its own read gives it; anything else as a chip in place, by its target's own words
- * cut as a tie's chip cuts them (`chipName`). A reference with no name - its target has not
+ * which a chip draws in place of its name (decision 39) and which `names` holds for it instead -
+ * the line the page's store projects beside its name (`KnownReferences.lines`, from
+ * `tree-drafts.ts`'s `documentWord`) - or, until it has, the word for a document
+ * (`node-row-chip.ts`'s `documentWord`); an issue by its key, then its title; a party by the
+ * name its own read gives it; anything else as a chip in place, by its target's own words cut
+ * as a tie's chip cuts them (`chipName`). A reference with no name - its target has not
  * answered yet, or Dispatch answered it has none - reads as the words its author wrote, as a
  * link of any other body reads until its title resolves (R8, INFRA-1196 decision 350, which
  * replaces decision 95's short form).

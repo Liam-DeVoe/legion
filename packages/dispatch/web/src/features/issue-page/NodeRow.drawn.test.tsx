@@ -25,7 +25,12 @@ import {
   usePublishReferenceNames,
 } from "../refs/reference-names";
 import { measureNearWords } from "./clamp-fixtures";
-import { issueDetails, KEY } from "./decisions-filter/decisions-fixtures";
+import {
+  artifact,
+  DECISIONS_DOCUMENT,
+  issueDetails,
+  KEY,
+} from "./decisions-filter/decisions-fixtures";
 import {
   FIRST_LINE_LIMIT,
   type IssueTreeReads,
@@ -44,6 +49,7 @@ import {
   type GapKind,
   NODE_TYPE_NAMES,
   type NodeType,
+  PRESET_NAMES,
 } from "./page-words";
 import { publishedChips, publishedNames } from "./projection-fixture";
 import { RowText } from "./RowText";
@@ -676,6 +682,100 @@ test("a two-paragraph block reads alike in a plain line and a link, and its chip
     });
   } finally {
     getReferences.mockRestore();
+    getIssueSummary.mockRestore();
+    body.unmount();
+    view.unmount();
+  }
+});
+
+// R8: the page publishes a whole document's name as a link to it reads it - the issue's spec by
+// the issue's title, and any other document by its own name, its file name - so a plain line
+// reads the document as a link to it does, whatever word the batched read or the page has for
+// it. Every chip keeps the page's word for the document, the word for the part it plays, since a
+// chip never draws a document's file name (decision 39): a tie's, and one in place in a node's
+// words, which the names store feeds. All of it is read from the one batched read's answer,
+// through the page's own code.
+test("a whole document reads alike in a plain line and a link, and by the page's word in every chip", async () => {
+  const spec = `dispatch://${KEY}/spec`;
+  const notes = `dispatch://${KEY}/artifact/notes-md`;
+  const decisions = `dispatch://${KEY}/artifact/${DECISIONS_DOCUMENT.slug}`;
+  const title = "Draw one ordered body";
+  const notesFile = { ...artifact("artifact-notes", "notes-md"), name: "notes.md" };
+  const decisionsFile = { ...DECISIONS_DOCUMENT, name: "decisions.md" };
+  const issue = issueDetails();
+  const held = (issue.artifacts ?? []).filter((one) => one.id !== decisionsFile.id);
+  const reads = {
+    issue: { ...issue, artifacts: [...held, notesFile, decisionsFile], title },
+    // The batched read names a document by its file name, the spec's included.
+    targets: [
+      { gone: false, kind: "artifact", name: "spec.md", ref: spec },
+      { gone: false, kind: "artifact", name: notesFile.name, ref: notes },
+      { gone: false, kind: "artifact", name: decisionsFile.name, ref: decisions },
+    ],
+  } satisfies IssueTreeReads;
+  const context = treeContext(reads);
+  const words = `Read ${spec}, ${notes} and ${decisions} first.`;
+  const view = renderRow(
+    node({
+      chips: [context.chipOf(spec), context.chipOf(notes), context.chipOf(decisions)],
+      id: "plan-md#b-t1",
+      parentLine: {
+        id: "spec#b-r2",
+        reference: `dispatch://${KEY}/spec#b-r2`,
+        text: words,
+        tree: readingOf(words),
+        type: "requirement",
+      },
+      text: words,
+      tree: readingOf(words),
+      type: "plan_task",
+    }),
+    {
+      body: false,
+      published: { ...targetNaming(reads), asked: new Set([spec, notes, decisions]) },
+    }
+  );
+  // The links, which read the issue's summary, as every rendered body's do.
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [notesFile, decisionsFile].map((file) => ({
+      id: file.id,
+      kind: "doc",
+      latest_version: 1,
+      name: file.name,
+      primary: false,
+      slug: file.slug,
+    })),
+    key: KEY,
+    project: "CORE",
+    status: "todo",
+    title,
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const body = render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <MarkdownBody markdown={words} />
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  const pageWords = [PRESET_NAMES.spec, NODE_TYPE_NAMES.document, PRESET_NAMES.decisions];
+  const inWords = (reference: string) =>
+    view.container.querySelector(`[data-node-words] a[data-row-reference="${reference}"]`)
+      ?.textContent;
+  try {
+    for (const name of [title, notesFile.name, decisionsFile.name]) {
+      await within(body.container).findByRole("link", { name });
+    }
+    await waitFor(() => {
+      expect(view.container.querySelector("[data-node-parent-line] a")?.textContent).toBe(
+        `Read ${title}, ${notesFile.name} and ${decisionsFile.name} first.`
+      );
+      expect([inWords(spec), inWords(notes), inWords(decisions)]).toEqual(pageWords);
+      expect(
+        [...view.container.querySelectorAll("[data-chip-name]")].map((chip) => chip.textContent)
+      ).toEqual(pageWords);
+    });
+  } finally {
     getIssueSummary.mockRestore();
     body.unmount();
     view.unmount();

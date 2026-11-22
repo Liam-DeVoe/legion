@@ -19,6 +19,7 @@ import { useKnownReferences } from "../refs/reference-names";
 import { parseNodeReference } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
+import { documentWord } from "./node-row-chip";
 import { authorText } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import {
@@ -173,20 +174,32 @@ interface RowNames {
  * reference in the same words: the name the page published from its batched read, and a party's
  * own read, by the issue the record is on (`issue`), where a role is read. The page's names are
  * read once for each of its answers and shared by every row. An issue's name is its title, which
- * a row draws apart from its key. A block is drawn as a chip in place, named as a tie's chip
- * names it: by the first block of its words that holds any, which the page's store projects
- * beside its name (`KnownReferences.lines`).
+ * a row draws apart from its key. A block and a whole document are drawn as chips in place,
+ * named as a tie's chip names them, by the line the page's store projects beside the name
+ * (`KnownReferences.lines`): a block by the first block of its words that holds any, and a
+ * document by the page's word for it alone, since a chip never draws a document's name, which a
+ * link and every plain line read it by (decision 39).
  */
 function useRowNames(words: string, issue: string | undefined): RowNames {
   const { ambiguous, lines, names: known } = useKnownReferences();
   const issues = useMemo(() => knownIssueKeys(known), [known]);
   const found = useMemo(() => rowReferences(words, issues, ambiguous), [ambiguous, issues, words]);
-  const addresses = useMemo(() => [...new Set(found.map((one) => one.reference))], [found]);
+  // A document's own read would answer only the name its chip never draws.
+  const addresses = useMemo(
+    () => [
+      ...new Set(
+        found.filter((one) => documentWord(one.route) === undefined).map((one) => one.reference)
+      ),
+    ],
+    [found]
+  );
   const { names: named, reads } = useReferenceNames(addresses, issue);
   const names = useMemo(() => {
     const byReference = new Map<string, string>();
     for (const one of found) {
-      const name = lines.get(one.reference) ?? named.get(one.reference)?.name;
+      const name =
+        lines.get(one.reference) ??
+        (documentWord(one.route) === undefined ? named.get(one.reference)?.name : undefined);
       if (name !== undefined) byReference.set(one.reference, name);
     }
     return byReference;

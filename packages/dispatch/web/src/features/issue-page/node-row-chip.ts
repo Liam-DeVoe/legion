@@ -36,10 +36,13 @@ export function chipWords(name: string): string {
 
 /**
  * The page's word for the whole document `route` names, or undefined where it names no whole
- * document (part G's R4, ruling 5): today's model holds no title for a document and its name is
- * its file name, which no chip draws, so a document is named by the page's word for one, and the
- * issue's spec by the Spec's name. A chip, a reference in a row's words and the name the page
- * publishes for a document all name it by this one word (`tree-drafts.ts`'s `treeContext`).
+ * document (part G's R4, ruling 5): a document's own name is its file name, which no chip draws
+ * (decision 39), so a chip names a document by the page's word for one, and the issue's spec by
+ * the Spec's name. A tie's chip and one in place in a node's words draw it where the page gave
+ * them no word of its own, the page's word for the document's part
+ * (`refs/reference-names.tsx`'s `ReferenceNameReading.chipWord`). The page publishes a
+ * document's name as a link to it reads it, which every plain line draws (`tree-drafts.ts`'s
+ * `treeContext`).
  */
 export function documentWord(route: DispatchReferenceRoute | undefined): string | undefined {
   if (route === undefined || referenceTargetKind(route) === "block") return undefined;

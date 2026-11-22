@@ -108,13 +108,15 @@ export interface NodeChip {
    *  into the name every surface reads the target by, as a link to it reads it
    *  (`refs/reference-names.tsx`), and which a chip cuts again where it draws it (`chipName`). A
    *  block by the server's reading of its whole text, as a link to it titles it, which a chip
-   *  names by its first block that holds any words (`blockLineReading`); where the read answered
+   *  names by its first block that holds any words (`chipLineReading`); where the read answered
    *  with no reading or one that holds no words, the page's word for the block's kind
    *  (`NODE_TYPE_NAMES`) for a block of this issue whose document the tree read; a whole
-   *  document by the page's word for one, never `spec.md`; an ask's, a comment's and a message's
-   *  stored text; an issue's title; and anything else's name as that read answers it. Absent for
-   *  a block and for anything else until the read answers, for another issue's block the read
-   *  sent no words for, and for a target that is gone. */
+   *  document by the title a link to it reads, the issue's title for its spec and its file name
+   *  for any other, with the page's word for it, which a chip draws in place of that title
+   *  (`ReferenceNameReading.chipWord`); an ask's, a comment's and a message's stored text; an
+   *  issue's title; and anything else's name as that read answers it. Absent for a block and for
+   *  anything else until the read answers, for another issue's block the read sent no words
+   *  for, and for a target that is gone. */
   readonly reading?: ReferenceNameReading;
   /** The target's own `dispatch://` address. */
   readonly ref: string;
@@ -538,7 +540,9 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
  * What the page publishes from the targets of the batched reference read (`reads.targets`) for
  * every surface beside the tree to name them by (`refs/reference-names.tsx`), each read by the
  * rule a chip naming the target is named by (`treeContext`), so a link and a chip naming one
- * target never disagree: the chip of each answered target, named by `chipNaming`.
+ * target never disagree, save that a chip draws the page's word for a whole document in place
+ * of its name (`ReferenceNameReading.chipWord`): the chip of each answered target, named by
+ * `chipNaming`.
  */
 export function targetNaming(reads: IssueTreeReads): Omit<PublishedReferences, "asked"> {
   const context = treeContext(reads);
