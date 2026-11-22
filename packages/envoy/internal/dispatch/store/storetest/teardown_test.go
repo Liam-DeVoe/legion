@@ -37,11 +37,14 @@ func TestADropLeftAtTheBoundIsNamedAndTheServerFinishesIt(t *testing.T) {
 		if err != nil {
 			return err.Error()
 		}
+		if read.gone[name] {
+			t.Fatalf("the drop of %s finished while holdBarriers held every drop on the server", name)
+		}
 		drop = read.drops[name]
 		if drop.wait == "IPC/ProcSignalBarrier" {
 			return ""
 		}
-		return fmt.Sprintf("the drop's backend: %+v", drop)
+		return fmt.Sprintf("the drop's backend: %s", drop)
 	})
 
 	read, err := readActivity([]string{name})
@@ -126,8 +129,16 @@ func TestTheSweepDropsADatabaseOfAGoneBinaryAndKeepsALiveBinarys(t *testing.T) {
 
 // holdBarriers holds every DROP DATABASE on the server: a backend writing a large COPY to a
 // client that reads none of it waits on Client/ClientWrite and accepts no barrier (measured on
-// PostgreSQL 18.6). It returns that backend's pid, once it waits so, and a func that releases it:
-// closing the client's socket ends the backend. The test's cleanup releases it too.
+// PostgreSQL 18.6). It returns that backend's pid and a func that releases it (closing the
+// client's socket ends the backend), once the hold is proven.
+//
+// Client/ClientWrite alone proves nothing: until the socket's buffers are full the backend waits
+// on the write only while the kernel moves its last bytes, and between writes it takes any
+// barrier, so a drop sent then would finish. So a probe database's drop is sent, and the hold is
+// proven when the probe's drop is seen waiting on IPC/ProcSignalBarrier, and the holder on
+// Client/ClientWrite, at two reads a second or more apart; a probe whose database goes took the
+// hold for one not yet in place, and a new probe is sent. The probes' drops finish at release.
+// The test's cleanup releases the hold before it drops the probes.
 func holdBarriers(t *testing.T) (int, func()) {
 	t.Helper()
 	conn := connect(t)
@@ -145,21 +156,54 @@ func holdBarriers(t *testing.T) (int, func()) {
 		}
 	}
 	t.Cleanup(release)
-	eventually(t, fmt.Sprintf("backend %d waits on Client/ClientWrite", pid), func() string {
-		read, err := readActivity(nil)
+
+	var probe string
+	var held int
+	var lastHeld time.Time
+	eventually(t, fmt.Sprintf("a probe drop held by backend %d", pid), func() string {
+		if probe == "" {
+			probe = randomName(t, "dispatch_test_")
+			if _, err := shared.admin.Exec(context.Background(), "create database "+probe+" strategy file_copy"); err != nil {
+				t.Fatalf("create the probe database: %v", err)
+			}
+			name := probe
+			t.Cleanup(func() { _, _ = shared.admin.Exec(context.Background(), "drop database if exists "+name) })
+			// Sent and never read, like the row's own drop.
+			connect(t).PgConn().Exec(context.Background(), "drop database "+probe)
+			held = 0
+			return "the probe " + probe + "'s drop is sent"
+		}
+		read, err := readActivity([]string{probe})
 		if err != nil {
 			return err.Error()
 		}
+		if read.gone[probe] {
+			seen := "the probe " + probe + "'s drop finished: the hold was not in place yet"
+			probe = ""
+			return seen
+		}
+		holder := "not on the server"
 		for _, b := range read.others {
 			if b.pid == pid {
-				if b.wait == "Client/ClientWrite" {
-					return ""
-				}
-				return b.String()
+				holder = b.String()
 			}
 		}
-		return "not on the server"
+		drop := read.drops[probe]
+		if drop.wait != "IPC/ProcSignalBarrier" || !strings.Contains(holder, "waiting on Client/ClientWrite") {
+			held = 0
+			return fmt.Sprintf("the probe's drop: %s; the holder: %s", drop, holder)
+		}
+		if held == 0 || time.Since(lastHeld) >= time.Second {
+			held++
+			lastHeld = time.Now()
+		}
+		if held < 2 {
+			return fmt.Sprintf("the probe's drop held at %d read", held)
+		}
+		return ""
 	})
+	// Registered last, so it runs first: the probes' cleanup drops wait for the hold to end.
+	t.Cleanup(release)
 	return pid, release
 }
 
