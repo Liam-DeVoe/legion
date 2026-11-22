@@ -29,7 +29,9 @@ import (
 // slot rule (internal/replay), so a rule is judged by the daemon's own decisions over a window it
 // lived through. Its commands collect a window (collect, collect-merges), neutralize one for the
 // repository's test data (neutralize), replay one (run), read the measures of a window's record
-// (scorecard) and name the rules a replay can run (rules). None of them reaches a daemon.
+// (scorecard), check the replay against the record (validate) and against a recorded change of
+// the rule (forecast), compare the rules on two windows (compare) and name the rules a replay can
+// run (rules). None of them reaches a daemon.
 func newReplayCommand(stdout, stderr io.Writer) *cobra.Command {
 	return group(&cobra.Command{Use: "replay", Short: "replay a recorded window of a daemon's project through the daemon's own admission pass under a named slot rule (a developer's tool)"},
 		newReplayCollectCommand(stdout, stderr),
@@ -37,6 +39,9 @@ func newReplayCommand(stdout, stderr io.Writer) *cobra.Command {
 		newReplayNeutralizeCommand(stdout, stderr),
 		newReplayRunCommand(stdout, stderr),
 		newReplayScorecardCommand(stdout, stderr),
+		newReplayValidateCommand(stdout, stderr),
+		newReplayForecastCommand(stdout, stderr),
+		newReplayCompareCommand(stdout, stderr),
 		newReplayRulesCommand(stdout, stderr),
 	)
 }
@@ -407,6 +412,351 @@ func newReplayScorecardCommand(stdout, stderr io.Writer) *cobra.Command {
 		return 0
 	})
 	return cmd
+}
+
+// replayValidateLong is `legion replay validate --help`'s description.
+const replayValidateLong = `Check the replay of a recorded window against its record (the tool's validation).
+
+The window in --window is replayed under --rule, the rule its daemon ran, on every branch the tool
+offers: the main branch and each change of one knob from it, each at the slowdown factors 1, 1.2
+and 1.6, with 5 seeds for a branch that draws (a conflict, or the work of an issue that never
+started) and the seed 1 alone for one that draws nothing. Up to --parallel runs run at once, each
+in a database of its own on the server --pg-dsn names. Each run's run.json, scorecard.json and
+scorecard-line.json are written under --out, in <window>/<rule>/<branch>@<f>/seed-<n>/, beside the
+window's record.json; a run whose files are there already is not run again, and each run's log is
+deleted once the run has read it back, unless --keep-logs.
+
+It prints, for each branch and each measure, the recorded value, the replayed value (the mean of
+the seeds, with the lowest and the highest seed's), the gap, the allowance and the test; for each
+issue the error of its first slot and of its done, with their median and 90th percentile; whether
+the window's main branch (main at f 1) passes; and which branches give no comparison. The record
+and each replay are read from their line timelines, so like is compared with like. The gaps: 10%
+of the issues finished and of the slots given out on each day, 0.05 of the share of priority
+taken, 60 minutes at the median of each issue's first-slot error, and 30% of every other measure.
+
+With --from-runs nothing runs: the validation is read from the directories of runs a validate or
+a compare wrote, --window naming the window by its directory's name (needed only where they hold
+more than one) and --rule defaulting to the rule its daemon ran.`
+
+// newReplayValidateCommand is `legion replay validate` (replay.RunValidate, replay.Runs.Validation).
+func newReplayValidateCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "validate --window <dir> --rule <name> --pg-dsn <dsn> --out <dir> [--parallel <n>] [--keep-logs] | --from-runs <dir>... [--window <name>] [--rule <name>]",
+		Short: "replay a window under the rule its daemon ran on every branch, and test each branch against the record",
+		Long:  replayValidateLong,
+		Args:  noArguments,
+	}
+	flags := cmd.Flags()
+	windowDir := flags.String("window", "", "the directory of the recorded window; with --from-runs, the window's name")
+	ruleName := flags.String("rule", "", "the rule the window's daemon ran, as legion replay rules names it")
+	dsn := flags.String("pg-dsn", "", "a Postgres server each run makes its own database on")
+	out := flags.String("out", "", "the directory of runs every run is written under")
+	parallel := flags.Int("parallel", 1, "how many runs run at once")
+	keepLogs := flags.Bool("keep-logs", false, "keep each run's log.jsonl")
+	fromRuns := flags.StringArray("from-runs", nil, "a directory of runs to read the validation from, running nothing; repeat for more")
+	asJSON := flags.Bool("json", false, "print the validation as JSON")
+	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
+		var validation replay.Validation
+		if len(*fromRuns) > 0 {
+			if set := changedFlag(cmd, "pg-dsn", "out", "parallel", "keep-logs"); set != "" {
+				return refuse(cmd, "--from-runs reads runs and makes none, so --%s does not apply", set)
+			}
+			read, err := replay.ReadRuns(*fromRuns...)
+			if err != nil {
+				fmt.Fprintf(stderr, "legion replay validate: %v\n", err)
+				return 1
+			}
+			name := *windowDir
+			if name == "" {
+				windows := read.Windows()
+				if len(windows) != 1 {
+					return refuse(cmd, "the runs hold %d windows (%s); name one with --window", len(windows), strings.Join(windows, ", "))
+				}
+				name = windows[0]
+			}
+			rule := *ruleName
+			if rule == "" {
+				if rule, err = read.Rule(name); err != nil {
+					fmt.Fprintf(stderr, "legion replay validate: %v\n", err)
+					return 1
+				}
+			}
+			if validation, err = read.Validation(name, rule); err != nil {
+				fmt.Fprintf(stderr, "legion replay validate: %v\n", err)
+				return 1
+			}
+		} else {
+			if missing := missingFlag(cmd, "window", "rule", "pg-dsn", "out"); missing != "" {
+				return refuse(cmd, "--%s is required", missing)
+			}
+			rule, ok := record.SlotRuleNamed(*ruleName)
+			if !ok {
+				return refuse(cmd, "--rule %q names no slot rule; `legion replay rules` lists them", *ruleName)
+			}
+			if *parallel < 1 {
+				return refuse(cmd, "--parallel %d: at least one run runs at a time", *parallel)
+			}
+			var err error
+			validation, err = replay.RunValidate(ctx, replay.ValidateConfig{Window: *windowDir, Rule: rule, PGDSN: *dsn, Parallel: *parallel,
+				Out: *out, KeepLogs: *keepLogs, Progress: replayProgress(stderr, "validate")})
+			if err != nil {
+				fmt.Fprintf(stderr, "legion replay validate: %v\n", err)
+				return 1
+			}
+		}
+		if *asJSON {
+			return printReplayJSON(stdout, validation)
+		}
+		if err := validation.Write(stdout, 1, func(replay.BranchAt) bool { return true }); err != nil {
+			return 1
+		}
+		return 0
+	})
+	return cmd
+}
+
+// replayForecastLong is `legion replay forecast --help`'s description.
+const replayForecastLong = `Forecast the window after a recorded change of the rule from the window before it.
+
+The window in --before, recorded before a change of its daemon's rule, is replayed under --rule,
+the rule after the change, on the main branch (main at f 1) with 5 seeds where it draws and the
+seed 1 alone where it draws nothing, up to --parallel runs at once, each in a database of its own
+on the server --pg-dsn names; each run is written under --out as validate writes it, beside the
+record.json of both windows. The forecast is compared with the record of the window in --after,
+read from its line timeline as the replays are.
+
+It compares rates per hour, averages over time and shares, never totals, since the two windows
+differ in length and in work, and each passes within twice its gap. A send-back cause the change
+of the workflow redefines (red checks or a conflict, a conflict, a send-back by the architect or
+the merger) is scored only inside the total of all send-back loops; each cause both releases
+define the same way (a review that asks for changes, a failed test, a drop from the merge queue, a
+worker's own move back) is scored apart. It names the workflow commits between the two windows'
+daemons that the forecast carries beside the rule.
+
+With --from-runs nothing runs: the forecast is read from the directories of runs a forecast or a
+compare wrote, --before and --after naming the windows by their directories' names and --rule
+defaulting to the rule the daemon of the window after ran.`
+
+// newReplayForecastCommand is `legion replay forecast` (replay.RunForecast, replay.Runs.Forecast).
+func newReplayForecastCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "forecast --before <dir> --after <dir> --rule <name> --pg-dsn <dsn> --out <dir> [--parallel <n>] [--keep-logs] | --from-runs <dir>... --before <name> --after <name> [--rule <name>]",
+		Short: "replay the window before a recorded change of the rule under the rule after it, and compare it with the window after",
+		Long:  replayForecastLong,
+		Args:  noArguments,
+	}
+	flags := cmd.Flags()
+	before := flags.String("before", "", "the directory of the window before the change; with --from-runs, its name (required)")
+	after := flags.String("after", "", "the directory of the window after the change; with --from-runs, its name (required)")
+	ruleName := flags.String("rule", "", "the rule after the change, as legion replay rules names it")
+	dsn := flags.String("pg-dsn", "", "a Postgres server each run makes its own database on")
+	out := flags.String("out", "", "the directory of runs every run is written under")
+	parallel := flags.Int("parallel", 1, "how many runs run at once")
+	keepLogs := flags.Bool("keep-logs", false, "keep each run's log.jsonl")
+	fromRuns := flags.StringArray("from-runs", nil, "a directory of runs to read the forecast from, running nothing; repeat for more")
+	asJSON := flags.Bool("json", false, "print the forecast as JSON")
+	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
+		if missing := missingFlag(cmd, "before", "after"); missing != "" {
+			return refuse(cmd, "--%s is required", missing)
+		}
+		var forecast replay.ForecastResult
+		if len(*fromRuns) > 0 {
+			if set := changedFlag(cmd, "pg-dsn", "out", "parallel", "keep-logs"); set != "" {
+				return refuse(cmd, "--from-runs reads runs and makes none, so --%s does not apply", set)
+			}
+			read, err := replay.ReadRuns(*fromRuns...)
+			if err != nil {
+				fmt.Fprintf(stderr, "legion replay forecast: %v\n", err)
+				return 1
+			}
+			rule := *ruleName
+			if rule == "" {
+				if rule, err = read.Rule(*after); err != nil {
+					fmt.Fprintf(stderr, "legion replay forecast: %v\n", err)
+					return 1
+				}
+			}
+			if forecast, err = read.Forecast(*before, *after, rule); err != nil {
+				fmt.Fprintf(stderr, "legion replay forecast: %v\n", err)
+				return 1
+			}
+		} else {
+			if missing := missingFlag(cmd, "rule", "pg-dsn", "out"); missing != "" {
+				return refuse(cmd, "--%s is required", missing)
+			}
+			rule, ok := record.SlotRuleNamed(*ruleName)
+			if !ok {
+				return refuse(cmd, "--rule %q names no slot rule; `legion replay rules` lists them", *ruleName)
+			}
+			if *parallel < 1 {
+				return refuse(cmd, "--parallel %d: at least one run runs at a time", *parallel)
+			}
+			var err error
+			forecast, err = replay.RunForecast(ctx, replay.ForecastConfig{Before: *before, After: *after, Rule: rule, PGDSN: *dsn,
+				Parallel: *parallel, Out: *out, KeepLogs: *keepLogs, Progress: replayProgress(stderr, "forecast")})
+			if err != nil {
+				fmt.Fprintf(stderr, "legion replay forecast: %v\n", err)
+				return 1
+			}
+		}
+		if *asJSON {
+			return printReplayJSON(stdout, forecast)
+		}
+		if err := forecast.Write(stdout, 1); err != nil {
+			return 1
+		}
+		return 0
+	})
+	return cmd
+}
+
+// replayCompareLong is `legion replay compare --help`'s description.
+const replayCompareLong = `Compare the slot rules on two recorded windows, and write the result as one Markdown document.
+
+The windows are given window before the change of the rule first: --window twice. The rules are
+each --rule, every rule the repository keeps where none is given, with main and the rule each
+window's daemon ran added where they are left out. Under each rule, each window is replayed on
+every branch the tool offers (the main branch and each change of one knob from it, each at the
+slowdown factors 1, 1.2 and 1.6), with 5 seeds for a branch that draws and the seed 1 alone for
+one that draws nothing, and on the main branch at each slowdown factor from 1 to 2 by 0.1 for the
+break-even search. Up to --parallel runs run at once, each in a database of its own on the server
+--pg-dsn names, each written under --runs as validate writes it; a run whose files are there
+already is not run again, and each run's log is deleted once read unless --keep-logs. The
+document is then written to --out from the runs.
+
+The work splits by window and rule: --only-window <name> and --only-rule <name> run that part
+alone into --runs and write no document, so each pod of an indexed Job can run one part. Then
+--from-runs <dir>... --out <file> writes the document from the directories the parts wrote,
+running nothing; it is the same document a single process writes.
+
+The document gives each window's scorecard read from its record; each window's validation under
+its own rule, with which branches give no comparison; the forecast across the change, which
+replays the window before under the rule of the window after, with the workflow commits it carries
+too; which window measures how a rule changes conflicts; the value of every measure for every
+rule, window and branch, read from the snapshot timeline, with the lowest and the highest seed;
+the gap of each measure between the snapshot and the line timelines; each rule's break-even
+slowdown factor against main; the rule it names best, or that none is, with each rule's trade; and
+the assumptions and the scenario each run used.`
+
+// newReplayCompareCommand is `legion replay compare` (replay.RunCompare, replay.Runs.Comparison).
+func newReplayCompareCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "compare --window <dir> --window <dir> [--rule <name>]... --pg-dsn <dsn> --runs <dir> (--out <file> | --only-window <name> --only-rule <name>) [--parallel <n>] [--keep-logs] | --from-runs <dir>... --out <file>",
+		Short: "compare the slot rules on two recorded windows over every branch, and write the result as one document",
+		Long:  replayCompareLong,
+		Args:  noArguments,
+	}
+	flags := cmd.Flags()
+	windows := flags.StringArray("window", nil, "the directory of a recorded window, the window before the change first; give two")
+	ruleNames := flags.StringArray("rule", nil, "a rule to compare, as legion replay rules names it; repeat for more (every rule where none is given)")
+	dsn := flags.String("pg-dsn", "", "a Postgres server each run makes its own database on")
+	runsDir := flags.String("runs", "", "the directory of runs every run is written under")
+	out := flags.String("out", "", "the file the document is written to")
+	parallel := flags.Int("parallel", 1, "how many runs run at once")
+	onlyWindow := flags.String("only-window", "", "run the part of this window alone, by its directory's name, and write no document")
+	onlyRule := flags.String("only-rule", "", "run the part of this rule alone, and write no document")
+	keepLogs := flags.Bool("keep-logs", false, "keep each run's log.jsonl")
+	fromRuns := flags.StringArray("from-runs", nil, "a directory of runs to write the document from, running nothing; repeat for more")
+	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
+		part := *onlyWindow != "" || *onlyRule != ""
+		dirs := *fromRuns
+		if len(dirs) > 0 {
+			if set := changedFlag(cmd, "window", "rule", "pg-dsn", "runs", "parallel", "only-window", "only-rule", "keep-logs"); set != "" {
+				return refuse(cmd, "--from-runs writes the document from runs and makes none, so --%s does not apply", set)
+			}
+			if missing := missingFlag(cmd, "out"); missing != "" {
+				return refuse(cmd, "--%s is required", missing)
+			}
+		} else {
+			if missing := missingFlag(cmd, "window", "pg-dsn", "runs"); missing != "" {
+				return refuse(cmd, "--%s is required", missing)
+			}
+			if len(*windows) != 2 {
+				return refuse(cmd, "--window is given %d times; a comparison reads two windows, the window before the change first", len(*windows))
+			}
+			switch {
+			case part && cmd.Flags().Changed("out"):
+				return refuse(cmd, "a part (--only-window, --only-rule) writes no document, so --out does not apply; write it with --from-runs")
+			case !part && !cmd.Flags().Changed("out"):
+				return refuse(cmd, "--out is required")
+			case *parallel < 1:
+				return refuse(cmd, "--parallel %d: at least one run runs at a time", *parallel)
+			}
+			rules := make([]record.SlotRule, 0, len(*ruleNames))
+			for _, name := range *ruleNames {
+				rule, ok := record.SlotRuleNamed(name)
+				if !ok {
+					return refuse(cmd, "--rule %q names no slot rule; `legion replay rules` lists them", name)
+				}
+				rules = append(rules, rule)
+			}
+			if len(rules) == 0 {
+				rules = record.SlotRules()
+			}
+			if err := replay.RunCompare(ctx, replay.CompareConfig{Windows: *windows, Rules: rules, PGDSN: *dsn, Parallel: *parallel, Runs: *runsDir,
+				OnlyWindow: *onlyWindow, OnlyRule: *onlyRule, KeepLogs: *keepLogs, Progress: replayProgress(stderr, "compare")}); err != nil {
+				fmt.Fprintf(stderr, "legion replay compare: %v\n", err)
+				return 1
+			}
+			if part {
+				fmt.Fprintf(stdout, "legion replay compare: ran the part into %s; write the document with --from-runs\n", *runsDir)
+				return 0
+			}
+			dirs = []string{*runsDir}
+		}
+		read, err := replay.ReadRuns(dirs...)
+		if err != nil {
+			fmt.Fprintf(stderr, "legion replay compare: %v\n", err)
+			return 1
+		}
+		document, err := read.Comparison()
+		if err != nil {
+			fmt.Fprintf(stderr, "legion replay compare: %v\n", err)
+			return 1
+		}
+		if err := os.WriteFile(*out, []byte(document), 0o644); err != nil {
+			fmt.Fprintf(stderr, "legion replay compare: write the document: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "legion replay compare: wrote %s from the runs in %s\n", *out, strings.Join(dirs, ", "))
+		return 0
+	})
+	return cmd
+}
+
+// replayProgress is what validate, forecast and compare tell of each run as it ends, on stderr: the
+// run, whether it was there already, and what its run.json counted, so a pilot can size a Job.
+func replayProgress(stderr io.Writer, command string) func(replay.RunDone) {
+	return func(done replay.RunDone) {
+		if done.Kept {
+			fmt.Fprintf(stderr, "legion replay %s: %d of %d: %s under %s on %s, seed %d, was already run\n", command, done.Ended, done.Of,
+				done.Window, done.Rule, done.Branch.Label(), done.Seed)
+			return
+		}
+		fmt.Fprintf(stderr, "legion replay %s: %d of %d: ran %s under %s on %s, seed %d: %d facts, %d passes, %.1f s, peak memory %d MiB\n",
+			command, done.Ended, done.Of, done.Window, done.Rule, done.Branch.Label(), done.Seed, done.Facts, done.Passes, done.WallSeconds,
+			done.PeakMemoryBytes>>20)
+	}
+}
+
+// changedFlag is the first of names cmd was given, "" when it was given none.
+func changedFlag(cmd *cobra.Command, names ...string) string {
+	for _, name := range names {
+		if cmd.Flags().Changed(name) {
+			return name
+		}
+	}
+	return ""
+}
+
+// printReplayJSON prints v as indented JSON, answering the exit status.
+func printReplayJSON(stdout io.Writer, v any) int {
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(v); err != nil {
+		return 1
+	}
+	return 0
 }
 
 // newReplayRulesCommand is `legion replay rules`: every slot rule a replay can run

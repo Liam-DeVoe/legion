@@ -99,9 +99,15 @@ func Score(w Window) (Scorecard, error) {
 	if err != nil {
 		return Scorecard{}, err
 	}
+	return scoreTrace(t), nil
+}
+
+// scoreTrace is the scorecard of the record t is the trace of (Score), for a reader that builds the
+// trace once for more than the scorecard.
+func scoreTrace(t Trace) Scorecard {
 	card := Measure(lineTimeline(t, ranksOf(t), t.ruleAt))
 	card.Source, card.Unplaced, card.Assumptions = "record", unplacedAtStart(t), []int{}
-	return card, nil
+	return card
 }
 
 // unplacedAtStart is how many issues of t a fact the trace could not place leaves in doubt at the

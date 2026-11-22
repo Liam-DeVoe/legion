@@ -43,10 +43,13 @@ legion project resume	--config string	--json bool	--operator-token-file string	-
 legion replay
 legion replay collect	--before duration	--collector string	--concurrency int	--dispatch-token-file string	--from string	--gate-steps string	--linger duration	--log stringArray	--out string	--part stringArray	--project string	--review-round-cap int	--stalled-tree-notice duration	--tick-interval duration	--to string	--worker-background duration	--worker-silence duration
 legion replay collect-merges	--branch string	--from string	--github-api string	--github-token-env string	--out string	--repo string	--to string
+legion replay compare	--from-runs stringArray	--keep-logs bool	--only-rule string	--only-window string	--out string	--parallel int	--pg-dsn string	--rule stringArray	--runs string	--window stringArray
+legion replay forecast	--after string	--before string	--from-runs stringArray	--json bool	--keep-logs bool	--out string	--parallel int	--pg-dsn string	--rule string
 legion replay neutralize	--deny stringArray	--in string	--map string	--out string	--project string
 legion replay rules	--json bool
 legion replay run	--branch string	--keep-db bool	--out string	--pg-dsn string	--rule string	--seed int64	--slowdown float64	--trace-segments bool	--window string
 legion replay scorecard	--json bool	--window string
+legion replay validate	--from-runs stringArray	--json bool	--keep-logs bool	--out string	--parallel int	--pg-dsn string	--rule string	--window string
 legion restart
 legion sessions
 legion sessions import	--claims string	--dsn-file string	--tree string	--tree-volume string
