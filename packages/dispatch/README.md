@@ -1060,9 +1060,10 @@ naming how many and no grant's id or secret; row `grants-revoke`, the revoke of 
 `OUTSIDE_GRANTS_PROBE_ID` names, passes only on Dispatch's own refusal, 403 `RESTRICTED_MEMBER`,
 and fails on a 2xx or on the broker's 403 `NOT_APPROVER`, which shows Dispatch relayed it. Any
 other answer, or none, is `UNKNOWN`, and so is the revoke with no probe id or one that is no
-UUID, which revokes nothing. Its caller names a grant the broker lets no person end, so a revoke
-let through ends nothing. The rows go to `OUTSIDE_EDGE_GRANTS` too
-(`<state>/outside-edge-grants.tsv` when unset).
+UUID, which revokes nothing. Its caller names a grant the broker lets no person end (no approver,
+no operator), so a revoke let through ends nothing; where the list just read shows that grant with
+`approver` or `enrollment.operator` set, no revoke is sent and the row is `UNKNOWN`. The rows go
+to `OUTSIDE_EDGE_GRANTS` too (`<state>/outside-edge-grants.tsv` when unset).
 `t5` is the browser's half of a delisting window: until `OUTSIDE_T5_DEADLINE` it asks
 `/auth/whoami` with the kept cookie, and once that is answered 401 it tries the kept passkey in a
 fresh browser, writing the rows `T5-cookie` and `T5-passkey` to `OUTSIDE_T5_TSV`. `T5-passkey`
