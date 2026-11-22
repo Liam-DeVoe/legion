@@ -3037,23 +3037,34 @@ func (i Issue) Standing() pods.Standing {
 func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase != phase.Done }
 
 // HoldsQueued says whether work of role queued for phase queuedFor — a start, an owed start, or the
-// task a start delivers — is the work of the place the issue stands at now: the issue stands in
-// queuedFor and, at the phase step, a running step of role stands there (RunningAt). Every role a
+// task a start delivers — is the work of a place the issue stands at now: the issue stands in
+// queuedFor, or a running step of it that is not held stands there (RunningAt), and at the phase
+// step that step is of role. The tasks of a plan run at one time, each at its own phase, and the
+// issue's phase is the least finished of the tasks that run (workflow's issuePhaseOfTasks), so the
+// phase of each other running step is a place the issue stands at too; a held step's is not, and a
+// held task is the issue's phase only once no task runs, which is then held. The issue's own phase
+// still answers where no step of it runs there: a task that runs whose step waits for its join or
+// its agent, and an issue that stands where no step runs at all (held, awaiting a person, admitted),
+// whose other roles a re-admission brings back on starts that name that phase (admit's
+// startMidPhaseMembers). So an issue of one task, and one with no plan rows (RunningOf), whose one
+// running step not held stands at the phase it stands in, read exactly as when the issue's phase
+// alone answered. Away from step the phase alone is compared, never the role: one role works
+// several phases (the implementer implementing and retro), a phase names its one role, and a
+// re-admission brings back every other role of a member that has run on a start that names the
+// member's phase and carries no task, so that a person can still talk to it. Every role a
 // deployment defines runs as step, so a start or a task queued for the step of one role names a
-// phase that still reads the same while the task stands at the step of another; the role is what
-// tells the two apart. At step the role names the step: a role runs at most one step of a task,
-// since a plan, an owner's or a project's default steps, that names a role at two steps is refused
-// (plan.Supported), as the phases row of a role assumes too (PhaseRow.StepPlace). Away from step
-// the phase alone is compared: one role works several phases (the implementer implementing and
-// retro), and a phase names its one role. It is the one definition of that question, which the
-// four judges of queued work ask, each on its own read: the outbox before it runs a start
-// (daemon's supervise), the admission pass before it lets an owed start take a slot (admit's
-// finishFencedStarts), the supervisor before it sends a queued task (PhaseHolds), and the
-// supervisor again before it brings a claim back for a start (supervise.StartWork, through
-// PhaseHolds).
+// phase that still reads the same while the task stands at the step of another; at step the role
+// is what tells the two apart, and a role runs at most one step of a task (plan.Supported). It is
+// the one definition of that question, which the four judges of queued work ask, each on its own
+// read: the outbox before it runs a start (daemon's supervise), the admission pass before it lets
+// an owed start take a slot (admit's finishFencedStarts), the supervisor before it sends a queued
+// task (PhaseHolds), and the supervisor again before it brings a claim back for a start
+// (supervise.StartWork, through PhaseHolds).
 func (i Issue) HoldsQueued(role claim.Role, queuedFor phase.Phase) bool {
-	return i.Phase == queuedFor && (queuedFor != phase.Step ||
-		slices.ContainsFunc(i.RunningAt(phase.Step), func(step RunningStep) bool { return step.Role == role }))
+	if queuedFor == phase.Step {
+		return slices.ContainsFunc(i.RunningAt(phase.Step), func(step RunningStep) bool { return step.Role == role && !step.Held })
+	}
+	return i.Phase == queuedFor || slices.ContainsFunc(i.RunningAt(queuedFor), func(step RunningStep) bool { return !step.Held })
 }
 
 // PhaseHolds says whether a task queued for role at phase queuedFor on run generation is still

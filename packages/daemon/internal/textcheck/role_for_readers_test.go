@@ -63,7 +63,9 @@ type roleForReader struct {
 // phase (retroHeldNotice and Engine.startHeldRetro, which run only for a parent held before its
 // retro for the issues beneath it), or answers the running steps' roles to the readers this list
 // holds (record.RunningOf, and record.stepOfRow, the one reading of a row of plan rows, which
-// Postgres.AgentWaiter reads too), or reads the role of the step a held issue's retry restores
+// Postgres.AgentWaiter reads too), or reads of the running steps at a phase only whether one is
+// held, never its role, and answers by the issue's own phase where no step runs (record's
+// Issue.HoldsQueued), or reads the role of the step a held issue's retry restores
 // only past the refusal of a plan's own hold, which is the one hold an issue at admitted takes
 // (heldStepRole, which Engine.retryOrEscalate reads for the retry of a named claim and
 // Engine.retryPhase for the role it restarts), or never reads admitted at all because a check
@@ -91,6 +93,14 @@ var roleForReaders = map[roleForSite]roleForReader{
 	// The role of the issue's running step at its phase, and of the phase where no step runs at it.
 	{file: "internal/projection/project.go", fn: "Project"}: {calls: 2, tests: []string{
 		"TestProjectShowsARootsArchitectHandshake", "TestTheServedStateNamesTheRunningDeploymentRole"}},
+	// Whether queued work stands at a running step's phase, away from step, where it reads only
+	// whether the step is held and never its role; at admitted, where no step runs, the issue's own
+	// phase answers, as it did before running steps were read.
+	{file: "internal/record/record.go", fn: "Issue.HoldsQueued"}: {calls: 1, tests: []string{
+		"TestAQueuedStartIsHeldToTheRunningStepOfItsRole", "TestAnOwedStartOfAnotherStepsRoleIsEnded",
+		"TestAStartOfAnotherStepsRoleFinishesWithoutActing", "TestALateStartWhoseStepTheTaskLeftSpawnsNoProcess",
+		"TestPhaseHoldsAnswersFromTheRoleOfTheRunningStep", "TestOnlyThePhaseOwnersTaskAdoptsTheWorkingCopy",
+		"TestAnIssueThatComesBackIsNotStrandedByTheStartFence"}},
 	// The role of the phase of an issue with no plan rows.
 	{file: "internal/record/record.go", fn: "RunningOf"}: {calls: 1, tests: []string{
 		"TestAnIssueReadsTheRoleOfItsRunningStep"}},
