@@ -101,20 +101,20 @@ else
 fi
 
 # This process's own web dist, sign-in and embedder, read before the sweep below: web/dist and
-# dev sign-in with a cookie key of its own unless two-process mode or DISPATCH_E2E_SIGNIN gave
-# it others (above). The dev embedder is the development embedder of the server, which hashes a
-# text's words into a vector in the process, so meaning search answers with no AWS or Azure
-# account. It is off unless DISPATCH_E2E_EMBEDDER=1 asks for it, and it goes only with dev
-# sign-in, the one shape the server reads it in: a suite whose assertions count search hits
-# counts the keyword answers Dispatch gives a deployment with no embedder, which is what every
-# spec but the ones that drive meaning search is written against. The acceptance driver and the
-# two-process run ask for it (packages/dispatch/README.md). No row of the two-process run reads
-# a vector since INFRA-1554 moved its rollout row to a Go test, so that run's request is for the
-# work ahead of it rather than for a row it has: dispatch://INFRA-558's plan builds on an embedder
-# there, and the dev embedder calls no model service, so leaving it on costs that run nothing.
-# DISPATCH_E2E_EMBEDDER=fake is the other embedder a harness can have, the fake below, which this
-# block leaves alone: the server reads it as Bedrock, not as a dev-only setting, so it goes with
-# either sign-in.
+# dev sign-in with a cookie key of its own unless a pooled run (e2e/harness-pool.ts), two-process
+# mode or DISPATCH_E2E_SIGNIN gave it others (above). The dev embedder is the development embedder
+# of the server, which hashes a text's words into a vector in the process, so meaning search
+# answers with no AWS or Azure account. It is off unless DISPATCH_E2E_EMBEDDER=1 asks for it, and
+# it goes only with dev sign-in, the one shape the server reads it in: a suite whose assertions
+# count search hits counts the keyword answers Dispatch gives a deployment with no embedder, which
+# is what every spec but the ones that drive meaning search is written against. The acceptance
+# driver and the two-process run ask for it (packages/dispatch/README.md). No row of the
+# two-process run reads a vector since INFRA-1554 moved its rollout row to a Go test, so that
+# run's request is for the work ahead of it rather than for a row it has: dispatch://INFRA-558's
+# plan builds on an embedder there, and the dev embedder calls no model service, so leaving it on
+# costs that run nothing. DISPATCH_E2E_EMBEDDER=fake is the other embedder a harness can have,
+# the fake below, which this block leaves alone: the server reads it as Bedrock, not as a
+# dev-only setting, so it goes with either sign-in.
 web_dist="${DISPATCH_E2E_SERVER_WEB_DIST:-../dispatch/web/dist}"
 dev_embedder=0
 # signin_secret_env holds the sign-in settings that are secrets (the shared cookie key, the
@@ -378,8 +378,9 @@ fi
 # DISPATCH_E2E_ switch of this harness, or that this environment does not set is refused. Unset
 # or empty, the server gets none of the caller's DISPATCH_* settings, as before. Its values are
 # env's arguments below, which every user of the machine reads, so a caller names no setting that
-# holds a secret, which goes in the exports above: both callers name endpoints, deployments,
-# quotas, ids and the files a key or a token is read from, never a key or a token itself.
+# holds a secret (the script's own secrets are exported below; a caller's have no route but this
+# one): both callers name endpoints, deployments, quotas, ids and the files a key or a token is
+# read from, never a key or a token itself.
 pass_through_env=()
 if [ -n "${DISPATCH_E2E_PASS_THROUGH:-}" ]; then
   for name in $DISPATCH_E2E_PASS_THROUGH; do

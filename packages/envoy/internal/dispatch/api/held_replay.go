@@ -49,19 +49,25 @@ type heldCaller struct {
 // PersonTyped is a write a person typed in a session (Dispatch-Person-Typed: 1), which runs again
 // with that header. RoleHolder is what a reply's route learned, as the reply was written, of
 // whether its writer holds the role the attempt was sent for (roleHolderReplyOf), which its post
-// reads back rather than ask the listener again; nil for any other write.
+// reads back rather than ask the listener again; nil for any other write. Place is where a held
+// reply posts (heldRequest.place), read at its hold from the text it answers (repliedTextOf), so
+// a later held text of its writer finds it there (heldBeforeOf). EarlierReply is the writer's
+// earlier held reply to the same delivery that a held reply waits on (heldReplyPlaceOf), which its
+// record reads once it posts (heldReviewWaitsSQL); "" for none.
 type heldReplay struct {
-	Replay      bool             `json:"replay"`
-	Method      string           `json:"method"`
-	Path        string           `json:"path"`
-	Query       string           `json:"query,omitempty"`
-	ContentType string           `json:"content_type,omitempty"`
-	Body        []byte           `json:"body,omitempty"`
-	Caller      heldCaller       `json:"caller"`
-	Text        reviewer.Text    `json:"text"`
-	Subject     reviewer.Subject `json:"subject"`
-	PersonTyped bool             `json:"person_typed,omitempty"`
-	RoleHolder  *roleHolderReply `json:"role_holder,omitempty"`
+	Replay       bool             `json:"replay"`
+	Method       string           `json:"method"`
+	Path         string           `json:"path"`
+	Query        string           `json:"query,omitempty"`
+	ContentType  string           `json:"content_type,omitempty"`
+	Body         []byte           `json:"body,omitempty"`
+	Caller       heldCaller       `json:"caller"`
+	Text         reviewer.Text    `json:"text"`
+	Subject      reviewer.Subject `json:"subject"`
+	PersonTyped  bool             `json:"person_typed,omitempty"`
+	RoleHolder   *roleHolderReply `json:"role_holder,omitempty"`
+	Place        string           `json:"place,omitempty"`
+	EarlierReply string           `json:"earlier_reply,omitempty"`
 }
 
 // isReplay reports whether a held text's request is a write kept whole.
@@ -267,7 +273,10 @@ type reviewedReply struct {
 // answer, and nothing more is held (answerHeldReplyAgain). Any other waits on the newest held
 // reply, reviewed where the reviewer reads it, and held unreviewed where it does not (a plugin's
 // generated text, a person's typed write, a write the check does not read, a reply no person
-// reads), so the replies post in the order the writer wrote them.
+// reads), so the replies post in the order the writer wrote them. A held reply that waits on no
+// earlier reply to its delivery waits on its writer's newest held text at the place it posts to
+// (heldBeforeOf), as a held ask, comment or message does: it is reviewed at once, and posts after
+// that text.
 func (s *server) reviewReply(w http.ResponseWriter, r *http.Request, actor model.Actor, input any, reply reviewedReply) (*postedReview, bool) {
 	if heldPostFrom(r.Context()) != nil {
 		return nil, true
@@ -314,11 +323,9 @@ func (s *server) reviewReply(w http.ResponseWriter, r *http.Request, actor model
 		return nil, true
 	}
 	subject.Reader = reader
-	project := ""
+	project, postsAt := s.repliedTextOf(ctx, reply.kind, r.PathValue("id"))
 	if place.parent != nil {
 		project = place.parent.project
-	} else {
-		project = s.projectOfReply(ctx, reply.kind, r.PathValue("id"))
 	}
 	event := store.WritingCheckEvent{
 		Route: route, Method: method, ActorKind: actor.Kind, ActorID: actor.ID,
@@ -341,14 +348,22 @@ func (s *server) reviewReply(w http.ResponseWriter, r *http.Request, actor model
 		s.writeAuthenticationError(w, err)
 		return nil, false
 	}
+	before, earlier := "", ""
+	if place.parent != nil {
+		earlier = place.parent.id
+	} else if before, err = s.heldBeforeOf(ctx, subject.Writer, postsAt); err != nil {
+		s.writeHandlerError(w, err)
+		return nil, false
+	}
 	typed := personTypedWrite(r)
 	replay := heldReplay{
 		Replay: true, Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, ContentType: "application/json",
 		Body: encoded, Caller: caller, Text: text, Subject: subject, PersonTyped: typed, RoleHolder: &reply.roleHolder,
+		Place: postsAt, EarlierReply: earlier,
 	}
 	s.holdWrite(w, r, actor, replay.reviewed(reply.kind), heldWriteOf{
-		route: method + " " + route, reader: reader, project: project, parent: place.parent, reviewed: reviews, event: event,
-		personTyped: typed,
+		route: method + " " + route, reader: reader, project: project, parent: place.parent, before: before,
+		reviewed: reviews, event: event, personTyped: typed,
 	})
 	return nil, false
 }
@@ -371,8 +386,8 @@ type heldReplyPlace struct {
 // follow-up repeats the earliest held reply to it that is none either, the attempt's reply to be;
 // one that finds only follow-ups held on its attempt, whose reply posted already, waits on none,
 // and its route answers it the stored reply. A follow-up repeats the newest held reply to its
-// attempt that holds its text. Any other reply waits on the newest held reply, whose review it
-// follows (claimHeldReview).
+// attempt that holds its text. Any other reply waits on the newest held reply, whose post its
+// review follows (heldReplay.EarlierReply, claimHeldReview).
 func (s *server) heldReplyPlaceOf(ctx context.Context, route string, subject reviewer.Subject, reply reviewedReply, encoded []byte) (heldReplyPlace, error) {
 	if subject.Writer == "" {
 		return heldReplyPlace{}, nil
@@ -434,15 +449,15 @@ func replyAttemptOf(body []byte) replyAttempt {
 // reply under row's id as its post writes it, read off a dry run of replay as row's hold read it
 // (heldAnswerOf), with its `held` object as it now stands, and a message marked duplicate as that
 // route marks one. As that route's repeat, it names no ask_waiting_on: whom the ask waits on once
-// a reply is its newest, which a repeated reply need no longer be. A row that waits on a held text
-// ran no dry run at its hold and runs none here. A dry run its route answers otherwise - a
-// refusal, or the stored reply of row, which posted meanwhile - is the repeat's answer, as with the
-// reviewer off. Nothing is held, and the writing check records nothing: the reply writes none of
-// its words.
+// a reply is its newest, which a repeated reply need no longer be. A row that waits on its
+// writer's earlier reply to the delivery (heldReplay.EarlierReply) ran no dry run at its hold and
+// runs none here. A dry run its route answers otherwise - a refusal, or the stored reply of row,
+// which posted meanwhile - is the repeat's answer, as with the reviewer off. Nothing is held, and
+// the writing check records nothing: the reply writes none of its words.
 func (s *server) answerHeldReplyAgain(w http.ResponseWriter, r *http.Request, row heldRow, replay heldReplay) {
 	write := replay.reviewed(reviewer.Kind(row.kind))
 	var dry *heldDryRun
-	if row.dependsOn == "" {
+	if replay.EarlierReply == "" {
 		ran, done := s.heldDryRunOrAnswer(w, write, row.actor, row.id)
 		if done {
 			return
@@ -459,35 +474,47 @@ func (s *server) answerHeldReplyAgain(w http.ResponseWriter, r *http.Request, ro
 	WriteJSON(w, http.StatusOK, answer)
 }
 
-// The project of the text a reply answers: messageProjectQuery a message's, the project of its
-// issue, and commentProjectQuery a comment's, the project of its issue or of its document.
+// The text a reply answers, read for the reply's project and its place: repliedMessageQuery a
+// message's, the project of its issue, the kind and the id of its author and its issue; and
+// repliedCommentQuery a comment's, the project of its issue or of its document, its issue and its
+// document.
 const (
-	messageProjectQuery = `select coalesce(i.project_key, '') from messages m left join issues i on i.key = m.issue_key where m.id = $1`
-	commentProjectQuery = `
-		select coalesce(i.project_key, ar.project_key, '')
+	repliedMessageQuery = `
+		select coalesce(i.project_key, ''), m.author ->> 'kind', m.author ->> 'id', m.issue_key
+		from messages m left join issues i on i.key = m.issue_key
+		where m.id = $1`
+	repliedCommentQuery = `
+		select coalesce(i.project_key, ar.project_key, ''), c.issue_key, c.artifact_id::text
 		from comments c
 		left join artifacts ar on ar.id = c.artifact_id
 		left join issues i on i.key = coalesce(c.issue_key, ar.issue_key)
 		where c.id = $1`
 )
 
-// projectOfReply is the project of the message or the comment a reply answers, "" where it has
-// none or the read fails.
-func (s *server) projectOfReply(ctx context.Context, kind reviewer.Kind, id string) string {
+// repliedTextOf is the project of the message or the comment id that a reply of kind answers, and
+// the place the reply posts to (heldRequest.place): a comment's issue, else its document; for a
+// message, the session that sent it, where a session did, as a held message to that session posts
+// there, else the message's issue. Each is "" where the text has none or the read fails.
+func (s *server) repliedTextOf(ctx context.Context, kind reviewer.Kind, id string) (project, place string) {
 	if _, err := uuid.Parse(id); err != nil {
-		return ""
+		return "", ""
 	}
-	var project string
-	var err error
 	if kind == reviewer.KindComment {
-		err = s.deps.Store.Pool.QueryRow(ctx, commentProjectQuery, id).Scan(&project)
-	} else {
-		err = s.deps.Store.Pool.QueryRow(ctx, messageProjectQuery, id).Scan(&project)
+		var on owner
+		if err := s.deps.Store.Pool.QueryRow(ctx, repliedCommentQuery, id).Scan(&project, &on.IssueKey, &on.ArtifactID); err != nil {
+			return "", ""
+		}
+		return project, placeOf(on)
 	}
-	if err != nil {
-		return ""
+	var authorKind, authorID, issueKey *string
+	if err := s.deps.Store.Pool.QueryRow(ctx, repliedMessageQuery, id).Scan(&project, &authorKind, &authorID, &issueKey); err != nil {
+		return "", ""
 	}
-	return project
+	sender := ""
+	if deref(authorKind) == "session" {
+		sender = "session:" + deref(authorID)
+	}
+	return project, messagePlaceOf(sender, deref(issueKey))
 }
 
 // heldTargets are the path values that name a text a later write may wait on, by the prefix of

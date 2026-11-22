@@ -97,7 +97,8 @@ async function main(): Promise<void> {
   const refusal = given ? databaseUrlRefusal(given) : undefined;
   if (refusal !== undefined) throw new Error(refusal);
 
-  // 2. Postgres: DATABASE_URL as given (it is truncated and seeded), else the repo's dev container.
+  // 2. Postgres: DATABASE_URL as given (it is truncated and seeded, unless
+  // DISPATCH_E2E_KEEP_DATABASE=1 keeps it as it is: step 5), else the repo's dev container.
   // It stays ahead of the web build, so a database problem is the failure reported.
   // A new container runs initdb before it takes connections, so the wait gives it 30 s.
   const postgresBoundMs = 30_000;
@@ -164,7 +165,9 @@ async function main(): Promise<void> {
   console.log(
     handOverMessage({
       baseUrl,
-      broadcastId: seeded?.broadcast.id,
+      ...(seeded === undefined
+        ? { kept: true }
+        : { kept: false, broadcastId: seeded.broadcast.id }),
       plannerSessionId: sessionIds.planner,
       fakeEnvoy: `http://127.0.0.1:${harness.env[harnessVariables.fakeEnvoy]}`,
       databaseUrl,

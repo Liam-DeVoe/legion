@@ -210,10 +210,12 @@ type postedReview struct {
 // it whatever the setting says, and posts right after it, through its own review where the
 // setting is hold and no person typed it. A held text that names none waits on its writer's
 // newest held text at its place, if any (heldBeforeOf): it is reviewed at once and posts after
-// that text, so one writer's texts at one place post in the order written. A person signed in at
-// a browser learns nothing of a held text: their write is the route's own, which finds no such
-// text, as awaitHeldTarget answers their other writes. Call it as writingCheck is called: once the
-// input is decoded and the actor resolved, before any transaction.
+// that text, so one writer's held texts at one place post in the order written; a write that posts
+// at once (typed by a person, generated, read by no person, or of a kind whose setting is not
+// hold) waits on none. A person signed in at a browser learns nothing of a held text: their write
+// is the route's own, which finds no such text, as awaitHeldTarget answers their other writes.
+// Call it as writingCheck is called: once the input is decoded and the actor resolved, before any
+// transaction.
 func (s *server) reviewWrite(w http.ResponseWriter, r *http.Request, actor model.Actor, input any, write reviewedWrite) (*postedReview, bool) {
 	rv := s.deps.Reviewer
 	if !rv.reviewsAny() || s.deps.Store == nil {
@@ -278,8 +280,8 @@ func (s *server) reviewWrite(w http.ResponseWriter, r *http.Request, actor model
 		s.writingCheck(r, actor, input)
 	}
 	before := ""
-	if holds && parent == nil {
-		if before, err = s.heldBeforeOf(ctx, writerOf(actor), write); err != nil {
+	if parent == nil {
+		if before, err = s.heldBeforeOf(ctx, writerOf(actor), write.request.place()); err != nil {
 			s.writeHandlerError(w, err)
 			return nil, false
 		}
@@ -638,16 +640,16 @@ const (
 )
 
 // sweepHeld is one pass of the reviewer's sweep, which one process runs every
-// ReviewerSweepInterval under its lease (cmd/dispatch). It fails the held texts that wait on one
-// that failed; reviews again each text a stopped process left in review, once the text it waits
-// on has posted where its record reads that text (claimHeldReview); posts, as
+// ReviewerSweepInterval under its lease (cmd/dispatch). It settles the held texts that wait on one
+// that failed (failOrphanedHeld); reviews again each text a stopped process left in review, once
+// the text it waits on has posted where its record reads that text (claimHeldReview); posts, as
 // DISPATCH_REVIEWER_UNEDITED says, each text whose writer has not acted in time or whose writer
 // session has gone; and posts every decided text whose turn has come.
 func (s *server) sweepHeld(ctx context.Context) {
 	if s.deps.Store == nil {
 		return
 	}
-	if err := s.failOrphanedHeld(ctx); err != nil && ctx.Err() == nil {
+	if _, err := s.failOrphanedHeld(ctx); err != nil && ctx.Err() == nil {
 		slog.Warn("dispatch: fail the held texts that wait on a failed one", "error", err)
 	}
 	stale := intervalOf(s.deps.Reviewer.staleClaim())

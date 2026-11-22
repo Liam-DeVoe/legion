@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -285,33 +286,45 @@ func (rig *reviewRig) requireThreadedUnder(id, parent string) {
 	}
 }
 
-// One writer's two held comments on one issue, and two held messages to one session, post in
-// the order written: the second's review runs at once and passes while the first waits on its
-// writer, and the second still posts only once the first has, as its answer says (`waits_on`).
+// One writer's two held texts at one place post in the order written: two comments on an issue,
+// two messages to a session, a reply to a mention on an issue then a comment on that issue, and
+// that comment then that reply. The second's review runs at once and passes while the first waits
+// on its writer, and the second still posts only once the first has, as its answer says
+// (`waits_on`).
 func TestOneWritersHeldTextsAtOnePlacePostInTheOrderWritten(t *testing.T) {
 	const recipient = "s-recipient"
 	for name, place := range map[string]struct {
-		cfg          ReviewerConfig
-		route, table string
-		fields       map[string]any
+		cfg           ReviewerConfig
+		table         string
+		first, second string
 	}{
-		"comments on an issue":  {holdComments(), "comments", "comments", nil},
-		"messages to a session": {ReviewerConfig{Messages: ReviewHold, WriterWindow: time.Minute}, "messages", "messages", map[string]any{"target": "session:" + recipient, "delivery": "btw"}},
+		"comments on an issue":                 {holdComments(), "comments", "comment", "comment"},
+		"messages to a session":                {ReviewerConfig{Messages: ReviewHold, WriterWindow: time.Minute}, "messages", "message", "message"},
+		"a reply to a mention, then a comment": {holdComments(), "comments", "reply", "comment"},
+		"a comment, then a reply to a mention": {holdComments(), "comments", "comment", "reply"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			rig := newReviewRig(t, place.cfg, nil)
 			rig.listener.start(recipient)
-			write := func(what, body string) heldWriteAnswer {
-				t.Helper()
-				fields := map[string]any{"body": body}
-				for key, value := range place.fields {
-					fields[key] = value
-				}
-				return rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/"+place.route, fields), what)
+			writes := map[string]func(body string) *httptest.ResponseRecorder{
+				"comment": func(body string) *httptest.ResponseRecorder {
+					return rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/comments", map[string]any{"body": body})
+				},
+				"message": func(body string) *httptest.ResponseRecorder {
+					return rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/messages", map[string]any{
+						"body": body, "target": "session:" + recipient, "delivery": "btw",
+					})
+				},
+				// The writer's reply to alice's mention of it on the rig's issue, a comment there.
+				"reply": func(body string) *httptest.ResponseRecorder {
+					return rig.asWriter(http.MethodPost, "/api/v1/comments/"+rig.mentionOfWriter("Is it done?")+"/reply", map[string]any{
+						"attempt": 1, "body": body,
+					})
+				},
 			}
-			first := write("the first", "Status\nWe spin up the node. "+vacuousPhrase)
+			first := rig.held(writes[place.first]("Status\nWe spin up the node. "+vacuousPhrase), "the first, a "+place.first)
 			rig.waitHeld(first.ID, heldAwaitingWriter)
-			second := write("the second", "The node answers on its port now.")
+			second := rig.held(writes[place.second]("The node answers on its port now."), "the second, a "+place.second)
 			pollUntil(t, 20*time.Second, "the second's review to end", func() bool {
 				return rig.heldRow(second.ID).outcome != ""
 			})
@@ -325,26 +338,52 @@ func TestOneWritersHeldTextsAtOnePlacePostInTheOrderWritten(t *testing.T) {
 			}
 			rig.postHeldAsWritten(first.ID)
 			rig.waitHeld(second.ID, heldPosted)
-			var order []string
 			rows, err := rig.database.Pool.Query(context.Background(),
 				`select id::text from `+place.table+` where id::text = any($1) order by created_at`, []string{second.ID, first.ID})
 			if err != nil {
 				t.Fatal(err)
 			}
-			for rows.Next() {
-				var id string
-				if err := rows.Scan(&id); err != nil {
-					t.Fatal(err)
-				}
-				order = append(order, id)
-			}
-			if err := rows.Err(); err != nil {
+			order, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			if err != nil {
 				t.Fatal(err)
 			}
 			if want := []string{first.ID, second.ID}; !slices.Equal(order, want) {
 				t.Fatalf("the %s posted in the order %v, want the order written %v", place.table, order, want)
 			}
 		})
+	}
+}
+
+// A held text that waits on its writer's earlier held text at its place only for its turn posts
+// when that text's post is refused: the writer's held message on an issue waits on its held ask
+// there, the issue closes, the ask's post is refused, and the message, which a closed issue still
+// takes, posts, and its writer is told only of the ask.
+func TestATextWaitingForItsTurnPostsWhenTheTextBeforeItFails(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Asks: ReviewHold, Messages: ReviewHold, WriterWindow: time.Minute}, nil)
+	ask := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/asks", map[string]any{
+		"question": "Ship the reviewer?\n" + vacuousPhrase, "options": writtenOptions,
+	}), "the held ask")
+	rig.waitHeld(ask.ID, heldAwaitingWriter)
+	message := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/messages", map[string]any{
+		"body": "The node answers on its port now.",
+	}), "the held message")
+	if message.Held.WaitsOn != ask.ID {
+		t.Fatalf("the message waits on %q, want the ask, %s", message.Held.WaitsOn, ask.ID)
+	}
+	rig.closeRigIssue()
+	rig.postHeldAsWritten(ask.ID)
+	if row := rig.waitDecided(ask.ID); row.state != heldFailed || !strings.Contains(row.detail, "ISSUE_CLOSED") {
+		t.Fatalf("the ask is %s (%s) on its closed issue, want its post refused", row.state, row.detail)
+	}
+	if row := rig.waitDecided(message.ID); row.state != heldPosted {
+		t.Fatalf("the message is %s (%s) once the ask before it failed, want it posted", row.state, row.detail)
+	}
+	if posted := countRows(t, rig.database, `select count(*) from messages where id::text = $1`, message.ID); posted != 1 {
+		t.Fatalf("%d messages under the posted message's id, want one", posted)
+	}
+	rig.served.detached.wait()
+	if bodies := rig.framesAbout(message.ID, "did not post"); len(bodies) != 0 {
+		t.Fatalf("the writer was told the posted message did not post: %q", bodies)
 	}
 }
 

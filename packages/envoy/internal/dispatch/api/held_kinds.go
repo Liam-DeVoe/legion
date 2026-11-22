@@ -16,8 +16,8 @@ import (
 )
 
 // held_kinds.go is each kind of write the reviewer holds, as the one interface the hold, the edit,
-// the post, the rewrite and the order of one writer's texts read it through (heldRequest): a new
-// ask (askCreate), a new issue (issueCreate), a comment (commentCreate), a message
+// the post, the rewrite and the order of one writer's held texts read it through (heldRequest): a
+// new ask (askCreate), a new issue (issueCreate), a comment (commentCreate), a message
 // (messageCreate), a write kept whole (heldReplay) and a decision block's hold
 // (decisionBlockHold). A new kind is one type that implements it.
 
@@ -43,10 +43,10 @@ type heldRequest interface {
 	rewritten(kind reviewer.Kind, rewrite reviewer.Text) (reviewedWrite, bool)
 	// place is where the text posts, for the order of one writer's held texts there
 	// (heldBeforeOf): the issue or the document of an ask or a comment, the session or the role a
-	// message goes to, else its issue. It is "" for a write whose order something else keeps: a
-	// new issue, by the parent it names; a write kept whole, by the delivery a reply answers or the
-	// held text its path names (heldReplyPlaceOf, awaitHeldTarget); a decision block, by its place
-	// in its document.
+	// message goes to, else its issue; for a held reply, the place its hold stored
+	// (heldReplay.Place). It is "" for a write whose order something else keeps: a new issue, by
+	// the parent it names; a write kept beside a held text, by the held text its path names
+	// (awaitHeldTarget); a decision block, by its place in its document.
 	place() string
 }
 
@@ -57,6 +57,18 @@ func placeOf(o owner) string {
 		return "issue " + *o.IssueKey
 	case o.ArtifactID != nil:
 		return "document " + *o.ArtifactID
+	}
+	return ""
+}
+
+// messagePlaceOf is the place of a message to target, a session or a role
+// (heldRequest.place), else of one on the issue issueKey; "" for neither.
+func messagePlaceOf(target, issueKey string) string {
+	switch {
+	case target != "":
+		return "to " + target
+	case issueKey != "":
+		return "issue " + issueKey
 	}
 	return ""
 }
@@ -412,10 +424,7 @@ func (c messageCreate) rewritten(_ reviewer.Kind, rewrite reviewer.Text) (review
 }
 
 func (c messageCreate) place() string {
-	if target := deref(c.Input.Target); target != "" {
-		return "to " + target
-	}
-	return "issue " + deref(c.IssueKey)
+	return messagePlaceOf(deref(c.Input.Target), deref(c.IssueKey))
 }
 
 // The write kept whole: a reply, or a write that names a held text.
@@ -487,7 +496,7 @@ func (c heldReplay) rewritten(kind reviewer.Kind, rewrite reviewer.Text) (review
 	return edited.reviewed(kind), true
 }
 
-func (c heldReplay) place() string { return "" }
+func (c heldReplay) place() string { return c.Place }
 
 // The decision block's hold: the block is in its document already, so its hold answers nothing,
 // runs no dry run, takes no edit and no rewrite of its request; its post ends the hold

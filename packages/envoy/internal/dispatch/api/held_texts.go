@@ -44,13 +44,15 @@ const (
 // 20261119050004_held_texts), which a query naming these states reads through.
 const heldOpenStatesSQL = "('" + heldReviewing + "', '" + heldAwaitingWriter + "', '" + heldPosting + "')"
 
-// heldReviewWaitsSQL holds where the review of the held text h waits for the text it waits on
-// (depends_on) to post, as its record reads that text: a write kept whole (a reply, reviewed once
-// the writer's earlier reply to its delivery has posted) and a write whose request names that text
-// (a child of a held issue, an ask or a comment on one, a reply to a held comment). A text that
-// waits on its writer's earlier held text at its place (heldBeforeOf) names none: its place has
-// posted, so its review runs at once, and only its post waits for its turn.
-const heldReviewWaitsSQL = `(h.request @> '{"replay": true}' or
+// heldReviewWaitsSQL holds where the held text h reads the text it waits on (depends_on): a write
+// kept beside the held text its path names (awaitHeldTarget), and a write whose request names that
+// text (a child of a held issue, an ask or a comment on one, a reply to a held comment, a reply
+// after its writer's earlier reply to the same delivery, heldReplay.EarlierReply). Its review
+// waits for that text to post (claimHeldReview), and it fails where that text fails
+// (failWaitingOnFailed). A text that waits only for its turn behind its writer's earlier held text
+// at its place (heldBeforeOf) names none: its review runs at once, only its post waits for its
+// turn, and where that text fails it waits on what that text waited on.
+const heldReviewWaitsSQL = `(h.kind = '` + heldRequestKind + `' or
 	jsonb_path_exists(h.request, '$.** ? (@ == $id)', jsonb_build_object('id', h.depends_on)))`
 
 // heldNotReviewed is the outcome of a held text the reviewer does not read before it posts: a
@@ -281,23 +283,34 @@ func (s *server) heldParentOf(ctx context.Context, names []string) (*heldParent,
 	return &parent, nil
 }
 
-// heldBeforeOf is the newest held text, not yet posted, that writer wrote to the place write
-// posts to (heldRequest.place), "" where it holds none there: the text a held ask, comment or
-// message posts after, so one writer's texts at one place post in the order written whichever
-// review ends first, as its replies to one delivery do (heldReplyPlaceOf).
-func (s *server) heldBeforeOf(ctx context.Context, writer string, write reviewedWrite) (string, error) {
-	place := write.request.place()
+// heldBeforeOf is the newest held text, not yet posted, that writer wrote to place
+// (heldRequest.place), "" where it holds none there or place is "": the text a held ask, comment,
+// message or reply posts after, so one writer's held texts at one place post in the order written,
+// whichever review ends first. It reads the id, the kind and the request of the writer's open
+// texts of the kinds that have a place, newest first, and stops at the first one there.
+func (s *server) heldBeforeOf(ctx context.Context, writer, place string) (string, error) {
 	if writer == "" || place == "" {
 		return "", nil
 	}
-	rows, err := s.loadHeldRows(ctx, `writer = $1 and state in `+heldOpenStatesSQL+` order by seq desc`, writer)
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select id, kind, request from held_texts
+		where writer = $1 and state in `+heldOpenStatesSQL+` and kind in ('ask', 'comment', 'message')
+		order by seq desc`, writer)
 	if err != nil {
 		return "", fmt.Errorf("read the writer's held texts: %w", err)
 	}
-	for _, row := range rows {
-		if held, err := row.write(); err == nil && held.request.place() == place {
-			return row.id, nil
+	defer rows.Close()
+	for rows.Next() {
+		var held heldRow
+		if err := rows.Scan(&held.id, &held.kind, &held.request); err != nil {
+			return "", fmt.Errorf("read the writer's held texts: %w", err)
 		}
+		if write, err := held.write(); err == nil && write.request.place() == place {
+			return held.id, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("read the writer's held texts: %w", err)
 	}
 	return "", nil
 }
@@ -995,8 +1008,9 @@ func (s *server) claimHeldPost(ctx context.Context, id string) (heldRow, error) 
 }
 
 // failHeld fails row, a held text still posting whose post was answered refused, and tells its
-// writer the text was not posted, with the refusal (tellNotPosted). Every held text that waits on
-// it fails with it at once, and each of their writers is told too (failOrphanedHeld).
+// writer the text was not posted, with the refusal (tellNotPosted). Every held text that reads it
+// fails with it at once, and each of their writers is told too; a held text that waited on it only
+// for its turn takes its turn and posts (failOrphanedHeld).
 func (s *server) failHeld(ctx context.Context, row heldRow, refused *apiError) {
 	failed, err := s.failHeldPost(ctx, row.id, "the post was refused: "+refused.code+": "+refused.message)
 	if err != nil {
@@ -1008,8 +1022,13 @@ func (s *server) failHeld(ctx context.Context, row heldRow, refused *apiError) {
 			ID: row.id, Kind: reviewer.Kind(row.kind), Code: refused.code, Message: refused.message,
 		})
 	}
-	if err := s.failOrphanedHeld(ctx); err != nil && ctx.Err() == nil {
+	moved, err := s.failOrphanedHeld(ctx)
+	if err != nil && ctx.Err() == nil {
 		slog.Warn("dispatch: fail the held texts that wait on a failed one", "error", err)
+	}
+	if moved {
+		// A text that waited on row for its turn may post now.
+		s.detached.goDetached(s.postReady)
 	}
 }
 
@@ -1198,13 +1217,17 @@ func withRewrite(write reviewedWrite, rewrite reviewer.Text) reviewedWrite {
 	return write
 }
 
-// failOrphanedHeld fails each held text that waits on one that failed, which can never post, and
-// tells each one's writer it was not posted, naming the held text it waited on (tellNotPosted).
-func (s *server) failOrphanedHeld(ctx context.Context) error {
+// failOrphanedHeld settles each held text that waits on one that failed (failWaitingOnFailed): a
+// text that reads it can never post, and fails, and its writer is told it was not posted, naming
+// the held text it waited on (tellNotPosted); a text that waited on it only for its turn takes its
+// turn. It reports whether it moved any text, whose turn may have come.
+func (s *server) failOrphanedHeld(ctx context.Context) (bool, error) {
+	moved := false
 	for range 10 {
-		orphans, err := s.failWaitingOnFailed(ctx)
-		if err != nil || len(orphans) == 0 {
-			return err
+		orphans, movedNow, err := s.failWaitingOnFailed(ctx)
+		moved = moved || movedNow
+		if err != nil || (len(orphans) == 0 && !movedNow) {
+			return moved, err
 		}
 		for _, orphan := range orphans {
 			s.tellNotPosted(ctx, orphan.writer, reviewer.PostFailedFrame{
@@ -1212,7 +1235,7 @@ func (s *server) failOrphanedHeld(ctx context.Context) error {
 			})
 		}
 	}
-	return nil
+	return moved, nil
 }
 
 // heldOrphan is a held text failWaitingOnFailed failed: its id, kind and writer, and the held text
@@ -1221,12 +1244,15 @@ type heldOrphan struct {
 	id, kind, writer, waitedOn string
 }
 
-// failWaitingOnFailed fails, in one statement, each held text that waits on one that failed, and
-// answers them: each is failed by this call alone, so its writer is told once.
-func (s *server) failWaitingOnFailed(ctx context.Context) ([]heldOrphan, error) {
+// failWaitingOnFailed settles, in one transaction, each held text that waits on one that failed. A
+// text that reads it (heldReviewWaitsSQL) fails, in one statement, and is answered: each is failed
+// by this call alone, so its writer is told once. A text that waits on it only for its turn at its
+// place (heldBeforeOf) waits on what the failed text waited on instead, on none where that waited
+// on none, so it keeps its turn and posts; the answer says whether any moved.
+func (s *server) failWaitingOnFailed(ctx context.Context) ([]heldOrphan, bool, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer tx.Rollback(ctx)
 	rows, err := tx.Query(ctx, `
@@ -1234,23 +1260,30 @@ func (s *server) failWaitingOnFailed(ctx context.Context) ([]heldOrphan, error) 
 		set state = 'failed', detail = 'the held text it waits on, ' || p.id || ', failed to post',
 			claimed_at = null, updated_at = now()
 		from held_texts p
-		where p.id = h.depends_on and p.state = 'failed' and h.state in `+heldOpenStatesSQL+`
+		where p.id = h.depends_on and p.state = 'failed' and h.state in `+heldOpenStatesSQL+` and `+heldReviewWaitsSQL+`
 		returning h.id, h.kind, coalesce(h.writer, ''), p.id`)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var orphans []heldOrphan
 	for rows.Next() {
 		var orphan heldOrphan
 		if err := rows.Scan(&orphan.id, &orphan.kind, &orphan.writer, &orphan.waitedOn); err != nil {
 			rows.Close()
-			return nil, err
+			return nil, false, err
 		}
 		orphans = append(orphans, orphan)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return orphans, tx.Commit(ctx)
+	moved, err := tx.Exec(ctx, `
+		update held_texts h set depends_on = p.depends_on, updated_at = now()
+		from held_texts p
+		where p.id = h.depends_on and p.state = 'failed' and h.state in `+heldOpenStatesSQL+` and not `+heldReviewWaitsSQL)
+	if err != nil {
+		return nil, false, err
+	}
+	return orphans, moved.RowsAffected() > 0, tx.Commit(ctx)
 }
