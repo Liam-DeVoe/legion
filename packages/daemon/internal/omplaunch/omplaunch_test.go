@@ -249,9 +249,9 @@ func TestWithPrefix(t *testing.T) {
 // launch's output a line at a time, the program included, and the value alone of a NAME=value
 // word, wherever each stands; a shorter word stays, a line that names the variable with another
 // value stays, and a line that still holds a 10-character run of an argument or a value, folded or
-// cut, is not printed. The program is taken out as an exact copy alone, so its cut copy stays. The
-// credentials are made up: a token pasted as the program, a token an env word sets, and a proxy
-// URL's password.
+// cut, is not printed. A program word with no command's shape (a token) is held to the same way,
+// so its cut copy and its upper-case copy are not printed either. The credentials are made up: a
+// token pasted as the program, a token an env word sets, and a proxy URL's password.
 func TestPrefixMaskedTakesOutEveryWordAndValue(t *testing.T) {
 	const program, value = "madeUpProgramToken0123", "madeUpEnvValue0123456"
 	proxy := "https://legion:madeUpProxyPass0123" + "@proxy.example"
@@ -259,11 +259,13 @@ func TestPrefixMaskedTakesOutEveryWordAndValue(t *testing.T) {
 	text := "sh: 1: " + program + ": not found; OMP_TOKEN=" + value + " (" + value + "x); -- kept; " + proxy + "\n" +
 		"OMP_TOKEN=other is set\n" +
 		"the token MADEUPENVVALUE0123456 is refused\n" +
-		"cut: madeUpProgramTo…"
+		"cut: madeUpProgramTo…\n" +
+		"MADEUPPROGRAMTOKEN0123 refused"
 	want := "sh: 1: <prefix word 0>: not found; <prefix word 1> (<prefix word 1>x); -- kept; <prefix word 3>\n" +
 		"OMP_TOKEN=other is set\n" +
 		"(a line of 42 bytes that holds part of the launch prefix, not printed)\n" +
-		"cut: madeUpProgramTo…"
+		"(a line of 23 bytes that holds part of the launch prefix, not printed)\n" +
+		"(a line of 30 bytes that holds part of the launch prefix, not printed)"
 	if got := PrefixMasked(text, prefix); got != want {
 		t.Fatalf("PrefixMasked = %q, want %q", got, want)
 	}
@@ -295,9 +297,10 @@ func TestPrefixMaskedReadsOnlyAVariableAsANameValueWord(t *testing.T) {
 	}
 }
 
-// The program is taken out as an exact copy and by its base name, never by a run: a line that
-// shares a directory with it is kept, a check's JSON among them, while a shell's refusal naming it
-// either way is masked.
+// The program is taken out as an exact copy and by its base name, and by its base name's runs only
+// when that has no command's shape: a line that shares a directory with it is kept, a check's JSON
+// among them, while a shell's refusal naming it either way is masked, and a cut copy of a token
+// pasted as the program is not printed. The token is made up.
 func TestPrefixMaskedKeepsALineSharingTheProgramsDirectory(t *testing.T) {
 	for _, tc := range []struct{ name, program, text, want string }{
 		{"a library beside the wrapper", "/usr/local/bin/proxywrap",
@@ -308,6 +311,12 @@ func TestPrefixMaskedKeepsALineSharingTheProgramsDirectory(t *testing.T) {
 			"sh: 1: /usr/local/bin/proxywrap: not found", "sh: 1: <prefix word 0>: not found"},
 		{"the program by its base name", "/usr/local/bin/proxywrap",
 			"proxywrap: cannot reach the proxy", "<prefix word 0>: cannot reach the proxy"},
+		{"a command name's cut copy", "/usr/local/bin/omp-proxy-wrapper",
+			"omp-proxy-wr… exited 1", "omp-proxy-wr… exited 1"},
+		{"a token program's cut copy", "/opt/bin/madeUpProgramToken0123",
+			"sh: madeUpProgramTo: cut", "(a line of 24 bytes that holds part of the launch prefix, not printed)"},
+		{"a line beside a token program", "/opt/bin/madeUpProgramToken0123",
+			"error: cannot read /opt/bin/wrapper.conf", "error: cannot read /opt/bin/wrapper.conf"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := PrefixMasked(tc.text, []string{tc.program, "--"}); got != tc.want {

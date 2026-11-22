@@ -252,12 +252,15 @@ const MaskedPrefixWord = 8
 // redact.HeldRun characters in a row of an argument, or of such a value, compared without case, is
 // not printed, its length printed instead. A NAME=value word whole is taken out only as an exact
 // copy, so a line that names the variable is kept. The program is taken out as an exact copy and
-// by its base name, which a shell's refusal names (`sh: 1: <name>: not found`), and by no run: a
-// line that shares a directory with it (`/usr/local/lib/…` beside `/usr/local/bin/<wrapper>`, a
-// check's JSON naming one) is kept. A prefix such as `env NAME=<token>`, a proxy wrapper handed a
-// URL with a password, or a credential pasted where the program goes carries a credential in its
-// words, and a launch that refuses or fails can echo it, whole, as the value alone, folded or
-// cut, in the output a refusal quotes.
+// by its base name, which a shell's refusal names (`sh: 1: <name>: not found`); a line that shares
+// a directory with it (`/usr/local/lib/…` beside `/usr/local/bin/<wrapper>`, a check's JSON naming
+// one) is kept. Its base name's runs are held to as an argument's are only when that base name has
+// no command's shape (commandShaped): a credential pasted where the program goes, whose cut or
+// case-changed copy is then not printed, where a command's name is a word the output may name
+// freely. A prefix such as `env NAME=<token>`, a proxy wrapper handed a URL with a password, or a
+// credential pasted where the program goes carries a credential in its words, and a launch that
+// refuses or fails can echo it, whole, as the value alone, folded or cut, in the output a refusal
+// quotes.
 func PrefixMasked(text string, prefix []string) string {
 	var words []redact.Word
 	for place, word := range prefix {
@@ -265,10 +268,12 @@ func PrefixMasked(text string, prefix []string) string {
 		value, assigns := assignment(word)
 		switch {
 		case place == 0 && !assigns:
-			for _, named := range []string{word, filepath.Base(word)} {
-				if len(named) >= MaskedPrefixWord {
-					words = append(words, redact.Word{Text: named, Shown: shown, Exact: true})
-				}
+			base := filepath.Base(word)
+			if len(word) >= MaskedPrefixWord {
+				words = append(words, redact.Word{Text: word, Shown: shown, Exact: true})
+			}
+			if len(base) >= MaskedPrefixWord {
+				words = append(words, redact.Word{Text: base, Shown: shown, Exact: commandShaped(base)})
 			}
 		case len(word) >= MaskedPrefixWord:
 			words = append(words, redact.Word{Text: word, Shown: shown, Exact: assigns})
