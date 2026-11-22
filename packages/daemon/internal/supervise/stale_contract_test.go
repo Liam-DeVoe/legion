@@ -1,6 +1,9 @@
 package supervise
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // A live claim whose registration declared a plugin contract below PodUpdateContract — a worker
 // started from the image of the release before this one, which is what every roll of this
@@ -192,7 +195,7 @@ func TestAStaleRegistrationNoInstallCanMoveIsAcceptedAtAnyContract(t *testing.T)
 			h.reach(StateReady)
 			h.m.deps.PluginContract = PodUpdateContract + 2
 			h.m.deps.PluginRelaunchable = true
-			h.m.deps.NoPluginInstall = func(Claim) bool { return true }
+			h.m.deps.NoPluginInstall = func(context.Context, Claim) bool { return true }
 			// The mark a relaunch of this claim already left, which is what turns the next
 			// stale registration into the charged path (relaunchAfterFailure).
 			h.m.claim.PluginRelaunchFor = h.m.deps.PluginContract

@@ -317,7 +317,7 @@ func TestBootLeavesALaunchingClaimToItsRegistration(t *testing.T) {
 	s := &supervision{log: quietLogger(), supervisor: sup, claims: []supervise.Claim{c}, plan: plan{pluginRelaunchable: true},
 		refreshGate: supervise.NewRefreshGate(0)}
 
-	s.refreshStalePlugins(s.claims, "boot")
+	s.refreshStalePlugins(context.Background(), s.claims, "boot")
 
 	m, ok := sup.Machine(token)
 	if !ok {
@@ -386,7 +386,7 @@ func TestBootTakesEveryClaimOutOfItsPluginRoundAndRefreshesTheLiveOne(t *testing
 		refreshGate: supervise.NewRefreshGate(0)}
 
 	s.endPluginRounds(s.claims)
-	s.refreshStalePlugins(s.claims, "boot")
+	s.refreshStalePlugins(context.Background(), s.claims, "boot")
 
 	for _, token := range []claim.Token{live, suspended} {
 		m, ok := sup.Machine(token)
@@ -458,7 +458,7 @@ func TestBootSuspendsAStaleClaimWhoseSuspensionIsHeldAtItsTurnsEnd(t *testing.T)
 	s := &supervision{log: quietLogger(), supervisor: sup, claims: []supervise.Claim{c}, plan: plan{pluginRelaunchable: true},
 		refreshGate: supervise.NewRefreshGate(0)}
 
-	s.refreshStalePlugins(s.claims, "boot")
+	s.refreshStalePlugins(context.Background(), s.claims, "boot")
 
 	m.Wait()
 	if held := m.Claim(); held.State != supervise.StateWorking {

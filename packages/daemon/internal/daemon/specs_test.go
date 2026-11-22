@@ -253,8 +253,55 @@ func TestARoleOfAPlanShadowedByADeploymentRoleOnClaudeCodeRunsOnOhMyPi(t *testin
 		if spec.Backend != tc.want {
 			t.Errorf("the prober on %s launches on %q, want %q", tc.issue, spec.Backend, tc.want)
 		}
-		if got := noPluginInstall(cfg, backends, c); got != tc.noInstall {
+		if got := noPluginInstall(context.Background(), cfg, backends, c); got != tc.noInstall {
 			t.Errorf("noPluginInstall of the prober on %s = %t, want %t", tc.issue, got, tc.noInstall)
+		}
+	}
+}
+
+// A claim the cheap terms of the stale-plugin rule settle never asks whether its launch installs
+// a plugin, which under Kubernetes reads the plan of the claim's issue from the store for a role
+// that is none of Legion's (noPluginInstall over roleBackends). A claim on this daemon's
+// contract, one in an update round and one on a daemon that can relaunch onto no plugin are each
+// answered with no read of the plan. A claim on an older contract reads it once, under the
+// context of the call that asks, and is refused, since its prober runs on Oh My Pi.
+func TestTheStalePluginRuleReadsThePlanOnlyForAClaimItsContractFindsStale(t *testing.T) {
+	cfg := config.Config{Runtime: config.Runtime{Name: "kubernetes"},
+		Roles: []config.Role{{Name: "prober", Type: "testing", GitHubApp: config.RoleAppReview}}}
+	type callKey struct{}
+	call := context.WithValue(context.Background(), callKey{}, "the call's")
+	var reads []string
+	planRole := func(ctx context.Context, issue string, _ claim.Role) (record.PlanRole, bool, error) {
+		reads = append(reads, issue)
+		if ctx.Value(callKey{}) != "the call's" {
+			t.Errorf("the plan of %s was read under a context other than the call's", issue)
+		}
+		return record.PlanRole{}, false, nil
+	}
+	backends := roleBackends(cfg.BackendFor, planRole)
+	noInstall := func(ctx context.Context, c supervise.Claim) bool { return noPluginInstall(ctx, cfg, backends, c) }
+	older := api.DaemonAPIVersion - 1
+	prober := func(contract int, round string) supervise.Claim {
+		return supervise.Claim{Issue: "LEGION-43", Role: "prober", PluginContract: contract, UpdateRound: round}
+	}
+	for _, tc := range []struct {
+		name         string
+		claim        supervise.Claim
+		relaunchable bool
+		refused      bool
+		reads        int
+	}{
+		{"on this daemon's contract", prober(api.DaemonAPIVersion, ""), true, false, 0},
+		{"in an update round", prober(older, "round-1"), true, false, 0},
+		{"on a daemon that relaunches onto no plugin", prober(older, ""), false, false, 0},
+		{"on an older contract", prober(older, ""), true, true, 1},
+	} {
+		reads = nil
+		if got := supervise.StaleRefusesCalls(call, tc.claim, api.DaemonAPIVersion, tc.relaunchable, noInstall); got != tc.refused {
+			t.Errorf("the prober %s: refused = %t, want %t", tc.name, got, tc.refused)
+		}
+		if len(reads) != tc.reads {
+			t.Errorf("the prober %s read the plan %d times, want %d", tc.name, len(reads), tc.reads)
 		}
 	}
 }

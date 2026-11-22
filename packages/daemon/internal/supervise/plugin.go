@@ -478,7 +478,7 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 	if got == m.deps.PluginContract {
 		return m.endCurrentPluginRound(ctx)
 	}
-	if m.deps.NoPluginInstall != nil && m.deps.NoPluginInstall(m.claim) {
+	if m.deps.NoPluginInstall != nil && m.deps.NoPluginInstall(ctx, m.claim) {
 		m.log.Warn("supervise: this claim's launch installs no plugin, so no relaunch can move its contract; the registration stands and the update round over its pod brings the new image",
 			"pluginContract", got, "daemonApiVersion", m.deps.PluginContract)
 		return nil
@@ -524,6 +524,12 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 // Kubernetes mode) every stale claim is served, since no relaunch is coming for any of them.
 // Refused there, such a worker would wait on a replacement process that is never started.
 //
+// The cheap terms are asked first, and noPluginInstall only of a claim they find stale, with ctx,
+// the context of the call that asks: under Kubernetes the daemon's answer reads the plan of the
+// claim's issue from its store for a role that is none of Legion's (internal/daemon's
+// noPluginInstall), and every `legion` call of a claim, every send of its task and every count of
+// the state asks this rule.
+//
 // Each caller adds the term that is its own, and neither may copy the other's. internal/api's
 // staleClaim adds that the claim is in no turn, because a worker in a turn is served so that it
 // can push what that turn holds before the relaunch its end releases (holdStaleRelaunch);
@@ -533,11 +539,11 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 // for a relaunch nothing is making; drift the other and a task reaches a claim whose every
 // `legion` call is refused, which buys a model turn the worker can do nothing in and puts the
 // claim in a turn, postponing the very relaunch it is waiting for.
-func StaleRefusesCalls(c Claim, daemonContract int, pluginRelaunchable bool, noPluginInstall func(Claim) bool) bool {
-	if noPluginInstall != nil && noPluginInstall(c) {
+func StaleRefusesCalls(ctx context.Context, c Claim, daemonContract int, pluginRelaunchable bool, noPluginInstall func(context.Context, Claim) bool) bool {
+	if !pluginRelaunchable || c.PluginContract == daemonContract || c.UpdateRound != "" {
 		return false
 	}
-	return pluginRelaunchable && c.PluginContract != daemonContract && c.UpdateRound == ""
+	return noPluginInstall == nil || !noPluginInstall(ctx, c)
 }
 
 // staleRefusesClaim is whether this daemon would refuse the claim's own `legion` calls because
@@ -553,8 +559,8 @@ func StaleRefusesCalls(c Claim, daemonContract int, pluginRelaunchable bool, noP
 // staleClaim's fourth term, that the claim is in no turn, is answered before this is asked:
 // sendPending hands nothing to a claim that is not ready or idle, so every claim that reaches
 // this is out of a turn, which is the claim staleClaim refuses.
-func (m *Machine) staleRefusesClaim() bool {
-	return StaleRefusesCalls(m.claim, m.deps.PluginContract, m.deps.PluginRelaunchable, m.deps.NoPluginInstall)
+func (m *Machine) staleRefusesClaim(ctx context.Context) bool {
+	return StaleRefusesCalls(ctx, m.claim, m.deps.PluginContract, m.deps.PluginRelaunchable, m.deps.NoPluginInstall)
 }
 
 // NoPluginSourceMessage is logged whenever a daemon that can relaunch nothing onto a plugin

@@ -1802,7 +1802,9 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		RefreshGate:        refreshGate,
 		PluginContract:     api.DaemonAPIVersion,
 		PluginRelaunchable: p.pluginRelaunchable,
-		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, backends, c) },
+		NoPluginInstall: func(ctx context.Context, c supervise.Claim) bool {
+			return noPluginInstall(ctx, cfg, backends, c)
+		},
 	}
 	if pauses != nil {
 		sup.deps.Paused, sup.deps.PauseStopped, sup.deps.WakeLetOut = pauses.service.Paused, pauses.stopped, pauses.wakeLetOut
@@ -2141,7 +2143,7 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 		s.reconcileOrphans(store.ForConcurrentWorker(s.supervisor.ctx))
 	}()
 	s.endPluginRounds(s.claims)
-	s.refreshStalePlugins(s.claims, "boot")
+	s.refreshStalePlugins(boot, s.claims, "boot")
 	if len(unfinished) > 0 {
 		s.relaunchUnfinished(unfinished, reconciled)
 	}
@@ -2294,13 +2296,13 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // it holds none of what the gate counts, and it is the one session an operator's own reading of a
 // running wave relies on. It is posted mid-turn as well, since its turn is never waited out
 // (refreshPlugin).
-func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger string) {
-	noInstall := func(c supervise.Claim) bool { return noPluginInstall(s.cfg, s.backends, c) }
+func (s *supervision) refreshStalePlugins(ctx context.Context, claims []supervise.Claim, trigger string) {
+	noInstall := func(ctx context.Context, c supervise.Claim) bool { return noPluginInstall(ctx, s.cfg, s.backends, c) }
 	parked, refreshes := s.parkedWakes()
 	s.refreshGate.Correct(refreshes)
 	refused := 0
 	for _, c := range claims {
-		if !staleForTheLane(c, noInstall) {
+		if !staleForTheLane(ctx, c, noInstall) {
 			continue
 		}
 		if !s.plan.pluginRelaunchable {
@@ -2364,11 +2366,11 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 // hand holds: serve gives the state's source the rule over this deployment's configuration and
 // the lane's own pass builds a closure of it at every sweep, so no daemon reads this term as
 // nil, a tmux daemon included (noPluginInstall, serve, refreshStalePlugins).
-func staleForTheLane(c supervise.Claim, noPluginInstall func(supervise.Claim) bool) bool {
+func staleForTheLane(ctx context.Context, c supervise.Claim, noPluginInstall func(context.Context, supervise.Claim) bool) bool {
 	if c.Session == "" || c.PluginContract == api.DaemonAPIVersion || !supervise.HoldsCapability(c.State) || c.InPodRound() {
 		return false
 	}
-	return noPluginInstall == nil || !noPluginInstall(c)
+	return noPluginInstall == nil || !noPluginInstall(ctx, c)
 }
 
 // claimsToRefresh is how many of claims the stale-plugin lane still has to relaunch onto this
@@ -2392,10 +2394,10 @@ func staleForTheLane(c supervise.Claim, noPluginInstall func(supervise.Claim) bo
 // Error line per stale claim at boot, and this count is what that gap costs, standing at the
 // claims the lane cannot act on beside those lines. A count zeroed there would read as a lane
 // with nothing left, which is the one thing such a daemon is not.
-func claimsToRefresh(claims []supervise.Claim, noPluginInstall func(supervise.Claim) bool) int {
+func claimsToRefresh(ctx context.Context, claims []supervise.Claim, noPluginInstall func(context.Context, supervise.Claim) bool) int {
 	left := 0
 	for _, c := range claims {
-		if staleForTheLane(c, noPluginInstall) {
+		if staleForTheLane(ctx, c, noPluginInstall) {
 			left++
 		}
 	}
@@ -2452,17 +2454,20 @@ func (s *supervision) parkedWakes() (map[claim.Token]bool, int) {
 // function); and the API's stale-caller refusal, which would otherwise hold such a worker's
 // grants, its handoff_complete and its ready on a relaunch that never comes
 // (api.Options.NoPluginInstall, api's staleClaim). The harness is backends' for c's issue
-// (roleBackends, the one decision the launch reads too); nil reads worker_backends alone. A read
-// of the issue's plan that fails answers that an install can move the claim, as an Oh My Pi
-// role's answer is: the stale-plugin lane tries it again at its next pass.
-func noPluginInstall(cfg config.Config, backends roleBackend, c supervise.Claim) bool {
+// (roleBackends, the one decision the launch reads too); nil reads worker_backends alone. For a
+// role that is none of Legion's that reads the issue's plan from the store, under ctx, the
+// context of the call that asks, so each reader asks this only of a claim the cheap terms of the
+// stale-plugin rule find stale (supervise.StaleRefusesCalls, staleForTheLane). A read of the
+// issue's plan that fails answers that an install can move the claim, as an Oh My Pi role's
+// answer is: the stale-plugin lane tries it again at its next pass.
+func noPluginInstall(ctx context.Context, cfg config.Config, backends roleBackend, c supervise.Claim) bool {
 	if cfg.Runtime.Name != "kubernetes" {
 		return false
 	}
 	if backends == nil {
 		backends = roleBackends(cfg.BackendFor, nil)
 	}
-	backend, err := backends(context.Background(), c.Issue, c.Role)
+	backend, err := backends(ctx, c.Issue, c.Role)
 	return err == nil && runtime.Of(backend) == runtime.BackendClaude
 }
 
@@ -2630,7 +2635,7 @@ func (s *supervision) reconcileOrphans(ctx context.Context) {
 		if err := s.runtime.ReconcileOrphans(ctx, knownClaims(claims), orphanGrace); err != nil && ctx.Err() == nil {
 			s.log.Error("reconcile orphans", "error", err)
 		}
-		s.refreshStalePlugins(claims, "sweep")
+		s.refreshStalePlugins(ctx, claims, "sweep")
 		s.reconcilePodUpdates(ctx, claims)
 		s.backstopStalledTurns(ctx, claims)
 		s.tellSilentPhaseWorkers(ctx, claims)
@@ -2802,7 +2807,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			// The same rule the lane itself reads, over the same configuration, so the count
 			// the state serves and the claims the pass posts are one set (refreshStalePlugins,
 			// and the NoPluginInstall option three lines below).
-			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, s.backends, c) },
+			noPluginInstall: func(ctx context.Context, c supervise.Claim) bool { return noPluginInstall(ctx, cfg, s.backends, c) },
 			architectStalls: architectStalls,
 		},
 		StateTransactions:  st,
@@ -2821,7 +2826,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Deployment:         cfg.Deployment(),
 		ControllerLaunched: keeper != nil,
 		PluginRelaunchable: p.pluginRelaunchable,
-		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, s.backends, c) },
+		NoPluginInstall:    func(ctx context.Context, c supervise.Claim) bool { return noPluginInstall(ctx, cfg, s.backends, c) },
 		Backend:            s.backends,
 		Stopping:           s.stopping,
 		Drained:            s.draining,
@@ -2989,7 +2994,7 @@ type source struct {
 	// has left (api.State.ClaimsToRefresh). Nil is every launch installing a plugin, which only
 	// a source a test builds by hand reads as: serve sets this field over the daemon's own
 	// configuration, whatever the runtime.
-	noPluginInstall func(supervise.Claim) bool
+	noPluginInstall func(context.Context, supervise.Claim) bool
 	// architectStalls is, by root key, every arm of the architect-stalled reading that holds for
 	// that root's architect (admit.Admission.ArchitectStallArms over the workflow's own admission),
 	// which State serves as each root's `architectStalls`; nil for a daemon with no workflow,
@@ -3418,7 +3423,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 			}
 		}
 	}
-	state.ClaimsToRefresh = claimsToRefresh(claims, s.noPluginInstall)
+	state.ClaimsToRefresh = claimsToRefresh(ctx, claims, s.noPluginInstall)
 	// The project's pause, read through tx as every other durable fact here (api.PauseStateTx):
 	// `paused` with the roles it waits on and the rows it holds while the project is paused, and
 	// `lastPause` while it runs after a pause has ended (decision 25 of dispatch://INFRA-3759).

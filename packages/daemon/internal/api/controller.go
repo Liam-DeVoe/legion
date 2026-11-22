@@ -454,7 +454,7 @@ func (s *server) refuseIfStaleController(w http.ResponseWriter, r *http.Request,
 		return false
 	}
 	c := m.Claim()
-	got, stale := s.staleClaim(c)
+	got, stale := s.staleClaim(r.Context(), c)
 	if !stale {
 		return false
 	}
