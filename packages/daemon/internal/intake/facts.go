@@ -1789,8 +1789,9 @@ type Refusal struct {
 
 // PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner gave, with one reason for each
 // cause: register_plan answers it for a plan that plan.Supported or plan.Validate refuses, and
-// the workflow for a version that changes or removes a running task (RunningTaskChanged), or one
-// whose agent this release cannot name (AgentUnnamed). The message holds every reason in its
+// the workflow for a version that changes or removes a running or held task (RunningTaskChanged,
+// HeldTaskChanged), one that needs the task that merges where it merges (NeedOfMergingTask), or
+// one whose agent this release cannot name (AgentUnnamed). The message holds every reason in its
 // order, so a reader of the sentence alone reads every cause.
 func PlanRefused(reasons []plan.Refusal) *Refusal {
 	texts := make([]string, len(reasons))
@@ -1804,6 +1805,23 @@ func PlanRefused(reasons []plan.Refusal) *Refusal {
 // removes task, which is running: the owner stops it first.
 func RunningTaskChanged(task string) plan.Refusal {
 	return plan.Refusal{Task: task, Reason: fmt.Sprintf("task %s is running: stop it with stop_task before you change it.", task)}
+}
+
+// HeldTaskChanged is the reason a later version of the plan is refused when it changes or removes
+// task, which is held where at says (`step <i> (<role>)`, or its retro or merge): its owner retries
+// or escalates the hold, or stops the task, first.
+func HeldTaskChanged(task, at string) plan.Refusal {
+	return plan.Refusal{Task: task, Reason: fmt.Sprintf(
+		"task %s is held at %s: retry or escalate its hold with retry_or_escalate, or stop it with stop_task, before you change it.", task, at)}
+}
+
+// NeedOfMergingTask is the reason a later version of the plan is refused when it gives task a
+// need of merging, the task whose work is the issue's that merges, which stands at its at (retro
+// or merge) or is done: the work of the issue merges there, and this release does not carry out
+// a need of it then.
+func NeedOfMergingTask(task, merging, at string) plan.Refusal {
+	return plan.Refusal{Task: task, Reason: fmt.Sprintf(
+		"task %s needs task %s, which stands at its %s, where the work of the issue merges. This release of Legion does not carry it out yet.", task, merging, at)}
 }
 
 // AgentUnnamed is the reason a version of the plan is refused when the agent of step place of task,

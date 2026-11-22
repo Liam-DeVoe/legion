@@ -1,13 +1,18 @@
 package workflow
 
 import (
+	"context"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -71,5 +76,213 @@ func TestAStoppedTaskHoldsOnlyTheTasksThatNeedIt(t *testing.T) {
 	if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Held || issue.Hold == nil ||
 		*issue.Hold != (record.Hold{From: phase.Implementing, Reason: record.HoldTaskStopped}) {
 		t.Fatalf("%s once a is done stands in %s (hold %+v), want held from implementing, c's phase, for the stopped task", root.Key, issue.Phase, issue.Hold)
+	}
+}
+
+// stepWords is the stored steps of task of key's plan at its generation, each `role:key`.
+func stepWords(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, task string) []string {
+	t.Helper()
+	issue := issueOf(t, pool, engine, key)
+	var words []string
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+		stored, err := engine.store.Plan(ctx, tx, key, issue.Generation)
+		if err != nil || stored == nil {
+			return err
+		}
+		for _, step := range stored.Steps[task] {
+			words = append(words, step.Role+":"+step.AgentKey)
+		}
+		return nil
+	})
+	return words
+}
+
+// givenBranches is each branch name the generation of key gave to a task (plan_branches).
+func givenBranches(t *testing.T, pool *pgxpool.Pool, key string) []string {
+	t.Helper()
+	rows, err := pool.Query(t.Context(), "select branch from plan_branches where issue = $1 order by branch", key)
+	if err != nil {
+		t.Fatalf("read the branches %s gave: %v", key, err)
+	}
+	defer rows.Close()
+	var branches []string
+	for rows.Next() {
+		var branch string
+		if err := rows.Scan(&branch); err != nil {
+			t.Fatalf("read the branches %s gave: %v", key, err)
+		}
+		branches = append(branches, branch)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the branches %s gave: %v", key, err)
+	}
+	return branches
+}
+
+// keyed is the plan_task block of task id as a version gives it: "Do <id>." with text added, its
+// steps as `role:key` words, and needs.
+func keyed(t *testing.T, id, text string, words []string, needs ...string) plan.Task {
+	t.Helper()
+	steps, err := plan.ParseSteps(strings.Join(words, " "))
+	if err != nil {
+		t.Fatalf("the steps %v: %v", words, err)
+	}
+	return plan.Task{ID: id, Text: "Do " + id + "." + text, Needs: needs, Steps: steps}
+}
+
+// A later version adds, changes and removes tasks by the state of each. Of tasks a (`implementer
+// reviewer`, running), g (`implementer`, needs a), k (`tester`, needs a) and z (`implementer`,
+// needs g and k, the task that merges), each step its own agent's key, version 2 adds f
+// (`implementer`, needing nothing, which z now needs too), changes g's steps to `implementer
+// reviewer` and removes k: it is taken, f runs in the same transaction, g waits with its two steps
+// and k is gone, never started. Version 3, which changes the running a, is refused with one reason,
+// and a keeps the steps it started with. When a is done, g runs its first changed step. A version
+// that changes g while g is held is refused. A version that adds s, which runs, then a version that
+// removes the stopped s, then one that adds s back, are each taken: s is a new task, running with
+// its counts at 0, on a branch the generation gave to no task before.
+//
+// The fault it catches is a version that changes what runs or is held, or that loses a task it
+// adds or changes (its controls: version 3 changing only the waiting g, which is taken, so the
+// assertion of the refusal fails; and planGiven taking the change of a held task, which the
+// refusal of the held g then fails).
+func TestALaterVersionAddsChangesAndRemovesTasks(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Implementing)
+	seedTasks(t, pool, root.Key, root.Generation,
+		planTask{id: "a", steps: []string{"implementer:a", "reviewer:ar"}, agents: []claim.Agent{"impl-a", "rev-a"}, state: record.TaskRunning, place: atStep(1)},
+		planTask{id: "g", steps: []string{"implementer:g"}, agents: []claim.Agent{"impl-g"}, needs: []string{"a"}, state: record.TaskWaiting},
+		planTask{id: "k", steps: []string{"tester:k"}, agents: []claim.Agent{"test-k"}, needs: []string{"a"}, state: record.TaskWaiting},
+		planTask{id: "z", steps: []string{"implementer:z"}, agents: []claim.Agent{"impl-z"}, needs: []string{"g", "k"}, state: record.TaskWaiting})
+	apply := applyFacts(t, pool, engine)
+	aBlock := keyed(t, "a", "", []string{"implementer:a", "reviewer:ar"})
+	gChanged := keyed(t, "g", "", []string{"implementer:g", "reviewer:gr"}, "a")
+	fBlock := keyed(t, "f", "", []string{"implementer:f"})
+
+	mustTake(t, "version 2", apply("version-2", laterVersion(t, root.Key, root.Generation, 2,
+		aBlock, fBlock, gChanged, keyed(t, "z", "", []string{"implementer:z"}, "g", "f"))))
+	tasks := tasksOf(t, pool, engine, root.Key)
+	assertTask(t, tasks, "f", record.TaskRunning, atStep(1))
+	assertTask(t, tasks, "g", record.TaskWaiting, record.TaskPlace{})
+	if _, ok := tasks["k"]; ok {
+		t.Fatalf("the plan of %s holds k after version 2 removed it", root.Key)
+	}
+	if got := stepWords(t, pool, engine, root.Key, "g"); !slices.Equal(got, []string{"implementer:g", "reviewer:gr"}) {
+		t.Fatalf("task g's steps after version 2 = %v, want implementer:g reviewer:gr", got)
+	}
+	if starts := roleStartsOf(t, pool, root.Key, claim.RoleTester); len(starts) != 0 {
+		t.Fatalf("the tester's starts of %s = %+v, want none: k never started", root.Key, starts)
+	}
+
+	result := apply("version-3", laterVersion(t, root.Key, root.Generation, 3,
+		keyed(t, "a", "", []string{"implementer:a", "tester:at"}), fBlock, gChanged, keyed(t, "z", "", []string{"implementer:z"}, "g", "f")))
+	if result.Refusal == nil || !reflect.DeepEqual(result.Refusal.Reasons, []plan.Refusal{{Task: "a", Reason: "task a is running: stop it with stop_task before you change it."}}) {
+		t.Fatalf("version 3, which changes the running a, = %+v, want refused with the one reason of a", result)
+	}
+	if got := stepWords(t, pool, engine, root.Key, "a"); !slices.Equal(got, []string{"implementer:a", "reviewer:ar"}) {
+		t.Fatalf("task a's steps after version 3 was refused = %v, want the steps it started with", got)
+	}
+
+	taskMoves(t, pool, engine, root.Key, "a", TriggerImplementationReady, "")
+	taskMoves(t, pool, engine, root.Key, "a", TriggerReviewApproved, "")
+	tasks = tasksOf(t, pool, engine, root.Key)
+	assertTask(t, tasks, "a", record.TaskDone, atStep(2))
+	assertTask(t, tasks, "g", record.TaskRunning, atStep(1))
+
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		return record.NewStore().HoldTask(t.Context(), tx, root.Key, root.Generation, "g", "")
+	})
+	result = apply("version-3-held", laterVersion(t, root.Key, root.Generation, 3,
+		aBlock, fBlock, keyed(t, "g", " Again.", []string{"implementer:g", "reviewer:gr"}, "a"), keyed(t, "z", "", []string{"implementer:z"}, "g", "f")))
+	heldWant := []plan.Refusal{{Task: "g", Reason: "task g is held at step 1 (implementer): retry or escalate its hold with retry_or_escalate, or stop it with stop_task, before you change it."}}
+	if result.Refusal == nil || !reflect.DeepEqual(result.Refusal.Reasons, heldWant) {
+		t.Fatalf("version 3, which changes the held g, = %+v, want refused with %+v", result, heldWant)
+	}
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		return record.NewStore().ReleaseTask(t.Context(), tx, root.Key, root.Generation, "g")
+	})
+
+	// s is a tester's step: this release names one fresh agent of each role of an issue
+	// (record.NameAgents), and f's fresh implementer holds the implementer's name.
+	sBlock := keyed(t, "s", "", []string{"tester:s"})
+	mustTake(t, "version 4", apply("version-4", laterVersion(t, root.Key, root.Generation, 4,
+		aBlock, fBlock, gChanged, sBlock, keyed(t, "z", "", []string{"implementer:z"}, "g", "f", "s"))))
+	if first := tasksOf(t, pool, engine, root.Key)["s"]; first.State != record.TaskRunning || first.Branch == "" {
+		t.Fatalf("task s after version 4 = %+v, want running on a branch of its own", first)
+	}
+	if result := apply("stop-s", ownersStop(t, root, "s")); result.Refusal != nil {
+		t.Fatalf("the owner's stop of s was refused: %+v", result.Refusal)
+	}
+	mustTake(t, "version 5", apply("version-5", laterVersion(t, root.Key, root.Generation, 5,
+		aBlock, fBlock, gChanged, keyed(t, "z", "", []string{"implementer:z"}, "g", "f"))))
+	if _, ok := tasksOf(t, pool, engine, root.Key)["s"]; ok {
+		t.Fatalf("the plan of %s holds s after version 5 removed it", root.Key)
+	}
+	given := givenBranches(t, pool, root.Key)
+	mustTake(t, "version 6", apply("version-6", laterVersion(t, root.Key, root.Generation, 6,
+		aBlock, fBlock, gChanged, sBlock, keyed(t, "z", "", []string{"implementer:z"}, "g", "f", "s"))))
+	again := tasksOf(t, pool, engine, root.Key)["s"]
+	if again.State != record.TaskRunning || again.Counts.Pass != 0 || again.Counts.Rounds != 0 || again.Branch == "" || slices.Contains(given, again.Branch) {
+		t.Fatalf("task s added back = %+v (branches given before: %v), want a new task running with counts of 0 on a branch no task had", again, given)
+	}
+}
+
+// A version that changes the stopped task of a held issue starts that task again at its first
+// step, where its needs are done, and the issue's hold goes: of the plan a to e, c stopped and a
+// done, so nothing runs and the issue is held for the stop, a version that changes c starts c
+// again at its step and the issue stands in implementing.
+//
+// The fault it catches is a held issue that a change of its stopped task leaves held.
+func TestAVersionThatChangesTheStoppedTaskStartsItAgain(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Implementing)
+	seedAToE(t, pool, root)
+	if result := applyFacts(t, pool, engine)("stop-c", ownersStop(t, root, "c")); result.Refusal != nil {
+		t.Fatalf("the owner's stop of c was refused: %+v", result.Refusal)
+	}
+	taskMoves(t, pool, engine, root.Key, "a", TriggerImplementationReady, "")
+	if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Held {
+		t.Fatalf("premise: %s once a is done stands in %s, want held for the stopped c", root.Key, issue.Phase)
+	}
+
+	mustTake(t, "version 2", applyFacts(t, pool, engine)("version-2", laterVersion(t, root.Key, root.Generation, 2,
+		keyed(t, "a", "", []string{"implementer:a"}), keyed(t, "b", "", []string{"implementer:b"}), keyed(t, "c", " Again.", []string{"implementer:c"}, "b"),
+		keyed(t, "d", "", []string{"implementer:d"}, "a", "c"), keyed(t, "e", "", []string{"tester:e"}, "d"))))
+
+	tasks := tasksOf(t, pool, engine, root.Key)
+	assertTask(t, tasks, "c", record.TaskRunning, atStep(1))
+	assertTask(t, tasks, "d", record.TaskWaiting, record.TaskPlace{})
+	if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Implementing || issue.Hold != nil {
+		t.Fatalf("%s after version 2 changed the stopped c stands in %s (hold %+v), want implementing with no hold", root.Key, issue.Phase, issue.Hold)
+	}
+}
+
+// A version that adds a need of the task that merges is refused while that task stands at its
+// retro or its merge, where the work of the issue merges: of the plan a to e at e's retro, a version
+// that adds h, needing e, is refused with one reason of h.
+//
+// The fault it catches is a need on the work the issue merges once it is merging (its control:
+// planGiven without the refusal, which takes the version).
+func TestAVersionThatNeedsTheMergingTaskAtItsRetroIsRefused(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Retro)
+	seedTasks(t, pool, root.Key, root.Generation,
+		planTask{id: "a", steps: []string{"implementer:a"}, agents: []claim.Agent{"impl-a"}, state: record.TaskDone, place: atStep(1)},
+		planTask{id: "b", steps: []string{"implementer:b"}, agents: []claim.Agent{"impl-b"}, state: record.TaskDone, place: atStep(1)},
+		planTask{id: "c", steps: []string{"implementer:c"}, agents: []claim.Agent{"impl-c"}, needs: []string{"b"}, state: record.TaskDone, place: atStep(1)},
+		planTask{id: "d", steps: []string{"implementer:d"}, agents: []claim.Agent{"impl-d"}, needs: []string{"a", "c"}, state: record.TaskDone, place: atStep(1)},
+		planTask{id: "e", steps: []string{"tester:e"}, agents: []claim.Agent{"test-e"}, needs: []string{"d"}, state: record.TaskRunning,
+			place: record.TaskPlace{Kind: record.PlaceRetro}})
+	result := applyFacts(t, pool, engine)("version-2", laterVersion(t, root.Key, root.Generation, 2,
+		keyed(t, "a", "", []string{"implementer:a"}), keyed(t, "b", "", []string{"implementer:b"}), keyed(t, "c", "", []string{"implementer:c"}, "b"),
+		keyed(t, "d", "", []string{"implementer:d"}, "a", "c"), keyed(t, "e", "", []string{"tester:e"}, "d"), keyed(t, "h", "", []string{"implementer:h"}, "e")))
+	want := []plan.Refusal{{Task: "h", Reason: "task h needs task e, which stands at its retro, where the work of the issue merges. This release of Legion does not carry it out yet."}}
+	if result.Refusal == nil || !reflect.DeepEqual(result.Refusal.Reasons, want) {
+		t.Fatalf("the version that adds h, needing e at its retro, = %+v, want refused with %+v", result, want)
+	}
+	if _, ok := tasksOf(t, pool, engine, root.Key)["h"]; ok {
+		t.Fatalf("the plan of %s holds h after its version was refused", root.Key)
 	}
 }

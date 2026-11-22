@@ -67,9 +67,10 @@ type givenVersion struct {
 // A later version is compared, task by task, with the version in force as its owner gave it
 // (heldPlan, plan.ChangedTasks). A version of another document than the one in force is refused,
 // but over the default steps, and so is a version at or below it (laterVersionRefusal). A task the
-// version changes or removes must wait or be stopped: a running task is refused, one reason for
-// each, and so is a task that is done or left the workflow. A plan given in a lingering tree is
-// refused too.
+// version changes or removes must wait or be stopped: a running task is refused, and so is a held
+// task, one reason for each, and so is a task that is done or left the workflow. A version that
+// adds a need of the task that merges is refused while that task stands at its retro or its merge
+// or is done (needsOfMerging). A plan given in a lingering tree is refused too.
 //
 // Each step of the version is named from every row of the issue as it stands now
 // (record.NameAgents, Store.PlanStepsOf), before anything is written, since the write deletes the
@@ -101,22 +102,26 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 			return givenVersion{}, refusal, nil
 		}
 		given.changed = plan.ChangedTasks(heldPlan(given.stored), fact.Plan)
-		var running []plan.Refusal
+		var refused []plan.Refusal
 		for _, id := range given.changed {
 			at := slices.IndexFunc(given.stored.Tasks, func(task record.PlanTask) bool { return task.Task == id })
 			if at < 0 {
 				continue
 			}
-			state := given.stored.Tasks[at].State
-			if refusal := intake.FinishedTask(fact.Issue, id, state, intake.ChangeOfTask); refusal != nil {
+			task := given.stored.Tasks[at]
+			if refusal := intake.FinishedTask(fact.Issue, id, task.State, intake.ChangeOfTask); refusal != nil {
 				return givenVersion{}, refusal, nil
 			}
-			if state == record.TaskRunning {
-				running = append(running, intake.RunningTaskChanged(id))
+			switch task.State {
+			case record.TaskRunning:
+				refused = append(refused, intake.RunningTaskChanged(id))
+			case record.TaskHeld:
+				refused = append(refused, intake.HeldTaskChanged(id, heldAt(given.stored, task)))
 			}
 		}
-		if len(running) > 0 {
-			return givenVersion{}, intake.PlanRefused(running), nil
+		refused = append(refused, needsOfMerging(given.stored, fact.Plan, given.changed)...)
+		if len(refused) > 0 {
+			return givenVersion{}, intake.PlanRefused(refused), nil
 		}
 	}
 	if issue != nil {
@@ -237,6 +242,10 @@ func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 // for a plan of several.
 func (e *Engine) afterSeveral(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, issue record.Issue, written writtenVersion) error {
 	for _, task := range written.stopped {
+		// A stopped task the version removes is deleted (writeVersion), and starts nothing.
+		if !slices.ContainsFunc(fact.Plan.Tasks, func(next plan.Task) bool { return next.ID == task }) {
+			continue
+		}
 		now, err := e.store.Issue(ctx, tx, issue.Key)
 		if err != nil {
 			return err
@@ -300,6 +309,50 @@ func laterVersionRefusal(issue string, held record.PlanVersion, next plan.Plan) 
 		return intake.PlanVersionOld(issue, held.Version, next.Version)
 	}
 	return nil
+}
+
+// heldAt is where task, a held task of stored, stands, as the refusal of a change of it names it
+// (intake.HeldTaskChanged): `step <i> (<role>)`, or its retro or its merge.
+func heldAt(stored *record.StoredPlan, task record.PlanTask) string {
+	switch task.Place.Kind {
+	case record.PlaceRetro:
+		return "its retro"
+	case record.PlaceMerge:
+		return "its merge"
+	}
+	role := ""
+	if steps := stored.Steps[task.Task]; task.Place.Position >= 1 && task.Place.Position <= len(steps) {
+		role = steps[task.Place.Position-1].Role
+	}
+	return fmt.Sprintf("step %d (%s)", task.Place.Position, role)
+}
+
+// needsOfMerging is one refusal (intake.NeedOfMergingTask) for each task next adds or changes
+// (changed) that needs the task of stored that merges (mergingTask) where that task stands at its
+// retro or its merge, or is done: the work of the issue merges there, and this release carries out
+// no need of it then. None while that task stands at a step or waits.
+func needsOfMerging(stored *record.StoredPlan, next plan.Plan, changed []string) []plan.Refusal {
+	merging := mergingTask(stored)
+	at := slices.IndexFunc(stored.Tasks, func(task record.PlanTask) bool { return task.Task == merging })
+	if merging == "" || at < 0 {
+		return nil
+	}
+	var stands string
+	switch row := stored.Tasks[at]; {
+	case row.Place.Kind == record.PlaceRetro:
+		stands = "retro"
+	case row.Place.Kind == record.PlaceMerge || row.State == record.TaskDone:
+		stands = "merge"
+	default:
+		return nil
+	}
+	var refused []plan.Refusal
+	for _, task := range next.Tasks {
+		if task.ID != merging && slices.Contains(changed, task.ID) && slices.Contains(task.Needs, merging) {
+			refused = append(refused, intake.NeedOfMergingTask(task.ID, merging, stands))
+		}
+	}
+	return refused
 }
 
 // heldPlan is the plan in force of stored as its owner's blocks gave it, which a later version is
