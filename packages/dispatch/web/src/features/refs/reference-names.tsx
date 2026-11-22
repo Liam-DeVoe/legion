@@ -102,8 +102,11 @@ export interface KnownReferences {
    *  reference (`chipLineReading`): a block by the first block of its words that holds any,
    *  whole, and a whole document by the page's word for it (`ReferenceNameReading.chipWord`).
    *  A chip cuts it to its room where it draws it: one drawn in place in a node's words
-   *  (`issue-page/row-references.ts`), and a tie's naming a block (`issue-page/NodeRow.tsx`'s
-   *  `Chip`). None for any other target. */
+   *  (`issue-page/row-references.ts`), a tie's naming a block (`issue-page/NodeRow.tsx`'s
+   *  `Chip`), the Plan chart's needs and serves (`issue-page/plan-filter/PlanFilterBody.tsx`'s
+   *  `chipLine`), and a check's "Also under" line in the Verification view
+   *  (`issue-page/verification-filter/VerificationFilterBody.tsx`'s `AlsoUnder`). None for any
+   *  other target. */
   readonly lines: ReadonlyMap<string, string>;
   readonly names: ReadonlyMap<string, string>;
   readonly unnamed: ReadonlySet<string>;

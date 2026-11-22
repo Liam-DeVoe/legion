@@ -522,9 +522,10 @@ export function lineReading(node: {
 /** The words a chip draws for a target `name` names (ruling 5): a block's first line, as a row
  *  draws one (R1, `firstLineOf`, `drawnLine`), and any other target's name, each cut to a
  *  chip's room (`chipWords`). The page publishes every name as a link to its target reads it
- *  (R8), so a tie's chip (`NodeRow.tsx`) and a block or a document drawn as a chip in a node's
- *  words (`row-references.ts`) each cut it again here, where they draw it, and draw one target
- *  alike. */
+ *  (R8), so a tie's chip (`NodeRow.tsx`), a block or a document drawn as a chip in a node's words
+ *  (`row-references.ts`), the Plan chart's needs and serves (`plan-filter/PlanFilterBody.tsx`)
+ *  and a check's "Also under" line (`verification-filter/VerificationFilterBody.tsx`) each cut it
+ *  again here, where they draw it, and draw one target alike. */
 export function chipName(route: DispatchReferenceRoute | undefined, name: string): string {
   const block = route !== undefined && referenceTargetKind(route) === "block";
   return chipWords(block ? drawnLine(firstLineOf(name)) : name);

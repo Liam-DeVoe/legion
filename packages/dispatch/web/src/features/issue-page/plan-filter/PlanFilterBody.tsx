@@ -459,7 +459,8 @@ function useTaskLine(task: TreeNode): {
  *  `KnownReferences.lines`), and any other target by the name the store holds for it - a task or
  *  a statement whose words hold none by the page's word for its kind (`tree-drafts.ts`'s
  *  `treeContext`) - each cut as a chip cuts it (`chipName`). Nothing for a chip the tree has not
- *  named (no `reading`), and nothing while the store holds no name for it. */
+ *  named (no `reading`), and nothing while the store holds no name for it. The reading list's
+ *  `node-row-chip` (`DISPATCH_READING_SURFACES`) says why a chip draws its words so. */
 function chipLine(
   chip: Pick<NodeChip, "reading" | "ref"> | undefined,
   { lines, names }: KnownReferences

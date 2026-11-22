@@ -897,6 +897,51 @@ test("a task that serves a statement with no worded block draws a serves chip na
   }
 });
 
+// The chart's chips, a step's needs and the statements it serves, each name a block as a tie's
+// chip names one (`chipLine`, the reading list's `node-row-chip`): by the line the names store
+// projects for it, the first block of its words that holds any, so a heading is never run into
+// the paragraph after it and no mark the author typed is drawn, cut at a word to a chip's room
+// with an ellipsis (`chipName`). A need is words alone, and a serves chip a link to its statement.
+test("a step's needs and serves chips name each block by its first worded block, cut to a chip's room", async () => {
+  setViewport(1440);
+  const root = issue([
+    { ...task("t1"), text: "# Stand the **harness** up\n\nThen read the rows." },
+    { ...task("t2"), text: "Read every row of the harness and say which one failed." },
+    {
+      ...task("t3", {
+        needs: ["t1", "t2"],
+        parentLine: serves("r1", "# Draw the **chart**\n\nThen the rest."),
+      }),
+      alsoUnder: [alsoUnder(serves("r2", "Draw each bar of the chart after every bar it needs."))],
+    },
+  ]);
+  const view = renderBody(root);
+  try {
+    await waitFor(() => {
+      expect(
+        [...rowOf(view, "t3").querySelectorAll("[data-plan-need]")].map((one) => [
+          one.getAttribute("data-plan-need"),
+          one.textContent,
+        ])
+      ).toEqual([
+        [D("t1"), "Stand the harness up"],
+        [D("t2"), "Read every row of the harness…"],
+      ]);
+      expect(
+        [...rowOf(view, "t3").querySelectorAll("[data-plan-serve]")].map((one) => [
+          one.textContent,
+          one.querySelector("a")?.getAttribute("href"),
+        ])
+      ).toEqual([
+        ["Draw the chart", `/issues/${KEY}/spec#b-r1`],
+        ["Draw each bar of the chart…", `/issues/${KEY}/spec#b-r2`],
+      ]);
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
 // The body hands its rows what the page publishes of its batched names read in the render that
 // draws them (`published`), the steps' rows through the outline's tree (`IssueTree`'s
 // `published`), and the page publishes to the names store only after the rows have rendered
