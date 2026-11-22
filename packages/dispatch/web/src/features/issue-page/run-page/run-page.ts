@@ -15,6 +15,7 @@ import { useState } from "react";
 import { ApiError, api } from "../../../api/client";
 import { queryRetry } from "../../../api/query-client";
 import type { GraphEdge, GraphReferences } from "../../../api/types";
+import { safeExternalHref } from "../../../lib/external-href";
 import { drawsEdge } from "../../refs/ReferencedBy";
 import { referencesQuery } from "../../refs/reference-target";
 import { buildReferencePath, parseNodeReference } from "../../refs/routes";
@@ -59,10 +60,14 @@ function isMissingRun(error: unknown): boolean {
 
 /**
  * The run `id` with the nodes it changed (`GET /api/v1/references?to=<address>&kind=changed_by_run`).
- * Its key is under the backlink panels' `["references", "to", <address>]` (`referencesQuery`), so
- * an event that refreshes the references at the run's address refreshes this read too, and the
- * kind after the address keeps it apart from the unfiltered read of the same address. A run that
- * is missing is asked for once; any other failure is asked again as every read is (`queryRetry`).
+ * Its key is the backlink panel's `["references", "to", <address>]` (`referencesQuery`) and the
+ * kind after it, which keeps it apart from the unfiltered read of the same address. No event's
+ * refresh names a run (`api/event-refresh.ts`), so what sends this read again is a refresh by the
+ * prefix `["references", "to"]` - `referencePanels`, where its `when` accepts this read's answer,
+ * `EVERY_REFERENCE_READ`, and the whole-cache refresh after a gap in the event feed - window focus
+ * (`main.tsx`), and the page mounted again. An event's refresh of one panel's exact key
+ * (`referencePanel`) does not reach it, since this key is one longer. A run that is missing is
+ * asked for once; any other failure is asked again as every read is (`queryRetry`).
  */
 const runQuery = (id: string) =>
   queryOptions({
@@ -90,14 +95,17 @@ interface RunEnded {
  *
  * Whether the run is missing is kept from how the read last ended, not read off its failure
  * alone: TanStack clears the failure of a read that holds no answer as the read runs again - on
- * window focus, at an event about the run's address, or as the page is mounted again over the
- * read the cache holds - and the failure alone would then draw the run's own page, its line
- * saying the read failed, until the read answered 400 or 404 again. So a read that ended 400 or
- * 404 stays missing until it ends with an answer or a failure of another kind. The hook keeps
- * that per id, since the page stays drawn as its address moves to another run. For an id it has
- * kept nothing of, it reads the cache's state, which still holds the read's last failure as the
- * hook first renders for that id: TanStack sends the read again only after that render, though
- * the result it hands the render already reads as pending.
+ * window focus, at a broad refresh of the backlink panels (`runQuery`), or as the page is mounted
+ * again over the read the cache holds - and the failure alone would then draw the run's own page,
+ * its line saying the read failed, until the read answered 400 or 404 again. So a read that ended
+ * 400 or 404 stays missing until it ends with an answer or a failure of another kind. The hook
+ * keeps that per id, since the page stays drawn as its address moves to another run. For an id it
+ * has kept nothing of, it reads the cache's state. Where no fetch of the read is running as the
+ * hook first renders for that id, that state still holds the read's last failure: TanStack sends
+ * the read again only after that render, though the result it hands the render already reads as
+ * pending. Where one is running, the state holds no failure (`error: null`): `runQuery` reads no
+ * abort signal, so a fetch running as the page unmounts goes on, and a page mounted again over it
+ * draws the loading line until its 400 or 404 lands, then the not-found page.
  */
 export function useRun(id: string | undefined): RunRead {
   const named = isRunId(id);
@@ -120,7 +128,7 @@ export function useRun(id: string | undefined): RunRead {
 
 /** One piece of the answer, in the order its frames came: the model's text, one thing it cites,
  *  or a line the page says of the answer. An item's `href` is the page it opens, none where the
- *  frame's href is no page the page links (`isLinkableHref`). */
+ *  frame's href is no page the page links (`linkedHref`). */
 export type RunPart =
   | { readonly kind: "answer"; readonly markdown: string }
   | { readonly kind: "item"; readonly href?: string; readonly title: string }
@@ -160,29 +168,27 @@ function stringOf(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-/** The origin a path an item names is read against (`isLinkableHref`): a reserved name (RFC
- *  6761), since only whether the path keeps the origin it is read against matters, not which. */
+/** The origin a path an item names is read against (`linkedHref`): a reserved name (RFC 6761),
+ *  since only whether the path keeps the origin it is read against matters, not which. */
 const PATH_ORIGIN = "https://dispatch.invalid";
 
 /**
- * Whether an item's `href` is one the page links: a path on Dispatch's own origin, or an absolute
- * `http:` or `https:` URL. A path starts with `/` and the browser reads it as a path on the page's
- * origin, so it is no `//host`, and no `/\host` or `/` and `/` split by a tab or a line break,
- * which the browser reads as `//host`. A URL is written whole, `//` and a host after its scheme,
- * and parses. Any other href is not linked: `javascript:` or another scheme, which the page's
- * link (`Link`) would hand to the browser as written, or a path relative to the run's own
- * address, which names no page the answer meant.
+ * The page an item's `href` opens, or none where the page links nothing: a path on Dispatch's own
+ * origin as written, or an absolute `http:` or `https:` URL in the form it parses into. A path
+ * starts with `/` and the browser reads it as a path on the page's origin, so it is no `//host`,
+ * and no `/\host` or `/` and `/` split by a tab or a line break, which the browser reads as
+ * `//host`. Every other href is read by `safeExternalHref`, the app's one answer to which URL is
+ * safe to follow, so this page trusts no URL the others refuse: `javascript:` or another scheme,
+ * which the page's link (`Link`) would hand to the browser as written, and a path relative to the
+ * run's own address, which names no page the answer meant, are linked nowhere.
  */
-export function isLinkableHref(href: string): boolean {
-  // `new URL` throws for what does not parse, which is then no link. The static parser that
-  // answers null instead is missing from browsers older than Safari 18 and Chrome 126.
+export function linkedHref(href: string): string | undefined {
+  if (!href.startsWith("/")) return safeExternalHref(href) ?? undefined;
+  // `new URL` throws for a path that does not parse, such as `//`, which is then no link.
   try {
-    if (href.startsWith("/")) return new URL(href, PATH_ORIGIN).origin === PATH_ORIGIN;
-    if (!/^https?:\/\//i.test(href)) return false;
-    new URL(href);
-    return true;
+    return new URL(href, PATH_ORIGIN).origin === PATH_ORIGIN ? href : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -217,9 +223,8 @@ function partsOf(frames: readonly GraphFrame[]): RunPart[] {
         break;
       }
       case GOING_EVENT_ITEM: {
-        const href = stringOf(data.href);
         parts.push({
-          href: isLinkableHref(href) ? href : undefined,
+          href: linkedHref(stringOf(data.href)),
           kind: "item",
           title: stringOf(data.title),
         });

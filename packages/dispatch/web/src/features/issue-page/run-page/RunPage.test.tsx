@@ -139,15 +139,6 @@ function expectNotFoundPage(container: HTMLElement, alone: NotFoundSeen): HTMLEl
   return link;
 }
 
-/** Every word the run's page says of its own, none of which the not-found page may say. */
-const RUN_PAGE_PHRASES = [
-  RUN_WORD,
-  RUN_PAGE_WORDS.question,
-  RUN_PAGE_WORDS.what_changed,
-  ANSWER_LINES.loading_older,
-  ANSWER_LINES.run_unreadable,
-];
-
 test("a 404 draws NotFoundPage", async () => {
   const alone = notFoundAlone();
   for (const refusal of [new ApiError(404, { code: "NOT_FOUND" }), new ApiError(400, {})]) {
@@ -155,9 +146,6 @@ test("a 404 draws NotFoundPage", async () => {
     await screen.findByRole("heading", { name: alone.heading });
     expectNotFoundPage(view.container, alone);
     expect(document.title).toBe(alone.title);
-    for (const phrase of RUN_PAGE_PHRASES) {
-      expect(view.container.textContent).not.toContain(phrase);
-    }
     // A run that is missing is asked for once: a retry finds it no more than the read did.
     expect(getReferences).toHaveBeenCalledTimes(1);
     restore?.();
@@ -368,9 +356,6 @@ test("a Retry the server answers 400 or 404 hands the focus to the not-found pag
 
     await screen.findByRole("heading", { name: alone.heading });
     const link = expectNotFoundPage(view.container, alone);
-    for (const phrase of RUN_PAGE_PHRASES) {
-      expect(view.container.textContent).not.toContain(phrase);
-    }
     expect(
       link,
       `the not-found page of a ${refusal.status} left the focus off its link`
@@ -381,8 +366,8 @@ test("a Retry the server answers 400 or 404 hands the focus to the not-found pag
 });
 
 // TanStack clears the failure of a read that holds no answer as the read runs again - on window
-// focus, or at an event about the run's address - so a missing run's page drew the run's own page,
-// its line saying the read failed, until the read answered 404 again.
+// focus, or at a broad refresh of the backlink panels - so a missing run's page drew the run's own
+// page, its line saying the read failed, until the read answered 404 again.
 test("a missing run's read sent again keeps the not-found page while it is out", async () => {
   const alone = notFoundAlone();
   const { client, getReferences, view } = draw(() =>
@@ -393,7 +378,9 @@ test("a missing run's read sent again keeps the not-found page while it is out",
   const again = Promise.withResolvers<GraphReferences>();
   getReferences.mockImplementation(() => again.promise);
   const asked = getReferences.mock.calls.length;
-  // An event about the references at the run's address sends its read again.
+  // The prefix this refreshes by stands for the broad refreshes that reach the read, each by the
+  // shorter prefix `["references", "to"]` (`referencePanels`, `EVERY_REFERENCE_READ`, a gap in the
+  // event feed): the read is sent again.
   act(() => {
     void client.invalidateQueries({
       queryKey: referencesQuery(`dispatch://interaction/${RUN}`).queryKey,

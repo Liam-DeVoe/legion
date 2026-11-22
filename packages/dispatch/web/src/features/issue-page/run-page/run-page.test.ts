@@ -18,7 +18,7 @@ import type { GraphEdge, GraphReferences } from "../../../api/types";
 import { drawnLine, firstLineOf } from "../issue-tree";
 import { EMPTY_STATE_LINES, NODE_REFERENCES_WORDS, STATE_LINES, sentenceCase } from "../page-words";
 import { plainWords } from "../tree-drafts";
-import { isLinkableHref, runView } from "./run-page";
+import { linkedHref, runView } from "./run-page";
 
 const RUN = "3f2b8c1e-5d4a-4b6f-9e2d-1a7c0b9e8f43";
 const ASKED_AT = "2026-11-17T09:00:00Z";
@@ -165,18 +165,23 @@ test("a changed node is named by the page's words alone, and an edge the page do
   ]);
 });
 
-// The page links an item's href only where it opens it as written: a path the browser reads on
-// Dispatch's own origin, or an absolute `http:` or `https:` URL.
+// The page links an item's href only where it opens it as the reader expects: a path the browser
+// reads on Dispatch's own origin, as written, or an absolute `http:` or `https:` URL, in the form
+// `safeExternalHref` parses it into, as every link the app makes of a URL from outside it.
 test("an item's href is linked only as a path on Dispatch's origin or an http(s) URL", () => {
-  for (const href of [
-    "/issues/CORE-9",
-    "/",
-    "/runs/3f2b8c1e?at=1#answer",
-    "https://example.com/release",
-    "http://example.com",
-    "HTTPS://example.com/release",
-  ]) {
-    expect(isLinkableHref(href), href).toBe(true);
+  for (const [href, linked] of [
+    ["/issues/CORE-9", "/issues/CORE-9"],
+    ["/", "/"],
+    ["/runs/3f2b8c1e?at=1#answer", "/runs/3f2b8c1e?at=1#answer"],
+    ["https://example.com/release", "https://example.com/release"],
+    ["http://example.com", "http://example.com/"],
+    ["HTTPS://example.com/release", "https://example.com/release"],
+    // A URL with no `//` after its scheme, and one after a space, each as it parses: written as
+    // it came, the first would open a path on the run's own address.
+    ["https:example.com", "https://example.com/"],
+    [" https://x", "https://x/"],
+  ] as const) {
+    expect(linkedHref(href), JSON.stringify(href)).toBe(linked);
   }
   for (const href of [
     "javascript:alert(1)",
@@ -192,23 +197,25 @@ test("an item's href is linked only as a path on Dispatch's origin or an http(s)
     // A path relative to the run's own address, and none at all.
     "issues/CORE-9",
     "",
-    // No valid absolute URL, though each starts as one: no host, and no `//` after the scheme.
+    // No valid absolute URL, though it starts as one: it names no host.
     "https://",
-    "https:example.com",
   ]) {
-    expect(isLinkableHref(href), JSON.stringify(href)).toBe(false);
+    expect(linkedHref(href), JSON.stringify(href)).toBeUndefined();
   }
 
-  // An item whose href is not linked keeps its title, and opens nothing.
+  // An item whose href is not linked keeps its title, and opens nothing; one whose href is a URL
+  // opens it in the form it parses into.
   expect(
     runView(
       answerOf([
         frame(1, GOING_EVENT_ITEM, { href: "javascript:alert(1)", title: "Run a script" }),
         frame(2, GOING_EVENT_ITEM, { href: "/issues/CORE-9", title: "The release plan" }),
+        frame(3, GOING_EVENT_ITEM, { href: "https:example.com", title: "The release notes" }),
       ])
     ).parts
   ).toEqual([
     { href: undefined, kind: "item", title: "Run a script" },
     { href: "/issues/CORE-9", kind: "item", title: "The release plan" },
+    { href: "https://example.com/", kind: "item", title: "The release notes" },
   ]);
 });
