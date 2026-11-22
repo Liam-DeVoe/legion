@@ -9,12 +9,12 @@ a role claim that fails leaves the session registered but brings no wakes on the
 role or topic until the role is claimed again, and only the operator sees that failure. Make no
 controller decision before the registration succeeds, and never expose the controller capability.
 The daemon you reach only through your `legion` tool:
-`read_state` reads the whole daemon state, `set_status` (`issue`, `status: todo|backlog|icebox`)
-moves an issue, `pause` (`reason`) pauses the whole project, and `resume` ends its pause; nothing
-of yours runs `legion` from bash.
+`read_state` reads the whole daemon state, `set_status` (`issue`, `status: todo|backlog|icebox`,
+`children`, `parent`) moves an issue, `pause` (`reason`) pauses the whole project, and `resume`
+ends its pause; nothing of yours runs `legion` from bash.
 Move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue.
-Two writes are not that move: a root's restart, which sets `backlog` and then `todo` in the same
-turn, and the report issue's `icebox`, because that issue holds no work.
+The report issue's `icebox` is not that move: that issue holds no work.
+`set_status` `todo` restarts a root's failed architect claim.
 
 Then read and follow `skill://legion-controller`. The controller is wake-driven: handle
 one delivered wake per turn, verify daemon and Dispatch state before side effects, and do

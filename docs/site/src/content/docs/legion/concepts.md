@@ -182,7 +182,7 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
 | `accepting` | the architect | Reads the tester's handoff, each check of the issue's Verification document with its latest result, and the reviewer's approval of the head, and accepts the issue (on to retro) or sends it back to the implementer or the tester. An issue still running beneath it holds the acceptance, and an open child moves it to `awaiting_children`. No worker runs here; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
-| `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
+| `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; an issue with a child that is not `done` records the merge and stays here until each child is `done`. | implement App |
 
 A failed test or a review that requests changes sends the issue back to `implementing` from
 testing or review, and the change goes through the tester again before the reviewer sees it. A
@@ -227,8 +227,8 @@ the first turn comes about a minute after the daemon starts,
 then one every `controller_wake_interval_seconds`, an hour by default.
 Three started issues keep their slot although a wait
 names them: a root in `awaiting_person`; a root at `admitted` whose design gate has never
-opened, whose architect is writing the design; and a root that arrived from another tree
-carrying the row it held there, which the line starts whatever its links say.
+opened, whose architect is writing the design; and a root that the release before this one
+carried in by a hand-over, holding the row it held there, which the line starts whatever its links say.
 Such a wait is a wait by design, in any project, when nothing in the issue's own tree moves it:
 a `blocked_by` link to an issue that is not `done`, in another project or in this one, run by a
 Legion tree or by none, or an open child the daemon has released into the tree and runs.
@@ -254,7 +254,8 @@ in none of the three.
 
 The line has two parts, and `legion state` prints them in the order the daemon promotes them:
 the issues whose work came back, oldest first by the moment it came back, and then the issues
-that have not started, by the Dispatch rank of each issue's tree root and then its own. A
+that have not started, by the Dispatch rank of each issue's top issue (the highest issue above it
+in Legion's work, or the issue itself) and then its own. A
 re-rank on the board therefore moves an issue inside the second part, and never ahead of an
 issue whose work came back. Each waiting issue carries `waitingLine` in `legion state --json`:
 its `place` and the line's `length`, its `part` (`returned` or `starting`) and `kind`, its
@@ -282,7 +283,8 @@ An issue gets the label in one of three ways:
 A free slot stays free until an issue gets the label one of these ways: the controller never takes
 one on its own.
 
-A child issue needs no label: it runs under its tree once the root is admitted. Taking the label
+A child issue needs no label: it starts once its parent is in Legion's work and the issue is
+`todo`, written by the architect's release or by you, and a label on it changes nothing. Taking the label
 off a waiting root takes it out of line; taking it off a running tree does not stop the tree.
 
 A root whose architect asked you a question and now waits only on your answer keeps its slot while
@@ -335,8 +337,8 @@ decision: it stays on the ask for the person who asked, and nothing wakes.
 A held root is not a parked one. Its work stopped because a worker's budget ran out
 ([Supervision](#supervision)), and it is still in the workflow. Setting it to `todo` releases the
 hold: the issue returns to the phase it was held from and that phase's worker starts again, with
-no new run of the tree. A root you parked, by contrast, starts a new run when you set it to
-`todo`.
+no new run of the tree. A root you parked comes back too when you set it to `todo`: it stands in
+the line among the work that came back and resumes the phase it stood in at a new phase entry.
 
 ## The design gate
 
@@ -433,7 +435,7 @@ Legion uses GitHub's own review mechanisms rather than labels:
   its merge forward now (below), and never re-implements. The reviewer reads the
   head's checks on GitHub itself before it approves, and the architect before it accepts; those
   reads are the ones that decide anything. Two settlements of the same head that name the same
-  checks tell nobody twice, and a lingering tree is told nothing at all.
+  checks tell nobody twice, and an issue out of Legion's work is told nothing at all.
 - **A head that conflicts with its base** moves no phase. GitHub computes no merge ref for such a
   head and runs no check on it. The daemon reads the pull request's mergeability twice, at least a
   minute apart, since a read made while GitHub is still computing can be stale, and acts only on a
@@ -560,20 +562,19 @@ it.
 ## The production check
 
 The merge closes the issue: the daemon reads the merged pull request, writes `done`, and nothing is
-left of the issue to develop. A root whose tree still runs, and a child with an issue beneath it
-still in the workflow, are the issues the merge does not close at once: the daemon records the
-merge, and the issue stays in `merging` with its workers while the issues beneath it reach their
-own merges.
+left of the issue to develop. An issue with a child that is not `done`, one in `icebox` or the
+backlog included, is the issue the merge does not close at once: the daemon records the
+merge, and the issue stays in `merging` with its workers until each child is `done`, since
+Dispatch closes a parent only once each of its children is `done`.
 It stands there on no admission slot, as every phase past the review does, so no wait of it
 changes the cap.
-Its architect is told once which issues the close waits for,
-and the close comes when the last of them is done or parked. What is
+Its architect is told once which children the close waits for, each with its status,
+and the close comes when the last of them is `done`. What is
 left after the close is to see the change work in production, and that is
 work after the close, where your project asks for it: `projects.<KEY>.production_check` in
 `legion.yaml` takes `off` or `tester` and is `tester` by default, so the tester is handed a
 production check in its session as the issue closes, and a project that sets `off` opens no
-check at all — a child's close retires every claim of the child and releases its pod, and a
-root's close suspends every claim of its tree for the linger, whose end retires them. The loader
+check at all — a close then retires every claim of the issue and releases its pod. The loader
 refuses any other value, naming the key and the value it read. The check's record carries the
 role, written when the check opened, so changing the setting leaves an open check with the role
 it started under, and only that role may report on it. Each look of the check reaches the deploy
@@ -611,16 +612,20 @@ days, by default): the look at that bound is the last, and a `pending` there clo
 as not run, which the agent writes on the pull request. `legion state` prints how many checks
 are open and the oldest of them, with when its next look is due.
 
-A child's close deletes its pod, and the disk goes with it; a root's close releases any admission
-slot its issues still held, which happens once no other issue of its tree is still in the
-workflow, and the finished tree **lingers** for
-`linger_hours` (72 by default) in case work resumes, each member's conversation kept in the session
-database; then its Sandboxes are deleted, once no member's check is open. Closing a root yourself
-from the Dispatch dashboard lingers the tree at once, children and all: your decision outranks
-that order. What a stop keeps is the conversation and whatever was pushed to the issue's branch: a
+A close deletes the issue's pod, and the disk goes with it, and frees its admission slot. A stop
+does the same for an issue Dispatch shows in `triage`, `icebox` or `backlog`, or `done` by your own
+move: the daemon suspends its claims, or at a close retires them after any production check the
+issue owes, and keeps its phase, its sessions, its branch and its pull request. Each issue stops
+on its own status alone: a move of a parent moves its children only where the move says so.
+Dispatch keeps a parent `done` only when each child is `done`, so when you close a root that has
+open children, the dashboard asks whether to close them with it or to unlink them. What a stop
+keeps is the conversation and whatever was pushed to the issue's branch: a
 workspace lives as long as the pod it was provisioned in, and the next pod provisions it again
-from that branch. Setting a done root back to `todo` runs it again as a new generation, starting
-from its architect.
+from that branch. When Dispatch shows the issue in work again, it stands in the line among the
+work that came back and resumes the phase it stood in at a new phase entry. Three returns start a
+new run from the issue's first phase instead: a `todo` on an issue the daemon closed, a reopen of
+an issue its merge closed, and the architect's `rerun_child` on a child Dispatch shows in
+`backlog` or `icebox`.
 
 ## Supervision
 
@@ -629,8 +634,9 @@ outstanding, prompts it acknowledged without taking a turn, and the times it was
 that. When a budget runs out (`launch_failure_limit`, `prompt_failure_limit` and
 `prompt_retire_limit` in the configuration) the daemon stops relaunching that agent and **holds**
 the issue. A held phase worker is its architect's to retry or escalate to the controller. A root's
-architect that runs out goes to the controller, which restarts a running tree when it finds no
-cause or the cause is gone, and otherwise asks a person whether to park it. A child's architect
+architect that runs out goes to the controller, which sets the root to `todo` when it finds no
+cause or the cause is gone, and otherwise asks a person whether to park it. That `todo` starts the
+architect's claim again in its session with fresh budgets and moves no issue under the root. A child's architect
 that runs out holds nothing: the architect above it is told and takes the child's notices, and
 the daemon starts the child's architect again, with fresh budgets, at the child's next phase
 start.
@@ -644,16 +650,14 @@ architect that owns the issue reads it on the claim, the controller reads it wit
 beside it, and the notice of the hold carries it as well, so the first reader of a hold already
 knows what ran out. The held issue names the phase the hold took it out of.
 
-Four moves release a held issue. The architect's own retry puts it back in that phase. Setting a
+Three moves release a held issue. The architect's own retry puts it back in that phase. Setting a
 held root to `todo` releases the hold the same way, whether you move it in the Dispatch
 dashboard, the controller sets it, or an operator runs `legion issue status`: the issue returns to
 that phase and its worker starts again at the same generation, in the same pod and at the same place
 in the admission line. Where the pull request's head is red, the issue goes on to implementing
 instead, and a held review whose round is already decided goes where that decision sends it; the
 board then shows the phase the issue ends in. Starting the worker's claim in a fresh session
-does the same at the cost of that session. A restart, the root set to `backlog` and then to
-`todo`, runs the whole tree over as a new generation, which is the move for a tree that must start
-from its architect.
+does the same at the cost of that session.
 
 A launch failure that is charged is spaced from the next try by a backoff: 2 s after the first,
 doubling after each further one, each wait drawn between half its step and the whole of it. A

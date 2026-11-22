@@ -445,11 +445,9 @@ What each part is for:
       production_check: tester
   ```
 
-  With `tester`, the merge hands the tester the check's first look in its session. A child's
-  other five claims are retired. A root's are suspended with the rest of its tree for the linger,
-  and retired when the linger ends. With `off`, no check opens at all: a child's close retires
-  every claim of the child and releases its pod, and a root's close suspends every claim of its
-  tree for the linger. The loader refuses any other value,
+  With `tester`, the merge hands the tester the check's first look in its session, and the
+  issue's other five claims are retired. With `off`, no check opens at all: the close retires
+  every claim of the issue and releases its pod. The loader refuses any other value,
   naming the key and the value it read. The check's record carries the role, written when the
   check opened, so moving the key leaves an open check with the role it started under and a check
   opened before this release keeps the implementer.
@@ -487,15 +485,13 @@ What each part is for:
   reads at boot and appends to such a role's system prompt after the deployment's own instructions.
   Both keys take absolute paths, and under `runtime: kubernetes` each overlay must be a file one of
   the operator's pod mounts carries.
-  The draw is made once, when the tree's lifecycle row is first created, and is kept on the tree's
-  root issue record with the mode it was drawn under and the time of the draw.
-  A re-admission, a new generation and the next epoch after a cleanup keep it, and a child its root
-  hands over as a tree of its own takes the answer of the tree it leaves at the hand-over: that
-  tree's draw where it had one, and no draw at all where that tree had been opened with none.
-  A tree first opened before this release has no group and runs without memory, nothing draws for
-  it later, and a change of mode reaches only the trees opened after it.
-  A child out of a tree the daemon never opened has run under nothing and the hand-over gives it
-  nothing, so its own first open draws it like any other new tree.
+  The draw is made once, at an issue's first start, and is kept on the issue's own record with the
+  mode it was drawn under and the time of the draw: an issue that starts with an issue above it in
+  Legion's work takes the answer of the nearest such issue that holds one, and an issue with none
+  above it draws its own.
+  A new run keeps it, and a later change of the issue's Dispatch parent changes no answer.
+  An issue started before this release has no group and runs without memory, nothing draws for
+  it later, and a change of mode reaches only the issues first started after it.
   The launch follows the record, not the mode: a tree the daemon drew into the memory group keeps
   its overlays and its instructions while the block still names them, whatever the mode is now, so
   `mode: off` stops new draws and takes memory from no tree already running with it, and taking
@@ -506,8 +502,8 @@ What each part is for:
   The controller is in no memory group, a tree drawn `none` runs exactly as it ran before the block
   existed, and a block with no `instructions` appends nothing.
   `legion state` prints one line per declared experiment, the `memory` line among them, counting
-  the issues that hold each arm — every issue carries each answer that applies to it, and a child
-  handed over as a tree of its own takes its old tree's draw verbatim, so a count of trees would
+  the issues that hold each arm — every issue carries each answer that applies to it, and an issue
+  that starts under another takes the nearest one's draw verbatim, so a count of trees would
   count one draw more than once — and
   `legion state --json` shows each issue its tree's group, the mode it was drawn under and when.
 - **`projects.<KEY>.experiments`** (optional) declares the experiments the project draws its trees
@@ -529,8 +525,9 @@ What each part is for:
   once.
   `mode` is `off`, the default, which draws for no unit, `on`, which gives every new unit the arm
   `on_variant` names, or `random`, which draws among the arms by their weights.
-  `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the
-  same arm, or `issue`, which draws for each issue on its own.
+  `unit` is `tree`, the default, which draws once for an issue that starts with no issue above it
+  in Legion's work and gives each issue that starts under it the same arm, or `issue`, which draws
+  for each issue on its own.
   `roles` lists the issue roles whose launches load the experiment's arms (`architect`, `planner`,
   `implementer`, `tester`, `reviewer`, `merger`, each once), and every issue role where the block
   names none. A launch of a role the list leaves out loads none of this experiment's overlays or
@@ -777,7 +774,7 @@ What each part is for:
 - **`controller`** (optional) is who runs the project's controller: `operator` (the default), you,
   with `legion controller start`, or `daemon`, a pod the daemon launches and keeps running
   ([Start the controller](#start-the-controller)).
-- Workflow limits, all optional: `linger_hours` (72), `production_check_hours` (336: how long a
+- Workflow limits, all optional: `production_check_hours` (336: how long a
   closed issue's production check runs before its last look, 14 days by default,
   decimals allowed), `pod_update_grace_minutes` (30: how many minutes after it opens a pod's
   update round ends and the pod is replaced, whatever the roles answered and unless an operator's
@@ -1306,12 +1303,13 @@ Closing the terminal leaves the project without one, and the daemon logs
    and anything the old pod held unpushed is gone. Let the agent push before you suspend it.
 
    **An operator's suspension holds until the operator resumes the claim.** The daemon keeps every
-   role of an open issue live and idle between phases and while the root waits on a person. A child
-   that left the workflow and is set back to `todo` gets its own architect and its planner back,
-   on their kept sessions, at its next first phase start, and each other role at the start of its
-   phase. A claim whose session supervise's `forgetSession` has dropped comes back in a new
+   role of an open issue live and idle between phases and while the root waits on a person. An
+   issue that left the workflow and is back in work gets its roles back, on their kept sessions,
+   at its return, and a new run gives back its own architect and its planner at its first phase
+   start and each other role at the start of its phase. A claim whose session supervise's
+   `forgetSession` has dropped comes back in a new
    session instead. The daemon suspends or ends claims only when an issue leaves the workflow,
-   when a claim moves to another tree, or for a production check after the issue is done. A phase
+   or for a production check after the issue is done. A phase
    start gives its task to that live claim. At boot the daemon
    resumes by rule a suspended worker that still owns its issue's phase, but never a claim an
    operator suspended; a start for an operator-suspended claim waits instead. A notice for a root's
@@ -1320,9 +1318,9 @@ Closing the terminal leaves the project without one, and the daemon logs
    ends with the operator resuming every claim they suspended, one `legion claims resume` each;
    `legion claims list --json` names each one's `suspendedBy` (`operator`, `daemon`, `exit`, or
    `unknown` for one suspended before this release). A daemon suspension of a claim whose issue
-   left the workflow waits for its current turn to finish, with no stop timeout: a child parked
+   left the workflow waits for its current turn to finish, with no stop timeout: an issue parked
    in Dispatch (`backlog` or `icebox`) stops its worker only once the worker's current turn ends,
-   and a lingering tree's claims stay suspended until the tree is re-admitted.
+   and its claims stay suspended until the issue is back in work.
 
    **After the first upgrade to a release that records `suspendedBy`,** every claim already
    suspended reads `unknown`. The next phase start, re-admission and the controller keeper
@@ -1345,8 +1343,7 @@ Closing the terminal leaves the project without one, and the daemon logs
    claim). Otherwise it comes back on a workflow start, for example a start of the phase it owns
    or, for an architect, a start of its issue's run (its tree's admission for a root's, its child's
    first phase start for a child's own), as that page's `needsWorkflowStart` shows. Never resume
-   or retry by hand a claim of a lingering tree or of an issue parked out of the workflow:
-   re-admission or the issue's return to `todo` starts it.
+   or retry by hand a claim of an issue out of Legion's work: the issue's return to work starts it.
 
    **Rolling back across this release.** The earlier daemon boots on this schema but never writes
    `suspendedBy`, so a value this release wrote survives the earlier daemon's own suspends and
@@ -1376,7 +1373,7 @@ Closing the terminal leaves the project without one, and the daemon logs
 
   ```text
   legion WIDGETS on http://192.0.2.10:13370 — schema 12, boot 7 started 2026-10-03T09:12:40Z (first boot 2026-09-20T15:02:11Z)
-  admission: 3 issues hold a slot, cap 4, 2 waiting; 2 live trees; 9 issues
+  admission: 3 issues hold a slot, cap 4, 2 waiting; 2 roots in work; 9 issues
   waiting line: 2
     WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back, and it takes the free slots first.
     WIDGETS-15 2 of 2, starting: It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them.
@@ -1401,13 +1398,14 @@ Closing the terminal leaves the project without one, and the daemon logs
   The `admission` line counts the issues that hold a slot, a root or a child, against the cap: an
   issue takes a slot when the daemon starts it and gives it back as the admission rule says
   ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)),
-  so a tree of four issues holding a slot holds four of them, and the `live trees` count is the
-  trees that run whether or not any issue of theirs holds one.
+  so a tree of four issues holding a slot holds four of them, and the `roots in work` count is the
+  issues in Legion's work with no issue above them in Legion's work on their Dispatch chain,
+  whether or not any issue under them holds a slot.
 
   The `waiting line` block under it names the issues of `admission.waiting`, in the order the
   daemon promotes them: the issues whose work came back first, oldest first by the moment it
   came back, and then the issues that have not started, by the Dispatch rank of each issue's
-  tree root and then its own. Each line gives the issue's key, its place in the line, the part
+  top issue and then its own. Each line gives the issue's key, its place in the line, the part
   it stands in (`returned` or `starting`) and the daemon's own sentence for that place: what put
   the issue in the line and when, where it stands among the issues of its own part, and whether
   it waits for a free slot or already holds its admission slot and resumes whatever the cap
@@ -1417,14 +1415,37 @@ Closing the terminal leaves the project without one, and the daemon logs
   `waiting line: the daemon sent no reasons at this caller's contract` where the daemon served
   this caller no sentence at all, which is what a daemon older than the sentence serves.
 
+  **The `admission.held` line.** It counts the issues the daemon records in the workflow that
+  stand neither among the issues holding a slot nor in the waiting line, by the one word for why
+  each is held, such as `admission.held: 3 issues — chain_unknown 1, awaiting_todo 2`, and reads
+  `admission.held: none` while nothing is held. The words, in the order the line prints them:
+  `chain_unknown`, an issue whose Dispatch parent chain the daemon's copy of Dispatch cannot show
+  to its top (a missing row, a loop, or more than 32 links), on which the daemon starts nothing
+  until it has read the chain again; `label_off`, a root whose `legion` label is off; `ancestry`,
+  an issue whose parent is not in Legion's work while an issue above that parent is;
+  `root_awaiting_person`, an issue whose top issue waits on a person; `awaiting_children`, a
+  parent that holds its phase start while a child of it is open; `awaiting_todo`, an issue whose
+  run starts as a root's does and that waits at `admitted` for a person's `todo`, because a person
+  moved it to another status in work, such as a reopen of a merged issue straight to
+  `in_progress`; `design_gate`, an issue a shut design gate holds; `dispatch_blocker`, an issue an
+  unfinished Dispatch issue holds; `children_first`, a parent whose own open children start first;
+  `accepted_ancestor`, an issue under an issue already in `retro` or `merging`; `at_work`, an issue
+  past its review, which needs no slot; and `unclassified`, an issue none of the other words fits.
+  `tree_closed` and `tree_parked` stay in the daemon's list for older readers, and no issue reads
+  either of them any more. A word this build of `legion` does not know is counted after these, in
+  sorted order, so the counts add up to the total whatever words a later daemon writes. A reader
+  that states a daemon API contract below 215 is served `chain_unknown` and `awaiting_todo` as
+  `unclassified`.
+  `--json` names each held issue under `admission.held` with its word and the issues that hold it.
+
   **The experiment lines.** There is one per experiment the project declares, counting the issues
   drawn each arm of that experiment under each mode it was drawn in:
   `memory: 6 issues — 3 memory (random), 2 none (off), 1 none (random)` above. Each count reads
   `N <variant> (<mode>)`, the arm's own name and the mode in force when that unit was drawn;
   `none` stands for the empty variant a draw under a mode gives, which is what an experiment at
-  mode `off` draws. A unit a hand-over settled at no arm, because the tree it left held no row
-  for the experiment, records no draw and is counted in no line, as its `memoryGroup` is absent
-  for the `memory` experiment; `--json` still shows its row. The counts
+  mode `off` draws. A unit a hand-over of an earlier release settled at no arm, because the tree it
+  left held no row for the experiment, records no draw and is counted in no line, as its
+  `memoryGroup` is absent for the `memory` experiment; `--json` still shows its row. The counts
   of one line are in the order of the name they print and then of the mode; the lines are in the
   order the daemon declares the experiments, which is the `memory` block's experiment first and
   then the order `projects.<KEY>.experiments` names the rest in. A project that declares
@@ -1437,10 +1458,10 @@ Closing the terminal leaves the project without one, and the daemon logs
   `none (off)` after, which is the line such a deployment read before any experiment was
   declared.
   The lines count issues rather than the trees a tree experiment is drawn for, because each issue
-  in the state carries every answer that applies to it: its tree's for a tree experiment and its
-  own for an issue experiment, so one count serves both kinds. A count of trees would fit a tree
-  experiment alone, and even there it would not count draws: a child handed over as a tree of its
-  own takes its old tree's draw verbatim, so two trees hold one draw.
+  in the state carries every answer that applies to it: for a tree experiment the answer it took at
+  its first start and for an issue experiment its own, so one count serves both kinds. A count of
+  trees would fit a tree experiment alone, and even there it would not count draws: an issue that
+  starts under another takes the nearest one's draw verbatim, so two issues hold one draw.
   A daemon older than contract 141, which is the daemon the documented rollback leaves, serves
   no `assignments`, so the `memory` line counts an issue that carries none from its
   `memoryGroup` and `memoryDrawMode`, wherever `memoryGroup` is set, and reads as the
@@ -1451,9 +1472,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   order and then any experiment the file no longer names, in the order of their names; the
   declaration each answer of a declared experiment was drawn from is in the settings, under
   `settings.projects.<KEY>.memory` for the block's experiment and
-  `settings.projects.<KEY>.experiments` for the rest. An issue carries its tree's answer for a
-  tree experiment and its own for an issue experiment, `drawnAt` is absent where no draw was
-  made, and the key itself is absent from an issue no experiment holds an answer for. The three
+  `settings.projects.<KEY>.experiments` for the rest. An issue carries the answer it took at its
+  first start for a tree experiment and its own for an issue experiment, `drawnAt` is absent where
+  no draw was made, and the key itself is absent from an issue no experiment holds an answer for. The three
   fields the `memory` experiment fills — `memoryGroup` (`memory` or `none`), `memoryDrawMode`
   (the mode in force at the draw) and `memoryDrawnAt` — are still on every issue and answer
   exactly as they did, absent together where nothing was drawn for that tree. Read
@@ -1554,10 +1575,13 @@ Closing the terminal leaves the project without one, and the daemon logs
   [GitHub events wait](/legion/legion/troubleshooting/#github-events-wait) says what each means
   and what to check.
 
-  `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, and `blocked`), each
-  issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), on a root
-  `treeRuns` (true when the root's tree runs: its lifecycle is open, the root does not linger, and
-  the root does not wait in the line for its tree to open), `repo` and `defaultBranch`, `holdReason`,
+  `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots in Legion's work, `blocked`, and `held`), each
+  issue under `issues` with its `phase`, `status`, `tree` (the issue's gate root: the nearest issue
+  at or above it in Legion's work that holds its own design gate, and for an issue out of Legion's
+  work the nearest issue above it that the daemon records and that holds its own gate, else the
+  issue itself), on a root
+  `treeRuns` (true when the root is in Legion's work and does not wait in the line for a slot it
+  does not hold), `repo` and `defaultBranch`, `holdReason`,
   `architect` and `workers` (each claim's `state`, and on the implementer `backwardMoves`, one
   count for each kind of move back the issue has made, keyed `<from>-<to>`, left out where it has
   made none), `pullRequest` (`repo`, `number`, `head`, `state`, `mergeState`, `reviewDecision`),
@@ -1583,7 +1607,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   `partLength`, its place among the issues of its own part and how many they are; `holdsSlot`,
   true for an issue that already holds its admission slot and so takes no free one; `since`,
   the moment a `returned` issue's work came back; `rootRank`, `ownRank` and `rootKey`, the two
-  Dispatch ranks that placed a `starting` issue and the key of its tree root; and `reason`, the
+  Dispatch ranks that placed a `starting` issue and the key of its top issue; and `reason`, the
   sentence the block above prints. Beside them, on every issue that is not working now,
   `why`, one answer with a `state` — `claim_stopped`, a claim nothing will wake; `waiting`, the
   line; `blocked`, a Dispatch link or an open child below it; `unlisted`, an issue the record
@@ -1635,24 +1659,36 @@ Closing the terminal leaves the project without one, and the daemon logs
   controller's daily report on the project's `Legion daily report` issue.
 - **The controller's terminal** is where the controller says what it did each turn. You can type to
   it at any time; a message from you is always handled first.
-- **The cluster** shows each issue as a Sandbox and a pod labelled with its tree and issue, with one
-  container, `roles`, whose log prefixes every line with its role:
+- **The cluster** shows each issue as a Sandbox and a pod labelled with its issue, with one
+  container, `roles`, whose log prefixes every line with its role. The pod's `legion.dev/tree`
+  label is the issue's gate root when the pod was made; no decision reads it, so select by the
+  issue:
 
   ```sh
-  kubectl -n legion get sandboxes,pods -l legion.dev/tree=WIDGETS-12
+  kubectl -n legion get sandboxes,pods -l legion.dev/issue=WIDGETS-12
   kubectl -n legion logs <pod> -c roles | grep '^implementer: '   # that role's launcher, its shim and Oh My Pi
   kubectl -n legion logs <pod> -c workspace-init    # the workspace provisioning
   ```
 
-## Take a tree out
+## Take an issue out
 
-From an operator's shell, `legion issue status` sets a root's Dispatch status through the daemon, as
-the controller does through its `legion` tool's `set_status`:
+From an operator's shell, `legion issue status` sets an issue's Dispatch status through the daemon, as
+the controller does through its `legion` tool's `set_status`, and prints each status write the
+daemon queued:
 
 ```sh
 legion issue status WIDGETS-12 backlog --config legion.yaml --operator-token-file operator-token
 ```
 
-A root on the backlog or in icebox stops its tree: its agents are suspended and the slots
-its issues held go to the next issues in line. `todo` admits a labelled root again, as a new generation that starts from its
-architect.
+An issue on the backlog or in icebox stops: its agents are suspended and its slot goes to the next
+issue in line, and an issue under it stops only where the move takes it along. Dispatch keeps an
+issue in work while a child of it is in work, so a `backlog` or `icebox` of an issue that has a
+child in work takes `--children include`, which moves each open issue under it with it, or
+`--children unlink`, which takes each open child out from under it; without it the daemon refuses
+the call (`CHILDREN_ARGUMENT_REQUIRED`) and names each such child. `todo` brings a stopped issue
+back: it resumes the phase it stood in at a new phase entry, an issue the daemon closed starts a
+new run instead, and a labelled root the daemon does not record yet takes its place in the line.
+A todo that would put the issue in work under a parent that is not takes `--parent include`,
+which moves each issue above it that is not in work to `in_progress` (`PARENT_ARGUMENT_REQUIRED`
+without it). A `todo` on a root whose architect claim failed starts that claim again and moves no
+issue under the root.
