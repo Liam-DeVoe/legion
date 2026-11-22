@@ -43,7 +43,7 @@ import { focusedNodeOf, IssueTree, landOnRow, useReleaseFocus } from "../IssueTr
 import { chipName, heldBy, type NodeChip, type TreeNode } from "../issue-tree";
 import { useRowOnScreen } from "../NodeRow";
 import { lineOrKindWord, useNodeLine } from "../node-line";
-import type { FailedRead, ViewReads } from "../outline-reads";
+import type { FailedRead, OutlineReads } from "../outline-reads";
 import { authorText, pageChrome } from "../page-structure";
 import { CONTROL_LABELS, PLAN_WORDS, PRESET_NAMES, STATE_LINES } from "../page-words";
 import { FailedLineLeaves, FailedReadLine } from "../slots/failed-read-line";
@@ -146,13 +146,13 @@ export function PlanFilterBody({
   ...tree
 }: ComponentProps<typeof IssueTree> & {
   /** The names' line while the page's names reads stand failed (`outline-reads.ts`'s
-   *  `useViewReads`), the outline's own: its words and a Retry that asks those reads again, and
+   *  `useOutlineReads`), the outline's own: its words and a Retry that asks those reads again, and
    *  none while they do not stand failed. Every reference the bars, the chips and the steps draw
    *  waits on those names (`published`), so while they stand failed each is drawn as its address
    *  or as nothing; the line says why. The body draws it over the tree after the lines of its
    *  own reads (`reads`), as the outline draws it after the lines of the reads its rows come
    *  from. */
-  namesLine: ViewReads["names"];
+  namesLine: OutlineReads["names"];
   /** The whole plan's tasks, as the Plan view gives them with no words filter on
    *  (`slots/view-plan.tsx`): the order and the chart's places are worked out from them, and
    *  `root`, the view, chooses which of those places are drawn. */
