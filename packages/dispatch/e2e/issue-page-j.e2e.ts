@@ -72,6 +72,7 @@ import {
   idsOf,
   onScreen,
   openPreset,
+  outlineRows,
   rowGaps,
 } from "./issue-page-i";
 import {
@@ -1326,5 +1327,85 @@ test("the Spec view opened at its address with its statements' reads refused put
       line.getByRole("button", { name: CONTROL_LABELS.retry }),
       "the statements' Retry does not hold the focus after the page's load"
     ).toBeFocused();
+  });
+});
+
+// An address beside the Spec view's own that opens no document - a `#b-` fragment on it, or an
+// item beside it (`?comment=`) - is the view's to land on where the view draws a row of its node,
+// and the outline's where it draws none: the view tells the stage which, and the stage keeps the
+// view or draws the outline in its place. The first statement's fragment, changed alone with no
+// load, keeps the view, which puts the focus on that statement's row once the page has gone
+// quiet, and no row of the outline is drawn. A comment id of the right shape that no comment of
+// the issue has names no node the view draws a row for: the stage draws the outline in the view's
+// place, which says the issue holds no such comment, with the focus on that line's heading and
+// none of the view beside it. The view is read first at its own address, so each address is
+// followed where the view drew its statements.
+// SLOW(>=2s): the whole seeded issue and its comments read back, two loads of the Spec view and a
+// change of the fragment alone, each waited on until the view's statements, the page going quiet
+// or the line is drawn.
+test("an address beside the Spec view lands where the outline does when the view draws no row for its node", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    // A comment id of the right shape, a whole uuid, that no comment of the seeded issue has: the
+    // comment's own read answers 404 for it.
+    const gone = "5f0c2a9e-7d41-4b8a-9c3e-2e6d1b7a4c90";
+    const comments = (await listComments(seeded.key)).map((comment) => comment.id);
+    expect(comments.length, "the seeded issue holds no comment").toBeGreaterThan(0);
+    expect(comments, `a comment of the seeded issue has the id ${gone}`).not.toContain(gone);
+
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    const spec = presetPath(seeded.key, "spec");
+    const body = issuePage(page).locator("[data-spec-body]");
+    // The Spec view's first reading: it draws its statements at its own address.
+    await openPreset(page, seeded.key, "spec");
+    await expect
+      .poll(() => body.locator("[data-spec-statement]").count(), {
+        message: "the Spec view draws no statement at its own address",
+      })
+      .toBeGreaterThan(0);
+    await expectIssuePageDrawn(page);
+
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    const block = seeded.requirements[0] ?? "";
+    const statement = blockNodeId(specSlug, block);
+    const traffic = watchApiRequests(page);
+    await gotoIssue(page, `${spec}#b-${block}`);
+    await expectLoadSettled(traffic);
+    await expect(body, "the first statement's fragment draws no Spec view").toHaveCount(1);
+    await expect(
+      outlineRows(page),
+      "the first statement's fragment draws the outline in the Spec view's place"
+    ).toHaveCount(0);
+    await expect(
+      body.locator(`[data-spec-statement][data-node-id="${statement}"]`),
+      "the first statement's fragment leaves the focus off the Spec view's row for it"
+    ).toBeFocused();
+
+    await gotoIssue(page, `${spec}?comment=${gone}`);
+    // The heading and the line the outline draws in its own place for an address that names a
+    // comment the issue holds none of (`slots/body.tsx`'s `ItemFallback`). That file keeps these
+    // words to itself, so they are written out here, as `deep-links.e2e.ts` writes the heading of
+    // a comment that is not found.
+    const named = { exact: true, name: "Comment not found" } as const;
+    const heading = issuePage(page).getByRole("heading", named);
+    await expect(
+      heading,
+      `a gone comment draws no "${named.name}" in the Spec view's place`
+    ).toBeVisible();
+    // The inner locator of `has` is read inside each section, so it names no root of its own.
+    await expect(
+      issuePage(page)
+        .locator("section")
+        .filter({ has: page.getByRole("heading", named) })
+        .locator("p"),
+      `a gone comment draws another line under "${named.name}"`
+    ).toHaveText(`That link doesn't name a comment on ${seeded.key} — it may have been deleted.`);
+    await expect(
+      heading,
+      `a gone comment leaves the focus off "${named.name}", on the page's body or elsewhere`
+    ).toBeFocused();
+    await expect(body, "a gone comment draws the Spec view beside the line").toHaveCount(0);
   });
 });

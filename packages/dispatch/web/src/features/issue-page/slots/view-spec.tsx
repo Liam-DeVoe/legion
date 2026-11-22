@@ -1,37 +1,44 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useLayoutEffect, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
-import { primarySpec } from "../../../api/issue-cache";
+import { primarySpec, roleDocument } from "../../../api/issue-cache";
 import { whoAmIQuery } from "../../../api/queries";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
+import { blocksKey, type ReadKey, useOutlineReads } from "../outline-reads";
 import { useOutlineRequest } from "../outline-request";
 import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
-import type { SlotProps } from "../slot-props";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
-import { useIssueTree } from "../useIssueTree";
+import { nodesInOrder } from "../tree-keys";
+import { useTellsAddressDrawn } from "./refused-reads";
+import type { ViewSlotProps } from "./stage";
 
 /**
  * The Spec view's slot: what the stage draws in place of the outline
  * with Spec on (`slots/stage.tsx`). It is `SpecFilterBody` over the issue's one tree as the Spec
  * view leaves it (`presetView`), at the width the approved picture draws it (the prototype's
- * `.spec`, 1080 px), and reads everything else itself: the tree (`useIssueTree`), who is reading,
- * the Contents list's last request (`useOutlineRequest`), and the node the address names, which
- * the view keeps whatever the words filter leaves and puts the focus on.
+ * `.spec`, 1080 px), and reads everything else itself: the tree and the outline's reads
+ * (`useOutlineReads`), who is reading, the Contents list's last request (`useOutlineRequest`),
+ * and the node the address names, which the view keeps whatever the words filter leaves and puts
+ * the focus on.
  */
-export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
+export function ViewSpecSlot({ issue, onAddressDrawn, route }: ViewSlotProps): ReactNode {
   const { hash, search } = useLocation();
   const specSlug = primarySpec(issue)?.slug;
   const address = issueAddress(route, search, hash, specSlug);
   // The body watches the reads it draws from itself, under the keys the tree fills, so it waits
-  // on those alone (`SpecFilterBody`). The names reads are the tree's, and the view draws from
-  // them too - the three sentences, and the name of every reference a plain line cites - so
-  // their line's state while they stand failed (`namesFailure`) is passed on for the body to draw.
-  const { namesFailure, root } = useIssueTree(issue);
+  // on those alone (`SpecFilterBody`). The tree and the outline's reads come from one place
+  // (`useOutlineReads`), under the keys and with the freshness the tree reads them by, so they
+  // cost no request of their own and build no second tree. The names reads are the tree's, and
+  // the view draws from them too - the three sentences, and the name of every reference a plain
+  // line cites - so their line while they stand failed (the names' entry of `failed`) is passed
+  // on for the body to draw.
+  const { failed, readsSettled, root } = useOutlineReads(issue);
+  const namesFailure = failed.find(({ key }) => key === "names");
   // Who is reading, so a decision of theirs reads as their own words (R5), read as the tree reads
   // it (`useIssueTree`, `EVENT_FRESH`): staleness is per observer, so under the app's 30 s
   // `staleTime` the view opened later would ask for it again.
@@ -44,6 +51,30 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
     () => presetView(root, "spec", address.filter, named),
     [address.filter, named, root]
   );
+  // Whether the view draws a row of the node the address names, which the stage is told by the
+  // rule for refused reads (`useTellsAddressDrawn`), from the outline's reads above. The body
+  // draws a line of its own for the coverage, the spec's blocks, the results, the Verification
+  // document's blocks, the decisions and the asks (`SpecFilterBody`). It draws a row for every
+  // node the view keeps below the issue: each statement, and any other node the address names,
+  // which the view keeps whatever the words filter leaves (`presetView`) and draws by its kind. So
+  // where the view may tell, it says it draws the node where its view holds it, and that it draws
+  // none where the tree holds no node the address names (`reveal` undefined).
+  // It says so before the browser paints, so where the reads were held as the view was drawn, as
+  // on Back to its address, no statement is painted in the outline's place.
+  const documents = [primarySpec(issue), roleDocument(issue, "verification")];
+  const own: readonly ReadKey[] = [
+    "coverage",
+    "results",
+    "decisions",
+    "asks",
+    ...documents.flatMap((one) => (one === undefined ? [] : [blocksKey(one.id)])),
+  ];
+  const tells = useTellsAddressDrawn(failed, readsSettled, own, onAddressDrawn);
+  useLayoutEffect(() => {
+    if (!tells) return;
+    const rows = nodesInOrder(view.root).slice(1);
+    onAddressDrawn(rows.some(({ id }) => id === revealed));
+  }, [onAddressDrawn, revealed, tells, view.root]);
   const request = useOutlineRequest();
   return (
     <NoTooltips>
