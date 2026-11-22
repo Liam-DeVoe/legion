@@ -8,7 +8,7 @@ tags:
   - ci
   - legion-worker
 date: 2026-10-25
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: skills/legion-worker
 related_issues:
   - "INFRA-251"
@@ -30,8 +30,8 @@ otherwise. The delta is for the role that is forbidden to wait:
   `CONFLICTING`, the honest line is that the head will never be judged — which is a stop, not a
   completion.
 - **Nothing downstream recovers it for you.** The daemon reads settlements, not absences; a red
-  check sends the work back, a missing check does not. The round is handed on, the next role reads
-  the same empty list, and the conflict is found one phase later at the cost of a full round.
+  check sends the work back, a missing check does not. The round is handed on, the tester reads the
+  same empty list, and the conflict is found one phase later at the cost of a full round.
 - **The conflict can arrive between the push and the read.** A sibling merging into the base while
   the round runs is what makes the head conflicting; the push that created the head is no evidence
   about it.

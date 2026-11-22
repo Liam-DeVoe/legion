@@ -1,5 +1,5 @@
 ---
-title: "An approved head waiting on its merge rechecks main's migration numbers at every wake, and the merger can send it back to an earlier step"
+title: "An approved head waiting on its merge rechecks main's migration numbers at every wake, and only a push can send it back"
 category: envoy
 tags:
   - migration
@@ -7,24 +7,24 @@ tags:
   - legion-workflow
   - dispatch
 date: 2026-10-30
-status: active
+status: superseded in part — The awaiting_merge phase is gone, and the merger can move an issue in merging back to an earlier step.
 module: packages/envoy/internal/dispatch/store
 related_issues:
   - "sjawhar/legion#2483"
 ---
 
-# An approved head waiting on its merge rechecks main's migration numbers at every wake, and the merger can send it back to an earlier step
+# An approved head waiting on its merge rechecks main's migration numbers at every wake, and only a push can send it back
 
 Extends docs/solutions/envoy/a-migration-number-is-checked-against-mains-highest-at-every-push-and-the-local-harness-database-is-recreated-after-a-renumber-INFRA-367.md.
 
 - That note checks the number before every push and every review round. A head in
-  `merging` has neither, and two new migration files never conflict as text, so GitHub
+  `awaiting_merge` has neither, and two new migration files never conflict as text, so GitHub
   keeps it `MERGEABLE`. Whoever watches the merge (the architect, the deployment lane) compares
   main's highest migration with the branch's on every wake while the head waits.
-- The merger can move the issue back to implementing (`request_backward_move`), where the
-  implementer merges main forward, renumbers and pushes. After that push, the task's later steps
-  run again at the new head, in the task's own order. Expect it, and name the renumber in the
-  round's report.
+- A backward move out of `awaiting_merge` is refused, so the remedy is the implementer's push:
+  merge main forward, renumber and push. That push moves the head past READY, which withdraws
+  READY and starts a full round. Expect it, and say in the round's report that the merge was
+  pushed before the task existed.
 - Prove a renumber-only round by diffing the two fingerprinted diffs line by line: every changed
   line must be the old number replaced by the new.
 

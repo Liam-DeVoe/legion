@@ -7,7 +7,7 @@ tags:
   - assertion-scope
   - test-design
 date: 2026-10-24
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: .github/scripts
 related_issues:
   - "INFRA-110"
@@ -48,9 +48,9 @@ Then apply these, each of which this repository already practised somewhere else
 - **When a plan pins the runtime, it has already decided which assertions are possible.** Resolve
   that conflict in the plan. Standard-library-only Python before the Bun install forecloses a
   TypeScript or Go parser, so it forecloses every assertion that needs one.
-- **An acceptance criterion whose subject is prose belongs to the reviewer, or to another step that
-  reads it where the task has no reviewer. Get that decision before the implementer writes code.**
-  A plan decision marked "the architect may overrule this" is not a licence to proceed — it is a question.
+- **An acceptance criterion whose subject is prose belongs to the reviewer; get that decision before
+  the implementer writes code.** A plan decision marked "the architect may overrule this" is not a
+  licence to proceed — it is a question.
 
 ## Withdrawing an assertion
 

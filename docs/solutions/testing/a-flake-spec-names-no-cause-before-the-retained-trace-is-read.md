@@ -10,7 +10,7 @@ tags:
   - spec
   - root-cause
 date: 2026-09-14
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: packages/dispatch/e2e
 related_issues:
   - "LEGION-94"
@@ -64,7 +64,7 @@ plan stopped at "raise the timeout", the two racing scenarios would have failed 
 ## The rule
 
 A spec about a flaky browser test names no cause until the retained trace of a failing run has
-been read. Until then the spec says "cause: not yet read" and the task's first step begins with the trace.
+been read. Until then the spec says "cause: not yet read" and the plan's first task is the trace.
 The error text names only the assertion that gave up, never why the state it waited for did not
 arrive.
 

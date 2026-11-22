@@ -9,7 +9,7 @@ tags:
   - version-bump
   - code-review
 date: 2026-09-13
-status: active
+status: superseded in part — Retro commits nothing and pushes nothing, and no role writes to docs/solutions/.
 module: .github/scripts/release-push.sh
 problem_type: ci-correctness
 component: .github/scripts/release-push.sh push-main
@@ -234,9 +234,9 @@ file the branch never touches. Its merge base `0611be6b` (`chore: release cli v1
 `catchup.ts` requiring `baseEnv` and the test file lacking it; `main` was red there and #1045
 (`8af58deb`) fixed it eight minutes later, green in run 34769578687. The rerun (attempt 2) and the
 `edited`-triggered run 34769828557 both checked out `5bc2afa` and failed on the same line. What
-finally produced a run against current `main` was this section's own commit. It was the one
-docs-only push the retro rule then allowed above an approved head. It carried a real learning and
-refreshed the merge commit as a side effect.
+finally produced a run against current `main` was this section's own commit — the one docs-only
+push the retro rule allows above an approved head, which carries a real learning and refreshes
+the merge commit as a side effect.
 
 So, when a PR is red on a required check in a file the branch does not touch: read the run's
 `HEAD is now at <merge> Merge <head> into <base>` line, check whether `main` was red at `<base>`

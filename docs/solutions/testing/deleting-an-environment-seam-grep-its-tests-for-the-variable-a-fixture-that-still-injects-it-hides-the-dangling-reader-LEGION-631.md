@@ -9,7 +9,7 @@ tags:
   - PATH
   - live-proof
 date: 2026-10-10
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: packages/daemon/internal/shim
 related_issues:
   - "LEGION-631"
@@ -26,10 +26,9 @@ related_issues:
   file for a credential). A fixture that asserted the old seam's exclusivity — a decoy binary first on
   `PATH` that must never run — is the loudest sign the reader is still there: it was written to prove
   the opposite of the new rule.
-- Where a planner step comes before the implementer, the plan's risk list is a grep list. Each risk
-  it names ("dropping `LEGION_JJ_PATH` puts the jj on an unvalidated `PATH`") is a variable.
-  Enumerate its readers and fixtures before the first push. It is not a sentence left for a later
-  step.
+- The plan's risk list is a grep list: a risk it names ("dropping `LEGION_JJ_PATH` puts the jj on an
+  unvalidated `PATH`") is a variable whose readers and fixtures are enumerated before the first push,
+  not a sentence left for the tester.
 
 ## Evidence
 

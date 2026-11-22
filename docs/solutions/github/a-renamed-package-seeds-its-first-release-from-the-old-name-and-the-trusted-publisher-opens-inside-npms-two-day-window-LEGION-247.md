@@ -9,7 +9,7 @@ tags:
   - release-bump
   - version-seed
 date: 2026-10-07
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: .github/workflows/release.yaml
 applies_when:
   - A package is renamed or split and the release workflow gains a job with a new tag prefix
@@ -34,9 +34,9 @@ related_issues:
   `always() && (success || skipped)` chain): the push's race repair covers one package.
 - Trusted publishing is per package name, and npm drops a configuration that has not completed a
   publish within two days. Have the placeholder published early so the name and its settings
-  page exist. Open the trusted-publisher ask only late in the task, so the merge follows inside
-  the window: in the default steps, once review is done. A release that runs before it fails at
-  `npm publish` and is re-run with `workflow_dispatch`, which the job's `npm view` skip makes safe.
+  page exist, and open the trusted-publisher ask only once review is done, with the merge to
+  follow inside the window; a release that runs before it fails at `npm publish` and is re-run
+  with `workflow_dispatch`, which the job's `npm view` skip makes safe.
 - The committed manifest version is not the released version. Readers of the diff see the last
   pre-split version in both manifests; the build job computes the next one (`release-push.sh
   version --first-npm`).

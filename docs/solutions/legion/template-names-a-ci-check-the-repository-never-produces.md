@@ -15,7 +15,7 @@ tags:
   - attribution
   - docs-hygiene
 date: 2026-09-13
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: skills
 related_issues:
   - "LEGION-38"
@@ -111,9 +111,8 @@ That sentence is what made the skip safe. Before sjawhar/legion#2354 the impleme
 told the implementer to "read the plan handoff's `requiredSkills` for your role" and to "read the
 plan and existing `.legion/` handoffs first", and the worker skill listed `plan.json` second in
 the handoff order. A worker reads a predecessor's handoff with `dispatch handoff-read` now. A
-worker whose task puts a planner step before it, and who finds no plan handoff and no statement
-about it, has a missing predecessor. The correct response to a missing predecessor is to stop and
-ask the architect. The architect
+worker that finds no plan handoff and no statement about it has a missing predecessor,
+and the correct response to a missing predecessor is to stop and ask the architect. The architect
 who skips a phase owns telling each worker it spawns (implementer, tester, reviewer) that the
 phase was skipped and what stands in for its output — here, the spec's Design table.
 

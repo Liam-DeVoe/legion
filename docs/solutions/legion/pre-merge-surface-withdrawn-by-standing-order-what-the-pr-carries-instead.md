@@ -10,7 +10,7 @@ tags:
   - release
   - verification
 date: 2026-09-14
-status: active
+status: superseded in part — The production check after the merge is the tester's session unless production_check is off, not the implementer's.
 module: skills/legion-worker
 related_issues:
   - "LEGION-109"
@@ -73,9 +73,9 @@ reviewer had one text to check against instead of each deciding what "withdrawn"
 
 - It does not make the unit suite a production-like surface. The word "withdrawn" in the `E2E`
   line is what keeps the record honest; do not paraphrase it away into "verified".
-- It does not remove the post-merge duty. The production check still goes to the tester's session
-  after the merge, to record the production observation (`Production:` line, PR comment,
-  `dispatch message`). The standing order withdrew pre-merge rigs, not the production check.
+- It does not remove the post-merge duty. The implementer is still sent back after the merge to
+  record the production observation (`Production:` line, PR comment, `dispatch message`); the
+  standing order withdrew pre-merge rigs, not the production check.
 - It does not apply to an issue that *has* a reachable surface. A daemon change still needs the
   smoke rig or a scratch daemon unless the order covers it; ask the architect which order applies
   before writing "withdrawn".

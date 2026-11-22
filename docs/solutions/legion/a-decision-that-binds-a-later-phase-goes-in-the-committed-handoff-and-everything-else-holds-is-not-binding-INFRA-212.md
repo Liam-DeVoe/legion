@@ -7,7 +7,7 @@ tags:
   - planning
   - envoy-messages
 date: 2026-10-24
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: skills/legion-worker
 applies_when:
   - A planner records decisions in the Dispatch plan document and a summary in the plan handoff
@@ -31,8 +31,7 @@ endorsement is a claim. Two deltas, each of which cost a round here.
   all. Keep the reasoning in the document; put the binding rule in the handoff. Before
   sjawhar/legion#2354 that handoff was the committed `plan.json`. It is a record on the Dispatch
   issue now, read with `dispatch handoff-read --issue <KEY> --phase plan --version <n>`.
-- **Phase worker: where a planner step comes before yours, open the plan document the plan handoff
-  names before your first commit.** The
+- **Phase worker: open the plan document the plan handoff names before your first commit.** The
   `plan` field is a summary string, never the plan; a decision you never saw still binds you.
 - **Reviewer: enumerate what you checked and name what is still open. Never write a blanket
   "everything else holds" over a clause you are still checking** — a later role, and the merger,

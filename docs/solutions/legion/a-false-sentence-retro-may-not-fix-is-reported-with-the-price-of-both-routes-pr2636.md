@@ -8,7 +8,7 @@ tags:
   - stale-prose
   - architecture-pages
 date: 2026-11-04
-status: active
+status: superseded in part — The READY route and its READY_UNREVIEWED_CHANGE refusal are deleted, and the merger reads the pull request and merges the head itself. Retro commits nothing and pushes nothing, and no role writes to docs/solutions/.
 module: docs/solutions
 related_issues:
   - "sjawhar/legion#2636"
@@ -24,23 +24,23 @@ That note covers a learning note only **main** carries, which your branch cannot
 sentence your branch **does** carry, in a file retro may not write, and it adds the one number the
 architect deciding what to do about it does not otherwise have.
 
-- **Report it, never fix it.** Retro commits nothing and pushes nothing: a push would put a commit
-  above the head the task's last worker step passed. At this learning's date, READY compared the
-  two heads and refused on any path outside `docs/solutions/`, naming it:
-  `packages/daemon/internal/api/ready.go:241-251` filtered the compare to those paths and named
-  only them, so the refusal listed the one file you touched and never the learnings beside it.
+- **Report it, never fix it.** Retro's commits are the only ones permitted above the reviewer's
+  approved head, and only under `docs/solutions/`. READY compares the two heads and refuses on any
+  other path, naming it: `packages/daemon/internal/api/ready.go:241-251` filters the compare to
+  paths outside `docs/solutions/` and names only those, so the refusal lists the one file you
+  touched and never the learnings beside it.
 
 - **Give both prices, because you are the only one who has read the sentence.** The in-pull-request
-  fix costs a full round whatever the size of the edit. The issue moves back to `implementing`,
-  every later step of the task runs again, and a second retro follows. The follow-up issue costs
-  nothing now, and is observed to leave the sentence standing. Price the defect as well as the fix:
-  give the sentence, the code line that falsifies it, and who reads the file — a page under
-  `.dispatch/architecture/` is imported into Dispatch and read by agents, not only by whoever edits
-  it next.
+  fix costs a full round whatever the size of the edit: READY refuses `READY_UNREVIEWED_CHANGE`, the
+  merger sends the issue back to `reviewing`, the reviewer re-reads the whole diff from the approved
+  head, and a tester re-run and a second retro follow. The follow-up issue costs nothing now, and is
+  observed to leave the sentence standing. Price the defect as well as the fix: give the sentence,
+  the code line that falsifies it, and who reads the file — a page under `.dispatch/architecture/`
+  is imported into Dispatch and read by agents, not only by whoever edits it next.
 
-- **The author of the fix does not matter.** At this learning's date, `unreviewedChange` read paths,
-  never authorship (`ready.go:236-251`), so a correction the reviewer itself committed sat above its
-  own approval and was refused exactly as yours would be.
+- **The author of the fix does not matter.** `unreviewedChange` reads paths, never authorship
+  (`ready.go:236-251`), so a correction the reviewer itself commits sits above its own approval and
+  is refused exactly as yours would be.
 
 ## Evidence
 

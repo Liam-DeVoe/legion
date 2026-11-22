@@ -8,7 +8,7 @@ tags:
   - testing
   - pull-request-body
 date: 2026-10-25
-status: superseded in part by INFRA-714 — the records its examples pin, `READY_CHECKS_NOT_GREEN` and the `merge-waiting` notice, are deleted; the rule, that a claim is pinned to a command or deleted, stands
+status: superseded in part by INFRA-714 — the records its examples pin, `READY_CHECKS_NOT_GREEN` and the `merge-waiting` notice, are deleted; the rule, that a claim is pinned to a command or deleted, stands. Retro commits nothing and pushes nothing, and no role writes to docs/solutions/.
 module: packages/daemon
 related_issues:
   - "INFRA-83"
@@ -104,7 +104,7 @@ the tester's bare gates lives in two homes. `prompts/roles/core/tester.md:13` wa
 *"CI green at the new head, read on GitHub and written down nowhere"*;
 `skills/legion-worker/references/pr-body.md:131` still reads *"the repository's CI green at the
 new head"* with no such clause, in the sentence that tells the tester what to write into its `E2E`
-line. The change about copies left a copy. It was reported to the architect rather than fixed here.
-Retro could then commit only `docs/solutions/` (before sjawhar/legion#2354, also the handoff
-removal), and a correction above the approved head voided the approval. That is itself the
+line. The change about copies left a copy. It is reported to the architect rather than fixed here,
+because retro may commit only `docs/solutions/` — before sjawhar/legion#2354 it also committed the
+handoff removal — and a correction above the approved head voids the approval. That is itself the
 lesson: **leave a round's width for the findings a retro makes, because retro cannot take them.**

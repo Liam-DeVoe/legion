@@ -12,7 +12,7 @@ tags:
   - implementer
   - merger
 date: 2026-09-18
-status: active
+status: superseded in part — The READY route and its READY_UNREVIEWED_CHANGE refusal are deleted, and the merger reads the pull request and merges the head itself. Retro commits nothing and pushes nothing, and no role writes to docs/solutions/. An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: skills/legion-worker (READY and post-approval mechanics)
 related_issues:
   - "LEGION-105"
@@ -66,11 +66,10 @@ round could neither recreate the directory nor write a handoff file:
   commit, the red-then-green test titles, and — when the review offered alternatives ("fence the
   launch, or derive the resume from the retained locator") — which one you chose and why. The
   re-approving reviewer reads that reply against the delta and says so.
-- **The task's later steps run again in its order.** The reviewer re-approves by SHA ("Approved:
-  `83709677…` — supersedes my approval at `7db2b5db`"), and the tester runs another round at that
-  head. Retro then extends its documents with one more `docs/solutions/`-only commit, and only
-  then does the merger re-post READY. The docs-only-above-approval rule of that time held for that
-  final commit. Retro now commits nothing.
+- **The reviewer re-approves by SHA** ("Approved: `83709677…` — supersedes my approval at
+  `7db2b5db`"), the tester runs another round at that head, retro extends its documents with one
+  more `docs/solutions/`-only commit, and only then does the merger re-post READY. The
+  docs-only-above-approval rule still holds for that final commit.
 - **The round's own proof has to reach the failure branch the review read.** Both prior proofs
   drove the success path; the finding lived on the `StopFailed` branch. The tester's
   `LEGION_TMUX_PATH` wrapper (fail `kill-pane` with a non-proving stderr while a flag file exists)

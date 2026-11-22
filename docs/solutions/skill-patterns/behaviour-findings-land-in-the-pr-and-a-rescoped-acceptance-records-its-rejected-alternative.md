@@ -11,7 +11,7 @@ tags:
   - corrective-round
   - fixtures
 date: 2026-09-13
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: legion
 related_issues:
   - "sjawhar/legion#1021"
@@ -56,9 +56,8 @@ diff unless the round is already in that file.
 
 Two costs to expect and plan for:
 
-- **Each in-PR reclassification is a corrective round**: an implementer push, then the task's later
-  steps again. In the default steps that is a tester round and a reviewer round.
-  Three findings surfaced one round at a time cost three rounds. A reviewer that
+- **Each in-PR reclassification is a corrective round**: implementer push → tester round →
+  reviewer round. Three findings surfaced one round at a time cost three rounds. A reviewer that
   lists *every* behaviour-class observation in its first round (not just the one it is sure of)
   lets the architect land them together. The r2 reviewer did this — its `observationsForArchitect`
   named the `--check-config` gap explicitly as "a behaviour change, so land here or file a LEGION

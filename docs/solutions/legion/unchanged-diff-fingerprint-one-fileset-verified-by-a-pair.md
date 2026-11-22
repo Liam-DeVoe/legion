@@ -9,7 +9,7 @@ tags:
   - review
   - long-lived-pr
 date: 2026-09-13
-status: superseded in part by sjawhar/legion#2423 — a branch no longer carries a rebuilt `dist/` commit and `check-dist` forces no rebuild in a pull request, since main's Rebuild Claude Envoy plugin workflow commits the bundle after each merge; the one-fileset fingerprint, its verification by a pair and the rules for what a rebase may change stand
+status: superseded in part by sjawhar/legion#2423 — a branch no longer carries a rebuilt `dist/` commit and `check-dist` forces no rebuild in a pull request, since main's Rebuild Claude Envoy plugin workflow commits the bundle after each merge; the one-fileset fingerprint, its verification by a pair and the rules for what a rebase may change stand. An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: skills/legion-worker
 related_issues:
   - "LEGION-59"
@@ -123,7 +123,7 @@ it without anyone editing a line of the branch:
 The rule is the rule: a different fingerprint is a round, not a confirmation, even when the
 delta is prose. What the implementer owes the other roles in that case is attribution — run the
 fingerprint per file (split the `--git` output on `diff --git` and hash each file's lines) and
-name the files and the sentences that differ in the rebase comment, so the task's later steps
+name the files and the sentences that differ in the rebase comment, so the tester and reviewer
 can scope their round to those files instead of re-verifying everything. When one file owned the
 conflict, the cheaper attribution is the same command with the retired harness test added to the
 exclusion — equal hashes before and after prove

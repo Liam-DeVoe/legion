@@ -7,7 +7,7 @@ tags:
   - bedrock
   - live-proof
 date: 2026-10-26
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: packages/envoy/internal/dispatch/embed
 related_issues:
   - "INFRA-393"
@@ -26,7 +26,7 @@ related_issues:
   the rest to the unit tests and the production check, not to an inference from the new
   provider's runs.
 - If the default path's working matters before the merge, ask for the credential (a `dispatch
-  ask`) before implementation starts. Do not discover the gap at review.
+  ask`) at planning. Do not discover the gap at review.
 
 ## Evidence
 

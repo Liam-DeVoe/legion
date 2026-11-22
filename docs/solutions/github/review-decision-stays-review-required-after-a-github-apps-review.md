@@ -10,7 +10,7 @@ tags:
   - pr-review
   - envoy-review-payload
 date: 2026-09-14
-status: superseded by LEGION-631 — `legion gh` and `legion threads resolve` with its `Accepted:` rule are gone; a role reads GitHub with plain `gh` as its App from `GH_CONFIG_DIR`, and threads are resolved by node id by the implementer with plain `gh api graphql` as the pull request's author (the reviewer names the bot threads it accepted to the implementer), while the `reviewDecision`/`latestReviews` fact stands
+status: superseded by LEGION-631 — `legion gh` and `legion threads resolve` with its `Accepted:` rule are gone; a role reads GitHub with plain `gh` as its App from `GH_CONFIG_DIR`, and threads are resolved by node id by the implementer with plain `gh api graphql` as the pull request's author (the reviewer names the bot threads it accepted to the implementer), while the `reviewDecision`/`latestReviews` fact stands. An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: packages/daemon/src/daemon/reducers.ts, packages/daemon/src/daemon/catchup.ts
 problem_type: correctness
 severity: medium
@@ -54,9 +54,9 @@ not "no review yet"; it is "no review that branch protection counts".
 - `mergeStateStatus: BLOCKED` with a green check rollup and an App approval on the head is branch
   protection waiting for a *counted* approval the App may never supply. On this deployment the
   merge queue merges under its own authority after `READY`; the merger's gate facts are the
-  reviewer's `APPROVED` at the exact head SHA where the task has a reviewer step (verified through
-  `latestReviews`/`reviews`), the green run, and the thread state — not `reviewDecision`, and not
-  `mergeStateStatus` leaving `BLOCKED`.
+  reviewer's `APPROVED` at the exact head SHA (verified through `latestReviews`/`reviews`), the
+  green run, and the thread state — not `reviewDecision`, and not `mergeStateStatus` leaving
+  `BLOCKED`.
 - The same App boundary explains the thread rule: the review App can reply on a thread but cannot
   resolve it on a pull request the implement App opened, so the implementer's/merger's
   `legion threads resolve` closes the threads the reviewer has `Accepted:` (see

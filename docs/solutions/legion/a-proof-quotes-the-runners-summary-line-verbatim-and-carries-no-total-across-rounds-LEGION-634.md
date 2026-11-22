@@ -8,7 +8,7 @@ tags:
   - test-counts
   - review-rounds
 date: 2026-10-09
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: skills/legion-worker, .legion handoffs
 related_issues:
   - "LEGION-634"
@@ -21,7 +21,7 @@ related_issues:
 
 - **Paste the runner's own summary line into the proof's `observed` and the PR body's `E2E` line.**
   `192 pass / 0 fail / 691 expect() calls / Ran 192 tests across 14 files` is a quotation; a number
-  typed from memory after adding a case is a claim any tester step will re-run and find false.
+  typed from memory after adding a case is a claim the tester will re-run and find false.
 - **Never recompute a total.** Adding one test to a suite that printed `192 pass` does not make
   the proof `193 pass`: the run that printed 192 already held the case, or the next run prints the
   new number itself. Re-run and quote.

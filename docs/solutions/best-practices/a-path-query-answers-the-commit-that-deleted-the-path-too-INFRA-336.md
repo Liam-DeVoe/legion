@@ -8,7 +8,7 @@ tags:
   - deletions
   - prose-and-code
 date: 2026-10-31
-status: active
+status: superseded in part — Retro commits nothing and pushes nothing, and no role writes to docs/solutions/.
 module: packages/daemon/internal/prompts
 related_issues:
   - "INFRA-336"
@@ -50,9 +50,9 @@ nothing. Measured on this
 pull request: the revset answered `ec7c7ad0`, the commit that deleted the directory, for both
 `implement.json` and `test.json`.
 
-The consumer was the daemon's refusal of a handoff commit it had already recorded. The field
-existed to make a repeated round's bytes differ, and retro's commit did that as well as any other.
-So the prose was fixed, not the query — the prompts now say "the newest commit on this branch that
+The consumer is the daemon's refusal of a handoff commit it has already recorded: the field exists
+to make a repeated round's bytes differ, and retro's commit does that as well as any other. So the
+prose was fixed, not the query — the prompts now say "the newest commit on this branch that
 changed `.legion/<issue>/<phase>.json` (usually this role's previous handoff; after a retro,
 retro's removal)". Had any consumer read the previous handoff's contents, the same mismatch would
 have made the query wrong instead.

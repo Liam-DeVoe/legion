@@ -6,7 +6,7 @@ tags:
   - proof
   - review-rounds
 date: 2026-10-25
-status: active
+status: superseded in part — Retro commits nothing and pushes nothing, and no role writes to docs/solutions/. An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: docs/kubernetes.md
 related_issues:
   - "INFRA-232"
@@ -22,8 +22,8 @@ handoff's residual risk), find the sentence on the page that states that behavio
 same condition in the same round. If you don't, the pull request says "not proven" while the page
 states the behaviour as a property, and the page is what a reader keeps.
 
-Check this before the approval, not at retro. Retro commits nothing, so a sentence found too
-strong at retro costs a move back and another pass through the task's steps.
+Check this before the approval, not at retro: a retro may change only `docs/solutions/`, so a
+sentence found too strong there costs a full test and review round.
 
 ## Evidence
 

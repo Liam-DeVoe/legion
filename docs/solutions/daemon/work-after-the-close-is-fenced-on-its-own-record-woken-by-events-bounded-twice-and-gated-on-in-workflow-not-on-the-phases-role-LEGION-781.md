@@ -10,7 +10,7 @@ tags:
   - untrusted-input
   - predicate-writers
 date: 2026-10-21
-status: active
+status: superseded in part — The production check after the merge is the tester's session unless production_check is off, not the implementer's. The build check it names, `compareBuilds`, is gone from packages/.
 module: packages/daemon/internal/workflow
 related_issues:
   - "LEGION-781"
@@ -19,9 +19,9 @@ related_issues:
 
 # Work after the close is fenced on its own record, woken by events, bounded twice, and gated on InWorkflow, never on the phase's role
 
-Work the daemon runs for an issue after its merge closed it runs where no phase, generation or
-tree fence holds any more. That work is the production check: the tester's looks at whether
-production carries the merge. These are the rules that made it safe.
+Work the daemon runs for an issue after its merge closed it (the production check: the
+implementer's looks at whether production carries the merge) runs where no phase, generation or
+tree fence holds any more. These are the rules that made it safe.
 
 - **Fence it on its own record, not on the issue's phase or generation.** The check's identity is
   its `OpenedAt` (clock truncated to the microsecond, Postgres's precision), and every row and fact
@@ -35,24 +35,24 @@ production carries the merge. These are the rules that made it safe.
   one pending cause and starts the next look when the current one ends; the same build woke it
   once (`check.go` `wake`).
 - **Bound every look and the whole check, and let the bound end a silent look as a pending
-  report would.** `check_look` ends a look nobody reported (suspend the tester, keep session
-  and volume, the pod goes). `check_bound` starts the last look and a `pending` there closes the
-  check as `not_run`. The tester's failed claim ends a look the same way — only while the
+  report would.** `check_look` ends a look nobody reported (suspend the implementer, keep session
+  and volume, the pod goes); `check_bound` starts the last look and a `pending` there closes the
+  check as `not_run`. The implementer's failed claim ends a look the same way — only while the
   issue is out of the workflow.
 - **"Runs again" is `InWorkflow(issue)`: status in the workflow and phase short of `done`.**
   Never `RoleFor(phase) != ""`: that answers "which role works this phase" and is empty for
   `admitted` and `held`, exactly where a root reopened inside its linger stands (`admit.readmit`),
-  so a look would resume the tester and relaunch the Sandbox under the run. Apply the
+  so a look would resume the implementer and relaunch the Sandbox under the run. Apply the
   predicate at every site that starts, ends or closes a look and in the outbox's start row.
 - **Seeing the same merge again opens nothing.** A done child a person parks and sets done again
   leaves twice more; `openCheck` keeps the check it has for the same pull request (repo, number,
   the merge where both are known), open or recorded, and only a rerun's other pull request
   replaces it.
 - **A value from a bus subject any client may publish on is held to a shape where every source
-  meets the sink.** At this learning's date, `server.started`'s commit, the daemon's revision and
-  Dispatch's `/healthz` commit all passed `compareBuilds`. A build outside `^[0-9a-f]{7,40}$` was
-  refused there and logged by cause and length. So it never reached the implement App's GitHub
-  compare URL (also `url.PathEscape`d) or the implementer's task text.
+  meets the sink.** `server.started`'s commit, the daemon's revision and Dispatch's `/healthz`
+  commit all pass `compareBuilds`; a build outside `^[0-9a-f]{7,40}$` is refused there, logged by
+  cause and length, before it reaches the implement App's GitHub compare URL (also
+  `url.PathEscape`d) or the implementer's task text.
 
 ## Evidence
 

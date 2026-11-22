@@ -12,7 +12,7 @@ tags:
   - smoke-rig
   - routeActive
 date: 2026-09-13
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: packages/daemon/src/daemon/reducers.ts, packages/daemon/src/daemon/legion-state.ts, packages/daemon/src/daemon/processes.ts, skills/legion-architect/SKILL.md
 related_issues:
   - "LEGION-57"
@@ -137,7 +137,7 @@ role that can act on it.
   resources did not isolate the event source. The rig is removed; use the daemon's test harness
   and real-process fixtures for pre-merge coverage, and record a live observation at the
   operator's next authorized daemon restart.
-- **A conflict-forced rebase before the tester and the reviewer start keeps the fingerprint procedure out of the picture.**
+- **A conflict-forced rebase before testing keeps the fingerprint procedure out of the picture.**
   GitHub reported `CONFLICTING` before the tester started; rebasing then (onto LEGION-20's
   design-gate rewrite, six files integrated with main rather than around it) meant no reviewed
   head existed to compare, so no unchanged-diff check, no confirmation approval, and no re-test

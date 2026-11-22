@@ -10,7 +10,7 @@ tags:
   - fast-follow
   - conflict-rebase
 date: 2026-09-13
-status: active
+status: superseded in part — Retro commits nothing and pushes nothing, and no role writes to docs/solutions/. An approval moves the issue to its task's next step (accepting in the default steps), and retro starts once the task's last step passes. An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: legion
 related_issues:
   - "LEGION-44"
@@ -80,10 +80,9 @@ commits", and a runbook calling a load-bearing scrub "belt and braces"). Landing
 deletion cost one tester bare-gate pass and one short reviewer re-check — the same price round
 1's fast-follow paid — and left the PR with no follow-up. The alternative, a follow-up LEGION
 issue for wording, is a deferral in disguise; Sami's rule is no deferrals. The order that works:
-fast-follow commit → push → `legion threads resolve` → the task's later steps in its order → retro.
-`legion threads resolve` resolves every thread accepted so far, and its output describes the pushed
-head. In the default steps the later steps are tester bare gates, reviewer re-check and approval of
-that head, then the owner's acceptance. Before sjawhar/legion#2354 a `.legion/` deletion push sat between the re-check and
+fast-follow commit → push → `legion threads resolve` (every thread accepted so far resolves, and
+its output describes the pushed head) → tester bare gates → reviewer re-check → approval of
+that head → retro. Before sjawhar/legion#2354 a `.legion/` deletion push sat between the re-check and
 the approval, and the fast-follow had to land before it. (2026-09-25, LEGION-285: the tester and
 the reviewer began pushing their own handoff commits; the order was unchanged. 2026-09-30,
 LEGION-386: `legion threads resolve` runs after the push, not before it.)
@@ -101,8 +100,8 @@ Two pull requests with disjoint code can still conflict through `docs/solutions/
 edits the same few hazard and runbook files, so a retro commit is shared surface even when the
 fixes are not. This PR's retro touched the shared-repo hazards doc that LEGION-45 had just
 extended on `main`, and the merge queue refused the `READY` as `CONFLICTING`; #1041 and #1042 hit
-the same thing within ten minutes the same evening. Retro now commits nothing and pushes nothing,
-so it no longer adds this conflict.
+the same thing within ten minutes the same evening. Expect a rebase after retro when another tree
+retro'd on the same doc since your fork point, and fetch before publishing `READY`.
 
 The second rebase then conflicted where nobody predicted — not the docs file (jj merged it) but
 three product files `main` had rewritten meanwhile: `packages/workspace/src/workspace.test.ts`

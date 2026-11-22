@@ -9,7 +9,7 @@ tags:
   - e2e-harness
   - unchanged-diff-fingerprint
 date: 2026-10-10
-status: superseded in part by INFRA-714 — the daemon's own `checks-red` move for CI is gone: a red check moves the issue nowhere, so the only daemon move left to count is the conflict move. Every other move back still counts a round
+status: superseded in part by INFRA-714 — the daemon's own `checks-red` move for CI is gone: a red check moves the issue nowhere, so the only daemon move left to count is the conflict move. Every other move back still counts a round. Only a review that requests changes counts a round, and every move back by the task's own order counts a pass.
 module: scripts/e2e/stage4b-sandbox-tree.sh, scripts/e2e/lib/workflow.sh, packages/daemon/internal/workflow
 related_issues:
   - "LEGION-632"
@@ -20,10 +20,11 @@ related_issues:
 
 Extends docs/solutions/legion/a-conflict-round-that-changes-the-fingerprint-is-a-counted-review-round-and-its-approval-starts-a-second-retro-LEGION-578.md.
 
-- The task's `rounds` count rises only on a review that requests changes (`recordRound`,
-  `packages/daemon/internal/workflow/review.go`). Every move back by the task's own order
-  (`Walk.MovesBack`, `workflow/line.go`) counts a pass instead (`recordPass`): a tester's fail, a
-  worker's backward move, a rejected review. A proof that
+- The implementer's `phases.rounds` counts every move to an earlier phase, not only a reviewer's
+  `changes_requested`: `movesBack` (`packages/daemon/internal/workflow/engine.go`, `phaseIndex(to) <
+  phaseIndex(from)`) calls `recordRound` for the tester's fail, a worker's backward move, and the
+  move the daemon makes itself on a red CI verdict or a conflicting head (`TriggerChecksRed` from
+  Testing, Reviewing and AwaitingMerge, `workflow/table.go`), since main's #1850. A proof that
   keys a handoff assertion by round must count the daemon's own moves in its expected round, not
   just the reviews the proof scripted. The helper was `handoff_fact_commit ISSUE ROLE PHASE ROUND`
   (`scripts/e2e/lib/workflow.sh`): `review_round` had to equal `ROUND`, else the fact was empty

@@ -9,7 +9,7 @@ tags:
   - collation
   - proof-environment
 date: 2026-10-14
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: packages/envoy/internal/dispatch
 related_issues:
   - "LEGION-752"
@@ -34,9 +34,8 @@ Extends docs/solutions/testing/go-test-in-a-worker-pod-leaves-gowork-to-go-work-
   and overrun `go test`'s ten-minute per-package default (`panic: test timed out after 10m0s`,
   `FAIL … 600.0s`), which reads as a failure of the branch. Run the touched packages alone with a
   budget - `go test ./internal/dispatch/docs/ -count=1 -timeout 40m` (about 400 s) and
-  `go test ./internal/dispatch/api/ -count=1 -timeout 55m` (about 700 s). Run the plan's selection
-  first where a planner step comes before yours, since the whole package is a wall-clock cost the
-  pod repays slowly.
+  `go test ./internal/dispatch/api/ -count=1 -timeout 55m` (about 700 s) - and the selection the
+  plan names first, since the whole package is a wall-clock cost the pod repays slowly.
 - Expect these to fail in the pod for the environment: `internal/dispatch/delivery`,
   `internal/dispatch/outbox`, `internal/dispatch/redeliver` and `internal/dispatch/files`
   (testcontainers for NATS and an S3-compatible server: `panic: rootless Docker not found`);

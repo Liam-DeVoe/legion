@@ -9,7 +9,7 @@ tags:
   - image-probe
   - capacity-stop
 date: 2026-10-16
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: packages/daemon/internal/config, packages/daemon/internal/daemon
 related_issues:
   - "LEGION-636"
@@ -28,8 +28,7 @@ related_issues:
   configuration; `/legion/v1/state` carries no timeout. A coordinator's dated sentence that "both
   deployments hold the relation" is a hypothesis to check, not evidence; the one reader is the
   role that owns the deployments (Envoy role `legion-deploy`), asked through the architect — and
-  asked before the plan is approved, or before the implementer starts where no planner step comes
-  first, not left to the implementer "if the pod's identity allows".
+  asked before the plan is approved, not left to the implementer "if the pod's identity allows".
 - Prefer the design that needs no reading. When the invariant is a relation between two keys the
   operator sets independently, derive the dependent value instead of refusing the pair:
   `daemon.ProbeBudget` makes the image probe's attempt `max(slow_command_timeout_seconds,

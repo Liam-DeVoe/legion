@@ -1,5 +1,5 @@
 ---
-title: "A root's re-admission erases its child's approval, so an unchanged diff is reviewed again as a confirmation, and one more retro follows that approval"
+title: "A root's re-admission erases its child's approval, so an unchanged diff is reviewed again as a confirmation, and that approval starts retro"
 category: legion
 tags:
   - re-admission
@@ -9,7 +9,7 @@ tags:
   - retro
   - pr-body
 date: 2026-10-09
-status: superseded in part by INFRA-714 — `READY_NOT_APPROVED` and the whole READY route are deleted, so a merger reaching a round with no recorded approval meets no refusal from the daemon; the architect decides whether the round runs again. A confirmation after a conflict-forced merge, as in the evidence below, still follows the fingerprint rule, and the round-counter labelling below still holds
+status: superseded in part by INFRA-714 — `READY_NOT_APPROVED` and the whole READY route are deleted, so a merger reaching a round with no recorded approval meets no refusal from the daemon; the architect decides whether the round runs again. A confirmation after a conflict-forced merge, as in the evidence below, still follows the fingerprint rule, and the round-counter labelling below still holds. Retro commits nothing and pushes nothing, and no role writes to docs/solutions/. An approval moves the issue to its task's next step (accepting in the default steps), and retro starts once the task's last step passes. An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: packages/daemon/internal/admit
 applies_when:
   - A child issue of a Legion tree sits in merging (or past review) when the tree's root is re-admitted at a new generation
@@ -21,7 +21,7 @@ related_issues:
   - "LEGION-578"
 ---
 
-# A root's re-admission erases its child's approval, so an unchanged diff is reviewed again as a confirmation, and one more retro follows that approval
+# A root's re-admission erases its child's approval, so an unchanged diff is reviewed again as a confirmation, and that approval starts retro
 
 Extends docs/solutions/legion/a-conflict-round-that-changes-the-fingerprint-is-a-counted-review-round-and-its-approval-starts-a-second-retro-LEGION-578.md.
 
@@ -32,16 +32,16 @@ Extends docs/solutions/legion/a-conflict-round-that-changes-the-fingerprint-is-a
   (`ClearTreeGeneration`, `packages/daemon/internal/record/store.go`, called from
   `admit.go`'s readmit): a child resumed in merging has no approved head (`approvedHead`,
   `packages/daemon/internal/workflow/effects.go`), the merger refuses for want of one, and the daemon
-  runs the tester and the reviewer again, where the task has those steps, even when the child's diff
-  is byte-identical (`packages/daemon/internal/admit/admit_test.go`,
-  `TestAResumedMergerIsToldNoApprovedHeadAcrossGenerations`).
+  runs the tester and the reviewer again even when the child's diff is byte-identical
+  (`packages/daemon/internal/admit/admit_test.go`, `TestAResumedMergerIsToldNoApprovedHeadAcrossGenerations`).
 - Run that round as a confirmation: the tester re-checks the bare gates and moves its `E2E` head
   with a `rebase re-check` record; the reviewer computes the fingerprint at its own last approved
   head and at the new head, and when they are equal re-states the approval by SHA with no
-  thermonuclear pass and no thread pass. An approval moves the issue to the task's next step, and
-  retro starts once the task's last step passes (`table.go`, `stepRows`). So a confirmation's
-  approval leads to one more retro, which covers only the confirmation round.
-- A long pull request accumulates up to three round counters — the implementer's implementing rounds, the
+  thermonuclear pass and no thread pass. Every approval starts retro (`table.go`: `Reviewing` +
+  `TriggerReviewApproved` → `Retro`), so a confirmation's approval starts the implementer on retro
+  once more; that retro covers only the confirmation round and edits none of the earlier retros'
+  files.
+- A long pull request accumulates three round counters — the implementer's implementing rounds, the
   tester's test rounds and the reviewer's review rounds — in one body. Label every round bullet with
   the role whose counter it uses and the head it stands at (`Round 5 (reviewer, at 4dcf272f)`),
   never a bare `Round N`: the same number names different heads on different counters.

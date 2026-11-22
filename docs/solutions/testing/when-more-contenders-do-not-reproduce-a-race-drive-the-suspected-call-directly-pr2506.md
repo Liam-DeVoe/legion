@@ -7,7 +7,7 @@ tags:
   - instrumentation
   - flaky-tests
 date: 2026-10-30
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: packages/envoy/internal/bus
 related_issues:
   - "sjawhar/legion#2506"
@@ -31,9 +31,8 @@ fail here"; this is the other, and it is the one to take when widening has alrea
   weigh it against the one observation that went the other way.
 - **A red-on-base from another role or another machine is that role's observation, not yours.**
   Name whose it is. An acceptance criterion whose own command the implementer cannot make fail is
-  a problem in the criterion itself. Renegotiate it into a command that fails, rather than spending
-  hours of loops proving it rarely. Where a planner step comes before the implementer, do this
-  before the plan is approved.
+  a plan-time problem: renegotiate it into a command that fails before the plan is approved,
+  rather than spending hours of loops proving it rarely.
 
 ## Evidence
 

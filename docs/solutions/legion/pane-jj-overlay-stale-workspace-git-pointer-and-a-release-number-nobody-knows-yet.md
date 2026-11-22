@@ -12,7 +12,7 @@ tags:
   - docs-solutions
   - conflicting
 date: 2026-09-14
-status: active
+status: superseded in part — Retro commits nothing and pushes nothing, and no role writes to docs/solutions/.
 module: legion
 related_issues:
   - "LEGION-109"
@@ -105,9 +105,10 @@ resolving the conflict inside the retro commit.
 Rule for retro on a branch cut days ago: **do not edit a hot shared doc in place from an old base.**
 Before appending to a file another retro may have touched, check
 `jj log -r '<fork point>..main@origin & files("<path>")'`; if it lists anything, write a standalone
-note that cross-links the shared doc (this file) and let the next docs sweep fold it in. Retro now
-commits nothing and pushes nothing. After any push, read `legion gh -- pr view <n> --json
-mergeable`, and again a minute later (`UNKNOWN` is GitHub still computing).
+note that cross-links the shared doc (this file) and let the next docs sweep fold it in. The
+`--summary '~docs/solutions'` check that guards the approval says nothing about mergeability —
+run `legion gh -- pr view <n> --json mergeable` after the push, and again a minute later
+(`UNKNOWN` is GitHub still computing).
 
 ## Related
 

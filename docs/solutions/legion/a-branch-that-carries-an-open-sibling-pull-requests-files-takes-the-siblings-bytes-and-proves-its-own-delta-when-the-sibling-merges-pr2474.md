@@ -6,7 +6,7 @@ tags:
   - forward-merge
   - conflicts
 date: 2026-10-31
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: skills/legion-worker
 related_issues:
   - "sjawhar/legion#2474"
@@ -16,7 +16,7 @@ related_issues:
 - While the sibling is open, every main edit to its files conflicts your branch too.
   Never resolve those files by hand: take the sibling's own merge, or run the sibling's own script, and `cmp` the result against the sibling's head.
 - When the sibling merges, restore every one of its paths from `main@origin` in one forward merge.
-  First `cmp` main's copy against the copy you carried; then re-apply only your named changes, and show the diff of those files against main equals the diff the reviewer approved (with no reviewer step, the diff the last step passed).
+  First `cmp` main's copy against the copy you carried; then re-apply only your named changes, and show the diff of those files against main equals the diff the reviewer approved.
 - Before you push that merge, list `jj diff --from main@origin --name-only` outside `.legion/`: it names only your own files.
 
 ## Evidence

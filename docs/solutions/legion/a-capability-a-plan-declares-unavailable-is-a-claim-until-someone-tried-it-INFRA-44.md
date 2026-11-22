@@ -8,7 +8,7 @@ tags:
   - handoff
   - e2e
 date: 2026-10-20
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: skills/legion-worker
 related_issues:
   - "INFRA-44"
@@ -19,9 +19,9 @@ related_issues:
 
 - **Write "not attempted" or attempt it.** A plan may route around a capability it has not got,
   but it must say which of the two it is doing. "X cannot run here" with no recorded attempt is a
-  claim wearing a constraint's clothes, and no later phase re-tests it — where the planner comes
-  before the implementer, the planner's sentence becomes the implementer's surface choice, the
-  implementer's surface choice becomes the pull request body's, and the body is what a human reads.
+  claim wearing a constraint's clothes, and no later phase re-tests it — the planner's sentence
+  becomes the implementer's surface choice, the implementer's surface choice becomes the pull
+  request body's, and the body is what a human reads.
 - **The phase that pays is the implementer.** A proof surface the plan rules out is a proof the
   implementer cites instead of drives, which is the weaker of the two and the one the skill asks
   it not to settle for.

@@ -1,5 +1,5 @@
 ---
-title: "A forward merge after retro reinstalls when main bumped the lockfile, keeps both changelog insertions, and still owes the reviewer's approval of the new head where the task has a reviewer step"
+title: "A forward merge after retro reinstalls when main bumped the lockfile, keeps both changelog insertions, and still runs test, review and a second retro"
 category: legion
 tags:
   - forward-merge
@@ -10,7 +10,7 @@ tags:
   - second-retro
   - legion-handoffs
 date: 2026-10-09
-status: active
+status: superseded in part — The READY route and its READY_UNREVIEWED_CHANGE refusal are deleted, and the merger reads the pull request and merges the head itself. Retro commits nothing and pushes nothing, and no role writes to docs/solutions/. An approval moves the issue to its task's next step (accepting in the default steps), and retro starts once the task's last step passes.
 module: packages/pi-legion/CHANGELOG.md, bun.lock, .legion handoffs
 related_issues:
   - "LEGION-634"
@@ -18,7 +18,7 @@ related_issues:
   - "LEGION-605"
 ---
 
-# A forward merge after retro reinstalls when main bumped the lockfile, keeps both changelog insertions, and still owes the reviewer's approval of the new head where the task has a reviewer step
+# A forward merge after retro reinstalls when main bumped the lockfile, keeps both changelog insertions, and still runs test, review and a second retro
 
 Extends docs/solutions/legion/a-conflict-round-that-changes-the-fingerprint-is-a-counted-review-round-and-its-approval-starts-a-second-retro-LEGION-578.md.
 That record is the conflict round whose fingerprint changes. This one is the other case it names,
@@ -40,12 +40,15 @@ a forward merge after retro whose fingerprint is unchanged, and what the round s
   Now an entry is a fragment file of its own
   (`packages/<pkg>/.changes/unreleased/pr<number>-<Kind>-<YYYYMMDD-HHMMSS>.yaml`), so this
   conflict is gone.
-- **A forward merge after retro keeps the issue in `merging` and starts no new pass through the
-  daemon's table.** On the conflict the daemon asks the implementer to merge the base forward and
-  push, and the merger merges nothing until the merge lands. Where the task has a reviewer step,
-  the reviewer is asked to approve the new head, and the merger merges only after that approval.
-  No second retro runs unless the issue moves back to an earlier step. Retro commits nothing and
-  pushes nothing, so no retro commit sits above the merged-forward head.
+- **An unchanged fingerprint is a confirmation for the tester and the reviewer, and still a full
+  pass through the daemon's table.** The daemon moves the issue to implementing on the conflict,
+  the implementer merges and completes, the tester re-runs the bare gates and completes, the
+  reviewer records the equal fingerprint and completes with `approved` (no thermonuclear pass, no
+  new GitHub review), and the table's `Reviewing` + `TriggerReviewApproved` → `Retro` edge starts
+  the implementer on retro again. There is no confirmation edge that goes to the merger directly.
+  The second retro writes only what the round taught, as a new file, edits none of the first
+  retro's, re-reads `mergeable` before committing, and brings the body's `Size` and `Chain` lines
+  up to date for its commit.
 - **Before sjawhar/legion#2354, the head that merged could not carry `.legion/<issue>/`.** On a
   daemon older than LEGION-605's READY refusal, the human merge gate refused such a head too. The
   repository's own `skills/legion-retro/SKILL.md` made the removal retro's last commit
@@ -54,8 +57,8 @@ a forward merge after retro whose fingerprint is unchanged, and what the round s
   `docs/solutions/` commit, pushed with CI in full). A worker whose installed plugin predated it
   was told so by its architect and did it by hand, publishing the final head and
   `jj diff --from <approved head> --to <final head> --summary` to the reviewer, the merger and the
-  architect, so the reviewer approved at the final head and READY named it. A handoff is a Dispatch
-  record now, retro commits and pushes nothing, and the merger merges the branch's head.
+  architect, so the reviewer approved at the final head and READY named it. A handoff is a record
+  on the Dispatch issue now, retro deletes nothing, and the approved head is the head READY names.
 
 ## Evidence
 

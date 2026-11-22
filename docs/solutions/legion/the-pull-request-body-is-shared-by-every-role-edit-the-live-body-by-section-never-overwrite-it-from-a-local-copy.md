@@ -9,7 +9,7 @@ tags:
   - gh-pr-edit
   - e2e-line
 date: 2026-09-15
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: skills/legion-worker (PR body and merge-queue discipline)
 related_issues:
   - "LEGION-179"
@@ -22,11 +22,11 @@ related_issues:
 
 The implementer writes the READY-format body when the pull request opens and keeps a local copy
 of it (`--body-file`). Later rounds ask the implementer to update a few lines — the `CI` line to
-the new head's runs, `Threads`, `Thermo`, `Fast-follow`. By then a tester that ran before has
-written its own `E2E (tester)` line into the live body on GitHub, and the reviewer may have too.
-Re-running `legion gh -- pr edit --body-file <the local copy>` would have replaced the tester's
-line with the implementer's stale `<pending the tester>` — silently, with no diff anyone reviews.
-The reviewer's approval then refused a head whose `E2E (tester)` line was missing.
+the new head's runs, `Threads`, `Thermo`, `Fast-follow`. By then the tester has written its own
+`E2E (tester)` line into the live body on GitHub, and the reviewer may have too. Re-running
+`legion gh -- pr edit --body-file <the local copy>` would have replaced the tester's line with
+the implementer's stale `<pending the tester>` — silently, with no diff anyone reviews, and the
+reviewer's approval refuses a head whose `E2E (tester)` line is missing.
 
 ## The rule
 
