@@ -599,7 +599,7 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 	// redo work that is already pushed (dispatch://INFRA-714 R8). A session the launcher could not
 	// look up was not deleted, and a store may hold it still, so its words say neither that it was
 	// lost nor that no store holds it.
-	const readFirst = "Read your issue and the committed handoffs in your workspace before you continue. " +
+	const readFirst = "Read your issue and the handoffs recorded on it before you continue. " +
 		"Then tell the architect named above what you found, unless you are your tree's root architect."
 	switch c.SessionLost {
 	case "":

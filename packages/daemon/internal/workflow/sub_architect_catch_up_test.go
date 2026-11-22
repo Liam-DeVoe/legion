@@ -171,7 +171,7 @@ func TestARootsCatchUpNamesOnlyTheAcceptancesItsArchitectOwns(t *testing.T) {
 	const root = "the tree of LEGION-1 at generation 1 as the daemon records it now; start or resume it as your role says"
 	const child = "the issues under LEGION-2, which you own, at generation 2 as the daemon records them now; start or resume your issue as your role says"
 	awaiting := func(base, keys string) string {
-		return base + "; in accepting, waiting for your acceptance, which no worker gives: " + keys + " (read the evidence, then sign_off or request_backward_move)"
+		return base + "; in accepting: " + keys + " (where its task holds acceptance:owner, the acceptance is yours and no worker gives it: read the evidence, then sign_off or request_backward_move; a step acceptance with no key is its fresh agent's)"
 	}
 	accepting := func(child *record.Issue) { child.Phase, child.Status = phase.Accepting, "needs_review" }
 	for _, tc := range []struct {

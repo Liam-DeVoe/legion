@@ -191,7 +191,7 @@ func lastCatchUp(t *testing.T, pool *pgxpool.Pool) record.CatchUp {
 func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) {
 	const base = "the tree of LEGION-1 at generation 1 as the daemon records it now; start or resume it as your role says"
 	awaiting := func(keys string) string {
-		return base + "; in accepting, waiting for your acceptance, which no worker gives: " + keys + " (read the evidence, then sign_off or request_backward_move)"
+		return base + "; in accepting: " + keys + " (where its task holds acceptance:owner, the acceptance is yours and no worker gives it: read the evidence, then sign_off or request_backward_move; a step acceptance with no key is its fresh agent's)"
 	}
 	for _, tc := range []struct {
 		name                    string
