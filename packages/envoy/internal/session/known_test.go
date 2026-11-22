@@ -247,8 +247,9 @@ func knownBucketGrant() []string {
 // bucket's lookup once, rather than again until its context ends (bus.EnsureKeyValue's resends),
 // which the row counts. And that one attempt ends within twice its wait (knownBucketOpenWait),
 // the bound the listener's start pays for a bucket it may not open: a request of the row's own,
-// whose deadline is set before the open begins at twice that wait, is still waiting when the open
-// returns.
+// sent once the server has refused the open's lookup, with a deadline twice that wait from then,
+// is still waiting when the open returns. A stall of this process before the open sends its
+// lookup counts on neither side.
 func TestAKnownSessionStoreOpensItsDeniedBucketOnceTheGrantArrives(t *testing.T) {
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, "nothing.this.store.uses")
@@ -261,10 +262,25 @@ func TestAKnownSessionStoreOpensItsDeniedBucketOnceTheGrantArrives(t *testing.T)
 		t.Fatalf("connect as the user whose grant does not carry the bucket: %v", err)
 	}
 	t.Cleanup(counting.Close)
+	// The open runs on its own goroutine, so the row can start the bounding request once the server
+	// has refused the open's lookup: the open's wait began when it sent that lookup, before the
+	// refusal, so the bound starts no earlier than the open's own wait.
+	type opened struct {
+		known *KnownSessions
+		err   error
+	}
+	open := make(chan opened, 1)
+	go func() {
+		known, err := OpenKnownSessions(t.Context(), counting,
+			WithKnownSessionReplicas(1),
+			WithKnownSessionLogger(slog.New(slog.NewTextHandler(&lockedWriter{}, nil))),
+			withKnownSessionRetry(time.Hour, time.Hour))
+		open <- opened{known, err}
+	}()
+	waitFor(t, "the server to refuse the open's lookup", refused.refusedLookup)
 	// The bounding request goes to a subject the user may not publish to: the server drops it as
 	// it drops the open's lookup, so nothing answers it and it waits until its deadline, where a
-	// request to a subject nobody serves is answered at once (no responders). It is in flight before
-	// the open begins: the row waits for the server's refusal of it.
+	// request to a subject nobody serves is answered at once (no responders).
 	bound, endBound := context.WithTimeout(context.Background(), 2*knownBucketOpenWait)
 	defer endBound()
 	bounding := make(chan error, 1)
@@ -272,17 +288,14 @@ func TestAKnownSessionStoreOpensItsDeniedBucketOnceTheGrantArrives(t *testing.T)
 		_, err := counting.RequestWithContext(bound, refusalBound, nil)
 		bounding <- err
 	}()
-	waitFor(t, "the server to refuse the bounding request", refused.refusedBound)
-	counted, err := OpenKnownSessions(t.Context(), counting,
-		WithKnownSessionReplicas(1),
-		WithKnownSessionLogger(slog.New(slog.NewTextHandler(&lockedWriter{}, nil))),
-		withKnownSessionRetry(time.Hour, time.Hour))
+	result := testwait.Receive(t, "the open over a bucket its user may not open to return", open)
 	select {
 	case err := <-bounding:
-		t.Fatalf("the open returned after a request whose deadline, set before the open began, was twice the open's %s wait had ended (%v): the listener's start waits on this open before it opens /v1",
+		t.Fatalf("the open returned after a request whose deadline, twice the open's %s wait from the server's refusal of its lookup, had ended (%v): the listener's start waits on this open before it opens /v1",
 			knownBucketOpenWait, err)
 	default:
 	}
+	counted, err := result.known, result.err
 	if err != nil {
 		t.Fatalf("open the counted store over a bucket its user may not open: %v", err)
 	}
@@ -371,7 +384,8 @@ const knownLookupSubject = `"$JS.API.STREAM.INFO.KV_` + bus.KnownSessionBucket +
 // names, so the server refuses it after every publish the connection sent before it.
 const refusalMark = "session.test.refusal-mark"
 
-// refusalBound is the subject of the request that bounds the open, which the server refuses too.
+// refusalBound is the subject of the request that bounds the open, which the server refuses too;
+// a refusal of it counts as no lookup.
 const refusalBound = "session.test.open-bound"
 
 // refusals counts the publishes the server refused a connection, from the permissions violations
@@ -382,7 +396,6 @@ type refusals struct {
 	mu      sync.Mutex
 	lookups int
 	marked  bool
-	bounded bool
 }
 
 func (r *refusals) handle(_ *nats.Conn, _ *nats.Subscription, err error) {
@@ -396,16 +409,14 @@ func (r *refusals) handle(_ *nats.Conn, _ *nats.Subscription, err error) {
 		r.lookups++
 	case strings.Contains(err.Error(), `"`+refusalMark+`"`):
 		r.marked = true
-	case strings.Contains(err.Error(), `"`+refusalBound+`"`):
-		r.bounded = true
 	}
 }
 
-// refusedBound reports whether the server has refused the request that bounds the open.
-func (r *refusals) refusedBound() bool {
+// refusedLookup reports whether the server has refused a lookup of the bucket.
+func (r *refusals) refusedLookup() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.bounded
+	return r.lookups > 0
 }
 
 // after is how many lookups of the bucket the server refused conn before it refused a publish to
