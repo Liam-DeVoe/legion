@@ -415,6 +415,13 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// names one, for the reason the verdict is in it: the workflow commits its refusal of a step it
 	// may not name (RETURN_REFUSED) as processed, so the same fail naming another step must be a
 	// fact of its own. A completion naming none keeps the key it had before returnTo existed.
+	//
+	// Who completed is in the key by its role, and by its claim's agent where that is not the role
+	// (completionWho): two claims of one issue can hold one role — the agent of a key on a step of
+	// another role, beside that role's own claim of an earlier version of the plan — and the same
+	// report from each is a fact of its own, so the workflow's refusal of the one recorded under the
+	// key never answers the other's completion as its duplicate. A role's own claim keeps the key
+	// it had.
 	reported, received := req.Commit, "at commit "+req.Commit
 	if recordBacked {
 		reported, received = req.HandoffID, fmt.Sprintf("naming handoff record %s (%s version %d)", req.HandoffID, word, req.HandoffVersion)
@@ -423,7 +430,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	if position.task != "" {
 		counted = position.task + ":" + counted
 	}
-	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%s:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, issue.Phase, counted, reported, req.Verdict)
+	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%s:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, completionWho(grant), issue.Phase, counted, reported, req.Verdict)
 	returnTo := 0
 	if req.ReturnTo != nil {
 		returnTo = *req.ReturnTo
@@ -467,6 +474,17 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	}
 	s.writeAnswer(w, r, AnswerHandoffComplete, http.StatusOK, HandoffCompleteResponse{})
 	return
+}
+
+// completionWho is who completed, as a completion's key names it (answerCompletion): the grant's
+// role, and `@<agent>` after it where the grant's claim is an agent of another name than the role,
+// a keyed agent on that role's step.
+func completionWho(grant credential.Grant) string {
+	who := string(grant.Role)
+	if _, agent, ok := grant.Claim.Cut(); ok && string(agent) != string(grant.Role) {
+		who += "@" + string(agent)
+	}
+	return who
 }
 
 // returnToRefusal holds a completion's returnTo to its rule, and is nil when the completion

@@ -217,7 +217,8 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "(PLAN_RATING_REQUIRED, PLAN_RATING_UNEXPECTED or PLAN_RATING_INPUT). " +
   "The daemon refuses " +
   "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
-  "write this phase's handoff), " +
+  "write this phase's handoff), HANDOFF_NOT_THE_STEPS_WORKER (another claim of your role works the step: end this turn without " +
+  "completing), " +
   "HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row names, because the phase was entered " +
   "again while your turn ran, and nothing was recorded. End this turn without completing. The task of the entry the phase is on is owed to " +
   "this claim, and the daemon sends it by itself. That task is work of its own: do what it asks at the head it names and complete it with a " +

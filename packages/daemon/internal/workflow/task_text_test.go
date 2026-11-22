@@ -40,7 +40,7 @@ func lastStart(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) st
 // version n, through the completion route (intake.ApplyFact), which writes the role's phases row.
 func completes(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, word string, n int) {
 	t.Helper()
-	fact := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: role, Claim: claim.Token(string(role) + "-claim"),
+	fact := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: role, Claim: workerOr(t, pool, "LEGION-208", role, claim.Token(string(role)+"-claim")),
 		Summary: "done", Commit: "head", HandoffRecord: word + "-" + string(rune('0'+n)), HandoffVersion: n}
 	if role == claim.RoleTester {
 		fact.Verdict = "pass"
@@ -214,7 +214,7 @@ func TestATaskNamesTheNewReportOfAStepThatRanAgain(t *testing.T) {
 		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		completes(t, pool, engine, claim.RolePlanner, "plan", 1)
 		completes(t, pool, engine, claim.RoleImplementer, "implement", 1)
-		if result := applyFacts(t, pool, engine)("fail-1", failedTest(root.Key, 1, "test-1")); result.Refusal != nil {
+		if result := applyFacts(t, pool, engine)("fail-1", failedTest(t, pool, root.Key, 1, "test-1")); result.Refusal != nil {
 			t.Fatalf("the tester's fail naming step 1 was refused: %+v", result.Refusal)
 		}
 		planner := lastStart(t, pool, root.Key, claim.RolePlanner)

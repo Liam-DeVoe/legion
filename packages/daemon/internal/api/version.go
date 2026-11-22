@@ -3132,8 +3132,12 @@ package api
 // take a claim's token in a new member, `claim` (api.ClaimRequest), a claim of the issue that
 // holds the role the body names: the issue and the role reach the claim that works the role's
 // step, and the other claim of that role a notice can name was out of the controller's reach. A
-// plugin sends it only when it names one, since a daemon below 222 refuses an unknown member. From
-// this entry the last number of answers.go's SupportedContracts is
+// plugin sends it only when it names one, since a daemon below 222 refuses an unknown member.
+// `POST /legion/v1/handoff/complete` refuses, at every contract, a completion from a claim of the
+// role that does not work the role's step the record names, `HANDOFF_NOT_THE_STEPS_WORKER`, and
+// the same report from two claims of one role is two completions, so neither is answered
+// `HANDOFF_ALREADY_RECORDED` for the other's. From this entry the last number of answers.go's
+// SupportedContracts is
 // `api.strandedTokenContract`, and `deploymentRolesContract` stays 221.
 // (This entry takes 222, the lowest number above the base's 221 (the entry above) that no other
 // open pull request declared: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head, by the

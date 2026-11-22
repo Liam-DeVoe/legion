@@ -1082,6 +1082,19 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	if err != nil {
 		return intake.Result{}, err
 	}
+	// Two claims of one issue can hold one role — the agent of a key on a step of another role,
+	// beside that role's own claim of an earlier version of the plan — and the role's row names the
+	// one that works its step (record.WorkerClaim). A completion from the other is no report of
+	// the step: taken, it would move the issue and write its own claim on the row, and every later
+	// start and message of the step would reach it. It is refused before anything is written, and
+	// left unspent, so the same report applies should a later entry of the step give it to that
+	// claim. A row that runs no step of the plan names no worker, and a completion that names no
+	// claim, from a route before the claim was carried, is judged by its role as before.
+	if row.StepTask != "" && row.Claim != "" && fact.Claim != "" && fact.Claim != row.Claim {
+		return intake.Result{Refusal: refused("HANDOFF_NOT_THE_STEPS_WORKER", fmt.Sprintf(
+			"%s is a claim of the %s of %s, and %s works its step: only that claim's completion reports the step; this completion changed nothing",
+			fact.Claim, fact.Role, issue.Key, row.Claim)).Refusal, Unspent: true}, nil
+	}
 	// The route judged the entry this completion is of on its own read of the role's row, before
 	// this lock (api's answerCompletion). An entry raised between that read and this transaction —
 	// a move back and the phase entered again, or a re-admission's promotion — would otherwise take

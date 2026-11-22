@@ -43,13 +43,30 @@ func deploymentEngine() *Engine { return withDeployment(returnEngine()) }
 // stepHead is the commit every completion of these tests reports.
 const stepHead = "0123456789abcdef0123456789abcdef01234567"
 
+// workerOr is the claim role's phases row of key names on the step it runs, the claim a real
+// route's grant carries (the step's worker), or fallback where the row runs no step or names no
+// claim: a completion from any other claim of the role is refused (HANDOFF_NOT_THE_STEPS_WORKER).
+func workerOr(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role, fallback claim.Token) claim.Token {
+	t.Helper()
+	var token string
+	if err := pool.QueryRow(t.Context(), `select coalesce((select claim from phases
+		where issue = $1 and role = $2 and step_task <> '' and claim <> ''), '')`, key, string(role)).Scan(&token); err != nil {
+		t.Fatalf("read the worker on %s's %s step: %v", key, role, err)
+	}
+	if token == "" {
+		return fallback
+	}
+	return claim.Token(token)
+}
+
 // stepReports applies role's completion of key at its generation 1 with verdict ("" for none),
-// summary and returnTo (0 for none), as the route hands it to the engine, and fails the test on a
-// refusal; handoffRecord is the handoff record it names ("" for none).
+// summary and returnTo (0 for none), as the route hands it to the engine, from the step's worker
+// (workerOr), and fails the test on a refusal; handoffRecord is the handoff record it names (""
+// for none).
 func stepReports(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, role claim.Role, verdict, summary, handoffRecord string, returnTo int) {
 	t.Helper()
-	fact := intake.HandoffComplete{Generation: 1, Issue: key, Role: role, Claim: claim.Token(string(role) + "-claim"), Summary: summary, Commit: stepHead,
-		Verdict: verdict, HandoffRecord: handoffRecord, HandoffVersion: 1, ReturnTo: returnTo}
+	fact := intake.HandoffComplete{Generation: 1, Issue: key, Role: role, Claim: workerOr(t, pool, key, role, claim.Token(string(role)+"-claim")),
+		Summary: summary, Commit: stepHead, Verdict: verdict, HandoffRecord: handoffRecord, HandoffVersion: 1, ReturnTo: returnTo}
 	if result := applyFacts(t, pool, engine)(string(role)+"-"+verdict+"-"+handoffRecord+"-"+summary, fact); result.Refusal != nil {
 		t.Fatalf("the %s's completion of %s was refused: %+v", role, key, result.Refusal)
 	}
