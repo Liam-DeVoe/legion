@@ -102,10 +102,9 @@ Dispatch carries the approval to a new version in two cases.
 The first is a version whose text is exactly the text of the version they approved, with no ask
 block in it decided since, such as an accidental edit undone exactly. The second is a version
 whose every change is one Dispatch carries an approval over: a reading added, changed or removed
-inside a decision or an answered ask, a server-owned attribute of an ask block, or the write of
-Dispatch's decisions step, which moves answered asks and decisions into the spec's `## Decisions`
-part. In both cases Dispatch records an `approved` review in their name at that version, the
-daemon reopens the gate and sends `design-approved`, and you request nothing.
+inside a decision or an answered ask, or a server-owned attribute of an ask block. In both cases
+Dispatch records an `approved` review in their name at that version, the daemon reopens the gate
+and sends `design-approved`, and you request nothing.
 When the spec does not read Approved at such a version, request approval as after any change.
 Each step records its own document: the `spec` step the issue's primary document, and the
 `criteria` step its Verification document. So `register_gate` names the step and that step's own

@@ -547,10 +547,10 @@ func storeKinds() []StoreKind {
 			              and k.state = 'answered'))`,
 	}, {
 		Name: "block_move", MovedBy: movedWithAsks, Tuples: 1, Assumed: 1 * sizingWindowDays,
-		Driver: "assumed at one a day, since the one writer of a moved_to out of a block is the decisions step's" +
-			" conversion, which moves each section and ask block of a decisions document an earlier release wrote" +
-			" into its issue's spec once, a backlog no table dates: the moved address's moved_to, its node and" +
-			" placement being a block's, which the block terms count",
+		Driver: "assumed at one a day, since the one writer of a moved_to out of a block was the conversion an" +
+			" earlier release ran, which moved each section and ask block of a decisions document into its issue's" +
+			" spec once, a backlog no table dates: the moved address's moved_to, its node and placement being a" +
+			" block's, which the block terms count",
 	}, {
 		Name: "decision", MovedBy: movedWithAsks, Tuples: 5, Assumed: 10 * sizingWindowDays,
 		Driver: "assumed at 10 a day, since production writes no agent's decision before the asks child ships and a" +

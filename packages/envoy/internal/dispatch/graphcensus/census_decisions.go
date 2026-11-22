@@ -441,9 +441,10 @@ var askPastBound = `
 
 // askUnmarked counts every other asks row that names no node and that member, a predicate over
 // the row and askDocuments, makes one of a kind's own population: a row a process of the release
-// before wrote and the decisions step's backfill owes, which graph_edges' old arms answer, a class
-// of its own and no difference (projection.unmarked). So an ask kind whose every row is unmarked
-// holds rows still, and is no kind nothing of which is written yet (KindReport.Empty).
+// before wrote and the backfill's asks pass owes (backfillAsks), which graph_edges' old arms
+// answer, a class of its own and no difference (projection.unmarked). So an ask kind whose every
+// row is unmarked holds rows still, and is no kind nothing of which is written yet
+// (KindReport.Empty).
 func askUnmarked(member string) string {
 	return `
 		select count(*) from asks k` + askDocuments + `

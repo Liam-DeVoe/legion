@@ -82,8 +82,8 @@ type projection struct {
 	pastBound string
 	// unmarked counts the rows of the kind's table that name no node and are no difference: an
 	// asks or ask_followers row a process of the release before wrote, which graph_edges' old
-	// arms answer until the decisions step's backfill or catch-up marks it. It is a full
-	// `select count(*)` of the rows of the kind's own population - an ask's
+	// arms answer until the backfill's ask passes mark it (backfillAsks, backfillAskFollowers). It
+	// is a full `select count(*)` of the rows of the kind's own population - an ask's
 	// anchor counts the unmarked asks that name a document to anchor to, and its answer those
 	// that hold one - so a kind whose every row is unmarked is no empty kind (KindReport.Empty).
 	// The row side reads marked rows alone, and the census reports the count as a class of its
@@ -194,9 +194,9 @@ type StoreReport struct {
 	// restore by design, and the moved set is a finding the driver that watches it holds to zero.
 	Dangling   DanglingReport
 	Collisions []Collision
-	// Decisions is what the decisions step's third phase still owes (DecisionsCensus), set by the
-	// census command from docs' reader of the decisions documents' sections, nil where no caller
-	// read it. It refuses nothing.
+	// Decisions is what is left of the decisions documents an earlier release converted
+	// (DecisionsCensus), set by the census command from docs' reader of the decisions documents'
+	// sections, nil where no caller read it. It refuses nothing.
 	Decisions *DecisionsCensus
 	// VersionRenders is the census of the versions version_renders holds (VersionRenderCensus),
 	// set by the census command from docs' renderer, nil where no caller read it. A version whose

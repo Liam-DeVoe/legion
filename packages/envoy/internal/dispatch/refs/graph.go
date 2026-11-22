@@ -1056,11 +1056,10 @@ func loadIssueNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 	return rows.Err()
 }
 
-// RetiredDecisionsSlug is the slug of an issue's decisions document, which the decisions step
-// retires: the address `dispatch://KEY/artifact/<this slug>` of a
-// retired one resolves to the issue KEY, as every retired document's address does
-// (loadArtifactNodes). It is the one place the server spells that slug: api refuses a new
-// document that would take it.
+// RetiredDecisionsSlug is the slug of an issue's decisions document, which an earlier release
+// retired: the address `dispatch://KEY/artifact/<this slug>` of a retired one resolves to the
+// issue KEY, as every retired document's address does (loadArtifactNodes). It is the one place
+// the server spells that slug: api refuses a new document that would take it.
 const RetiredDecisionsSlug = "decisions-md"
 
 // DecisionsDocumentOf is the FROM and WHERE of a read of the issue's decisions document while it

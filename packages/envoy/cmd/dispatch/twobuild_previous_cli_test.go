@@ -58,6 +58,15 @@ func withoutTheEightAskAttributes(markdown string) string {
 // wrote, keeps on each ask's opening line the state its node holds, and the answerer and time
 // where answered, and nothing more; the live text serves that version, character for character,
 // with none of the eight.
+//
+// The previous build must be the release that retired the decisions documents
+// (dispatch://INFRA-1150) or a later one, as this build's deploy order requires: such a build
+// writes an ask's node with its row, so the wait below for the first ask's node passes at once,
+// and every asks row the test reads names its node. Against an older previous build, which writes
+// asks rows with no node, the test is red at this head: this build states such a row on its node
+// only at its next boot's backfill, so the first ask's node never holds the previous build's answer
+// within the wait, and this build's answer, decline and resolve go into the rows alone
+// (asks.Settle), so no version keeps a state on any of the four opening lines.
 func TestThePreviousReleasesCLIRequestsApprovalOverDecidedAsksOnceTheFleetIsOneBuild(t *testing.T) {
 	ctx := context.Background()
 	builds := newTwoBuilds(t)
@@ -72,8 +81,8 @@ func TestThePreviousReleasesCLIRequestsApprovalOverDecidedAsksOnceTheFleetIsOneB
 	fourth := settledAskOf(t, previous, issue, "fourth")
 	answerThrough(t, previous, first, "Ship", "Ship the first now.")
 	waitForNoSettlementOwed(t, ctx, builds, spec)
-	// This build's decisions step catches the previous build's answer up onto the ask's node while
-	// both serve (ruling E1), which every version this build writes then reads it from.
+	// The previous build states its answer on the ask's node as it writes the row, which every
+	// version this build writes then reads it from.
 	for deadline := time.Now().Add(90 * time.Second); ; time.Sleep(time.Second) {
 		if state, _, _ := askNodeAnswerOf(t, ctx, builds, first); state == asks.StateAnswered {
 			break

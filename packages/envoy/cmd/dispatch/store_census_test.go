@@ -378,6 +378,61 @@ func baseBuildOf(t *testing.T, commit, variable string) string {
 	return binary
 }
 
+// baseRelease is the envoy-dispatch binary of the base release, which the Verification
+// document's preamble builds once for each head from BASELINE_SHA, stamped with that commit, at
+// $TMPDIR/base-dispatch. It builds nothing: a test of this tag compares this head with that one
+// build, and a binary this helper built would be another. It fails the test where the binary is
+// not there, never skips it, since a skipped comparison with the previous release reads as one
+// that held.
+func baseRelease(t *testing.T) string {
+	t.Helper()
+	dir := os.Getenv("TMPDIR")
+	if dir == "" {
+		t.Fatal("TMPDIR is unset, so the base release at $TMPDIR/base-dispatch cannot be found; build it as the Verification document's preamble does")
+	}
+	binary := filepath.Join(dir, "base-dispatch")
+	info, err := os.Stat(binary)
+	if err != nil {
+		t.Fatalf("the base release %s cannot be read: %v; build it from BASELINE_SHA as the Verification document's preamble does", binary, err)
+	}
+	if info.IsDir() || info.Mode()&0o111 == 0 {
+		t.Fatalf("the base release %s is no executable file", binary)
+	}
+	return binary
+}
+
+// previousBuildSigningKey is the one DISPATCH_SIGNING_KEY both builds carry: a process whose key
+// a live peer does not share refuses to start (processes.Register).
+const previousBuildSigningKey = "previous-build-answer-signing-key"
+
+// headBuildStamp is the commit this head is stamped with for the test, which no base release
+// carries, so the two processes serve two builds as a roll has them (processes.Process.Commit).
+const headBuildStamp = "1150115011501150115011501150115011501150"
+
+// basebuildAgentSession is the agent's session whose writes the tests of this tag make through the
+// shared agent bearer (asAgentSession).
+const basebuildAgentSession = "ses_basebuild_agent"
+
+// asAgentSession sends body, a write the agent's session makes through the shared agent bearer,
+// naming that session as its actor, to p, and fails unless p answers status.
+func asAgentSession(t *testing.T, p *dispatchProcess, method, path string, body map[string]any, status int) httpAnswer {
+	t.Helper()
+	body["actor"] = map[string]string{"kind": "session", "id": basebuildAgentSession}
+	answer := p.send(t, method, path, encodeJSON(t, body), agentBearer())
+	if answer.status != status {
+		t.Fatalf("the agent's %s %s: %s, want %d", method, path, answer, status)
+	}
+	return answer
+}
+
+// agentUpload uploads content as the document name of issue, as the agent's session, and answers
+// its id.
+func agentUpload(t *testing.T, p *dispatchProcess, issue, name, content string) string {
+	t.Helper()
+	answer := asAgentSession(t, p, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", map[string]any{"name": name, "content": content}, http.StatusCreated)
+	return uploadedID(t, answer)
+}
+
 func gitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)

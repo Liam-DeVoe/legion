@@ -1261,10 +1261,10 @@ type Artifact struct {
 	// "" for every other document. It is set from the document's slug when the row is created, as
 	// Primary is, and no request field sets it; the one write that clears it is the document's
 	// retirement. A decisions document an earlier release stored answers its stored role,
-	// `decisions`, until the decisions step retires it. A document of
-	// an issue born converted carries no role in its row: its role is projected from the query
-	// value of its node (graphstore.QueryNode), `verification`, `plan` or `decisions`, the spec's
-	// `spec` projecting none (dispatch://INFRA-1253 R8, decision 2 of its plan).
+	// `decisions`, until it is retired. A document of an issue born converted carries no role in
+	// its row: its role is projected from the query value of its node (graphstore.QueryNode),
+	// `verification`, `plan` or `decisions`, the spec's `spec` projecting none
+	// (dispatch://INFRA-1253 R8, decision 2 of its plan).
 	Role      string    `json:"role,omitempty"`
 	CreatedBy Actor     `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`

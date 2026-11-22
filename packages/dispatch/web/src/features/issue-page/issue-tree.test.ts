@@ -2311,13 +2311,14 @@ test("an open question waits on the reader only where its turn is theirs", () =>
 
 // A Change is a comment a person anchored to a decision's words in the document its block stands
 // in. The fixture is the shape the Change control (`DecisionActions.tsx`) stored on a running
-// build of the checkpoint (preview of 29111db16c41), read with `Dispatch-Trees: 1`, moved where
-// this build's decisions step moves it: the decision is a `decision` block of the spec, which the
-// decisions read names by that block's address and answers as that one block, and the Change is
-// anchored in the spec, in the paragraph the decision's block holds, with the spec's id
-// (`api/anchors.go`'s `resolveAnchor`). A Change newer than the decision's words sits under the
-// decision, which then reads Change requested and waits on its agent, not on the reader; one
-// older than its words is no Change, and the decision waits for the reader's review.
+// build of the checkpoint (preview of 29111db16c41), read with `Dispatch-Trees: 1`, moved where an
+// earlier release's conversion of the decisions documents moved it: the decision is a `decision`
+// block of the spec, which the decisions read names by that block's address and answers as that
+// one block, and the Change is anchored in the spec, in the paragraph the decision's block holds,
+// with the spec's id (`api/anchors.go`'s `resolveAnchor`). A Change newer than the decision's
+// words sits under the decision, which then reads Change requested and waits on its agent, not on
+// the reader; one older than its words is no Change, and the decision waits for the reader's
+// review.
 test("a Change is drawn under its decision, which then waits on its agent", () => {
   // As the reads send them: the spec as the issue read lists it, the decision as the decisions
   // read answers it, the requirements its tie names and the decision's block as the blocks read

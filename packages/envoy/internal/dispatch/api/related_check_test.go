@@ -1048,9 +1048,9 @@ func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
 	fixture := newAskStateFixture(t, "PARTIAL")
 	fixture.answer(t, "twice", "alice", map[string]any{"selected": []string{"Brass"}})
 	retractedAnswer := fixture.answer(t, "closed", "alice", map[string]any{"selected": []string{"Steel"}, "text": "Steel pilots."})
-	// The retraction a release before's document settlement wrote, as the decisions step's
-	// catch-up states it (asks.Recorded): on the ask's node, which every read of an answer reads,
-	// and on its row, with the answer left only in its ask.answered event.
+	// The retraction a release before's document settlement wrote, as the boot's backfill states
+	// it off that release's row (asks.Recorded): on the ask's node, which every read of an answer
+	// reads, and on its row, with the answer left only in its ask.answered event.
 	retraction := model.AskResolution{
 		Kind:   "retracted",
 		Reason: "removed from the document in version 2",
@@ -1059,7 +1059,7 @@ func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
 	}
 	retracted := asks.Recorded(asks.StateResolved, nil, &retraction)
 	retracted.Who, retracted.At, retracted.Event = retraction.Actor, retraction.At, graphstore.NoEvent
-	settleAskAsTheCatchUp(t, fixture.database, fixture.asks["closed"], retracted)
+	settleAskRecorded(t, fixture.database, fixture.asks["closed"], retracted)
 	var results []model.SearchResult
 	for _, name := range []string{"twice", "closed"} {
 		var issueKey string

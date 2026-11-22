@@ -64,8 +64,8 @@ func owesBlockIndex(artifact string) string {
 // answeredAsk is true of the asks row k whose node states it answered now: the newest answer_state
 // tuple of the ask's node holds answered and asserts. The node holds the answer and the row is its
 // projection (graphstore's TupleAnswerState, asks.Settle), so a row a writer of the release before
-// answered counts once the step's backfill has stated its node, as docs' countDecisionStepOwed
-// reads the same answer. The read takes graph_tuples_values, keyed by the node and the kind.
+// answered counts once the backfill's asks pass has stated its node (backfillAsks). The read takes
+// graph_tuples_values, keyed by the node and the kind.
 var answeredAsk = `exists (
 		select 1 from (
 			select t.to_id, t.asserted from graph_tuples t

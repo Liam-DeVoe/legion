@@ -785,11 +785,6 @@ RULES = {
     f"{ENVOY}/cmd/cipherd/outage_test.go": [
         run(ENVOY, ["./cmd/cipher"], "cmd/cipherd/outage_test.go:323-325 cmdtest.BuildCommand . in ../cipher", mode="build")],
     f"{ENVOY}/cmd/cipherd/multiprocess_test.go": reads((f"{ENVOY}/internal/cipher/store/migrations/*", "cmd/cipherd/multiprocess_test.go:501-502 countMigrations globs ../../internal/cipher/store/migrations/*.up.sql")),
-    # c-document-gone's test reads this tree's href table through `..`; it is a basebuild test,
-    # which no job of ci.yaml compiles today, so the rule binds the run that first does.
-    f"{ENVOY}/cmd/dispatch/document_gone_test.go": reads(
-        (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-href-references.json",
-         "cmd/dispatch/document_gone_test.go:301 os.ReadFile of ../../internal/dispatch/text/testdata/dispatch-href-references.json")),
     f"{ENVOY}/cmd/dispatch/main_test.go": reads((f"{ENVOY}/internal/dispatch/store/migrations/*", "cmd/dispatch/main_test.go:822")),
     # The two-build suite's CLI half runs this tree's dispatch command with bun (currentCLI,
     # :42-46), which loads bin/dispatch.ts and its imports: envoy-client's sources and

@@ -23,6 +23,22 @@ import (
 // sections are decisions no longer the design.
 const replacedPartTitle = "Replaced"
 
+// headingLevel is a heading node's level, 0 for a node that is no heading.
+func headingLevel(node *pmdoc.Node) int {
+	if node.Type != "heading" {
+		return 0
+	}
+	switch level := node.Attrs["level"].(type) {
+	case int:
+		return level
+	case int64:
+		return int(level)
+	case float64:
+		return int(level)
+	}
+	return 1
+}
+
 // decisionSection is one section of a decisions document: its heading block, the heading's level
 // and title, whether it stands under `## Replaced`, and the top-level blocks after the heading
 // that it holds, in document order.

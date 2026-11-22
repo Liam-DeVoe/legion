@@ -120,9 +120,9 @@ func isLifecycleWrite(ctx context.Context) bool {
 //
 // A retired document (RetireDocument), which takes no new text, is written nothing, and nothing is
 // refused for it: the other documents are written, so a close or a reopen is never refused for a
-// document the decisions step retired. The list leaves retired documents out (issueDocumentIDs),
-// and each document's retirement is read again under its owner's lock before it is written
-// (retiredUnderOwnerLock), so a retirement that commits after the list is read is read there too.
+// retired document. The list leaves retired documents out (issueDocumentIDs), and each document's
+// retirement is read again under its owner's lock before it is written (retiredUnderOwnerLock), so
+// a retirement that commits after the list is read is read there too.
 //
 // An answered ask, which the close's final sweep passes, is written into its copies alone, never
 // into its own block, which settlement keeps in step with its row. While another build serves,
@@ -539,7 +539,7 @@ func (s *Service) followLatestVersion(ctx context.Context, tx pgx.Tx, artifactID
 	if err != nil {
 		return skipUnreadableVersion(artifactID, latest.Number, err)
 	}
-	return s.carryStandingApproval(ctx, tx, artifactID, latest.Number, renderedTree{tree: tree, markdown: latest.markdown}, *newest, decisionStepCases{}, eventSink(ctx))
+	return s.carryStandingApproval(ctx, tx, artifactID, latest.Number, renderedTree{tree: tree, markdown: latest.markdown}, *newest, eventSink(ctx))
 }
 
 // issueAskStateWrites is what WriteIssueAskStates writes into one document of an issue, read off
@@ -572,8 +572,8 @@ type issueAskStateWrites struct {
 // version keeps (keptAskState), written from the node of the block's ask, or of a copy's source,
 // as this transaction's commit leaves it (askNodeAnswers, onItsNode), as settlement writes them.
 // wanted hands back the row as it stands for a block it shows as the store holds it - the close's
-// final sweep, a closed issue's rebuild - and that row can be ahead of its node where a process of
-// the release before wrote it, before the decisions step's catch-up states it. An ask wanted hands
+// final sweep, a closed issue's rebuild - and that row can be ahead of its node where it names no
+// node, a row an older build wrote that the boot's backfill has not stated yet. An ask wanted hands
 // back in another state than its row's is one whose change the caller plans after this write in
 // the same transaction - the close's withdrawal (api's planWithdrawal) - and is written as wanted
 // gives it. It changes nothing in tree.

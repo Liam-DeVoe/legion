@@ -146,7 +146,7 @@ func TestACriterionWrittenThroughEditsOnTheTreeArtifactReadsBackInTheTreeRead(t 
 // document_rooms row naming the issue's tree from its first write, which is stored in the room,
 // none under the spec's own id; the spec is a query node of query spec; and the issue holds its
 // decisions query node, a document with an empty version 1 whose role reads decisions, which
-// INFRA-1150's decisions step does not select (decisions_documents()). One created while a process
+// decisions_documents() does not select. One created while a process
 // of the release before is live is created as today, with no tree and no document_rooms row
 // (decision 7 of dispatch://INFRA-1253's plan).
 func TestAnIssueIsBornConvertedOnlyWhileEveryLiveProcessListsTheIssueRoom(t *testing.T) {
@@ -203,7 +203,7 @@ func TestAnIssueIsBornConvertedOnlyWhileEveryLiveProcessListsTheIssueRoom(t *tes
 		t.Fatalf("read the decisions documents: %v", err)
 	}
 	if selected != 0 {
-		t.Errorf("the decisions step selects %d documents of %s, want none", selected, converted.Key)
+		t.Errorf("decisions_documents() selects %d documents of %s, want none", selected, converted.Key)
 	}
 
 	holdIssuesUnconverted(t, database)

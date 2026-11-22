@@ -166,10 +166,10 @@ func TestTheCensusHoldsAnAgentWhoseOnlyActsAreADecisionAndAReading(t *testing.T)
 // A person whose answer was taken off an ask stays a node of the store, as an author does: their
 // node was made by the answer (asks.Settle), and a node is history and never goes. bob, who writes
 // nothing else, answers alice's ask, and the ask is then opened again through the one writer of
-// its answer state (asks.Settle with asks.Reopened, the change an issue's reopen and the decisions
-// step's catch-up make), which takes the answer off the node and the row. No row names bob after
-// the reopen; the store's log still holds his answer, and the census reads zero differences
-// before and after, the person kind counting alice, who asked, and bob both times.
+// its answer state (asks.Settle with asks.Reopened, the change an issue's reopen makes), which
+// takes the answer off the node and the row. No row names bob after the reopen; the store's log
+// still holds his answer, and the census reads zero differences before and after, the person kind
+// counting alice, who asked, and bob both times.
 func TestTheCensusHoldsAPersonWhoseAnswerWasTakenOff(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)

@@ -133,9 +133,7 @@ text is the text you approved, such as an edit undone exactly, or when every cha
 of these, none of which changes a decision:
 
 - a reading an agent wrote, changed or removed inside a decision or an answered ask;
-- an attribute of an ask block that the server owns, which holds no answer;
-- what Dispatch's decisions step wrote when it moved answered asks and decisions into the spec's
-  `## Decisions` part.
+- an attribute of an ask block that the server owns, which holds no answer.
 
 Dispatch then records an approval in your name at that version, with a reason that begins
 `Carried forward from the approval of version`. The chip reads `Approved` at that version, and

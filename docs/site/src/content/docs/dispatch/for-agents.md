@@ -246,12 +246,11 @@ stay on the ask. Such a version carries no approval of its own. Dispatch carries
 across the version an answer, a resolve, a decline or a reopen writes, and not across a close's.
 Any other later version leaves the approval stale, unless Dispatch carries the approval to it.
 Dispatch carries it when that version's text is the approved text, or when every change in
-it is a reading inside a decision or an answered ask, an ask block attribute the server owns, or
-the write of Dispatch's decisions step. Dispatch then records the approval in the person's name at
-the new version, so request nothing for it. When an answer means text outside the block must
-change, rewrite that text and request approval again with a one-sentence `--summary` naming what
-changed since the earlier approval; the card shows that approval and a **Show diff** control that
-carries the detail.
+it is a reading inside a decision or an answered ask, or an ask block attribute the server owns.
+Dispatch then records the approval in the person's name at the new version, so request nothing for
+it. When an answer means text outside the block must change, rewrite that text and request
+approval again with a one-sentence `--summary` naming what changed since the earlier approval; the
+card shows that approval and a **Show diff** control that carries the detail.
 
 ## Whose turn it is
 

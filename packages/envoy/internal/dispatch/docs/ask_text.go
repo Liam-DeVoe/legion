@@ -154,9 +154,9 @@ func (s *Service) storedAskedText(ctx context.Context, artifactID string, stored
 // opened yet, which the text routes showed with no state before they took the attributes off, and
 // so does every block of a tree that repeats an ask block's id, which settlement reads no block
 // under (askNodes). The asks rows say which ask indexes which block, and the node holds the
-// answer, as the Decisions read's entries read it (R3): while a process of the release before
-// answers an ask whose node the decisions step's catch-up has not stated that answer on yet, both
-// read the ask as its node holds it. Everything is read in a transaction of the read's own that
+// answer, as the Decisions read's entries read it (R3): an ask whose row holds an answer its node
+// does not - a row an older build wrote, which names no node until the boot's backfill states it -
+// reads in both as its node holds it. Everything is read in a transaction of the read's own that
 // writes nothing and locks no row.
 func (s *Service) textAsks(ctx context.Context, artifactID string, tree *pmdoc.Node) ([]model.TextAsk, error) {
 	var blocks []*pmdoc.Node
@@ -285,8 +285,8 @@ var askNodeAnswerKinds = []string{
 // askNodeAnswers reads, in tx, what the node of each ask ids names holds of its answer, by ask
 // id, from the node's tuples as they stand now (graphstore.CurrentTupleRead), as the Decisions
 // read's entries read them (api's decisionEntriesRead). An ask whose node holds no answer_state -
-// one a process of the release before wrote, before the decisions step states it - is absent, and
-// reads open (textAskOf), as an entry does. An ask whose answer state the ledger that queues tx's
+// one an older build wrote, before the boot's backfill states it - is absent, and reads open
+// (textAskOf), as an entry does. An ask whose answer state the ledger that queues tx's
 // writes has planned a change of (Ledger.PlanSettle) - a reopen's restore, planned before the
 // reopen writes its asks' blocks (WriteRestoredAsks, WriteIssueAskStates) - reads as that change
 // leaves its node (plannedAskNodeAnswer): a block written in the same transaction shows the node

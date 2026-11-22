@@ -196,8 +196,7 @@ func followedBy(askID, sessionID string, asserted bool, who model.Actor, at time
 
 // followChange is followedBy marked as changing the ask's node (graphstore.Tuple's Changes): the
 // relation a follow or an unfollow states, which a write made for a run names the ask's node
-// changed by. CatchUpFollower states what another build's follow or unfollow did, which no run
-// made, through followedBy alone.
+// changed by.
 func followChange(askID, sessionID string, asserted bool, who model.Actor, at time.Time, event int64) graphstore.Tuple {
 	relation := followedBy(askID, sessionID, asserted, who, at, event)
 	relation.Changes = true

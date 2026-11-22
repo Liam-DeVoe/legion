@@ -22,9 +22,8 @@ import (
 // none, and graph_edges' old arms answer it until these two passes state the row on the node and
 // mark it, on the store's backfill contract: each walks only the rows its marker does not mark,
 // states every fact of a row in the transaction that marks it, and reads no marked row, so a run
-// after another, or beside a live server, does only the rows still owed. They are the boot step's
-// first phase after the object nodes (docs' decision step), and `backfill-graph-store` runs them
-// too.
+// after another, or beside a live server, does only the rows still owed. They run after the object
+// nodes in every boot's run of the whole backfill, and `backfill-graph-store` runs them too.
 //
 // Each batch takes the store's lock order (api/inbox_read.go's markInboxReadThreads): it reads
 // what it takes without a lock, then takes the owner row of every ask of the batch, each once and

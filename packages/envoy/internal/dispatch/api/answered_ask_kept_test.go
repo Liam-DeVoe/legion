@@ -30,9 +30,9 @@ const (
 // the spec when it is read back, and the ask's node holds no removal. The same three writes by the
 // person are taken, whether they are made at a browser or through the person's own token, which
 // holds the person scope that the refusal reads (docs.WithPersonScope), and each leaves one
-// asserted removed_by from the ask's node to that person, so the decisions step never writes the
-// block back. The person then writes the block back, and the settlement that binds the ask's row
-// to it retracts the removal.
+// asserted removed_by from the ask's node to that person, so the removal reads as the person's.
+// The person then writes the block back, and the settlement that binds the ask's row to it
+// retracts the removal.
 func TestAnAgentCannotDropAnAnsweredAsk(t *testing.T) {
 	handler, database := blockAskHandler(t)
 	personalToken := personalTokenHolding(t, database, model.ScopePerson)

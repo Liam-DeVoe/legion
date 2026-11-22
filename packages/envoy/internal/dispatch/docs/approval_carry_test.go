@@ -172,7 +172,7 @@ func TestAnAskAgreesWithItsNodeShowingNoAnswerStateOrTheRowsOwn(t *testing.T) {
 		}
 	}
 
-	// A process of the release before answered own, and the decisions step's catch-up has not yet
+	// An older build answered own in a row that names no node, and the boot's backfill has not yet
 	// stated that answer on own's node, which still holds it open: every write on a fleet of one
 	// build writes a block's kept attributes from the node (keptAskState, onItsNode), which keep no
 	// state of an open ask, so a block showing what the node holds agrees, as one showing the row's

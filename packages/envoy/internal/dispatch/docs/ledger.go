@@ -23,14 +23,13 @@ import (
 
 // Ledger is what the document operations joined to one database transaction produce until it
 // ends: the events they generate, their writes to live documents (see liveWrite) and the versions
-// they write. Join, and joinAtOnce for the decisions step's restore of one issue, are the only ways
-// to join a transaction, so an operation that has one always has its ledger. Commit ends the
-// transaction the way every caller must: it runs the transaction's write queue, records the
-// writes' authors and takes out the authors its versions listed in the transaction itself,
-// commits, marks the in-flight credits its versions listed consumed, records the writes' latest
-// edit source in their rooms, and publishes the writes to their rooms, in that order. Discard,
-// which callers defer right after Join, drops whatever a transaction that did not commit left
-// behind.
+// they write. Join is the only way to join a transaction, so an operation that has one always has
+// its ledger. Commit ends the transaction the way every caller must: it runs the transaction's
+// write queue, records the writes' authors and takes out the authors its versions listed in the
+// transaction itself, commits, marks the in-flight credits its versions listed consumed, records
+// the writes' latest edit source in their rooms, and publishes the writes to their rooms, in that
+// order. Discard, which callers defer right after Join, drops whatever a transaction that did not
+// commit left behind.
 //
 // A joined transaction runs in two phases. Its read phase takes the locks it needs - advisory
 // locks, none of which gives it a transaction id - reads, and does every operation's document
@@ -50,19 +49,16 @@ import (
 // no `tx` and marks its ledger `ownTx` instead: a settlement (settleRoomWithin) and the block-id
 // backfill (backfillBlockIDs) are the two. A settlement's ledger queues its writes all the same
 // (writer), and the settlement runs the queue before it commits; the backfill's sets no writer,
-// so its writes run at once (write, store.RunWrite). The decisions step's restore of one issue
-// (DecisionStep.restoreIssue) is the third writer of a transaction of its own: it joins it with
-// joinAtOnce, whose ledger carries that `tx`, so Commit commits it, and sets no writer, so its
-// writes run at once, in the order it makes them, as the backfill's do. Those are the ledgers
-// document operations run under: every operation that writes a document either joins its caller's
-// transaction or runs in the transaction of one of those three writers. A background pass with no
-// document operation queues its writes on a bare ledger (queueWrites).
+// so its writes run at once (write, store.RunWrite). Those are the ledgers document operations run
+// under: every operation that writes a document either joins its caller's transaction or runs in
+// the transaction of one of those two writers. A background pass with no document operation
+// queues its writes on a bare ledger (queueWrites).
 type Ledger struct {
 	service *Service
 	tx      pgx.Tx
 	// writer is the transaction whose writes this ledger queues: the joined transaction, a
 	// writer's own transaction, or a background pass's (queueFor). It is nil on a ledger whose
-	// writes run at once: the block-id backfill's and the decisions step's restore's (joinAtOnce).
+	// writes run at once: the block-id backfill's.
 	writer pgx.Tx
 	// ownTx marks a ledger whose operations run inside a transaction of the writer's own, which
 	// no caller joined: a settlement's (settleRoomWithin) and the block-id backfill's
@@ -1235,8 +1231,7 @@ func (l *Ledger) deferAnnouncement(artifactID string, version persistence.Versio
 // the advisory locks the appends took and the transaction still holds, so a listener that hears
 // it reads a head at or past that version, and hears nothing of a transaction that rolls back.
 // It is queued on the write phase's batch (commitWrites), the last statement after every append
-// it announces, so the transaction spends no round trip of its own on it; a transaction whose
-// ledger queues nothing (joinAtOnce) runs it at once, after those appends.
+// it announces, so the transaction spends no round trip of its own on it.
 func (l *Ledger) announceAppends(ctx context.Context) error {
 	if len(l.announced) == 0 {
 		return nil

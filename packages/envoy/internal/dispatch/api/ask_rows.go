@@ -279,9 +279,9 @@ func askNodeStateOf(ask string) string {
 // (openApprovalAsksStatement) - picks the open ask aliased ask: its row's state open, which the
 // partial index asks_open (0001) holds, so the index picks the candidates out of every ask
 // stored, and its node's state open (askNodeStateOf), which decides (R3). An ask its node holds
-// anything but open is never picked. The two agree outside a roll; inside its window the row is
-// the newer of the two, written by a process of the release before and not yet stated on the node
-// by the decisions step's catch-up, so an ask that process answered is left out until then.
+// anything but open is never picked. The two agree: the one writer of an answer state writes both
+// in one transaction (asks.Settle), and askNodeStateOf reads the row's own state where the row
+// names no node.
 func askOpenOf(ask string) string {
 	return ask + `.state = '` + asks.StateOpen + `' and ` + askNodeStateOf(ask) + ` = '` + asks.StateOpen + `'`
 }

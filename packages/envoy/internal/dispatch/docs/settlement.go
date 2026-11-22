@@ -1425,7 +1425,7 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 			document, version, fragment := write.fragment.document, write.result.version, write.fragment
 			if err := carryAfterRender(ctx, tx, document, version.Number, func() error {
 				return s.carryApproval(ctx, tx, document, version,
-					renderedTree{tree: fragment.tree, markdown: fragment.markdown, offsets: fragment.offsets}, decisionStepCases{}, eventSink(ctx))
+					renderedTree{tree: fragment.tree, markdown: fragment.markdown, offsets: fragment.offsets}, eventSink(ctx))
 			}); err != nil {
 				return err
 			}

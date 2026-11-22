@@ -15,22 +15,22 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// settleAskAsTheCatchUp writes change on the ask askID as the decisions step's catch-up states a
-// write a process of the release before made (docs' applyCaughtUpEvent): through the one writer of
-// an ask's answer state (asks.Settle), on the ask's node and its row, in a transaction of its own.
-func settleAskAsTheCatchUp(t *testing.T, database *store.Store, askID string, change asks.Change) {
+// settleAskRecorded writes change, a whole recorded answer state (asks.Recorded), on the ask askID
+// through the one writer of an ask's answer state (asks.Settle), on the ask's node and its row, in
+// a transaction of its own: a state no route writes, as an earlier release's writer left it.
+func settleAskRecorded(t *testing.T, database *store.Store, askID string, change asks.Change) {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin the catch-up's write: %v", err)
+		t.Fatalf("begin the settle of ask %s: %v", askID, err)
 	}
 	defer tx.Rollback(ctx)
 	if _, err := asks.Settle(ctx, tx, askID, change); err != nil {
 		t.Fatalf("state the answer state of ask %s: %v", askID, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the catch-up's write: %v", err)
+		t.Fatalf("commit the settle of ask %s: %v", askID, err)
 	}
 }
 
@@ -47,12 +47,11 @@ func describedAnswer(answer *model.AskAnswer) string {
 // (specOpenQuestions) and a search hit's ask (attachAskStates). So does every read that picks asks
 // by their answer state: the issue's asks by state (listIssueAsksQueryOpen and
 // listIssueAsksQueryAnswered), the open asks of the issue's detail (the first of them) and the
-// Inbox (listInbox, askNodeStateOf). The node and the row differ only while a process of the
-// release before has written the row and the decisions step's catch-up has not yet stated that
-// write on the node: here the catch-up stated alice's answer on both (asks.Settle with
-// asks.Recorded), and then the release before's reopen wrote the row open again, alone. Each
-// reader answers alice's answer as the node holds it, the open questions and every read of open
-// asks leave the ask out, and the issue's answered asks hold it.
+// Inbox (listInbox, askNodeStateOf). Here alice's answer is stated on both the node and the row
+// (asks.Settle with asks.Recorded), and then the row alone is written open again, as a reopen of
+// a release before the store wrote it, so the two differ. Each reader answers alice's answer as
+// the node holds it, the open questions and every read of open asks leave the ask out, and the
+// issue's answered asks hold it.
 func TestEveryReadOfAnAnswerReadsTheAsksNodeNotItsRow(t *testing.T) {
 	handler, database, _ := blockAskHandlerWithDocuments(t)
 	issue, askID := seedBlockAsk(t, handler, "Readers of the ask node", "decision", transportAsk, "Which transport?")
@@ -61,7 +60,7 @@ func TestEveryReadOfAnAnswerReadsTheAsksNodeNotItsRow(t *testing.T) {
 	answer := model.AskAnswer{User: "alice", Selected: []string{"REST"}, Text: &words, At: time.Date(2026, 11, 21, 9, 30, 0, 0, time.UTC)}
 	change := asks.Recorded(asks.StateAnswered, &answer, nil)
 	change.Who, change.At, change.Event = model.Actor{Kind: "user", ID: "alice"}, answer.At, graphstore.NoEvent
-	settleAskAsTheCatchUp(t, database, askID, change)
+	settleAskRecorded(t, database, askID, change)
 	if tag, err := database.Pool.Exec(ctx, `update asks set state = 'open', answer = null where id = $1`, askID); err != nil || tag.RowsAffected() != 1 {
 		t.Fatalf("reopen the row of ask %s alone, as the release before writes it: %v", askID, err)
 	}
