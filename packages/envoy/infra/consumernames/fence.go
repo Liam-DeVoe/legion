@@ -10,24 +10,6 @@ import (
 	selection "github.com/sjawhar/envoy/consumernames"
 )
 
-// familyNames is the selection protocol of m's family as the family's creator configures it, in
-// the parts a consumer's check reads (selection.Names.Owns): the fixed name, the key's own check
-// and the metadata every consumer of the family carries (bus newFreshSessions, the listener's
-// durableNames, Dispatch's nameFreshly, the daemon's newDurableNames). member.Metadata is each
-// family's metadata as its creator writes it. A record's check is the library's own
-// (checkRecordFence).
-func familyNames(m member) *selection.Names {
-	config := selection.Config{
-		Prefix:   func(string) string { return m.Prefix },
-		Fixed:    func(string) string { return m.Fixed },
-		Metadata: func(string) map[string]string { return m.Metadata() },
-	}
-	if m.Family == familySession && m.SessionID == "" {
-		config.CheckKey = selection.CheckDurableKey
-	}
-	return selection.New(config)
-}
-
 // familyMember is logical's member of family (replayMember), refused as selection.ErrMalformedRecord
 // when logical is no logical name of a family, or of another family than family.
 func familyMember(family, logical string) (member, error) {
@@ -69,20 +51,14 @@ func restoredRecord(family, logical string, record selection.Record) bool {
 		return false
 	}
 	naming, err := selection.FamilyNaming(family, logical)
-	if err != nil {
-		return false
-	}
-	fixed := naming.Prefix(logical)
-	if naming.Fixed != nil {
-		fixed = naming.Fixed(logical)
-	}
-	return record.Current == fixed
+	return err == nil && record.Current == naming.Fixed(logical)
 }
 
 // deleteOwned deletes consumer name, which m's record or m's logical name names, only once the
-// server's info of it shows it is m's own (selection.Names.Owns of familyNames: the fixed name by
-// its name, any other by the metadata the family's consumers carry). One the server does not hold
-// is no error; one of another key is selection.ErrMalformedRecord and is not deleted.
+// server's info of it shows it is m's own (selection.OwnsFamily, the creators' owner check by the
+// family's own naming and metadata: the fixed name by its name, any other by the metadata the
+// family's consumers carry). One the server does not hold is no error; one of another key is
+// selection.ErrMalformedRecord and is not deleted.
 func deleteOwned(ctx context.Context, nc *nats.Conn, m member, name string) error {
 	info, err := consumerInfo(ctx, nc, notifications, name)
 	if err != nil {
@@ -97,7 +73,7 @@ func deleteIfOwned(ctx context.Context, nc *nats.Conn, m member, info *jetstream
 	if info == nil {
 		return nil
 	}
-	if err := familyNames(m).Owns(m.Logical, info); err != nil {
+	if err := selection.OwnsFamily(m.Family, m.Logical, info); err != nil {
 		return err
 	}
 	return deleteConsumer(ctx, nc, notifications, info.Name)

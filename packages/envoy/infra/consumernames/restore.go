@@ -345,8 +345,8 @@ func (rr *restoreRun) info(ctx context.Context, name string) (*jetstream.Consume
 }
 
 // delete deletes consumer name of the notification stream, which set's logical name names, once
-// its info shows it is that logical name's own (selection.Names.Owns of familyNames: the target,
-// the fixed name, by its name, a fresh name by the metadata its family's consumers carry), asked
+// its info shows it is that logical name's own (selection.OwnsFamily: the target, the fixed name,
+// by its name, a fresh name by the metadata its family's consumers carry), asked
 // again while no leader answers: a delete that landed unanswered reads as not found the next time,
 // which is no error. One of another key is refused (selection.ErrMalformedRecord) and not deleted.
 // The run's account (restoreLeft) records each name it deleted or found gone.
@@ -360,7 +360,7 @@ func (rr *restoreRun) delete(ctx context.Context, set restoreSetName, name strin
 		return err
 	}
 	if info != nil {
-		if err := familyNames(m).Owns(m.Logical, info); err != nil {
+		if err := selection.OwnsFamily(m.Family, m.Logical, info); err != nil {
 			return err
 		}
 	}
