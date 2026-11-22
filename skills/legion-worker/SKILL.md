@@ -29,6 +29,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
   - retro on the architect's answer to a defect it reported;
   - a pushing role whose second push still did not carry the pull request onto its commit.
 - Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on.
+- Another agent that needs an action (a stop, a retry, a suspension, a resume, a compaction or a fresh session) is the controller's to act on: ask it with a `dispatch comment` on that agent's issue that mentions its role, never with `envoy_publish` (`skill://legion-worker/references/findings.md#another-agent-that-needs-an-action`).
 - No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/pr-body.md`).
 - A released pod is not a stop. Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives.
 - When another role's topic answers 404, read its handoff with `dispatch handoff-read`.
@@ -63,5 +64,5 @@ They override this skill, except: no deferrals; the base merged forward only as 
 - A conflict, the daemon's merge-forward message, a need for the base, a retarget, a wrong pushed commit: `skill://legion-worker/references/conflicts-and-rewrites.md`.
 - A plan you write or review: `skill://legion-worker/references/plan-tests.md`.
 - Builds, tests, tools or a database in the pod: `skill://legion-worker/references/tools.md`; before you unpack or install what the image lacks: `skill://legion-worker/references/withheld-capability.md`.
-- A problem outside your issue, a to-do only a person may do, or a failed production check: `skill://legion-worker/references/findings.md`.
+- A problem outside your issue, a to-do only a person may do, another agent that needs an action, or a failed production check: `skill://legion-worker/references/findings.md`.
 - Text that reaches a person outside the company: `skill://outside-message`.

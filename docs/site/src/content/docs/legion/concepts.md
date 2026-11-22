@@ -581,11 +581,11 @@ next look. A time less than 60 seconds ahead becomes 60 seconds ahead, and a tim
 check's own bound starts no look of its own, because the look at that bound already stands.
 Nothing else wakes a check: no deploy run, no Dispatch `issue.deployed`, no Dispatch build and no
 daemon boot, and the daemon reads no deployment's production workflows at all.
-A look is bounded at two hours, and a look nobody reported — its two hours, a hold the operator,
-the controller or an architect put on the agent, or a claim that failed to start — starts the next
-look two hours later. A look that began before a pause of the project ended counts its two hours
-from the resume, or from its agent's last ready after the resume where that is later, and counts
-nothing while that agent is still starting.
+A look is bounded at two hours, and a look nobody reported — its two hours, a hold the operator
+or the controller put on the agent, or a claim that failed to start — starts the next look two
+hours later. A look that began before a pause of the project ended counts its two hours from the
+resume, or from its agent's last ready after the resume where that is later, and counts nothing
+while that agent is still starting.
 The whole check is bounded at `production_check_hours` (336, fourteen
 days, by default): the look at that bound is the last, and a `pending` there closes the check
 as not run, which the agent writes on the pull request. `legion state` prints how many checks

@@ -122,8 +122,11 @@ Handle each delivered wake by its row in `skill://legion-architect/references/wa
   red-team check; reply under its evidence comment with the issue that carries it. It changes the
   root spec only where it changes the Summary, a requirement, a check or the scope
   (`skill://legion-architect/references/design-gate.md`, "After approval").
-- Your tree's agents that need action, its failed CI runs and its pull requests that no merger
-  merges are yours, never a request to another session:
-  `skill://legion-architect/references/operations.md`.
+- An agent of your tree that needs an action (a stop, a retry, a suspension, a resume, a
+  compaction or a fresh session) is the controller's to act on: ask it with a `dispatch comment`
+  on that agent's issue that mentions its role, never with `envoy_publish`
+  (`skill://legion-architect/references/operations.md#an-agent-of-your-tree-that-needs-an-action`).
+- Your tree's failed CI runs and its pull requests that no merger merges are yours, never a
+  request to another session: `skill://legion-architect/references/operations.md`.
 - A tool a worker cannot get is a pull request to the worker image
   (`skill://legion-worker/references/tools.md`).

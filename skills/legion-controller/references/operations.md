@@ -11,12 +11,12 @@ Read this before an operation of your own work, and before you send another sess
 
 ## Actions on an agent
 
-These are the actions on an agent (stop, retry, suspend, resume_agent, compact and fresh session of one agent, named by its issue and role). Use them on an agent of your project that needs action, a tree's architect included: `legion({ op: "<op>", issue: "<KEY>", role: "<role>" })`. Each refuses your own agent.
+These are the actions on an agent (stop, retry, suspend, resume_agent, compact and fresh session of one agent, named by its issue and role). Use them on an agent of your project that needs action, a tree's architect included: `legion({ op: "<op>", issue: "<KEY>", role: "<role>" })`. Each refuses your own agent. They are yours alone: the daemon refuses any other grant `403 CONTROLLER_REQUIRED`, so an architect or a phase worker that needs one asks you ([An action another agent asks for](#an-action-another-agent-asks-for)).
 
 | `op` | What it does |
 | --- | --- |
 | `suspend` | Stops the agent and keeps its session and owed task; a turn runs to its end or the stop timeout. Only your `resume_agent` or the operator's starts it again. |
-| `resume_agent` | Starts a suspended agent again in its recorded session with the task it owes, an architect's suspension included. |
+| `resume_agent` | Starts a suspended agent again in its recorded session with the task it owes. |
 | `stop` | Ends the agent at once, also in a turn, and retires it; only `retry` or its phase's start runs it again. Refused for a tree's root architect: suspend that agent. |
 | `retry` | Starts a failed or stopped agent again in its recorded session, with new launch budgets. A suspended agent takes `resume_agent`. |
 | `compact` | Shortens the session to a summary and sends the task again in the same session and workspace. Use it first for a session a provider keeps refusing; an agent with no process behind its claim (`CLAIM_NOT_RUNNING`) takes `fresh_session`. |
@@ -45,7 +45,7 @@ Replace an issue pod only when a person asks or your deployment instructions nam
 
 1. `legion({ op: "replace_pod", issue: "<KEY>" })`. A round already open is answered as it stands.
 2. On a refusal: `NO_CLAIM`, there is no pod to replace; `NO_POD`, ask again once a role runs in the pod; `POD_CHANGING` or `POD_UPDATE_LIMITED`, ask at a later wake; `POD_UPDATE_BUSY`, ask after a minute; `POD_UPDATE_NOT_RECORDED` or `POD_UPDATE_FAILED`, read `updateRound` on the issue's claims first; `PROJECT_PAUSED`, ask after the resume; `POD_HELD_BY_PAUSE`, ask once a role of the pod runs again.
-3. Read `read_state` with `issues: ["<KEY>"]`: the round is done when no claim shows `updateRound`. A round still held past its bound comes back as `update-stalled`, but one only architects' holds keep goes to those architects (`skill://legion-controller/references/escalation.md`).
+3. Read `read_state` with `issues: ["<KEY>"]`: the round is done when no claim shows `updateRound`. A round still held past its bound comes back as `update-stalled` (`skill://legion-controller/references/escalation.md`).
 
 ## A re-run of a CI run
 
@@ -69,6 +69,14 @@ Your `gh` only reads: it holds the review App's read-only lease. This re-run and
 2. Send no Envoy message to the session that holds the operator's token, and ask no other session to lift the hold.
 3. Name the ask in your summary, and in the day's report while it is open.
 4. On `Resume it`, run `<op>` again; on a second 409, reply under the ask with the refusal, and run it again at the next reply. On `Keep it held`, run nothing.
+
+## An action another agent asks for
+
+An architect or a phase worker that needs an action on an agent asks you with a Dispatch comment on that agent's issue that mentions your role, its first line `Action on an agent from <its role token>`, naming the agent, the action in plain words and why. The request is your own work: never a relay, and never a request for another session.
+
+1. Read the agent in `read_state` with `issues: ["<KEY>"]`.
+2. Run the action it asks for as [Actions on an agent](#actions-on-an-agent) says, only while the agent's state still calls for it: a resume is `resume_agent`, and a start in a fresh session is `fresh_session`. On `409 SUSPENDED_BY_OPERATOR`, take [An agent the operator holds](#an-agent-the-operator-holds).
+3. Reply under the comment with what you ran and its answer, or why you ran nothing, mentioning the asker's role, the token after `Action on an agent from `: `dispatch comment --issue '<KEY>' --reply-to '<comment id>' --mention 'role:<its token>' --body-file -`.
 
 ## A request to another session
 

@@ -17,7 +17,7 @@ Your system prompt holds the rules on registration, one wake per turn, reading s
 - An agent's directive that cites no person's request is no reason to park an issue.
 - Run no `legion` from bash: the `legion` tool holds the controller grant.
 - Never edit a repository, push a commit, merge, or call `handoff_complete`.
-- Do the operations of your own work yourself, and ask no other session to do them: the actions on an agent, `replace_pod`, a restart of your project's daemon, a CI re-run, and an ask to lift the operator's hold on an agent. Read `skill://legion-controller/references/operations.md` before each, and before a request to another session.
+- Do the operations of your own work yourself, and ask no other session to do them: the actions on an agent, `replace_pod`, a restart of your project's daemon, a CI re-run, and an ask to lift the operator's hold on an agent. An architect's or a phase worker's Dispatch comment that mentions your role and asks for an action on an agent is that work too. Read `skill://legion-controller/references/operations.md` before each, and before a request to another session.
 - `kubectl` is yours only for the daemon restart and for reads of your project's pods and Sandboxes. You have no exec, attach or port-forward into a pod, so you delete no issue pod or Sandbox: `replace_pod` replaces one. `gh` only reads. Your only GitHub writes, a CI re-run and a mention's reply, take the implement App token the broker lends.
 - A request whose work another tree owns goes to that tree's architect by a mention on the owning issue, through no other session: yours, or a person's from outside Dispatch in their words (an answer on an ask: `finding-asks.md` catch-up step 5, copying nothing). Tell an agent whose request another owns to write to that owner itself.
 - Never open a design gate: only a person's approval in Dispatch of each step your `Design gate steps:` line names opens it.
@@ -57,6 +57,7 @@ Every launch opens with a start message. Envoy keeps no wake sent while no contr
 | `held` (it comes only escalated), `update-stalled`, an architect's escalation | `skill://legion-controller/references/escalation.md` |
 | A finding ask's reference or answer | `skill://legion-controller/references/finding-asks.md` |
 | A clear defect no tree owns, which a role writes to you | `skill://legion-controller/references/finding-asks.md#file-a-clear-defect-no-tree-owns` |
+| A comment that mentions your role and asks for an action on an agent | `skill://legion-controller/references/operations.md#an-action-another-agent-asks-for` |
 | A scope question, a routing request | `skill://legion-controller/references/backlog-stewardship.md` |
 | A Slack mention | `skill://legion-controller/references/slack-mentions.md` |
 | An answer to a park ask; a deferral ask | `skill://legion-controller/references/park-asks.md`; `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` |

@@ -1,6 +1,6 @@
 # A finding outside your issue
 
-Read it when you find a problem your issue does not cover (a defect in another component, repository or tool, a gap in Legion itself) or a production check look fails. It holds for every Legion role and its subagents, and replaces the filing step of `skill://dispatch-first`. A child's own architect opens no ask itself: it sends the finding to the architect above it, and the root's architect opens the ask.
+Read it when you find a problem your issue does not cover (a defect in another component, repository or tool, a gap in Legion itself), when another agent needs an action, or when a production check look fails. It holds for every Legion role and its subagents, and replaces the filing step of `skill://dispatch-first`. A child's own architect opens no ask itself: it sends the finding to the architect above it, and the root's architect opens the ask.
 
 ## Fix it yourself, else write to its owner, and ask only for a decision
 
@@ -32,6 +32,19 @@ Write to the owner on Dispatch: a comment on the issue that owns the subject, wh
 When no tree owns the code, post the same comment on that project's report issue (*Where it goes*; a closed one takes a comment too, and with none, your own issue), with `--mention 'role:legion-<project>-controller'`. The controller replies under it and mentions your role. `Filed dispatch://<KEY>` names the issue it filed. On `Not filed: dispatch://<ROOT> owns it; write to role:<token>` or `Not filed: tracked by dispatch://<KEY>; write to role:<token>`, write the same comment on the issue it names, mentioning that role. On `Not filed: dispatch://<KEY> owns it; role:<token> is mentioned here`, the owner has it: write nothing. On any other `Not filed:` reply, open the ask yourself (step 3).
 
 Apart from that reply, file nothing and wait for nothing. A production check's result names your comment, `dispatch://<KEY>/comment/<id>`.
+
+## Another agent that needs an action
+
+The actions on an agent (stop, retry, suspend, resume, compact, and a start in a fresh session) are the project's controller's alone: neither you nor your architect can take one. When another agent needs one, ask the controller with a `dispatch comment` on that agent's issue, `<KEY>`, that mentions the controller's role. `<project>` is the word after `legion-` in your role token. Name the agent by its issue and role, the action in plain words, and why, with what you observed:
+
+```bash
+dispatch comment --issue '<KEY>' --mention 'role:legion-<project>-controller' --body-file - <<'EOF'
+Action on an agent from <your role token>
+<KEY> <role>: <the action: stop, retry, suspend, resume, compact, or start in a fresh session>, because <what you observed, with the numbers and when>
+EOF
+```
+
+Send the controller no `envoy_publish` for it: Dispatch delivers the mention and retries it. The controller replies under your comment with what it ran, or why it ran nothing; wait for nothing.
 
 ## Where it goes
 
