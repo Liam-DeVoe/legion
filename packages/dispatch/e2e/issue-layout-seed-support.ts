@@ -325,7 +325,7 @@ export async function seedIssueWithDocuments(shape: IssueShape): Promise<SeededS
   }
   const blocked = children[1] ?? "";
   const done = children[children.length - 1] ?? "";
-  await patchIssue(blocked, { blocked_by: [children[0] ?? ""] });
+  await patchIssue(blocked, { needs: [children[0] ?? ""] });
   await patchIssue(done, { status: "done" });
 
   const verification = await createIssueArtifact(issue.key, {

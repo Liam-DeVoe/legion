@@ -17,7 +17,7 @@ import { authorText, HELP_LINES, pageChrome } from "./page-structure";
 import { ANSWER_LINES, BLOCKED_BY_REFUSALS, CONTROL_LABELS } from "./page-words";
 import { ROW_LINK } from "./row-references";
 import { firstUsable } from "./usable-control";
-import type { BlockedByWrite } from "./useIssueBlockedBy";
+import type { BlockedByWrite } from "./useIssueNeeds";
 
 /** The issues `value` names, in the order they were typed, with every repeat and blank dropped:
  *  what a reader types into the blocked-by editor as the model's own list. */
@@ -39,7 +39,7 @@ function issueKeysIn(value: string): readonly string[] {
  * stays open until Dispatch answers and says there what it refused - a key it has no issue
  * for, or the issue itself - in the page's own sentence with the key in it
  * (`BLOCKED_BY_REFUSALS`), with the keys the reader typed still in the box, so a refused
- * list is mended rather than retyped (`useIssueBlockedBy.ts`).
+ * list is mended rather than retyped (`useIssueNeeds.ts`).
  *
  * While that save is out nothing closes the editor: Cancel is held, and drawn so, and Escape is
  * refused, because a reader who closed it a moment before the refusal landed would be shown no
@@ -73,10 +73,10 @@ export function BlockedByControl({
   onEditing: (editing: boolean) => void;
   /** The title of the issue `key`, once Details has read it. */
   titleOf: (key: string) => string | undefined;
-  /** The write that saves the list (`useIssueBlockedBy`), which closes the editor on a landing. */
+  /** The write that saves the list (`useIssueNeeds`), which closes the editor on a landing. */
   write: BlockedByWrite;
 }): ReactNode {
-  const blockers = issue.blocked_by ?? [];
+  const blockers = issue.needs ?? [];
   const input = useRef<HTMLInputElement>(null);
   const control = useRef<HTMLButtonElement>(null);
   const row = useRef<HTMLDivElement>(null);

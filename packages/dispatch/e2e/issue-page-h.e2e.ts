@@ -346,7 +346,7 @@ test("Details opens on the properties and holds no conversation @phone", async (
       const urls = traffic.urls;
       const threeRef = `ref=${buildDispatchReference({ key: three, kind: "issue" })}`;
       const blocksRead = (url: string) =>
-        url.includes("/api/v1/references?") && url.includes("kind=blocked_by");
+        url.includes("/api/v1/references?") && url.includes("kind=needs");
       const titlesRead = (url: string) =>
         url.includes("/api/v1/reference-targets?") && url.includes(threeRef);
       // A link on GitHub is read through Dispatch's proxy (`web/src/api/client.ts`'s
@@ -1320,7 +1320,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     await expect(keys, "the refused list closed the editor").toBeVisible();
     await keys.fill(three);
     await blockedBy.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }).click();
-    await expect.poll(async () => (await getIssue(two)).blocked_by).toEqual([three]);
+    await expect.poll(async () => (await getIssue(two)).needs).toEqual([three]);
     await reopen(two);
     const blocker = detailsRow(page, PROPERTY_LABELS.blocked_by).getByRole("link", {
       exact: true,

@@ -97,8 +97,8 @@ import {
 import { architecture, offPageColours } from "./shared-controls-fixture";
 import { DetailsSlot } from "./slots/details";
 import { firstUsableIn, usableControl } from "./usable-control";
-import { blockedByRefusal } from "./useIssueBlockedBy";
 import { type IssueHeaderWrites, useIssueHeaderWrites } from "./useIssueHeaderWrites";
+import { blockedByRefusal } from "./useIssueNeeds";
 import { appClient, focusPastStaleness, restoreWindowFocus } from "./window-focus-fixture";
 
 const issue: IssueDetails = { ...marginIssue, last_seq: 250, status: "todo" };
@@ -158,7 +158,7 @@ async function readWhatWaits(
   else getReferences.mockResolvedValue(answer);
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   await act(() =>
-    queryClient.refetchQueries({ queryKey: ["references", "to", reference, "blocked_by"] })
+    queryClient.refetchQueries({ queryKey: ["references", "to", reference, "needs"] })
   );
 }
 
@@ -342,10 +342,10 @@ function rowAt(row: DetailsRow): HTMLElement {
 }
 
 /** How many times `getReferences` read what waits on `reference`, the Blocks row's read: the
- *  references of kind `blocked_by` that point at it. */
+ *  references of kind `needs` that point at it. */
 function blocksReads(getReferences: Mock<typeof api.getReferences>, reference: string): number {
   return getReferences.mock.calls.filter(
-    ([to, options]) => to === reference && options?.kind === "blocked_by"
+    ([to, options]) => to === reference && options?.kind === "needs"
   ).length;
 }
 
@@ -370,9 +370,9 @@ function issueNames(
   };
 }
 
-/** The edge by which the issue `key` waits on CORE-1, as this Dispatch answers the Blocks row's
- *  read (`getReferences` of kind `blocked_by`): of kind `needs`, unless a case names another, and
- *  `excerpt` is the title the edge carries. */
+/** The edge by which the issue `key` waits on CORE-1, as the Blocks row's read answers it
+ *  (`getReferences` of kind `needs`): of kind `needs`, unless a case names another, and `excerpt`
+ *  is the title the edge carries. */
 function waitingEdge(key: string, excerpt: string, kind: GraphEdge["kind"] = "needs"): GraphEdge {
   return {
     created_at: "2026-10-26T00:00:00Z",
@@ -389,7 +389,7 @@ function waitingEdge(key: string, excerpt: string, kind: GraphEdge["kind"] = "ne
   };
 }
 
-/** The `issue.updated` event of `key`, which waits on CORE-1 (`blocked_by`), titled `title`, that
+/** The `issue.updated` event of `key`, which waits on CORE-1 (`needs`), titled `title`, that
  *  moved the fields `changed`, at `seq` in the feed, as the feed hands it to the refresh: the
  *  payload as the server writes it - the issue after the write, flat, with what the write moved,
  *  and CORE-1 named in `references_changed`, since the edge into it moved - in the shape the
@@ -403,10 +403,10 @@ function waiterUpdated(
   const payload: Record<string, unknown> = {
     ancestors: [],
     assignee: null,
-    blocked_by: ["CORE-1"],
     changed,
     closed_at: null,
     key,
+    needs: ["CORE-1"],
     parent: null,
     project: "CORE",
     references_changed: [{ id: "CORE-1", kind: "issue" }],
@@ -443,7 +443,7 @@ test("the blocked-by editor stays open on a refusal and says what Dispatch refus
   const { patchIssue, restore } = stubIssueApi();
   patchIssue.mockImplementationOnce(() =>
     Promise.reject(
-      new ApiError(400, { code: "BLOCKED_BY_INPUT", error: "blocked_by issue CORE-9 not found" })
+      new ApiError(400, { code: "NEEDS_INPUT", error: "needs issue CORE-9 not found" })
     )
   );
   const { unmount } = renderDetails();
@@ -458,15 +458,11 @@ test("the blocked-by editor stays open on a refusal and says what Dispatch refus
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
 
     await waitFor(() =>
-      expect(patchIssue).toHaveBeenLastCalledWith(
-        "CORE-1",
-        { blocked_by: ["CORE-9"] },
-        keyedAttempt
-      )
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { needs: ["CORE-9"] }, keyedAttempt)
     );
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("There is no issue CORE-9.");
-    expect(alert).not.toHaveTextContent("blocked_by");
+    expect(alert).not.toHaveTextContent("needs issue");
     // The key is the reader's own text inside the page's sentence (c-plain-words).
     expect(within(alert).getByText("CORE-9")).toHaveAttribute("data-author-text");
     expect(
@@ -525,13 +521,13 @@ test("a blocked-by save the reader stopped says it may have been saved, and Save
     patchIssue.mockImplementation(() => saved.promise);
     await held.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(made + 1));
-    expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { blocked_by: ["CORE-9"] }, keyedAttempt);
+    expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { needs: ["CORE-9"] }, keyedAttempt);
     expect(
       patchIssue.mock.calls.at(-1)?.[2].key,
       "Save asked the stopped save again under its key"
     ).not.toBe(stoppedKey);
     // The new save lands, which closes the editor.
-    await act(async () => saved.resolve(narrowIssue({ ...issue, blocked_by: ["CORE-9"] })));
+    await act(async () => saved.resolve(narrowIssue({ ...issue, needs: ["CORE-9"] })));
     await waitFor(() =>
       expect(screen.queryByLabelText("Issues CORE-1 waits on")).not.toBeInTheDocument()
     );
@@ -567,7 +563,7 @@ test("a blocked-by save that fails without Dispatch's answer says the page's lin
       "data-author-text"
     );
 
-    const said = "blocked_by must list issue keys";
+    const said = "needs must list issue keys";
     patchIssue.mockRejectedValueOnce(new ApiError(400, { code: "INVALID_INPUT", error: said }));
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toBe(said));
@@ -588,7 +584,7 @@ test("a blocked-by save that fails without Dispatch's answer says the page's lin
 test("a blocked-by that is set can be changed and cleared from the panel", async () => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
-  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-2"] });
+  getIssue.mockResolvedValue({ ...issue, needs: ["CORE-2"] });
   const { unmount } = renderDetails();
 
   try {
@@ -603,11 +599,7 @@ test("a blocked-by that is set can be changed and cleared from the panel", async
     await user.paste("core-3");
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
     await waitFor(() =>
-      expect(patchIssue).toHaveBeenLastCalledWith(
-        "CORE-1",
-        { blocked_by: ["CORE-3"] },
-        keyedAttempt
-      )
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { needs: ["CORE-3"] }, keyedAttempt)
     );
     // The editor closes on a landing, and the written list is what the panel draws.
     await waitFor(() =>
@@ -621,7 +613,7 @@ test("a blocked-by that is set can be changed and cleared from the panel", async
     await user.clear(await screen.findByLabelText("Issues CORE-1 waits on"));
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
     await waitFor(() =>
-      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { blocked_by: [] }, keyedAttempt)
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { needs: [] }, keyedAttempt)
     );
   } finally {
     unmount();
@@ -680,7 +672,7 @@ test("the blocked-by editor refuses Cancel and Escape while the save is out", as
     ).toEqual([true, true]);
 
     // The answer closes it, which is the one thing that may.
-    saving.resolve(narrowIssue({ ...issue, blocked_by: ["CORE-9"] }));
+    saving.resolve(narrowIssue({ ...issue, needs: ["CORE-9"] }));
     await waitFor(() =>
       expect(screen.queryByLabelText("Issues CORE-1 waits on")).not.toBeInTheDocument()
     );
@@ -698,7 +690,7 @@ test("the blocked-by editor opened again draws no refusal from the attempt befor
   const { patchIssue, restore } = stubIssueApi();
   patchIssue.mockImplementationOnce(() =>
     Promise.reject(
-      new ApiError(400, { code: "BLOCKED_BY_INPUT", error: "blocked_by issue CORE-9 not found" })
+      new ApiError(400, { code: "NEEDS_INPUT", error: "needs issue CORE-9 not found" })
     )
   );
   const { unmount } = renderDetails();
@@ -755,7 +747,7 @@ test("closing Development keeps the blocked-by editor, its typed list and a refu
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith(
         "CORE-1",
-        { blocked_by: ["CORE-2", "CORE-9"] },
+        { needs: ["CORE-2", "CORE-9"] },
         keyedAttempt
       )
     );
@@ -767,7 +759,7 @@ test("closing Development keeps the blocked-by editor, its typed list and a refu
       "a closed Development still shows the blocked-by editor"
     ).toBeNull();
     saving.reject(
-      new ApiError(400, { code: "BLOCKED_BY_INPUT", error: "blocked_by issue CORE-9 not found" })
+      new ApiError(400, { code: "NEEDS_INPUT", error: "needs issue CORE-9 not found" })
     );
     await waitFor(() => expect(queryClient.isMutating()).toBe(0));
 
@@ -847,11 +839,11 @@ test("Details open with Development closed reads no GitHub link, title or Blocks
   const { getIssue, restore } = stubIssueApi();
   getIssue.mockResolvedValue({
     ...issue,
-    blocked_by: ["CORE-3"],
     external_links: [
       { kind: "github_pr", url: "https://github.com/acme/web/pull/7" },
       { url: "https://github.com/acme/web/issues/8" },
     ],
+    needs: ["CORE-3"],
   });
   // A reference with no head, so a pull request's read reads no checks after it.
   const githubRest = spyOn(api, "githubRest").mockImplementation(
@@ -1137,12 +1129,12 @@ test("on a closed issue, leaving the blocked-by editor hands the focus to the fi
       "Escape in the blocked-by editor of a closed issue that waits on none did not give the focus to Development's heading"
     ).toBe(screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }));
 
-    drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-3"] });
+    drawIssue(getIssue, queryClient, { ...issue, needs: ["CORE-3"] });
     await user.click(
       await screen.findByRole("button", { name: blockedByControlName("CORE-1", 1) })
     );
     await screen.findByLabelText("Issues CORE-1 waits on");
-    drawIssue(getIssue, queryClient, { ...closedIssue, blocked_by: ["CORE-3"] });
+    drawIssue(getIssue, queryClient, { ...closedIssue, needs: ["CORE-3"] });
     await user.keyboard("{Escape}");
     expect(
       document.activeElement,
@@ -1160,20 +1152,22 @@ test("on a closed issue, leaving the blocked-by editor hands the focus to the fi
 test("each refusal of a blocked-by list is the page's sentence about the key it names", () => {
   const refused = (code: string, error: string) => new ApiError(400, { code, error });
   expect(
-    blockedByRefusal(refused("BLOCKED_BY_INPUT", "blocked_by issue CORE-9 not found"), "CORE-1", [
+    blockedByRefusal(refused("NEEDS_INPUT", "needs issue CORE-9 not found"), "CORE-1", [
       "CORE-2",
       "CORE-9",
     ])
   ).toEqual({ key: "CORE-9", words: "not_found" });
   expect(
-    blockedByRefusal(refused("BLOCKED_BY_INPUT", "CORE-1 cannot be blocked by itself"), "CORE-1", [
+    blockedByRefusal(
+      refused("NEEDS_INPUT", "needs names CORE-1 itself: an issue cannot wait on itself"),
       "CORE-1",
-    ])
+      ["CORE-1"]
+    )
   ).toEqual({ key: "CORE-1", words: "itself" });
   const many = keysFrom2(MAX_ISSUE_BLOCKERS + 1);
   expect(
     blockedByRefusal(
-      refused("BLOCKED_BY_INPUT", "blocked_by is 1 over the 20-item limit (21/20)"),
+      refused("NEEDS_INPUT", "needs is 1 over the 20-item limit (21/20)"),
       "CORE-1",
       many
     )
@@ -1187,14 +1181,14 @@ test("each refusal of a blocked-by list is the page's sentence about the key it 
 
 // A list that would make the issue wait on itself through the issues it waits on, its parent or
 // its children is refused as `DEPENDENCY_CYCLE`, whose message names the field by its wire token
-// (`CORE-1 would wait on itself through blocked_by and parent links`). It is said in the page's
+// (`CORE-1 would wait on itself through needs and parent links`). It is said in the page's
 // words as the other refusals are, with the issue the server names as the reader's own text; a
 // chain too long for the server to follow names none.
 test("a blocked-by list that would make a loop is the page's sentence about the issue it names", () => {
   const refused = (error: string) => new ApiError(409, { code: "DEPENDENCY_CYCLE", error });
   expect(
     blockedByRefusal(
-      refused("CORE-1 would wait on itself through blocked_by and parent links"),
+      refused("CORE-1 would wait on itself through needs and parent links"),
       "CORE-1",
       ["CORE-7"]
     )
@@ -1215,7 +1209,7 @@ test("a blocked-by list that would make a loop is the page's sentence about the 
     `An issue can wait on at most ${MAX_ISSUE_BLOCKERS} issues.KEY`,
   ]);
   for (const sentence of sentences) {
-    expect(sentence).not.toMatch(/blocked_by|_/u);
+    expect(sentence).not.toMatch(/\bneeds\b|_/u);
   }
 });
 
@@ -1224,7 +1218,7 @@ test("a blocked-by list that would make a loop is the page's sentence about the 
 test("the blockers never fold", async () => {
   const { getIssue, restore } = stubIssueApi();
   const blockers = keysFrom2(MAX_ISSUE_BLOCKERS);
-  getIssue.mockResolvedValue({ ...issue, blocked_by: blockers });
+  getIssue.mockResolvedValue({ ...issue, needs: blockers });
   const { unmount } = renderDetails();
 
   try {
@@ -1250,7 +1244,7 @@ test("the blockers never fold", async () => {
 
 // What waits on the issue is read from the references that point at it, which another issue's
 // write moves: the Blocks row is read again on the event of an issue that starts waiting on this
-// one, as the backlink panels are (`api/event-refresh.ts`'s rule for `blocked_by`).
+// one, as the backlink panels are (`api/event-refresh.ts`'s rule for `needs`).
 test("Details' Blocks is read again when another issue starts waiting on this one", async () => {
   const { restore } = stubIssueApi();
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
@@ -1276,7 +1270,7 @@ test("Details' Blocks is read again when another issue starts waiting on this on
     edges = [waitingEdge("CORE-5", "Ship the release")];
     refreshQueries(
       queryClient,
-      eventRefreshTargets(waiterUpdated("CORE-5", "Ship the release", ["blocked_by"], 4), "alice")
+      eventRefreshTargets(waiterUpdated("CORE-5", "Ship the release", ["needs"], 4), "alice")
     );
 
     await waitFor(() =>
@@ -1302,7 +1296,7 @@ test("Details' Blocks is read again when another issue starts waiting on this on
 // Blocks draws each title from a names read of the waiting issues' addresses, as Blocked by
 // draws its own, so the rename of an issue that waits on this one reads that title again
 // (`api/event-refresh.ts`'s `namesReadsNaming`). The title an edge of what waits on the issue
-// carries is not read again by a rename, which moves no `blocked_by`: the backlink panel the
+// carries is not read again by a rename, which moves no `needs`: the backlink panel the
 // rename names (`references_changed`) is refreshed by its exact key, and this read's is longer.
 test("Details' Blocks draws the new title of an issue that waits on this one once it is renamed", async () => {
   const { restore } = stubIssueApi();
@@ -1378,7 +1372,7 @@ test("Details' Blocks keeps the titles it drew while the names read of a changed
     edges = [...edges, waitingEdge("CORE-6", "Write the notes")];
     refreshQueries(
       queryClient,
-      eventRefreshTargets(waiterUpdated("CORE-6", "Write the notes", ["blocked_by"], 4), "alice")
+      eventRefreshTargets(waiterUpdated("CORE-6", "Write the notes", ["needs"], 4), "alice")
     );
     await blocksRow().findByRole("link", { name: "CORE-6" });
     await waitFor(() => expect(titleReads(titles, newcomer)).toBe(1));
@@ -1437,7 +1431,7 @@ test("Details' Blocks keeps the titles it drew while the names read of a changed
 // gives a new key: while that read is out, the titles the row drew stay drawn.
 test("Blocked by keeps the titles it drew while the names read of a changed list is out", async () => {
   const { getIssue, restore } = stubIssueApi();
-  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  getIssue.mockResolvedValue({ ...issue, needs: ["CORE-3"] });
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const blocker = buildDispatchReference({ key: "CORE-3", kind: "issue" });
   const added = buildDispatchReference({ key: "CORE-4", kind: "issue" });
@@ -1457,7 +1451,7 @@ test("Blocked by keeps the titles it drew while the names read of a changed list
       expect(detailsRow(PROPERTY_LABELS.blocked_by)).toHaveTextContent("Fix the build")
     );
 
-    drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-3", "CORE-4"] });
+    drawIssue(getIssue, queryClient, { ...issue, needs: ["CORE-3", "CORE-4"] });
     await blockedBy().findByRole("link", { name: "CORE-4" });
     await waitFor(() => expect(titleReads(titles, added)).toBe(1));
     expect(
@@ -1491,9 +1485,7 @@ test("Details' Blocks says nothing while its read is out, and None once it answe
   const { unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
-    await waitFor(() =>
-      expect(getReferences).toHaveBeenCalledWith(reference, { kind: "blocked_by" })
-    );
+    await waitFor(() => expect(getReferences).toHaveBeenCalledWith(reference, { kind: "needs" }));
     expect(
       detailsRow(PROPERTY_LABELS.blocks),
       "Blocks reads None while its read is out"
@@ -1567,7 +1559,7 @@ test("Details' Blocks draws each issue that waits on this one through needs, and
 // mappings. Referenced by's list, which draws its own line, has a case of its own.
 test("a refresh that fails over an answer a row of Details holds keeps that answer drawn and says no failure", async () => {
   const { getIssue, restore } = stubIssueApi();
-  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  getIssue.mockResolvedValue({ ...issue, needs: ["CORE-3"] });
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(WAITER_REFERENCES);
   const titles = spyOn(api, "getReferenceTargets").mockImplementation(async (refs) =>
@@ -1595,7 +1587,7 @@ test("a refresh that fails over an answer a row of Details holds keeps that answ
     const refreshed = [
       referenceTargetsQuery([buildDispatchReference({ key: "CORE-3", kind: "issue" })]).queryKey,
       referenceTargetsQuery([buildDispatchReference({ key: "CORE-5", kind: "issue" })]).queryKey,
-      ["references", "to", reference, "blocked_by"],
+      ["references", "to", reference, "needs"],
       ["repo-projects"],
     ].map((queryKey) => queryClient.getQueryState(queryKey));
     expect(
@@ -1647,7 +1639,7 @@ test("a refresh that fails over an answer a row of Details holds keeps that answ
 test("a read that fails again in the same words is said again, while Retry keeps the focus", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  getIssue.mockResolvedValue({ ...issue, needs: ["CORE-3"] });
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue({
     edges: [],
@@ -1707,7 +1699,7 @@ test("a read that fails again in the same words is said again, while Retry keeps
 test("a read that failed on its first load keeps its Retry, with the focus, while the read is out, and hands the focus on in its row once it answers", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  getIssue.mockResolvedValue({ ...issue, needs: ["CORE-3"] });
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const titles = spyOn(api, "getReferenceTargets").mockRejectedValueOnce(
     new ApiError(500, { code: "INTERNAL", error: "read failed" })
@@ -1963,7 +1955,7 @@ test("Blocks read again on an event, not by its Retry, leaves the focus its Retr
     );
     act(() => retry.focus());
     await act(() =>
-      queryClient.refetchQueries({ queryKey: ["references", "to", reference, "blocked_by"] })
+      queryClient.refetchQueries({ queryKey: ["references", "to", reference, "needs"] })
     );
     await blocksRow().findByRole("link", { name: "CORE-5" });
     expect(retry, "Blocks answered, but its Retry is still drawn").not.toBeInTheDocument();
@@ -2005,7 +1997,7 @@ test("a failed refresh of what waits on the issue keeps Blocks' list, and the ti
 
     await readWhatWaits(queryClient, getReferences, readFailure());
     expect(
-      queryClient.getQueryState(["references", "to", reference, "blocked_by"])?.status,
+      queryClient.getQueryState(["references", "to", reference, "needs"])?.status,
       "what waits on the issue was not read again with a failure"
     ).toBe("error");
     expect(
@@ -2043,7 +2035,7 @@ test("a failed refresh of what waits on the issue keeps Blocks' list, and the ti
 test("while the Blocked by editor is open, the titles' Retry hands its focus to the first issue the row waits on", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  getIssue.mockResolvedValue({ ...issue, needs: ["CORE-3"] });
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue({
     edges: [],
@@ -2091,7 +2083,7 @@ test("while the Blocked by editor is open, the titles' Retry hands its focus to 
 test("on a closed issue, the titles' Retry hands its focus to the first issue the row waits on", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  getIssue.mockResolvedValue({ ...closedIssue, blocked_by: ["CORE-3"] });
+  getIssue.mockResolvedValue({ ...closedIssue, needs: ["CORE-3"] });
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue({
     edges: [],
@@ -2145,7 +2137,7 @@ test("on a closed issue, the titles' Retry hands its focus to the first issue th
 test("the titles' Retry whose answer reaches the page with a refresh that failed over it hands its focus to the row's control", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  getIssue.mockResolvedValue({ ...issue, needs: ["CORE-3"] });
   const blocker = buildDispatchReference({ key: "CORE-3", kind: "issue" });
   const titlesKey = referenceTargetsQuery([blocker]).queryKey;
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
@@ -2203,7 +2195,7 @@ test("the titles' Retry whose answer reaches the page with a refresh that failed
 test("while the Blocked by editor is open, a write elsewhere that leaves the issue waiting on nothing leaves the titles' Retry's focus on the page's body", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  getIssue.mockResolvedValue({ ...issue, needs: ["CORE-3"] });
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue({
     edges: [],
@@ -2225,7 +2217,7 @@ test("while the Blocked by editor is open, a write elsewhere that leaves the iss
 
     const read = queryClient.getQueryData<IssueDetails>(issueQuery("CORE-1").queryKey);
     if (read === undefined) throw new Error("Details reads no cached issue");
-    act(() => queryClient.setQueryData(issueQuery("CORE-1").queryKey, { ...read, blocked_by: [] }));
+    act(() => queryClient.setQueryData(issueQuery("CORE-1").queryKey, { ...read, needs: [] }));
     await waitFor(() =>
       expect(
         blockedBy().queryByRole("alert"),
@@ -2252,7 +2244,7 @@ test("while the Blocked by editor is open, a write elsewhere that leaves the iss
 test("the titles' Retry whose read failed again leaves its focus on the page's body when the titles answer later on an event", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  getIssue.mockResolvedValue({ ...issue, needs: ["CORE-3"] });
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue({
     edges: [],
@@ -2307,7 +2299,7 @@ test("the titles' Retry whose read failed again leaves its focus on the page's b
 test("the titles' Retry taken away by blockers changed elsewhere while its read is out leaves its focus on the page's body", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  getIssue.mockResolvedValue({ ...issue, needs: ["CORE-3"] });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
   const titles = spyOn(api, "getReferenceTargets").mockRejectedValueOnce(readFailure());
   const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
@@ -2322,7 +2314,7 @@ test("the titles' Retry taken away by blockers changed elsewhere while its read 
     await user.keyboard("{Enter}");
     await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
 
-    drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-4"] });
+    drawIssue(getIssue, queryClient, { ...issue, needs: ["CORE-4"] });
     await blockedBy().findByRole("link", { name: "CORE-4" });
     await waitFor(() =>
       expect(
@@ -2351,7 +2343,7 @@ test("the titles' Retry taken away by blockers changed elsewhere while its read 
 test("the titles' Retry taken away by blockers changed back elsewhere to a set already read leaves its focus on the page's body", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  getIssue.mockResolvedValue({ ...issue, needs: ["CORE-3"] });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
   const titles = spyOn(api, "getReferenceTargets").mockImplementation(async (refs) =>
     issueNames(refs, { "CORE-3": "Fix the build" })
@@ -2364,14 +2356,14 @@ test("the titles' Retry taken away by blockers changed back elsewhere to a set a
       expect(detailsRow(PROPERTY_LABELS.blocked_by)).toHaveTextContent("Fix the build")
     );
     titles.mockRejectedValueOnce(readFailure());
-    drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-4"] });
+    drawIssue(getIssue, queryClient, { ...issue, needs: ["CORE-4"] });
     const retry = await blockedBy().findByRole("button", { name: CONTROL_LABELS.retry });
     titles.mockImplementationOnce(() => new Promise(() => undefined));
     act(() => retry.focus());
     await user.keyboard("{Enter}");
     await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
 
-    drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-3"] });
+    drawIssue(getIssue, queryClient, { ...issue, needs: ["CORE-3"] });
     await waitFor(() =>
       expect(detailsRow(PROPERTY_LABELS.blocked_by)).toHaveTextContent("Fix the build")
     );
@@ -2401,7 +2393,7 @@ test("the titles' Retry taken away by blockers changed back elsewhere to a set a
 test("the titles' Retry taken away by blockers changed back elsewhere to a set whose read failed and then answered leaves its focus on the page's body", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  getIssue.mockResolvedValue({ ...issue, needs: ["CORE-3"] });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
   const titles = spyOn(api, "getReferenceTargets")
     .mockImplementation(async (refs) => issueNames(refs, { "CORE-3": "Fix the build" }))
@@ -2418,14 +2410,14 @@ test("the titles' Retry taken away by blockers changed back elsewhere to a set w
       expect(detailsRow(PROPERTY_LABELS.blocked_by)).toHaveTextContent("Fix the build")
     );
     titles.mockRejectedValueOnce(readFailure());
-    drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-4"] });
+    drawIssue(getIssue, queryClient, { ...issue, needs: ["CORE-4"] });
     const retry = await blockedBy().findByRole("button", { name: CONTROL_LABELS.retry });
     titles.mockImplementationOnce(() => new Promise(() => undefined));
     act(() => retry.focus());
     await user.keyboard("{Enter}");
     await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
 
-    drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-3"] });
+    drawIssue(getIssue, queryClient, { ...issue, needs: ["CORE-3"] });
     await waitFor(() =>
       expect(detailsRow(PROPERTY_LABELS.blocked_by)).toHaveTextContent("Fix the build")
     );
@@ -3032,7 +3024,7 @@ function referencedByDetails() {
 function titlesRetryDetails() {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-4"] });
+  getIssue.mockResolvedValue({ ...issue, needs: ["CORE-4"] });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
   const titles = spyOn(api, "getReferenceTargets")
     .mockImplementation(() => new Promise(() => undefined))
@@ -3046,7 +3038,7 @@ function titlesRetryDetails() {
   const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
   const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
   const drawBlockers = (keys: string[]) =>
-    drawIssue(getIssue, queryClient, { ...issue, blocked_by: keys });
+    drawIssue(getIssue, queryClient, { ...issue, needs: keys });
   return {
     answerPress: () => pressed.resolve(issueNames([blocker], { "CORE-3": "Fix the build" })),
     blockedBy,
@@ -3366,7 +3358,7 @@ test("closing References or Details takes an open Referenced by list, and its re
 test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Blocks' titles, Referenced by, repository mapping or project again", async () => {
   const user = userEvent.setup();
   const { getIssue, getMyState, restore } = stubIssueApi();
-  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"], referenced_by_count: 3 });
+  getIssue.mockResolvedValue({ ...issue, needs: ["CORE-3"], referenced_by_count: 3 });
   const blocker = buildDispatchReference({ key: "CORE-3", kind: "issue" });
   const waiter = buildDispatchReference({ key: "CORE-12", kind: "issue" });
   const titles = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] });
@@ -3374,7 +3366,7 @@ test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Blo
   // Blocks is answered with one issue that waits on this one, whose title Blocks then reads, and
   // the Referenced by list with nothing.
   const getReferences = spyOn(api, "getReferences").mockImplementation(async (_to, options) => ({
-    edges: options?.kind === "blocked_by" ? [waitingEdge("CORE-12", "Wire the release")] : [],
+    edges: options?.kind === "needs" ? [waitingEdge("CORE-12", "Wire the release")] : [],
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
   }));
   // The Referenced by list's read, which names no kind of reference (`referencesQuery`).
@@ -3555,7 +3547,6 @@ test("the add control is not drawn on a closed issue, nor when every property ha
       ...issue,
       advances: [{ id: "PRI-7", inherited: false }],
       assignee: "alice",
-      blocked_by: ["CORE-3"],
       components: {
         mode: "inherit",
         ids: ["api"],
@@ -3564,6 +3555,7 @@ test("the add control is not drawn on a closed issue, nor when every property ha
         inherited_from: "CORE-2",
       },
       labels: ["bug"],
+      needs: ["CORE-3"],
       parent: "CORE-2",
       repo: "acme/widgets",
       resolved_repo: "acme/widgets",
@@ -3647,7 +3639,6 @@ const orphan: IssueDetails = {
   ...issue,
   advances: [{ id: "PRI-7", inherited: false }],
   assignee: "alice",
-  blocked_by: ["CORE-3"],
   components: {
     mode: "inherit",
     ids: ["api"],
@@ -3656,6 +3647,7 @@ const orphan: IssueDetails = {
     inherited_from: "CORE-2",
   },
   labels: ["bug"],
+  needs: ["CORE-3"],
   parent: null,
   repo: "acme/widgets",
   resolved_repo: "acme/widgets",
@@ -3704,7 +3696,6 @@ test("removing the last label draws Add, whose Labels the row's control now answ
     ...issue,
     advances: [{ id: "PRI-7", inherited: false }],
     assignee: "alice",
-    blocked_by: ["CORE-3"],
     components: {
       mode: "inherit",
       ids: ["api"],
@@ -3713,6 +3704,7 @@ test("removing the last label draws Add, whose Labels the row's control now answ
       inherited_from: "CORE-2",
     },
     labels: ["bug"],
+    needs: ["CORE-3"],
     parent: "CORE-2",
     repo: "acme/widgets",
     resolved_repo: "acme/widgets",
@@ -3782,7 +3774,6 @@ test("Add is drawn again after the Advances form it opened is cancelled", async 
     ...issue,
     advances: [],
     assignee: "alice",
-    blocked_by: ["CORE-3"],
     components: {
       mode: "inherit",
       ids: ["api"],
@@ -3791,6 +3782,7 @@ test("Add is drawn again after the Advances form it opened is cancelled", async 
       inherited_from: "CORE-2",
     },
     labels: ["bug"],
+    needs: ["CORE-3"],
     parent: "CORE-2",
     repo: "acme/widgets",
     resolved_repo: "acme/widgets",
@@ -3841,7 +3833,6 @@ test("Add lists no entry whose control is disabled, and lists it again once it i
     ...issue,
     advances: [],
     assignee: "alice",
-    blocked_by: ["CORE-3"],
     components: {
       mode: "inherit",
       ids: ["api"],
@@ -3850,6 +3841,7 @@ test("Add lists no entry whose control is disabled, and lists it again once it i
       inherited_from: "CORE-2",
     },
     labels: ["bug"],
+    needs: ["CORE-3"],
     parent: "CORE-2",
     repo: "acme/widgets",
     resolved_repo: "acme/widgets",
@@ -3905,7 +3897,6 @@ const advancesOnly: IssueDetails = {
   ...issue,
   advances: [],
   assignee: "alice",
-  blocked_by: ["CORE-3"],
   components: {
     mode: "inherit",
     ids: ["api"],
@@ -3914,6 +3905,7 @@ const advancesOnly: IssueDetails = {
     inherited_from: "CORE-2",
   },
   labels: ["bug"],
+  needs: ["CORE-3"],
   parent: "CORE-2",
   repo: "acme/widgets",
   resolved_repo: "acme/widgets",
@@ -4970,7 +4962,6 @@ test("Add lists Repository on an empty repository row and presses None, which op
     ...issue,
     advances: [{ id: "PRI-7", inherited: false }],
     assignee: "alice",
-    blocked_by: ["CORE-3"],
     components: {
       mode: "inherit",
       ids: ["api"],
@@ -4979,6 +4970,7 @@ test("Add lists Repository on an empty repository row and presses None, which op
       inherited_from: "CORE-2",
     },
     labels: ["bug"],
+    needs: ["CORE-3"],
     parent: "CORE-2",
     route: "role:legion-controller-core",
   });
@@ -7514,8 +7506,8 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
   [
     "Blocked by's link, that blocker taken away in another session",
     {
-      after: { issue: { ...issue, blocked_by: ["CORE-3"] } },
-      before: { issue: { ...issue, blocked_by: ["CORE-2", "CORE-3"] } },
+      after: { issue: { ...issue, needs: ["CORE-3"] } },
+      before: { issue: { ...issue, needs: ["CORE-2", "CORE-3"] } },
       focused: async () =>
         within(await drawnRow(PROPERTY_LABELS.blocked_by)).findByRole("link", { name: "CORE-2" }),
     },
@@ -7523,8 +7515,8 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
   [
     "Blocked by's last link, that blocker taken away in another session",
     {
-      after: { issue: { ...issue, blocked_by: [] } },
-      before: { issue: { ...issue, blocked_by: ["CORE-2"] } },
+      after: { issue: { ...issue, needs: [] } },
+      before: { issue: { ...issue, needs: ["CORE-2"] } },
       focused: async () =>
         within(await drawnRow(PROPERTY_LABELS.blocked_by)).findByRole("link", { name: "CORE-2" }),
     },
@@ -7860,7 +7852,7 @@ test.each(
     act(() => {
       queryClient.setQueryData(issueQuery("CORE-1").queryKey, details);
       queryClient.setQueryData(userStateQuery().queryKey, state);
-      queryClient.setQueryData(["references", "to", reference, "blocked_by"], blocking);
+      queryClient.setQueryData(["references", "to", reference, "needs"], blocking);
     });
   };
   hold(before);
