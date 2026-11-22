@@ -368,8 +368,14 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // node move and its append changed in whitespace alone: that read writes nothing and refuses a
 // comment write only where the store holds no live supertag row of comment, person or session,
 // rows migration 20261109051232 seeds, so it too moves no row in or out of what a pass owes.
+//
+// It was re-recorded again when main's #4883 made store.LatestEventID a scalar subquery,
+// `(select currval(...))`, which the node write of refs.CommentWrite.Queue names as each comment
+// node's cause: the statement reads the same event id, only through events' primary key, so it
+// moves no row in or out of what a pass owes, and no build of rule 1 has shipped. With the old
+// text of LatestEventID the statements give the digest recorded before.
 var markingStatementDigests = map[int]string{
-	1: "564582f5e8fbc53950324c8c77ee2d10f4665daad8ad3ebb15e71192b7b2cc9f",
+	1: "f43ec48e83d9e62ce19d4d2da0a1446ad761e613770130bd30eab6cc5134c828",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks

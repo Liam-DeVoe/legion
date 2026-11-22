@@ -3833,17 +3833,21 @@ type DecisionKeep struct {
 
 // DecisionLink is one link from a decision to a spec node it shaped: its `shaped` tuple
 // (internal/dispatch/decisionread). FromBlock is the decision's own block, To the node it names,
-// CreatedVersion and CreatedAt when the tuple was written, Event the event that wrote it,
+// CreatedVersion and CreatedAt when the tuple was written, Event the event that wrote it, and
 // TextChangedEvent and TextChangedAt the event and the time that wrote the version the node's text
-// last changed in, and Stale true when that text changed after the tuple was written. The three
-// are absent where the store holds none. It is Decision's, and the Decisions read's `entries`
-// answer it as each entry's `shaped`, so it stays when the old `decisions` member goes.
+// last changed in; the three are absent where the store holds none. Stale is the release
+// before's rule, which every reader of a link's `stale` reads: the decision's own words changed
+// after the tuple was written, and the node's text has not changed since the decision's did.
+// ChangedSinceTie is the other fact (R5): the node's text changed after the tuple was written. It
+// is Decision's, and the Decisions read's `entries` answer it as each entry's `shaped`, so it
+// stays when the old `decisions` member goes.
 type DecisionLink struct {
 	FromBlock        string     `json:"from_block"`
 	To               GraphNode  `json:"to"`
 	CreatedVersion   int        `json:"created_version"`
 	CreatedAt        time.Time  `json:"created_at"`
 	Stale            bool       `json:"stale"`
+	ChangedSinceTie  bool       `json:"changed_since_tie"`
 	Event            *int64     `json:"event,omitempty"`
 	TextChangedEvent *int64     `json:"text_changed_event,omitempty"`
 	TextChangedAt    *time.Time `json:"text_changed_at,omitempty"`

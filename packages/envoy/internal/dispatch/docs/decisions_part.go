@@ -275,13 +275,16 @@ func blockMarkdown(node *pmdoc.Node) (string, error) {
 }
 
 // pointerLineLead is the words a spec's pointer line to its issue's decisions document holds
-// before the citation, case folded and its whitespace collapsed: none, `see`, or one clause naming
-// the decisions and saying they are in the cited document, as the release before's spec skill had
-// an agent write the line ("The decisions are in" and the decisions document's dispatch://
-// address), with no sentence break among its words.
+// before the citation, case folded and its whitespace collapsed, and nothing else: none, `see`,
+// `see the decisions in` (or `at`, or with no `the`), or `the decisions are in` (or `live`, or
+// `at`, or with no `the`), as the release before's spec skill had an agent write the line ("The
+// decisions are in" and the decisions document's dispatch:// address), and `the decisions this
+// spec rests on are in`, the line the tests and the e2e seeds write for it. A paragraph whose
+// words before the citation say anything more, such as "The decisions the board rejected twice
+// are in", is a person's prose, which the step keeps.
 //
 // kept for one release: decisions-step
-var pointerLineLead = regexp.MustCompile(`^(see|(the )?decisions( [^.;:!?]*)? (are|live) (in|at))?$`)
+var pointerLineLead = regexp.MustCompile(`^(see|see (the )?decisions (in|at)|(the )?decisions( this spec rests on)? (are|live) (in|at))?$`)
 
 // isPointerLine reports whether node is the pointer line of a spec's `## Decisions` part to the
 // issue's decisions document, one of documents by ref_key: a paragraph whose one content is the

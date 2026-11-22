@@ -823,6 +823,7 @@ func (s *Service) reconcileAskBlocks(
 	// The fleet is read at each write that holds an ask block, never cached: the attributes stay in
 	// step while another build serves, and the first settlement after its last process left takes
 	// them out.
+	// kept for one release: roll-window-attributes
 	twoBuilds := false
 	if len(blocks)+len(invalidBlocks) > 0 {
 		if twoBuilds, err = anotherBuildServes(ctx, tx); err != nil {
@@ -832,6 +833,7 @@ func (s *Service) reconcileAskBlocks(
 	// Once the fleet is one build, the attributes a version keeps are written from each ask's node,
 	// each one its node holds no value of taken off (keptAskState, onItsNode); an ask whose state
 	// this settlement writes - one it restores - is written as it states it.
+	// kept for one release: stored-ask-state
 	var nodes map[string]askNodeAnswer
 	if !twoBuilds && len(rows)+len(sources) > 0 {
 		ids := make([]string, 0, len(rows)+len(sources))
@@ -845,6 +847,7 @@ func (s *Service) reconcileAskBlocks(
 			return settlementReconciliation{}, err
 		}
 	}
+	// kept for one release: stored-ask-state
 	shown := func(ask model.Ask) model.Ask {
 		if twoBuilds {
 			return ask
@@ -880,6 +883,7 @@ func (s *Service) reconcileAskBlocks(
 				},
 			))
 		}
+		// kept for one release: stored-ask-state
 		if !twoBuilds {
 			unread := withoutStoredAskAttributes
 			if indexed {
@@ -1695,6 +1699,8 @@ func clearAskInvalidAttribute(node *pmdoc.Node) bool {
 // of the seven attributes a version can store once the fleet is one build, as the close's sweep
 // leaves such a block (unindexedAskResolution). The block reads, so it carries no `invalid`
 // either way.
+//
+// kept for one release: roll-window-attributes
 func unindexedAskWrite(twoBuilds bool) func(*pmdoc.Node) bool {
 	resolve := unindexedAskResolution(twoBuilds)
 	return func(node *pmdoc.Node) bool {

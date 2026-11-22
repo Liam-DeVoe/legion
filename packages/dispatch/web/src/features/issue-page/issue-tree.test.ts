@@ -281,6 +281,7 @@ function decision(
     kept: null,
     kind: "agent",
     links: shaped.map((one) => ({
+      changed_since_tie: false,
       created_at: "2026-11-05T00:00:00Z",
       created_version: 1,
       from_block: blockId,
@@ -377,6 +378,7 @@ function decisions(made: readonly Decision[]): IssueDecisions {
 /** A link of decision `d1`'s to `ref`, which is a chip of the decision's and places nothing. */
 function linkTo(ref: string, kind: DecisionLink["to"]["kind"]): DecisionLink {
   return {
+    changed_since_tie: false,
     created_at: "2026-11-05T00:00:00Z",
     created_version: 1,
     from_block: "d1",
@@ -819,6 +821,7 @@ test("a chip of a block draws the first line of its reading, and a document's ch
     ...decision("d1", "Keep the spec as one document.", []),
     links: [
       {
+        changed_since_tie: false,
         created_at: "2026-11-05T00:00:00Z",
         created_version: 1,
         from_block: "d1",
@@ -2367,6 +2370,7 @@ test("a Change is drawn under its decision, which then waits on its agent", () =
     kind: "agent",
     links: [
       {
+        changed_since_tie: false,
         created_at: "2026-11-16T11:11:07.225118Z",
         created_version: 1,
         from_block: "4f4f7706-5e2f-4f98-ba08-ba9afa843985",
@@ -2393,6 +2397,7 @@ test("a Change is drawn under its decision, which then waits on its agent", () =
         },
       },
       {
+        changed_since_tie: false,
         created_at: "2026-11-16T11:11:07.225118Z",
         created_version: 1,
         from_block: "4f4f7706-5e2f-4f98-ba08-ba9afa843985",
