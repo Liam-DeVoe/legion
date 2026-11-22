@@ -67,6 +67,17 @@ that writes the hold takes `--signing-key-secret`. `set` and `prove` also need:
 - the hub's Kubernetes objects, through `--kube-namespace` (`envoy`), `--statefulset` (`envoy-nats`)
   and `--configmap` (`envoy-nats-config`), read with the in-cluster or KUBECONFIG configuration.
 
+### Rotating the hold signing key
+
+Every signature names its key by id: it is `<key id>.<signature>` (`signedrecord.KeyID`, which
+holds no key material). A retired signing key stays in `BROKER_NATS_HOLD_SIGNING_KEYS`, and in
+every command's `--verify-keys`, verify-only, while anything it signed is stored: the hold row, a
+log entry, a record, a record delete or a cutover row. It leaves the list only once the read in
+infra/README.md ("Rotating the hold signing key") finds no stored row it signed; that section gives
+the order of a rotation, and the exception for a key that leaked. A restore refused 409
+`below_floor` whose message names a key id is the sign that a key left the list too early: list it
+again, verify-only, and run the restore again.
+
 ### `hold set`'s steps
 
 1. The preflight: the render from ConfigMap `envoy-nats-config` and StatefulSet `envoy-nats`, the
