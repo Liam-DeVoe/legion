@@ -44,6 +44,8 @@
  * by the case reader before any run) and the reply NOTHING_REPLY must fail.
  */
 import { createHash, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import { readCalls, type SessionMessage, stripSkillHeader } from "../skill-scenarios/transcript";
@@ -58,7 +60,7 @@ import {
   type Spent,
   toolCalls,
 } from "./gateway";
-import { ask, loadPrompt, promptBody } from "./readers";
+import { ask, loadPrompt, PROMPTS_DIR, PromptSettings, promptBody } from "./readers";
 
 /** How many times one reply is judged before its verdict is null. */
 export const JUDGE_TRIES = 3;
@@ -79,6 +81,26 @@ export const CONTROLS = {
   violating: { step: "the violating step", wanted: "fail" },
   nothing: { step: `the reply "${NOTHING_REPLY}"`, wanted: "fail" },
 } as const satisfies Record<ControlName, { step: string; wanted: "pass" | "fail" }>;
+
+/** The judge's identity: the SHA-256 of `prompts/judge.md` (its header and its text, as read) and
+ *  the settings its header pins. `behaviour report` prints it, and each stage of a case's results
+ *  records the identity it was first judged with (a stage judged before this was recorded has
+ *  none). */
+export const JudgeIdentity = z.strictObject({
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  settings: PromptSettings,
+});
+export type JudgeIdentity = z.infer<typeof JudgeIdentity>;
+
+/** The identity (JudgeIdentity) of the judge this process runs. */
+export function judgeIdentity(): JudgeIdentity {
+  return {
+    sha256: createHash("sha256")
+      .update(readFileSync(path.join(PROMPTS_DIR, "judge.md")))
+      .digest("hex"),
+    settings: loadPrompt("judge").settings,
+  };
+}
 
 /** A judgement as the judge answers it. */
 const Judgement = z.strictObject({

@@ -80,6 +80,13 @@
  *   reader properties; the gaps the change fixes (each a finding by its number, or a style rule or
  *   property), the gaps it makes (each a rule), each with its file and line where given, and a
  *   one-line summary.
+ * - `written-case`: a skill's base text, its session cases (each one's real step and criterion;
+ *   none, when it has none) and the first user message of a recorded session that read it, and how
+ *   many tasks to write; at most that many tasks of that session's kind of work in which a line of
+ *   the skill decides the agent's first step after it reads the skill, each with the task (the
+ *   user's message), the line (its file, number and text: a line of the base text, which the schema
+ *   checks), a criterion, a step that follows the line and a violating step (`build-cases
+ *   --written`).
  *
  * The positive controls of the map, attack, same-job and sentence readers (`runControl`) each
  * plant a known finding in a copy of real input, run the reader once, and hold only when its
@@ -107,7 +114,7 @@ export const NAME_ONLY_REFUSAL = "says only that the job is not clear from the n
 
 /** The settings a prompt file's header pins. With thinking on, the Messages API takes temperature
  *  1 only, and a thinking budget of 1024 tokens or more, below `max_tokens`. */
-const PromptSettings = z
+export const PromptSettings = z
   .strictObject({
     model: z.string().min(1),
     thinking_budget: z.int().min(1024),
@@ -1578,6 +1585,81 @@ const proposalReader: Reader<ProposalInput, ProposalAnswer> = {
   },
 };
 
+// The written-case reader: tasks in a recorded session's context whose first step a line of the
+// skill decides (`build-cases --written`).
+
+/** A session case of the skill as the written-case reader reads it: its real step (judge.ts's
+ *  `stepText`) and its criterion. */
+const SessionCaseText = z.strictObject({
+  step: NonBlank,
+  criterion: z.strictObject({ pass: NonBlank, fail: NonBlank }),
+});
+export const WrittenCaseInput = z.strictObject({
+  skill: z.string().min(1),
+  /** The skill's base text, every `.md` file of `--old` (`skillFiles`). */
+  files: z.array(File).min(1),
+  sessionCases: z.array(SessionCaseText),
+  /** The first user message of the context session, whose context the tasks go in. */
+  firstMessage: NonBlank,
+  /** The most tasks to write. */
+  count: z.int().positive(),
+});
+export type WrittenCaseInput = z.infer<typeof WrittenCaseInput>;
+const WrittenTask = z.strictObject({
+  task: NonBlank,
+  line: z.strictObject({ file: z.string().min(1), number: z.int().positive(), text: OneLine }),
+  criterion: z.strictObject({ pass: NonBlank, fail: NonBlank }),
+  followingStep: WrittenStep,
+  violatingStep: WrittenStep,
+});
+export const WrittenCaseAnswer = z.strictObject({ tasks: z.array(WrittenTask).min(1) });
+export type WrittenCaseAnswer = z.infer<typeof WrittenCaseAnswer>;
+
+const writtenCaseReader: Reader<WrittenCaseInput, WrittenCaseAnswer> = {
+  input: WrittenCaseInput,
+  answer: (input) =>
+    WrittenCaseAnswer.superRefine((answer, ctx) => {
+      if (answer.tasks.length > input.count) {
+        refuse(
+          ctx,
+          ["tasks"],
+          `holds ${answer.tasks.length} tasks, more than the ${input.count} asked for`
+        );
+      }
+      // Each task's line is a line of the base text: its file, its number and its text.
+      for (const [index, { line }] of answer.tasks.entries()) {
+        const at = ["tasks", index, "line"];
+        const file = input.files.find((each) => each.path === line.file);
+        if (file === undefined) {
+          refuse(ctx, [...at, "file"], "is no file of the base text");
+          continue;
+        }
+        const lines = textLines(file.text);
+        if (line.number > lines.length) {
+          refuse(ctx, [...at, "number"], `is past the last line, ${lines.length}, of ${line.file}`);
+        } else if (lines[line.number - 1]?.trim() !== line.text.trim()) {
+          refuse(ctx, [...at, "text"], `is not line ${line.number} of ${line.file}`);
+        }
+      }
+    }),
+  render: (input) =>
+    [
+      `<skill name="${input.skill}">\n${fileBlocks(input.files)}\n</skill>`,
+      `<session-cases>\n${
+        input.sessionCases.length === 0
+          ? "None."
+          : input.sessionCases
+              .map(
+                (each, n) =>
+                  `<case n="${n + 1}">\n<step>\n${each.step}\n</step>\n<criterion>\nPass: ${each.criterion.pass}\nFail: ${each.criterion.fail}\n</criterion>\n</case>`
+              )
+              .join("\n")
+      }\n</session-cases>`,
+      `<first-message>\n${input.firstMessage}\n</first-message>`,
+      `<count>${input.count}</count>`,
+    ].join("\n\n"),
+};
+
 /** Every reader, by the name of its prompt file. */
 export const READERS = {
   case: caseReader,
@@ -1594,6 +1676,7 @@ export const READERS = {
   claim: claimReader,
   "proposal-target": proposalTargetReader,
   proposal: proposalReader,
+  "written-case": writtenCaseReader,
 } as const;
 export type ReaderName = keyof typeof READERS;
 export const READER_NAMES = Object.keys(READERS) as ReaderName[];

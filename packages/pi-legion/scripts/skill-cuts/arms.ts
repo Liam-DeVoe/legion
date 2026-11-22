@@ -174,6 +174,18 @@ function answered(
   };
 }
 
+/** The result of the read call `toolCallId` of `read.target`, which reads `read.file` (a path
+ *  inside the skill's directory), answered from the arm's files at `read.shown` as every arm but
+ *  `none` answers a history read: F1's shape of a read of a skill file, or of a read that failed.
+ *  `build-cases --written` answers a written case's read so, from `--old`. */
+export function readResult(
+  arm: Arm,
+  read: { file: string; target: string; shown: string },
+  toolCallId: string
+): SessionMessage {
+  return answered({ role: "toolResult", toolCallId, toolName: "read" }, arm, read);
+}
+
 /** The directory `dir` as an absolute path, or a throw naming the arm when it is no directory. */
 function directory(dir: string, name: ArmName): string {
   if (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) {

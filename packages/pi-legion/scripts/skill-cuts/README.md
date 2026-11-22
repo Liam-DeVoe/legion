@@ -69,15 +69,20 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   that fails any is dropped, naming the control), then a capture of each arm (old, the compared
   arm unless it is no skill, and none), 10
   replays of each, each reply judged blind with all arms shuffled, and runs made again for the runs
-  with no verdict, at most 5 more per arm. It stops at 6 informative or 15 screened cases. A case
-  whose model the gateway does not serve (none of the configuration's `servedModels` has its id,
-  the text after its last `/`) is dropped before any call as `model-not-served`; a case on a
+  with no verdict, at most 5 more per arm. The session cases (`source.kind` `session`, or none)
+  are screened first, in the file's order, and the written cases (`build-cases --written`) after
+  them: at most 15 screened cases of each kind, until the skill has 6 informative cases in all. A
+  case whose model the gateway does not serve (none of the configuration's `servedModels` has its
+  id, the text after its last `/`) is dropped before any call as `model-not-served`; a case on a
   served model runs as that served `provider/model`, so an Anthropic model behind another
   gateway prefix runs as `anthropic/<id>`. With `--reading-models` (the skill's
-  `<cut or set id>/models/<skill>.json` that `attribute` writes: its reading sessions by model), a
-  skill with fewer than 6 reading sessions on models the gateway serves is refused before any call
-  (exit 2): it gets no verdict, with the reason `too few sessions on served models` and its served
-  and total counts, and the walk of the cut's ranking goes on to the next skill.
+  `<cut or set id>/models/<skill>.json` that `attribute` writes: its reading sessions by model),
+  a skill with fewer than 6 reading sessions on models the gateway serves gets no session case
+  screened: with no written case it is refused before any call (exit 2), it gets no verdict, with
+  the reason `too few sessions on served models` and its served and total counts, and the walk of
+  the cut's ranking goes on to the next skill; with written cases, the screen says the session
+  cases are not screened and screens the written ones, and the skill's verdict, or its reason for
+  none, is theirs, never that refusal.
 - `confirm`: 40 fresh runs of old and the compared arm for each flagged case. `confirm --case
   <id>` makes 40 fresh runs of old and the compared arm on that one case, with no flag gate and
   no gate of 6 informative cases, and no screen or judge controls: give it its own `--out`. It
@@ -110,11 +115,26 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   case's smallest drop ("The smallest drop" below), the spend
   at list price, the peak memory, how many captures' system-prompt digests differ from their
   session's, and the text of `--limits <file>` as it is (the limits a result states, so no limit
-  is written into the runner), or that none was given. It calls no model, and needs only
-  `--config`, `--out`, `--old` and `--cases`; its compared arm is the one its results record (a
-  `--new` or `--ours` it is given must be that one). With the cut compared, `keeps` prints as "no
-  loss detected by the registered rule" and a loss names the cases where the cut's text passes at
-  least 10 fewer of 40 fresh runs than the old text. With no skill compared, the report says once
+  is written into the runner), or that none was given. Beside the verdict, as descriptions that
+  change no rule: each kind's screened cases (their ids), how many are informative, and each
+  screen arm's passes summed over them; the mean over the screened cases of old's screen pass
+  rate less the compared arm's, over all of them and over each kind's, with a 95% interval
+  clustered by case (each case's difference is one observation, so the interval is Student's t
+  over the cases; one case has none, and a kind with no screened case has no mean); and how many
+  screened cases tie (old and the compared arm pass alike), floor (0 of 10 in both), ceil (10 of
+  10 in both) and reverse (the compared arm passes more than old), a floor or a ceiling being a
+  tie too. It names the judge: the SHA-256 of `prompts/judge.md` and the settings its header pins,
+  and how many stages of the results record that judge, another one, or none. Each stage records
+  the judge it was made with (`judge`) before its first judgement; a results file made before
+  that records none and still loads. A skill whose planted-loss control is no loss gets the reason
+  "deleting the case's line showed no detectable change (planted-loss control not a loss)" (with
+  `--planted-line`, the planted line in place of the case's), and one whose control's runs are
+  unscreened "planted-loss control not a loss: its runs are unscreened". It calls no model, and
+  needs only `--config`, `--out`, `--old` and `--cases`; its compared arm is the one its results
+  record (a `--new` or `--ours` it is given must be that one). With the cut compared, `keeps`
+  prints as "no loss detected by the registered rule" and a loss names the cases where the cut's
+  text passes at least 10 fewer of 40 fresh runs than the old text. With no skill compared, the
+  report says once
   that the arm with no skill informs and clears nothing; `loss` prints as "no skill loses against
   their skill on <n> cases" and `keeps` as "no loss of no skill detected by the registered rule".
   With ours compared, it calls the arm of ours a bundle where its text replaced a skill of our name
@@ -125,13 +145,17 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   confirm runs were made). With
   `--reading-models` it also prints each model of that file with its sessions and whether the
   gateway serves it, the sessions whose file names no model and those in no models query's rows,
-  and the served models the screened cases ran on, each with its cases; a verdict then ends with
-  the reading sessions it speaks for, on each served model its screened cases ran on (a model
-  counted under the served model of its id, so `gateway/claude-sonnet-5-5` under
+  and the served models the screened session cases ran on, each with its cases; a verdict then
+  ends with the reading sessions it speaks for, on each served model its screened session cases
+  ran on (a model counted under the served model of its id, so `gateway/claude-sonnet-5-5` under
   `anthropic/claude-sonnet-5-5`), and those it does not speak for, on models the gateway does not
-  serve and on served models no screened case ran on. A skill too few of whose reading sessions
-  are on served models gets no verdict. Without `--reading-models`, it says the reading sessions
-  by model were not given, and the verdict names no models.
+  serve and on served models no screened session case ran on. A written case is a written task in
+  a recorded session's context, never a reading session: the report counts the screened written
+  cases on a line of their own by the model each ran on (`written tasks: <n> on <model>, …`), and
+  a skill whose screened cases are all written speaks for no reading sessions, which its verdict
+  says. A skill too few of whose reading sessions are on served models, and with no written case,
+  gets no verdict. Without `--reading-models`, it says the reading sessions by model were not
+  given, and the verdict names no models.
 
 `score.ts` holds the rules. Each case's results are one file, `<out>/cases/<case id>.json`,
 written whole after each round of runs, so a run started again goes on from what was saved and
@@ -253,7 +277,7 @@ was made before this rule and is refused.
 
 ```
 bun scripts/skill-cuts/cli.ts read --config <skill-cuts.json> --key-file <file> \
-  --prompt <case|restate|audit|map|attack|same-job|sentence|names|tasks|craft|nearest|claim> \
+  --prompt <case|restate|audit|map|attack|same-job|sentence|names|tasks|craft|nearest|claim|written-case> \
   --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>] \
   [--concurrency <n>]
 ```
@@ -874,6 +898,12 @@ bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file 
   --sessions <sessions.jsonl> --seed <n> --copies <copies out dir> --count <count dir> \
   --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] \
   [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]
+bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file <file> \
+  (--cut <id> | --set <id>) --skill <name> --old <skill dir> --copies <copies out dir> \
+  --count <count dir> --written <n> \
+  (--context-session <store>:<hash> | --sessions <sessions.jsonl> --seed <n>) --out <cases.jsonl> \
+  [--session-cases <cases.jsonl>] [--reading-models <file>] [--model-pool <file>]... \
+  [--budget-usd <n>]
 bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --old <skill dir at the cut's base> \
   --copies <copies out dir> --count <count dir> --reprofile <cases.jsonl> --out <new cases.jsonl>
 bun scripts/skill-cuts/cli.ts build-tasks --config <skill-cuts.json> --key-file <file> \
@@ -1028,7 +1058,10 @@ by the measure: a report applies its rules.
 
 `--reprofile` builds the profiles of an existing case file again that way, from the cases and
 their sessions' heads (no transcript pulled, no reader call), and writes a new file in which only
-`profile` and the profile's part of `evidence` differ. A case holds no working directory, so each
+`profile` and the profile's part of `evidence` differ: each case's `source`, its `kind` among it,
+stays. A written case's profile is built again from the reads of its context session its evidence
+names (`context session read: …`), which its messages do not hold, and its written case's
+evidence stays. A case holds no working directory, so each
 case's is the header's `cwd` in its session's head, read from its store with `session-head.sql`
 (one query per store, through the configuration's `psqlCommand`; each head is kept under
 `<out>.sessions/`). For a case whose session the store no longer holds, the evidence says so
@@ -1083,6 +1116,60 @@ keep them. At most n sessions are open (being read, or read and waiting), so at 
 are there at once. When the build ends, each session still open is stopped before its next
 reader call and recorded with what it spent, as `not-needed` (or, at the budget, as stopped by
 it).
+
+`build-cases --written <n>` writes up to n written cases of one skill, for a skill whose session
+cases give fewer than 6 informative cases in the screen:
+
+```
+bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file <file> \
+  (--cut <id> | --set <id>) --skill <name> --old <skill dir> --copies <copies out dir> \
+  --count <count dir> --written <n> \
+  (--context-session <store>:<hash> | --sessions <sessions.jsonl> --seed <n>) --out <cases.jsonl> \
+  [--session-cases <cases.jsonl>] [--reading-models <file>] [--model-pool <file>]... \
+  [--budget-usd <n>]
+```
+
+A written case is a written task in a recorded session's context, not that session run again.
+The context session is the one `--context-session` names (`<store>:<file hash>`, the hash the
+sessions file names a file by), else the first of `--sessions` in the order `--seed` gives that is
+on a model the gateway serves and whose rebuilt profile installs the cut repository's (or the
+set's) copy of the skill; when no such session is on a served model, the first whose profile
+installs it, on any model. A session gives a context as a session gives a case: its first
+successful read of the skill must be placed at the cut repository's copy by `attribute.ts`'s
+rules, the model and thinking level are those in effect at that read, its context (`devbox`,
+its Legion role, or a subagent's recorded prompt and tools) is rebuilt as build-cases rebuilds a
+case's, and its profile is built at its start from its reads up to and including that read, as a
+session case's is from the reads before its step. The summary's `contextSession` names it, how it
+was chosen, and each session passed over before it with why (a drop reason and its detail, or
+`model-not-served` for a session on a model the gateway does not serve). A case's `model` is the
+context session's when the gateway serves it; else the served model with the most reading
+sessions of the skill in `--reading-models` (the skill's `<cut or set id>/models/<skill>.json`);
+else the served model with the most reading sessions summed over the `--model-pool` files (each a
+models file of a skill of the set: give the flag once per file); with none, the build fails
+(exit 1). The `written-case` reader (`prompts/written-case.md`) is called once: it reads the base
+text (`--old`, each line numbered), each session case of `--session-cases` (its real step and its
+criterion; none when the flag is not given) and the context session's first user message, and
+writes at most n tasks in which a line of the skill decides the agent's first step after it reads
+the skill, each with the task (the user's message), the line (file, number and text; its schema
+refuses one that is not that line of the base text), the criterion, a following step and a
+violating step. Each task gives a case whose `messages` are the task as the user's message, an
+assistant call `read skill://<skill>` and its result: the base text's `SKILL.md`, answered as the
+arms answer a history read, at the path the context session's first read of the skill showed
+(`skillReads` points at it). Its `realStep` is the following step, its `violatingStep` the
+violating one, its `source` the context session's store and path hash with `kind` `written`, and
+its profile, working directory and system context the context session's; its evidence names each
+read of the context session its profile is built from (`context session read: …`), the task, the
+context session and the model. Secrets are taken out as from a session case. The `restate` reader
+reads the task and the read's call (never the skill's text): a restatement of the line drops the
+task (`written-restates`). The `audit` reader reads the line, the messages as the judge reads
+them and the following step: anything but `follows` drops the task (`written-not-followed`). The
+screen's three judge controls run on a written case as on a session case. The summary
+(`<out>.summary.json`) records the inputs, the context session, the model, each task's outcome
+(its case, or its drop reason and detail, with its restatement check and audit), the drops by
+reason and the readers' spend. The build does not go on from an earlier run: an `--out` that is
+there is refused (exit 2). `--budget-usd` stops it once its readers cost that much (exit 3), with
+the cases built so far written. Put the written cases after the skill's session cases in one file
+for `behaviour` (`cat cases.jsonl written.jsonl`), which screens the session cases first.
 
 A stopped build goes on where it stopped. The summary records the run's inputs: the cut, the
 skill, the seed, and the SHA-256 of `--old`'s files, the sessions file, the copies files read and

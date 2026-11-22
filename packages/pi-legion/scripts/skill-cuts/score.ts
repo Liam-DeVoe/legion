@@ -49,7 +49,8 @@ export const FLAG_GAP = 2;
 export const LOSS_GAP = 10;
 /** The informative cases a skill needs for a verdict; screening stops when it has them. */
 export const MIN_INFORMATIVE_CASES = 6;
-/** The screened cases after which screening of a skill stops, informative or not. */
+/** The screened cases of one kind (CaseKind) after which screening of that kind stops,
+ *  informative or not: at most this many session cases, and as many written cases after them. */
 export const MAX_SCREENED_CASES = 15;
 /** The sessions in the window that must read a skill before it is screened (one case per
  *  session). */
@@ -245,6 +246,11 @@ export function controlCase(
 
 /** A skill that gets no verdict, and why. */
 export type NoVerdict = { verdict: null; reason: string };
+/** The reason of a skill whose planted-loss control is no loss: deleting the case's line from the
+ *  old text changed nothing the rule detects (the line may be redundant, or the instrument
+ *  blind). */
+export const NO_CONTROL_LOSS =
+  "deleting the case's line showed no detectable change (planted-loss control not a loss)";
 /** A skill's verdict: the cut lost what a case's line makes agents do, or kept it; or no
  *  verdict. */
 export type SkillOutcome = { verdict: "loss" | "keeps" } | NoVerdict;
@@ -266,7 +272,7 @@ export function skillVerdict(counts: {
       reason: `fewer than ${MIN_INFORMATIVE_CASES} informative cases: ${counts.informative}`,
     };
   const failed = [
-    ...(counts.controlLoss ? [] : ["control not a loss"]),
+    ...(counts.controlLoss ? [] : [NO_CONTROL_LOSS]),
     ...(counts.falseLoss ? ["false-loss control a loss"] : []),
   ];
   if (failed.length > 0) return { verdict: null, reason: failed.join("; ") };
@@ -376,10 +382,141 @@ export function servedScreeningRefusal(counts: {
     : undefined;
 }
 
-/** Whether screening of a skill stops: it has MIN_INFORMATIVE_CASES informative cases, or
- *  MAX_SCREENED_CASES screened (counted) cases. */
-export function screeningDone(counts: { screened: number; informative: number }): boolean {
-  return counts.informative >= MIN_INFORMATIVE_CASES || counts.screened >= MAX_SCREENED_CASES;
+/** The kinds of a case: one step of a recorded session (`session`), or a written task in a
+ *  recorded session's context (`written`, built by `build-cases --written`). cases.ts's
+ *  `source.kind`; a case with none is a session case. */
+export const CaseKind = z.enum(["session", "written"]);
+export type CaseKind = z.infer<typeof CaseKind>;
+
+/** What says when screening of each kind of case stops: the informative cases, of either kind,
+ *  and the screened (counted) cases of each kind. */
+export interface ScreenCounts {
+  readonly informative: number;
+  readonly screened: Readonly<Record<CaseKind, number>>;
+}
+
+/** The screen counts of `score` (ScreenCounts), each case's kind by its id from `kindOf`. */
+export function screenCounts(
+  score: Pick<SkillScore, "cases" | "informative">,
+  kindOf: (caseId: string) => CaseKind
+): ScreenCounts {
+  const screened: Record<CaseKind, number> = { session: 0, written: 0 };
+  for (const each of score.cases) {
+    if (each.screen.state === "counted") screened[kindOf(each.caseId)] += 1;
+  }
+  return { informative: score.informative, screened };
+}
+
+/** Whether screening of a skill's cases of `kind` stops: the skill has MIN_INFORMATIVE_CASES
+ *  informative cases in all, or MAX_SCREENED_CASES screened (counted) cases of `kind`. */
+export function screeningDone(counts: ScreenCounts, kind: CaseKind): boolean {
+  return counts.informative >= MIN_INFORMATIVE_CASES || counts.screened[kind] >= MAX_SCREENED_CASES;
+}
+
+/** `cases` in the order the screen takes them: every session case, then every written case, each
+ *  kind in its order in `cases`. So written cases are screened only after the session cases are
+ *  all screened or have stopped at their cap. */
+export function screenOrder<T>(cases: readonly T[], kindOf: (each: T) => CaseKind): T[] {
+  return [
+    ...cases.filter((each) => kindOf(each) === "session"),
+    ...cases.filter((each) => kindOf(each) === "written"),
+  ];
+}
+
+// Descriptions beside the registered rule: they decide no verdict.
+
+/** ln Γ(x) for x > 0, by Lanczos's series (g = 7, nine terms). */
+function logGamma(x: number): number {
+  const terms = [
+    0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313,
+    -176.61502916214059, 12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6,
+    1.5056327351493116e-7,
+  ];
+  if (x < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * x)) - logGamma(1 - x);
+  const z = x - 1;
+  let sum = terms[0] ?? 0;
+  for (let i = 1; i < terms.length; i += 1) sum += (terms[i] ?? 0) / (z + i);
+  const t = z + 7.5;
+  return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(sum);
+}
+
+/** The regularized incomplete beta function I_x(a, b), by its continued fraction (Lentz's
+ *  method), taken on the side of x where it converges fast. */
+function incompleteBeta(x: number, a: number, b: number): number {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+  if (x > (a + 1) / (a + b + 2)) return 1 - incompleteBeta(1 - x, b, a);
+  const front = Math.exp(
+    logGamma(a + b) - logGamma(a) - logGamma(b) + a * Math.log(x) + b * Math.log(1 - x)
+  );
+  const tiny = 1e-30;
+  let f = 1;
+  let c = 1;
+  let d = 0;
+  for (let i = 0; i <= 400; i += 1) {
+    const m = Math.floor(i / 2);
+    const numerator =
+      i === 0
+        ? 1
+        : i % 2 === 0
+          ? (m * (b - m) * x) / ((a + 2 * m - 1) * (a + 2 * m))
+          : -((a + m) * (a + b + m) * x) / ((a + 2 * m) * (a + 2 * m + 1));
+    d = 1 + numerator * d;
+    d = 1 / (Math.abs(d) < tiny ? tiny : d);
+    c = 1 + numerator / c;
+    if (Math.abs(c) < tiny) c = tiny;
+    f *= c * d;
+    if (Math.abs(1 - c * d) < 1e-15) break;
+  }
+  return (front * (f - 1)) / a;
+}
+
+/** The 97.5% point of Student's t with `df` degrees of freedom: the t at which its distribution
+ *  function, 1 − I_{df/(df+t²)}(df/2, 1/2) / 2, is 0.975, found by bisection. */
+function tQuantile975(df: number): number {
+  let low = 0;
+  let high = 1000;
+  for (let n = 0; n < 200; n += 1) {
+    const t = (low + high) / 2;
+    const below = 1 - incompleteBeta(df / (df + t * t), df / 2, 0.5) / 2;
+    if (below < 0.975) low = t;
+    else high = t;
+  }
+  return (low + high) / 2;
+}
+
+/** The mean of `differences` (one per screened case: old's screen pass rate less the compared
+ *  arm's), with its 95% interval clustered by case: each case's difference is one observation, so
+ *  the interval is Student's t over the cases, mean ± t(0.975, n − 1) × s / √n. One case gives no
+ *  interval, and none gives undefined. */
+export function meanDifference(
+  differences: readonly number[]
+):
+  | { cases: number; mean: number; interval: { low: number; high: number } | undefined }
+  | undefined {
+  const cases = differences.length;
+  if (cases === 0) return undefined;
+  const mean = differences.reduce((sum, each) => sum + each, 0) / cases;
+  if (cases === 1) return { cases, mean, interval: undefined };
+  const variance = differences.reduce((sum, each) => sum + (each - mean) ** 2, 0) / (cases - 1);
+  const half = (tQuantile975(cases - 1) * Math.sqrt(variance)) / Math.sqrt(cases);
+  return { cases, mean, interval: { low: mean - half, high: mean + half } };
+}
+
+/** How many of the screened cases `cases` (old's and the compared arm's screen passes, of `runs`
+ *  runs each) tie (the two pass alike), floor (a tie at no pass), ceil (a tie at every run) and
+ *  reverse (the compared arm passes more than old). A floor and a ceiling are ties too. */
+export function screenShapes(
+  cases: readonly { readonly old: number; readonly compared: number }[],
+  runs = SCREEN_RUNS
+): { ties: number; floors: number; ceilings: number; reverse: number } {
+  const ties = cases.filter((each) => each.old === each.compared);
+  return {
+    ties: ties.length,
+    floors: ties.filter((each) => each.old === 0).length,
+    ceilings: ties.filter((each) => each.old === runs).length,
+    reverse: cases.filter((each) => each.compared > each.old).length,
+  };
 }
 
 // The rule's chance of a loss, and each case's smallest drop.

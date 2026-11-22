@@ -18,6 +18,7 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import { readTargets, SessionMessage } from "../skill-scenarios/transcript";
 import { schemaFaults } from "./common";
+import { CaseKind } from "./score";
 
 /** A file of a repository at a commit: the repository (`owner/name`), the commit, and the path
  * inside it. */
@@ -119,7 +120,10 @@ const InsidePath = z
  * `violatingStep` is an assistant message the case reader wrote before any run: a plausible next
  * step that breaks the line and otherwise looks like a valid one (the same goal, the same kind of
  * tool calls); the judge must fail it (judge.ts, `judgeControls`). `source`
- * names the store and the SHA-256 of the transcript's path (`pathHash`), never the path.
+ * names the store and the SHA-256 of the transcript's path (`pathHash`), never the path, and the
+ * case's kind (`caseKind`): `session` (one step of that session) or `written` (a written task in
+ * that session's context, `build-cases --written`); a case with no kind is a session case, so a
+ * case file written before cases had a kind loads as it was.
  * `secretsRemoved` counts what the secret scan took out of the case before it left the pod, and
  * `sessionDigest` is the session's last `system-prompt-digest` before the step, or null.
  * `evidence`, when the case builder wrote it, says where each part of the case came from that the
@@ -162,6 +166,7 @@ export const Case = z.strictObject({
   source: z.strictObject({
     store: z.string().min(1),
     pathHash: z.string().regex(/^[0-9a-f]{64}$/),
+    kind: CaseKind.optional(),
   }),
   sessionStart: z.iso.datetime({ offset: true }),
   secretsRemoved: z.int().nonnegative(),
@@ -175,6 +180,12 @@ export type Case = z.infer<typeof Case>;
 /** The `source.pathHash` of a transcript path. */
 export function pathHash(transcriptPath: string): string {
   return createHash("sha256").update(transcriptPath).digest("hex");
+}
+
+/** Whether case `c` is a session case or a written one: its `source.kind`, a case with none read
+ *  as a session case. */
+export function caseKind(c: Pick<Case, "source">): CaseKind {
+  return c.source.kind ?? "session";
 }
 
 /** The file of skill `skill` that a `read` of `target` reads, as a path inside the skill

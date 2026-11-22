@@ -97,8 +97,10 @@
  * arm of ours, every judgement reads the case's skill name and ours as `the-skill` (blind.ts);
  * with `--new` or no skill compared, the judge reads the case's text as it is.
  *
- * - `screen`: per case in the file's order, until the skill has MIN_INFORMATIVE_CASES informative
- *   or MAX_SCREENED_CASES screened cases (score.ts): a case whose model the gateway does not serve
+ * - `screen`: the session cases first, in the file's order, then the written ones (cases.ts's
+ *   `caseKind`; score.ts's `screenOrder`), at most MAX_SCREENED_CASES screened cases of each kind,
+ *   until the skill has MIN_INFORMATIVE_CASES informative cases in all (`screeningDone`): a case
+ *   whose model the gateway does not serve
  *   (none of the configuration's `servedModels` has its id, its text after the last `/`) is
  *   dropped as `model-not-served`, and a case on a served model runs as that served
  *   `provider/model`, on the gateway route of its capture's body (gateway.ts); the three judge
@@ -110,10 +112,11 @@
  *   rounds of extra runs for the runs with no verdict, as score.ts's `stageOutcome` says, at most
  *   MAX_EXTRA_RUNS per arm. With `--reading-models <file>` (attribute.ts's
  *   `<cut id>/models/<skill>.json` of the skill: its reading sessions by model), a skill whose
- *   reading sessions on a model the gateway serves are fewer than MIN_READING_SESSIONS is refused
- *   before any model call (score.ts's `servedScreeningRefusal`: `too few sessions on served
- *   models`, with the served and total counts): it gets no verdict, and the walk of the cut's
- *   ranking goes on to its next skill.
+ *   reading sessions on a model the gateway serves are fewer than MIN_READING_SESSIONS gets no
+ *   session case screened (score.ts's `servedScreeningRefusal`: `too few sessions on served
+ *   models`, with the served and total counts): with no written case it is refused before any
+ *   model call, gets no verdict, and the walk of the cut's ranking goes on to its next skill;
+ *   with written cases, they are screened, and the refusal is never its reason for no verdict.
  * - `confirm`: FRESH_RUNS fresh runs of old and the compared arm for each flagged case. With
  *   `--case <id>`, FRESH_RUNS fresh runs of old and the compared arm on that case alone, with no
  *   flag gate and no gate of MIN_INFORMATIVE_CASES informative cases, into its own `--out`; an id
@@ -143,15 +146,23 @@
  *   0.9 and 0.7 and drops of 0.1 to 0.4), each screened case's smallest drop and their medians
  *   (score.ts's `dropFigures`), the estimated false-loss rate at the cases run
  *   (`falseLossChance`), the spend, the peak memory, how many captures' system-prompt digests
- *   differ from their session's, and the `--limits` text as it is. Its compared arm is the one
+ *   differ from their session's, and the `--limits` text as it is. Beside the verdict, as
+ *   descriptions: each kind's screened cases with each arm's screen passes and the informative
+ *   ones, the mean of old's screen pass rate less the compared arm's over the screened cases, all
+ *   and each kind's, with its 95% t interval over the cases (score.ts's `meanDifference`), the
+ *   screened cases that tie, floor, ceil and reverse (`screenShapes`), and the judge's identity
+ *   (judge.ts's `judgeIdentity`) with how many stages record it. Its compared arm is the one
  *   its results record. With `--reading-models`, it prints each model of the file with its
  *   sessions and
  *   whether the gateway serves it (the file's `served`), the sessions with no model and not
- *   queried, and the served models the screened cases ran on, each with its cases; a verdict's
- *   line then ends with the reading sessions it speaks for, on each served model its screened
- *   cases ran on (a model of the file counted under the served model of its id), and the ones it
- *   does not: on models the gateway does not serve, and on served models no screened case ran
- *   on; a skill the screen's refusal holds for gets no verdict. Without it, `report` says the
+ *   queried, and the served models the screened session cases ran on, each with its cases; a
+ *   verdict's line then ends with the reading sessions it speaks for, on each served model its
+ *   screened session cases ran on (a model of the file counted under the served model of its id),
+ *   and the ones it does not: on models the gateway does not serve, and on served models no
+ *   screened session case ran on. A written case is a written task, never a reading session: the
+ *   screened written cases are counted by model on a line of their own (`writtenTasksLine`), and a
+ *   skill whose screened cases are all written speaks for no reading sessions. A skill the
+ *   screen's refusal holds for gets no verdict. Without it, `report` says the
  *   reading sessions by model were not given, and its verdict names no models.
  *
  * Every round of a stage sends the runs of all its arms in one order, seeded by the round's
@@ -269,7 +280,7 @@ import {
   sessionHeads,
   userTurnKey,
 } from "./capture";
-import { type Case, loadCases, Thinking, textLines } from "./cases";
+import { type Case, caseKind, loadCases, Thinking, textLines } from "./cases";
 import {
   configFrom,
   json,
@@ -310,8 +321,10 @@ import {
   CONTROLS,
   ControlName,
   type Judged,
+  JudgeIdentity,
   judgeBlind,
   judgeControls,
+  judgeIdentity,
   newSeed,
 } from "./judge";
 import { Host, LOAD_MODEL, LOAD_THINKING, runLoad, skillName } from "./load";
@@ -353,6 +366,7 @@ import {
 import { type Replayed, replayInterleaved } from "./replay";
 import { main as resultsIndexMain } from "./results-index";
 import {
+  CaseKind,
   type CaseScore,
   Compared,
   DROP_CHANCE,
@@ -370,6 +384,9 @@ import {
   MAX_EXTRA_RUNS,
   MAX_SCREENED_CASES,
   MIN_INFORMATIVE_CASES,
+  meanDifference,
+  NO_CONTROL_LOSS,
+  type NoVerdict,
   type Passes,
   RunRecord,
   SCREEN_RUNS,
@@ -377,9 +394,13 @@ import {
   type SmallestDrop,
   STAGE_RUNS,
   Stage,
+  type StageOutcome,
   StageState,
   scoreSkill,
+  screenCounts,
   screeningDone,
+  screenOrder,
+  screenShapes,
   servedScreeningRefusal,
   skillVerdict,
   stageArms,
@@ -1853,8 +1874,9 @@ type OursNote = z.infer<typeof OursNote>;
  *  `texts` are the digests of `--old` and of `--new` or `--ours` it ran with, `compared` the arm
  *  the old text was compared with (a stage that records none was run with `--new`, before it was
  *  recorded), `ours` the arm of ours' note where its arms hold it, and `plantedLine` the line
- *  `minus` left out in place of the case's (control only). `sends` is SENDS. `usd` is what its
- *  calls cost at list price. */
+ *  `minus` left out in place of the case's (control only). `judge` is the judge's identity
+ *  (judge.ts's JudgeIdentity) when the stage was made, before its first judgement; a stage made
+ *  before it was recorded has none. `sends` is SENDS. `usd` is what its calls cost at list price. */
 const StageResult = z.strictObject({
   state: StageState,
   sends: z.literal(SENDS),
@@ -1866,6 +1888,7 @@ const StageResult = z.strictObject({
   compared: Compared.optional(),
   ours: OursNote.optional(),
   plantedLine: z.string().nullable(),
+  judge: JudgeIdentity.optional(),
   captures: z.record(z.string(), CaptureNote),
   seeds: z.array(z.string()),
   runs: z.array(Run),
@@ -2133,19 +2156,39 @@ function runRecords(results: Iterable<CaseResult>): RunRecord[] {
   return records;
 }
 
+/** The served-sessions refusal of `b`'s skill (score.ts's `servedScreeningRefusal`, with
+ *  `--reading-models`), which stops its session cases only: a case runs only on a served model, and
+ *  a written case is a written task on a served model, not a session. Undefined without
+ *  `--reading-models` or with enough reading sessions on served models. */
+function sessionRefusal(b: Behaviour): NoVerdict | undefined {
+  return b.readingModels === undefined ? undefined : servedScreeningRefusal(b.readingModels.count);
+}
+
+/** The kind of each case of `b` by its id (cases.ts's `caseKind`). */
+function kindsOf(b: Behaviour): (caseId: string) => CaseKind {
+  const kinds = new Map(b.cases.map((c) => [c.id, caseKind(c)]));
+  return (caseId) => kinds.get(caseId) ?? "session";
+}
+
 /** Why the screen of `b`'s skill is not finished, or undefined when it is: each case is dropped
- *  or has its screen counted or unscreened, or screening stopped before it at the case cap. */
+ *  or has its screen counted or unscreened, or the screen takes it no more: a session case the
+ *  served-sessions refusal stops (`sessionRefusal`), or a case of a kind whose screening stopped
+ *  (score.ts's `screeningDone`) before it. */
 function screenUnfinished(
   b: Behaviour,
   results: ReadonlyMap<string, CaseResult>,
   score: SkillScore
 ): string | undefined {
-  for (const c of b.cases) {
+  const counts = screenCounts(score, kindsOf(b));
+  const refused = sessionRefusal(b) !== undefined;
+  for (const c of screenOrder(b.cases, caseKind)) {
     const result = results.get(c.id);
     if (result !== undefined && result.dropped !== null) continue;
     const state = result?.stages.screen?.state;
     if (state === "counted" || state === "unscreened") continue;
-    if (result === undefined && screeningDone(score)) continue;
+    const kind = caseKind(c);
+    if (result === undefined && ((kind === "session" && refused) || screeningDone(counts, kind)))
+      continue;
     return `case ${c.id} is not screened yet`;
   }
   return undefined;
@@ -2188,11 +2231,32 @@ export function noVerdict(score: SkillScore): string | undefined {
     losses: 0,
   });
   if (outcome.verdict !== null) return undefined;
-  // Too few informative cases is the reason whatever the control is; with enough, an unscreened
-  // control is no control loss, and its reason says why.
-  return control?.state === "unscreened" && score.informative >= MIN_INFORMATIVE_CASES
-    ? `${outcome.reason}: its runs are unscreened`
-    : outcome.reason;
+  return reasonWords(outcome.reason, control, null);
+}
+
+/** A reason of score.ts's (`skillVerdict`) as the runner says it. Where the planted-loss
+ *  control's runs are unscreened, its reason (NO_CONTROL_LOSS) says so, since no deletion was
+ *  measured; else it names the line `minus` left out: `plantedLine` where one was given. */
+function reasonWords(
+  reason: string,
+  control: StageOutcome<"control"> | undefined,
+  plantedLine: string | null
+): string {
+  if (control?.state === "unscreened") {
+    return reason.replace(
+      NO_CONTROL_LOSS,
+      "planted-loss control not a loss: its runs are unscreened"
+    );
+  }
+  return plantedLine === null
+    ? reason
+    : reason.replace(
+        NO_CONTROL_LOSS,
+        NO_CONTROL_LOSS.replace(
+          "the case's line",
+          `the planted line ${JSON.stringify(plantedLine)}`
+        )
+      );
 }
 
 /** The drop of a case whose model the gateway does not serve, as its drop begins and the report
@@ -2441,6 +2505,7 @@ async function runStage(
     texts: r.texts,
     compared: r.compared,
     plantedLine: stage === "control" ? (r.dirs.plantedLine ?? null) : null,
+    judge: judgeIdentity(),
     captures: {},
     seeds: [],
     runs: [],
@@ -2588,7 +2653,25 @@ async function screenCommand(r: Runner): Promise<void> {
   const finished = async (result: CaseResult, phases: Phases): Promise<void> => {
     records.set(result.caseId, runRecords([await finishCase(r, result, "screen", phases)]));
   };
-  for (const c of r.cases) {
+  // The served-sessions refusal stops the session cases only; the setup refused a skill with no
+  // written case before any call.
+  const refused = sessionRefusal(r);
+  if (refused !== undefined) {
+    say(
+      r,
+      `session cases are not screened: ${refused.reason} (--reading-models ${r.readingModels?.file}); the written cases are`
+    );
+  }
+  const kindOf = kindsOf(r);
+  const stopped = new Set<CaseKind>();
+  // Session cases first, then written ones: up to MAX_SCREENED_CASES screened cases of each kind,
+  // until the skill has MIN_INFORMATIVE_CASES informative cases in all.
+  for (const c of screenOrder(r.cases, caseKind)) {
+    const kind = caseKind(c);
+    if (kind === "session" && refused !== undefined) {
+      stopped.add(kind);
+      continue;
+    }
     const phases = newPhases();
     let result = readResult(r, c.id);
     if (result !== undefined && result.dropped !== null) {
@@ -2601,12 +2684,23 @@ async function screenCommand(r: Runner): Promise<void> {
     }
     if (result === undefined) {
       const score = scoreSkill([...records.values()].flat(), r.compared);
-      if (screeningDone(score)) {
+      const counts = screenCounts(score, kindOf);
+      if (counts.informative >= MIN_INFORMATIVE_CASES) {
         say(
           r,
-          `screening stops before case ${c.id}: ${score.informative} informative and ${score.screened} screened cases (it stops at ${MIN_INFORMATIVE_CASES} informative or ${MAX_SCREENED_CASES} screened)`
+          `screening stops before case ${c.id}: ${score.informative} informative and ${score.screened} screened cases (it stops at ${MIN_INFORMATIVE_CASES} informative in all, or at ${MAX_SCREENED_CASES} screened cases of each kind)`
         );
         return;
+      }
+      if (screeningDone(counts, kind)) {
+        if (!stopped.has(kind)) {
+          say(
+            r,
+            `screening of ${kind} cases stops before case ${c.id}: ${counts.screened[kind]} ${kind} cases screened, ${score.informative} informative in all (it stops at ${MAX_SCREENED_CASES} screened cases of each kind)`
+          );
+        }
+        stopped.add(kind);
+        continue;
       }
       result = newResult(c);
       if (servedModel(c.model, r.servedModels) === undefined) {
@@ -2627,7 +2721,12 @@ async function screenCommand(r: Runner): Promise<void> {
     }
     await finished(await runStage(r, c, "screen", result, phases), phases);
   }
-  say(r, "every case of the file is screened");
+  say(
+    r,
+    stopped.size === 0
+      ? "every case of the file is screened"
+      : `the screen is done: it takes no more ${[...stopped].join(" or ")} cases`
+  );
 }
 
 /** `behaviour confirm`. */
@@ -2753,13 +2852,18 @@ function stageLine(result: CaseResult, stage: Stage): string {
 /** `count` with `word`, plural unless the count is 1: `1 session`, `2 sessions`. */
 const counted = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
-/** The served models the screened (counted) cases of `score` ran on, each case on the served model
- *  of its model's id (`servedModel`), with its screened cases, most first, a tie by model. */
-function screenedModels(b: Behaviour, score: SkillScore): { model: string; cases: number }[] {
+/** The served models the screened (counted) cases of `kind` of `score` ran on, each case on the
+ *  served model of its model's id (`servedModel`), with its screened cases, most first, a tie by
+ *  model. */
+function screenedModels(
+  b: Behaviour,
+  score: SkillScore,
+  kind: CaseKind
+): { model: string; cases: number }[] {
   const cases = new Map<string, number>();
   for (const each of score.cases) {
     const c = b.cases.find((candidate) => candidate.id === each.caseId);
-    if (c === undefined || each.screen.state !== "counted") continue;
+    if (c === undefined || each.screen.state !== "counted" || caseKind(c) !== kind) continue;
     const model = servedModel(c.model, b.servedModels) ?? c.model;
     cases.set(model, (cases.get(model) ?? 0) + 1);
   }
@@ -2768,9 +2872,18 @@ function screenedModels(b: Behaviour, score: SkillScore): { model: string; cases
     .sort((x, y) => y.cases - x.cases || x.model.localeCompare(y.model));
 }
 
+/** The report's line of the screened written cases by the served model each ran on: written
+ *  tasks in a recorded session's context, counted apart and never as reading sessions. */
+function writtenTasksLine(b: Behaviour, score: SkillScore): string {
+  const ran = screenedModels(b, score, "written");
+  if (ran.length === 0) return "written tasks: none screened";
+  return `written tasks: ${ran.map((item) => `${item.cases} on ${item.model}`).join(", ")} (screened written cases: each a written task in a recorded session's context, never a reading session)`;
+}
+
 /** The report's lines on the skill's reading sessions by model (`--reading-models`): each model
  *  of the file with its sessions and whether the gateway serves it, the sessions with no model and
- *  not queried, and the served models the screened cases ran on; or one line saying they were not
+ *  not queried, and the served models the screened session cases ran on; or one line saying they
+ *  were not
  *  given. */
 function modelLines(b: Behaviour, score: SkillScore): string[] {
   if (b.readingModels === undefined) {
@@ -2779,7 +2892,7 @@ function modelLines(b: Behaviour, score: SkillScore): string[] {
     ];
   }
   const { file, count } = b.readingModels;
-  const ran = screenedModels(b, score)
+  const ran = screenedModels(b, score, "session")
     .map((item) => `${item.model} ${counted(item.cases, "case")}`)
     .join(", ");
   return [
@@ -2789,22 +2902,27 @@ function modelLines(b: Behaviour, score: SkillScore): string[] {
         `  ${item.model}: ${counted(item.sessions, "session")}, ${item.served ? "served" : "not served"} by the gateway`
     ),
     `  with no model (its file's head names none): ${count.noModel}; not queried (in no models query's rows): ${count.notQueried}`,
-    `screened cases by the served model they ran on: ${ran || "none"}`,
+    `screened session cases by the served model they ran on: ${ran || "none"}`,
   ];
 }
 
 /** The end of a verdict's line with `--reading-models`: the reading sessions the verdict speaks
- *  for, on each served model its screened cases ran on (a served model of the file counted under
- *  the one of its id), and those it does not: the sessions on models the gateway does not serve,
- *  and any on served models no screened case ran on. Empty without `--reading-models`. */
+ *  for, on each served model its screened session cases ran on (a served model of the file counted
+ *  under the one of its id), and those it does not: the sessions on models the gateway does not
+ *  serve, and any on served models no screened session case ran on. A written case is a written
+ *  task, never a reading session, so a skill whose screened cases are all written speaks for no
+ *  reading sessions. Empty without `--reading-models`. */
 function speaksFor(b: Behaviour, score: SkillScore): string {
   const count = b.readingModels?.count;
   if (count === undefined) return "";
-  const spoken = screenedModels(b, score).map(({ model }) => ({
+  const spoken = screenedModels(b, score, "session").map(({ model }) => ({
     model,
     id: modelId(model),
     sessions: 0,
   }));
+  if (spoken.length === 0) {
+    return "; it speaks for no reading sessions: its screened cases are all written tasks, never reading sessions";
+  }
   let unserved = 0;
   let otherServed = 0;
   for (const item of count.byModel) {
@@ -2820,20 +2938,21 @@ function speaksFor(b: Behaviour, score: SkillScore): string {
     `; it speaks for the reading sessions on ${models}; not for the ${counted(unserved, "session")} on models the gateway does not serve` +
     (otherServed === 0
       ? ""
-      : `; nor for the ${counted(otherServed, "session")} on served models no screened case ran on`)
+      : `; nor for the ${counted(otherServed, "session")} on served models no screened session case ran on`)
   );
 }
 
 /** The skill's verdict as one line: the verdict and its reason, or what it waits for; a verdict
  *  ends with the reading sessions it speaks for (`speaksFor`). With `--reading-models`, a skill
- *  too few of whose reading sessions are on served models (`servedScreeningRefusal`) gets none. */
+ *  too few of whose reading sessions are on served models (`servedScreeningRefusal`) gets none
+ *  when it has no written case; one with written cases is screened on them, and its reason is
+ *  theirs. */
 function verdictLine(
   b: Behaviour,
   results: ReadonlyMap<string, CaseResult>,
   score: SkillScore
 ): string {
-  const refusal =
-    b.readingModels === undefined ? undefined : servedScreeningRefusal(b.readingModels.count);
+  const refusal = b.cases.some((c) => caseKind(c) === "written") ? undefined : sessionRefusal(b);
   if (refusal !== undefined) return `none: ${refusal.reason}`;
   const unfinished = screenUnfinished(b, results, score);
   if (unfinished !== undefined) return `not yet: ${unfinished} (behaviour screen)`;
@@ -2843,7 +2962,12 @@ function verdictLine(
       ? "not yet: the control runs are not all made (behaviour control)"
       : "not yet: the confirm runs of a flagged case are not all made (behaviour confirm)";
   }
-  if (outcome.verdict === null) return `none: ${outcome.reason}`;
+  if (outcome.verdict === null) {
+    const controlResult =
+      score.controlCase === undefined ? undefined : results.get(score.controlCase);
+    const planted = controlResult?.stages.control?.plantedLine ?? null;
+    return `none: ${reasonWords(outcome.reason, score.control, planted)}`;
+  }
   const flagged = score.cases.filter((each) => each.flagged).length;
   const control = `the planted-loss control (case ${score.controlCase}) is a loss and its false-loss control is no loss`;
   if (outcome.verdict === "keeps") {
@@ -2903,21 +3027,126 @@ function comparedLine(b: Behaviour, results: ReadonlyMap<string, CaseResult>): s
   return `compared arm: ${ours}, a bundle: their skill hidden, ours at the given text (it replaced the profile's own ${name})${some}`;
 }
 
-/** Whether case `c` is a session case or a written one: its `source.kind`, a case with none read
- *  as a session case. */
-function caseKind(c: Case): "session" | "written" {
-  return Reflect.get(c.source, "kind") === "written" ? "written" : "session";
-}
-
 /** The report's line of the cases of each kind, and the informative cases of each. */
 function kindLine(b: Behaviour, score: SkillScore): string {
   const informative = new Set(score.cases.filter((c) => c.informative).map((c) => c.caseId));
-  const words = (["session", "written"] as const).map((kind) => {
+  const words = CaseKind.options.map((kind) => {
     const cases = b.cases.filter((c) => caseKind(c) === kind);
     const of = cases.filter((c) => informative.has(c.id)).length;
     return `${cases.length} ${kind} (${of} informative)`;
   });
   return `cases by kind: ${words.join(", ")}`;
+}
+
+/** The screened (counted) cases of `score` with their screen passes, the old text's and the
+ *  compared arm's among them (`compared`: no skill's, with no skill compared), and each case's
+ *  kind. */
+function screenedCases(
+  b: Behaviour,
+  score: SkillScore
+): {
+  caseId: string;
+  kind: CaseKind;
+  passes: Partial<Record<ArmName, number>>;
+  informative: boolean;
+  old: number;
+  compared: number;
+}[] {
+  const kindOf = kindsOf(b);
+  return score.cases.flatMap((each) => {
+    if (each.screen.state !== "counted") return [];
+    const passes: Partial<Record<ArmName, number>> = each.screen.passes;
+    return [
+      {
+        caseId: each.caseId,
+        kind: kindOf(each.caseId),
+        passes,
+        informative: each.informative,
+        old: passes.old ?? 0,
+        compared: passes[b.compared] ?? 0,
+      },
+    ];
+  });
+}
+
+/** The report's lines of each kind's screened cases, a description beside the registered rule:
+ *  their ids, how many are informative, and each screen arm's passes summed over them. */
+function screenedKindLines(b: Behaviour, score: SkillScore): string[] {
+  const screened = screenedCases(b, score);
+  return CaseKind.options.map((kind) => {
+    const cases = screened.filter((each) => each.kind === kind);
+    if (cases.length === 0) return `screened ${kind} cases: none`;
+    const passes = stageArms("screen", b.compared)
+      .map(
+        (arm) =>
+          `${arm} ${cases.reduce((sum, each) => sum + (each.passes[arm] ?? 0), 0)}/${cases.length * SCREEN_RUNS}`
+      )
+      .join(", ");
+    const informative = cases.filter((each) => each.informative).length;
+    return `screened ${kind} cases: ${cases.length} (${cases.map((each) => each.caseId).join(", ")}), ${informative} informative; screen passes ${passes}`;
+  });
+}
+
+/** The report's line of the mean over the screened cases of old's screen pass rate less the
+ *  compared arm's, each case one observation, with its 95% interval clustered by case (score.ts's
+ *  `meanDifference`): over all of them and over each kind's. A description beside the registered
+ *  rule, which it does not change. */
+function meanLine(b: Behaviour, score: SkillScore): string {
+  const screened = screenedCases(b, score);
+  const words = (kind: CaseKind | undefined): string => {
+    const mean = meanDifference(
+      screened
+        .filter((each) => kind === undefined || each.kind === kind)
+        .map((each) => (each.old - each.compared) / SCREEN_RUNS)
+    );
+    if (mean === undefined) return "none";
+    const head = `${counted(mean.cases, "case")} ${mean.mean.toFixed(2)}`;
+    return mean.interval === undefined
+      ? `${head} (one case, so no interval)`
+      : `${head} (95% interval ${mean.interval.low.toFixed(2)} to ${mean.interval.high.toFixed(2)}, t over the cases)`;
+  };
+  return `mean of old less ${b.compared} in screen pass rate, each screened case one observation (a description beside the registered rule): all ${words(undefined)}; ${CaseKind.options.map((kind) => `${kind} ${words(kind)}`).join("; ")}`;
+}
+
+/** The report's line of the screened cases that tie, floor, ceil and reverse, old against the
+ *  compared arm in the screen (score.ts's `screenShapes`). */
+function shapesLine(b: Behaviour, score: SkillScore): string {
+  const shapes = screenShapes(screenedCases(b, score));
+  return `screened cases, old against ${b.compared} in the screen: ${counted(shapes.ties, "tie")}, ${counted(shapes.floors, "floor")} (0 of ${SCREEN_RUNS} in both), ${counted(shapes.ceilings, "ceiling")} (${SCREEN_RUNS} of ${SCREEN_RUNS} in both), ${counted(shapes.reverse, "reverse gap")} (${b.compared} above old); a floor or a ceiling is a tie too`;
+}
+
+/** The report's line of the judge's identity (judge.ts's `judgeIdentity`): the SHA-256 of
+ *  `prompts/judge.md` and its pinned settings, and how many stages of the results record it,
+ *  record another, and record none (a stage made before the identity was recorded). */
+function judgeLine(results: ReadonlyMap<string, CaseResult>): string {
+  const now = judgeIdentity();
+  const settings = (identity: JudgeIdentity) =>
+    Object.entries(identity.settings)
+      .map(([key, value]) => `${key} ${value}`)
+      .join(", ");
+  let stages = 0;
+  let same = 0;
+  let none = 0;
+  const others = new Map<string, number>();
+  for (const result of results.values()) {
+    for (const stage of Stage.options) {
+      const judge = result.stages[stage]?.judge;
+      if (result.stages[stage] === undefined) continue;
+      stages += 1;
+      if (judge === undefined) none += 1;
+      else if (judge.sha256 === now.sha256 && settings(judge) === settings(now)) same += 1;
+      else {
+        const other = `sha256 ${judge.sha256} (${settings(judge)})`;
+        others.set(other, (others.get(other) ?? 0) + 1);
+      }
+    }
+  }
+  const other = [...others.values()].reduce((sum, count) => sum + count, 0);
+  const which =
+    others.size === 0
+      ? ""
+      : ` (${[...others].map(([each, count]) => `${each} by ${count}`).join("; ")})`;
+  return `judge: prompts/judge.md sha256 ${now.sha256}; ${settings(now)}; recorded by ${same} of the ${stages} stages of the results, another judge by ${other}${which}, none by ${none}${none === 0 ? "" : " (judged before the judge's identity was recorded)"}`;
 }
 
 /** The report's line of each model of the cases, with its cases, most first, a tie by model. */
@@ -3036,6 +3265,7 @@ function reportCommand(given: Behaviour): void {
     `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${dropped.length} dropped (${byControls} by the judge controls, ${notServed} ${MODEL_NOT_SERVED}, ${unreadable} ${UNREADABLE_DIRECTORY}), ${unscreened} unscreened, ${b.cases.length - results.size} not run`
   );
   lines.push(kindLine(b, score));
+  lines.push(...screenedKindLines(b, score), meanLine(b, score), shapesLine(b, score));
   const byControl = ControlName.options.map((name) => {
     const count = dropped.filter((result) => result.controls?.failed.includes(name)).length;
     return `${CONTROLS[name].step} not judged ${CONTROLS[name].wanted} ${count}`;
@@ -3061,7 +3291,7 @@ function reportCommand(given: Behaviour): void {
   }
   if (b.compared === "ours") lines.push(...oursAgainstOldLines(results, score));
   lines.push(caseModelsLine(b));
-  lines.push(...modelLines(b, score));
+  lines.push(...modelLines(b, score), writtenTasksLine(b, score));
   lines.push(`verdict: ${verdictLine(b, results, score)}`);
 
   const percent = (x: number) => `${(100 * x).toFixed(2)}%`;
@@ -3113,6 +3343,7 @@ function reportCommand(given: Behaviour): void {
   lines.push(
     `digests: ${differ.length} of ${notes.size} captures' system-prompt digests differ from their session's`
   );
+  lines.push(judgeLine(results));
   const total = controlsUsd + stageUsd.screen + stageUsd.confirm + stageUsd.control;
   lines.push(
     `spend at list price: $${total.toFixed(4)} (judge controls $${controlsUsd.toFixed(4)}, screen $${stageUsd.screen.toFixed(4)}, confirm $${stageUsd.confirm.toFixed(4)}, control $${stageUsd.control.toFixed(4)})`
@@ -3268,13 +3499,17 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     reportCommand(behaviour);
     return EXIT.ok;
   }
-  if (command === "screen" && behaviour.readingModels !== undefined) {
-    const refusal = servedScreeningRefusal(behaviour.readingModels.count);
-    if (refusal !== undefined) {
-      throw new Refused(
-        `the skill ${cases[0]?.skill} gets no verdict, and no case of it is screened: ${refusal.reason} (--reading-models ${readingModels}); the walk of the cut's ranking goes on to its next skill`
-      );
-    }
+  // The served-sessions refusal stops the session cases only: a skill with written cases is
+  // screened on them (screenCommand).
+  const refusal = sessionRefusal(behaviour);
+  if (
+    command === "screen" &&
+    refusal !== undefined &&
+    !cases.some((c) => caseKind(c) === "written")
+  ) {
+    throw new Refused(
+      `the skill ${cases[0]?.skill} gets no verdict, and no case of it is screened: ${refusal.reason} (--reading-models ${readingModels}); the walk of the cut's ranking goes on to its next skill`
+    );
   }
 
   const comparedDir = values.new ?? values.ours;
