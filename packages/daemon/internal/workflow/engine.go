@@ -2073,7 +2073,10 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return intake.Result{}, err
 	}
-	if refusal, err := e.stepMovedRefusal(ctx, tx, *issue, phase.RoleFor(issue.Hold.From), fact.Claim); err != nil || refusal != nil {
+	// The role the hold is from is the issue's at that phase (record.Issue.RoleAt): for a hold from
+	// step, the role of the step it was held at, which the held issue keeps, since phase.RoleFor
+	// knows no role of step.
+	if refusal, err := e.stepMovedRefusal(ctx, tx, *issue, issue.RoleAt(issue.Hold.From), fact.Claim); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
 	// The architect's own words where it named any, which the restarted role's task and the log

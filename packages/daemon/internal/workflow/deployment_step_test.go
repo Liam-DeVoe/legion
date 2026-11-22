@@ -321,6 +321,31 @@ func TestARetryOfADeploymentStepRestartsItsRole(t *testing.T) {
 		}
 	})
 
+	// The operator's retry of a claim (api's retryClaim) names that claim, and the claim it names is
+	// fenced against the claim on the step of the role the hold is from: the step's role, which the
+	// held issue still records, and not the role of the phase step, which is none.
+	t.Run("the operator's retry of a hold from step names the step's claim", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := deploymentEngine()
+		root := checkerAtStep2(t, pool)
+		applyRefusingNothing(t, pool, engine, intake.ClaimFailed{Issue: root.Key, Role: "checker", Reason: "the pane died"})
+		project, err := claim.ProjectToken(root.Project)
+		if err != nil {
+			t.Fatalf("the project token: %v", err)
+		}
+		checker, err := claim.NewToken(project, root.Key, "checker")
+		if err != nil {
+			t.Fatalf("the checker's token: %v", err)
+		}
+
+		applyRefusingNothing(t, pool, engine, intake.RetryOrEscalate{Issue: root.Key, Decision: intake.RetryDecision, Claim: checker})
+
+		assertWalksAt(t, pool, engine, root.Key, phase.Step, stepPlace(2))
+		if starts := roleStartsOf(t, pool, root.Key, "checker"); len(starts) != 1 || starts[0].Phase != phase.Step {
+			t.Fatalf("the checker's starts after the operator's retry = %+v, want one, of step", starts)
+		}
+	})
+
 	t.Run("the operator's restart", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := deploymentEngine()
