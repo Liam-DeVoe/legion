@@ -2116,6 +2116,9 @@ func unacknowledged(err error, mayHold bool) error {
 // Once one send of the call is such a send, every failure after it wraps it too, the resend's and
 // that of the reconnect before the resend, since the first send may have stored the message. The
 // resend's acknowledgement is Resent, since its Duplicate may name the copy the first send stored.
+// The resend after a reconnect starts under the loop's own rule (nearEnd): not once ctx is
+// canceled or within noStreamMargin of its deadline, when the call fails with the first send's
+// answer instead.
 func (c *Client) sendStored(ctx context.Context, subject string, data []byte, options ...nats.PubOpt) (StoredAck, error) {
 	once := append(slices.Clone(options), nats.RetryAttempts(0))
 	live := false
@@ -2137,10 +2140,12 @@ func (c *Client) sendStored(ctx context.Context, subject string, data []byte, op
 		if err := c.ensureConnWithContext(ctx); err != nil {
 			return StoredAck{}, unacknowledged(err, mayHold)
 		}
-		sentAt = time.Now()
-		resent = true
-		ack, err = sentAgainWhileNoStream(ctx, publish, gone)
-		mayHold = mayHold || live && sendUnanswered(err)
+		if !nearEnd(ctx) {
+			sentAt = time.Now()
+			resent = true
+			ack, err = sentAgainWhileNoStream(ctx, publish, gone)
+			mayHold = mayHold || live && sendUnanswered(err)
+		}
 	}
 	if err != nil {
 		if denied := c.deniedPublish(subject, sentAt); denied != nil {

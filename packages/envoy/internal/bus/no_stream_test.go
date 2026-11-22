@@ -120,6 +120,46 @@ func TestAWriteNoStreamTookIsNotSentAgainPastItsDeadline(t *testing.T) {
 	}
 }
 
+// nearDeadline is a context that has not ended and whose deadline, each time it is read after its
+// first far reads, is 99 ms away: a context within noStreamMargin of its deadline however long
+// the code reading it took. The first far reads answer a deadline an hour away.
+type nearDeadline struct {
+	context.Context
+	far   int32
+	reads atomic.Int32
+}
+
+func (c *nearDeadline) Deadline() (time.Time, bool) {
+	if c.reads.Add(1) <= c.far {
+		return time.Now().Add(time.Hour), true
+	}
+	return time.Now().Add(99 * time.Millisecond), true
+}
+
+// The loop sends nothing again within noStreamMargin of its context's deadline: here 99 ms away,
+// before the pause, after one "no response from stream". A margin under 99 ms sends it again.
+func TestAWriteNoStreamTookIsNotSentAgainWithinTheMarginOfItsDeadline(t *testing.T) {
+	write := &scriptedWrite{script: []error{nats.ErrNoStreamResponse}}
+	ctx := &nearDeadline{Context: context.Background()}
+	if _, err := sentAgainWhileNoStream(ctx, write.send, write.streamGone); !errors.Is(err, nats.ErrNoStreamResponse) || write.sends != 1 {
+		t.Fatalf("a write no stream took 99 ms before its deadline = %v after %d sends, want nats.ErrNoStreamResponse after one send", err, write.sends)
+	}
+}
+
+// The loop reads its deadline again after the pause, and sends nothing again when the pause brought
+// it within noStreamMargin: here the deadline is an hour away when read before the pause and 99 ms
+// away when read after it.
+func TestAWriteNoStreamTookIsNotSentAgainWhenThePauseBringsItsDeadlineNear(t *testing.T) {
+	write := &scriptedWrite{script: []error{nats.ErrNoStreamResponse}}
+	ctx := &nearDeadline{Context: context.Background(), far: 1}
+	if _, err := sentAgainWhileNoStream(ctx, write.send, write.streamGone); !errors.Is(err, nats.ErrNoStreamResponse) || write.sends != 1 {
+		t.Fatalf("a write no stream took whose pause brought its deadline within 99 ms = %v after %d sends, want nats.ErrNoStreamResponse after one send", err, write.sends)
+	}
+	if reads := ctx.reads.Load(); reads < 2 {
+		t.Fatalf("the loop read its deadline %d times, want before and after the pause", reads)
+	}
+}
+
 // The pause between two sends grows with each send and stops growing at 2 s: drawn at its top, it
 // is 50 ms after the first send, then 250 ms, 500 ms, 1 s, 2 s and 2 s.
 func TestThePauseBetweenSendsGrowsUpToTwoSeconds(t *testing.T) {
@@ -319,6 +359,23 @@ func TestAPutWhoseCallerGaveUpLandsNothingAfterItsNextWrite(t *testing.T) {
 	}
 }
 
+// A put through a handle given its caller's context sends nothing when the caller's deadline is
+// within noStreamMargin: the jetstream handle sends under a context that ends noStreamMargin
+// before the caller's deadline, so with that deadline 99 ms away the put is refused before it
+// leaves, and answers a timeout. Without the margin it would go out and be stored.
+func TestAPutWhoseCallerHasLessThanTheMarginLeftSendsNothing(t *testing.T) {
+	kv, legacy, _, _ := countedBucket(t, "envoy_no_stream_margin_test")
+	before := legacy.conn.Stats().OutMsgs
+	_, err := kv.Within(&nearDeadline{Context: context.Background()}).Put("key", []byte("value"))
+	sent := legacy.conn.Stats().OutMsgs - before
+	if !errors.Is(err, nats.ErrTimeout) || sent != 0 || legacy.sends.Load() != 0 {
+		t.Fatalf("a put whose caller's deadline is 99 ms away = %v after %d messages (%d through the legacy handle), want nats.ErrTimeout and none", err, sent, legacy.sends.Load())
+	}
+	if entry, err := kv.Get("key"); !errors.Is(err, nats.ErrKeyNotFound) {
+		t.Fatalf("read the key = %v, %v; want it not stored", entry, err)
+	}
+}
+
 // A write the stream refuses is not sent again: here an update at a revision the key has moved
 // past, which the stream answers with its conflict at once.
 func TestAConflictingUpdateIsSentOnce(t *testing.T) {
@@ -470,5 +527,41 @@ func TestAStoredPublishToAStreamThatIsGoneIsSentOnceAndStoresNothing(t *testing.
 	}
 	if sent := counted.messages(); !slices.Equal(sent, []uint64{1}) {
 		t.Fatalf("messages the connection sent during each publish = %v, want [1]: one send, not sent again", sent)
+	}
+}
+
+// closedFirstPublisher is a client's JetStream context whose first publish answers that the
+// connection closed under it, without sending, and whose later publishes go through; it counts
+// every publish.
+type closedFirstPublisher struct {
+	nats.JetStreamContext
+	calls atomic.Int32
+}
+
+func (p *closedFirstPublisher) Publish(subject string, data []byte, opts ...nats.PubOpt) (*nats.PubAck, error) {
+	if p.calls.Add(1) == 1 {
+		return nil, nats.ErrConnectionClosed
+	}
+	return p.JetStreamContext.Publish(subject, data, opts...)
+}
+
+// The stored path's send again after a reconnect starts under the loop's rule: not within
+// noStreamMargin of the publish's deadline. Here the first send answers that the connection closed,
+// the connection is there again, and the deadline is 99 ms away: the call fails with the first
+// send's answer after one publish.
+func TestAStoredPublishIsNotSentAgainAfterAReconnectWithinTheMarginOfItsDeadline(t *testing.T) {
+	client, err := ConnectOwningStream([]string{testnats.URL(t)}, WithKeepInterval(time.Hour))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	publisher := &closedFirstPublisher{JetStreamContext: client.JS()}
+	client.mu.Lock()
+	client.js = publisher
+	client.mu.Unlock()
+	ctx := &nearDeadline{Context: context.Background()}
+	_, err = client.sendStored(ctx, offSubjectEnvelope.Topic, []byte(`{}`), nats.Context(ctx))
+	if !errors.Is(err, nats.ErrConnectionClosed) || publisher.calls.Load() != 1 {
+		t.Fatalf("a publish whose connection closed under it 99 ms before its deadline = %v after %d publishes, want nats.ErrConnectionClosed after one", err, publisher.calls.Load())
 	}
 }

@@ -35,15 +35,18 @@ import (
 // Between two sends it waits noStreamPause, which grows with each send, so the writes of every
 // client a recovering cluster has made wait do not all come back at once. No send again starts
 // once ctx is canceled or within noStreamMargin of its deadline (nearEnd), and the last send's
-// answer is returned then, nats.ErrNoStreamResponse itself, so a caller still reads that the
-// stream stored nothing. That is why this loop is the bus's and not nats.go's RetryAttempts(-1):
-// nats.go's loop sends again with a ctx that ended in its pause and answers ctx's error
-// (js.go:598-618), which the stored path must read as a send that may have stored the message
-// (sendUnanswered); the bucket's legacy writes take no publish options at all; and a delete's
-// options (nats.DeleteOpt) cannot be read outside nats.go to build the publish here. Any other
-// answer is returned at once. A send already in flight when the bound ends is answered by its own
-// wait, which the stored path reads as a send that may have stored the message, as it did before
-// writes were sent again.
+// answer is returned then. For the stored path that is nats.ErrNoStreamResponse itself, so a
+// caller still reads that the stream stored nothing. A bucket write through a handle given its
+// caller's context (writtenOn) sends under a context that ends noStreamMargin earlier, so a send
+// of it that runs into that end answers a timeout, or a cancel, and that is the answer returned:
+// a write no stream takes until its bound usually ends so. That is why this loop is the bus's and
+// not nats.go's RetryAttempts(-1): nats.go's loop sends again with a ctx that ended in its pause
+// and answers ctx's error (js.go:598-618), which the stored path must read as a send that may have
+// stored the message (sendUnanswered); the bucket's legacy writes take no publish options at all;
+// and a delete's options (nats.DeleteOpt) cannot be read outside nats.go to build the publish here.
+// Any other answer is returned at once. A send already in flight when the bound ends is answered
+// by its own wait, which the stored path reads as a send that may have stored the message, as it
+// did before writes were sent again.
 func sentAgainWhileNoStream[T any](ctx context.Context, send func() (T, error), gone func(context.Context) bool) (T, error) {
 	for sent := 1; ; sent++ {
 		value, err := send()
