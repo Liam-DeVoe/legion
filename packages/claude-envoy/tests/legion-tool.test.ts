@@ -8,6 +8,7 @@ import {
   type ClaimCapability,
   PHASE_OP_SENTENCES,
   PHASE_OPS,
+  phaseOpsOf,
 } from "@legion/pi-shared/legion-phase-ops"
 import { stateAtPhase } from "@legion/pi-shared/test/daemon-state"
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest"
@@ -178,9 +179,9 @@ const grantRequest = {
 
 // The phase ops are defined once, in `PHASE_OPS`, and every host's `legion` tool serves that list:
 // this MCP tool and pi-legion's (`packages/pi-legion/src/tools.test.ts` holds the same of it), so
-// the two list the same phase ops, review_verdict among them.
+// the two list the same phase ops, review_verdict among them, to a review step's agent.
 test("declares the phase ops, PHASE_OPS, under one op, and names the Envoy publish tool as Claude Code shows it", () => {
-  const definition = legionToolDefinition()
+  const definition = legionToolDefinition({ LEGION_ROLE: "reviewer" })
   expect(definition.name).toBe("legion")
   expect(definition.inputSchema.properties?.["op"]).toMatchObject({ enum: [...PHASE_OPS] })
   expect(definition.inputSchema).toMatchObject({
@@ -241,6 +242,24 @@ test("declares the phase ops, PHASE_OPS, under one op, and names the Envoy publi
     "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The daemon refuses the tester's move out of testing (BACKWARD_REFUSED), since a testing step ends by its checks' states: the tester records each check's result with `dispatch result`, a fail with its evidence for a check it cannot verify, and completes. The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing, and names in `commit` the head it sends back. That move is its acceptance's changes at that head, which the daemon takes only at the pull request's current head (VERDICT_HEAD_NOT_CURRENT). That move counts a review round. review_verdict answers the daemon's request, when the head of the pull request moves while its issue stands past its review (accepting, retro or merging), for a verdict on the new head from the agent of each review step of the issue's task that has passed: the reviewer, and the owning architect on the issue whose acceptance it ran. Send `verdict` approve or changes, `commit` that head, and `summary`; an architect names in `issue` the issue it accepted, and a reviewer leaves `issue` out. It writes no handoff and ends no phase. The daemon takes it only from such an agent (VERDICT_CALLER_FORBIDDEN), only past review (VERDICT_NOT_PAST_REVIEW) and only on the pull request's current head (VERDICT_HEAD_NOT_CURRENT). read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. It also reports the contract the daemon states on its answer to the health route. That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. The two numbers can differ, and the answer shows both. Report the version this call answers, never the one at the plugin's path on the image. In a pod, an Oh My Pi role relaunched onto the daemon's contract loads the build that relaunch installed under the role's own state home, and a Claude Code role installs no plugin: it loads its pod image's own claude-envoy. read_build reads no project state. What a later phase needs",
   )
   expect(definition.description).toContain("with mcp__legion__envoy_publish.")
+})
+
+// The runtime sets `LEGION_ROLE` on every pane before Claude Code starts this server, so the tool
+// list Claude Code reads, which the server builds before the pane's claim registers, offers the
+// phase ops of the pane's role (`phaseOpsOf`): review_verdict to a review step's agent alone. A
+// pane whose environment names no Legion role is one this server cannot tell, so it lists every
+// phase op, and the shared executor holds review_verdict by the role the claim registered.
+test("lists the phase ops of the pane's role, review_verdict to a review step's agent alone", () => {
+  const listed = (env: Record<string, string | undefined>) =>
+    (legionToolDefinition(env).inputSchema.properties?.["op"] as { enum?: unknown } | undefined)
+      ?.enum
+  for (const role of LEGION_ROLES)
+    expect(listed({ LEGION_ROLE: role }), role).toEqual([...phaseOpsOf(role)])
+  expect(listed({ LEGION_ROLE: "tester" })).not.toContain("review_verdict")
+  expect(listed({ LEGION_ROLE: "reviewer" })).toContain("review_verdict")
+  for (const env of [{}, { LEGION_ROLE: "" }, { LEGION_ROLE: "deployer" }]) {
+    expect(listed(env), JSON.stringify(env)).toEqual([...PHASE_OPS])
+  }
 })
 
 test("handoff_complete finds the record and commit for the issue's phase and the claim's role, then mints its grant and posts them", async () => {

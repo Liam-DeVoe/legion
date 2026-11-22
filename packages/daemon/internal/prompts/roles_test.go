@@ -821,3 +821,37 @@ func TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI(t *testing.T) {
 		}
 	}
 }
+
+// The tester's token holds `contents: read` (appauth.SetTester), so a push of its own is refused.
+// Every role of an issue works the one workspace of that issue (tmux.WorkspaceDir and
+// sandbox.WorkspaceDir name it by the issue alone), so a red-test commit the tester makes there is
+// in the history the implementer's next push carries, and an idle release keeps it, since the
+// release's bundle holds every commit no remote holds (shim's bundleKeptRevset). So the composed
+// tester prompt tells the tester that it pushes nothing and where its red tests go, and keeps no
+// instruction to push them; and the implementer, whose push carries them, is told that those
+// commits are the one kind of commit it did not make that it may push. Putting back "Push your red
+// tests", or dropping either sentence, fails here. This shows the text is loaded, never that a
+// tester or an implementer follows it.
+func TestTheTesterPushesNothingAndTheImplementersPushCarriesItsRedTests(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	tester := foldWhitespace(composedText(t, composer, claim.RoleTester, false))
+	for _, want := range []string{
+		"the `evidence` of its `failures` entry names the test, its commit and the command that shows it failing",
+		"You push nothing, not even for an update message: your token holds `contents: read`.",
+		"Your red-test commits stay in the issue's workspace, which every role of the issue shares, and the implementer's next push carries them to the branch",
+	} {
+		if !strings.Contains(tester, want) {
+			t.Errorf("the composed tester prompt omits %q", want)
+		}
+	}
+	if retired := "Push your red tests"; strings.Contains(tester, retired) {
+		t.Errorf("the composed tester prompt still tells the tester to push, which its `contents: read` token cannot: %q", retired)
+	}
+	const carried = "every commit you push must be one you made in this turn, or, for the implementer, a red-test commit the tester left there"
+	if implementer := foldWhitespace(composedText(t, composer, claim.RoleImplementer, false)); !strings.Contains(implementer, carried) {
+		t.Errorf("the composed implementer prompt omits %q, so it holds the tester's red-test commits off its push", carried)
+	}
+}

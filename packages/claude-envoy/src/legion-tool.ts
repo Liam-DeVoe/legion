@@ -1,4 +1,4 @@
-import type { LegionRole } from "@legion/contracts"
+import { isLegionRole, type LegionRole } from "@legion/contracts"
 import type { LegionPhase } from "@legion/contracts/legion-api"
 import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import type { HandoffReport } from "@legion/pi-shared/handoff-record"
@@ -9,6 +9,7 @@ import {
   PHASE_OP_SENTENCES,
   PHASE_OPS,
   phaseOpParameters,
+  phaseOpsOf,
   pluginBuildOf,
 } from "@legion/pi-shared/legion-phase-ops"
 import { z } from "zod"
@@ -26,11 +27,17 @@ export const LEGION_TOOL_NAME = "legion"
 
 /** The tool as `tools/list` declares it: one object schema, `op` choosing one of the phase ops
  * (`PHASE_OPS` of `@legion/pi-shared/legion-phase-ops`), the list pi-legion's `legion` tool serves
- * too. The schema is the same for every claim, since the server builds its tool list once, before
- * the pane's claim registers; the shared executor refuses review_verdict to every claim whose
- * role runs no review step (`REVIEW_STEP_ROLES` of `@legion/pi-shared/legion-phase-ops`), by the
- * role the claim registered (`ClaimCapability.role`). */
-export function legionToolDefinition() {
+ * too. The server builds its tool list once, before the pane's claim registers, so the role it
+ * offers the phase ops of (`phaseOpsOf`) is the pane's `LEGION_ROLE`, which the runtime sets on
+ * every pane: review_verdict is listed to a review step's agent alone. An environment that names
+ * no Legion role lists every phase op, and the shared executor refuses review_verdict to every
+ * claim whose role runs no review step, by the role the claim registered
+ * (`ClaimCapability.role`). */
+export function legionToolDefinition(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+) {
+  const role = env["LEGION_ROLE"]
+  const ops = role !== undefined && isLegionRole(role) ? phaseOpsOf(role) : PHASE_OPS
   return {
     name: LEGION_TOOL_NAME,
     description: legionToolDescription({
@@ -41,7 +48,7 @@ export function legionToolDefinition() {
         PHASE_OP_SENTENCES.reviewVerdict +
         PHASE_OP_SENTENCES.readBuild,
     }),
-    inputSchema: z.toJSONSchema(z.object({ op: z.enum(PHASE_OPS), ...phaseOpParameters(z) })),
+    inputSchema: z.toJSONSchema(z.object({ op: z.enum(ops), ...phaseOpParameters(z) })),
   }
 }
 

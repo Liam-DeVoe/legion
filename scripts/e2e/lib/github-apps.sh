@@ -48,10 +48,10 @@
 #                                         app_key_unsets, and no process a proof starts with that
 #                                         list (the listener, Dispatch, the daemon, the bridge)
 #                                         inherits it.
-# The review App's inputs, LEGION_E2E_REVIEW_APP_ID and LEGION_E2E_REVIEW_APP_KEY_COMMAND, are read
-# by nothing here: a caller that still passes them (a deployment's own workflow, until it drops
-# them) is neither refused nor served, and the key command is still in app_key_unsets, since its
-# value may be a key.
+# The retired second App's inputs, LEGION_E2E_REVIEW_APP_ID and LEGION_E2E_REVIEW_APP_KEY_COMMAND,
+# are read by nothing here: a caller that still passes them (a deployment's own workflow, until it
+# drops them) is neither refused nor served, and the key command is still in app_key_unsets, since
+# its value may be a key.
 # write_github_apps writes the `github_apps` block of legion.yaml from them, one credential field,
 # which is what the daemon admits: in token mode a token_command that runs
 # `agent-secrets <secret> … -- …` (or reads the release file the refresher below wrote, when its
@@ -186,7 +186,7 @@ app_key_squeezed() {
 #
 # It records the roles it read for write_github_apps, and sets app_key_unsets: `-u NAME` for the
 # App's profile name and its read profile's, in token mode, for the default's two, for
-# LEGION_REVIEW_APP, the name of the broker secret that released the retired review App's tokens,
+# LEGION_REVIEW_APP, the name of the broker secret that released the retired second App's tokens,
 # for GH_REVIEW_APP_PRIVATE_KEY_B64, the variable an older recipe's private_key_command read that
 # App's key out of, for LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND and LEGION_E2E_REVIEW_APP_KEY_COMMAND,
 # whose values may be keys themselves (the second read by nothing here, the header says why), and
@@ -283,7 +283,7 @@ require_app_inputs() {
     app_key_unsets+=(-u "$implement_app_secret" -u "${implement_app_secret}_READ")
   fi
   # The default's two profiles; LEGION_REVIEW_APP, the broker secret that released the retired
-  # review App's tokens; GH_REVIEW_APP_PRIVATE_KEY_B64, the variable an older recipe's
+  # second App's tokens; GH_REVIEW_APP_PRIVATE_KEY_B64, the variable an older recipe's
   # private_key_command read that App's key out of; and the two key commands. A stale export of
   # any of the first four must not reach a process the run starts, and neither must a key command:
   # the refusals above turn back the common pastes of a key, but a value that holds one and still

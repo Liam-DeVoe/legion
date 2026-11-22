@@ -49,8 +49,9 @@ export interface ClaimCapability {
  * A phase worker's operations on the daemon's role-local workflow surface, which every host's
  * `legion` tool serves: pi-legion's (`packages/pi-legion/src/tools.ts`, beside the architect's and
  * the controller's operations) and claude-envoy's MCP tool (`packages/claude-envoy/src/legion-tool.ts`).
- * `review_verdict` is a review step's agent's alone (`REVIEW_STEP_ROLES`), which `executePhaseOp`
- * holds for every host.
+ * `review_verdict` is a review step's agent's alone (`REVIEW_STEP_ROLES`): each host offers a
+ * claim's session the phase ops of its role (`phaseOpsOf`), and `executePhaseOp` holds it for
+ * every host.
  */
 export const PHASE_OPS = [
   "read_record",
@@ -73,6 +74,15 @@ export function isPhaseOp(op: string): op is PhaseOp {
  * an architect's. A role a plan defines runs no step in this release (`plan.Supported`).
  * `review_verdict` is theirs alone on every host. */
 const REVIEW_STEP_ROLES: readonly LegionRole[] = ["reviewer", "architect"];
+
+/** The phase ops a claim of `role` runs, which a host offers that claim's session: every one for
+ * a role whose claim runs a review step (`REVIEW_STEP_ROLES`), and every one but `review_verdict`
+ * for each other role. */
+export function phaseOpsOf(role: LegionRole): readonly PhaseOp[] {
+  return REVIEW_STEP_ROLES.includes(role)
+    ? PHASE_OPS
+    : PHASE_OPS.filter((op) => op !== "review_verdict");
+}
 
 /** A string field `op` requires: present, and not blank. The value is passed on as it was sent. */
 const requiredString = (op: PhaseOp, field: string) => {

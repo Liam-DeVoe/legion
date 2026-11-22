@@ -613,7 +613,7 @@ for tool in go psql jq curl python3 tmux bun mise secrets agent-secrets gh jj ha
 # and cleanup removes.
 declare -F require_app_inputs >/dev/null ||
   fail "ACCEPT_ROOT's scripts/e2e/lib/workflow.sh ($root) predates lib/github-apps.sh: point ACCEPT_ROOT at a checkout that has it"
-# A lib from before the one App asks GitHub for a review App this run gives none, and reads no
+# A lib from before the one App asks GitHub for a second App this run gives none, and reads no
 # reviewer verdict from the daemon's record, so it is refused by name rather than mid-run.
 declare -F app_key_mode assert_legion_verdict reviewer_verdict_recorded reviewer_newest_verdict >/dev/null ||
   fail "ACCEPT_ROOT's scripts/e2e/lib ($root) predates the one App and the reviewer's verdict: point ACCEPT_ROOT at a checkout that has them"

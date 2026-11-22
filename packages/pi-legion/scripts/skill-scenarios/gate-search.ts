@@ -132,11 +132,42 @@ const NO_CHECK =
   "An issue with no `before_merge` check, so no check whose answer is read: the acceptance decides its delivered items.";
 const MERGE_OF_THE_BASE =
   "Which checks run again after a merge of the base, and that a pass from before that merge carries none to its head. It states no condition of an approval, an acceptance or a merge of the pull request.";
+const VERDICT_WRITER =
+  "The daemon's rule for `legion-verdict` at a head, from each review step's verdict and Dispatch's state of each check there. No agent approves or accepts by it: the reviewer's gate and the architect's, each in its role part, state their facts.";
+const NO_CARRY =
+  "That no pass and no verdict carries to a later head. It states no condition of an approval, an acceptance or a merge of the pull request.";
+const ACCEPTANCE_PAST_REVIEW =
+  "Where the testing step's pass at a head past review comes from, and that the acceptance reads it there, with no condition of its own: the condition is section 6 of `skill://legion-architect`, which states each fact of R16.";
 const ENTRIES: readonly Entry[] = [
   {
     file: "packages/daemon/internal/prompts/go/architect-common.md",
     has: "the `phase-finished` notice of the step before it",
     keep: ACCEPTANCE_STEP,
+  },
+  {
+    file: "packages/daemon/internal/prompts/go/architect-common.md",
+    has: "`legion-verdict` at a head is `success` only once each review step's verdict there is `approve`",
+    keep: VERDICT_WRITER,
+  },
+  {
+    file: "packages/daemon/internal/prompts/go/architect-common.md",
+    has: "The testing step passes at the new head only by the states Dispatch publishes of its checks there",
+    keep: ACCEPTANCE_PAST_REVIEW,
+  },
+  {
+    file: "packages/daemon/internal/prompts/go/reviewer.md",
+    has: "The daemon writes `legion-verdict` at a head from the steps of the task's plan",
+    keep: VERDICT_WRITER,
+  },
+  {
+    file: "packages/daemon/internal/prompts/go/reviewer.md",
+    has: "It writes `success` there once each review step's verdict is `approve`",
+    keep: VERDICT_WRITER,
+  },
+  {
+    file: "packages/daemon/internal/prompts/go/reviewer.md",
+    has: "A pass or a verdict at an earlier commit counts at no later head",
+    keep: NO_CARRY,
   },
   {
     file: "packages/daemon/internal/prompts/go/worker-common.md",

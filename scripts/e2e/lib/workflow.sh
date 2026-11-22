@@ -511,12 +511,16 @@ request_changes_as_reviewer() {
   until_true 300 "the daemon's record of $issue's round $round verdict changes on pull request #$pr_number, from the reviewer's claim $(claim_token "$issue" reviewer)" \
     reviewer_verdict_recorded "$issue" "$round" changes
 }
-# reviewer_verdicts ISSUE prints each verdict the daemon records of ISSUE's reviewer, oldest first,
-# one a line, `<verdict> <head> <claim>`: the rows the workflow writes into `verdicts` when it
-# records a reviewer's verdict (workflow's recordVerdict), approve or changes, on the head the
-# verdict names, from the claim that gave it. It prints nothing before the reviewer's first verdict.
+# reviewer_verdicts ISSUE prints each verdict the daemon records from ISSUE's reviewer's claim,
+# oldest first, one a line, `<verdict> <head> <claim>`: the rows the workflow writes into
+# `verdicts` when it records a review step's verdict (workflow's recordVerdict), approve or
+# changes, on the head the verdict names, from the claim that gave it, kept only where that claim
+# is the reviewer's, since the owner's acceptance is a row of the same table. It prints nothing
+# before the reviewer's first verdict.
 reviewer_verdicts() {
-  db_value "select verdict || ' ' || head || ' ' || session from verdicts where issue = '$1' order by id"
+  local rows
+  rows=$(db_value "select verdict || ' ' || head || ' ' || session from verdicts where issue = '$1' order by id") || return 1
+  awk -v claim="$(claim_token "$1" reviewer)" '$3 == claim' <<<"$rows"
 }
 # reviewer_newest_verdict ISSUE COUNT prints the newest of those, `<verdict> <head> <claim>`, once
 # the daemon records at least COUNT verdicts of ISSUE's reviewer and the newest is from the

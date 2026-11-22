@@ -551,11 +551,11 @@ func TestTokenModeAPendingApprovalIsTransient(t *testing.T) {
 }
 
 // A human-tier profile's grant is reused, and its waiting request joined, only for the same
-// target, so while the review App's request for one owner waits on a person, the request for a
+// target, so while the App's request for one owner waits on a person, the request for a
 // second owner is refused REQUEST_PENDING, `agent-secrets` exiting 1. That refusal is no answer
 // about the App or the owner: it is transient, as exit 75 is, and a grant that waits
 // (ErrApprovalPending). It is not GitHub's trouble, so it holds no other owner's permission read
-// (internal/daemon's reviewAppClient); it is no answer about the installation either, so a gh
+// (internal/daemon's permissionClient); it is no answer about the installation either, so a gh
 // bundle that needs the second owner fails as it does on GitHub's trouble (credential.go's
 // leaveOutReason) and is minted again at its next refresh. The stand-in answers the first owner's
 // release and refuses the second's as the broker does; any other exit 1 stays the configuration's

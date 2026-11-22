@@ -18,6 +18,8 @@ const appsFn = scriptFunctions(apps);
 const helperGuard = nameMissingHelpers(workflow);
 const app = "example-implement[bot]";
 const claim = "legion-acme-acme-7-reviewer";
+// The owner's acceptance is a verdict row of the issue too, from the architect's claim.
+const owner = "legion-acme-acme-7-architect";
 const head = "1111111111111111111111111111111111111111";
 const older = "2222222222222222222222222222222222222222";
 
@@ -218,6 +220,15 @@ describe("request_changes_as_reviewer", () => {
     ).not.toBe(0);
     // The newest verdict is not the round's changes.
     expect(decided(verdicts(["changes", older, claim], ["approve", head, claim]))).not.toBe(0);
+    // The owner's acceptance between the reviewer's rounds is no verdict of this reviewer's, so it
+    // counts toward no round: two of the reviewer's verdicts are no third round's.
+    const withOwner = verdicts(
+      ["changes", older, claim],
+      ["approve", older, owner],
+      ["changes", head, claim]
+    );
+    expect(decided(withOwner, 3)).not.toBe(0);
+    expect(decided(withOwner, 2)).toBe(0);
     expect(decided("")).not.toBe(0);
   });
 });
@@ -276,10 +287,8 @@ describe("assert_reviewer_verdict", () => {
   test("fails naming what the daemon recorded when the verdict is of another head, claim or word", () => {
     for (const [rows, shown] of [
       [verdicts(["changes", older, claim]), `changes ${older} ${claim}`],
-      [
-        verdicts(["changes", head, "legion-acme-acme-7-tester"]),
-        `changes ${head} legion-acme-acme-7-tester`,
-      ],
+      // A verdict of another claim is none of the reviewer's.
+      [verdicts(["changes", head, "legion-acme-acme-7-tester"]), "none"],
       [verdicts(["approve", head, claim]), `approve ${head} ${claim}`],
       ["", "none"],
     ] as const) {
@@ -292,6 +301,15 @@ describe("assert_reviewer_verdict", () => {
         `ACME-7's reviewer verdict at round 1 is '${shown}', want 'changes ${head} ${claim}'`
       );
     }
+  });
+
+  test("reads the reviewer's own newest verdict, never the owner's after it", () => {
+    const { code, stderr } = run("assert_reviewer_verdict ACME-7 1 changes", {
+      verdicts: verdicts(["changes", head, claim], ["approve", head, owner]),
+      state: state(head, "changes_requested"),
+    });
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
   });
 
   test("fails when the daemon's state shows another decision for the round", () => {

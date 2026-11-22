@@ -428,7 +428,7 @@ func controllerEnvironment(cfg config.ControllerConfig, stateDir, secretFile, gh
 // that pane, and otherwise the first gh on the operator's PATH that is not this state directory's
 // own wrapper (workerbin.LauncherDir), which would run itself, and that is no script
 // (daemon.RefuseScriptGH): a gh wrapper of the operator's machine there would answer in place of
-// the review App's token. Either is an executable file; a LEGION_GH_PATH that is relative, absent
+// the one App's token. Either is an executable file; a LEGION_GH_PATH that is relative, absent
 // or not executable, a script first on PATH, and no gh at all, are refused before the daemon is
 // asked for anything, since the mint that follows replaces the running controller's capability.
 func controllerRealGH(stateDir string) (string, error) {

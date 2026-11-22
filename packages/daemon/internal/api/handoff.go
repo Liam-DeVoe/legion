@@ -956,7 +956,7 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 	repository := s.serving(recordedRepo)
 	lease, err := s.tokens.ReadToken(ctx, repository.Owner())
 	if err != nil {
-		logUnread(fmt.Errorf("mint the implement App token for %s: %w", repository, err))
+		logUnread(fmt.Errorf("mint the read token for %s: %w", repository, err))
 		return true
 	}
 	github := githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(s.githubAPI, repository)}

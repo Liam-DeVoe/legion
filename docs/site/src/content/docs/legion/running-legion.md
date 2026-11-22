@@ -264,10 +264,11 @@ for the accounts the profile its command names lists, each an account of the sec
 
 `--webhook-url` becomes the Envoy App's webhook. That App's webhook secret is the listener's
 `ENVOY_GITHUB_WEBHOOK_SECRET`, its client id is Dispatch's `DISPATCH_APP_CLIENT_ID`, and its
-private key, as the PEM GitHub gives or its base64, is `DISPATCH_APP_PEM_B64`. The review App's id
-is the listener's `ENVOY_VERDICT_APP_ID` and Dispatch's `DISPATCH_VERDICT_APP_ID` (each still reads
-its former name, `ENVOY_REVIEWER_APP_ID` or `DISPATCH_REVIEWER_APP_ID`, while the new one is
-unset); set both, because with neither of Dispatch's set its CI reconcile pass records no `tester`
+private key, as the PEM GitHub gives or its base64, is `DISPATCH_APP_PEM_B64`. The implement App's
+id, that of the one App every role works as (`github_apps.implement`), is the listener's
+`ENVOY_VERDICT_APP_ID` and Dispatch's `DISPATCH_VERDICT_APP_ID` (each still reads its former name,
+`ENVOY_REVIEWER_APP_ID` or `DISPATCH_REVIEWER_APP_ID`, while the new one is unset); set both,
+because with neither of Dispatch's set its CI reconcile pass records no `legion-verdict`, `tester`
 or `architect` check run. Store the private keys where `github_apps.<role>` and
 Dispatch read them, delete the files, then install every App from
 `https://github.com/apps/<slug>/installations/new` on the same repositories.

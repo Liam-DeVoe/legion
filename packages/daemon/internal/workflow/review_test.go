@@ -1293,7 +1293,7 @@ func TestARoundNoReviewDecidesTellsTheArchitect(t *testing.T) {
 // request for changes from an account without write access, or another App. A round the reviewer
 // completed undecided stays stuck, the architect is told nothing more, and the reviewer's verdict
 // still ends the round.
-func TestOnlyTheReviewAppOrAWriterDecidesARound(t *testing.T) {
+func TestOnlyAWritersRequestForChangesDecidesARound(t *testing.T) {
 	submitted := time.Date(2026, 9, 23, 0, 1, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name, author, state string
