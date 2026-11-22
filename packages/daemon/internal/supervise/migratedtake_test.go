@@ -262,8 +262,9 @@ func (h *harness) wantFinishedOnceAndRelaunchedEmpty() {
 //     came on. That the first connection's answer, replayed on the next ahead of the take's
 //     agent_start, reaches the machine as no answer, since that connection never asked it, is the
 //     stream's to hold (Conn.stateAnswered), and stream's conn_test is what catches it.
-//   - An ask the agent does not answer: asked again at the next sweep, and relaunched at the
-//     reconnect deadline counted from the hello, by the lane, charged nothing.
+//   - An ask the agent does not answer: not asked again at the next sweep (row 31 of the plan's
+//     state table, v121), and relaunched at the reconnect deadline armed at the hello, by the lane,
+//     charged nothing.
 //   - A hello whose connection closed before the daemon asked on it, from a shim that cannot
 //     reach the daemon again: no ask is made, and the claim is relaunched at the same deadline,
 //     the same way. Negative control: askRestoredTurn arming no bound with no connection — the
@@ -352,8 +353,8 @@ func TestBootRelaunchOfAStaleClaimWaitsForTheTurnOverAnswer(t *testing.T) {
 		h.connect()
 		h.advance(deadline / 2)
 		h.observe(runtime.Alive)
-		if asks := h.logs.lines("supervise: the agent could not say whether it is in a turn"); len(asks) != 2 {
-			t.Fatalf("the asks the agent left unanswered are %q, want the hello's and the sweep's", asks)
+		if asks := h.logs.lines("supervise: the agent could not say whether it is in a turn"); len(asks) != 1 {
+			t.Fatalf("the asks the agent left unanswered are %q, want the hello's alone: no sweep asks its connection again", asks)
 		}
 		h.wantRelaunchedUnchargedAtTheDeadline()
 	})

@@ -32,17 +32,23 @@ import (
 // (turnStarted): no bound runs over a turn, and its end arms them whole. "Not in a turn" over a
 // claim read in a turn is read as that turn's end (turnEnded), so a lost end frame leaves no claim
 // working for ever, and the bounds are armed whole from the answer. Every answer the daemon reads
-// is applied by that one rule (applyTurnAnswer): this ask's, and a daemon start's own.
+// makes the view whole in one place (answerView), which ends the reconnect deadline below, and is
+// applied there by that one rule (applyTurnAnswer): this ask's, and a daemon start's own.
 //
-// The ask is made once on each reconnect hello, never again at a sweep. Its one bound is the
-// reconnect deadline (TimerRegistration, reconnectBound), armed at the hello and disarmed by the
-// answer or a turn frame: at it the process is relaunched, charged nothing, and the task taken
-// back as a cut turn (reconnectDeadline). A later hello is a new connection, which asks once on it
-// and arms the deadline again. A daemon start's own ask — of a claim restored working (askFirst,
-// askTurnOver) or holding a take on a stale plugin (askTurn, askRestoredTurn) — serves only the
-// first hello since that start, the one that makes it (startAskServes), since the stream reads an
-// answer only on the connection that asked: that hello asks no second time, and every later hello
-// over a pending task asks its own, so no connection is asked twice.
+// The ask is made once on each reconnect hello over a pending task, and never again at a sweep
+// while that connection stands (helloAsked, observe). Its one bound is the reconnect deadline
+// (TimerRegistration, reconnectBound), armed whole at the hello and disarmed by the answer or a
+// turn frame: at it the process is relaunched, charged nothing, and the task taken back as a cut
+// turn (reconnectDeadline). A later hello is a new connection, which asks once on it and arms the
+// deadline again. A daemon start's own ask — of a claim restored working (askFirst, askTurnOver) or
+// holding a take on a stale plugin (askTurn, askRestoredTurn) — serves only the first hello since
+// that start, the one that makes it (startAskServes), since the stream reads an answer only on the
+// connection that asked: that hello asks no second time and arms the same deadline whole, and
+// every later hello over a pending task asks its own, so no connection is asked twice. An answer
+// to any of these asks answers the daemon start's own too, which ends with it (askFirst, askTurn).
+// A hello over no pending task asks nothing of its own: a daemon start's own ask is made at it
+// and again at each sweep until it is answered, as before, the stall backstop bounding a working
+// claim and the deadline askRestoredTurn arms a stale one.
 //
 // A close of a live process whose claim holds a pending task arms the reconnect deadline, whole
 // from the close: a hello ends it, and at it the process is probed, and a live one retired and
@@ -103,7 +109,8 @@ const viewAskedLine = "supervise: the shim reconnected over a pending task; the 
 const viewUnansweredLine = "supervise: the agent did not say whether it is in a turn after its shim reconnected; the bounds on the worker wait for a turn frame or the reconnect deadline"
 
 // viewAnsweredLine is the line of the answer that makes the view whole again (answerView), at Info,
-// with whether the agent is in a turn.
+// with whether the agent is in a turn: the answer to a reconnect hello's ask, or to a daemon start's
+// own ask of the first hello since that start.
 const viewAnsweredLine = "supervise: the agent said whether it is in a turn after its shim reconnected; the bounds on the worker run again from here"
 
 // viewUnansweredRelaunchLine is the line of the reconnect deadline of a hello no answer or turn
@@ -119,12 +126,13 @@ const viewUnansweredRelaunchLine = "supervise: the agent did not say whether it 
 const viewCutLine = "supervise: the daemon no longer sees every frame of the worker's turns; the bounds on the worker stand still until it does again"
 
 // viewWholeLine is the line of the claim's view becoming whole again (setView), at Info, with the
-// task pending where one is: the new process's first hello (helloed, enrolledOnly), a reconnect
-// hello over no pending task (askView), the agent's answer to a hello's ask (answerView) or to a
-// daemon start's own ask (askTurnOver, turnAnswered), a turn frame (seeView), and the let-go of
-// the process, whose next one opens a connection of its own (letGo). The bounds the view held
-// still are armed whole from here, as each one's other conditions allow. The cost reading starts
-// the claim's clocks again at it, whole (ReadTaskCost).
+// task pending where one is: the new process's first hello (helloed), a hello of a shim that
+// reconnected before its agent said it is ready (enrolledOnly), a reconnect hello over no pending
+// task (askView), the agent's answer to a hello's ask or to a daemon start's own ask (answerView:
+// turnAnswered, askTurnOver), a turn frame (seeView), and the let-go of the process, whose next one
+// opens a connection of its own (letGo). The bounds the view held still are armed whole from here,
+// as each one's other conditions allow. The cost reading starts the claim's clocks again at it,
+// whole (ReadTaskCost).
 const viewWholeLine = "supervise: the daemon sees every frame of the worker's turns again; the bounds on the worker run again, whole, from here"
 
 // setView is the claim's view of the worker's turns becoming v (connSeen). Every change of it goes
@@ -156,15 +164,17 @@ func (m *Machine) reconnectBound() time.Duration {
 }
 
 // closeView is the claim's connection closing (closed): the view is cut, so the three bounds go at
-// the end of this decision (armWaits). A live process whose agent said it is ready and whose claim
-// holds a pending task is given the reconnect deadline, whole from the close, unless one stands
-// already (armReconnectForTask): the deadline of a hello's ask still unanswered, or of a daemon
-// start's own. A claim not ready keeps the registration deadline it runs under, and its ready,
-// with no hello since, keeps a reconnect deadline whole from this close (readyView); one holding
-// no pending task is given none.
+// the end of this decision (armWaits), and the ask of that connection's hello goes with it
+// (helloAsked). A live process whose agent said it is ready and whose claim holds a pending task
+// is given the reconnect deadline, whole from the close, unless one stands already
+// (armReconnectForTask): the deadline of a hello's ask still unanswered, or of a daemon start's
+// own. A claim not ready keeps the registration deadline it runs under, and its ready, with no
+// hello since, keeps a reconnect deadline whole from this close (readyView); one holding no
+// pending task is given none.
 func (m *Machine) closeView() {
 	m.setView(viewClosed)
 	m.closedAt = m.deps.Clock.Now()
+	m.helloAsked = false
 	if m.claim.Pending != nil {
 		m.armReconnectForTask()
 	}
@@ -244,21 +254,25 @@ func (m *Machine) startAskServes() bool {
 
 // askView reads the view a reconnect hello opens (reconnected, reconnectedMidTurn), and answers
 // whether it asked. A claim holding no pending task asks nothing, and its view is whole. One
-// holding a task waits for the agent's answer or a turn frame (viewAsked): the hello asks once,
-// here, and arms the reconnect deadline whole from the hello, unless it is the first hello since a
-// daemon start whose own ask serves it (startAskServes), whose bound stands as it was. An ask the
-// agent does not answer is not asked again: the view waits for a turn frame, or for the deadline.
+// holding a task waits for the agent's answer or a turn frame (viewAsked), its connection is one
+// a hello asked (helloAsked), and the reconnect deadline is armed whole from the hello: the hello
+// asks once, here, unless it is the first hello since a daemon start whose own ask serves it
+// (startAskServes), which its caller makes under that same deadline (askTurnOver,
+// askRestoredTurn). An ask the agent does not answer is not asked again, here or at a sweep
+// (observe): the view waits for a turn frame, or for the deadline.
 func (m *Machine) askView(ctx context.Context) (asked bool) {
 	if m.claim.Pending == nil {
+		m.helloAsked = false
 		m.setView(viewWhole)
 		return false
 	}
 	served := m.startAskServes()
 	m.setView(viewAsked)
+	m.helloAsked = true
+	m.arm(TimerRegistration, m.reconnectBound(), "")
 	if served {
 		return false
 	}
-	m.arm(TimerRegistration, m.reconnectBound(), "")
 	m.log.Info(viewAskedLine, "task", m.claim.Pending.Number)
 	conn, ok := m.deps.Conns.Conn(m.claim.Token)
 	if !ok {
@@ -301,16 +315,41 @@ func (m *Machine) turnMayHaveRunUnseen() bool {
 	return (m.turnUnseen || m.connSeen != viewWhole) && m.takeAwaitsTurn()
 }
 
-// answerView is the agent's answer to whether it is in a turn, over a view a reconnect hello left
-// waiting for it (turnAnswered): the view is whole, the reconnect deadline goes, and the answer is
-// applied to the claim with every frame the shim replayed applied already (applyTurnAnswer). The
-// bounds are armed whole from here at the end of this decision, or at the end of the turn the
-// answer started.
-func (m *Machine) answerView(ctx context.Context, answer StreamTurnAnswered) error {
+// markTurnUnseen marks the pending take as one whose turn may have run with no frame of it
+// reaching the machine (Machine.turnUnseen), where it awaits its turn and its finish is not owed
+// (takeAwaitsTurn): a migrated worker's take awaiting its turn (waitNone) is marked as a current
+// one's is, since its turn can run unseen as well, and only a take whose report came is left out,
+// which every let-go finishes by that report before it reads the mark (interrupted). It is the one
+// test of every site that marks: the reconnect deadline (reconnectDeadline), a stale-plugin
+// relaunch decided behind a cut backlog (markRestoredTurnUnseen), and a turn's end the daemon
+// never saw begin (blindTurnEnded).
+func (m *Machine) markTurnUnseen() {
+	if m.takeAwaitsTurn() {
+		m.turnUnseen = true
+	}
+}
+
+// answerView is the agent's answer to whether it is in a turn (streaming), on every path an answer
+// reaches the machine: the ask a reconnect hello made, over the view that hello left waiting for it
+// (turnAnswered), and a daemon start's own ask of the first hello since that start, of a restored
+// take on a stale plugin (turnAnswered, askTurn) or of a claim restored working (askTurnOver,
+// askFirst). It is the one place an answer makes the view whole: the view is whole (setView, and
+// viewAnsweredLine where the answer made it so), the reconnect deadline that bounded the ask goes,
+// and the daemon start's own asks are answered and end with it (askFirst, askTurn), so no sweep
+// asks them again. Left armed, that deadline would find the view whole and take the path of a shim
+// that never said hello (retireNeverReady), and retire and charge a live worker in its turn. The
+// answer is then applied to the claim with every frame the shim replayed applied already
+// (applyTurnAnswer). The bounds are armed whole from here at the end of this decision, or at the
+// end of the turn the answer started.
+func (m *Machine) answerView(ctx context.Context, streaming bool, ev Event) error {
+	cut := m.connSeen != viewWhole
 	m.setView(viewWhole)
 	m.disarm(TimerRegistration)
-	m.log.Info(viewAnsweredLine, "streaming", answer.Streaming)
-	return m.applyTurnAnswer(ctx, answer.Streaming, answer)
+	m.askFirst, m.askTurn, m.unansweredAsks = false, false, 0
+	if cut {
+		m.log.Info(viewAnsweredLine, "streaming", streaming)
+	}
+	return m.applyTurnAnswer(ctx, streaming, ev)
 }
 
 // applyTurnAnswer applies the agent's answer to whether it is in a turn to the claim, read behind
@@ -318,8 +357,9 @@ func (m *Machine) answerView(ctx context.Context, answer StreamTurnAnswered) err
 // take's own over a take awaiting its turn (turnStarted), and no turn over a claim in one is that
 // turn's end (turnEnded), so an end frame the connection lost leaves no claim working for ever. An
 // answer the claim already agrees with changes nothing. It is the one rule of every answer the
-// daemon reads: the ask a reconnect hello makes (answerView), and a daemon start's own two — of a
-// claim restored working (askTurnOver) and of a restored take on a stale plugin (turnAnswered).
+// daemon reads, applied where that answer makes the view whole (answerView): the ask a reconnect
+// hello makes, and a daemon start's own two — of a claim restored working (askTurnOver) and of a
+// restored take on a stale plugin (turnAnswered).
 func (m *Machine) applyTurnAnswer(ctx context.Context, streaming bool, ev Event) error {
 	switch {
 	case streaming && !m.busy():

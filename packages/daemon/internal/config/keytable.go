@@ -399,12 +399,12 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "worker_stop_timeout_seconds", RequiredBy: "no",
-			Description: "How long a role's stop gives its agent to exit before the daemon kills it, which under Kubernetes is the pod's termination grace and so has a floor the loader refuses a shorter value against.",
+			Description: "How long a role's stop gives its agent to exit before the daemon kills it, which under Kubernetes is the pod's termination grace and so has a floor the loader refuses a shorter value against. It also bounds how long an operator's suspension of a worker waits before it stops the process anyway: for the agent's turn to end, for the report of a take's turn that has ended, and for the own turn of a take that was put back.",
 			Positive:    &positiveKey{Value: 10, Duration: func(c *Config) *time.Duration { return &c.WorkerStopTimeout }},
 		},
 		{
 			Name: "worker_take_timeout_seconds", RequiredBy: "no",
-			Description: "How long a ready, idle worker under no hold that reported its task's value seen has to ask to take it before it is charged, and how often a value nobody reported seeing is written again.",
+			Description: "How long a ready, idle worker under no hold that reported its task's value seen has to ask to take it before it is charged, and how often a value nobody reported seeing is written again. The wait over a seen value runs only while the worker's connection shows the daemon every frame of its turns, so time with the connection cut does not count toward it, and it starts again whole once the agent answers the daemon's ask after its shim's reconnect hello or a turn starts or ends.",
 			Positive:    &positiveKey{Value: 300, Duration: func(c *Config) *time.Duration { return &c.WorkerTakeTimeout }},
 		},
 		{
@@ -424,7 +424,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "probe_interval_seconds", RequiredBy: "no",
-			Description: "How often the runtime sweeps every recorded process, which is also how often a launch or relaunch the store refused is tried again.",
+			Description: "How often the runtime sweeps every recorded process, which is also how often a launch or relaunch the store refused is tried again, and how often the daemon tries again a take-back the store refused at the bound of the wait for a take's report, and the relaunch of a worker whose agent did not say whether it is in a turn by the reconnect deadline.",
 			Positive:    &positiveKey{Value: 30, Duration: func(c *Config) *time.Duration { return &c.ProbeInterval }},
 		},
 	}

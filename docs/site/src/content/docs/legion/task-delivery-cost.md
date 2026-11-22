@@ -219,7 +219,7 @@ So each figure that names a task names its claim too.
   - The clock runs only while the daemon sees every frame of the worker's turns on the worker's connection.
     The daemon writes `supervise: the daemon no longer sees every frame of the worker's turns; the bounds on the worker stand still until it does again` when it stops seeing them: when the connection closes, when a start of the daemon restores a claim with a process, and when a hello over a pending task comes on a new connection before the daemon read the close of the one before it.
     That line stops the clock, and no act of the worker starts it again.
-    The daemon writes `supervise: the daemon sees every frame of the worker's turns again; the bounds on the worker run again, whole, from here` when it sees them again: at the first hello of a new process, at a hello over no pending task, at the agent's answer to the daemon's ask whether it is in a turn, at a turn's start or end, and when the daemon lets the worker's process go.
+    The daemon writes `supervise: the daemon sees every frame of the worker's turns again; the bounds on the worker run again, whole, from here` when it sees them again: at the first hello of a new process, at a hello of a worker whose agent has not said it is ready yet, at a hello over no pending task, at the agent's answer to the daemon's ask whether it is in a turn, at a turn's start or end, and when the daemon lets the worker's process go.
     That line starts the clock again, and the bound starts again from zero.
 
   - A start of the daemon stops the clock as of the last line that the command read from the daemon before it.

@@ -74,9 +74,13 @@ worker_wake_burst: 1                   # how many wakes may leave at once before
 #                                      # refused
 # worker_take_timeout_seconds: 300     # how long a ready, idle worker under no hold that reported its
 #                                      # task's value seen has to ask to take it before it is charged;
-#                                      # a value nobody reported seeing charges nobody and is written
-#                                      # again once per this bound. 300 by default; a value that is
-#                                      # not a positive integer is refused
+#                                      # that wait runs only while the worker's connection shows the
+#                                      # daemon every frame of its turns, and starts again whole once
+#                                      # the agent answers the daemon's ask after its shim's reconnect
+#                                      # hello, or a turn starts or ends. A value nobody reported
+#                                      # seeing charges nobody and is written again once per this
+#                                      # bound. 300 by default; a value that is not a positive integer
+#                                      # is refused
 # worker_turn_start_timeout_seconds: 1500  # how long after an accepted take the task's turn has to
 #                                      # start before the worker is charged and the task taken back:
 #                                      # it holds the harness's setup, an automatic compaction among

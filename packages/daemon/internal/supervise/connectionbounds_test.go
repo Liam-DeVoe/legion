@@ -903,18 +903,32 @@ func relaunchedAndTaken(h *harness) {
 	h.mustTake()
 }
 
+// compactedByTheOperator is the operator's compaction of the claim's session (compactStart),
+// which takes back a take awaiting its turn and keeps the process, run to its end (compactEnded).
+func compactedByTheOperator(t *testing.T, h *harness) {
+	t.Helper()
+	if err := h.m.Compact(h.ctx, testCompactInstructions); err != nil {
+		t.Fatalf("the compaction answered %v", err)
+	}
+	h.m.Wait()
+}
+
 // Row 26: a take awaiting its turn while the claim's connection does not show every frame of its
 // turns — no hello since a close or a daemon start, or no answer since the hello — taken back by a
 // let-go that is no reconnect deadline: a retirement, a held suspension's deadline, a death, the
 // one the close's own probe finds among them, or a relaunch of a process still running for a stale
-// address. Its turn may have run unseen, its start frame lost with the connection, so it goes back
-// as a turn cut off, and the next process takes it told its turn on it may have run, as row 8 takes
-// it back. A stale plugin's relaunch waits for a whole view (row 29) and runs over a cut one only
-// at the reconnect deadline, whose take-back TestAStaleRelaunchBehindABacklogCutTakesTheTakeBackAsACutTurn
-// holds. The negative control is the commit under this change, where each gave the take back
-// unstarted with no note: only the reconnect deadline marked such a take (turnUnseen), the close
-// probed its process before it cut the view, and a relaunch's take-back, made before its let-go
-// records anything, read the mark alone (interrupted).
+// address; or by the operator's compaction, which keeps the process. Its turn may have run unseen,
+// its start frame lost with the connection, so it goes back as a turn cut off, and the next
+// process, or the same one after the compaction, takes it told its turn on it may have run, as row
+// 8 takes it back. A stale plugin's relaunch waits for a whole view (row 29) and runs over a cut
+// one only at the reconnect deadline, whose take-back
+// TestAStaleRelaunchBehindABacklogCutTakesTheTakeBackAsACutTurn holds. The negative control is the
+// commit under this change, where each let-go gave the take back unstarted with no note: only the
+// reconnect deadline marked such a take (turnUnseen), the close probed its process before it cut
+// the view, and a relaunch's take-back, made before its let-go records anything, read the mark
+// alone (interrupted). The compaction's is the head before the change that made clearTake read
+// the view (2da324b8), where its take-back (takeBack, clearTake) read neither the view nor the
+// mark and gave the take back with no note.
 func TestTakeAwaitingItsTurnIsTakenBackAsACutTurnWhileTheViewIsCut(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -941,6 +955,10 @@ func TestTakeAwaitingItsTurnIsTakenBackAsACutTurnWhileTheViewIsCut(t *testing.T)
 			h.observe(runtime.StaleAddress)
 			h.wantState(StateLaunching)
 		}, next: relaunchedAndTaken},
+		{name: "the operator's compaction after a hello no answer followed", cut: func(h *harness) {
+			h.reconnectLater()
+			h.helloOf(true, false)
+		}, letGo: compactedByTheOperator, next: func(h *harness) { h.mustTake() }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := boundsHarness(t)
@@ -984,6 +1002,12 @@ func TestTakeAwaitingItsTurnIsTakenBackAsACutTurnWhileTheViewIsCut(t *testing.T)
 // awaiting its turn marked it as one whose turn may have run unseen (Machine.turnUnseen). The
 // negative control is the commit under this change, where the blind end marked nothing, and the
 // let-go over the whole view gave the take back unstarted with no note.
+//
+// A migrated worker's take awaiting its turn, on a plugin below TaskTakeContract (waitNone), is
+// marked as a current one's is (markTurnUnseen: one test at every site that marks), so a death
+// after the blind end takes it back as a cut turn too. Its negative control is the head before
+// this change (2da324b8), where the blind end marked only a take in waitTake, and the death gave
+// the migrated take back unstarted with no note.
 func TestTakeAwaitingItsTurnBehindAnEndNeverSeenBegunIsTakenBackAsACutTurn(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -1011,6 +1035,19 @@ func TestTakeAwaitingItsTurnBehindAnEndNeverSeenBegunIsTakenBackAsACutTurn(t *te
 			h.wantTakenOnceMore(number, tc.next)
 		})
 	}
+	t.Run("a migrated worker's take, a death", func(t *testing.T) {
+		h := restoreMigrated(t, false)
+		number := h.pending().Number
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		h.answerAsk(false)
+		h.wantAwaitingItsTurn(number, "after the answer")
+
+		h.observe(runtime.Gone)
+		h.wantState(StateLaunching)
+
+		h.wantTakenBackWithItsNote(number)
+		h.wantTakenOnceMore(number, (*harness).relaunchedTakes)
+	})
 }
 
 // staleToTheDaemon makes the claim's recorded plugin contract an earlier one than this daemon's,
@@ -1193,19 +1230,37 @@ func TestTakeFinishedWhileItsConnectionIsClosedTakesTheReconnectDeadlineWithIt(t
 	})
 }
 
+// restoredWorking is a daemon start over a claim restored working on the current plugin, its
+// process's shim not yet said hello to this daemon: the claim whose turn an earlier daemon saw
+// start, which the start asks its agent about at the first hello (askFirst). It holds the
+// fixture's pending task, its take's turn running, as change leaves it, and every take of it is
+// driven by the test.
+func restoredWorking(t *testing.T, change func(*Claim)) *harness {
+	t.Helper()
+	h := newBareHarness(t)
+	h.deps.PluginContract = TaskTakeContract
+	h.manualTakes()
+	restored := fixture(StateWorking)
+	restored.PluginContract = TaskTakeContract
+	if change != nil {
+		change(&restored)
+	}
+	h.restore(restored)
+	return h
+}
+
 // A daemon start's own ask of a claim restored working (askFirst) serves only the first hello since
 // that start, since the stream reads an answer only on the connection that asked. A later hello over
 // the pending task asks once on its own connection and arms the reconnect deadline whole from
-// itself, as every reconnect hello does (askView), and the start's ask makes no second ask on it
-// (askTurnOver). The negative control is the commit under this change, where the later hello let the
-// start's ask stand for it: it asked through askTurnOver and armed no deadline, so a shim that went
-// quiet after that hello was bounded by nothing but the stall backstop.
+// itself, as every reconnect hello does (askView); the start's ask makes no second ask on it
+// (askTurnOver), and no sweep asks that connection again (observe, row 31): the deadline bounds
+// the ask. The negative control of the hello's ask and deadline is the commit under the change
+// that made them, where the later hello let the start's ask stand for it: it asked through
+// askTurnOver and armed no deadline, so a shim that went quiet after that hello was bounded by
+// nothing but the stall backstop. That of the sweep is the head before row 31 (2da324b8), where
+// each sweep asked the connection again through askTurnOver.
 func TestTakeOfARestoredWorkingClaimIsAskedOnceAtALaterHelloUnderItsOwnDeadline(t *testing.T) {
-	h := newBareHarness(t)
-	h.deps.PluginContract = TaskTakeContract
-	restored := fixture(StateWorking)
-	restored.PluginContract = TaskTakeContract
-	h.restore(restored)
+	h := restoredWorking(t, nil)
 	h.conn.FailGetState(errBoom)
 	h.connect()
 	h.reconnectLater()
@@ -1216,4 +1271,105 @@ func TestTakeOfARestoredWorkingClaimIsAskedOnceAtALaterHelloUnderItsOwnDeadline(
 		t.Fatalf("the later hello's connection was asked up to %q, want the one ask the hello makes", ask)
 	}
 	h.wantArmedFromNow(TimerRegistration, deadline, "at the later hello")
+	h.observe(runtime.Alive)
+	if ask := h.conn.LastAsk(); ask != "ask-1" {
+		t.Fatalf("the later hello's connection was asked up to %q after a sweep, want no ask but the hello's", ask)
+	}
+}
+
+// Row 30, at a later hello: a claim restored working holds a pending task, its first hello's ask
+// went unanswered, its connection closed, and the next hello armed the reconnect deadline whole at
+// itself; a sweep passes, and the agent answers that hello's ask. The answer makes the view whole
+// in the one place every answer does (answerView), which disarms the deadline, so at the
+// deadline's time nothing is retired, charged or taken back, and the task's turn runs on. The
+// negative control is the head before this change (2da324b8): the sweep asked the connection
+// again through askTurnOver, whose answer made the view whole and left the deadline armed; the
+// hello's own answer then found the view whole and changed nothing, and at the deadline the path
+// of a shim that never said hello (retireNeverReady) retired the live worker in its turn, charged
+// it a launch failure and took its task back, so the task ran twice.
+func TestTakeOfARestoredWorkingClaimAnsweredAtALaterHelloIsNotRetiredAtItsDeadline(t *testing.T) {
+	h := restoredWorking(t, nil)
+	h.conn.FailGetState(errBoom)
+	h.connect()
+	h.reconnectLater()
+	h.helloOf(true, true)
+	h.observe(runtime.Alive)
+	h.answerAsk(true)
+
+	h.advance(deadline)
+
+	h.wantCalls("Suspend", 0)
+	h.wantCalls("Resume", 0)
+	h.wantBudgets(Budgets{})
+	h.wantCharges()
+	h.wantState(StateWorking)
+	if p := h.pending(); p.Number != 1 || !p.turnStarted() || p.Interrupted {
+		t.Fatalf("the claim holds %+v, want task 1's take with its turn running", p)
+	}
+}
+
+// Row 32, with rows 30 and 31: a daemon start restores a claim working holding a pending task
+// (askFirst), here a take awaiting its turn behind the turn the earlier daemon saw start. The first
+// hello's ask is the start's own (askTurnOver), and that hello arms the reconnect deadline whole at
+// itself, as every hello that asks over a pending task does (askView).
+//
+//   - Unanswered, the ask is not asked again at a sweep, and at the deadline the process is
+//     relaunched, charged nothing, and the take taken back as a cut turn, so the relaunched worker
+//     takes it again told its turn on it may have run. The negative control is the head before
+//     this change (2da324b8), where the hello disarmed the start's deadline and armed none, so the
+//     unanswered ask was bounded only by the sweep's repeat and the stall backstop.
+//   - Answered at the hello, the answer disarms the deadline where it makes the view whole
+//     (answerView), and at the deadline's time nothing is relaunched or charged. It passes at the
+//     head before this change too, where no deadline was armed at the hello; with that deadline
+//     armed and askTurnOver making the view whole without disarming it, the deadline would retire
+//     the live worker as one whose shim never said hello.
+func TestTakeOfARestoredWorkingClaimIsBoundedByTheReconnectDeadlineArmedAtItsFirstHello(t *testing.T) {
+	awaiting := func(c *Claim) { c.Pending.TurnStarted, c.Pending.TakenText = false, c.Pending.Task }
+	t.Run("an unanswered ask", func(t *testing.T) {
+		h := restoredWorking(t, awaiting)
+		number := h.pending().Number
+		h.conn.FailGetState(errBoom)
+		// The hello comes half a deadline after the daemon's start, so a deadline counted from the
+		// start would come due half a deadline early.
+		h.advance(deadline / 2)
+		h.connect()
+		h.wantArmedFromNow(TimerRegistration, deadline, "at the first hello")
+		h.advance(deadline / 2)
+		h.observe(runtime.Alive)
+		if asks := h.logs.lines("supervise: the agent could not say whether it is in a turn"); len(asks) != 1 {
+			t.Fatalf("the asks the agent left unanswered are %q, want the first hello's alone", asks)
+		}
+		h.advance(deadline/2 - time.Second)
+		h.wantCalls("Resume", 0)
+
+		h.advance(time.Second)
+
+		h.wantCalls("Resume", 1)
+		h.wantState(StateLaunching)
+		h.wantBudgets(Budgets{})
+		h.wantCharges()
+		if cause := h.claim().PendingCause; cause != "" {
+			t.Fatalf("the relaunch is pending cause %q, want none: it is charged nothing", cause)
+		}
+		h.wantTakenBackWithItsNote(number)
+		h.wantTakenOnceMore(number, func(h *harness) {
+			h.relaunched()
+			h.mustTake()
+		})
+	})
+	t.Run("an answered ask", func(t *testing.T) {
+		h := restoredWorking(t, awaiting)
+		number := h.pending().Number
+		h.conn.SetStreaming(true)
+		h.connect()
+		h.wantUnarmed("after the answer to the first hello's ask", TimerRegistration)
+
+		h.advance(deadline)
+
+		h.wantCalls("Suspend", 0)
+		h.wantCalls("Resume", 0)
+		h.wantBudgets(Budgets{})
+		h.wantState(StateWorking)
+		h.wantAwaitingItsTurn(number, "at the deadline's time")
+	})
 }

@@ -947,6 +947,10 @@ func (m *Machine) stateHold() string {
 // What the take-back establishes holds in memory at once, whether or not its write lands: a
 // write that fails leaves the delivery unsaved, and settle writes it again, with the claim.
 //
+// A take awaiting its turn while the claim's connection does not show every frame of its turns, or
+// one marked so, goes back as a cut turn with its note (clearTake, turnMayHaveRunUnseen): the
+// operator's compaction can take it back while the view waits for the agent's answer to a hello.
+//
 // A take whose report's finish the store refused (takePhase, waitFinish) is not taken back but
 // finished, by that report: the report decides whichever turn the take awaits, and taken back
 // under its number the task would run again.

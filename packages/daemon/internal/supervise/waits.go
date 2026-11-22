@@ -327,8 +327,9 @@ func turnStartBoundOver(m *Machine, ctx context.Context, _ Event) error {
 // live process whose shim never comes back is held by nothing else: no frame of it reaches the
 // daemon, so none of R5's waits can be judged of it. The task its turn was running is taken back
 // first, as a replacement takes it (interrupted), so the relaunched worker takes it again under
-// its number; a take awaiting its turn goes back as a cut turn (Machine.turnUnseen), since that
-// turn may have run while no frame of the claim reached the machine.
+// its number; a take awaiting its turn goes back as a cut turn (markTurnUnseen,
+// Machine.turnUnseen), since that turn may have run while no frame of the claim reached the
+// machine.
 //
 // A suspension held for the claim's turn ends here instead: no turn's end will reach it from a
 // shim that never came back. A relaunch the tree lifecycle refuses, a take-back the store would
@@ -390,9 +391,7 @@ func reconnectDeadline(m *Machine, ctx context.Context, _ Event) error {
 		defer func() { m.atReconnectDeadline = false }()
 		return m.refreshPlugin(ctx, m.askTrigger, false)
 	}
-	if p := m.claim.Pending; p != nil && p.awaitsTurn() {
-		m.turnUnseen = true
-	}
+	m.markTurnUnseen()
 	if m.connSeen == viewAsked {
 		m.log.Warn(viewUnansweredRelaunchLine, "task", pendingNumber(m.claim.Pending))
 		end, err := m.replaceProcess(ctx, "the agent did not say whether it is in a turn by the reconnect deadline of its shim's hello", ordinaryEnd, endUnanswered)

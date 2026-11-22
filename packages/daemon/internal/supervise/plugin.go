@@ -288,23 +288,29 @@ func (m *Machine) holdStaleRelaunch(trigger string) {
 }
 
 // relaunchWaitsForReport leaves the stale-plugin relaunch waiting behind the wait for the report
-// of the pending take's turn (reportwait.go; refreshPlugin, runWake): the report's finish runs it,
-// or its provider error's take-back (reportedTask, afterTurn), or the wait's bound, at which the
-// task is taken back with the note of a cut turn first (reportBoundOver). That bound is R5's
-// second bound. Over a take it reaches with nothing held (reportReaches), it was armed whole at
-// the end of the take's turn, and the relaunch that begins to wait keeps it as it was; over a take
-// it reaches only with work held, a restored take it leaves out with nothing held, it is armed
-// whole where the relaunch began to wait. Each of the three runs the relaunch through
+// of the pending take's turn (reportwait.go; refreshPlugin, runWake), in whichever phase of it
+// work waits (reportHolds). In the report's own phase, the take's turn over and its report not come
+// (waitReport), the report's finish runs it, or its provider error's take-back (reportedTask,
+// afterTurn), or the wait's bound, at which the task is taken back with the note of a cut turn
+// first (reportBoundOver). That bound is R5's second bound. Over a take it reaches with nothing
+// held (reportReaches), it was armed whole at the end of the take's turn, and the relaunch that
+// begins to wait keeps it as it was; over a take it reaches only with work held, a restored take it
+// leaves out with nothing held, it is armed whole where the relaunch began to wait. Behind a held
+// suspension that waits already, the relaunch joins two other phases, where no bound of the wait
+// is armed: a take awaiting its turn again (waitTake), whose own turn's start and then its report,
+// or else R5's second bound taking the task back, runs it (turnStartBoundOver); and a report that
+// came with its finish refused by the store (waitFinish), whose finish the end-frame bound makes
+// again until it lands and runs it then (finishAtTurnsEnd). Each runs the relaunch through
 // refreshPlugin as the claim stands then, as the relaunch held for a turn is run. So a report
 // that never comes, lost by a worker that gave up on it, leaves no claim on a stale plugin for
 // ever, and a report that is only slow lands inside the bound. A pass that posts the claim again
 // meanwhile replaces the trigger and moves the bound nothing. Like the relaunch held for a turn,
 // it is memory only: a restart forgets it, and the restarted daemon's own stale-plugin pass asks
-// again. A relaunch newly held here has its wait's line written here, so no end writes it again
-// (Machine.staleForEnd).
+// again. A relaunch newly held here has its wait's line written here, by the take's phase
+// (waitsLine), so no end writes it again (Machine.staleForEnd).
 func (m *Machine) relaunchWaitsForReport(trigger string) {
 	if m.staleRelaunch == nil {
-		m.log.Info(reportWaitsLine, "task", pendingNumber(m.claim.Pending), "held", "relaunch", "trigger", trigger,
+		m.log.Info(m.takePhase().waitsLine(), "task", pendingNumber(m.claim.Pending), "held", "relaunch", "trigger", trigger,
 			"pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract)
 		m.staleForEnd = false
 	}

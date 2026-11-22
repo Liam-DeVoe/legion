@@ -138,16 +138,39 @@ import (
 // that let the process go left nothing of it to run.
 
 // reportWaitsLine is the line of work that begins to wait for the report of the take's turn
-// (takePhase), at Info, with the task's number and what waits: "suspension", with the hold's source
-// and its deadline (the zero time for none); "relaunch", with the pass that asked for it; or "wake",
-// with the wake's kind and the hold's source.
+// (waitReport, waitsLine), at Info, with the task's number and what waits: "suspension", with the
+// hold's source and its deadline (the zero time for none); "relaunch", with the pass that asked for
+// it; or "wake", with the wake's kind and the hold's source.
 const reportWaitsLine = "supervise: the report of the take's turn is still to come; what is held for that turn waits for it"
 
 // putBackWaitsLine is the line of a put-back that leaves work waiting for the take (putBack), at
 // Info, with the task's number and whether a held suspension and a held stale-plugin relaunch
 // wait ("suspension", "relaunch"): the work waits for the take's own turn to start, or for R5's
-// second bound.
+// second bound. It is also the line of work that begins to wait on a take awaiting its turn again
+// (waitTake, waitsLine), with what waits as reportWaitsLine names it.
 const putBackWaitsLine = "supervise: the take awaits its turn again; what is held for it waits for that turn to start, or for the second bound"
+
+// finishWaitsLine is the line of work that begins to wait on a take whose report came and whose
+// finish the store refused (waitFinish, waitsLine), at Info, with the task's number and what waits
+// as reportWaitsLine names it: the work waits for that finish, which the end-frame bound makes
+// again until the store takes it (finishAtTurnsEnd).
+const finishWaitsLine = "supervise: the report of the take's turn came and the store refused its finish; what is held for that turn waits for the finish"
+
+// waitsLine is the line of work that begins to wait on the pending take in phase w (reportHolds,
+// reportToCome), chosen by what that work waits for: the report still to come (waitReport,
+// reportWaitsLine), the take's own turn again (waitTake, putBackWaitsLine), or the finish of the
+// report that came (waitFinish, finishWaitsLine). Its callers write it with what waits: a held
+// suspension (logSuspensionWaits), a held stale-plugin relaunch (relaunchWaitsForReport,
+// endNothingHeld) and a wake spent into the held suspension (wakeNow).
+func (w waitPhase) waitsLine() string {
+	switch w {
+	case waitTake:
+		return putBackWaitsLine
+	case waitFinish:
+		return finishWaitsLine
+	}
+	return reportWaitsLine
+}
 
 // reportMissedLine is the line of the wait's take-back (reportMissed), at Warn, with the task's
 // number, the bound that came first, and whether work was held: the task goes back as a cut turn,
@@ -305,14 +328,16 @@ func (m *Machine) settleThenAfterTurn(ctx context.Context, settle func() error) 
 // the report of its take's turn (heldWaits). reready and reconnectDeadline run it then.
 func (m *Machine) heldRunsNow() bool { return m.held != nil && !m.busy() && !m.heldWaits() }
 
-// logSuspensionWaits writes reportWaitsLine for the held suspension that begins to wait for the
-// report of the take's turn, with the hold's source and its deadline (holdForReport, and
-// runHeldAtEnd for turnEnded and compactEnded). It logs nothing with no suspension held.
+// logSuspensionWaits writes the line of the held suspension that begins to wait on the take, with
+// the hold's source and its deadline (holdForReport, and runHeldAtEnd for turnEnded and
+// compactEnded), chosen by the take's phase (waitsLine): read off the take, since the end of a turn
+// or a compaction runs it over a claim still stored working. It logs nothing with no suspension
+// held.
 func (m *Machine) logSuspensionWaits() {
 	if m.held == nil {
 		return
 	}
-	m.log.Info(reportWaitsLine, "task", pendingNumber(m.claim.Pending), "held", "suspension", "by", m.held.By, "deadline", m.held.Deadline)
+	m.log.Info(m.takePhase().waitsLine(), "task", pendingNumber(m.claim.Pending), "held", "suspension", "by", m.held.By, "deadline", m.held.Deadline)
 }
 
 // reportBounded is the pending take whose report the wait's own bound runs on, and false for none:

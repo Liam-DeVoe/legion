@@ -1352,9 +1352,8 @@ Closing the terminal leaves the project without one, and the daemon logs
    legion claims resume  --config legion.yaml --operator-token-file operator-token --claim <token>
    ```
 
-   An operator's suspension of an agent in a turn waits for that turn to land, at most
-   `worker_stop_timeout_seconds`, and the cut-off task is taken again after the resume. One that reaches
-   a claim whose start is still running stops that start — which is charged nothing — and suspends
+   An operator's suspension of an agent in a turn waits for that turn to land; one of a worker whose take's turn has ended waits for the worker's report of that turn too, and one over a take that was put back, because the worker reported the run it was given as no task's, waits for that take's own turn; each waits at most `worker_stop_timeout_seconds`, and the cut-off task is taken again after the resume.
+   One that reaches a claim whose start is still running stops that start — which is charged nothing — and suspends
    the claim at once, rather than waiting out a launch that can take minutes. Every `legion
    claims` subcommand takes a `--wait`, one minute by default, that bounds the whole call: a call
    that reaches it is refused with a line naming the bound, and the daemon goes on with what it

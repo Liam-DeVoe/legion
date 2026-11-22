@@ -1379,7 +1379,8 @@ func (m *Machine) untellUnstarted() {
 // A take whose turn may have run with no frame of it reaching the machine goes back as a turn cut
 // off instead (Delivery.Interrupted), as the reconnect deadline takes it back: the let-go that
 // came first found the claim's connection not showing every frame of its turns, and kept that
-// for this take-back (turnMayHaveRunUnseen, letGo), so the worker may have run it whole.
+// for this take-back (turnMayHaveRunUnseen, letGo), so the worker may have run it whole. The
+// take-back reads that where every take-back of this kind does (clearTake).
 //
 // A take whose report's finish the store refused (takePhase, waitFinish) is not taken back but
 // finished, by that report, which writes the claim with the retirement; a finish the store
@@ -1392,11 +1393,7 @@ func (m *Machine) takeBackUnstarted(ctx context.Context, cause string) (bool, er
 	if m.takePhase() == waitFinish {
 		return false, m.finishTask(ctx, finishedByReport)
 	}
-	cut := m.turnMayHaveRunUnseen()
 	m.clearTake(p, cause)
-	if cut {
-		p.Interrupted, p.OutOfMemory = true, ordinaryEnd
-	}
 	return true, nil
 }
 
@@ -1406,9 +1403,22 @@ func (m *Machine) takeBackUnstarted(ctx context.Context, cause string) (bool, er
 // of the number is decided afresh and its text composed again (Delivery.message), and the
 // take-back is logged under cause (takenBackLine). It answers giveBackTake's answer, whether the
 // claim changed.
+//
+// A take awaiting its turn whose turn may have run with no frame of it reaching the machine
+// (turnMayHaveRunUnseen) goes back as a turn cut off (Delivery.Interrupted), read here, before the
+// take goes, for every take-back that keeps the task pending (dispatch://INFRA-2811, decision 8,
+// row 26): the claim's connection does not show every frame of its turns — a close, or a hello
+// whose ask neither the agent's answer nor a turn frame followed — or the take is marked so. The
+// operator's compaction (compactStart) is one, which needs only a connection and so can run while
+// the view waits for its answer; a let-go's (takeBackUnstarted) reads the mark its record kept. The
+// next accepted take then tells the worker its turn on the task may have run.
 func (m *Machine) clearTake(p *Delivery, cause string) (claimMoved bool) {
+	cut := m.turnMayHaveRunUnseen()
 	claimMoved = m.giveBackTake(p)
 	p.ConfirmedAt, p.TakenText, p.TurnStarted, p.TakeTold = time.Time{}, "", false, Sentences{}
+	if cut {
+		p.Interrupted, p.OutOfMemory = true, ordinaryEnd
+	}
 	m.log.Info(takenBackLine, "task", p.Number, "cause", cause)
 	return claimMoved
 }

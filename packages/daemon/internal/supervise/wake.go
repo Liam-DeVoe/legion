@@ -409,8 +409,9 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 			// suspendedFor). A hold dropped unrun meanwhile leaves the launch to whoever raised
 			// it: the stale-plugin pass, or the runtime's next report of the process. A hold over
 			// a turn that runs is no such hold: the wake ends it (endHeld), as it ends every hold
-			// over a running turn.
-			m.log.Info(reportWaitsLine, "task", pendingNumber(m.claim.Pending), "held", "wake", "kind", waiting.kind, "by", m.held.By)
+			// over a running turn. The line says what the hold waits for, by the take's phase
+			// (waitsLine).
+			m.log.Info(m.takePhase().waitsLine(), "task", pendingNumber(m.claim.Pending), "held", "wake", "kind", waiting.kind, "by", m.held.By)
 			m.heldLaunch = true
 			return nil
 		}

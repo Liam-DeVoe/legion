@@ -967,18 +967,25 @@ type Timeouts struct {
 	// RPC (worker_rpc_timeout_seconds) bounds each ask of the agent whether it is in a turn
 	// (streaming): the get_state a claim restored working is asked (askTurnOver), the ask a daemon
 	// start makes of a restored take on a stale plugin (askRestoredTurn), the ask a reconnect hello
-	// makes over a pending task (askView), and the one that checks a count a take's report placed
-	// (learnTurns); and the calls a decision makes for the agent's secrets and its role's holder
-	// (secrets.go, sessionhold.go). It is the end-frame bound too (TimerFinish, finishTask): the
-	// wait after a task's turn ends for the turn-outcome report that names it, past which the end
-	// of the turn finishes the task, for a plugin below TaskTakeContract alone (TakesNoTask); and
-	// the wait before a finish the store refused is made again, whatever the plugin, each refusal
-	// waiting it once more.
+	// makes over a pending task (askView), the one that checks a count a take's report placed
+	// (learnTurns), and the one that gives a restored take's anchor the first hello's connection
+	// (bindRestoredAnchor); and the calls a decision makes for the agent's secrets and its role's
+	// holder (secrets.go, sessionhold.go). It is the end-frame bound too (TimerFinish,
+	// finishTask): the wait after a task's turn ends for the turn-outcome report that names it,
+	// past which the end of the turn finishes the task, for a plugin below TaskTakeContract alone
+	// (TakesNoTask); and the wait before a finish the store refused is made again, whatever the
+	// plugin, each refusal waiting it once more.
 	RPC time.Duration
-	// Probe is how soon an uncertain process is probed again (probe_interval_seconds).
+	// Probe is how soon an uncertain process is probed again (probe_interval_seconds), and how
+	// soon a step the store, the lifecycle or the runtime refused is tried again, among them a
+	// launch or relaunch, the take-back at the bound of the wait for a take's report
+	// (reportBoundOver), the relaunch at the reconnect deadline of a hello no answer followed
+	// (reconnectDeadline), and the stop of a held suspension (suspendHeld).
 	Probe time.Duration
-	// Stop is how long a suspension that arrives while the agent is in a turn waits for that turn
-	// to end before it stops the process anyway (worker_stop_timeout_seconds).
+	// Stop is how long an operator's suspension held over the claim waits before it stops the
+	// process anyway (worker_stop_timeout_seconds, holdSuspension, suspendAtTimeout): for the
+	// agent's turn to end, for the report of the take's turn that has ended (reportwait.go), and
+	// for the own turn of a take a report put back (putBack), whichever the hold waits for.
 	Stop time.Duration
 	// LaunchBackoff is the first wait before a launch is tried again after a charged launch
 	// failure, doubled for each failure charged since the claim was last ready, and jittered
@@ -988,16 +995,19 @@ type Timeouts struct {
 	LaunchBackoff time.Duration
 	// Take is R5's first bound (worker_take_timeout_seconds, waits.go): how long a worker that is
 	// ready and idle, under no hold, and reported seeing its latest value has to ask to take it
-	// before it is charged, and how often a value nobody reported seeing is written again. Zero
-	// judges no first wait: the daemon always sets it, since its configuration refuses a value
-	// that is not positive, and a Deps a test builds without it charges nothing for a silent
+	// before it is charged, and how often a value nobody reported seeing is written again. The
+	// wait over a seen value runs only while the claim's connection shows every frame of its
+	// turns (connview.go): a close disarms it, and it is armed again whole once the view is whole.
+	// Zero judges no first wait: the daemon always sets it, since its configuration refuses a
+	// value that is not positive, and a Deps a test builds without it charges nothing for a silent
 	// worker and writes no unseen value again.
 	Take time.Duration
 	// TurnStart is R5's second bound (worker_turn_start_timeout_seconds, waits.go): how long after
 	// an accepted take its turn has to start before the worker is charged and the task taken back
 	// under its number, and the bound of the wait for the take's report after its turn ends
-	// (reportwait.go). Zero judges no second wait and no report bound, as Take's zero judges no
-	// first.
+	// (reportwait.go). Both run only while the claim's connection shows every frame of its turns
+	// (connview.go): a close disarms them, and each is armed again whole once the view is whole.
+	// Zero judges no second wait and no report bound, as Take's zero judges no first.
 	TurnStart time.Duration
 	// ClaimWrite bounds each claim and delivery write a decision makes while it holds the machine's
 	// lock, so a database that has stopped answering cannot hold that lock for as long as the
@@ -1580,6 +1590,13 @@ type Machine struct {
 	// over that cut view counts the reconnect deadline from (readyView). It is read only while the
 	// view is closed, and is memory only, as connSeen is.
 	closedAt time.Time
+	// helloAsked is whether the hello of the claim's connection asked its agent whether it is in a
+	// turn over a pending task (askView): its own ask, or a daemon start's own that serves it
+	// (startAskServes). No sweep asks that connection again (observe), since the reconnect deadline
+	// armed at that hello bounds the ask, and the answer, when it comes, ends the daemon start's own
+	// asks with it (answerView). A close clears it (closeView), and so does the let-go of the
+	// process (letGo); it is memory only, as connSeen is.
+	helloAsked bool
 	// held is the suspension held for the agent's turn (holdSuspension), behind the wait for the
 	// report of its take's turn (reportwait.go), or for a launch's ready (holdSuspendUntilReady),
 	// nil for none.
@@ -1604,11 +1621,11 @@ type Machine struct {
 	staleRelaunch *string
 	// staleForEnd is whether the held stale-plugin relaunch (staleRelaunch) was held for the end of
 	// a turn or of a compaction (holdStaleRelaunch) and has not begun to wait for the report of the
-	// take's turn since: the end that leaves it waiting for that report writes reportWaitsLine for
-	// it, and clears this (endNothingHeld). A relaunch that began to wait for the report where it
-	// arrived (relaunchWaitsForReport) wrote that line there, so it is false for it, and a later end
-	// that leaves it waiting as it was writes none. Each newly held relaunch sets it, so it says
-	// nothing while staleRelaunch is nil.
+	// take's turn since: the end that leaves it waiting for that report writes the line of that
+	// wait (waitsLine) for it, and clears this (endNothingHeld). A relaunch that began to wait for
+	// the report where it arrived (relaunchWaitsForReport) wrote that line there, so it is false
+	// for it, and a later end that leaves it waiting as it was writes none. Each newly held
+	// relaunch sets it, so it says nothing while staleRelaunch is nil.
 	staleForEnd bool
 	// turnsTask is the number of the task the turn now running is the turn of, as that turn's own
 	// start line named it, and 0 for a turn that is no task's. It is set where the machine learns a
@@ -1650,10 +1667,12 @@ type Machine struct {
 	// broke (blindTurnEnded); or a reconnect deadline passed, or a let-go was recorded — a
 	// death's, a displacement's, a retirement's, a suspension's — while the claim's connection did
 	// not show its turns whole (reconnectDeadline, recordEnd, turnMayHaveRunUnseen, connview.go).
-	// The take-back that follows takes such a take back with the note of a cut turn rather than
-	// unstarted (interrupted, takeBackUnstarted), so the next process is told its turn on the task
-	// may have run. It stays through the let-go, for the take-back made after it, where the view
-	// reads whole again; the next accepted take clears it (accept), and it is memory only.
+	// Each site marks by one test (markTurnUnseen): a take awaiting its turn whose finish is not
+	// owed. Every take-back that follows takes such a take back with the note of a cut turn rather
+	// than unstarted (interrupted, takeBackUnstarted, clearTake), so the next process is told its
+	// turn on the task may have run. It stays through the let-go, for the take-back made after it,
+	// where the view reads whole again; the next accepted take clears it (accept), and it is memory
+	// only.
 	turnUnseen bool
 	// rewrite is the pending task whose value the next write at a hold's end (offerPending) logs
 	// under a cause of its own, and that cause: TaskValueRetake for a task taken back in this
@@ -4153,10 +4172,10 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // because everything it reads goes with the process below, and the launch that follows clears
 // the report. noEnd records nothing. The mark of a task taken back from that process's turn goes
 // with the process too (cutTurnOf), and so does the connection's view of the process's turns
-// (connSeen): the next process's first hello opens a connection of its own, and a late frame of
-// the process let go disarms nothing of the next one's. What that view said of a take still
-// awaiting its turn stays, as the mark of a take whose turn may have run unseen that recordEnd
-// kept (turnUnseen, turnMayHaveRunUnseen), for the take-back the caller makes after this
+// (connSeen, helloAsked): the next process's first hello opens a connection of its own, and a late
+// frame of the process let go disarms nothing of the next one's. What that view said of a take
+// still awaiting its turn stays, as the mark of a take whose turn may have run unseen that
+// recordEnd kept (turnUnseen, turnMayHaveRunUnseen), for the take-back the caller makes after this
 // (takeBackUnstarted): read there, the view would be whole. The next accepted take clears it
 // (accept).
 func (m *Machine) letGo(ctx context.Context, cause string) {
@@ -4167,6 +4186,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.askFirst = false
 	m.askTurn, m.askedAt, m.askTrigger = false, time.Time{}, ""
 	m.setView(viewWhole)
+	m.helloAsked = false
 	m.dropHeld()
 	m.staleRelaunch = nil
 	m.turnsTask, m.reportedAhead, m.rewrite = 0, aheadReport{}, valueRewrite{}

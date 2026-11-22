@@ -283,8 +283,10 @@ const backlogCutLine = "supervise: the shim's hello does not say its backlog is 
 //   - a take a daemon start restored has its anchor refused by the same word
 //     (bindRestoredAnchor), so no producer's word that its text was held gives that take its turn
 //     back;
-//   - a stale-plugin relaunch decided behind such a replay takes a restored take whose turn no
-//     frame showed back as a turn that may have run (turnAnswered).
+//   - a stale-plugin relaunch decided behind such a replay, at the agent's answer of no turn
+//     (turnAnswered) or at the reconnect deadline with no answer (reconnectDeadline), takes a take
+//     whose turn no frame showed back as a turn that may have run (markRestoredTurnUnseen): any
+//     take awaiting its turn then, one the daemon start restored or one accepted since.
 func (m *Machine) readBacklog(hello StreamHello) {
 	if hello.BacklogWhole {
 		return
