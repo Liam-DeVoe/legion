@@ -547,7 +547,7 @@ def legion_build(why):
 
 RULES = {
     # --- daemon
-    f"{DAEMON}/cmd/legion/config_example_test.go": reads(("deploy/kubernetes/daemon/legion.yaml.example", "cmd/legion/config_example_test.go:371 (runtime.Caller at :367 + ../../../..)")),
+    f"{DAEMON}/cmd/legion/config_example_test.go": reads(("deploy/kubernetes/daemon/legion.yaml.example", "cmd/legion/config_example_test.go:395 (runtime.Caller at :391 + ../../../..)")),
     f"{DAEMON}/cmd/legion/gh_test.go": reads((f"{DAEMON}/docker/gh", "cmd/legion/gh_test.go:1003 ../../docker/gh")),
     f"{DAEMON}/cmd/legion/state_read_budget_test.go": reads(
         (f"{FIX}/daemon-api/state.json", "cmd/legion/state_read_budget_test.go:30 reads the daemon's state golden as the slow daemon's answer")),
@@ -788,6 +788,9 @@ RULES = {
          "internal/workflow/waiting_line_band_test.go:62 reads every file of its list under ../../../.."),
         (f"{DAEMON}/internal/phase/phase.go",
          "internal/workflow/waiting_line_band_test.go:62 reads every file of its list under ../../../..")),
+    f"{DAEMON}/internal/workspace/sharedclone_test.go": reads(
+        (f"{DAEMON}/docker/worker.Dockerfile", "internal/workspace/sharedclone_test.go:230 passes ../../docker/worker.Dockerfile to "
+                                               "requireImagePackWindows, which reads it at :246")),
     # --- envoy
     f"{ENVOY}/cmd/cipher/modules_test.go": [
         run(ENVOY, ["./cmd/cipher"], "cmd/cipher/modules_test.go:179 cmdtest.BuildCommand . CGO_ENABLED=0 GOOS=darwin",
