@@ -34,12 +34,13 @@ func TestATaskBranchRowNamesItsTask(t *testing.T) {
 	}
 }
 
-// A start of an issue's role waits while an older task_branch row of the issue is unfinished, as it
-// waits for the issue's own branch row: no step's agent starts before its task's branch is on
-// GitHub, where its first push would otherwise create the branch, which GitHub can refuse on a large
-// repository. While the branch row runs the start is held behind it, and once the row finishes the
-// start is due. A start of another issue waits for nothing of this one.
-func TestAStartWaitsForItsTasksBranch(t *testing.T) {
+// A start of an issue's role waits for no task_branch row of its issue: each task's first step
+// waits for the end of its own join (the wait join of its step), so a join that GitHub retries
+// holds the steps of its own task alone, and the steps of every other task of the issue go on.
+// While the row runs, the lifecycle lane holds the start behind it, as it holds each lifecycle row
+// of the issue behind the one that runs; once the row waits on its backoff, the start is due. A
+// start of another issue waits for nothing of this one.
+func TestAStartWaitsForNoTaskBranchRowOfItsIssue(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
@@ -62,8 +63,8 @@ func TestAStartWaitsForItsTasksBranch(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		due, err := records.DueRows(ctx, tx, "LEGION", "", nil, now.Add(time.Hour))
 		must(t, err)
-		if keys, want := outboxKeys(due), []string{"task_branch:LEGION-208", "supervise:LEGION-209:start"}; !reflect.DeepEqual(keys, want) {
-			t.Fatalf("due rows = %v, want %v: LEGION-208's start waits for its task's branch", keys, want)
+		if keys, want := outboxKeys(due), []string{"task_branch:LEGION-208", "supervise:LEGION-208:start", "supervise:LEGION-209:start"}; !reflect.DeepEqual(keys, want) {
+			t.Fatalf("due rows = %v, want %v: LEGION-208's start waits for no task's branch row", keys, want)
 		}
 		leased, ok, err := records.ClaimRow(ctx, tx, due[0].ID, now, time.Minute)
 		must(t, err)
@@ -78,13 +79,13 @@ func TestAStartWaitsForItsTasksBranch(t *testing.T) {
 		if len(held) != 1 || held[0].Kind != OutboxKindSupervise || held[0].WaitsOn != branch.ID {
 			t.Fatalf("held rows of LEGION-208 = %#v, want its start, waiting on the running task_branch row %d", held, branch.ID)
 		}
-		must(t, records.FinishOutbox(ctx, tx, branch.ID, branch.LeaseToken))
+		must(t, records.RetryOutbox(ctx, tx, branch.ID, branch.LeaseToken, now.Add(time.Minute), "GitHub answered 500"))
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		due, err := records.DueRows(ctx, tx, "LEGION", "LEGION-208", nil, now.Add(time.Hour))
+		due, err := records.DueRows(ctx, tx, "LEGION", "LEGION-208", nil, now)
 		must(t, err)
 		if keys, want := outboxKeys(due), []string{"supervise:LEGION-208:start"}; !reflect.DeepEqual(keys, want) {
-			t.Fatalf("due rows of LEGION-208 once its task's branch row finished = %v, want %v", keys, want)
+			t.Fatalf("due rows of LEGION-208 while its task's branch row waits on its backoff = %v, want %v", keys, want)
 		}
 	})
 }

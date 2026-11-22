@@ -25,11 +25,13 @@
 -- There is no down file. This directory keeps none, so the way back is the transaction below, run
 -- with the daemon stopped, before the earlier image is pinned. It deletes each task_branch row
 -- first, since the check written again without the kind refuses a row that holds it, and the
--- earlier release decodes no such row:
+-- earlier release decodes no such row; and each task-join-failed notice not yet sent, a kind the
+-- earlier release decodes no row of either:
 --
 --   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
 --   delete from outbox where kind = 'task_branch';
+--   delete from outbox where kind = 'notice' and payload->>'kind' = 'task-join-failed';
 --   alter table outbox drop constraint if exists outbox_kind_check;
 --   alter table outbox add constraint outbox_kind_check check (kind in (
 --     'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
