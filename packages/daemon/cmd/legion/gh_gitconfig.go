@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -67,14 +68,24 @@ var ghGitReadBound = 30 * time.Second
 //
 // Its limit is ghConfigShape's: it reads the configuration before gh's git does, so a pane that
 // writes it between the two wins that race, and that pane can already read the token itself.
+//
+// The read runs in a process group of its own that its bound stops whole (procgroup.Configure):
+// a git, or a wrapper of it, whose child holds the output pipe would otherwise keep the call
+// waiting past the bound for as long as that child lives, since a stop of git alone leaves the
+// pipe open. A git that exits on its own while a child still holds the pipe is waited for no
+// longer than procgroup's WaitDelay, and its own exit is its answer.
 func ghRepoGitConfigRefusal(env []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), programbound.Of(&ghGitReadBound))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "config", "--show-origin", "--null", "--get-regexp", `^(http|credential)\.|^include\.path$|^includeif\..*\.path$|^extensions\.worktreeconfig$`)
+	procgroup.Configure(cmd)
 	cmd.Env = append(slices.Clone(env), "LC_ALL=C")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		err = nil
+	}
 	var exit *exec.ExitError
 	switch {
 	case errors.Is(err, exec.ErrNotFound):

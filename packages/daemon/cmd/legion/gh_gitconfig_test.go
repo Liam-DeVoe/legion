@@ -9,11 +9,56 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
+
+// A git read of `legion gh` that outlives its bound is stopped with everything it started: a git,
+// or a wrapper of it, whose child holds the output pipe once git itself is stopped would keep the
+// read waiting past its bound for as long as that child lives. The stand-in git starts a child
+// that holds its standard output and records the child's pid, then never answers; the read's bound
+// is a second here (ghGitReadBound, which this row sets itself). The read must end, refused, with
+// the test binary's deadline as the only bound on the wait, and the child must be gone with it.
+func TestAGitReadThatOutlivesItsBoundIsStoppedWithWhatItStarted(t *testing.T) {
+	for _, tc := range []struct {
+		name, refused string
+		read          func() error
+	}{
+		{"the configuration read", "cannot read the repository's git configuration", func() error { return ghRepoGitConfigRefusal(os.Environ()) }},
+		{"the remotes read", "git remote -v", func() error { _, err := gitLines("remote", "-v"); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin, child := t.TempDir(), filepath.Join(t.TempDir(), "child.pid")
+			const childSeconds, gitSeconds = "86397", "86396"
+			script := "#!/bin/sh\nsleep " + childSeconds + " &\necho $! >'" + child + ".new'\nmv '" + child + ".new' '" + child + "'\nexec sleep " + gitSeconds + "\n"
+			if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			killRecordedHelper(t, child, childSeconds)
+			bound := ghGitReadBound
+			ghGitReadBound = time.Second
+			t.Cleanup(func() { ghGitReadBound = bound })
+			answered := make(chan error, 1)
+			go func() { answered <- tc.read() }()
+			err := testwait.Receive(t, tc.name+" whose git never answers and whose child holds its output to end at its bound of 1s", answered)
+			if err == nil || !strings.Contains(err.Error(), tc.refused) {
+				t.Fatalf("%s = %v, want a refusal naming %q", tc.name, err, tc.refused)
+			}
+			pid, recorded := recordedHelper(child, childSeconds)
+			if pid == 0 && !recorded {
+				t.Fatalf("the stand-in git recorded no child in %s", child)
+			}
+			testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, testBoundMargin), testwait.Poll,
+				fmt.Sprintf("git's child (pid %d) to end with the read's stop: want the stop to reach git's whole process group", pid),
+				func() bool { return !helperRunning(pid, childSeconds) })
+		})
+	}
+}
 
 // gitConfigEnviron is pairs as the GIT_CONFIG_COUNT block git reads as it reads `-c`.
 func gitConfigEnviron(pairs [][2]string) []string {

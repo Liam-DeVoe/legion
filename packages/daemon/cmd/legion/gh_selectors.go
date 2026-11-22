@@ -794,18 +794,24 @@ func readGitRemotes() ([]ghRemote, error) {
 // file or url.<base>.insteadOf of the caller's that gh's git never sees.
 //
 // It takes no lock: `git remote -v` and `git config --get-regexp` read configuration and write
-// nothing, so neither can leave a lock file behind for the next reader of the repository. R8 of
-// dispatch://INFRA-3098 gives a process group of its own and the SIGTERM-then-grace-then-SIGKILL
-// stop to the two command runners of internal/workspace, whose git and jj do take locks, and
-// leaves a read that takes none as it is: this child needs neither the group nor the grace.
+// nothing, so neither can leave a lock file behind for the next reader of the repository. It still
+// runs in a process group of its own that its bound stops whole (procgroup.Configure): a git, or a
+// wrapper of it, whose child holds the output pipe would otherwise keep the call waiting past the
+// bound for as long as that child lives, since a stop of git alone leaves the pipe open. A git
+// that exits on its own while a child still holds the pipe is waited for no longer than
+// procgroup's WaitDelay, and its own exit is its answer.
 func gitLines(args ...string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), programbound.Of(&ghGitReadBound))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
+	procgroup.Configure(cmd)
 	cmd.Env = append(ghChildEnviron(os.Environ(), nil), "LC_ALL=C")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		err = nil
+	}
 	end := procgroup.Ended(err)
 	switch {
 	case errors.Is(err, exec.ErrNotFound):
