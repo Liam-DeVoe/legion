@@ -2529,6 +2529,22 @@ func (e *Engine) queueMovedNews(ctx context.Context, tx pgx.Tx, issue record.Iss
 	return nil
 }
 
+// releasedIntoPhase is what a release of a held issue into a phase (startHeldRetro, restartTask)
+// does once it has started that phase's worker, as a move does after its start (transition). It
+// queues the reconcile of the tree's news (queueMovedNews): the hold owed the issue nothing
+// (record.OwedNews names a held issue UntoldHeld), so a version approved while it was held can
+// reach the holder of the phase entered with no change set recorded, which that start cannot carry
+// and the reconcile records and sends. And it acts on the pull request's merge forward as a move
+// from from, the phase the hold is from, into the phase entered does (mergeForwardOnEntry): a
+// release into implementing drops an ask made before the hold, which would otherwise hold back
+// every later ask of its head (mergeForward asks once for each head).
+func (e *Engine) releasedIntoPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase) error {
+	if err := e.queueMovedNews(ctx, tx, issue); err != nil {
+		return err
+	}
+	return e.mergeForwardOnEntry(ctx, tx, issue, from)
+}
+
 // noticeFor is what a transition on trigger out of from into to tells the architect: that from
 // finished, with its worker's handoff. Two moves tell it nothing (a notice of no kind, which notice
 // drops): its own sign-off, whose only recipient would be the architect that just acted, and the
