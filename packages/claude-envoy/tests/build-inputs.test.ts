@@ -8,7 +8,16 @@ import { gitBinary } from "@legion/test-fixtures/version-control-tools"
 const packageRoot = resolve(import.meta.dir, "..")
 const repoRoot = resolve(packageRoot, "..", "..")
 
-/** `command` run in `cwd`; its stdout, or an error naming the command and its stderr when it fails. */
+/** How long a command of the row below may run before it is taken for hung: a hang guard, which
+ *  decides no verdict. The row waits for each command to exit, and the build's two bundles take
+ *  what the machine gives them: a few seconds at an ordinary load, and past the 120 s that bounded
+ *  the whole row before at a load of about 2,300 (120,028 ms). 300 s is half the claude-envoy job's
+ *  `timeout-minutes: 10`, so a hung build is killed and named here before the job's limit cuts the
+ *  step. */
+const COMMAND_GUARD_MS = 300_000
+
+/** `command` run in `cwd`; its stdout, or an error naming the command and its stderr when it fails,
+ *  or naming it as hung, killed, when it has not exited after `COMMAND_GUARD_MS`. */
 async function run(command: string[], cwd: string, env?: Record<string, string>): Promise<string> {
   const child = Bun.spawn(command, {
     cwd,
@@ -16,11 +25,21 @@ async function run(command: string[], cwd: string, env?: Record<string, string>)
     stdout: "pipe",
     stderr: "pipe",
   })
+  let hung = false
+  const guard = setTimeout(() => {
+    hung = true
+    child.kill("SIGKILL")
+  }, COMMAND_GUARD_MS)
   const [exitCode, stdout, stderr] = await Promise.all([
     child.exited,
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
-  ])
+  ]).finally(() => clearTimeout(guard))
+  if (hung) {
+    throw new Error(
+      `${command.join(" ")} had not exited after ${COMMAND_GUARD_MS / 1000} s, so it was killed as hung: ${stderr.trim()}`,
+    )
+  }
   if (exitCode !== 0) {
     throw new Error(`${command.join(" ")} exited ${exitCode}: ${stderr.trim()}`)
   }
@@ -126,7 +145,9 @@ test("scripts/build-inputs.txt matches every file the build reads", async () => 
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
-}, 120_000)
+  // The row's own limit is three COMMAND_GUARD_MS, one for the build and one for each git command,
+  // so it is reached only past a hang one of them has already named.
+}, 900_000)
 
 /** The entries of scripts/build-inputs.txt that are not release inputs, so
  *  $CLAUDE_ENVOY_VERSION_ARGS does not carry them: the toolchain block the list's own header
