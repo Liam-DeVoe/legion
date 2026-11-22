@@ -1,5 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, type SyntheticEvent, useLayoutEffect, useRef } from "react";
+import {
+  type ReactNode,
+  type SyntheticEvent,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { flushSync } from "react-dom";
 
 import { api, type WriteBounds } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
@@ -26,6 +34,7 @@ import {
 import { AskHandOn } from "../inbox/AskHandOn";
 import { writePin } from "../issue/pin-write";
 import { conversationItemId, isPinnedConversation, stateForIssue } from "../issue/pins";
+import { type PressWatch, watchPresses } from "../margin/details-focus-keeper";
 import { useCommentActionQueue } from "../margin/useCommentActionQueue";
 import { type AgentPart, AgentParts, useAgentText } from "../refs/AgentName";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -144,16 +153,33 @@ function ItemControls({
     queryKey: ["asks", issueKey],
     staleTime: Number.POSITIVE_INFINITY,
   });
+  // The items whose action Dispatch has taken while the read of the comments that action set off
+  // is still out, once for each such read. A press is answered once the page shows what it did
+  // (`watchPresses`), so the item's controls stay busy until that read has landed.
+  const [reading, setReading] = useState<readonly string[]>([]);
   const actions = useCommentActionQueue({
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] }),
+    onSuccess: ({ id }) => {
+      // Drawn before the queue draws the action as no longer out, so that the controls never
+      // read idle between the two.
+      flushSync(() => setReading((ids) => [...ids, id]));
+      void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] }).finally(() =>
+        setReading((ids) => {
+          const landed = ids.indexOf(id);
+          return ids.filter((_, index) => index !== landed);
+        })
+      );
+    },
   });
   const retry = useKeyedWrite({
     label: () => CONTROL_LABELS.retry_delivery,
     method: "POST",
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] });
-      void queryClient.invalidateQueries({ queryKey: ["issue-messages", issueKey] });
-    },
+    // The write stays out until the reads it set off have landed, failed or not, so that its
+    // Retry reads busy until the page shows what it did.
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["comments", issueKey] }),
+        queryClient.invalidateQueries({ queryKey: ["issue-messages", issueKey] }),
+      ]),
     write: (delivery: Delivery, bounds) => delivery.retry(bounds),
   });
   const pinId = conversationItemId(item.kind, item.id);
@@ -172,12 +198,13 @@ function ItemControls({
   const undecided = comment?.suggestion !== null && comment?.suggestion?.accepted === null;
   // The reader's own words by the page's one rule, as the outline's row tells them.
   const own = isReader(comment?.author, viewer);
-  const pending = actions.pendingActionIds.has(item.id);
-  // A control whose write is out stays enabled, marked busy, as the margin's thread cards keep
-  // theirs (`ThreadCard.tsx`): Chromium drops the focus of a focused button that turns disabled
-  // to the page, and enabling it again does not bring it back. A repeat press does nothing:
-  // the queue ignores a repeat of the action it is sending (`useCommentActionQueue`), and a
-  // delivery's Retry returns while one is out.
+  const pending = actions.pendingActionIds.has(item.id) || reading.includes(item.id);
+  // A control whose write is out, or the read that write set off, stays enabled, marked busy, as
+  // the margin's thread cards keep theirs (`ThreadCard.tsx`): Chromium drops the focus of a
+  // focused button that turns disabled to the page, and enabling it again does not bring it
+  // back. A repeat press while the write is out does nothing: the queue ignores a repeat of the
+  // action it is sending (`useCommentActionQueue`), and a delivery's Retry returns while its
+  // write, or the reads that write set off, are out.
   const control = `${pageHeaderControl} aria-busy:opacity-50`;
   const deliveries: Delivery[] = [
     ...(comment?.deliveries ?? []).map((row) => {
@@ -212,35 +239,26 @@ function ItemControls({
   ];
   const pinControl = useRef<HTMLButtonElement>(null);
   const threadControl = useRef<HTMLButtonElement>(null);
-  // The control of these the focus is on (`onFocus` below), and whether the reader has pressed it,
-  // or a key on it, since it took the focus (`notePress`). Accept and Reject go once the
+  // The control of these the focus is on (`onFocus` below), with the watch of the reader's presses
+  // on it (`watchPresses`, the rule of which loss is theirs). Accept and Reject go once the
   // suggestion is decided, a delivery's Retry once a Retry could deliver it twice, and a failure's
   // Retry once what it sent again is out. Where the reader's own press of one takes it away, the
   // focus would fall to the page with it: it goes to the thread's Resolve or Reopen instead, else
   // to Pin, as Unpin in Pinned hands it on (`IssuePins.tsx`). Pin, Resolve and Reopen, and the
-  // hand-on, stay drawn when pressed, and none of them is disabled. A control that goes with no
-  // press of the reader's on it - the suggestion decided in another session, a delivery's Retry
-  // whose time ran out, the question answered elsewhere - leaves the focus on the page's body, as
-  // on every page of Dispatch, and nothing here takes it.
-  const held = useRef<{ readonly control: Element; pressed: boolean } | null>(null);
-  const notePress = (event: SyntheticEvent) => {
-    const focused = held.current;
-    if (
-      focused !== null &&
-      event.target instanceof Node &&
-      focused.control.contains(event.target)
-    ) {
-      focused.pressed = true;
-    }
-  };
+  // hand-on, stay drawn when pressed, and none of them is disabled. A control that goes while no
+  // press of the reader's on it stands - the suggestion decided in another session, a delivery's
+  // Retry whose time ran out, the question answered elsewhere - leaves the focus on the page's
+  // body, as on every page of Dispatch, and nothing here takes it.
+  const held = useRef<{ readonly control: Element; readonly press: PressWatch } | null>(null);
+  const hear = (event: SyntheticEvent) => held.current?.press.hear(event.nativeEvent);
+  useEffect(() => () => held.current?.press.stop(), []);
   useLayoutEffect(() => {
     const lost = held.current;
     if (lost === null || lost.control.isConnected) return;
     held.current = null;
-    if (
-      lost.pressed &&
-      (document.activeElement === null || document.activeElement === document.body)
-    ) {
+    const caused = lost.press.stands();
+    lost.press.stop();
+    if (caused && (document.activeElement === null || document.activeElement === document.body)) {
       (threadControl.current ?? pinControl.current)?.focus();
     }
   });
@@ -248,15 +266,15 @@ function ItemControls({
     // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only note which of these controls the focus is on and whether the reader pressed it, so they need no role of their own.
     <div
       className="mt-2 flex min-w-0 flex-col gap-1"
-      onClick={notePress}
+      onClick={hear}
       onFocus={(event) => {
         // The focus come back to the control it was on, as the window is focused again, keeps the
         // reader's press of it.
-        if (held.current?.control !== event.target) {
-          held.current = { control: event.target, pressed: false };
-        }
+        if (held.current?.control === event.target) return;
+        held.current?.press.stop();
+        held.current = { control: event.target, press: watchPresses(event.target) };
       }}
-      onKeyDown={notePress}
+      onKeyDown={hear}
     >
       <p className="flex flex-wrap items-center gap-2" data-focused-controls="">
         <button

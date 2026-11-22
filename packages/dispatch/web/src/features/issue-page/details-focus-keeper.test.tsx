@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -10,8 +10,10 @@ import { useDetailsFocusKeeper } from "../margin/details-focus-keeper";
 import { Margin } from "../margin/Margin";
 import { MarginProvider } from "../margin/margin-context";
 import { DESKTOP_WIDTH, issue, stubViewport } from "../margin/margin-fixture";
+import { standsFailed } from "../refs/reference-target";
 import { buildIssuePath } from "../refs/routes";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
+import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
 import { useDrawerPage } from "./drawer-page";
 import {
   DETAILS_ATTRIBUTE,
@@ -22,6 +24,7 @@ import {
   useFillMarginSlot,
   useMarginDrawer,
 } from "./margin-slot";
+import { CONTROL_LABELS } from "./page-words";
 
 /** Where the focus is when no element holds it. */
 const PAGE = "the page";
@@ -104,6 +107,11 @@ function Fixture<S>({
 interface Drawn<S> {
   /** Sets the box's state, then waits until every observer and microtask it set off has run. */
   change: (state: S) => Promise<void>;
+  /** Draws one animation frame: runs every callback asked for before it. The box's frames are
+   *  held until a case draws them. happy-dom draws a frame as an immediate, between any two steps
+   *  of a case, while a browser draws the commit a press makes - which a case makes as the change
+   *  after its press - before the next frame. */
+  frame: () => Promise<void>;
   /** Sets the box's state as a write that lands does (`outsideAct`), then waits until React has
    *  run the commit's passive effects and the keeper has had its task. In a browser React's
    *  scheduler queues the task that runs those effects as the commit ends, before the keeper's
@@ -113,12 +121,23 @@ interface Drawn<S> {
   land: (state: S) => Promise<void>;
   /** Draws the box again with the keeper turned on or off, or the box hidden. */
   redraw: (props: { active?: boolean; hidden?: boolean }) => Promise<void>;
+  /** Takes the box away, and lets frames run freely again. */
   unmount: () => void;
 }
 
 function drawBox<S>(active: boolean, initial: S, draw: Draw<S>): Drawn<S> {
   const handle: Handle<S> = { set: () => undefined };
   let props = { active, hidden: false };
+  let asked = new Map<number, FrameRequestCallback>();
+  let made = 0;
+  const request = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    made += 1;
+    asked.set(made, callback);
+    return made;
+  });
+  const cancel = spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
+    asked.delete(id);
+  });
   const fixture = () => (
     <Fixture
       active={props.active}
@@ -134,6 +153,13 @@ function drawBox<S>(active: boolean, initial: S, draw: Draw<S>): Drawn<S> {
       await act(async () => handle.set(state));
       await settled();
     },
+    frame: async () => {
+      await act(async () => {
+        const due = asked;
+        asked = new Map();
+        for (const callback of due.values()) callback(performance.now());
+      });
+    },
     land: async (state) => {
       await onFakeClock(async () => {
         outsideAct(() => handle.set(state));
@@ -145,7 +171,11 @@ function drawBox<S>(active: boolean, initial: S, draw: Draw<S>): Drawn<S> {
       view.rerender(fixture());
       await settled();
     },
-    unmount: () => view.unmount(),
+    unmount: () => {
+      view.unmount();
+      cancel.mockRestore();
+      request.mockRestore();
+    },
   };
 }
 
@@ -378,6 +408,251 @@ test("a control removed with no press of the reader's leaves the focus on the pa
       box.unmount();
     }
   } finally {
+    restore();
+  }
+});
+
+/** Show more given the focus and `key` pressed on it, and then Show more replaced by its loading
+ *  line in a change the reader did not make. */
+async function keyThenLoading(key: string): Promise<string> {
+  const box = drawBox(true, false, (loading) => showMore(loading));
+  try {
+    screen.getByRole("button", { name: "Show more" }).focus();
+    await userEvent.keyboard(key);
+    await box.change(true);
+    return focusName();
+  } finally {
+    box.unmount();
+  }
+}
+
+test("a key that acts on nothing is no press: the control taken away after it leaves the focus on the page's body", async () => {
+  const restore = chromiumLayout();
+  try {
+    expect(await keyThenLoading("{ArrowDown}"), "ArrowDown pressed on Show more").toBe(PAGE);
+    expect(await keyThenLoading("{PageDown}"), "PageDown pressed on Show more").toBe(PAGE);
+  } finally {
+    restore();
+  }
+});
+
+/** A row of `rowList`: its name, and where it stands. */
+interface ListRow {
+  readonly name: string;
+  readonly top: number;
+}
+
+const ROWS: readonly ListRow[] = [
+  { name: "Row one", top: 60 },
+  { name: "Row two", top: 100 },
+  { name: "Row three", top: 140 },
+];
+
+/** A list whose rows each hold a control that takes Delete as its act: it prevents the key's
+ *  default and takes its row away. It leaves every other key alone. */
+function rowList(rows: readonly ListRow[], set: (rows: readonly ListRow[]) => void): ReactNode {
+  return (
+    <ul data-height={120} data-top={60}>
+      {rows.map((row) => (
+        <li data-height={40} data-top={row.top} key={row.name}>
+          <button
+            data-top={row.top + 4}
+            onKeyDown={(event) => {
+              if (event.key !== "Delete") return;
+              event.preventDefault();
+              set(rows.filter((other) => other !== row));
+            }}
+            type="button"
+          >
+            {row.name}
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+test("a key the control takes as its act is a press that hands the focus on, and a key it leaves alone is none", async () => {
+  const restore = chromiumLayout();
+  try {
+    const taken = drawBox<readonly ListRow[]>(true, ROWS, rowList);
+    try {
+      screen.getByRole("button", { name: "Row two" }).focus();
+      await userEvent.keyboard("{Delete}");
+      await settled();
+      expect(screen.queryByRole("button", { name: "Row two" }), "Delete took no row away").toBe(
+        null
+      );
+      expect(focusName(), "Row two took Delete and went").toBe("Row three");
+    } finally {
+      taken.unmount();
+    }
+    const left = drawBox<readonly ListRow[]>(true, ROWS, rowList);
+    try {
+      screen.getByRole("button", { name: "Row two" }).focus();
+      await userEvent.keyboard("{Backspace}");
+      await left.change(ROWS.filter((row) => row.name !== "Row two"));
+      expect(focusName(), "Row two, left Backspace, then taken away by another change").toBe(PAGE);
+    } finally {
+      left.unmount();
+    }
+  } finally {
+    restore();
+  }
+});
+
+/** How a line with Retry stands: whether the read Retry sent is out, which Retry reads as busy,
+ *  and whether a read has answered, which takes the line and its Retry away. */
+interface RetryDrawn {
+  readonly answered: boolean;
+  readonly busy: boolean;
+}
+
+/** Collapse; a line that says a read failed, with its Retry, or the read's answer; Copy link,
+ *  further down. */
+function retryLine({ answered, busy }: RetryDrawn): ReactNode {
+  return (
+    <>
+      <button data-top={100} type="button">
+        Collapse
+      </button>
+      {answered ? (
+        <p data-top={140}>The row</p>
+      ) : (
+        <div data-top={140}>
+          <p data-top={140}>The row could not be read.</p>
+          <button aria-busy={busy || undefined} data-top={164} type="button">
+            Retry
+          </button>
+        </div>
+      )}
+      <button data-top={300} type="button">
+        Copy link
+      </button>
+    </>
+  );
+}
+
+/** Retry pressed by the reader's Enter, and then, step by step, the line drawn as a step says,
+ *  or two frames drawn: where the focus is after the last step. */
+async function retryThrough(steps: readonly (RetryDrawn | "two frames")[]): Promise<string> {
+  const box = drawBox<RetryDrawn>(true, { answered: false, busy: false }, retryLine);
+  try {
+    await take(screen.getByRole("button", { name: "Retry" }), "key");
+    for (const step of steps) {
+      if (step !== "two frames") {
+        await box.change(step);
+        continue;
+      }
+      await box.frame();
+      await box.frame();
+    }
+    return focusName();
+  } finally {
+    box.unmount();
+  }
+}
+
+test("a press stands while its act is out, and is forgotten once the site answers it with the control standing", async () => {
+  const restore = chromiumLayout();
+  const out: RetryDrawn = { answered: false, busy: true };
+  try {
+    expect(
+      await retryThrough([out, { answered: false, busy: false }, { answered: true, busy: false }]),
+      "Retry's read failed again, and then a read that answered on its own took the line away"
+    ).toBe(PAGE);
+    expect(
+      await retryThrough([out, "two frames", { answered: true, busy: true }]),
+      "another change took Retry away while its read was out, frames after the press"
+    ).toBe("Collapse");
+    expect(
+      await retryThrough([out, { answered: true, busy: false }]),
+      "the read Retry sent answered and took the line away"
+    ).toBe("Collapse");
+  } finally {
+    restore();
+  }
+});
+
+test("a press whose act marks the control busy in no way is answered once two frames have drawn after it", async () => {
+  const restore = chromiumLayout();
+  try {
+    expect(
+      await retryThrough(["two frames", { answered: true, busy: false }]),
+      "Retry, never busy, taken away by another change once two frames had drawn"
+    ).toBe(PAGE);
+  } finally {
+    restore();
+  }
+});
+
+/** A row of Details whose read failed: its line says so with Retry (`DetailsErrorLine`) while
+ *  the read stands failed (`standsFailed`), Retry reads busy while the read it sent is out, and it
+ *  hands its focus on to Collapse, above it, where the reader's press of Retry took it away
+ *  (`useRetryHandOff`). Each read the row makes is answered by the case (`read`). */
+function FailedRow({ read }: { read: () => Promise<string> }): ReactNode {
+  const row = useQuery({ queryFn: read, queryKey: ["row"] });
+  const collapse = useRef<HTMLButtonElement>(null);
+  const handOff = useRetryHandOff(() => collapse.current);
+  return (
+    <>
+      <button data-top={100} ref={collapse} type="button">
+        Collapse
+      </button>
+      <div data-top={140}>
+        {standsFailed(row) ? (
+          <DetailsErrorLine
+            error={row.error}
+            failure={row.errorUpdateCount}
+            message="The row could not be read."
+            onRetry={retryRead(row)}
+            {...handOff}
+            retrying={row.isFetching}
+          />
+        ) : (
+          <p data-top={140}>{row.data ?? "Loading…"}</p>
+        )}
+      </div>
+      <button data-top={300} type="button">
+        Copy link
+      </button>
+    </>
+  );
+}
+
+test("a Retry whose read failed again is answered: a read that answers on its own and takes the line away leaves the focus on the page's body", async () => {
+  const restore = chromiumLayout();
+  const reads: ReturnType<typeof Promise.withResolvers<string>>[] = [];
+  const read = () => {
+    const answer = Promise.withResolvers<string>();
+    reads.push(answer);
+    return answer.promise;
+  };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const box = drawBox(true, null, () => (
+    <QueryClientProvider client={client}>
+      <FailedRow read={read} />
+    </QueryClientProvider>
+  ));
+  try {
+    await act(async () => reads[0]?.reject(new Error("the row could not be read")));
+    const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
+    await take(retry, "key");
+    await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+    await act(async () => reads[1]?.reject(new Error("the row could not be read")));
+    expect(retry.isConnected, "the line went with a read that failed again").toBe(true);
+    expect(retry).not.toHaveAttribute("aria-busy");
+    expect(focusName(), "Retry lost the focus as its read failed again").toBe(CONTROL_LABELS.retry);
+
+    act(() => void client.invalidateQueries({ queryKey: ["row"] }));
+    await waitFor(() => expect(reads).toHaveLength(3));
+    await act(async () => reads[2]?.resolve("The row"));
+    await settled();
+    expect(retry.isConnected, "the read that answered left the line").toBe(false);
+    expect(focusName(), "a read the reader did not press for took Retry away").toBe(PAGE);
+  } finally {
+    box.unmount();
+    client.clear();
     restore();
   }
 });

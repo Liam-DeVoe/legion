@@ -1052,6 +1052,59 @@ test("a suggestion decided in another session leaves the focus Accept held on th
   }
 });
 
+// ArrowDown on Accept scrolls Details and acts on nothing, so it is no press of Accept: a
+// suggestion decided in another session after it still leaves the focus Accept held on the page's
+// body, and Details' box stays where the reader scrolled it.
+test("a suggestion decided in another session after ArrowDown on Accept leaves the focus on the page's body and Details where the reader scrolled it", async () => {
+  const suggested = bobsComment("comment-7", {
+    suggestion: { accepted: null, replace_with: "the drafts store" },
+  });
+  const client = readsHeld();
+  client.setQueryData(["comments", KEY], [suggested]);
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <FocusedNodeProvider>
+          <Focus node={commentNode(suggested)} />
+          <div data-testid="details-box" style={{ overflowY: "auto" }}>
+            <DetailsFocusedNode issue={issue} state={undefined} />
+          </div>
+        </FocusedNodeProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const accept = await screen.findByRole("button", { name: CONTROL_LABELS.accept });
+    act(() => accept.focus());
+    await userEvent.keyboard("{ArrowDown}");
+    // happy-dom scrolls nothing for the key, so the box is put where the key scrolled it.
+    const box = screen.getByTestId("details-box");
+    box.scrollTop = 40;
+
+    act(() =>
+      client.setQueryData(
+        ["comments", KEY],
+        [
+          {
+            ...suggested,
+            resolved: true,
+            suggestion: { accepted: true, replace_with: "the drafts store" },
+          },
+        ]
+      )
+    );
+    expect(accept.isConnected, "Accept stayed once the suggestion was decided").toBe(false);
+    expect(screen.getByRole("button", { name: CONTROL_LABELS.reopen_thread })).toBeDefined();
+    expect(
+      document.activeElement,
+      "another session decided the suggestion after ArrowDown on Accept, and the focus left the page's body"
+    ).toBe(document.body);
+    expect(box.scrollTop, "Details scrolled as the suggestion was decided").toBe(40);
+  } finally {
+    view.unmount();
+  }
+});
+
 /** One attempt to deliver `comment-2`'s mention to `target`. */
 function attempt(target: string, over: Partial<CommentDelivery>): CommentDelivery {
   return {
@@ -1187,6 +1240,16 @@ test("a delivery that could not reach its agent reads Not delivered with Retry, 
     expect(queued.textContent).not.toContain(DELIVERY_STATE_WORDS.sent);
     expect(retryOf(queued)).toBeNull();
 
+    // A mention sent to a role is named by the session that took it, and one no session took
+    // by the page's word for an agent: an address is no name. The read of the comments the
+    // Retry's write sets off answers with these deliveries.
+    const roled = bobsComment("comment-2", {
+      deliveries: [
+        attempt("role:legion-p-core-1-tester", { session_id: "tester-7" }),
+        attempt("role:legion-p-core-1-reviewer", {}),
+      ],
+    });
+    listComments.mockResolvedValue([roled]);
     await userEvent.click(within(failed).getByRole("button", { name: CONTROL_LABELS.retry }));
 
     await waitFor(() =>
@@ -1199,16 +1262,6 @@ test("a delivery that could not reach its agent reads Not delivered with Retry, 
     );
     expect(createCommentDelivery).toHaveBeenCalledTimes(1);
 
-    // A mention sent to a role is named by the session that took it, and one no session took
-    // by the page's word for an agent: an address is no name.
-    const roled = bobsComment("comment-2", {
-      deliveries: [
-        attempt("role:legion-p-core-1-tester", { session_id: "tester-7" }),
-        attempt("role:legion-p-core-1-reviewer", {}),
-      ],
-    });
-    listComments.mockResolvedValue([roled]);
-    await act(() => client.invalidateQueries({ queryKey: ["comments", KEY] }));
     await waitFor(() =>
       expect(
         document.querySelector('[data-deliveries] [data-agent-name="tester-7"]'),
@@ -1218,8 +1271,8 @@ test("a delivery that could not reach its agent reads Not delivered with Retry, 
     const [reached, unheld] = [...document.querySelectorAll<HTMLElement>("[data-deliveries] > li")];
     expect(reached?.textContent).not.toContain("role:");
     expect(unheld?.textContent).toStartWith(`${CONTROL_LABELS.unnamed_recipient} · `);
-    // The failed attempt's Retry went once the read after it landed, and the focus with it: it
-    // is on the thread's Resolve rather than on the page.
+    // The failed attempt's Retry went once the read its write set off landed, and the focus with
+    // it: it is on the thread's Resolve rather than on the page.
     expect(document.activeElement, "the focus fell to the page with the delivery's Retry").toBe(
       screen.getByRole("button", { name: CONTROL_LABELS.resolve })
     );
