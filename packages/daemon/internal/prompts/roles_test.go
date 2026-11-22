@@ -340,7 +340,7 @@ func TestTheMergersSquashMessageIsItsOwn(t *testing.T) {
 // with the merge App's token). That merge would also land every open pull request below, which
 // the base holds to its reviews and checks alone and not to its issue's acceptance, retro or
 // design gate. So the merger waits while every pull request below lands through its own issue,
-// then takes the stack apart, after which its pull request merges as any other (dispatch://INFRA-5217).
+// then takes the stack apart, after which its pull request merges as any other.
 func TestTheMergerTakesAStackApartOnceNothingBelowItsPullRequestIsOpen(t *testing.T) {
 	merger := rolePart(t, "merger.md")
 	for _, want := range []string{
