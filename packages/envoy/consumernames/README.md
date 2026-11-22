@@ -99,18 +99,20 @@ revision:
   (`Naming`, `FamilyNaming`): `SessionNaming()` (`session~<nuid>`, fixed `s-<session id>`, metadata
   `envoy.logical` and `envoy.session_id` both the session id, keys `CheckKey` passes),
   `DurableNaming()` for a key `DurableKey` made (`<durable>~<nuid>`, fixed and `envoy.logical` the
-  durable's name, keys `CheckDurableKey` passes), and `LogicalNaming()` for Dispatch's and a
-  daemon's durables (`<logical>~<nuid>`, fixed and `envoy.logical` the logical name). Every creator
-  builds its `Config.Prefix`, `Config.Fixed`, `Config.Metadata` and `Config.CheckKey` from it.
+  durable's name, keys `DurableKey` made of a listener's durable, `listener-<machine id>`), and
+  `LogicalNaming()` for Dispatch's and a daemon's durables (`<logical>~<nuid>`, fixed and
+  `envoy.logical` the logical name). Every creator builds its `Config.Prefix`, `Config.Fixed`,
+  `Config.Metadata` and `Config.CheckKey` from it.
   `FamilyNaming(family, logical)` takes only the family's own keys: Dispatch's store only
   `delivery-events` and `delivery-jobs` (`DispatchDeliveryDurable`, `DispatchJobDurable`), a
   daemon's store only `legion-go-<project>-<kind>` of its own project for the kinds `dispatch`,
-  `github`, `wake` and `ready`, and the session store a key `CheckKey` passes or one `DurableKey`
-  made. Any other key is `ErrInvalidKey`, naming it, and the `Naming` it gives carries the
-  family's rule (`Naming.CheckKey`), so a `Names` built from it refuses another family's key
-  before it reads the record. The fence judges a record's names by its key's own prefix, so
-  without the key rule a record of a daemon's store keyed by the listener's durable would name
-  that durable as its own.
+  `github`, `wake` and `ready`, and the session store a key `CheckKey` passes or the `DurableKey` of
+  a listener's durable (`ListenerDurablePrefix`, the prefix `bus.ListenerDurable` names it by). Any
+  other key is `ErrInvalidKey`, naming it, and the `Naming` it gives carries the family's rule
+  (`Naming.CheckKey`), so a `Names` built from it refuses another family's key before it reads the
+  record. The fence judges a record's names by its key's own prefix, so without the key rule a
+  record of a daemon's store keyed by the listener's durable, or a session-store record keyed by
+  `DurableKey` of a daemon's durable, would name that durable as its own.
   `CheckFamily(family, logical, record)` is the fence by that table, the one a reader of the store
   uses (an operator's status, census or cleanup, in a module that cannot import the creators'),
   and it answers what the family's creator answers. Its nil says only that the key is of the
