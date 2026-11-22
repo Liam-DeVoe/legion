@@ -1,11 +1,12 @@
 // The control of gate-search.ts. The checkout as it is, its generated plugin included, flags no
-// statement of the merge condition. Each planted sentence below is flagged naming its text, for
-// the facts of R14 to R16 it lacks or for the gate it asks that R14 rules out: the reviewer's
-// gate in its role prompt, asking a pass from the implementer and from the tester; a gate that
-// asks the same, in a text the reviewer reads and in the generated copy of a skill; and the
-// architect's acceptance with no word of a pass and a fail, in a text the architect reads. The
-// same sentence in a text that no reader reaches is no flag, and a checkout with no texts is
-// UNKNOWN, never clean.
+// statement of the merge condition, and reads each of the reviewer's role prompts as a gate that
+// states every fact its kind needs. Each planted sentence below is flagged naming its text, for the
+// facts of R14 to R16 it lacks or for the pass it asks of named roles, which R14 rules out: R14's
+// two-role rule put back in the reviewer's role prompts in the words that rule wrote there, one place
+// at a time; a gate in each form of that rule, in a text the reviewer reads and in the generated
+// copy of a skill; and the architect's acceptance with no word of a pass and a fail, in a text the
+// architect reads. The same sentence in a text that no reader reaches is no flag, and a checkout
+// with no texts is UNKNOWN, never clean.
 //
 //   bun test gate-search.test.ts
 //
@@ -41,10 +42,41 @@ function copy(): string {
 const MERGE_GATE = "skills/legion-worker/references/merge-gate.md";
 
 const CORE_REVIEWER = "packages/daemon/internal/prompts/roles/core/reviewer.md";
+const REVIEWER = "packages/daemon/internal/prompts/roles/reviewer.md";
+// A gate that asks a pass from the implementer and from the tester, and one that takes a line of
+// one role alone for no pass: each holds one form of TWO_ROLE_FORMS (gate-search.ts) and no other.
 const TWO_ROLES_GATE =
   "Approve only when each `before_merge` check reads yes on the line of the head you review, from the implementer and from the tester both.";
-// The fact a gate that asks a pass of the two roles goes against.
+const ONE_ROLE_ALONE_GATE =
+  "Approve only when each `before_merge` check reads yes on the line of the head you review: a line that names one of the two roles alone is no pass for your approval.";
+// The fact a gate that asks a pass of named roles goes against.
 const STATE_DECIDES = "R14: the state at the head decides, whoever recorded the pass";
+// R14's two-role rule in the reviewer's role prompts: in each row, words of the state-alone gate
+// and the words the two-role rule held in their place. The last row is a form of that rule that
+// asks the tester's pass only where a tester worked the change. Rows two and four each hold one
+// form of TWO_ROLE_FORMS alone.
+const PUT_BACK: readonly (readonly [string, string, string])[] = [
+  [
+    CORE_REVIEWER,
+    "and every `before_merge` check of the issue's Verification document reading yes on that head's line in `dispatch results --issue <issue>`, whoever recorded the pass: Dispatch's state decides your approval, and no role's pass is needed beside it.",
+    "and a pass standing for every `before_merge` check of the issue's Verification document at that head, from the implementer and from the tester both, which `dispatch results --issue <issue>` prints on that head's line under each check: a line that names one of the two roles alone is no pass for your approval.",
+  ],
+  [
+    CORE_REVIEWER,
+    "and its state comes from its results from CI:",
+    "and its results from CI stand for both roles:",
+  ],
+  [
+    REVIEWER,
+    "refuse it while any such check does not read yes on the line of that head under the check in `dispatch results --issue <issue>`, naming each by its block id. That state decides, whoever recorded the pass: for a check carrying `ci_check` it comes from its results from CI, and a pass at another commit is none.",
+    "refuse it while any such check has no pass standing at that head from the implementer and from the tester both (from CI, for a check carrying `ci_check`), naming each by its block id, and read `dispatch results --issue <issue>` for it, on the line of that head under the check, which names its state and its roles: a line that names one of the two roles alone is no pass for your approval, and a pass at another commit is none.",
+  ],
+  [
+    CORE_REVIEWER,
+    "reading yes on that head's line",
+    "reading yes on that head's line, from the implementer and, where a tester worked the change, from the tester,",
+  ],
+];
 const ACCEPT =
   "Accept only when a pass stands for every `before_merge` check at the approved head.";
 // A prompt part of another role: prompts.Compose gives it to no reader here, and no link names it.
@@ -104,22 +136,27 @@ describe("gate-search", () => {
     const gate = outcome.lines.find((line) => line.startsWith(`${MERGE_GATE}:`));
     expect(gate).toContain("KEEP");
     expect(gate).toContain("Owned by the guide pull request.");
+    // The state-alone gate of each reviewer's role prompt is read, and states every fact.
+    for (const file of [CORE_REVIEWER, REVIEWER])
+      expect(
+        outcome.lines.find((line) => line.startsWith(`${file}:`) && line.includes(" GATE "))
+      ).toContain(
+        " GATE reviewer (by its words): states line, other head, ci, not known, refusal, no wait\n"
+      );
   });
 
   test("a role prompt that asks for a pass from two named roles fails", () => {
-    const dir = copy();
-    const file = path.join(dir, CORE_REVIEWER);
-    const gate = "reading yes on that head's line";
-    const text = readFileSync(file, "utf8");
-    expect(text).toContain(gate);
-    writeFileSync(
-      file,
-      text.replace(gate, `${gate}, from the implementer and from the tester both,`)
-    );
-    const faults = gateSearch(dir, null, MAIN_GUIDE_EXEMPTIONS).faults;
-    expect(faults).toHaveLength(1);
-    expect(faults[0]).toStartWith(`${CORE_REVIEWER}:`);
-    expect(faults[0]).toContain(`goes against ${STATE_DECIDES}`);
+    for (const [file, gate, rule] of PUT_BACK) {
+      const dir = copy();
+      const text = readFileSync(path.join(dir, file), "utf8");
+      expect({ file, gate: text.includes(gate) }).toEqual({ file, gate: true });
+      writeFileSync(path.join(dir, file), text.replace(gate, rule));
+      const faults = gateSearch(dir, null, MAIN_GUIDE_EXEMPTIONS).faults;
+      console.log(`${file} with "${rule.slice(0, 80)}...": ${faults.join(" | ")}`);
+      expect({ rule, faults: faults.length }).toEqual({ rule, faults: 1 });
+      expect(faults[0]).toStartWith(`${file}:`);
+      expect(faults[0]).toContain(`goes against ${STATE_DECIDES}`);
+    }
   });
 
   test("a stale main-guide exemption fails by name", () => {
@@ -140,6 +177,12 @@ describe("gate-search", () => {
   for (const [plant, reader, file, flag] of [
     [
       TWO_ROLES_GATE,
+      "reviewer",
+      "skills/legion-worker/references/review-threads.md",
+      `goes against ${STATE_DECIDES}`,
+    ],
+    [
+      ONE_ROLE_ALONE_GATE,
       "reviewer",
       "skills/legion-worker/references/review-threads.md",
       `goes against ${STATE_DECIDES}`,

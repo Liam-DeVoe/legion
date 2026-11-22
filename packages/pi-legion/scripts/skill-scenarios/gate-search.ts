@@ -38,7 +38,6 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { TWO_ROLES } from "./label-rules";
 import { type Reader, roleTexts } from "./role-texts";
 import { type Sentence, sentences } from "./sentences";
 
@@ -62,6 +61,17 @@ const CHECK =
 const ARCHITECT = /\baccept(s|ed|ance|ing)?\b|\bsign(s|ed|ing)?[ _-]?off\b/i;
 const NAMING_THE_CHECK = String.raw`\bnam(e|es|ing)\b[^.]{0,30}\bcheck\b`;
 
+/** Each form in which a gate asks a pass of named roles, taken from the sentences that held R14's
+ * two-role rule in the reviewer's role prompts: a pass from the implementer and from the tester
+ * (with "both", "alike", or a clause between them), a line that names one of the two roles alone
+ * as no pass, and CI's results that stand for both roles. A statement that holds any of them goes
+ * against the fact `roles`. */
+export const TWO_ROLE_FORMS: readonly RegExp[] = [
+  /\bfrom the implementer and\b[^.:;]{0,60}?\bfrom the tester\b|\bfrom the tester and\b[^.:;]{0,60}?\bfrom the implementer\b/i,
+  /\bone of the two roles alone\b/i,
+  /\bstands? for both roles\b/i,
+];
+
 /** A fact of R14 to R16, and the words that state it: a statement states it when each matches. A
  * fact that FORBIDS lists is one a gate must not go against, and its words are the ones that do. */
 export const FACTS: Record<string, { readonly name: string; readonly says: readonly RegExp[] }> = {
@@ -75,7 +85,7 @@ export const FACTS: Record<string, { readonly name: string; readonly says: reado
   },
   roles: {
     name: "R14: the state at the head decides, whoever recorded the pass",
-    says: TWO_ROLES,
+    says: [new RegExp(TWO_ROLE_FORMS.map((form) => form.source).join("|"), "i")],
   },
   ci: {
     name: "R14: a pass from CI for a check that CI proves",

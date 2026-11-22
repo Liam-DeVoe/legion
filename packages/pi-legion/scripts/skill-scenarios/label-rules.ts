@@ -30,14 +30,6 @@ const LATER_FAIL: readonly RegExp[] = [
   /\bfail(s|ed)?\b[^.]{0,80}\bpass(es)?\b|\bpass(es)?\b[^.]{0,80}\bfail(s|ed)?\b/i,
 ];
 
-/** The words that ask a pass of the two roles: the implementer and the tester in one sentence, and
- * a pass named by its role. restore-two-roles searches for them, and gate-search.ts flags a gate
- * that states both, which R14 rules out: the state at the head decides, whoever recorded the pass. */
-export const TWO_ROLES: readonly RegExp[] = [
-  /implementer[^.]*\btester|tester[^.]*\bimplementer/i,
-  /\b(both|two|which|each) roles?\b|implementer.s own|from the implementer\b|from the tester\b/i,
-];
-
 const GUIDE_TWO_ROLES: readonly Entry[] = [];
 
 const GUIDE_LATER_FAIL: readonly Entry[] = [];
@@ -284,7 +276,8 @@ export const RULES: Record<string, Rule> = {
     role: "reviewer",
     rule: "A check passes the reviewer's gate when its line at the head reads yes, whoever recorded the pass.",
     patterns: [
-      ...TWO_ROLES,
+      /implementer[^.]*\btester|tester[^.]*\bimplementer/i,
+      /\b(both|two|which|each) roles?\b|implementer.s own|from the implementer\b|from the tester\b/i,
       /implementer records|tester records|records? (its|their|your) own/i,
       /\bwhoever recorded the pass\b|\bits state comes from\b/i,
     ],
