@@ -5,9 +5,10 @@
 //    source line that reads it. Where a why cites a line of a file that imports the read, that
 //    line holds the import. ci_job_reads.py itself lists every Read of GATES and RULES. A cited
 //    line that holds another line is wrong whatever the convention, so the lint job runs this rule.
-// 2. A comment of ci.yaml names a helper under a package's test/ directory, which other packages'
-//    tests import, by a name `grep` finds and never by a line number. Each run of consecutive
-//    comment lines is read as one text, so a citation wrapped onto the next line is read whole.
+// 2. A comment of ci.yaml, of a job file it calls (`ci-job-*.yaml`) or of `.github/ci-filters.yaml`
+//    names a helper under a package's test/ directory, which other packages' tests import, by a
+//    name `grep` finds and never by a line number. Each run of consecutive comment lines is read as
+//    one text, so a citation wrapped onto the next line is read whole.
 // 3. With CITATIONS_BASE set to the commit a change starts from (HEAD_REF, the commit it ends at,
 //    is HEAD unless set): no comment line, and no line of a Markdown or text file, that the change
 //    adds cites another file by a line number, but in ci_job_reads.py, whose own convention is
@@ -17,7 +18,7 @@
 // so they run only where a reader sets the base, and no CI step sets it:
 //    CITATIONS_BASE=<base> bun test ./.github/scripts/ci-citations.test.ts
 import { expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import * as path from "node:path";
 
 const root = path.resolve(import.meta.dir, "..", "..");
@@ -114,28 +115,39 @@ test("each line ci_job_reads.py cites in a file that imports the read holds that
   expect(wrong).toEqual([]);
 });
 
+/** The CI files whose comments rule 2 reads: ci.yaml, the job files it calls, and the filters. */
+function ciFiles(): string[] {
+  const workflows = readdirSync(path.join(root, ".github/workflows"))
+    .filter((name) => /^ci(?:-job-[\w-]+)?\.yaml$/.test(name))
+    .sort()
+    .map((name) => `.github/workflows/${name}`);
+  return [...workflows, ".github/ci-filters.yaml"];
+}
+
 test.skipIf(base === "")(
-  "a comment of ci.yaml names a package's test helper by a name, not a line",
+  "a comment of a CI file names a package's test helper by a name, not a line",
   () => {
-    const blocks: { n: number; text: string }[] = [];
-    let block: { n: number; text: string } | undefined;
-    const yaml = readFileSync(path.join(root, ".github/workflows/ci.yaml"), "utf8").split("\n");
-    for (const [i, line] of yaml.entries()) {
-      const comment = /^\s*#\s?(.*)$/.exec(line);
-      if (comment === null) {
-        block = undefined;
-        continue;
+    const blocks: { file: string; n: number; text: string }[] = [];
+    for (const file of ciFiles()) {
+      let block: { file: string; n: number; text: string } | undefined;
+      const yaml = readFileSync(path.join(root, file), "utf8").split("\n");
+      for (const [i, line] of yaml.entries()) {
+        const comment = /^\s*#\s?(.*)$/.exec(line);
+        if (comment === null) {
+          block = undefined;
+          continue;
+        }
+        if (block === undefined) {
+          block = { file, n: i + 1, text: "" };
+          blocks.push(block);
+        }
+        block.text += ` ${comment[1]}`;
       }
-      if (block === undefined) {
-        block = { n: i + 1, text: "" };
-        blocks.push(block);
-      }
-      block.text += ` ${comment[1]}`;
     }
     const fileAfter = new RegExp(`^\\s*(?:of|in)\\s+\`?(${FILE.source})`);
     let named = 0;
     const wrong: string[] = [];
-    for (const { n, text } of blocks) {
+    for (const { file, n, text } of blocks) {
       const helpers = [...text.matchAll(HELPER)].map((match) => match[0]);
       if (helpers.length === 0) continue;
       named += 1;
@@ -151,7 +163,7 @@ test.skipIf(base === "")(
           !/[.;]\s/.test(text.slice((before.index ?? 0) + before[0].length, at));
         const cited = own ?? after ?? (inSentence ? before[0] : undefined);
         if (cited !== undefined && helpers.some((h) => h === cited || h.endsWith(`/${cited}`)))
-          wrong.push(`the comment at line ${n} cites ${cited} by a line: ${cite[0]}`);
+          wrong.push(`the comment of ${file} at line ${n} cites ${cited} by a line: ${cite[0]}`);
       }
     }
     expect(named).toBeGreaterThan(0);

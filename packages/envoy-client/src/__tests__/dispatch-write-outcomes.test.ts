@@ -411,7 +411,7 @@ const KINDS: readonly Kind[] = [
     })
   ),
   // Dispatch's keyed layer names the key back on every answer from its claim on, its replays
-  // included (request_keys.go:319-322), so each replay row carries the echo.
+  // included (`keyedWrites` in request_keys.go), so each replay row carries the echo.
   {
     name: "403 handler OAUTH_SCOPE_REQUIRED replay",
     role: "refusal",
