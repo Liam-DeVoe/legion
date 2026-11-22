@@ -529,7 +529,7 @@ REFGEN_REFUSALS = tuple(f"{ENVOY}/internal/cipher/{d}" for d in ("api", "approva
 MODULE_SOURCES = [Read(path, "internal/dispatch/api/module_source_test.go:76 walks packages/envoy (infra, testdata "
                              "and all) and :83 parses every .go file it finds but the test files (:80), for "
                              "the tests that ask it for the module's sources: lock_level_test.go:122, "
-                             "event_insert_guard_test.go:87 and :493, review_order_guard_test.go:49, "
+                             "event_insert_guard_test.go:87 and :536, review_order_guard_test.go:49, "
                              "review_write_guard_test.go:51, one_expression_guard_test.go:66, "
                              "issue_route_writer_guard_test.go:107; issue_route_writer_guard_test.go:126 "
                              "also walks packages/envoy and reads every non-test file of it as text")

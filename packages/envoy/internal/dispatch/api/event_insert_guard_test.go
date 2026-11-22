@@ -178,21 +178,31 @@ const seedTool = "cmd/dispatch-seed/"
 
 // The limit of this scan, stated. It reads every string value of the module's non-test Go files
 // (sqlTemplatesByFunction): literals, package-level constants, a local bound once to either, a
-// fmt.Sprintf format and `+` chains of those, with the literals inside a run-time fragment
-// spliced into what it reads. Every value is parsed, whatever its first word, and every finding
-// of one that parses counts. A value the parser refuses, or one a run-time fragment completes, is
-// refused when what the scan read of it holds a word a draw needs (eventIDRiskText), unless
-// knownUnreadableEventIDSQL lists it. Each literal is read on its own as well as in its chain, so a
-// draw, the sequence's name or a reader of SQL text spelled whole in any literal is seen wherever
-// that literal goes: into a builder, through another function's return, into a struct field, to a
-// helper that hands it to a sink. A sink is not itself checked: refusing every sink whose argument
-// holds no string value the scan reads (a builder's String(), a field, a call's result) was
-// measured at this guard's head, and it named 266 calls in the module, most of them methods named
-// Exec, Query, QueryRow or Queue that are no database sink, which a reader without types cannot
-// tell apart; the literals each such argument was built from are read where they are written.
-// What stays outside: a function's or the sequence's name split across literals that only run
-// time joins (a `+` with a call between its halves, two writes to one builder), with neither half
-// a risk word. Review holds that line.
+// fmt.Sprintf format and `+` chains of those, with each run-time fragment standing as `null` and
+// the literals inside it spliced into what it reads. Every value is parsed, whatever its first
+// word, and every finding of one that parses counts. A value the parser refuses, or one a run-time
+// fragment completes, is refused when what the scan read of it holds a word a draw needs
+// (eventIDRiskText), unless knownUnreadableEventIDSQL lists it; and each literal written inside
+// such a value is read on its own as well, parsed and held to the same words, so a statement
+// written whole in one literal is read whatever run-time value stands beside it. A literal no
+// chain holds is a value of its own, so a draw spelled whole in any literal is seen wherever that
+// literal goes: into a builder, through another function's return, into a struct field, to a
+// helper that hands it to a sink. The word execute counts only in a value one of whose parts, at
+// its start or after a semicolon, begins a statement past comments, parentheses, the `null`
+// stand-in and a Sprintf verb (sqlLooking), since prose says it often.
+//
+// A sink is not itself checked. A check by sink was measured at this guard's head: the SQL
+// argument of every Exec, Query, QueryRow, Prepare and Queue call that holds no string value the
+// scan reads (sqlTemplateText) is 176 calls in the module. 3 are syscall.Exec, and 36 are Queue
+// calls handed a closure or a write batch rather than SQL; the other 137 are database calls whose
+// SQL is built at run time, such as inbox_read.go's tx.Query(query). Each of those is built from
+// literals and constants this scan reads where they are written, and a check by sink would need
+// about 137 listed entries, or type information, to tell its sinks apart.
+//
+// What stays outside: a function's or the sequence's name, or a statement's first word, split
+// across literals that only run time joins (a `+` with a call between its halves, two writes to
+// one builder), with no half a risk word; and SQL text a run-time value supplies whole. Review
+// holds that line.
 
 // eventIDOffences reads a SQL string with the PostgreSQL parser and reports each draw or unsafe
 // construct outside the broker's insert path. A string the parser refuses is one offence of its
@@ -250,11 +260,13 @@ func eventIDScan(path, statement string) (findings []eventIDFinding, lists int, 
 // eventIDRiskText is what a SQL value must hold for a part the parser could not read to draw an
 // event id, run SQL text of its own, or make or change what draws one: the sequence functions,
 // lastval and their C names, pg_get_serial_sequence, the sequence's own name, the readers that run
-// SQL text, a Unicode escape (which can spell any name), an alter of a sequence, and a write into
-// events or a table made from it in each spelling of the table (eventsTable). No word boundary
-// follows the sequence functions' names, so nextval_oid and setval3_oid are read too.
+// SQL text, a Unicode escape (which can spell any name), an alter of a sequence or of events.id's
+// column, and a write into events or a table made from it in each spelling of the table
+// (eventsTable). No word boundary follows the sequence functions' names, so nextval_oid and
+// setval3_oid are read too.
 var eventIDRiskText = regexp.MustCompile(`(?i)\b(?:nextval|setval|currval|lastval)|\b(?:pg_get_serial_sequence|query_to_xml(?:schema|_and_xmlschema)?|cursor_to_xml(?:schema)?|ts_stat|ts_rewrite)\b|events_id_seq|\bu&['"]|\balter\s+sequence\b|\b(?:insert|merge)\s+into\s+` + eventsTable +
-	`|\bcopy\s+` + eventsTable + `|\binherits?\s*\(?\s*` + eventsTable + `|\bpartition\s+of\s+` + eventsTable + `|\blike\s+` + eventsTable + `|\battach\s+partition\b`)
+	`|\bcopy\s+` + eventsTable + `|\binherits?\s*\(?\s*` + eventsTable + `|\bpartition\s+of\s+` + eventsTable + `|\blike\s+` + eventsTable + `|\battach\s+partition\b` +
+	`|\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?` + eventsTable + `(?s:.*?)\balter\s+(?:column\s+)?"?id"?(?:\s|$)`)
 
 // eventIDExecute is the one risk word read only in a value that looks like SQL (sqlLooking):
 // prose and log messages say "execute" often, and only a statement runs an EXECUTE.
@@ -271,20 +283,31 @@ func eventIDRiskWord(read string, looksLikeSQL bool) string {
 	return ""
 }
 
-// sqlLeader is what may come before a statement's first word: whitespace, comments and opening
-// parentheses.
-var sqlLeader = regexp.MustCompile(`^(?:\s+|/\*(?s:.*?)\*/|--[^\n]*(?:\n|$)|\()*`)
+// sqlLeader is what may come before a statement's first word: whitespace, comments, opening
+// parentheses, the scan's own `null` stand-in for a run-time fragment (sqlTemplateText), and a
+// fmt.Sprintf verb, which a run-time value fills.
+var sqlLeader = regexp.MustCompile(`(?i)^(?:\s+|/\*(?s:.*?)\*/|--[^\n]*(?:\n|$)|\(|null\b|%[-+# 0-9.*\[\]]*[a-z])*`)
 
-// sqlLooking reports a value that begins as a statement does, past any comments and parentheses
-// before it: a query form or a structural form, set, create and alter with their SQL-only second
-// word so CLI help and prose do not count. It decides one thing only: whether the word execute in
-// a value the parser could not read counts as a risk word (eventIDExecute).
+// sqlLooking reports a value of which some part begins as a statement does, at its start or after
+// a semicolon, past any leader (sqlLeader): a query form or a structural form, and set, create,
+// alter and start with their SQL-only second word so CLI help and prose do not count. It decides
+// one thing only: whether the word execute in a value the parser could not read counts as a risk
+// word (eventIDExecute).
 func sqlLooking(statement string) bool {
-	words := strings.Fields(strings.ToLower(sqlLeader.ReplaceAllString(statement, "")))
+	for _, part := range strings.Split(statement, ";") {
+		if statementStart(part) {
+			return true
+		}
+	}
+	return false
+}
+
+func statementStart(part string) bool {
+	words := strings.Fields(strings.ToLower(sqlLeader.ReplaceAllString(part, "")))
 	if len(words) == 0 {
 		return false
 	}
-	switch strings.TrimRight(words[0], ";") {
+	switch words[0] {
 	case "begin", "call", "copy", "declare", "delete", "do", "explain", "insert", "merge", "select", "update", "values", "with":
 		return true
 	case "create":
@@ -293,8 +316,10 @@ func sqlLooking(statement string) bool {
 		return len(words) > 1 && slices.Contains([]string{"domain", "function", "procedure", "sequence", "table", "view"}, words[1])
 	case "set":
 		return len(words) > 1 && slices.Contains([]string{"constraints", "local", "role", "search_path", "session", "standard_conforming_strings", "statement_timeout", "transaction"}, words[1])
+	case "start":
+		return len(words) > 1 && words[1] == "transaction"
 	case "prepare":
-		return strings.Contains(strings.ToLower(statement), " as ")
+		return strings.Contains(strings.ToLower(part), " as ")
 	}
 	return false
 }
@@ -427,6 +452,24 @@ func scanSourcesForEventIDDraws(sources []moduleSource, constants map[string]str
 					reason = "a run-time fragment completes it"
 				}
 				offend(at + ": " + reason + " and it holds " + word + " (sha256=" + sqlDigest(read) + "): " + located.statement)
+			}
+			// A value the scan cannot read whole is read literal by literal too: each literal of
+			// it is parsed on its own and held to the risk text, so a statement written whole in
+			// one literal is read wherever a run-time value stands beside it.
+			for _, literal := range located.literals {
+				if literal == located.statement {
+					continue
+				}
+				literalFindings, _, literalParsed := eventIDScan(at, literal)
+				for _, finding := range literalFindings {
+					offend(finding.offence)
+				}
+				if literalParsed {
+					continue
+				}
+				if word := eventIDRiskWord(literal, sqlLooking(literal)); word != "" {
+					offend(at + ": a literal of a value it cannot read whole holds " + word + ": " + literal)
+				}
 			}
 		}
 		if copies := eventCopies(source.file, constants); copies > 0 {
@@ -575,9 +618,56 @@ func testEventIDGuardReadsPlantedSources(t *testing.T) {
 		{"control: the latest event id read", query(`insert into refs (event_id) values ((select pg_catalog.currval(pg_catalog.pg_get_serial_sequence('events', 'id'))))`), false},
 		{"control: another sequence", query(`select nextval('other_seq')`), false},
 		{"control: prose that says execute", "package scratch\nfunc planted() error { return fmt.Errorf(\"execute the plan: %w\", err) }\n", false},
+		{"control: a log line that starts with execute and a verb", "package scratch\nfunc planted() error { return fmt.Errorf(\"execute %s: %w\", name, err) }\n", false},
 	} {
 		if got := len(scanPlanted(t, row.source).offences) > 0; got != row.refused {
 			t.Errorf("%s: refused %t, want %t", row.name, got, row.refused)
+		}
+	}
+
+	// The four shapes of review 6013136356, each a statement written whole in one literal beside a
+	// run-time value, and one row for each part of the reading that refuses them that no other
+	// row needs: each must be refused, and by the reading that names it.
+	for _, row := range []struct{ name, source, names string }{
+		{
+			"a run-time value before a do block that executes a query",
+			"package scratch\nfunc planted() { database.Exec(ctx, prefix()+\"do $$ declare q text := (select body from scripts); begin execute q; end $$\") }\n",
+			"runs SQL a static guard cannot read (execute)",
+		},
+		{
+			"a Sprintf whose format starts with a verb and a semicolon",
+			"package scratch\nfunc planted() { database.Exec(ctx, fmt.Sprintf(\"%s; do $$ begin execute %s; end $$\", lead, query)) }\n",
+			"the parser cannot read it and it holds execute",
+		},
+		{
+			"a run-time fragment inside a quoted string",
+			"package scratch\nfunc planted() { database.Exec(ctx, \"start transaction; do $$ begin execute 'select \"+part+\"'; end $$\") }\n",
+			"a run-time fragment completes it and it holds execute",
+		},
+		{
+			"a run-time value before a new default for events.id",
+			"package scratch\nfunc planted() { database.Exec(ctx, prefix()+\"alter table events alter column id set default 0\") }\n",
+			"alter events.id default of the events id sequence or default",
+		},
+		{
+			"a Sprintf whose verb stands right before the statement",
+			"package scratch\nfunc planted() { database.Exec(ctx, fmt.Sprintf(\"%s do $$ begin execute %s; end $$\", lead, query)) }\n",
+			"the parser cannot read it and it holds execute",
+		},
+		{
+			"a statement's first word in a literal of its own after a run-time value",
+			"package scratch\nfunc planted() { database.Exec(ctx, prefix()+\"do\"+\" $$ begin execute q; end $$\") }\n",
+			"the parser cannot read it and it holds execute",
+		},
+		{
+			"a new default for events.id completed at run time",
+			"package scratch\nfunc planted() { database.Exec(ctx, prefix()+\"alter table events alter column id set default \"+value) }\n",
+			"holds alter table events alter column id",
+		},
+	} {
+		offences := scanPlanted(t, row.source).offences
+		if !slices.ContainsFunc(offences, func(offence string) bool { return strings.Contains(offence, row.names) }) {
+			t.Errorf("%s: offences %q, want one naming %q", row.name, offences, row.names)
 		}
 	}
 }

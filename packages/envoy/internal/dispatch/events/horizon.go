@@ -52,9 +52,12 @@
 // lock, and no function of a sequence function's name, oid or C code but Postgres's own (held by
 // the name's pg_proc.dat oid, in pg_catalog and the fixed internal language oid).
 // TestOnlyAnEventInsertsDefaultDrawsAnEventID and TestOnlyTheBrokerInsertsEvents
-// (internal/dispatch/api) hold the Go half, TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault
-// (internal/dispatch/store) the migrations' text, and
-// TestOnlyTheEventsIDDefaultDrawsFromItsSequence (internal/dispatch/store) the migrated catalog.
+// (internal/dispatch/api) hold the Go half, as far as a static reading of the source reaches: SQL
+// text a run-time value supplies whole, or a name split across literals only run time joins, is
+// outside them and held by review (the limit the first test states);
+// TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault (internal/dispatch/store) holds the
+// migrations' text, and TestOnlyTheEventsIDDefaultDrawsFromItsSequence (internal/dispatch/store)
+// the migrated catalog.
 // T held its transaction id before nextval handed it g: that is the writer invariant, which
 // Broker.Append must keep by taking its transaction id before it inserts.
 // nextval handed out g before it handed out A, because events_id_seq has CACHE 1, so every

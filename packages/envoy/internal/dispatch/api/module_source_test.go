@@ -339,11 +339,14 @@ func literalsWithin(expression ast.Expr) string {
 // statement keeps its shape; fragments is every string literal inside those fragments, which a
 // reader scans for the words a draw needs and which the value's digest covers, so an edit to a
 // fragment moves that digest. complete reports whether every byte came from a literal or a
-// package-level constant.
+// package-level constant. literals is every string literal written inside the value's own
+// expression, each on its own, so a reader that cannot read the value whole can read each of its
+// literals: a literal inside a `+` chain or a Sprintf is part of the value, and no other template.
 type sqlTemplate struct {
 	locatedStatement
 	fragments string
 	complete  bool
+	literals  []string
 }
 
 // sqlTemplatesByFunction reads every string value a file writes, in each function body and each
@@ -362,6 +365,7 @@ func sqlTemplatesByFunction(file *ast.File, constants map[string]string) []sqlTe
 			locatedStatement: locatedStatement{function: name, statement: strings.TrimSpace(text)},
 			fragments:        strings.TrimSpace(fragments),
 			complete:         complete,
+			literals:         stringLiterals(expression),
 		}, true
 	}
 	collect := func(node ast.Node, name string, bindings map[string][]ast.Expr) {
@@ -436,6 +440,20 @@ func localBindings(body *ast.BlockStmt) map[string][]ast.Expr {
 		return true
 	})
 	return bindings
+}
+
+// stringLiterals is every string literal written inside expression, unquoted, in source order.
+func stringLiterals(expression ast.Expr) []string {
+	var literals []string
+	ast.Inspect(expression, func(node ast.Node) bool {
+		if literal, ok := node.(*ast.BasicLit); ok && literal.Kind == token.STRING {
+			if text, err := strconv.Unquote(literal.Value); err == nil {
+				literals = append(literals, text)
+			}
+		}
+		return true
+	})
+	return literals
 }
 
 // sqlTemplateText renders a SQL value two ways: text, the statement with each run-time fragment
