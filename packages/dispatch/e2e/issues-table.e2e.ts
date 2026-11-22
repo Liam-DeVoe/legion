@@ -439,6 +439,52 @@ test("with a refused change pending, every control of the selection bar and of P
   }
 });
 
+// The update banner sits at the foot of the window too, centred, as the selection bar does from
+// the sm width up. With a selection made and the banner shown (every live process serves a build
+// other than the page's), every control of the bar must still take a press at each width where
+// the bar sits at the foot; on a phone the bar sits under the header instead.
+test("with the update banner shown, every control of the selection bar takes a press @phone", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const epic = await createIssue({ project: "CORE", title: "Parser rollout" });
+  await patchIssue(epic.key, { labels: ["epic"] });
+  const other = await createIssue({ project: "CORE", title: "Ship the parser" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    // Every live process now serves one build the page does not run (`deploymentChanged`).
+    await page.route("**/api/v1/dashboard/builds", (route) =>
+      route.fulfill({
+        json: { live: ["/assets/index-next.js"], serving: "/assets/index-next.js" },
+      })
+    );
+    await page.goto("/projects/CORE/issues");
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(page.getByRole("status", { name: "A new version is available" })).toBeVisible();
+    await page.getByRole("checkbox", { name: `Select ${other.key}`, exact: true }).check();
+    const bar = page.getByRole("toolbar");
+    // Move takes a press only once an epic is picked, and picking one sends nothing.
+    const epics = bar.getByRole("combobox", { name: "Move to epic" });
+    await epics.selectOption(epic.key);
+    const controls = [...(await bar.getByRole("button").all()), epics];
+    const own = page.viewportSize();
+    if (!own) throw new Error("The project gave the page no viewport");
+    const atFoot = [
+      { width: 1600, height: 1000 },
+      { width: 1280, height: 720 },
+      { width: 800, height: 600 },
+    ];
+    for (const size of own.width >= 640 ? [own, ...atFoot] : [own]) {
+      await page.setViewportSize(size);
+      // A press that another element takes fails here, as in the rows above.
+      for (const control of controls) await control.click({ trial: true, timeout: 5_000 });
+    }
+  } finally {
+    await context.close();
+  }
+});
+
 test("a live insertion above a vertically and horizontally scrolled reader keeps their row in place", async ({
   browser,
 }) => {
