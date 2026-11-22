@@ -235,6 +235,18 @@ export async function userHeaders(
   return { Cookie: `${cookie.name}=${cookie.value}`, Origin: dashboardOrigin };
 }
 
+/** Deletes what `path` names as the reader, alice, as a raw `DELETE` with her session cookie, and
+ *  fails unless Dispatch answers 204. `what` names what is deleted, for the failure. */
+export async function deleteAsReader(path: string, what: string): Promise<void> {
+  const response = await fetch(new URL(path, baseUrl), {
+    headers: await userHeaders("alice"),
+    method: "DELETE",
+  });
+  if (response.status !== 204) {
+    throw new Error(`DELETE ${what} (${path}) failed: ${response.status} ${await response.text()}`);
+  }
+}
+
 async function request<T>(
   path: string,
   method: string,

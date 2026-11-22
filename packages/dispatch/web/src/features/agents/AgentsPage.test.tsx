@@ -14,6 +14,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
 import { afterRescue } from "../../__tests__/focus-rescue";
+import { pressHeld } from "../../__tests__/held-press";
 import { listOf, panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
 import { architectureTree, issueCollaborators } from "../../__tests__/search-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
@@ -2465,6 +2466,41 @@ test("Agents Clear hides every exchange up to now for this viewer and persists t
   }
 });
 
+// Clear conversation is held while its write is out, by `aria-disabled`, never `disabled`
+// (`pressHeld`): the pressed Clear keeps the focus through the write, and a second press, by key
+// or by pointer, sends nothing.
+test("Clear conversation, held while its write is out, keeps the focus, and a second press sends nothing", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({
+    messages: [exchange("m1", "Only question", "2026-09-14T01:00:00Z")],
+  });
+  const stored = page.putAgentState.getMockImplementation();
+  // The write's answer, held until the case gives it inside `act`.
+  const answer = Promise.withResolvers<void>();
+  page.putAgentState.mockImplementation(async (session, input, bounds) => {
+    await answer.promise;
+    if (stored === undefined) throw new Error("the agent-state write has no answer");
+    return stored(session, input, bounds);
+  });
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const clear = await within(planner).findByRole("button", { name: "Clear conversation" });
+    await pressHeld(user, clear, {
+      name: "Clear conversation",
+      sent: () => page.putAgentState.mock.calls.length,
+    });
+  } finally {
+    await act(async () => {
+      answer.resolve();
+      await answer.promise;
+    });
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 test("Agents keeps exchanges with activity after the persisted cutoff and hides the rest", async () => {
   const user = userEvent.setup();
   const page = renderAgents({
@@ -4589,8 +4625,9 @@ test("a row back after its session left mid-send holds the send it left until it
       within(back).getByRole("button", { name: pickNamed("Choose issue") }) as HTMLButtonElement;
     const field = () =>
       within(back).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement;
-    // The composer holds its draft through its control fieldset.
-    const held = () => field().closest("fieldset")?.disabled;
+    // The composer holds its draft through its control fieldset: `aria-disabled`, never
+    // `disabled`, while the send is out.
+    const held = () => field().closest("fieldset")?.getAttribute("aria-disabled") === "true";
     expect(choose().disabled).toBe(true);
     expect(held()).toBe(true);
     expect(field().value).toBe("Status please");

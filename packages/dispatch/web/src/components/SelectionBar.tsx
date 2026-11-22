@@ -144,10 +144,10 @@ export function focusListStop(stop: HTMLElement | null): null {
 
 /** Where the rows a list keeps will stand once the rows a press is still taking away (`leaving`)
  *  have gone, as the page's list lets them go (`ViewportAnchor`): each kept row that will move
- *  up, by id, with how far, and `drawn`, every row the list draws and every group heading that
- *  goes with the rows taken away. Where a row will move up, one of `drawn` stands now. */
+ *  up, by id, with how far, and `listed`, every row the list draws and every group heading that
+ *  goes with the rows taken away. Where a row will move up, one of `listed` stands now. */
 interface Landing {
-  readonly drawn: ReadonlySet<Element>;
+  readonly listed: ReadonlySet<Element>;
   readonly moves: ReadonlyMap<string, MovedUp>;
 }
 
@@ -160,13 +160,15 @@ interface Landing {
 function onceGone(order: readonly string[], list: MarkedList): Landing {
   const { control, leaving } = list;
   const moves = new Map<string, MovedUp>();
-  if (leaving === undefined) return { drawn: new Set(), moves };
+  if (leaving === undefined || !order.some((id) => leaving(id))) {
+    return { listed: new Set(), moves };
+  }
   const idOf = new Map<Element, string>();
   for (const id of order) {
     const row = control(id)?.closest(ROW_SELECTOR);
     if (row !== null && row !== undefined) idOf.set(row, id);
   }
-  const drawn = new Set<Element>(idOf.keys());
+  const listed = new Set<Element>(idOf.keys());
   let by = 0;
   for (const [row, id] of idOf) {
     if (!leaving(id)) {
@@ -175,12 +177,12 @@ function onceGone(order: readonly string[], list: MarkedList): Landing {
     }
     const lead = row.previousElementSibling;
     if (lead !== null && !idOf.has(lead) && groupGoes(lead, idOf, leaving)) {
-      drawn.add(lead);
+      listed.add(lead);
       by += spaceTaken(lead);
     }
     by += spaceTaken(row);
   }
-  return { drawn, moves };
+  return { listed, moves };
 }
 
 /** Whether every row `idOf` names from the element after `lead` to the next element that is no
@@ -231,8 +233,9 @@ function markAtPlace(
     }
   }
   const clips = new Map<Element, boolean>();
-  const atPlace = place < kept.length ? control(kept[place]) : null;
-  const lifted = place < kept.length ? landing.moves.get(kept[place]) : undefined;
+  const placeId: string | undefined = kept[place];
+  const atPlace = placeId === undefined ? null : control(placeId);
+  const lifted = placeId === undefined ? undefined : landing.moves.get(placeId);
   if (
     atPlace !== null &&
     lifted !== undefined &&
@@ -243,13 +246,13 @@ function markAtPlace(
       const mark = control(kept[index]);
       if (mark === null) break;
       const moved = landing.moves.get(kept[index]);
-      if (markShown(mark, clips, moved, landing.drawn)) return mark;
+      if (markShown(mark, clips, moved, landing.listed)) return mark;
       if (!aboveSightNow(mark, clips, moved)) break;
     }
   }
   for (let index = Math.min(place, kept.length - 1); index >= 0; index -= 1) {
     const mark = control(kept[index]);
-    if (mark !== null && markShown(mark, clips, landing.moves.get(kept[index]), landing.drawn)) {
+    if (mark !== null && markShown(mark, clips, landing.moves.get(kept[index]), landing.listed)) {
       return mark;
     }
   }
@@ -268,7 +271,7 @@ function firstMarkShown(
   const clips = new Map<Element, boolean>();
   for (const id of kept) {
     const mark = control(id);
-    if (mark !== null && markShown(mark, clips, landing.moves.get(id), landing.drawn)) return mark;
+    if (mark !== null && markShown(mark, clips, landing.moves.get(id), landing.listed)) return mark;
   }
   return null;
 }
@@ -279,10 +282,13 @@ function firstMarkShown(
  *  (`ROW_SELECTOR`). A list's sticky head, or other chrome the rows scroll under, can stand over a
  *  row whose box is in sight, and is what the page draws there then. A row that will move up is
  *  drawn at that point only once the rows above it have gone, so there a part of any element of
- *  `listed`, the list's rows and the headings that go with them, stands for its own. A mark with
- *  its centre out of the window shows half of itself at most, and one whose edge only touches the
- *  window's edge shows none of itself. Where the engine names no element at a point inside the
- *  window (happy-dom lays nothing out), the box and the centre decide alone. */
+ *  `listed`, the list's rows and the headings that go with them, stands for its own. That holds
+ *  for a point in a row nested inside such an element, as an Inbox row draws an ask card's
+ *  `<article>`. It holds too for a point inside the list that is in none of its rows: a gap its
+ *  spacing leaves between them. The list is the element that holds the row that moves up. A mark
+ *  with its centre out of the window shows half of itself at most, and one whose edge only
+ *  touches the window's edge shows none of itself. Where the engine names no element at a point
+ *  inside the window (happy-dom lays nothing out), the box and the centre decide alone. */
 function markShown(
   mark: HTMLElement,
   clips: Map<Element, boolean>,
@@ -296,8 +302,15 @@ function markShown(
   if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) return false;
   const drawn = document.elementFromPoint(x, y);
   if (drawn === null || (mark.closest(ROW_SELECTOR) ?? mark).contains(drawn)) return true;
-  const under = moved === undefined ? null : drawn.closest(ROW_SELECTOR);
-  return under !== null && listed.has(under);
+  if (moved === undefined) return false;
+  // Rows nest, so every row around the point is tried, the innermost first.
+  const inner = drawn.closest(ROW_SELECTOR);
+  for (let row = inner; row !== null; row = row.parentElement?.closest(ROW_SELECTOR) ?? null) {
+    if (listed.has(row)) return true;
+  }
+  // A point of the list that none of its rows holds is a gap its spacing leaves between them.
+  const list = moved.row.parentElement;
+  return list?.contains(drawn) === true && (inner === null || !list.contains(inner));
 }
 
 /**

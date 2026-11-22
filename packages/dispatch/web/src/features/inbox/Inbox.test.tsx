@@ -3686,14 +3686,15 @@ function layRowsDown(scrollY: number, above: () => number = () => 0): () => void
   const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: Element
   ) {
-    const rows = [...document.querySelectorAll("[data-inbox-row]")];
     if (this.matches('[data-testid="inbox-list"] > *')) {
-      return new DOMRect(0, above() - window.scrollY, 200, rows.length * LAID_ROW_PX);
+      const count = document.querySelectorAll("[data-inbox-row]").length;
+      return new DOMRect(0, above() - window.scrollY, 200, count * LAID_ROW_PX);
     }
     const row = this.matches('[data-inbox-row], input[type="checkbox"]')
       ? this.closest("[data-inbox-row]")
       : null;
     if (row === null) return real.call(this);
+    const rows = [...document.querySelectorAll("[data-inbox-row]")];
     const top = above() + rows.indexOf(row) * LAID_ROW_PX - window.scrollY;
     return new DOMRect(0, top, 200, LAID_ROW_PX);
   });
@@ -3937,6 +3938,80 @@ test("an answer that lands and takes its row away from above the focused row let
     moves.restore();
     laidOut();
     answerAsk.mockRestore();
+    getAsk.mockRestore();
+    listOpenAsks.mockRestore();
+  }
+});
+
+// The same for a reply, from the card of an ask's Reply row at the list's top, with the reader's
+// focus moved on to a row below it while the reply is out. A read of the Inbox's threads drops the
+// thread then, and the Inbox keeps its row where the reader saw it until the reply lands, and lets
+// it go then: the reader's own press takes it away, so the rows after it move up into its place,
+// the focused one with them. The window is not scrolled to hold the focused row where it stood.
+test("a reply that lands and lets its row go from above the focused row lets the focused row move up into its place, with no scroll", async () => {
+  const user = userEvent.setup();
+  const asks = [
+    inboxIssue("ask-a", "CORE-1", "First question?"),
+    inboxIssue("ask-b", "CORE-2", "Second question?"),
+    inboxIssue("ask-c", "CORE-4", "Third question?"),
+  ];
+  const settled = issueAsk({
+    answer: { at: "2026-09-11T03:00:00Z", selected: [], text: "Ship it.", user: "bob" },
+    id: "ask-done",
+    issue: { assignee: "bob", key: "CORE-3", title: "Bob's issue" },
+    issue_key: "CORE-3",
+    question: "Which approach?",
+    state: "answered",
+  });
+  const thread = replyRow("ask-done", {
+    issue: { key: "CORE-3", title: "Bob's issue" },
+    kind: "ask",
+    ref: "/issues/CORE-3/asks/ask-done",
+    subject: "Which approach?",
+  });
+  const listOpenAsks = mockInboxReads(asks, { threads: [thread] });
+  const getAsk = mockAskReads([...asks, settled]);
+  const getIssue = mockIssueReads();
+  const landing = Promise.withResolvers<Comment>();
+  const createComment = spyOn(api, "createComment").mockReturnValue(landing.promise);
+  // One row above the window, the Reply row; the focused row stands 100 px down it.
+  const laidOut = layRowsDown(LAID_ROW_PX);
+  const moves = watchMoves();
+  const { queryClient, unmount } = renderInbox("/?group=none");
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["reply:ask-done", "ask-a", "ask-b", "ask-c"]));
+    const row = shortRow("reply:ask-done");
+    await user.click(await within(row).findByRole("textbox", { name: "Reply" }));
+    await user.paste("Thanks, shipping it.");
+    await user.click(within(row).getByRole("button", { name: "Reply" }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    // A read of the Inbox's threads that no longer lists this one: the row stays while the reply
+    // is out.
+    answerOneRead({ asks, threads: [] });
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+    expect(rowIds()).toEqual(["reply:ask-done", "ask-a", "ask-b", "ask-c"]);
+
+    const focused = markOf("ask-b");
+    act(() => focused.focus());
+    const place = focused.getBoundingClientRect().top;
+    const scrolledBefore = moves.scrolled.length;
+    await act(async () => {
+      landing.resolve(postedComment("CORE-3", "ask-done", "Thanks, shipping it."));
+      await landing.promise;
+    });
+    await waitFor(() => expect(rowIds()).not.toContain("reply:ask-done"));
+    expect(focused).toHaveFocus();
+    expect(focused.getBoundingClientRect().top).toBe(place - LAID_ROW_PX);
+    expect(window.scrollY).toBe(LAID_ROW_PX);
+    expect(moves.scrolled.length).toBe(scrolledBefore);
+  } finally {
+    unmount();
+    moves.restore();
+    laidOut();
+    createComment.mockRestore();
+    getIssue.mockRestore();
     getAsk.mockRestore();
     listOpenAsks.mockRestore();
   }

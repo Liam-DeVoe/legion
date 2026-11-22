@@ -1124,10 +1124,7 @@ export function AskCard({
         )}
         {clarification.error === null ? null : (
           <QueryError
-            message={clarificationRefusal({
-              error: clarification.error,
-              method: clarification.method,
-            })}
+            message={clarificationRefusal(clarification)}
             onRetry={() => submitGuard.retryLast(clarification)}
             retrying={clarification.isPending}
           />

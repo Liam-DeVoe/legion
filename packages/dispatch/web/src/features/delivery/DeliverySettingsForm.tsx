@@ -6,6 +6,7 @@ import { deliverySettingsQuery } from "../../api/queries";
 import { isLiveQuery } from "../../api/query-refresh";
 import { useReadBound } from "../../api/read-bound";
 import type { DeliverySettings, DeliverySettingsInput } from "../../api/types";
+import { heldField } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { borderDefault, textMutedOnCanvas } from "../../theme/classes";
@@ -163,20 +164,21 @@ export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): Re
   return <DeliverySettingsFields record={record} replacedByCaller={initial !== undefined} />;
 }
 
-/** The form's fields and its Save. Save is held, and the fields are disabled, while the save is
- *  out and until what it changes is drawn: through the record's own read, which fills these
- *  fields again from the stored record, or - where the caller holds the record
- *  (`replacedByCaller`), as the Delivery page's live view does, drawing the timeline in the
- *  form's place once its snapshot comes - until the caller replaces the form
- *  (`useHoldUntilDrawn`). Save is held as every held control is (`held-press.ts`): by
- *  `aria-disabled`, never `disabled`, so it keeps its Tab stop and the reader's focus through the
- *  whole hold. Its press still submits the form, by a click or by Enter, and the form's submit
- *  sends nothing while Save is held. The `refused:` variant paints a held Save as a disabled one.
- *  The form and its Save stay the same elements through the read, so the focus stays on the Save
- *  the reader pressed; a form the caller replaces goes while Save is held, so its going is still
- *  the press's doing (`causedByReader`). A record read that has not settled by the request
- *  deadline (`REQUEST_DEADLINE_MS`) lets them go then, with the reason under the form
- *  (`useReadBound`). A refusal lets them go at once, with its reason under the form. */
+/** The form's fields and its Save. Save and the fields are held while the save is out and until
+ *  what it changes is drawn: through the record's own read, which fills these fields again from
+ *  the stored record, or - where the caller holds the record (`replacedByCaller`), as the Delivery
+ *  page's live view does, drawing the timeline in the form's place once its snapshot comes - until
+ *  the caller replaces the form (`useHoldUntilDrawn`). Save is held as every held control is
+ *  (`held-press.ts`): by `aria-disabled`, never `disabled`, so it keeps its Tab stop and the
+ *  reader's focus through the whole hold. Each field is held by `aria-disabled` and read-only,
+ *  never `disabled`, so the field the reader submitted from with Enter keeps the focus too. A
+ *  press of Save still submits the form, by a click or by Enter, and so does Enter in a field: the
+ *  form's submit sends nothing while Save is held. The `refused:` variant paints a held Save as a
+ *  disabled one. The form, its fields and its Save stay the same elements through the read, so
+ *  the focus stays where the reader pressed; a form the caller replaces goes while Save is held,
+ *  so its going is still the press's doing (`causedByReader`). A record read that has not settled
+ *  by the request deadline (`REQUEST_DEADLINE_MS`) lets them go then, with the reason under the
+ *  form (`useReadBound`). A refusal lets them go at once, with its reason under the form. */
 function DeliverySettingsFields({
   record,
   replacedByCaller,
@@ -254,10 +256,11 @@ function DeliverySettingsFields({
   return (
     <>
       <form className={`mt-6 grid gap-4 rounded-xl border p-4 ${borderDefault}`} onSubmit={submit}>
-        <fieldset className="grid min-w-0 gap-4 sm:grid-cols-2" disabled={held}>
+        <fieldset className="grid min-w-0 gap-4 sm:grid-cols-2">
           <label className={settingsFieldLabel} htmlFor={`${id}-deploy-repo`}>
             Deploy repository
             <input
+              {...heldField(held)}
               className={settingsMonoInput}
               id={`${id}-deploy-repo`}
               onChange={(event) => setDraft({ ...draft, deploy_repo: event.target.value })}
@@ -270,6 +273,7 @@ function DeliverySettingsFields({
           <label className={settingsFieldLabel} htmlFor={`${id}-deploy-workflow`}>
             Deploy workflow
             <input
+              {...heldField(held)}
               className={settingsMonoInput}
               id={`${id}-deploy-workflow`}
               onChange={(event) =>
@@ -287,6 +291,7 @@ function DeliverySettingsFields({
                   reference picker nor the renderer: `delivery-production-jobs` in
                   `DISPATCH_WRITING_BOXES` and `DISPATCH_READING_SURFACES` says why. */}
               <textarea
+                {...heldField(held)}
                 aria-describedby={`${id}-production-jobs-hint`}
                 className={settingsMonoInput}
                 id={`${id}-production-jobs`}
@@ -309,6 +314,7 @@ function DeliverySettingsFields({
             <label className={settingsFieldLabel} htmlFor={`${id}-production-apply-step`}>
               Production apply step
               <input
+                {...heldField(held)}
                 aria-describedby={`${id}-production-apply-step-hint`}
                 className={settingsMonoInput}
                 id={`${id}-production-apply-step`}
@@ -328,6 +334,7 @@ function DeliverySettingsFields({
             <label className={settingsFieldLabel} htmlFor={`${id}-${key}`} key={key}>
               {label}
               <input
+                {...heldField(held)}
                 aria-describedby={`${id}-pipeline-jobs-hint`}
                 className={settingsMonoInput}
                 id={`${id}-${key}`}
@@ -344,6 +351,7 @@ function DeliverySettingsFields({
           <label className={settingsFieldLabel} htmlFor={`${id}-pr-checks-workflow`}>
             PR checks workflow
             <input
+              {...heldField(held)}
               className={settingsMonoInput}
               id={`${id}-pr-checks-workflow`}
               onChange={(event) =>
@@ -360,6 +368,7 @@ function DeliverySettingsFields({
               {/* One setting per line rather than prose: `delivery-population-authors` in
                   `DISPATCH_WRITING_BOXES` and `DISPATCH_READING_SURFACES` says why. */}
               <textarea
+                {...heldField(held)}
                 aria-describedby={`${id}-population-authors-hint`}
                 className={settingsMonoInput}
                 id={`${id}-population-authors`}
@@ -382,6 +391,7 @@ function DeliverySettingsFields({
               {/* One setting per line rather than prose: `delivery-excluded-repos` in
                   `DISPATCH_WRITING_BOXES` and `DISPATCH_READING_SURFACES` says why. */}
               <textarea
+                {...heldField(held)}
                 aria-describedby={`${id}-excluded-repos-hint`}
                 className={settingsMonoInput}
                 id={`${id}-excluded-repos`}

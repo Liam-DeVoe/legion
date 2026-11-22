@@ -3,7 +3,7 @@ import { act, render, renderHook, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, type ReactNode, useRef, useState } from "react";
 
-import { drawOver, layRowsOut, watchMoves } from "../__tests__/laid-out-rows";
+import { drawAt, drawOver, layRowsOut, watchMoves } from "../__tests__/laid-out-rows";
 import { useFocusRescue } from "./focus-place";
 import { ROW_MARKER } from "./row-marker";
 import { SelectionBar, useLastMarkedPlace } from "./SelectionBar";
@@ -438,16 +438,19 @@ const PLACED_KEYS = Array.from({ length: 20 }, (_, index) => `CORE-${index + 1}`
  *  page the hand-off where the row marked last cannot take the focus is read on
  *  (`useLastMarkedPlace`). `listed` names the rows the list draws, `leaving` the drawn ones a
  *  press is taking away, `headings` the rows a group's heading is drawn right before, and `last`
- *  the row marked last, null where no row is marked. Its `returnFocus` names the mark of the row
- *  marked last while the list holds it, as the Inbox's does; the hand-off moves the focus itself
- *  otherwise. */
+ *  the row marked last, null where no row is marked. With `cards`, each row draws a card of its
+ *  own after its mark, an `<article>` and so a row nested in it, as an Inbox row draws an ask
+ *  card. Its `returnFocus` names the mark of the row marked last while the list holds it, as the
+ *  Inbox's does; the hand-off moves the focus itself otherwise. */
 function PlacedList({
+  cards = false,
   count,
   headings = [],
   last,
   leaving = [],
   listed,
 }: {
+  cards?: boolean;
   count: number;
   headings?: readonly string[];
   last: string | null;
@@ -479,6 +482,7 @@ function PlacedList({
           ) : null,
           <li data-row={key} key={key}>
             <input aria-label={`Select ${key}`} type="checkbox" />
+            {cards ? <article aria-label={`Card of ${key}`} /> : null}
           </li>,
         ])}
       </ul>
@@ -496,6 +500,11 @@ function PlacedList({
 /** `keys` without `taken`. */
 function without(keys: readonly string[], ...taken: string[]): string[] {
   return keys.filter((key) => !taken.includes(key));
+}
+
+/** The accessible name of what holds the focus, as a string a failed assertion prints whole. */
+function focusedName(): string | null {
+  return document.activeElement?.getAttribute("aria-label") ?? null;
 }
 
 // A press deep in a long list takes away the two rows marked, the row marked last among them.
@@ -591,6 +600,57 @@ test("a press still taking away the row marked last hands the focus to the row a
   } finally {
     moves.restore();
     view.unmount();
+    laidOut();
+  }
+});
+
+// The same press, with every row drawing a card nested in it, as an Inbox row draws an ask card's
+// `<article>`. Where the mark of the row after the leaving row will stand, the page draws the
+// leaving row's card now: a row nested in a row the list draws, which stands for the row that
+// moves up there. The focus goes to that row, with no scroll, and not to the row before it.
+test("a press still taking away the row marked last hands the focus to the row after it where the page draws a card nested in the leaving row", () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const drawn = drawAt("[data-row]", 9, (row) => row.querySelector("article"));
+  const view = render(<PlacedList cards count={1} last="CORE-17" listed={PLACED_KEYS} />);
+  const moves = watchMoves();
+  try {
+    act(() => screen.getByRole("button", { name: "Dismiss" }).focus());
+    view.rerender(
+      <PlacedList cards count={0} last="CORE-17" leaving={["CORE-17"]} listed={PLACED_KEYS} />
+    );
+    expect(focusedName()).toBe("Select CORE-18");
+    expect(moves.scrolled).toEqual([]);
+  } finally {
+    moves.restore();
+    view.unmount();
+    drawn();
+    laidOut();
+  }
+});
+
+// The same press, where the mark of the row after the leaving row will stand at a point the
+// list's spacing leaves between two rows, and the page draws the list itself there now: a point
+// of the list in none of its rows, which stands for the row that moves up there. The focus goes
+// to that row, with no scroll, and not to the row before it. CORE-18's mark is drawn from 800 to
+// 900 px down until CORE-17 goes, and its centre will stand 750 px down then.
+test("a press still taking away the row marked last hands the focus to the row after it where its mark will stand in a gap between the list's rows", () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const drawn = drawAt("[data-row]", 9, (row, y) =>
+    y === 750 ? screen.getByRole("list", { name: "Rows" }) : row.querySelector("input")
+  );
+  const view = render(<PlacedList count={1} last="CORE-17" listed={PLACED_KEYS} />);
+  const moves = watchMoves();
+  try {
+    act(() => screen.getByRole("button", { name: "Dismiss" }).focus());
+    view.rerender(
+      <PlacedList count={0} last="CORE-17" leaving={["CORE-17"]} listed={PLACED_KEYS} />
+    );
+    expect(focusedName()).toBe("Select CORE-18");
+    expect(moves.scrolled).toEqual([]);
+  } finally {
+    moves.restore();
+    view.unmount();
+    drawn();
     laidOut();
   }
 });

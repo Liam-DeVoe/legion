@@ -1,6 +1,5 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
-import { focusOnDocument } from "../features/shell/roving";
 import {
   borderDefault,
   borderStrong,
@@ -365,23 +364,27 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
 
   // Every row, the Create row and Clear are buttons, so the focus can reach one, as a screen
   // reader's cursor puts it there, and a press of each can take that focus to the body, where
-  // Escape no longer reaches the popover. Clear and the Create row always leave with their own
-  // press, Clear as the pick empties and the Create row as its value is made and the search
-  // empties, so a press of one that holds the focus gives it to the search box at the press
-  // itself, and the move does not depend on when the host applies the pick. A row's press need not
-  // take the row away. It can move the row, since a host can order the rows by the pick
-  // (`IssueLabels`, `ComponentPicker`), but a row the press only moves keeps its focus: as React
-  // ends a commit that took the focus away, it focuses again the element that held it before,
-  // where that element is still on the page (react-dom's `flushMutationEffects`). A row the press
-  // takes off the page loses the focus to the body, as in Details a label only the open draft
-  // holds does as the reader unpicks it: `IssueLabels` lists the draft's labels with the issue's
-  // and the project's, so that label is listed only while the draft holds it. So a press of a row
-  // that holds the focus only notes it, and the commit that answers the press gives the search box
-  // the focus only where that commit took the row off the page. A pointer press focuses none of
-  // them (`onMouseDown` below), and leaves the focus where it is. A row or a Create row the
-  // options take away holds no press, and its focus stays on the page's body, as for every change
-  // the reader did not make. A popover that closes takes the search box along, and the close above
-  // gives the focus back to the trigger instead.
+  // Escape no longer reaches the popover. A press of Clear or of the Create row that holds the
+  // focus gives it to the search box at the press itself, before the press acts, so the move does
+  // not depend on when the host applies the press. Clear goes as the pick empties. A multi-select's
+  // Create row goes as its value is made and the search empties. A single pick's Create row goes
+  // with the list where the host takes the value, and the focus goes on to the trigger. Where the
+  // host refuses the value, the Create row stays, and the focus stays in the search box, where the
+  // reader corrects the text. A row's press need not take the row away. It can move the row, since
+  // a host can order the rows by the pick (`IssueLabels`, `ComponentPicker`), but a row the press
+  // only moves keeps its focus: as React ends a commit that took the focus away, it focuses again
+  // the element that held it before, where that element is still on the page (react-dom's
+  // `flushMutationEffects`). A row the press takes off the page loses the focus, as in Details a
+  // label only the open draft holds does as the reader unpicks it: `IssueLabels` lists the draft's
+  // labels with the issue's and the project's, so that label is listed only while the draft holds
+  // it. So a press of a row that holds the focus only notes it, and the commit that answers the
+  // press gives the search box the focus only where the focus is lost then (`focusLost`): on the
+  // body, or still on the removed row in an engine that moves the focus off a removed element only
+  // at its next rendering update. A pointer press focuses none of them (`onMouseDown` below), and
+  // leaves the focus where it is. A row or a Create row the options take away holds no press, and
+  // its focus stays on the page's body, as for every change the reader did not make. A popover that
+  // closes takes the search box along, and the close above gives the focus back to the trigger
+  // instead.
   const focusSearchFirst = (event: { readonly currentTarget: EventTarget }) => {
     if (event.currentTarget === document.activeElement) inputRef.current?.focus();
   };
@@ -397,7 +400,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   useEffect(() => {
     const pressed = focusedRowPressed.current;
     focusedRowPressed.current = false;
-    if (pressed && focusOnDocument()) inputRef.current?.focus();
+    if (pressed && focusLost()) inputRef.current?.focus();
   });
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {

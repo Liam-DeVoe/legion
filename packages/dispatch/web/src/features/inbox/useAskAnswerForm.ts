@@ -156,7 +156,7 @@ export function answerFailure(answer: {
  *  one may have been sent, and the card's Retry makes that very press again (`retryLast`). The
  *  Inbox's short row says the same words of it (`AskShortRow`). */
 export function clarificationRefusal(clarification: {
-  readonly error: Error;
+  readonly error: unknown;
   readonly method: WriteMethod | undefined;
 }): string {
   return (

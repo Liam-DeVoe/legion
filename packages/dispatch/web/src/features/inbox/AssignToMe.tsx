@@ -19,18 +19,12 @@ import {
 import { type IssueAssigneeWrite, useIssueAssignee } from "../issue/useIssueAssignee";
 import { useInboxWrites } from "./ask-writes";
 
-/** What one ask's Assign to me write is doing, as every control drawn for the ask shows it. */
-interface AssignShown {
-  /** The server's reason after a refused save, or what a save the reader stopped may have done
-   *  (`IssueFieldWrite.error`). */
-  readonly error: string | undefined;
-  /** True after a save failed, until the next press (`IssueFieldWrite.failed`). */
-  readonly failed: boolean;
-  /** True while a save is out. */
-  readonly pending: boolean;
-  /** Whether the refused save may be made again (`IssueFieldWrite.retry`). */
+/** What one ask's Assign to me write is doing, as every control drawn for the ask shows it: the
+ *  write's own `error`, `failed` and `pending`, and whether the refused save may be made again
+ *  (`IssueFieldWrite.retry`). */
+type AssignShown = Readonly<Pick<IssueAssigneeWrite, "error" | "failed" | "pending">> & {
   readonly retryable: boolean;
-}
+};
 
 /** An ask whose Assign to me has made no save. */
 const NOTHING_SAVED: AssignShown = {
@@ -81,10 +75,8 @@ export function useAskAssign(askId: string): AskAssignWrite {
   return useInboxWrites(AskAssignWritesContext).of(askId);
 }
 
-/** One ask the Inbox makes an Assign to me write for: its issue, how many controls are drawn for
- *  it, and what its write is doing. */
+/** One ask the Inbox makes an Assign to me write for: its issue, and what its write is doing. */
 interface AssignEntry {
-  readonly drawn: number;
   readonly issueKey: string;
   readonly shown: AssignShown;
 }
@@ -103,41 +95,61 @@ interface AssignEntry {
  * optimistic assignee reaches the Inbox's read (`useIssueFieldWrite`). Each write tells the Inbox
  * what it is doing from then on in the layout effects of each commit that changes that: its
  * landing, its refusal and its Retry. The writes' own steps re-render this component alone: what
- * it draws re-renders only when the writes it provides change. Each Inbox provides its own: the
- * page's and the drawer's are separate.
+ * it draws re-renders only when the writes it provides change. How many controls are drawn for
+ * each ask is kept outside the state, so a control drawn or gone changes the writes only where it
+ * changes which asks the Inbox makes a write for. Each Inbox provides its own: the page's and the
+ * drawer's are separate.
  */
 export function AskAssignWritesProvider({ children }: { children: ReactNode }): ReactNode {
+  // The asks the Inbox makes a write for: an ask while a control is drawn for it, or while its
+  // save is out or refused.
   const [entries, setEntries] = useState<ReadonlyMap<string, AssignEntry>>(() => new Map());
+  /** How many controls are drawn for each ask that has one. */
+  const [drawn] = useState(() => new Map<string, number>());
   /** Each ask's write as it was last drawn, which a press and a Retry go through. */
   const [made] = useState(() => new Map<string, RefObject<IssueAssigneeWrite>>());
-  /** Changes the entry of `askId`, or makes it from `start` where there is none, and lets go of
-   *  it once the Inbox no longer needs it. */
+  /** Changes the entry of `askId`, where it has one, and lets go of it once the Inbox no longer
+   *  makes its write: no control is drawn for the ask, and its save is neither out nor refused. */
   const update = useCallback(
-    (askId: string, change: (entry: AssignEntry) => AssignEntry, start?: AssignEntry) =>
+    (askId: string, change: (entry: AssignEntry) => AssignEntry) => {
+      const controlDrawn = drawn.has(askId);
       setEntries((current) => {
-        const entry = current.get(askId) ?? start;
+        const entry = current.get(askId);
         if (entry === undefined) return current;
         const next = change(entry);
-        if (next === entry && current.has(askId)) return current;
+        const kept = controlDrawn || next.shown.pending || next.shown.failed;
+        if (kept && next === entry) return current;
         const changed = new Map(current);
-        // The Inbox makes the write while a control is drawn for the ask, or its save is out or
-        // refused.
-        if (next.drawn > 0 || next.shown.pending || next.shown.failed) changed.set(askId, next);
+        if (kept) changed.set(askId, next);
         else changed.delete(askId);
         return changed;
-      }),
-    []
+      });
+    },
+    [drawn]
   );
   const draw = useCallback(
     (askId: string, issueKey: string) => {
-      update(askId, (entry) => ({ ...entry, drawn: entry.drawn + 1 }), {
-        drawn: 0,
-        issueKey,
-        shown: NOTHING_SAVED,
-      });
-      return () => update(askId, (entry) => ({ ...entry, drawn: entry.drawn - 1 }));
+      const controls = drawn.get(askId) ?? 0;
+      drawn.set(askId, controls + 1);
+      // An ask that already had a control drawn for it has its entry already.
+      if (controls === 0) {
+        setEntries((current) =>
+          current.has(askId)
+            ? current
+            : new Map(current).set(askId, { issueKey, shown: NOTHING_SAVED })
+        );
+      }
+      return () => {
+        const left = (drawn.get(askId) ?? 0) - 1;
+        if (left > 0) {
+          drawn.set(askId, left);
+          return;
+        }
+        drawn.delete(askId);
+        update(askId, (entry) => entry);
+      };
     },
-    [update]
+    [drawn, update]
   );
   const report = useCallback(
     (askId: string, shown: AssignShown) =>

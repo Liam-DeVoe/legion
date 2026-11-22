@@ -12,6 +12,7 @@ import {
 } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { CreateProjectInput, ProjectDefaultAssignee } from "../../api/types";
+import { heldField } from "../../components/held-press";
 import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import {
@@ -180,6 +181,10 @@ export function ProjectsSection(): ReactNode {
             </div>
           ) : null}
 
+          {/* While the create is out, Key and Name are held, `aria-disabled` and read-only, and
+              New project by `aria-disabled`, never disabled: the control the reader submitted
+              from keeps the focus, and the guard refuses a submit then (`projectSubmitGuard`). The
+              default assignee's list starts no write, and is disabled. */}
           <form
             className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-[1fr_2fr_1fr_auto] sm:items-end ${borderDefault}`}
             onSubmit={submitProject}
@@ -187,8 +192,8 @@ export function ProjectsSection(): ReactNode {
             <label className={settingsFieldLabel} htmlFor="project-key">
               Key
               <input
+                {...heldField(createProject.isPending)}
                 className={settingsMonoInput}
-                disabled={createProject.isPending}
                 id="project-key"
                 onChange={(event) => {
                   createProject.forgetUnanswered();
@@ -202,8 +207,8 @@ export function ProjectsSection(): ReactNode {
             <label className={settingsFieldLabel} htmlFor="project-name">
               Name
               <input
+                {...heldField(createProject.isPending)}
                 className={`rounded-md px-3 py-2 ${inputClasses(false)} ${textPrimaryOnSurface}`}
-                disabled={createProject.isPending}
                 id="project-name"
                 maxLength={PROJECT_NAME_MAX}
                 onChange={(event) => setProjectName(event.target.value)}
@@ -234,8 +239,8 @@ export function ProjectsSection(): ReactNode {
               />
             </div>
             <button
+              aria-disabled={createProject.isPending || undefined}
               className={settingsSubmitButton}
-              disabled={createProject.isPending}
               type="submit"
             >
               New project

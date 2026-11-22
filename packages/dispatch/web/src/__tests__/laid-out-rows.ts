@@ -23,10 +23,9 @@ export function layRowsOut(rowSelector: string, first: number): () => void {
   const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: Element
   ) {
-    const row =
-      this.matches('input[type="checkbox"]') || this.matches(rowSelector)
-        ? this.closest(rowSelector)
-        : null;
+    const row = this.matches(`input[type="checkbox"], ${rowSelector}`)
+      ? this.closest(rowSelector)
+      : null;
     if (row === null) return real.call(this);
     const index = [...document.querySelectorAll(rowSelector)].indexOf(row);
     return new DOMRect(0, (index - first) * ROW_PX, 200, ROW_PX);
@@ -49,6 +48,22 @@ export function drawOver(
     if (y < px) return chrome;
     const row = document.querySelectorAll(rowSelector)[first + Math.floor(y / ROW_PX)];
     return row?.querySelector('input[type="checkbox"]') ?? null;
+  });
+  return () => point.mockRestore();
+}
+
+/** Answers `document.elementFromPoint` with `at(row, y)`, where `row` is the row that
+ *  `layRowsOut`, given the same `rowSelector` and `first`, lays at the point's `y`, else no
+ *  element: what the page draws there. Answers the function that gives happy-dom its own answer
+ *  back. */
+export function drawAt(
+  rowSelector: string,
+  first: number,
+  at: (row: Element, y: number) => Element | null
+): () => void {
+  const point = spyOn(document, "elementFromPoint").mockImplementation((_x, y) => {
+    const row = document.querySelectorAll(rowSelector)[first + Math.floor(y / ROW_PX)];
+    return row === undefined ? null : at(row, y);
   });
   return () => point.mockRestore();
 }

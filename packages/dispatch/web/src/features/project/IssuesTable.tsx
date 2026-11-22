@@ -385,6 +385,7 @@ export function IssuesTable({
     busy,
     notice,
     moved,
+    leaving,
     duplicateEpic,
     setDuplicateEpic,
     unansweredEpic,
@@ -584,6 +585,7 @@ export function IssuesTable({
             filterCounts={openFacets}
             filterUnloaded={doneLoaded || whole ? undefined : DONE_UNLOADED}
             label={`${name} table`}
+            leaving={leaving}
             model={model}
             noun={ISSUE_TABLE_NOUN}
             onOpenFilterChange={setOpenFilter}

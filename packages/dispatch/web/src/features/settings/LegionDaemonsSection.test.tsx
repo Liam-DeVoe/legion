@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 
 import { realClock, settle } from "../../__tests__/fake-clock";
+import { pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, pickFromLabelled, textBoxes } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -175,6 +176,49 @@ test("removing a project's daemon sends the DELETE and drops its row", async () 
 
   await waitFor(() => expect(deleteLegionDaemon).toHaveBeenLastCalledWith("ACME", keyedAttempt));
   expect(await section.findByText("No project names a Legion daemon yet.")).toBeDefined();
+});
+
+// While a write of the section is out, Save Legion daemon, the address box and every row's Remove
+// are held, by `aria-disabled`, never `disabled` (`pressHeld`). A Remove takes its row away at the
+// press, so its hold is read on the other row's Remove, which the reader moves to. The control
+// keeps the focus, and a second press sends nothing.
+test.each([
+  { label: "Save Legion daemon", role: "button", start: undefined },
+  { label: "Legion daemon state URL", role: "textbox", start: undefined },
+  {
+    label: "Remove the Legion daemon of CORE",
+    role: "button",
+    start: "Remove the Legion daemon of ACME",
+  },
+] as const)("$label, held while a write of the section is out, keeps the focus, and a second press sends nothing", async ({
+  label,
+  role,
+  start,
+}) => {
+  const user = userEvent.setup();
+  // The writes' answer, held until the case refuses it inside `act`.
+  const answer = Promise.withResolvers<never>();
+  const writes = [
+    spyOn(api, "putLegionDaemon").mockReturnValue(answer.promise),
+    spyOn(api, "deleteLegionDaemon").mockReturnValue(answer.promise),
+  ];
+  spies.push(...writes);
+  const section = await renderSection(
+    legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }])
+  );
+  try {
+    await section.findByRole("cell", { name: "CORE" });
+    await pickFromLabelled(user, "Legion project", "ACME · ACME");
+    await user.click(section.getByLabelText("Legion daemon state URL"));
+    await user.paste("http://127.0.0.1:9731");
+    await pressHeld(user, section.getByRole(role, { name: label }), {
+      name: label,
+      sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
+      start: start === undefined ? undefined : section.getByRole("button", { name: start }),
+    });
+  } finally {
+    await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
+  }
 });
 
 test("a refusal the server made is shown as the server wrote it, and the row goes back", async () => {

@@ -25,6 +25,7 @@ import {
   THREAD_SESSION,
   unreadThreadRows,
 } from "./inbox-threads";
+import { distinctKeys, watchWrites } from "./keyed-writes";
 import { refusePosts, WRITE_REFUSED } from "./sends";
 import { expandedState } from "./settled";
 import { type BrowserContext, expect, type Page, type Request, test } from "./test";
@@ -108,16 +109,11 @@ async function bandHeadings(page: Page): Promise<string[]> {
     .evaluateAll((nodes) => nodes.map((node) => (node.textContent ?? "").trim()));
 }
 
-/** Every `POST` to the dismiss route this page has made, in order, so a press that must be one
- *  request can be held to it. */
-function watchDismisses(page: Page): Request[] {
-  const posted: Request[] = [];
-  page.on("request", (request) => {
-    if (request.method() === "POST" && new URL(request.url()).pathname === DISMISS_PATH) {
-      posted.push(request);
-    }
-  });
-  return posted;
+/** Every `POST` to the dismiss route this page makes from here on, in order, as body and key. A
+ *  press is one write, under one key, however many requests it takes: the store sends it again
+ *  under the same key when an answer is dropped, so a row counts the keys (`distinctKeys`). */
+function watchDismisses(page: Page) {
+  return watchWrites(page, "POST", DISMISS_PATH);
 }
 
 /** The next `POST` to the dismiss route, as a promise to await before pressing. */
@@ -274,7 +270,7 @@ test("the row's Dismiss takes a thread out of the list, the counts and the Inbox
     // The server holds the same: one thread dismissed, one left in the Inbox.
     await expect.poll(async () => dismissedThreads()).toBe(1);
     expect(await inboxThreads()).toBe(1);
-    expect(posted).toHaveLength(1);
+    expect(distinctKeys(posted)).toEqual([expect.any(String)]);
   } finally {
     await alice.close();
   }
@@ -401,7 +397,7 @@ test("three thread rows picked with x go out together in one bulk Dismiss", asyn
     await expect(rows.first()).toHaveAttribute("data-inbox-row", drawn[3] ?? "");
     await expect.poll(async () => dismissedThreads()).toBe(3);
     expect(await inboxThreads()).toBe(1);
-    expect(posted).toHaveLength(1);
+    expect(distinctKeys(posted)).toEqual([expect.any(String)]);
   } finally {
     await alice.close();
   }
@@ -465,7 +461,7 @@ test("Select all dismisses every row of the group in one request that names each
     await expect(rows).toHaveCount(0);
     await expect.poll(async () => dismissedThreads()).toBe(THREADS);
     expect(await inboxThreads()).toBe(0);
-    expect(posted).toHaveLength(1);
+    expect(distinctKeys(posted)).toEqual([expect.any(String)]);
 
     // The Dismissed view reads them a page at a time, and **Show more** reads the next page.
     await chooseShow(page, "Dismissed");
@@ -543,7 +539,7 @@ test("Select all under a search dismisses every matching row of a band wider tha
     await expect(rows).toHaveCount(0);
     await expect.poll(async () => dismissedThreads()).toBe(MATCHING);
     expect(await inboxThreads()).toBe(OTHERS);
-    expect(posted).toHaveLength(1);
+    expect(distinctKeys(posted)).toEqual([expect.any(String)]);
 
     // What the word hid is untouched, and the Inbox draws it again once the box is empty.
     await page.getByRole("searchbox", { name: "Search asks" }).fill("");

@@ -187,7 +187,7 @@ export function UnsentReply({ className, text }: { className?: string; text: str
  *  may have been posted, and Retry makes that very press again. The Inbox's row of the ask's
  *  thread says the same words of it (`ThreadShortRow`). */
 export function replyRefusal(reply: {
-  readonly error: Error;
+  readonly error: unknown;
   readonly method: WriteMethod | undefined;
 }): string {
   return stoppedNote(reply, "your reply", "posted") ?? "Could not post your reply.";
@@ -282,7 +282,7 @@ export function AskReplyComposer({
     method: options.method,
     mutationKey,
     write: options.write,
-    onSuccess: (comment, press) => options.onSuccess?.(comment, press),
+    onSuccess: options.onSuccess,
   });
   const inbox = useInboxAnswerWrite(useContext(AskReplyWritesContext), ask.id, options);
   const submit: OutstandingAnswerWrite<ReplyPress> = inbox ?? own;
@@ -355,7 +355,7 @@ export function AskReplyComposer({
       </button>
       {submit.error === null ? null : (
         <QueryError
-          message={replyRefusal({ error: submit.error, method: submit.method })}
+          message={replyRefusal(submit)}
           onRetry={submit.retry}
           retrying={submit.isPending}
         />

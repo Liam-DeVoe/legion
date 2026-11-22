@@ -600,6 +600,27 @@ test("content above the list that shrinks with no named row leaving above the fo
   }
 });
 
+// Rows above the focused row are named as leaving for the whole time the press's write is out, so
+// a commit can name them while none of them goes. In such a commit the banner goes, by a live
+// update: no named row went, so the shrink is no doing of the press's. It is compensated, and the
+// rows in view stay where they were.
+test("content above the list that shrinks while named rows above the focused row stay is compensated, and the rows in view stay", () => {
+  const going = (id: string) => id === "r3" || id === "r4";
+  const view = render(<List banner leaving={going} rows={ids(12)} />);
+  try {
+    setScrollY(100);
+    buttonOf("r6").focus();
+    const inView = () => ["r5", "r6", "r7"].map((id) => viewportTop(id));
+    const seen = inView();
+
+    view.rerender(<List leaving={going} rows={ids(12)} />);
+    expect(inView()).toEqual(seen);
+    expect(window.scrollY).toBe(100 - BANNER_HEIGHT);
+  } finally {
+    view.unmount();
+  }
+});
+
 // Content that grows above the list in the commit in which named rows leave is no going of the
 // press's: it is compensated, so the rows move up by the named rows' space alone.
 test("content above the list that grows in the commit in which named rows leave is still compensated", () => {

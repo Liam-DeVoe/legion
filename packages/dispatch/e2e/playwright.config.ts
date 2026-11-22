@@ -367,7 +367,9 @@ const parallelProjects = [
   // view its own way, its row that a bulk Dismiss deep in the Inbox's list hands the focus to
   // the row now at the marked row's place in sight, whose bar and rows the Dismiss takes away,
   // and its row that a bulk action that takes the marked rows out of the project List's view
-  // hands the focus to the row now at their place, whose bar and rows the action takes away.
+  // hands the focus to the row now at their place, whose bar and rows the action takes away. And
+  // `focus-landing`'s sixteen rows, one for each page of R2 at each of two widths, whose focused
+  // control a press, a live update, another device or a press made offline takes away.
   // Measured in WebKit as well as Firefox:
   // neither fires a `focusout` for it. And a table scrolled while one of its rows holds the
   // focus, whose row the virtual list takes away out of sight: `table-controls`'s
@@ -467,8 +469,10 @@ const parallelProjects = [
   // `focusout`, so the page's focus rescue sees it only by watching the page: `table-controls`'s
   // page-own focus row, its row whose focused row a live update takes away, its row that Add a
   // priority opens its form in view with the focus on Priority to advance, its row that Change
-  // answer opens the answer form with the focus in it, and its scrolling-table row, whose focused
-  // row a scroll takes away.
+  // answer opens the answer form with the focus in it, its scrolling-table row, whose focused
+  // row a scroll takes away, and `focus-landing`'s sixteen rows, one for each page of R2 at each
+  // of two widths, whose focused control a press, a live update, another device or a press made
+  // offline takes away.
   // The order in which the engine fires a text box's blur, runs the microtask the page's focus
   // rescue queues from its `focusout`, and lets React commit the save the blur made, which takes
   // the box away: `issue`'s row that Enter in the title's editor, and a click outside it, close it

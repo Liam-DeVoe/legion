@@ -243,7 +243,8 @@ ci_filter_coverage.py's ENV_ALLOWED and stay in the browser step's `env:`; the
 multiprocess job's pinned build step, "Build the Dispatch server", is read under dispatch-browser.yaml's own `env:` and
 defaults, so neither may grow a name outside that set.
 
-The census both of this job's budgets are read from: main's own full-lane runs, read from the
+The census this job's budget counts its unbudgeted steps from, and main's browser-step budget:
+main's own full-lane runs, read from the
 jobs API on 2026-11-21 near 16:15Z at main 75bd096e02. It takes every run of ci.yaml with
 `event=merge_group`, and every run of dispatch-browser-nightly.yaml on branch `main`, that
 GitHub's `created=2026-11-18..2026-11-21` filter lists and whose head commit is on main's
@@ -273,16 +274,17 @@ requests, merge groups and the nightly schedule, `workflow_dispatch` runs left o
 uncut step is 585 s (run 44557669985, job 135679815991, shard (3)), a leg that had to finish
 its retries to report a failing row, and the next is 558 s (run 44601631311, job 135835839778,
 shard (4)). A leg with a failing row must finish to report it, so a pull request's legs count
-as much as a merge group's. So the browser step's budget, its `timeout-minutes: 12`, is
-585 x 1.15 = 673 s -> 12 min.
+as much as a merge group's. So main's own reads would give the browser step 585 x 1.15 =
+673 s -> 12 min. The step carries 16, from the larger maximum of this pull request's rows
+(below).
 The step grows with the suite, not with its rows getting slower: run 44423948511 of 2026-11-18
 ran 1,453 rows (363, 363, 364 and 363 a leg) and run 44909149810 at 67659e611c ran 1,600 (400 a
 leg), and the 1,260 rows both runs passed took 4,345 s and 4,393 s, a ratio of 1.011. So this
-budget is read again when the suite has grown: at the 9 minutes it replaces, derived from the
-419 s of the two runs of the head that sharded this suite (42334424798 and 42316487530), 42 of
-the census's legs came within 60 s of the limit, 34 of the 144 of 2026-11-21, and in run
-44908680493 of #4613 and run 44903205761 of #4199 three legs whose every row passed were cut
-at it.
+budget is read again when the suite has grown: at the 9 minutes main carried before it, derived
+from the 419 s of the two runs of the head that sharded this suite (42334424798 and
+42316487530), 42 of the census's legs came within 60 s of the limit, 34 of the 144 of 2026-11-21,
+and in run 44908680493 of #4613 and run 44903205761 of #4199 three legs whose every row passed
+were cut at it.
 
 The job budget, the shard job's `timeout-minutes`, follows the rule over the same census: one
 window for every step. Each step without a budget of its own is counted at its maximum over
@@ -329,11 +331,15 @@ digest each pinned, are the reading.
 
 This pull request's rows are not in that census: the shared search, sort and filter controls'
 rows of dispatch://INFRA-3135 (e2e/table-controls.e2e.ts and the rows beside them) run in this
-job too. At that pull request's head da0804df, with main aef6a73545 merged, full-lane run
-44892576846 took 425, 422, 443 and 607 s over the four legs' browser steps, so the browser
-step's maximum is 607 s, and 607 x 1.15 = 698 s -> 12 min, the budget the step carries. Its
-earlier heads measured 593 s (full-lane run 44740043506) and 486 s. Main's 531 s is read again
-here once the census holds these rows.
+job too, and so do its generated landing rows (e2e/focus-landing.e2e.ts, 16 a project in
+Chromium, Firefox and WebKit). At that pull request's head 08dd2b41, with main 143b57a76c
+merged, full-lane run 45010081248 took 399, 548, 437 and 808 s over the four legs' browser
+steps, so the browser step's maximum is 808 s, and 808 x 1.15 = 929 s -> 16 min, the budget the
+step carries. Shard 4 holds the tail of the listing, the Firefox and WebKit rows: of its 3,010 s
+of rows, the landing rows took 572 s. Its earlier heads measured 607 s (da0804df, full-lane run
+44892576846, before main's 143b57a76c and the landing rows) and 593 s (run 44740043506); at
+5b8a3463 shard 4 reached 12 minutes with 132 of its 441 rows to run (run 45007913349). Main's
+531 s is read again here once the census holds these rows.
 
 THE TWO NETWORK READS, AT A BUSY HOUR. The sum before this census read the binaries download at 5 s and the
 image pull, `Initialize containers`, at 45 s, from quiet runs, and on 2026-11-18 a leg of
@@ -350,8 +356,8 @@ it is built again. So the download now carries a budget of its own and a second 
 and the pull is counted at that 355 s, above the census's 176 s: no step holds it, so no step
 budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
 seconds" in that log) answers a failed read, not a slow one. The job's budget is the
-browser step's 720 s, the two download attempts' 120 s each, and the steps without a
-budget at the census's 565 s: 1,525 s, 25 min 25 s, rounded up to the 26 minutes
+browser step's 960 s, the two download attempts' 120 s each, and the steps without a
+budget at the census's 565 s: 1,765 s, 29 min 25 s, rounded up to the 30 minutes
 of the shard job's `timeout-minutes`. The browser step's own budget still fires before the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
@@ -516,12 +522,13 @@ $RUNNER_TEMP beside the stacks' own run directory: a file this step wrote into t
 checkout would leave it dirty afterwards. The blob report goes beside the list
 reporter's output, so a green run reports what it ran too.
 
-The step's budget, `timeout-minutes: 12`, is the 12 minutes the job's head derives from the
-pooled maximum of two reads: main's own full-lane runs of 2026-11-18 to 2026-11-21, whose
-maximum is 531 s, and #4523's read of every shard browser step of `ci.yaml` from
-2026-11-13T16:00Z to 2026-11-20T16:00Z, whose maximum is 585 s (run 44557669985, job
-135679815991). The job's head gives both reads and why the budget is read again as the suite
-grows.
+The step's budget, `timeout-minutes: 16`, is the 16 minutes the job's head derives by the rule from this
+step's maximum, 808 s, which the shared controls' rows of dispatch://INFRA-3135 and its landing
+rows set with the rows main has added since: 808 x 1.15 = 929 s. Main's own reads without those
+rows, its full-lane runs of 2026-11-18 to 2026-11-21, whose maximum is 531 s, and #4523's read of
+every shard browser step of `ci.yaml` from 2026-11-13T16:00Z to 2026-11-20T16:00Z, whose maximum
+is 585 s (run 44557669985, job 135679815991), would give 12 minutes from their pooled maximum; the
+job's head gives both reads and why the budget is read again as the suite grows.
 
 ## Why the file store's address is set on the step and not in the environment
 

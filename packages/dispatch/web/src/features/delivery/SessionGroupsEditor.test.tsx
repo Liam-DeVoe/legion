@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
+import { pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -248,7 +249,8 @@ test("a change the reader stopped says it may have been saved, not that it faile
   }
 });
 
-test("group actions are disabled while a save is pending", async () => {
+// A held button is held by `aria-disabled`, never `disabled`, so it keeps the focus.
+test("group actions are held while a save is pending", async () => {
   const user = userEvent.setup();
   let settle: (value: DeliverySessionGroup) => void = () => {};
   const pending = new Promise<DeliverySessionGroup>((resolve) => {
@@ -269,8 +271,9 @@ test("group actions are disabled while a save is pending", async () => {
     );
 
     for (const name of ["Rename", "Add selected", "Remove Planner two", "Delete group"]) {
-      expect((within(group).getByRole("button", { name }) as HTMLButtonElement).disabled).toBe(
-        true
+      const button = within(group).getByRole("button", { name }) as HTMLButtonElement;
+      expect(`${name}: ${button.getAttribute("aria-disabled")} ${button.disabled}`).toBe(
+        `${name}: true false`
       );
     }
     settle(crew);
@@ -285,6 +288,13 @@ function groupButtons(group: HTMLElement): HTMLButtonElement[] {
   return ["Remove Planner two", "Delete group"].map(
     (name) => within(group).getByRole("button", { name }) as HTMLButtonElement
   );
+}
+
+/** `element` as a string a failed assertion prints whole: the body, else its label, else its
+ *  text. */
+function named(element: Element | null): string {
+  if (element === null || element === document.body) return "the body";
+  return element.getAttribute("aria-label") ?? element.textContent?.trim() ?? element.tagName;
 }
 
 // A write of a group that lands keeps its buttons held until the live update carrying it is
@@ -308,14 +318,15 @@ test("a group's buttons stay held after its write lands, until the live update c
     await act(async () => answer.resolve(removed));
     await jump(1_000);
     expect(queryClient.isMutating()).toBe(0);
-    for (const button of groupButtons(group)) expect(button.disabled).toBe(true);
+    for (const button of groupButtons(group))
+      expect(button).toHaveAttribute("aria-disabled", "true");
 
     draw([removed]);
     expect(screen.getByRole("group", { name: "Release crew" })).toBe(group);
     expect(within(group).queryByRole("button", { name: "Remove Planner two" })).toBeNull();
-    expect(
-      (within(group).getByRole("button", { name: "Delete group" }) as HTMLButtonElement).disabled
-    ).toBe(false);
+    expect(within(group).getByRole("button", { name: "Delete group" })).not.toHaveAttribute(
+      "aria-disabled"
+    );
   } finally {
     realClock();
     cleanup();
@@ -342,9 +353,10 @@ test("a group's buttons held for a live update that never comes are free again a
     expect(queryClient.isMutating()).toBe(0);
     // Held from the landing, a second short of the deadline still, and free again past it.
     await jump(SEND_DEADLINE_MS - 1_000);
-    for (const button of groupButtons(group)) expect(button.disabled).toBe(true);
+    for (const button of groupButtons(group))
+      expect(button).toHaveAttribute("aria-disabled", "true");
     await jump(1_000);
-    for (const button of groupButtons(group)) expect(button.disabled).toBe(false);
+    for (const button of groupButtons(group)) expect(button).not.toHaveAttribute("aria-disabled");
   } finally {
     realClock();
     cleanup();
@@ -353,9 +365,9 @@ test("a group's buttons held for a live update that never comes are free again a
 });
 
 /** Lets the write that `pressed` made land, with the page's focus rescue mounted and Chromium's
- *  way with a button that turns disabled (`emulateChromiumFocusFixup`): `pressed` is held, and the
- *  focus has left it for the page. Then draws `next`, the live update carrying the write, and
- *  lets the rescue answer. */
+ *  way with a button that turns disabled (`emulateChromiumFocusFixup`): `pressed` is held by
+ *  `aria-disabled`, which no engine takes the focus off, and keeps the focus. Then draws `next`,
+ *  the live update carrying the write, and lets the rescue answer. */
 async function landAndDraw(
   pressed: HTMLButtonElement,
   next: readonly DeliverySessionGroup[],
@@ -363,21 +375,26 @@ async function landAndDraw(
 ): Promise<void> {
   await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));
   await afterRescue();
-  expect(pressed.disabled).toBe(true);
-  expect(document.activeElement).toBe(document.body);
+  expect(pressed).toHaveAttribute("aria-disabled", "true");
+  expect(pressed.disabled).toBe(false);
+  expect(named(document.activeElement)).toBe(named(pressed));
   editor.draw(next);
   await afterRescue();
 }
 
-// A card's button is held from its press until the live update carrying its write is drawn, and
-// Chromium takes the focus off a button that turns disabled. The card is keyed by the group's
-// id, so that update fills it in place: Rename stays the same element, held by `aria-disabled`
-// now that the name is the stored one, and the page's rescue gives the focus back to it - not to
-// the Name box of a card drawn anew, where the reader's next key would be typed.
-test("Rename keeps the focus once the live update draws the renamed group", async () => {
+// A card's button is held from its press until the live update carrying its write is drawn, by
+// `aria-disabled`, so Chromium does not take the focus off it as it would off a disabled button.
+// The card is keyed by the group's id, so that update fills it in place: Rename stays the same
+// element, still held now that the name is the stored one, and keeps the focus through the write
+// and after it - never the page's body, nor the Name box of a card drawn anew, where the reader's
+// next key would be typed.
+test("Rename pressed keeps the focus through its write, and once the live update draws the renamed group", async () => {
   const user = userEvent.setup();
   const renamed = { ...crew, name: "Ship crew", updated_at: "2026-10-11T00:01:00Z" };
-  const update = spyOn(api, "updateDeliverySessionGroup").mockResolvedValue(renamed);
+  // Held, and given inside `act` after the press, as docs/testing.md ("The act rule of a Dispatch
+  // unit test") says.
+  const answer = Promise.withResolvers<DeliverySessionGroup>();
+  const update = spyOn(api, "updateDeliverySessionGroup").mockReturnValue(answer.promise);
   const restoreFocus = emulateChromiumFocusFixup();
   const editor = renderEditor([crew], { rescued: true });
   try {
@@ -389,11 +406,15 @@ test("Rename keeps the focus once the live update draws the renamed group", asyn
     await user.paste(" Ship crew ");
     const rename = within(group).getByRole("button", { name: "Rename" }) as HTMLButtonElement;
     await user.click(rename);
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    // The write is out: Rename keeps the focus, held.
+    await afterRescue();
+    expect(named(document.activeElement)).toBe("Rename");
+    expect(rename).toHaveAttribute("aria-disabled", "true");
+    await act(async () => answer.resolve(renamed));
     await landAndDraw(rename, [renamed], editor);
 
-    await waitFor(() => expect(rename).toHaveFocus());
-    await afterRescue();
-    expect(document.activeElement).toBe(rename);
+    expect(named(document.activeElement)).toBe("Rename");
     expect(rename).toHaveAttribute("aria-disabled", "true");
     expect(screen.getByRole("group", { name: "Ship crew" })).toBe(group);
     expect(name.value).toBe("Ship crew");
@@ -405,8 +426,8 @@ test("Rename keeps the focus once the live update draws the renamed group", asyn
 });
 
 // The same for Add selected: the editor lets go of the selection as the write lands, so the
-// button is held by `aria-disabled` once the update is drawn, with no session left to add, and
-// keeps the focus the rescue gives back to it.
+// button is still held by `aria-disabled` once the update is drawn, with no session left to add,
+// and keeps the focus it has held since the press.
 test("Add selected keeps the focus once the live update draws the group with the sessions added", async () => {
   const user = userEvent.setup();
   const added = { ...crew, sessions: ["s2", "s9", "s3"], updated_at: "2026-10-11T00:01:00Z" };
@@ -420,9 +441,7 @@ test("Add selected keeps the focus once the live update draws the group with the
     await user.click(add);
     await landAndDraw(add, [added], editor);
 
-    await waitFor(() => expect(add).toHaveFocus());
-    await afterRescue();
-    expect(document.activeElement).toBe(add);
+    expect(named(document.activeElement)).toBe("Add selected");
     expect(add).toHaveAttribute("aria-disabled", "true");
     expect(screen.getByRole("group", { name: "Release crew" })).toBe(group);
     expect(within(group).getByRole("link", { name: "Reviewer" })).toBeDefined();
@@ -433,8 +452,9 @@ test("Add selected keeps the focus once the live update draws the group with the
   }
 });
 
-// A member's Remove goes with that member by design. The card stays, keyed by the group's id, so
-// the rescue answers the Remove's going inside it: the focus lands on the Remove of the member that
+// A member's Remove goes with that member by design. It keeps the focus while its write is out
+// and until the live update carrying it is drawn. The card stays, keyed by the group's id, so the
+// rescue answers the Remove's going inside it: the focus lands on the Remove of the member that
 // moved up into its place, never on the Name box of a card drawn anew.
 test("a member's Remove, gone with its member, hands the focus to the next member's Remove", async () => {
   const user = userEvent.setup();
@@ -462,11 +482,13 @@ test("a member's Remove, gone with its member, hands the focus to the next membe
   }
 });
 
-// Delete group of the only group takes the Groups section away with its card, so the rescue walks
-// the focus back through the dialog. The control before the lost place is the "New group name"
-// box, which takes typed text: the walk passes over it, so the reader's next key is typed into no
-// field they never chose, and lands on the control before it, the last session's live link.
-test("Delete group of the only group walks the focus back past the New group name box", async () => {
+// Delete group keeps the focus while its write is out and until the live update carrying it is
+// drawn. Of the only group, that update takes the Groups section away with its card, so the rescue
+// walks the focus back through the dialog. The control before the lost place is Create group, held
+// with nothing to create but in the Tab order (`aria-disabled`), which takes no typed text: the
+// walk lands on it, and the reader's next key is typed into no field they never chose, never the
+// "New group name" box before it.
+test("Delete group of the only group walks the focus back to the held Create group, never into the New group name box", async () => {
   const user = userEvent.setup();
   const remove = spyOn(api, "deleteDeliverySessionGroup").mockResolvedValue(undefined);
   const restoreFocus = emulateChromiumFocusFixup();
@@ -479,10 +501,11 @@ test("Delete group of the only group walks the focus back past the New group nam
     await user.click(deleting);
     await landAndDraw(deleting, [], editor);
 
-    const reviewer = screen.getByRole("link", { name: "Open live conversation with Reviewer" });
-    await waitFor(() => expect(reviewer).toHaveFocus());
+    const createGroup = screen.getByRole("button", { name: "Create group" });
+    await waitFor(() => expect(named(document.activeElement)).toBe("Create group"));
     await afterRescue();
-    expect(document.activeElement).toBe(reviewer);
+    expect(document.activeElement === createGroup).toBe(true);
+    expect(createGroup.getAttribute("aria-disabled")).toBe("true");
     expect(screen.getByLabelText("New group name")).not.toHaveFocus();
   } finally {
     restoreFocus();
@@ -514,8 +537,7 @@ test("a card deleted on another device after its Rename by Enter was drawn leave
     expect(rename).toHaveFocus();
     await user.keyboard("{Enter}");
     await landAndDraw(rename, [renamed], editor);
-    await waitFor(() => expect(rename).toHaveFocus());
-    await afterRescue();
+    expect(named(document.activeElement)).toBe("Rename");
     expect(rename).toHaveAttribute("aria-disabled", "true");
 
     editor.draw([]);
@@ -531,8 +553,100 @@ test("a card deleted on another device after its Rename by Enter was drawn leave
   }
 });
 
+// The live update carrying a write can be drawn before the write's answer comes back. The card's
+// hold waits for that update, which is drawn already, so the landing puts on no hold, and the
+// press that made the write ends a frame and a task after its answer. So the card deleted on
+// another device after that is a loss the reader did not cause: the focus goes to the open modal
+// dialog's own stop, never to the session list's link before the card's place.
+test("a Rename whose live update is drawn before its answer holds nothing once it lands, so a card deleted on another device after that leaves the focus on the dialog", async () => {
+  const user = userEvent.setup();
+  const renamed = { ...crew, name: "Ship crew", updated_at: "2026-10-11T00:01:00Z" };
+  // Held, and given inside `act` after the press, as docs/testing.md ("The act rule of a Dispatch
+  // unit test") says.
+  const answer = Promise.withResolvers<DeliverySessionGroup>();
+  const update = spyOn(api, "updateDeliverySessionGroup").mockReturnValue(answer.promise);
+  const editor = renderEditor([crew], { rescued: true });
+  try {
+    const group = screen.getByRole("group", { name: "Release crew" });
+    const name = within(group).getByLabelText("Name") as HTMLInputElement;
+    await user.clear(name);
+    await user.click(name);
+    await user.paste("Ship crew");
+    const rename = within(group).getByRole("button", { name: "Rename" }) as HTMLButtonElement;
+    await user.click(rename);
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    // The live update carrying the rename, drawn while its write is still out.
+    editor.draw([renamed]);
+    await act(async () => answer.resolve(renamed));
+    await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));
+    // A frame and a task, by when the press whose action has been answered has ended.
+    await afterRescue();
+    expect(named(document.activeElement)).toBe("Rename");
+
+    editor.draw([]);
+    await afterRescue();
+    const dialog = screen.getByRole("dialog", { name: "Session groups" });
+    expect(document.activeElement === dialog ? "the dialog" : named(document.activeElement)).toBe(
+      "the dialog"
+    );
+  } finally {
+    cleanup();
+    update.mockRestore();
+  }
+});
+
+// The live update carrying a write can come in the same batch as the write's answer. The landing
+// puts the card's hold on, and the render that would draw that hold draws the update's version
+// already, so it lets the hold go before any commit has drawn it. The hold's part in the press's
+// action ends with it, and the press ends a frame and a task after its answer. So the card deleted
+// on another device after that is a loss the reader did not cause: the focus goes to the open
+// modal dialog's own stop, never to the session list's link before the card's place.
+test("a Rename whose live update comes in the same batch as its answer holds nothing once both are drawn, so a card deleted on another device after that leaves the focus on the dialog", async () => {
+  const user = userEvent.setup();
+  const renamed = { ...crew, name: "Ship crew", updated_at: "2026-10-11T00:01:00Z" };
+  // Held, and given inside `act` after the press, as docs/testing.md ("The act rule of a Dispatch
+  // unit test") says.
+  const answer = Promise.withResolvers<DeliverySessionGroup>();
+  const update = spyOn(api, "updateDeliverySessionGroup").mockReturnValue(answer.promise);
+  const editor = renderEditor([crew], { rescued: true });
+  try {
+    const group = screen.getByRole("group", { name: "Release crew" });
+    const name = within(group).getByLabelText("Name") as HTMLInputElement;
+    await user.clear(name);
+    await user.click(name);
+    await user.paste("Ship crew");
+    await user.click(within(group).getByRole("button", { name: "Rename" }));
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    // The answer lands in a chain of microtasks, and inside `act` React commits nothing until the
+    // task they run in ends. So the card's hold is put on while the card still draws the group it
+    // was pressed on, and the live update drawn in that task is drawn in the same render as that
+    // hold.
+    await act(async () => {
+      answer.resolve(renamed);
+      for (let turn = 0; turn < 100 && editor.queryClient.isMutating() > 0; turn += 1) {
+        await Promise.resolve();
+      }
+      expect(editor.queryClient.isMutating()).toBe(0);
+      editor.draw([renamed]);
+    });
+    // A frame and a task, by when the press whose action has been answered has ended.
+    await afterRescue();
+    expect(named(document.activeElement)).toBe("Rename");
+
+    editor.draw([]);
+    await afterRescue();
+    const dialog = screen.getByRole("dialog", { name: "Session groups" });
+    expect(document.activeElement === dialog ? "the dialog" : named(document.activeElement)).toBe(
+      "the dialog"
+    );
+  } finally {
+    cleanup();
+    update.mockRestore();
+  }
+});
+
 // So for a press on another control of the dialog: Create group, its group made and drawn, and
-// the button disabled after it with its name box emptied. The press is the cause of what its write
+// the button held after it with its name box emptied. The press is the cause of what its write
 // takes away and of nothing after the write has landed, though a press in the dialog counts for a
 // loss anywhere in it. With the focus put on the other card's Rename with no press, that card
 // deleted on another device leaves the focus on the dialog's own stop, whether the engine fires a
@@ -556,7 +670,9 @@ test("a card deleted on another device after a Create group landed leaves the fo
       await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));
       editor.draw([crew, made]);
       await afterRescue();
-      expect(screen.getByRole("button", { name: "Create group" })).toBeDisabled();
+      expect(
+        screen.getByRole("button", { name: "Create group" }).getAttribute("aria-disabled")
+      ).toBe("true");
       const rename = within(screen.getByRole("group", { name: "Release crew" })).getByRole(
         "button",
         { name: "Rename" }
@@ -579,6 +695,43 @@ test("a card deleted on another device after a Create group landed leaves the fo
       cleanup();
       create.mockRestore();
     }
+  }
+});
+
+// Create group is held while its write is out, and while it has nothing to create, by
+// `aria-disabled`, never `disabled`. A disabled button drops the focus to the page's body in a
+// browser, and does here under `emulateChromiumFocusFixup`. The create lands and empties the name,
+// so the pressed button keeps the focus through the write and after it, and a second press, by key
+// or by pointer, sends nothing.
+test("Create group keeps the focus while its write is out and once it has emptied the name, and a second press sends nothing", async () => {
+  const user = userEvent.setup();
+  // The create's answer, held until the case gives it inside `act`.
+  const answer = Promise.withResolvers<DeliverySessionGroup>();
+  const create = spyOn(api, "createDeliverySessionGroup").mockReturnValue(answer.promise);
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  const editor = renderEditor();
+  try {
+    await user.click(screen.getByRole("checkbox", { name: "Planner one" }));
+    await user.click(screen.getByLabelText("New group name"));
+    await user.paste("Night crew");
+    const button = screen.getByRole("button", { name: "Create group" });
+    await pressHeld(user, button, {
+      name: "Create group",
+      sent: () => create.mock.calls.length,
+    });
+
+    await act(async () => answer.resolve({ ...crew, name: "Night crew", sessions: ["s1"] }));
+    await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));
+    expect((screen.getByLabelText("New group name") as HTMLInputElement).value).toBe("");
+    expect(named(document.activeElement)).toBe("Create group");
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    await user.keyboard("{Enter}");
+    await user.click(button);
+    expect(create).toHaveBeenCalledTimes(1);
+  } finally {
+    stopFocusFixup();
+    cleanup();
+    create.mockRestore();
   }
 });
 
@@ -686,9 +839,9 @@ test("a group made with its answer lost clears the form and says so, and a secon
     expect(
       (screen.getByRole("checkbox", { name: "Planner one" }) as HTMLInputElement).checked
     ).toBe(false);
-    expect(
-      (screen.getByRole("button", { name: "Create group" }) as HTMLButtonElement).disabled
-    ).toBe(true);
+    expect(screen.getByRole("button", { name: "Create group" }).getAttribute("aria-disabled")).toBe(
+      "true"
+    );
     await waitFor(() => expect(queryClient.getQueryState(reads.run)?.isInvalidated).toBe(true));
     expect(create).toHaveBeenCalledTimes(1);
   } finally {

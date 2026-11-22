@@ -98,12 +98,12 @@ import {
   type ViewRow,
   valuesOf,
 } from "./inbox-view";
-import { leaveFocus } from "./keyboard-issue";
+import { focusThePage } from "./issue-page-g";
 import { searchPath } from "./keyboard-palette";
 import { seedLegionDaemon } from "./legion-seed";
 import { sql } from "./psql";
 import { sessionIds } from "./session-ids";
-import { expandedState, settledState } from "./settled";
+import { expandedState } from "./settled";
 import {
   closeControlPanel,
   drawnControlNames,
@@ -118,6 +118,7 @@ import {
   SURFACE_CONTROLS,
   SURFACE_SESSION,
   seedSurfaces,
+  setBoardLanes,
   straysBetween,
   topOf,
   widthsOf,
@@ -4699,14 +4700,7 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     // is drawn again under a new parent.
     where = `project Board at ${at}`;
     await openIssuesTab(page, "CORE", "Board");
-    const showLanes = page.getByRole("button", { name: "Show lanes" });
-    const hideLanes = page.getByRole("button", { name: "Hide lanes" });
-    const lanes = await settledState("the Board's lanes switch", [
-      ["shown", hideLanes],
-      ["hidden", showLanes],
-    ]);
-    if (lanes === "hidden") await showLanes.click();
-    await expect(hideLanes).toBeVisible();
+    await setBoardLanes(page, "shown");
     const lane = `P${step + 1}`;
     const priority = page.getByLabel(`Priority of ${boardCard.key}`);
     await priority.focus();
@@ -5167,7 +5161,7 @@ test("the Delivery page reaches every facet from its row, in both views, and its
   await page.setViewportSize({ height: 768, width: 1024 });
   await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
   await expect(prs).toHaveCount(3);
-  await leaveFocus(page);
+  await focusThePage(page);
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
   await page.keyboard.press("ArrowDown");
   expect(

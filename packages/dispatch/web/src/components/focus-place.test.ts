@@ -1,16 +1,23 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { QueryClient } from "@tanstack/react-query";
 import { render, renderHook, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode, useRef } from "react";
 
+import { REQUEST_DEADLINE_MS } from "../api/client";
 import { useReadBound } from "../api/read-bound";
+import { signedIn } from "../features/conversation/held-sends-fixture";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { PANEL_ATTRIBUTE, useKeymap } from "../features/shell/keymap";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { plainWrite, type Writes, writesOf } from "../features/writes/write-store";
 import { CONTROL } from "./control-names";
-import { FRAME_WAIT_MS, SHOWN_ITEM_ATTRIBUTE, useFocusPlace, useFocusRescue } from "./focus-place";
+import {
+  beginAnswerHold,
+  FRAME_WAIT_MS,
+  SHOWN_ITEM_ATTRIBUTE,
+  useFocusPlace,
+  useFocusRescue,
+} from "./focus-place";
 import { ROW_MARKER_ATTRIBUTE } from "./row-marker";
 
 // The page's focus rescue, read in happy-dom with the page built by hand. A focused element taken
@@ -20,8 +27,9 @@ import { ROW_MARKER_ATTRIBUTE } from "./row-marker";
 // page. A `blur()` fires its own.
 // The rescue is handed no writes unless a case hands it the page's (`withRescue`'s `writes`), so a
 // press there starts no write, and it stays live while a control it reads as is held by a hold
-// that began after it: a case that holds a control by `aria-disabled` while its write is out reads
-// that rule. The cases that hand the rescue writes read a press's action (`signedInWrites`).
+// that began after it, or while a hold on what answers it is on (`beginAnswerHold`): a case that
+// holds a control by `aria-disabled` while its write is out reads the first rule. The cases that
+// hand the rescue writes read a press's action (`signedInWrites`).
 // A component's own hand-off (`useFocusPlace`) is read here too, in a line of buttons React draws
 // (`HandOffLine`).
 
@@ -1725,9 +1733,7 @@ test("a row its list's pick held, taken away after the hold ended, hands the foc
 /** The page's writes, signed in as the app's are, for a case to hand the rescue as `app.tsx`
  *  hands it the app's (`useFocusRescue`'s `writes`). */
 function signedInWrites(): Writes {
-  const client = new QueryClient();
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  return writesOf(client);
+  return writesOf(signedIn());
 }
 
 /** A write `writes` makes at the reader's press, as a press's handler makes one, out until the
@@ -1876,6 +1882,204 @@ test("a press whose control is held through its write's re-read makes the going 
     }, writes);
   } finally {
     bound.unmount();
+  }
+});
+
+// (cr) A press's action lasts as long as its write and then the re-read that answers it, whose
+// hold has a deadline of its own (`useReadBound`, `REQUEST_DEADLINE_MS` from the read's start).
+// So a write that lands within the write deadline (`SEND_DEADLINE_MS`) keeps its press live past
+// that deadline while the hold through its re-read is still on, and until a frame and a task after
+// that hold ends. The row the commit after the read takes away - the List's row whose Start next
+// moved its issue up the queue, read again 25 s after the write landed - is still the reader's
+// doing, and the focus goes to the control now at the row's place, as in (co).
+test("a press whose re-read is still held past the write deadline stays live until that hold ends, and the row taken away then is the reader's", async () => {
+  jest.useFakeTimers();
+  const writes = signedInWrites();
+  const bound = renderHook(() => useReadBound());
+  try {
+    await withRescue(async () => {
+      const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+      const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+      const third = rows[2] as { mark: HTMLInputElement; row: HTMLElement };
+      const startNext = buttonIn(second.row, "Start next");
+      startNext.focus();
+      placeAt(startNext, 200);
+      box.dispatchEvent(new Event("scroll"));
+      pointerPress(startNext);
+      const write = writeOf(writes);
+      // Held while its write is out and through the read after it (`heldPress`).
+      startNext.setAttribute("aria-disabled", "true");
+      // A frame and a task after the release the press watches its action.
+      await frame();
+      jest.advanceTimersByTime(0);
+      // The write lands 10 s on, and its `onSuccess` holds it through the list's read.
+      jest.advanceTimersByTime(10_000);
+      await write.land();
+      const reread = Promise.withResolvers<void>();
+      const held = bound.result.current[1](reread.promise);
+      // The write deadline passes with the read still out. A press it ended would end a frame
+      // and a task on.
+      jest.advanceTimersByTime(SEND_DEADLINE_MS - 10_000);
+      await frame();
+      jest.advanceTimersByTime(0);
+      expect(startNext).toHaveFocus();
+      // The read settles 5 s past the write deadline, within its own, and the commit after it
+      // takes the row away.
+      jest.advanceTimersByTime(5_000);
+      reread.resolve();
+      await held;
+      second.row.remove();
+      // The rescue's check, a frame and a task after the removal its watcher reads.
+      await frame();
+      await frame();
+      jest.advanceTimersByTime(0);
+      expect(third.mark).toHaveFocus();
+    }, writes);
+  } finally {
+    bound.unmount();
+    jest.useRealTimers();
+  }
+});
+
+// (cs) A hold on what answers a press keeps it live past the write deadline until the hold ends,
+// and at the latest until `SEND_DEADLINE_MS + REQUEST_DEADLINE_MS` after its release, the longest
+// a write that lands within its deadline, and then its re-read, can take. So a hold that never
+// ends - an update the press waits for that never comes - keeps the press live no longer than
+// that. A row taken away a second short of that bound is the reader's doing, and the focus goes
+// to the control now at the row's place, as in (ar). A row taken away once the bound has passed
+// is no doing of the reader's: the focus stays on the page, in no row (ag).
+test("a press whose answer hold never ends is live until the write and request deadlines have passed after its release, and no longer", async () => {
+  jest.useFakeTimers();
+  try {
+    // Where the focus went after the row was taken away at each wait, and where it belongs.
+    const landed: Record<string, string | null> = {};
+    const waits = {
+      "a second short of the bound": SEND_DEADLINE_MS + REQUEST_DEADLINE_MS - 1_000,
+      "once the bound has passed": SEND_DEADLINE_MS + REQUEST_DEADLINE_MS,
+    };
+    for (const [named, wait] of Object.entries(waits)) {
+      const writes = signedInWrites();
+      await withRescue(async () => {
+        const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+        const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+        const dismiss = buttonIn(second.row, "Dismiss");
+        dismiss.focus();
+        placeAt(dismiss, 200);
+        box.dispatchEvent(new Event("scroll"));
+        pointerPress(dismiss);
+        const write = writeOf(writes);
+        // A frame and a task after the release the press watches its action.
+        await frame();
+        jest.advanceTimersByTime(0);
+        await write.land();
+        // A hold on what answers the write, begun as it lands, that never ends.
+        beginAnswerHold();
+        jest.advanceTimersByTime(wait);
+        // A press its bound ended ends a frame and a task on.
+        await frame();
+        jest.advanceTimersByTime(0);
+        expect(dismiss).toHaveFocus();
+        second.row.remove();
+        // The rescue's check, a frame and a task after the removal its watcher reads.
+        await frame();
+        await frame();
+        jest.advanceTimersByTime(0);
+        landed[named] = document.activeElement === document.body ? "the page" : focusedName();
+      }, writes);
+    }
+    expect(landed).toEqual({
+      "a second short of the bound": "Select Three",
+      "once the bound has passed": "the page",
+    });
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+// (ct) So for a press that started no write and holds its own control (`watchHold`): past the
+// write deadline the control's hold keeps the press live no longer (ax), but a hold on what
+// answers the press, begun while it is live and still on then, keeps it live until that hold
+// ends, and a frame and a task after. The hold ends 5 s past the deadline, and the commit after it
+// takes the row away: that is still the reader's doing, and the focus goes to the control now at
+// the row's place, as in (ar).
+test("a press that started no write stays live past the write deadline while a hold on what answers it is on, and the row taken away after that hold ends is the reader's", async () => {
+  jest.useFakeTimers();
+  try {
+    await withRescue(async () => {
+      const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+      const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+      const third = rows[2] as { mark: HTMLInputElement; row: HTMLElement };
+      const dismiss = buttonIn(second.row, "Dismiss");
+      dismiss.focus();
+      placeAt(dismiss, 200);
+      box.dispatchEvent(new Event("scroll"));
+      pointerPress(dismiss);
+      dismiss.setAttribute("aria-disabled", "true");
+      // A hold on what answers the press, begun as its action runs.
+      const answered = beginAnswerHold();
+      // A frame and a task after the release the press finds its control held, and watches it.
+      await frame();
+      jest.advanceTimersByTime(0);
+      // The write deadline passes with the control and the hold still on. A press it ended would
+      // end a frame and a task on.
+      jest.advanceTimersByTime(SEND_DEADLINE_MS);
+      await frame();
+      jest.advanceTimersByTime(0);
+      expect(dismiss).toHaveFocus();
+      // The hold ends 5 s past the deadline, and the commit after it takes the row away.
+      jest.advanceTimersByTime(5_000);
+      answered();
+      second.row.remove();
+      // The rescue's check, a frame and a task after the removal its watcher reads.
+      await frame();
+      await frame();
+      jest.advanceTimersByTime(0);
+      expect(third.mark).toHaveFocus();
+    });
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+// (cu) A press that started no write and holds no control is still live while a hold on what
+// answers it is on: an action whose first write starts after the press's first frame, as the
+// List's merge reads every issue before it moves any, begins its hold within that frame
+// (`perform`'s `beginAnswerHold`). The press stays live until a frame and a task after the hold
+// ends 5 s on, so the row the commit after that end takes away is the reader's doing, and the
+// focus goes to the control now at the row's place, as in (ar).
+test("a press on a control that is not held stays live while a hold on what answers it is on, and the row taken away after that hold ends is the reader's", async () => {
+  jest.useFakeTimers();
+  try {
+    await withRescue(async () => {
+      const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+      const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+      const third = rows[2] as { mark: HTMLInputElement; row: HTMLElement };
+      const finish = buttonIn(second.row, "Finish");
+      finish.focus();
+      placeAt(finish, 200);
+      box.dispatchEvent(new Event("scroll"));
+      pointerPress(finish);
+      // A hold on what answers the press, begun as its action runs; the control is never held.
+      const answered = beginAnswerHold();
+      // A frame and a task after the release the press finds no control held. A press that ended
+      // there would be no cause of the row's going.
+      await frame();
+      jest.advanceTimersByTime(0);
+      await frame();
+      jest.advanceTimersByTime(0);
+      expect(finish).toHaveFocus();
+      // The hold ends 5 s on, and the commit after it takes the row away.
+      jest.advanceTimersByTime(5_000);
+      answered();
+      second.row.remove();
+      // The rescue's check, a frame and a task after the removal its watcher reads.
+      await frame();
+      await frame();
+      jest.advanceTimersByTime(0);
+      expect(third.mark).toHaveFocus();
+    });
+  } finally {
+    jest.useRealTimers();
   }
 });
 
@@ -3423,7 +3627,7 @@ function focusInFilterPanel(control: HTMLElement): void {
 /** The name of the element holding the focus: its `aria-label`, else its text. */
 function focusedName(): string | null {
   const focused = document.activeElement;
-  return focused?.getAttribute("aria-label") ?? focused?.textContent ?? null;
+  return focused === null ? null : nameOf(focused);
 }
 
 // (bl) Every control that fires its `change` at the reader's pick, as the date box of (bk) does,

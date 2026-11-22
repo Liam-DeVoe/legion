@@ -935,14 +935,15 @@ test("a close the host makes while the focus is outside the list leaves the focu
   }
 });
 
-/** A host that keeps the popover open as the search box's Tab asks it to close. The search
- *  box's Tab closes the list and stays put (the close hands the focus to the trigger), so the
- *  cases below put the focus on a row, the Create row or Clear as a screen reader's cursor puts it
- *  there: those are buttons, which it focuses. With `pickedFirst` it orders the rows as the labels' and the components'
- *  hosts do (`IssueLabels`, `ComponentPicker`): the picked ones first, each part by its name. With
- *  `dropPicked` it lists only the values not yet picked, so a row goes as it is picked. It stands
- *  for the row a press takes off the page in Details: a label only the open draft holds, which
- *  `IssueLabels` lists only while the draft holds it, goes as the reader unpicks it. */
+/** A host whose list stays open: it ignores every ask of the list's to close. No key moves the
+ *  focus from the search box to a row: the box's Tab closes the list in a host that lets it close,
+ *  and hands the focus to the trigger. So the cases below put the focus on a row, the Create row or
+ *  Clear directly, as a screen reader's cursor does: those are buttons, which it focuses. With
+ *  `pickedFirst` it orders the rows as the labels' and the components' hosts do (`IssueLabels`,
+ *  `ComponentPicker`): the picked ones first, each part by its name. With `dropPicked` it lists
+ *  only the values not yet picked, so a row goes as it is picked. It stands for the row a press
+ *  takes off the page in Details: a label only the open draft holds, which `IssueLabels` lists only
+ *  while the draft holds it, goes as the reader unpicks it. */
 function OpenHost({
   dropPicked = false,
   onCreate,
@@ -1180,6 +1181,30 @@ test("a focused row that its pick takes off the page gives the focus to the sear
     ).toHaveFocus();
   } finally {
     view.unmount();
+  }
+});
+
+// As the commit that answers the press ends, an engine that names a removed element focused until
+// its focus fixup still names the row its pick took off the page as focused (`keepRemovedFocus`).
+// That focus is lost all the same, and it goes to the search box.
+test("where the engine still names a removed row focused, a focused row that its pick takes off the page gives the focus to the search box", async () => {
+  const user = userEvent.setup();
+  const restore = keepRemovedFocus();
+  const view = render(<OpenHost dropPicked options={["api", "bug", "docs"]} />);
+  try {
+    const search = screen.getByRole("combobox", { name: "Search labels" });
+    const bug = screen.getByRole("option", { name: "bug" });
+    bug.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("selected").textContent).toBe("bug");
+    expect(bug.isConnected, "the picked row is still on the page").toBe(false);
+    expect(
+      search,
+      "the engine still named the removed row focused, and the focus did not go to the search box"
+    ).toHaveFocus();
+  } finally {
+    view.unmount();
+    restore();
   }
 });
 
