@@ -123,7 +123,13 @@ interface RenewalCorpus {
 }
 
 const renewalCorpus = (await Bun.file(RENEWAL_CORPUS).json()) as RenewalCorpus;
-if (renewalCorpus.rows.length === 0) throw new Error("the renewal corpus names no row at all");
+// Refused as the Go suite's `readRenewalCorpus` refuses it, so neither suite replays a corpus the
+// other refuses.
+if (renewalCorpus.version !== 1 || renewalCorpus.rows.length === 0) {
+  throw new Error(
+    `the renewal corpus is version ${renewalCorpus.version} with ${renewalCorpus.rows.length} rows, want version 1 with rows`
+  );
+}
 
 // Each row through the rule, and where the broker can mint its life, through a client that holds
 // what it traded until a millisecond short of the row's moment and trades again at it.

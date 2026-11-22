@@ -16,16 +16,8 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { calculateJwkThumbprint, compactVerify, importJWK, type JWK } from "jose";
 import { serveMetadataIdentity } from "../../test/metadata-server";
-import { signedIn, stubIssuer, writeSignIn } from "../../test/sign-ins";
-import {
-  BROKER_URL_VAR,
-  type BrokerEnvironment,
-  brokerTokenClient,
-  IDENTITY_VAR,
-  MACHINE_AUDIENCE_VAR,
-  PROJECTS_VAR,
-  SESSION_VAR,
-} from "../environment";
+import { boxes, CLIENT_ID, MACHINE_SESSION, signedIn, stubIssuer } from "../../test/sign-ins";
+import { type BrokerEnvironment, brokerTokenClient, PROJECTS_VAR } from "../environment";
 import {
   PERSON_TRADE_VAR,
   PERSON_VAR,
@@ -33,8 +25,6 @@ import {
   SIGNIN_CLIENT_SECRET_FILE_VAR,
   SIGNIN_COMMAND,
   SIGNIN_DIR_VAR,
-  SIGNIN_ISSUER_VAR,
-  type SignInRecord,
   signInSessionName,
 } from "../signins";
 import type { BrokerTokenClient } from "../token-client";
@@ -54,11 +44,7 @@ import {
 import { accepted, stubBroker } from "./stub";
 
 const PERSON = "ada@example.com";
-const CLIENT_ID = "example-device-client";
-const CLIENT_SECRET = fixtureSecret("client");
 const MACHINE_TOKEN = fixtureSecret("machine");
-/** The name the machine trades under for a caller that acts as no session of its own. */
-const MACHINE_SESSION = "legion-demo-controller";
 /** The token the stub broker answers a read trade's nth trade with, at READ_TOKENS[n - 1]. */
 const READ_TOKENS = [fixtureSecret("read1"), fixtureSecret("read2"), fixtureSecret("read3")];
 
@@ -81,32 +67,8 @@ async function stubs() {
   return { broker, issuer };
 }
 
-/**
- * The environment of a Compute Engine box at `brokerUrl` whose sign-in directory holds
- * `records`, with the sign-in client at `issuer` configured and `AGENT_SECRETS_SESSION` set, as a
- * daemon's environment sets it.
- */
-async function box(
-  brokerUrl: string,
-  issuer: string,
-  records: readonly SignInRecord[]
-): Promise<BrokerEnvironment> {
-  const dir = makeDirectory();
-  const signins = join(dir, "signins");
-  for (const record of records) await writeSignIn(signins, record);
-  const secret = join(dir, "client-secret");
-  await writeFile(secret, `${CLIENT_SECRET}\n`, { mode: 0o600 });
-  return {
-    [BROKER_URL_VAR]: brokerUrl,
-    [IDENTITY_VAR]: "metadata",
-    [MACHINE_AUDIENCE_VAR]: "example-machine-client-id",
-    [SESSION_VAR]: MACHINE_SESSION,
-    [SIGNIN_DIR_VAR]: signins,
-    [SIGNIN_ISSUER_VAR]: issuer,
-    [SIGNIN_CLIENT_ID_VAR]: CLIENT_ID,
-    [SIGNIN_CLIENT_SECRET_FILE_VAR]: secret,
-  };
-}
+/** This file's box environments, each in a directory of its own ({@link boxes}). */
+const box = boxes(makeDirectory);
 
 /** The client the factory answers, which these tests expect it to answer. */
 async function clientOf(env: BrokerEnvironment, own?: string): Promise<BrokerTokenClient> {

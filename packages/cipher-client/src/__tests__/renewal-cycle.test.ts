@@ -4,12 +4,12 @@
 // access token, whatever life the broker gives it (`BROKER_ACCESS_TOKEN_SECONDS`, S here) and
 // whatever its subject has left. Each row moves the process's clock (`setSystemTime`) a fixed step
 // at a time, calls `token()` at each step, and fails at the first call after which the client has
-// traded, or the login has refreshed, more often in the last life than the rules allow: a token is
-// held to the moment the renewal corpus names (`testdata/renewal.json`, never before half its
-// life), and a device login's read trade asks for no more than half the life a refresh gives (the
-// cap, `DeviceLoginIdentity.spend`). The clients are a device login's read client and its plain
-// client, and a person's read client whose sign-in credential nears its end, which a read trade
-// does not move.
+// traded, or the login has refreshed, more often in the last life than the bounds the row states:
+// a token is held to the moment the renewal corpus names (`testdata/renewal.json`, never before
+// half its life), and a device login's read trade asks for no more than half the life a refresh
+// gives (the cap, `DeviceLoginIdentity.spend`). The clients are a device login's read client and
+// its plain client, and a person's read client whose sign-in credential nears its end, which a
+// read trade does not move.
 //
 // The clock stands still between steps, so a row's counts are those of a stepped clock: a trade
 // made at exactly the moment a rule names is made there, where real time would have moved on a few
@@ -23,7 +23,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { stubDeviceLoginBroker, writeDeviceLoginFile } from "../../test/device-logins";
 import { serveMetadataIdentity } from "../../test/metadata-server";
-import { signedIn, stubIssuer, writeSignIn } from "../../test/sign-ins";
+import { boxes, CLIENT_ID, signedIn, stubIssuer } from "../../test/sign-ins";
 import { DEVICE_LOGIN_FILE_VAR } from "../device-login-file";
 import {
   BROKER_URL_VAR,
@@ -31,28 +31,17 @@ import {
   brokerTokenClient,
   IDENTITY_DEVICE_LOGIN,
   IDENTITY_VAR,
-  MACHINE_AUDIENCE_VAR,
-  SESSION_VAR,
 } from "../environment";
-import {
-  SIGNIN_CLIENT_ID_VAR,
-  SIGNIN_CLIENT_SECRET_FILE_VAR,
-  SIGNIN_DIR_VAR,
-  SIGNIN_ISSUER_VAR,
-} from "../signins";
-import {
-  type BrokerTokenClient,
-  DEFAULT_RENEW_BEFORE_MS,
-  EXPIRES_IN_STEP_MS,
-  TRADE_ATTEMPT_MS,
-} from "../token-client";
+import type { BrokerTokenClient } from "../token-client";
 import { FORM_SCOPE, SCOPE_READ } from "../wire";
 import { stubBroker } from "./stub";
 
 const makeDirectory = temporaryDirectories("renewal-cycle");
 
+/** This file's person's machine environments, each in a directory of its own ({@link boxes}). */
+const box = boxes(makeDirectory);
+
 const PERSON = "ada@example.com";
-const CLIENT_ID = "example-device-client";
 
 /** How far the clock moves between two calls. */
 const STEP_SECONDS = 10;
@@ -60,91 +49,21 @@ const STEP_SECONDS = 10;
 /** How many lives of the access token a row runs across. */
 const LIVES = 6;
 
-/** The client's renewal window, in seconds. */
-const WINDOW_SECONDS = DEFAULT_RENEW_BEFORE_MS / 1000;
-
-/** The minute every trade of a device login keeps (`ACCESS_MARGIN_MS`, two trade attempts). */
-const MARGIN_SECONDS = (2 * TRADE_ATTEMPT_MS) / 1000;
-
-/** What a read trade asks a device login for: the window and a second (`#trade`). */
-const READ_ASK_SECONDS = (DEFAULT_RENEW_BEFORE_MS + EXPIRES_IN_STEP_MS) / 1000;
-
-/** The renewal corpus both clients replay, read by relative path, never a copy. */
-interface RenewalCorpus {
-  readonly rows: readonly {
-    readonly life_seconds: number;
-    readonly renew_before_seconds: number;
-    readonly renews_after_seconds: number;
-  }[];
-}
-const renewalCorpus = (await Bun.file(
-  new URL("../../../envoy/internal/cipherclient/testdata/renewal.json", import.meta.url)
-).json()) as RenewalCorpus;
-
-/** How long after it lands the corpus has a token of `life` seconds traded again, under the
- *  client's window; a life the corpus has no row for is refused, so no bound rests on a guess. */
-function moment(life: number): number {
-  const row = renewalCorpus.rows.find(
-    (one) => one.life_seconds === life && one.renew_before_seconds === WINDOW_SECONDS
-  );
-  if (row === undefined) throw new Error(`the renewal corpus has no row for a life of ${life} s`);
-  return row.renews_after_seconds;
-}
-
-/** The least life a device login's read trade spends an access token with, in seconds: the ask,
- *  capped at half the life S a refresh gave, never under the minute. */
-function readCap(life: number): number {
-  return Math.max(MARGIN_SECONDS, Math.min(READ_ASK_SECONDS, life / 2));
-}
-
-/** Trades in one life of a device login's plain client: every plain token lives S, and is held to
- *  the corpus's moment for S. */
-function plainTradesPerLife(life: number): number {
-  return Math.ceil(life / moment(life));
-}
-
-/**
- * Trades in one life of a device login's read client that spends an access token with at least
- * `cap` left: a read token traded from a fresh access token lives S and is held to the corpus's
- * moment for S; one traded with exactly the cap left, which `spend`'s strict `<` spends without a
- * refresh, lives the cap and brings one more trade before the next refresh. Where the cap is S or
- * more, every trade refreshes and there is no such trade. The one extra holds where the cap is at
- * least half of what that first renewal leaves, so the next trade after it refreshes.
- */
-function readTradesPerLife(life: number, cap: number): number {
-  if (cap >= life) return Math.ceil(life / moment(life));
-  if (life - moment(life) >= 2 * cap) {
-    throw new Error(`a read token at ${life} s halves more than once before a refresh`);
-  }
-  return Math.ceil(life / moment(life)) + 1;
-}
-
-/** Trades in one life of a person's read client: full tokens as a plain client's, and as the
- *  credential nears its end, each read token lives what the credential has left and is held to
- *  at least half of it, so calls a step apart see at most log2(S / step) + 1 of those. */
-function personTradesPerLife(life: number): number {
-  return Math.ceil(life / moment(life)) + Math.floor(Math.log2(life / STEP_SECONDS)) + 1;
-}
-
-/** Refreshes in one life of a device login whose trades spend an access token with at least
- *  `cap` left: a refresh leaves S, and the next comes only once less than the cap is left, so
- *  refreshes come more than S − cap apart (the cap is at most half of S, so at most two a life);
- *  where the cap is S or more, every trade refreshes. */
-function refreshesPerLife(life: number, cap: number, trades: number): number {
-  return cap >= life ? trades : Math.ceil(life / (life - cap));
+/** What a row holds its client to in every life of the access token, as the row states it. */
+interface Bounds {
+  readonly tradesPerLife: number;
+  readonly refreshesPerLife: number;
+  /** Refreshes come more than this many seconds apart. */
+  readonly refreshGap: number;
 }
 
 /** One row's client and what it is held to. */
-interface Cycle {
+interface Cycle extends Bounds {
   readonly name: string;
   readonly life: number;
   readonly client: BrokerTokenClient;
   readonly trades: () => number;
   readonly refreshes: () => number;
-  readonly tradesPerLife: number;
-  readonly refreshesPerLife: number;
-  /** Refreshes come more than this many seconds apart. */
-  readonly refreshGap: number;
   /** Run after each call: a row whose file an older build rewrote takes out what it keeps. */
   readonly afterCall?: () => Promise<void>;
 }
@@ -206,11 +125,16 @@ serveMetadataIdentity(fixtureSecret("machine"));
 
 /**
  * A device login whose broker mints access tokens of `life` seconds, as a laptop's first
- * `dispatch` command meets it (no access token kept yet), and its read or plain client. Where
- * `olderBuild` is set, an older build rewrites the login's file after every call, leaving out the
- * life a refresh gave the access token, as that build's refreshes and saves do.
+ * `dispatch` command meets it (no access token kept yet), and its read or plain client, held to
+ * `bounds`. Where `olderBuild` is set, an older build rewrites the login's file after every call,
+ * leaving out the life a refresh gave the access token, as that build's refreshes and saves do.
  */
-async function deviceLoginCycle(life: number, read: boolean, olderBuild = false): Promise<Cycle> {
+async function deviceLoginCycle(
+  life: number,
+  read: boolean,
+  bounds: Bounds,
+  olderBuild = false
+): Promise<Cycle> {
   const stub = stubDeviceLoginBroker({ accessSeconds: life });
   stops.push(stub.stop);
   const path = join(makeDirectory(), "legion", "device-login.json");
@@ -222,9 +146,6 @@ async function deviceLoginCycle(life: number, read: boolean, olderBuild = false)
   };
   const made = await brokerTokenClient(env, "ses-laptop-1", read ? {} : undefined);
   if (made === undefined) throw new Error("the factory made no client for a device login");
-  // With the life kept, a read trade spends a token with the cap left; with none, the minute.
-  const cap = read && !olderBuild ? readCap(life) : MARGIN_SECONDS;
-  const trades = read ? readTradesPerLife(life, cap) : plainTradesPerLife(life);
   const afterCall = async (): Promise<void> => {
     const json = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
     if (!("access_life_seconds" in json)) return;
@@ -237,21 +158,20 @@ async function deviceLoginCycle(life: number, read: boolean, olderBuild = false)
     client: made.client,
     trades: () => stub.trades.length,
     refreshes: () => stub.refreshes.length,
-    tradesPerLife: trades,
-    refreshesPerLife: refreshesPerLife(life, cap, trades),
-    refreshGap: life - cap,
+    ...bounds,
     ...(olderBuild ? { afterCall } : {}),
   };
 }
 
 /**
  * A person's read client on a machine whose broker mints tokens of `life` seconds, and whose
- * sign-in credential lapses at `start` and {@link LIVES} lives: the broker answers a read trade
- * with the credential's remaining life where that is shorter, in whole seconds, truncated, as
- * `clampNarrowed` bounds it, and a read trade moves the credential not at all, as
- * `signInCredential` takes it. The row's last call comes a step before the credential lapses.
+ * sign-in credential lapses at `start` and {@link LIVES} lives, held to `tradesPerLife`: the
+ * broker answers a read trade with the credential's remaining life where that is shorter, in whole
+ * seconds, truncated, as `clampNarrowed` bounds it, and a read trade moves the credential not at
+ * all, as `signInCredential` takes it. The row's last call comes a step before the credential
+ * lapses. A person's client refreshes nothing.
  */
-async function personCycle(life: number, start: number): Promise<Cycle> {
+async function personCycle(life: number, start: number, tradesPerLife: number): Promise<Cycle> {
   const ends = start + LIVES * life * 1000;
   const broker = stubBroker((trade) => {
     const left = Math.floor((ends - Date.now()) / 1000);
@@ -270,24 +190,8 @@ async function personCycle(life: number, start: number): Promise<Cycle> {
   });
   const issuer = await stubIssuer({ clientId: CLIENT_ID, person: PERSON });
   stops.push(broker.stop, issuer.stop);
-  const dir = makeDirectory();
-  await writeSignIn(join(dir, "signins"), await signedIn(PERSON, { client_id: CLIENT_ID }));
-  const secret = join(dir, "client-secret");
-  await writeFile(secret, `${fixtureSecret("client")}\n`, { mode: 0o600 });
-  const made = await brokerTokenClient(
-    {
-      [BROKER_URL_VAR]: broker.url,
-      [IDENTITY_VAR]: "metadata",
-      [MACHINE_AUDIENCE_VAR]: "example-machine-client-id",
-      [SESSION_VAR]: "legion-demo-controller",
-      [SIGNIN_DIR_VAR]: join(dir, "signins"),
-      [SIGNIN_ISSUER_VAR]: issuer.url,
-      [SIGNIN_CLIENT_ID_VAR]: CLIENT_ID,
-      [SIGNIN_CLIENT_SECRET_FILE_VAR]: secret,
-    },
-    "ses_cycle",
-    {}
-  );
+  const env = await box(broker.url, issuer.url, [await signedIn(PERSON)]);
+  const made = await brokerTokenClient(env, "ses_cycle", {});
   if (made === undefined) throw new Error("the factory made no client for a person");
   return {
     name: `a person's read client at S = ${life} s`,
@@ -295,7 +199,7 @@ async function personCycle(life: number, start: number): Promise<Cycle> {
     client: made.client,
     trades: () => broker.trades.length,
     refreshes: () => 0,
-    tradesPerLife: personTradesPerLife(life),
+    tradesPerLife,
     refreshesPerLife: 0,
     refreshGap: 0,
   };
@@ -304,38 +208,82 @@ async function personCycle(life: number, start: number): Promise<Cycle> {
 /** How long a row may take: every call is a turn of the event loop, and a trade a request. */
 const ROW_MS = 120_000;
 
-// Fifteen rows: each access-token life against each of the three clients.
-test.each(
-  [120, 300, 302, 600, 900].flatMap((life) =>
-    (
-      [
-        ["a device login's read client", "read"],
-        ["a device login's plain client", "plain"],
-        ["a person's read client whose sign-in credential nears its end", "person"],
-      ] as const
-    ).map(([name, client]) => [name, life, client] as const)
-  )
-)(
+const READ = "a device login's read client";
+const PLAIN = "a device login's plain client";
+const PERSON_CLIENT = "a person's read client whose sign-in credential nears its end";
+
+// Fifteen rows: each access-token life S against each of the three clients, with the bounds each
+// row states and the rule it follows. A token of S s renews after the corpus's moment m for S
+// under the client's 300 s window. A device login spends a kept access token with at least its
+// least life left (`leastAccessLifeMs`): the read ask of 301 s, capped at S/2 and never under the
+// minute, and for a plain trade the minute alone; a refresh leaves S, so refreshes come more than
+// S less that least life apart, ceil(S / (S - least)) a life. A plain token lives S and is held to
+// m: ceil(S / m) trades a life. A read token traded from a fresh access token lives S and is held
+// to m; one traded with exactly the least life left, which `spend`'s strict `<` spends, lives that
+// and brings one more trade, refreshed at the next, wherever S - m is under twice the least life:
+// ceil(S / m) + 1 a life. A person's read token is held to m while the credential has S or more
+// left, and then lives what is left and is held to half of it, so calls 10 s apart see at most
+// floor(log2(S / 10)) + 1 more: ceil(S / m) + floor(log2(S / 10)) + 1 a life.
+test.each([
+  // [client, S, trades a life, refreshes a life, refreshes more than this many s apart]
+  // Corpus 120 → 60 s; least 60 s (S/2): trades 2 + 1, refreshes ceil(120/60), gap 120 - 60.
+  [READ, 120, 3, 2, 60],
+  // Corpus 120 → 60 s; least 60 s: trades ceil(120/60), refreshes ceil(120/60), gap 120 - 60.
+  [PLAIN, 120, 2, 2, 60],
+  // Corpus 120 → 60 s: trades ceil(120/60) + floor(log2(12)) + 1 = 2 + 3 + 1; no refresh.
+  [PERSON_CLIENT, 120, 6, 0, 0],
+  // Corpus 300 → 150 s; least 150 s (S/2): trades 2 + 1, refreshes ceil(300/150), gap 300 - 150.
+  [READ, 300, 3, 2, 150],
+  // Corpus 300 → 150 s; least 60 s: trades ceil(300/150), refreshes ceil(300/240), gap 300 - 60.
+  [PLAIN, 300, 2, 2, 240],
+  // Corpus 300 → 150 s: trades ceil(300/150) + floor(log2(30)) + 1 = 2 + 4 + 1; no refresh.
+  [PERSON_CLIENT, 300, 7, 0, 0],
+  // Corpus 302 → 151 s; least 151 s (S/2): trades 2 + 1, refreshes ceil(302/151), gap 302 - 151.
+  [READ, 302, 3, 2, 151],
+  // Corpus 302 → 151 s; least 60 s: trades ceil(302/151), refreshes ceil(302/242), gap 302 - 60.
+  [PLAIN, 302, 2, 2, 242],
+  // Corpus 302 → 151 s: trades ceil(302/151) + floor(log2(30.2)) + 1 = 2 + 4 + 1; no refresh.
+  [PERSON_CLIENT, 302, 7, 0, 0],
+  // Corpus 600 → 300 s; least 300 s (S/2): trades 2 + 1, refreshes ceil(600/300), gap 600 - 300.
+  [READ, 600, 3, 2, 300],
+  // Corpus 600 → 300 s; least 60 s: trades ceil(600/300), refreshes ceil(600/540), gap 600 - 60.
+  [PLAIN, 600, 2, 2, 540],
+  // Corpus 600 → 300 s: trades ceil(600/300) + floor(log2(60)) + 1 = 2 + 5 + 1; no refresh.
+  [PERSON_CLIENT, 600, 8, 0, 0],
+  // Corpus 900 → 600 s; least 301 s (ask): trades 2 + 1, refreshes ceil(900/599), gap 900 - 301.
+  [READ, 900, 3, 2, 599],
+  // Corpus 900 → 600 s; least 60 s: trades ceil(900/600), refreshes ceil(900/840), gap 900 - 60.
+  [PLAIN, 900, 2, 2, 840],
+  // Corpus 900 → 600 s: trades ceil(900/600) + floor(log2(90)) + 1 = 2 + 6 + 1; no refresh.
+  [PERSON_CLIENT, 900, 9, 0, 0],
+] as const)(
   "%s trades and refreshes within its bounds at an access-token life of %i s",
-  async (_name, life, client) => {
+  async (name, life, tradesPerLife, refreshesPerLife, refreshGap) => {
     const start = Date.now();
     const cycle =
-      client === "person"
-        ? await personCycle(life, start)
-        : await deviceLoginCycle(life, client === "read");
+      name === PERSON_CLIENT
+        ? await personCycle(life, start, tradesPerLife)
+        : await deviceLoginCycle(life, name === READ, {
+            tradesPerLife,
+            refreshesPerLife,
+            refreshGap,
+          });
     await run(cycle, start);
   },
   ROW_MS
 );
 
 // Under a minute of life every trade refreshes, plain or read, by the minute every trade keeps
-// alone: the read trade's ask may add no refresh to the plain client's.
+// alone: the read trade's ask may add no refresh to the plain client's. Both are held to the
+// same bounds: the least life, the minute, is over S, so every trade refreshes; corpus 30 → 15 s:
+// trades ceil(30/15), refreshes as many, and no gap (30 - 60).
 test(
   "at an access-token life of 30 s a device login's read client refreshes no more than its plain client",
   async () => {
     const start = Date.now();
-    const plain = await run(await deviceLoginCycle(30, false), start);
-    const read = await run(await deviceLoginCycle(30, true), start);
+    const bounds = { tradesPerLife: 2, refreshesPerLife: 2, refreshGap: -30 };
+    const plain = await run(await deviceLoginCycle(30, false, bounds), start);
+    const read = await run(await deviceLoginCycle(30, true, bounds), start);
     expect(read.refreshes).toBeLessThanOrEqual(plain.refreshes);
   },
   ROW_MS
@@ -345,13 +293,19 @@ test(
 // left, as a plain one does, until a refresh of this build keeps a life again. At 120 s the read
 // client may still refresh more often than the plain client: a read token is clamped to the
 // login's access token, so it renews at its half life with less of that token left, while a plain
-// token is not clamped. Both are held to the bounds of one life.
-test(
-  "at an access-token life of 120 s a device login whose file an older build rewrote trades and refreshes within its bounds",
-  async () => {
-    const start = Date.now();
-    await run(await deviceLoginCycle(120, true, true), start);
-    await run(await deviceLoginCycle(120, false, true), start);
+// token is not clamped. Both are held to the bounds of one life, with the minute as the least
+// life: at 120 s that is S/2 too, so the bounds are those of the rows above at 120 s.
+test.each([
+  // [client, trades a life, refreshes a life, refreshes more than this many s apart]
+  // Corpus 120 → 60 s; least 60 s (the minute): trades 2 + 1, refreshes ceil(120/60), gap 120 - 60.
+  [READ, 3, 2, 60],
+  // Corpus 120 → 60 s; least 60 s: trades ceil(120/60), refreshes ceil(120/60), gap 120 - 60.
+  [PLAIN, 2, 2, 60],
+] as const)(
+  "at an access-token life of 120 s %s whose file an older build rewrote trades and refreshes within its bounds",
+  async (name, tradesPerLife, refreshesPerLife, refreshGap) => {
+    const bounds = { tradesPerLife, refreshesPerLife, refreshGap };
+    await run(await deviceLoginCycle(120, name === READ, bounds, true), Date.now());
   },
   ROW_MS
 );

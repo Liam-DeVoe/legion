@@ -55,6 +55,14 @@ import {
   type TokenEndpointResponse,
 } from "openid-client";
 import {
+  BROKER_URL_SETTING,
+  brokerRefusal,
+  type DpopNonce,
+  requestInit,
+  sendWithProof,
+  statusOf,
+} from "./broker-request";
+import {
   DEVICE_LOGIN_FILE_NAMED,
   type DeviceLogin,
   deviceLoginDirectory,
@@ -71,16 +79,7 @@ import {
 import { type DpopKey, dpopKeyOf } from "./dpop";
 import { messageOf } from "./error-text";
 import type { SubjectToken, TokenSource } from "./source";
-import {
-  BROKER_URL_SETTING,
-  brokerRefusal,
-  type DpopNonce,
-  requestInit,
-  sendWithProof,
-  sleep,
-  statusOf,
-  TRADE_ATTEMPT_MS,
-} from "./token-client";
+import { sleep, TRADE_ATTEMPT_MS } from "./token-client";
 import {
   BrokerRefusedError,
   BrokerTradeFailedError,
