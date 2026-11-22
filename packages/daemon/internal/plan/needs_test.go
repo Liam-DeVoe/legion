@@ -19,9 +19,9 @@ func taskNeeding(id string, needs ...string) Block {
 	return Block{ID: id, Type: TaskBlockType, Attributes: attributes, Text: "What task " + id + " does."}
 }
 
-// exampleAToE is the plan of tasks a to e, each need written as a reference to a block: c needs b,
-// d needs a and c, and e needs d.
-func exampleAToE(t *testing.T) Plan {
+// planOfTasksAToE is the plan of five tasks a to e, each need written as a reference to a block:
+// c needs b, d needs a and c, and e needs d.
+func planOfTasksAToE(t *testing.T) Plan {
 	t.Helper()
 	return planOf(t, 1, taskNeeding("a"), taskNeeding("b"), taskNeeding("c", needWord("b")),
 		taskNeeding("d", needWord("a"), needWord("c")), taskNeeding("e", needWord("d")))
@@ -73,7 +73,7 @@ func TestANeedThatNamesNoTaskIsRefused(t *testing.T) {
 			}},
 		{name: "a word written twice", plan: planOf(t, 1, taskNeeding("a"), taskNeeding("d", "x", "x")),
 			want: []Refusal{{Task: "d", Reason: "task d needs x, which names no task of this plan."}}},
-		{name: "the plan of tasks a to e", plan: exampleAToE(t)},
+		{name: "the plan of tasks a to e", plan: planOfTasksAToE(t)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Validate(tc.plan, d); !reflect.DeepEqual(got, tc.want) {
@@ -114,7 +114,7 @@ func TestATaskThatNeedsItselfIsRefused(t *testing.T) {
 			want: []Refusal{itself("a", "a needs b, b needs a"), itself("b", "b needs c, c needs b")}},
 		{name: "a need outside the cycle", plan: planOf(t, 1, taskNeeding("a", "b"), taskNeeding("b", "a"), taskNeeding("e", "a")),
 			want: []Refusal{itself("a", "a needs b, b needs a")}},
-		{name: "the plan of tasks a to e", plan: exampleAToE(t)},
+		{name: "the plan of tasks a to e", plan: planOfTasksAToE(t)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Validate(tc.plan, d); !reflect.DeepEqual(got, tc.want) {
@@ -143,17 +143,17 @@ func TestTwoTasksThatNoTaskNeedsAreNotCarriedOutYet(t *testing.T) {
 		t.Fatalf("Supported(a, b) =\n%+v\nwant\n%+v", got, want)
 	}
 
-	example := exampleAToE(t)
-	if got := Sinks(example.Tasks); !reflect.DeepEqual(got, []string{"e"}) {
-		t.Fatalf("Sinks(the example A to E) = %q, want [e]", got)
+	aToE := planOfTasksAToE(t)
+	if got := Sinks(aToE.Tasks); !reflect.DeepEqual(got, []string{"e"}) {
+		t.Fatalf("Sinks(the plan of tasks a to e) = %q, want [e]", got)
 	}
-	got := Supported(example)
+	got := Supported(aToE)
 	if len(got) == 0 || got[0].Reason != "the plan has 5 tasks (a, b, c, d, e), and this release runs one task for each issue."+yet {
-		t.Fatalf("Supported(the example A to E) = %+v, want the refusal of its five tasks first", got)
+		t.Fatalf("Supported(the plan of tasks a to e) = %+v, want the refusal of its five tasks first", got)
 	}
 	for _, refusal := range got {
 		if strings.Contains(refusal.Reason, "no task needs") {
-			t.Fatalf("Supported(the example A to E) = %+v, want no refusal of tasks that no task needs: e alone is one", got)
+			t.Fatalf("Supported(the plan of tasks a to e) = %+v, want no refusal of tasks that no task needs: e alone is one", got)
 		}
 	}
 }
