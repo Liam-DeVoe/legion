@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -152,5 +153,69 @@ func TestStartThenRunsAfterExitBeforeExited(t *testing.T) {
 	}
 	if !exitedFirst {
 		t.Fatalf("afterExit ran before the process's exit was recorded (Cmd.ProcessState was nil)")
+	}
+}
+
+// Source reads a file as BuildCommand's go build reads it. The test builds a command whose file
+// word.go declares the word that it prints, once from the files on disk and once with an overlay, in
+// the build's directory and named by a relative path, that puts another file in word.go's place, takes
+// a file that is not Go out of the build, and puts a file in the place of a directory. Each binary
+// prints the word of the word.go that Source gives for its build; Source gives no file for the file
+// taken out, which the build did not read, and none under the directory replaced.
+func TestSourceIsTheFileThatTheBuildReads(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, text string) {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module example.com/sourceprobe\n\ngo 1.22\n")
+	write("main.go", "package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Print(word) }\n")
+	write("word.go", "package main\n\nconst word = \"disk\"\n")
+	c := Command{Name: "sourceprobe", Dir: dir}
+	// wordOf is the word that the file word.go declares, as Source reads it.
+	wordOf := func() string {
+		t.Helper()
+		src, err := c.Source("word.go")
+		if err != nil {
+			t.Fatalf("Source(word.go): %v", err)
+		}
+		_, quoted, _ := strings.Cut(string(src), "const word = ")
+		word, err := strconv.Unquote(strings.TrimSpace(quoted))
+		if err != nil {
+			t.Fatalf("Source(word.go) gives %q, which declares no word: %v", src, err)
+		}
+		return word
+	}
+	printed := func() string {
+		t.Helper()
+		out, err := exec.Command(BuildCommand(t, c)).Output()
+		if err != nil {
+			t.Fatalf("the built command: %v", err)
+		}
+		return string(out)
+	}
+
+	t.Setenv("ENVOY_TEST_GO_OVERLAY", "")
+	if got, read := printed(), wordOf(); got != "disk" || read != got {
+		t.Errorf("with no overlay the build prints %q and Source reads %q in word.go, want both %q", got, read, "disk")
+	}
+
+	write("not-go.go", "this is not Go\n")
+	write("other/word.go", "package main\n\nconst word = \"overlay\"\n")
+	write("overlay.json", `{"Replace": {"word.go": "other/word.go", "not-go.go": "", "gone": "word.go"}}`)
+	t.Setenv("ENVOY_TEST_GO_OVERLAY", "overlay.json")
+	if got, read := printed(), wordOf(); got != "overlay" || read != got {
+		t.Errorf("with the overlay the build prints %q and Source reads %q in word.go, want both %q", got, read, "overlay")
+	}
+	for _, gone := range []string{"not-go.go", filepath.Join("gone", "word.go")} {
+		if src, err := c.Source(gone); err == nil {
+			t.Errorf("with the overlay Source reads %s as %q, which the build does not read", gone, src)
+		}
 	}
 }

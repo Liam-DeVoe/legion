@@ -448,10 +448,16 @@ func eachAnswer(t *testing.T, whole map[string]string, kinds map[string]judgedKi
 }
 
 // declaredStates is the value of each constant of the block of the Go file file, a path under this
-// package, whose doc comment is doc: the states of a kind as the reader's code declares them.
+// package, whose doc comment is doc: the states of a kind as the reader's code declares them, read
+// from the file that the build of the reader's binary reads (sweepReaderCommand, Source), the overlay
+// of ENVOY_TEST_GO_OVERLAY included where it is set.
 func declaredStates(t *testing.T, file, doc string) []string {
 	t.Helper()
-	f, err := parser.ParseFile(token.NewFileSet(), file, nil, parser.ParseComments)
+	src, err := sweepReaderCommand().Source(file)
+	if err != nil {
+		t.Fatalf("the reader's code: %v", err)
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), file, src, parser.ParseComments)
 	if err != nil {
 		t.Fatalf("the reader's code: %v", err)
 	}
@@ -494,23 +500,23 @@ func cell(kind, base, input string, right placeRight) string {
 // (judgedKinds), each held to the states that the reader's code declares: the constants of "The
 // states of a check (R7)." in checkstate.go, of "The states of a statement (R10)." in
 // statementstate.go, a statement's own state's too, and of "The states of a wait (R29)." in
-// sweepreader's main.go (declaredStates). The
-// test generates each case: each kind, each state that the base reads and none, each state that the
-// input reads, and each form of right that the judgment has a rule for (rightForms, rightRules) with
-// each state of the kind for a right that names the place; it fails where the definition does not
-// cover a case, where the judgment refuses one, and where the two disagree, by the case. So a state, a
-// kind or a form of right that the code gains with no word of the definition for it fails by name.
-// Outside the domain, the judgment refuses a state of no kind, a place of no kind and a form of right
-// that it has no rule for. And it reads each base of the sweeps (sweepBases) in the reader's process:
-// each place of each base is of a kind and each state that it reads is a state of that kind; and it
-// hands judgeAnswer whole answers of each base, as sweepAgainst hands it the reader's answer and the
-// input's right (eachAnswer): each case of its kind at each place, with each other place as the base
-// reads it, and answers that move each place at once, each under each right of an answer; and it holds
-// what judgeAnswer reports of each to the definition applied place by place (definedAnswer). So a
-// judgment of an answer that skips, adds or moves a place, or reads another right at a place than the
-// input's, in any answer of a base, fails by the case. It does not show that sweepAgainst hands
-// judgeAnswer the reader's answer and the input's right; the known positives (knownPositives) show
-// that at their bases.
+// sweepreader's main.go, each read from the file that the build of the reader's binary reads, its
+// overlay included (declaredStates). The test generates each case: each kind, each state that the
+// base reads and none, each state that the input reads, and each form of right that the judgment has
+// a rule for (rightForms, rightRules) with each state of the kind for a right that names the place;
+// it fails where the definition does not cover a case, where the judgment refuses one, and where the
+// two disagree, by the case. So a state, a kind or a form of right that the code gains with no word of
+// the definition for it fails by name. Outside the domain, the judgment refuses a state of no kind, a
+// place of no kind and a form of right that it has no rule for. And it reads each base of the sweeps
+// (sweepBases) in the reader's process: each place of each base is of a kind and each state that it
+// reads is a state of that kind; and it hands judgeAnswer whole answers of each base, as sweepAgainst
+// hands it the reader's answer and the input's right (eachAnswer): each case of its kind at each
+// place, with each other place as the base reads it, and answers that move each place at once, each
+// under each right of an answer; and it holds what judgeAnswer reports of each to the definition
+// applied place by place (definedAnswer). So a judgment of an answer that drops or adds a place, or
+// reads another right at a place than the input's, in those answers, fails by the case. It does not
+// show that sweepAgainst hands judgeAnswer the reader's answer and the input's right; the known
+// positives (knownPositives) show that at their bases.
 func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T) {
 	t.Parallel()
 	kinds := judgedKinds()

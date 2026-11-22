@@ -39,16 +39,22 @@ import (
 // built and started outside the test process would close that.
 type sweepReader struct{ binary string }
 
-// newSweepReader builds the reader's binary once for the top-level test t (cmdtest.BuildCommand),
-// which passes ENVOY_TEST_GO_OVERLAY to go build -overlay, so a probe that lays a fault in the
-// reader's code by that overlay builds the binary with it: the binary is the code under test. The
-// build reads that variable, the rest of the test process's environment and the files on disk when
-// t calls it, after each init of the test binary has run, so test code chooses that code too; and
-// the binary is a file in t's temporary folder, which each process that start starts runs, so test
-// code that writes over it after the build chooses the code of those processes (sweepReader).
+// newSweepReader builds the reader's binary once for the top-level test t (cmdtest.BuildCommand of
+// sweepReaderCommand), which passes ENVOY_TEST_GO_OVERLAY to go build -overlay, so a probe that lays a
+// fault in the reader's code by that overlay builds the binary with it: the binary is the code under
+// test. The build reads that variable, the rest of the test process's environment and the files on
+// disk when t calls it, after each init of the test binary has run, so test code chooses that code
+// too; and the binary is a file in t's temporary folder, which each process that start starts runs, so
+// test code that writes over it after the build chooses the code of those processes (sweepReader).
 func newSweepReader(t *testing.T) sweepReader {
 	t.Helper()
-	return sweepReader{cmdtest.BuildCommand(t, cmdtest.Command{Name: "sweepreader", Target: "./internal/sweepreader"})}
+	return sweepReader{cmdtest.BuildCommand(t, sweepReaderCommand())}
+}
+
+// sweepReaderCommand is the build of the reader's binary (newSweepReader), whose Source is each file
+// as that build reads it (declaredStates).
+func sweepReaderCommand() cmdtest.Command {
+	return cmdtest.Command{Name: "sweepreader", Target: "./internal/sweepreader"}
 }
 
 // readerProcess is one process of the reader, which a sweep starts for each base, and the test that

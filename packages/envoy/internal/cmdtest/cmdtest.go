@@ -4,6 +4,8 @@
 package cmdtest
 
 import (
+	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -68,12 +70,12 @@ type builtBinary struct {
 }
 
 // BuildCommand builds c and returns the binary's path. The binary is removed when the test ends,
-// and ENVOY_TEST_GO_OVERLAY, when set, is passed to go build -overlay, so a probe can build it
-// from changed sources without editing the tree. A test that asks for the same build again is
-// handed the one it already built (built).
+// and ENVOY_TEST_GO_OVERLAY, when set, is passed to go build -overlay (buildOverlay), so a probe can
+// build it from changed sources without editing the tree; Command.Source reads a file as that build
+// reads it. A test that asks for the same build again is handed the one it already built (built).
 func BuildCommand(t testing.TB, c Command) string {
 	t.Helper()
-	overlay := os.Getenv("ENVOY_TEST_GO_OVERLAY")
+	overlay := buildOverlay()
 	// The count of the flags stands between them and the environment, so a value that moves from
 	// one of the two to the other is another key rather than the same one.
 	parts := append([]string{c.Name, c.Dir, c.Target, overlay, strconv.Itoa(len(c.Flags))}, c.Flags...)
@@ -112,6 +114,58 @@ func runBuild(t testing.TB, c Command, overlay string) string {
 		return ""
 	}
 	return binary
+}
+
+// buildOverlay is the overlay that BuildCommand passes to go build -overlay: the file that
+// ENVOY_TEST_GO_OVERLAY names, "" where it is not set. Command.Source reads files through it.
+func buildOverlay() string { return os.Getenv("ENVOY_TEST_GO_OVERLAY") }
+
+// Source is the content of the file at path as BuildCommand's go build of c reads it, with the overlay
+// of that build (buildOverlay) as go applies one: where the overlay names path, the file that it
+// names in its place, or no file where it names none (""); where it names a directory above path, no
+// file; and else the file on disk. A relative path, the overlay's own path and each path in it are
+// read from c.Dir, the directory that go build runs in, or the test's working directory where c.Dir
+// is empty, as go reads them. So a test that reads the code that it builds reads the code of the
+// binary, overlay and all.
+func (c Command) Source(path string) ([]byte, error) {
+	dir, err := filepath.Abs(c.Dir)
+	if err != nil {
+		return nil, err
+	}
+	abs := func(p string) string {
+		if filepath.IsAbs(p) {
+			return filepath.Clean(p)
+		}
+		return filepath.Join(dir, p)
+	}
+	file := abs(path)
+	overlay := buildOverlay()
+	if overlay == "" {
+		return os.ReadFile(file)
+	}
+	data, err := os.ReadFile(abs(overlay))
+	if err != nil {
+		return nil, fmt.Errorf("the overlay of the build: %w", err)
+	}
+	var o struct{ Replace map[string]string }
+	if err := json.Unmarshal(data, &o); err != nil {
+		return nil, fmt.Errorf("the overlay of the build, %s: %w", overlay, err)
+	}
+	for from, to := range o.Replace {
+		switch {
+		case abs(from) != file:
+		case to == "":
+			return nil, fmt.Errorf("the overlay of the build, %s, takes %s out of it", overlay, file)
+		default:
+			return os.ReadFile(abs(to))
+		}
+	}
+	for from := range o.Replace {
+		if strings.HasPrefix(file, abs(from)+string(filepath.Separator)) {
+			return nil, fmt.Errorf("the overlay of the build, %s, replaces %s, a directory above %s", overlay, abs(from), file)
+		}
+	}
+	return os.ReadFile(file)
 }
 
 // Process is a binary a test started, with its combined output.
