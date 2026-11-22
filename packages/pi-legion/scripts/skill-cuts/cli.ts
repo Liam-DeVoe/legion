@@ -36,6 +36,14 @@
  *       [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]
  *   bun scripts/skill-cuts/cli.ts craft-coverage --root <dir> [--source <text>]
  *       [--skip <name>]... --entries <reader-findings.jsonl>
+ *   bun scripts/skill-cuts/cli.ts proposals --config <file> --key-file <file> --body <file>
+ *       --body-source <text> --section <heading> --list <heading>... --pr-diff <prefix>=<file>...
+ *       --skills-root <repo>=<dir>... --repo-root <repo>=<dir> --style <file>
+ *       --style-source <text> --craft <craft-list.json> --craft-source <text>
+ *       --findings <reader-findings.jsonl> --out <dir> [--request-log <file>] [--budget-usd <n>]
+ *       [--concurrency <n>]
+ *   bun scripts/skill-cuts/cli.ts proposals --dry-run --body <file> --section <heading>
+ *       --list <heading>...
  *   bun scripts/skill-cuts/cli.ts count-sql --config <file> --store <db> --day <YYYY-MM-DD>
  *       [--hour <0-23>] [--query count|models]
  *   bun scripts/skill-cuts/cli.ts load --config <file> --key-file <file> --skill <dir>
@@ -168,6 +176,12 @@
  * `--skip` names beside its craft entry in `--entries`, or none, and exits 1 naming each skill
  * with no entry.
  *
+ * **`proposals`** reads each item of the `--list` lists of the `--section` section of a pull
+ * request's body with the proposal-target and proposal readers (proposals.ts): one entry per item,
+ * `<out>/<id>.json`, and the user messages sent, `<out>/<id>.input.md`. An item with an entry is
+ * not read again; it exits 1 naming an item line it cannot parse, and when an item has no entry
+ * at the end. `--dry-run` parses the body and prints the items, and reads nothing else.
+ *
  * **`control craft`** writes a copy of `--skill` with a section removed or list items joined, runs
  * `craft` on the copy and on the unchanged skill, takes each side's candidates (gaps in its line
  * range, of its kinds and rules), asks the claim reader once a candidate where the side gives a
@@ -187,19 +201,20 @@
  * task stands for in its capture.
  *
  * Each model request goes through the request log (`loggedGateway`): one JSON line per request,
- * appended to `--request-log` (by default `<out>/requests.jsonl` for `behaviour`, `load` and
- * `control craft`, and the `--out` file's path with `.requests.jsonl` added for `read`, `control`,
- * `craft` and `nearest`), holding what the call was for, when it was asked for and sent and the
- * calls in flight then, the session id it went with, the model, the thinking type and budget,
- * max_tokens, the temperature, the effort, and the reply's answering model, ids, gateway headers,
- * cache read and write tokens, usage and dollars at list price; never the key and never a
- * message's text.
+ * appended to `--request-log` (by default `<out>/requests.jsonl` for `behaviour`, `load`,
+ * `control craft` and `proposals`, and the `--out` file's path with `.requests.jsonl` added for
+ * `read`, `control`, `craft` and `nearest`), holding what the call was for, when it was asked for
+ * and sent and the calls in flight then, the session id it went with, the model, the thinking type
+ * and budget, max_tokens, the temperature, the effort, and the reply's answering model, ids,
+ * gateway headers, cache read and write tokens, usage and dollars at list price; never the key and
+ * never a message's text.
  *
  * Exit status: 0 done (a control held); 1 failed (a reader's every reply refused, a control that
- * did not hold, a call, a load test's task or an `--after-case` command that failed); 2 refused
- * before any model call; 3 stopped (the budget is spent, or the peak memory passed 1 GiB, 1.5 GiB
- * for `copies`); 4 stopped by build-cases' stop rule. The commands of the other files return
- * their own status, which `main` returns as it is.
+ * did not hold, a call, a load test's task or an `--after-case` command that failed, a proposals
+ * item line that does not parse or an item left with no entry); 2 refused before any model call;
+ * 3 stopped (the budget is spent, or the peak memory passed 1 GiB, 1.5 GiB for `copies`); 4
+ * stopped by build-cases' stop rule. The commands of the other files return their own status,
+ * which `main` returns as it is.
  */
 import { createHash } from "node:crypto";
 import {
@@ -278,6 +293,19 @@ import {
 import { Host, LOAD_MODEL, LOAD_THINKING, runLoad } from "./load";
 import { procPeakRssBytes, startPeakRssSampling } from "./memory";
 import {
+  type DiffFile,
+  FindingsEntry,
+  ItemFaults,
+  idPrefix,
+  type ProposalItem,
+  type ProposalsRun,
+  type PullDiff,
+  parseProposalItems,
+  pendingItems,
+  runProposals,
+  splitDiff,
+} from "./proposals";
+import {
   ATTACK_PLANTED_LINE,
   type ClaimAnswer,
   ClaimInput,
@@ -336,9 +364,9 @@ const DEFAULT_CONCURRENCY = 8;
 /** The most the runner's peak resident memory may reach: a case that ends above it stops the run
  *  (exit 3). */
 const MEMORY_LIMIT_BYTES = 1024 ** 3;
-/** The request log's name: `<out>/requests.jsonl` for `behaviour`, `load` and `control craft`, and
- *  the `--out` file's path with `.requests.jsonl` added for `read`, `control`, `craft` and
- *  `nearest`, unless `--request-log` names one. */
+/** The request log's name: `<out>/requests.jsonl` for `behaviour`, `load`, `control craft` and
+ *  `proposals`, and the `--out` file's path with `.requests.jsonl` added for `read`, `control`,
+ *  `craft` and `nearest`, unless `--request-log` names one. */
 const REQUEST_LOG = "requests.jsonl";
 /** The directories under the system's temporary directory that `--scratch` and `--cache-dir`
  *  name unless given. */
@@ -830,6 +858,16 @@ function readBytes(file: string, what: string): Buffer {
   }
 }
 
+/** The two sides of `value`, the value of `flag` in the shape `shape` (`<a>=<b>`): the text before
+ *  its first `=`, trimmed, and the rest. Throws a refusal when either side is empty. */
+function pairOf(flag: string, value: string, shape: string): [string, string] {
+  const at = value.indexOf("=");
+  const left = value.slice(0, Math.max(at, 0)).trim();
+  const right = value.slice(at + 1);
+  if (at < 0 || left === "" || right === "") throw new Refused(`${flag} ${value} is not ${shape}`);
+  return [left, right];
+}
+
 const CRAFT_OPTIONS = {
   ...GATEWAY_OPTIONS,
   skill: { type: "string" },
@@ -849,22 +887,26 @@ const CRAFT_FLAGS =
   "--config <skill-cuts.json> --key-file <file> --skill <dir> --style <file> --style-source <text> --craft <craft-list.json> --craft-source <text> [--nearest <dir>]... [--skill-source <text>]";
 const CRAFT_USAGE = `usage: cli.ts craft ${CRAFT_FLAGS} --out <entry.json> [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]`;
 
-/** What a craft read reads, all of it before any call: the skill, the style text and its rules,
- *  the craft list, and each nearest skill of theirs, each with its source where it has one. */
-interface CraftReads {
-  readonly skill: ReadSkill;
-  readonly skillSource: string | null;
+/** The style text and the craft list a reader reads (`--style` and `--craft`), each with its file,
+ *  the words its `--*-source` flag gives it, and its SHA-256: `craft`'s and `proposals`'. */
+interface RulesReads {
   readonly style: { file: string; source: string; sha256: string; rules: readonly StyleRule[] };
   readonly list: { file: string; source: string; sha256: string; list: CraftList };
+}
+
+/** What a craft read reads, all of it before any call: the skill, the style text and its rules,
+ *  the craft list, and each nearest skill of theirs, each with its source where it has one. */
+interface CraftReads extends RulesReads {
+  readonly skill: ReadSkill;
+  readonly skillSource: string | null;
   readonly nearest: readonly ReadSkill[];
 }
 
-/** The reads of `craft`'s flags. Throws a refusal: a file it cannot read, a style text with no
- *  rule, a craft list the shape refuses, a skill directory with no SKILL.md. */
-function craftReads(
-  given: Record<"skill" | "style" | "style-source" | "craft" | "craft-source", string>,
-  values: { readonly "skill-source"?: string; readonly nearest?: readonly string[] }
-): CraftReads {
+/** The reads of `--style` and `--craft`. Throws a refusal: a file it cannot read, a style text with
+ *  no rule, a craft list the shape refuses. */
+function rulesReads(
+  given: Record<"style" | "style-source" | "craft" | "craft-source", string>
+): RulesReads {
   const styleBytes = readBytes(given.style, "the style text");
   let rules: StyleRule[];
   try {
@@ -880,10 +922,21 @@ function craftReads(
     throw new Refused(`the craft list ${given.craft} is refused: ${messageFor(error)}`);
   }
   return {
-    skill: readSkill(given.skill, "--skill"),
-    skillSource: values["skill-source"] ?? null,
     style: { file: given.style, source: given["style-source"], sha256: sha256(styleBytes), rules },
     list: { file: given.craft, source: given["craft-source"], sha256: sha256(listBytes), list },
+  };
+}
+
+/** The reads of `craft`'s flags. Throws a refusal: a file it cannot read, a style text with no
+ *  rule, a craft list the shape refuses, a skill directory with no SKILL.md. */
+function craftReads(
+  given: Record<"skill" | "style" | "style-source" | "craft" | "craft-source", string>,
+  values: { readonly "skill-source"?: string; readonly nearest?: readonly string[] }
+): CraftReads {
+  return {
+    ...rulesReads(given),
+    skill: readSkill(given.skill, "--skill"),
+    skillSource: values["skill-source"] ?? null,
     nearest: (values.nearest ?? []).map((dir) => readSkill(dir, "--nearest")),
   };
 }
@@ -1031,12 +1084,7 @@ async function nearestCommand(argv: readonly string[], io: CliIo): Promise<numbe
   );
   const given = required(values, ["config", "key-file", "skill", "out"], NEAREST_USAGE);
   const roots = (values.candidates ?? []).map((flag) => {
-    const at = flag.indexOf("=");
-    const source = flag.slice(0, Math.max(at, 0)).trim();
-    const root = flag.slice(at + 1);
-    if (at < 0 || source === "" || root === "") {
-      throw new Refused(`--candidates ${flag} is not <source>=<root>`);
-    }
+    const [source, root] = pairOf("--candidates", flag, "<source>=<root>");
     return { source, root, names: skillDirs(root) };
   });
   if (roots.length === 0) throw new Refused(`--candidates required. ${NEAREST_USAGE}`);
@@ -1128,6 +1176,35 @@ const CoverageEntry = z.looseObject({
 });
 type CoverageEntry = z.infer<typeof CoverageEntry>;
 
+/** Each craft entry of the entries file `file` (a `reader-findings.jsonl`) with its line, as
+ *  `schema` reads it, in the file's order, and the file's SHA-256; its other lines (a proposal's
+ *  entry) are passed over. Throws a refusal naming the file when it cannot be read, or naming a
+ *  line that is no JSON or that `schema` refuses. */
+function craftEntries<T>(
+  file: string,
+  schema: z.ZodType<T>
+): { sha256: string; entries: { line: number; entry: T }[] } {
+  const bytes = readBytes(file, "the entries");
+  const text = bytes.toString("utf8");
+  const entries = text.split("\n").flatMap((line, index) => {
+    if (line.trim() === "") return [];
+    const where = `line ${index + 1} of the entries ${file}`;
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      throw new Refused(`${where} is not JSON`);
+    }
+    if (field(value, "entry") !== "craft") return [];
+    const entry = schema.safeParse(value);
+    if (!entry.success) {
+      throw new Refused(`${where} is no craft entry: ${schemaFaults(entry.error)}`);
+    }
+    return [{ line: index + 1, entry: entry.data }];
+  });
+  return { sha256: sha256(bytes), entries };
+}
+
 /** `skill-cuts craft-coverage`: each skill of a root beside its craft entry, or none. */
 function craftCoverageCommand(argv: readonly string[], io: CliIo): number {
   const values = parse(
@@ -1145,32 +1222,12 @@ function craftCoverageCommand(argv: readonly string[], io: CliIo): number {
   const all = skillDirs(given.root);
   const names = all.filter((name) => !skip.has(name));
   const skipped = all.filter((name) => skip.has(name));
-  let text: string;
-  try {
-    text = readFileSync(given.entries, "utf8");
-  } catch (error) {
-    throw new Refused(`cannot read the entries ${given.entries}: ${messageFor(error)}`);
-  }
-  // Each skill's craft entries of the source, by its directory's name, in the file's order; the
-  // file's other entries (a proposal's) are passed over.
+  // Each skill's craft entries of the source, by its directory's name, in the file's order.
   const entries = new Map<string, CoverageEntry[]>();
-  for (const [index, line] of text.split("\n").entries()) {
-    if (line.trim() === "") continue;
-    const where = `line ${index + 1} of the entries ${given.entries}`;
-    let value: unknown;
-    try {
-      value = JSON.parse(line);
-    } catch {
-      throw new Refused(`${where} is not JSON`);
-    }
-    if (field(value, "entry") !== "craft") continue;
-    const entry = CoverageEntry.safeParse(value);
-    if (!entry.success) {
-      throw new Refused(`${where} is no craft entry: ${schemaFaults(entry.error)}`);
-    }
-    if (values.source !== undefined && entry.data.skill.source !== values.source) continue;
-    const name = path.basename(entry.data.skill.dir);
-    entries.set(name, [...(entries.get(name) ?? []), entry.data]);
+  for (const { entry } of craftEntries(given.entries, CoverageEntry).entries) {
+    if (values.source !== undefined && entry.skill.source !== values.source) continue;
+    const name = path.basename(entry.skill.dir);
+    entries.set(name, [...(entries.get(name) ?? []), entry]);
   }
   const missing = names.filter((name) => !entries.has(name));
   const lines = names.map((name) => {
@@ -1198,6 +1255,150 @@ function craftCoverageCommand(argv: readonly string[], io: CliIo): number {
     `craft-coverage: ${counted(missing.length, "skill")} under ${given.root} ${missing.length === 1 ? "has" : "have"} no entry: ${missing.join(", ")}`
   );
   return EXIT.failed;
+}
+
+// `proposals`: the open proposals of closed pull requests (proposals.ts).
+
+const PROPOSALS_USAGE = [
+  "usage: cli.ts proposals --config <skill-cuts.json> --key-file <file> --body <file> --body-source <text> --section <heading> --list <heading>... --pr-diff <id prefix>=<file>... --skills-root <repo>=<dir>... --repo-root <repo>=<dir> --style <file> --style-source <text> --craft <craft-list.json> --craft-source <text> --findings <reader-findings.jsonl> --out <dir> [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]",
+  "       cli.ts proposals --dry-run --body <file> --section <heading> --list <heading>...",
+].join("\n");
+
+/** `skill-cuts proposals`: each item of the named lists of a pull request's body, read with the
+ *  proposal-target and proposal readers (proposals.ts); with `--dry-run`, the items only. */
+async function proposalsCommand(argv: readonly string[], io: CliIo): Promise<number> {
+  const values = parse(
+    argv,
+    {
+      ...GATEWAY_OPTIONS,
+      "dry-run": { type: "boolean" },
+      body: { type: "string" },
+      "body-source": { type: "string" },
+      section: { type: "string" },
+      list: { type: "string", multiple: true },
+      "pr-diff": { type: "string", multiple: true },
+      "skills-root": { type: "string", multiple: true },
+      "repo-root": { type: "string" },
+      style: { type: "string" },
+      "style-source": { type: "string" },
+      craft: { type: "string" },
+      "craft-source": { type: "string" },
+      findings: { type: "string" },
+      out: { type: "string" },
+    },
+    PROPOSALS_USAGE
+  );
+  const lists = values.list ?? [];
+  if (lists.length === 0) throw new Refused(`--list required. ${PROPOSALS_USAGE}`);
+  const { body, section } = required(values, ["body", "section"], PROPOSALS_USAGE);
+  const bodyBytes = readBytes(body, "the body");
+  let items: ProposalItem[];
+  try {
+    items = parseProposalItems(bodyBytes.toString("utf8"), section, lists);
+  } catch (error) {
+    if (!(error instanceof ItemFaults)) throw error;
+    io.err(`proposals: ${body}: ${error.message}`);
+    return EXIT.failed;
+  }
+  if (values["dry-run"] === true) {
+    const counts = lists.map(
+      (list) => `${items.filter((item) => item.list === list).length} in ${JSON.stringify(list)}`
+    );
+    io.out(
+      `${[
+        `proposals: ${body}: ${counted(items.length, "item")}: ${counts.join(", ")}`,
+        ...items.map((item) => `${item.id} (${item.state}): line ${item.line}`),
+      ].join("\n")}\n`
+    );
+    return EXIT.ok;
+  }
+  const given = required(
+    values,
+    [
+      ...["config", "key-file", "body-source", "repo-root", "style", "style-source", "craft"],
+      ...["craft-source", "findings", "out"],
+    ] as const,
+    PROPOSALS_USAGE
+  );
+  const diffs = new Map<string, PullDiff>();
+  for (const flag of values["pr-diff"] ?? []) {
+    const [prefix, file] = pairOf("--pr-diff", flag, "<id prefix>=<file>");
+    if (diffs.has(prefix)) throw new Refused(`--pr-diff gives the prefix ${prefix} twice`);
+    const bytes = readBytes(file, "the diff");
+    const text = bytes.toString("utf8");
+    let files: DiffFile[];
+    try {
+      files = splitDiff(text);
+    } catch (error) {
+      throw new Refused(`the diff ${file} of --pr-diff ${prefix} is refused: ${messageFor(error)}`);
+    }
+    diffs.set(prefix, { pr: prefix, file, sha256: sha256(bytes), text, files });
+  }
+  const undiffed = [...new Set(items.map((item) => idPrefix(item.id)))].filter(
+    (prefix) => !diffs.has(prefix)
+  );
+  if (undiffed.length > 0) {
+    const named = undiffed.map((prefix) => {
+      const ids = items.filter((item) => idPrefix(item.id) === prefix).map((item) => item.id);
+      return `${prefix} (${ids.join(", ")})`;
+    });
+    throw new Refused(`no --pr-diff gives the diff of ${named.join("; ")}`);
+  }
+  const skillsRoots: { repo: string; dir: string; names: string[] }[] = [];
+  for (const flag of values["skills-root"] ?? []) {
+    const [repo, dir] = pairOf("--skills-root", flag, "<repo>=<dir>");
+    if (skillsRoots.some((root) => root.repo === repo)) {
+      throw new Refused(`--skills-root gives the repository ${repo} twice`);
+    }
+    skillsRoots.push({ repo, dir, names: skillDirs(dir) });
+  }
+  if (skillsRoots.length === 0) throw new Refused(`--skills-root required. ${PROPOSALS_USAGE}`);
+  const [repo, dir] = pairOf("--repo-root", given["repo-root"], "<repo>=<dir>");
+  if (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Refused(`--repo-root ${given["repo-root"]}: ${dir} is no directory`);
+  }
+  const rules = rulesReads(given);
+  const findings = craftEntries(given.findings, FindingsEntry);
+  const run: ProposalsRun = {
+    items,
+    body: { file: body, source: given["body-source"], sha256: sha256(bodyBytes) },
+    diffs,
+    skillsRoots,
+    repoRoot: { repo, dir },
+    style: rules.style,
+    craft: rules.list,
+    findings: { file: given.findings, ...findings },
+    out: given.out,
+  };
+  const pending = pendingItems(items, given.out);
+  const gateway = openGateway({
+    config: configFrom(given.config),
+    keyFile: given["key-file"],
+    budgetUsd: values["budget-usd"],
+    concurrency: values.concurrency,
+  });
+  const log = values["request-log"] ?? path.join(given.out, REQUEST_LOG);
+  io.out(
+    `proposals: ${counted(items.length, "item")}, ${pending.length} to read; the others have an entry under ${given.out}\n`
+  );
+  const missing = await runProposals(
+    run,
+    pending,
+    {
+      target: loggedGateway(gateway, log, "reader:proposal-target"),
+      proposal: loggedGateway(gateway, log, "reader:proposal"),
+    },
+    io
+  );
+  const spent = `$${gateway.spend().usd.toFixed(4)} at list price`;
+  if (missing.length > 0) {
+    io.err(
+      `proposals: ${counted(missing.length, "item")} of ${items.length} ${missing.length === 1 ? "has" : "have"} no entry: ${missing.join(", ")}; ${spent}`
+    );
+    return EXIT.failed;
+  }
+  io.out(`proposals: each of ${counted(items.length, "item")} has an entry; ${spent}\n`);
+  return EXIT.ok;
 }
 
 const CONTROL_CRAFT_USAGE = `usage: cli.ts control craft (--remove-section <heading> | --join-lines <a>-<b>) --copy-line <a>[-<b>] [--copy-kind <present|missing>]... [--copy-rule <id>]... [--copy-claim <text>] --original-line <a>[-<b>|all] [--original-kind <present|missing>]... [--original-rule <id>]... [--original-claim <text>] ${CRAFT_FLAGS} --out <dir> [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]`;
@@ -3016,6 +3217,8 @@ const USAGE = [
   "  craft --config <skill-cuts.json> --key-file <file> --skill <dir> --style <file> --style-source <text> --craft <craft-list.json> --craft-source <text> [--nearest <dir>]... [--skill-source <text>] --out <entry.json> ...",
   "  nearest --config <skill-cuts.json> --key-file <file> --skill <dir> [--skill-source <text>] --candidates <source>=<root>... --out <row.json> ...",
   "  craft-coverage --root <dir> [--source <text>] [--skip <name>]... --entries <reader-findings.jsonl>",
+  "  proposals --config <skill-cuts.json> --key-file <file> --body <file> --body-source <text> --section <heading> --list <heading>... --pr-diff <id prefix>=<file>... --skills-root <repo>=<dir>... --repo-root <repo>=<dir> --style <file> --style-source <text> --craft <craft-list.json> --craft-source <text> --findings <reader-findings.jsonl> --out <dir> ...",
+  "  proposals --dry-run --body <file> --section <heading> --list <heading>...",
   "  count-sql --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>] [--query count|models]",
   "  load --config <skill-cuts.json> --key-file <file> --skill <dir> [--name <name>] --tasks <file> --host <omp|claude> [--profile <file>] --out <dir> ...",
   "  copies --config <skill-cuts.json> --at <ISO instant> --out <dir> [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]",
@@ -3071,6 +3274,8 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         return await nearestCommand(rest, io);
       case "craft-coverage":
         return craftCoverageCommand(rest, io);
+      case "proposals":
+        return await proposalsCommand(rest, io);
       default:
         throw new Refused(`no command ${JSON.stringify(command ?? "")}. ${USAGE}`);
     }

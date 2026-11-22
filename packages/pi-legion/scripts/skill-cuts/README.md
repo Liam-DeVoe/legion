@@ -561,6 +561,90 @@ nothing else. It exits 1 naming each skill with no entry, 2 when it refuses its 
 it cannot read or that holds no skill, or an entries file it cannot read or a line of it that is
 no JSON or no craft entry, and 0 otherwise.
 
+### `proposals`
+
+```
+bun scripts/skill-cuts/cli.ts proposals --config <skill-cuts.json> --key-file <file> \
+  --body <pull request body> --body-source <text> --section <heading> --list <text>... \
+  --pr-diff <id prefix>=<gh pr diff output>... --skills-root <repo>=<dir>... \
+  --repo-root <repo>=<repository tree> \
+  --style <style text> --style-source <text> --craft <craft-list.json> --craft-source <text> \
+  --findings <reader-findings.jsonl> --out <dir> \
+  [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]
+bun scripts/skill-cuts/cli.ts proposals --dry-run --body <pull request body> --section <heading> \
+  --list <text>...
+```
+
+Reads each open proposal of closed pull requests that a later pull request's body lists, with two
+readers (`readers.ts`), and writes one entry per item. `--body` is the body as text (`gh pr view
+<n> --json body --jq .body`), and `--body-source` the words the entries give it (the pull request
+at the head read).
+
+**The items.** `--section` names a heading of the body, of any level, by its whole text; its section
+runs to the next heading of its level or a higher one. Each `--list` names the one line of the
+section that starts with its text (`Lines whose target is gone` names `Lines whose target is gone
+from this repository (this pull request cannot carry them):`). The list is the `- ` items after
+that line, up to the next line after a blank line that is no item, or the next heading; a line
+indented under an item goes on with its text. An item is `` - `<id>` (<state>): <text> ``,
+whatever the words in the parentheses (`open`, `partly on main`, `open; no ruling found`, `target
+gone`, `done in its new home`, or any other). A list no `--list` names is never read. The command
+exits 1 naming each line of a named list that is not of that form, gives an id with a character
+other than a letter, a digit, `.`, `_` and `-`, or gives an id twice, or that follows an item, is
+not indented and is no item. It exits 2 when the section or a list's line is not found once, or no
+item follows a list's line. `--dry-run` prints the items with each list's count and reads nothing
+else.
+
+**The diffs and the trees.** Each item's id names its pull request by its prefix, the text before
+its first `-` (`41-9.12` → `41`): `--pr-diff 41=<file>` gives that pull request's `gh pr diff`
+output, which `proposals.ts`'s `splitDiff` splits into files (each path before and after the
+change, so a renamed file has both) and hunks (each hunk's `@@` line and its lines, as many as the
+line counts). Each `--skills-root <repo>=<dir>` gives a directory of skills (`<dir>/<name>/SKILL.md`)
+and the words of its repository at the commit read, which must be the `skill.source` the
+repository's `craft` entries give. `--repo-root <repo>=<dir>` gives the whole tree of the repository
+the pull requests changed, at the commit read, for a target that is a file of it.
+
+**Two readers per item.** `proposal-target` (`prompts/proposal-target.md`) gets the item's pull
+request's whole diff, with each file's hunks by their indexes, first in the request and marked for
+the prompt cache (`cache_control: {"type": "ephemeral"}`), so each item of one pull request reads it
+from the cache; then the repository of `--repo-root`, the item (id, state and text) and every skill
+of the skills roots (repository and name). It answers the hunks that make the item (each a file of
+the diff, by either of its paths, and a hunk's index in it, from 0) and its targets: a `dotfiles`
+file of the repository by its path, a `skill` of the list by its repository and name, or `none`,
+each with why. An answer is refused that names a file the diff does not hold, a hunk past its
+file's last, a skill not in the list, or a target twice.
+
+When every target is `none`, no second call is made: the entry says no target was found and gives
+the body's own words of the item. Else `proposal` (`prompts/proposal.md`) gets the item, its hunks,
+each target's text with its lines numbered (a file read from `--repo-root`, or that the tree holds
+no such file; a skill's `.md` files from its skills root, named `<skill>/<path>`), the gaps of each
+target skill's `craft` entry of `--findings` (the last entry whose source is the skill's root's
+repository and whose directory's name is the skill's; numbered across the targets), the style
+rules with their ids, and the craft list's reader properties, as `craft` gets them. It answers the
+gaps the change fixes (each a finding by its number, or a style rule or property with its file and
+line), the gaps it makes (each a rule, with its file and line where it gives them), and a one-line
+summary. An answer is refused that names a finding, a rule or a file the request does not hold, a
+fix with both a finding and a rule or neither, a line with no file, or a line past its file's end.
+
+**The entries.** Each item's entry is `<out>/<id>.json`: `{entry: "proposal", id, state, text,
+list, line, body: {file, source, sha256}, diff: {pr, file, sha256}, style, craft, findings: {file,
+sha256}, input, target: {reader, answer, refusals, spent, usd}, hunks: [{file, hunk, header}],
+targets, noTarget, reader, answer, refusals, spent, usd}`. `targets` gives each target read: a file
+with its repository, path, file and SHA-256 (null when the tree holds no such file), or a skill
+with its repository, name, directory, each file's SHA-256 and its findings entry (`{line, gaps}`,
+`gaps` null when every reply of that entry was refused; null with no entry). `noTarget` is
+`{bodyWords, why}` for an item with no target found, and then `targets` is empty and `reader` and
+`answer` are null; `answer` is the `proposal` reader's answer, `usd` the dollars of both calls. The
+user messages sent go to `<out>/<id>.input.md`. A reader whose every reply was refused leaves its
+item no entry, and its refusals go to `<out>/<id>.refused.json`.
+
+The first item of each pull request is read alone, then the rest, as many at once as
+`--concurrency` lets. An item whose entry exists is not read again, so a run started again reads
+only the items with none; an entry of another state or text of its item than the body's is refused
+(exit 2), so a changed item is read again only once its old entry is moved away. It exits 0 when
+every item has an entry, 1 when an item has none at the end, 2 when it refuses its arguments, a
+diff, a root with no skill, a style text, a craft list or a findings file, and 3 when the budget is
+spent.
+
 ### `control craft`
 
 ```
@@ -858,9 +942,9 @@ the last candidate, and writes no file. A bound is refused without `--model` or 
 
 ## The request log
 
-Each model request of `behaviour`, `read`, `control`, `craft`, `nearest` and `load` adds one JSON
-line to the request log (`<out>/requests.jsonl` for `behaviour`, `load` and `control craft`,
-`<out file>.requests.jsonl` otherwise):
+Each model request of `behaviour`, `read`, `control`, `craft`, `nearest`, `proposals` and `load`
+adds one JSON line to the request log (`<out>/requests.jsonl` for `behaviour`, `load`,
+`control craft` and `proposals`, `<out file>.requests.jsonl` otherwise):
 what the call was for; when it was asked for (`at`), when it got its place and was sent
 (`sentAt`) and how many calls were in flight then, it among them (`inFlight`); the session id it
 went with (`userId`: its `metadata.user_id` or `prompt_cache_key`); the model, the thinking type
@@ -875,7 +959,8 @@ message's text.
 ## Exit status
 
 0 done (a control held); 1 failed (every reply of a reader refused, a control that did not hold, a
-call, a load test's task or an `--after-case` command that failed); 2 refused before any model
+call, a load test's task or an `--after-case` command that failed, an item line of `proposals` that
+does not parse, or an item it leaves with no entry); 2 refused before any model
 call or store read (among the refusals, an `--out` inside a git or jj checkout, from `behaviour`'s
 stage commands, `load` and `build-cases`); 3 stopped (the budget is spent, or the peak memory
 passed 1 GiB, 1.5 GiB for `copies`); 4 stopped by build-cases' stop rule.

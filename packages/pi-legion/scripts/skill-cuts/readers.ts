@@ -68,6 +68,18 @@
  *   reason, and a verdict over them (`none` exactly when it names none, else the best entry's).
  * - `claim`: a claim about a skill, one gap of a craft answer and the skill's files; whether the
  *   gap states the claim, with a reason (`control craft`).
+ * - `proposal-target`: the whole diff of a closed pull request with each file's hunks (the part
+ *   every item of that pull request shares, sent first and marked for the prompt cache:
+ *   `Reader.cached`), then one item of a list of a later pull request's body (its id, state and
+ *   text), the repository a file target is in, and each skill the readers read (its repository
+ *   and name); the hunks that make the item, each a file of the diff and a hunk's index in it, and
+ *   its targets, each a file of the repository by its path, a skill of the list, or none, with why.
+ * - `proposal`: the item, its hunks, each target's text today (a skill's files as
+ *   `<skill>/<path>`, a file of the repository, or that the repository holds no such file), the
+ *   gaps of each target skill's findings entry, numbered across them, the style rules and the
+ *   reader properties; the gaps the change fixes (each a finding by its number, or a style rule or
+ *   property), the gaps it makes (each a rule), each with its file and line where given, and a
+ *   one-line summary.
  *
  * The positive controls of the map, attack, same-job and sentence readers (`runControl`) each
  * plant a known finding in a copy of real input, run the reader once, and hold only when its
@@ -182,7 +194,7 @@ export function loadPrompt(name: string): Prompt {
 
 /** One text block of a request's user message. `cache` marks it for the prompt cache: a part that
  *  every request of a batch shares, sent before the part that differs. */
-interface UserPart {
+export interface UserPart {
   readonly text: string;
   readonly cache?: boolean;
 }
@@ -282,11 +294,13 @@ export async function ask<T>(
 }
 
 /** A reader: the schema of its input, the schema of its answer to an input, and its input as the
- *  user message. */
+ *  user message. A reader with `cached` sends that part first, marked for the prompt cache: the
+ *  part each input of a run shares (`promptBody`), before the part `render` gives. */
 export interface Reader<I, A> {
   readonly input: z.ZodType<I>;
   answer(input: I): z.ZodType<A>;
   render(input: I): string;
+  cached?(input: I): string;
 }
 
 /** A file of a skill: its path inside the skill's directory, and its text. */
@@ -301,6 +315,8 @@ type Place = z.infer<typeof Place>;
 const OneLine = z
   .string()
   .refine((text) => text.trim() !== "" && !text.includes("\n"), "is not one non-blank line");
+/** Text that is not blank. */
+const NonBlank = z.string().refine((text) => text.trim() !== "", "is blank");
 
 /** Adds the issue `message` at `at` to `ctx`. */
 function refuse(ctx: z.RefinementCtx, at: PropertyKey[], message: string): void {
@@ -964,26 +980,31 @@ const NamedSkill = z.strictObject({
   name: z.string().regex(/^[^:\s]+$/, "is not a skill name with no colon and no space"),
   files: z.array(File).min(1),
 });
+/** A rule of the style text (style.ts's `styleRules`), as the craft and proposal readers take it. */
+const StyleRuleInput = z.strictObject({
+  id: StyleId,
+  line: z.int().positive(),
+  part: z.enum(["order", "rules", "check"]),
+  text: z.string().min(1),
+});
+type StyleRuleInput = z.infer<typeof StyleRuleInput>;
+/** A property of the craft list that a reader checks, as the craft and proposal readers take it:
+ *  what it states and what the reader looks for, never how it is checked. */
+const ReaderPropertyInput = z.strictObject({
+  id: PropertyId,
+  property: OneLine,
+  readerLooksFor: z.string().min(1),
+});
+type ReaderPropertyInput = z.infer<typeof ReaderPropertyInput>;
 
 export const CraftInput = z
   .strictObject({
     skill: z.string().min(1),
     files: z.array(File).min(1),
-    /** The style text's rules (style.ts's `styleRules`). */
-    style: z
-      .array(
-        z.strictObject({
-          id: StyleId,
-          line: z.int().positive(),
-          part: z.enum(["order", "rules", "check"]),
-          text: z.string().min(1),
-        })
-      )
-      .min(1),
-    /** The craft list's properties that a reader checks, and only those (`craftInput`). */
-    properties: z.array(
-      z.strictObject({ id: PropertyId, property: OneLine, readerLooksFor: z.string().min(1) })
-    ),
+    /** The style text's rules (`rulesInput`). */
+    style: z.array(StyleRuleInput).min(1),
+    /** The craft list's properties that a reader checks, and only those (`rulesInput`). */
+    properties: z.array(ReaderPropertyInput),
     nearest: z.array(NamedSkill),
   })
   .superRefine((input, ctx) => {
@@ -1015,9 +1036,24 @@ export type CraftAnswer = z.infer<typeof CraftAnswer>;
 /** A gap's rule against a nearest skill: `nearest:<skill>:<path>:<line>`. */
 const NEAREST_RULE = /^nearest:([^:]+):(.+):(\d+)$/;
 
-/** The craft reader's input for the skill `skill` and its files: each rule of the style text, the
- *  properties of `list` that a reader checks (never one a behaviour test checks), and each nearest
- *  skill of theirs with its files. */
+/** Each rule of the style text, and each property of `list` that a reader checks (never one a
+ *  behaviour test checks), as the craft and proposal readers take them. */
+export function rulesInput(
+  style: readonly StyleRule[],
+  list: CraftList
+): { style: StyleRuleInput[]; properties: ReaderPropertyInput[] } {
+  return {
+    style: style.map(({ id, line, part, text }) => ({ id, line, part, text })),
+    properties: readerProperties(list).map(({ id, property, readerLooksFor }) => ({
+      id,
+      property,
+      readerLooksFor,
+    })),
+  };
+}
+
+/** The craft reader's input for the skill `skill` and its files: the style text's rules and the
+ *  reader properties of `list` (`rulesInput`), and each nearest skill of theirs with its files. */
 export function craftInput(given: {
   readonly skill: string;
   readonly files: readonly File[];
@@ -1028,14 +1064,34 @@ export function craftInput(given: {
   return {
     skill: given.skill,
     files: [...given.files],
-    style: given.style.map(({ id, line, part, text }) => ({ id, line, part, text })),
-    properties: readerProperties(given.list).map(({ id, property, readerLooksFor }) => ({
-      id,
-      property,
-      readerLooksFor,
-    })),
+    ...rulesInput(given.style, given.list),
     nearest: given.nearest.map(({ name, files }) => ({ name, files: [...files] })),
   };
+}
+
+/** The style rules as the craft and proposal readers' `<style>` gives them: each with its id, its
+ *  line in the style text and its part. */
+function styleBlock(style: readonly StyleRuleInput[]): string {
+  return `<style>\n${style
+    .map(
+      (rule) =>
+        `<rule id="${rule.id}" line="${rule.line}" part="${PART_NAMES[rule.part]}">\n${rule.text}\n</rule>`
+    )
+    .join("\n")}\n</style>`;
+}
+
+/** The reader properties as the craft and proposal readers' `<craft-properties>` gives them. */
+function propertiesBlock(properties: readonly ReaderPropertyInput[]): string {
+  return `<craft-properties>\n${
+    properties.length === 0
+      ? "None."
+      : properties
+          .map(
+            (each) =>
+              `<property id="${each.id}">\n<states>${each.property}</states>\n<looks-for>${each.readerLooksFor}</looks-for>\n</property>`
+          )
+          .join("\n")
+  }\n</craft-properties>`;
 }
 
 const craftReader: Reader<CraftInput, CraftAnswer> = {
@@ -1104,22 +1160,8 @@ const craftReader: Reader<CraftInput, CraftAnswer> = {
   render: (input) =>
     [
       `<skill name="${input.skill}">\n${fileBlocks(input.files)}\n</skill>`,
-      `<style>\n${input.style
-        .map(
-          (rule) =>
-            `<rule id="${rule.id}" line="${rule.line}" part="${PART_NAMES[rule.part]}">\n${rule.text}\n</rule>`
-        )
-        .join("\n")}\n</style>`,
-      `<craft-properties>\n${
-        input.properties.length === 0
-          ? "None."
-          : input.properties
-              .map(
-                (each) =>
-                  `<property id="${each.id}">\n<states>${each.property}</states>\n<looks-for>${each.readerLooksFor}</looks-for>\n</property>`
-              )
-              .join("\n")
-      }\n</craft-properties>`,
+      styleBlock(input.style),
+      propertiesBlock(input.properties),
       `<nearest>\n${
         input.nearest.length === 0
           ? "None: no nearest skill of theirs was given."
@@ -1219,10 +1261,7 @@ export const ClaimInput = z
       refuse(ctx, ["gap", "file"], "is no file of the skill");
   });
 export type ClaimInput = z.infer<typeof ClaimInput>;
-export const ClaimAnswer = z.strictObject({
-  states: z.boolean(),
-  reason: z.string().refine((text) => text.trim() !== "", "is blank"),
-});
+export const ClaimAnswer = z.strictObject({ states: z.boolean(), reason: NonBlank });
 export type ClaimAnswer = z.infer<typeof ClaimAnswer>;
 
 const claimReader: Reader<ClaimInput, ClaimAnswer> = {
@@ -1234,6 +1273,309 @@ const claimReader: Reader<ClaimInput, ClaimAnswer> = {
       `<gap file="${input.gap.file}" line="${input.gap.line}" rule="${input.gap.rule}" kind="${input.gap.kind}">\n${input.gap.why}\n</gap>`,
       `<skill>\n${fileBlocks(input.files)}\n</skill>`,
     ].join("\n\n"),
+};
+
+// The proposal readers: where one proposal of a closed pull request goes today, and what its change
+// fixes and makes there.
+
+/** An item of a list of a pull request's body (proposals.ts's `parseProposalItems`): its id, its
+ *  state (the words in its parentheses) and its text. */
+const ProposalItem = z.strictObject({ id: Id, state: OneLine, text: NonBlank });
+/** A path inside a repository: relative, with no empty, `.` or `..` part. */
+const RepoPath = z
+  .string()
+  .refine(
+    (value) => value.split("/").every((part) => part !== "" && part !== "." && part !== ".."),
+    "is not a path inside the repository"
+  );
+/** A skill a reader reads: its repository (as its skills root names it) and its directory's name. */
+const ListedSkill = z.strictObject({ repo: z.string().min(1), name: z.string().min(1) });
+/** A file of a diff: its path before and after the change (null before for a file the change
+ *  adds, after for one it deletes), and the `@@` line of each of its hunks. */
+const ChangedFile = z.strictObject({
+  before: z.string().min(1).nullable(),
+  after: z.string().min(1).nullable(),
+  hunks: z.array(z.string().min(1)),
+});
+
+export const ProposalTargetInput = z
+  .strictObject({
+    /** The closed pull request's diff: its number, its whole text and each of its files. */
+    diff: z.strictObject({ pr: Id, text: z.string().min(1), files: z.array(ChangedFile).min(1) }),
+    item: ProposalItem,
+    /** The repository a `dotfiles` target's path is in, at the commit read. */
+    repository: z.string().min(1),
+    skills: z.array(ListedSkill).min(1),
+  })
+  .superRefine((input, ctx) => {
+    const paths = new Set<string>();
+    for (const [index, { before, after }] of input.diff.files.entries()) {
+      const at = ["diff", "files", index];
+      const name = after ?? before;
+      if (name === null) refuse(ctx, at, "has no path before or after the change");
+      else if (paths.has(name)) refuse(ctx, at, `gives the file ${name} twice`);
+      else paths.add(name);
+    }
+    uniqueIds(
+      input.skills.map((skill) => ({ id: `${skill.name} of ${skill.repo}` })),
+      ctx,
+      "skills"
+    );
+  });
+export type ProposalTargetInput = z.infer<typeof ProposalTargetInput>;
+const ProposalTarget = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("dotfiles"), path: RepoPath, why: NonBlank }),
+  z.strictObject({ kind: z.literal("skill"), skill: ListedSkill, why: NonBlank }),
+  z.strictObject({ kind: z.literal("none"), why: NonBlank }),
+]);
+/** The hunks that make an item, each a file of the diff (by its path before or after the change)
+ *  and the index of a hunk of it, from 0; and its targets. */
+export const ProposalTargetAnswer = z.strictObject({
+  hunks: z.array(z.strictObject({ file: z.string().min(1), hunk: z.int().nonnegative() })).min(1),
+  targets: z.array(ProposalTarget).min(1),
+});
+export type ProposalTargetAnswer = z.infer<typeof ProposalTargetAnswer>;
+
+const proposalTargetReader: Reader<ProposalTargetInput, ProposalTargetAnswer> = {
+  input: ProposalTargetInput,
+  answer: (input) =>
+    ProposalTargetAnswer.superRefine((answer, ctx) => {
+      const files = new Map<string, z.infer<typeof ChangedFile>>();
+      for (const file of input.diff.files) {
+        for (const name of [file.before, file.after]) if (name !== null) files.set(name, file);
+      }
+      const named = new Set<string>();
+      for (const [index, { file: name, hunk }] of answer.hunks.entries()) {
+        const file = files.get(name);
+        if (file === undefined) {
+          refuse(ctx, ["hunks", index, "file"], "is no file of the diff");
+          continue;
+        }
+        const path = file.after ?? file.before;
+        if (hunk >= file.hunks.length) {
+          refuse(
+            ctx,
+            ["hunks", index, "hunk"],
+            file.hunks.length === 0
+              ? `names a hunk of ${path}, which has none`
+              : `is past the last hunk, ${file.hunks.length - 1}, of ${path}`
+          );
+        } else if (named.has(`${hunk} of ${path}`)) {
+          refuse(ctx, ["hunks", index], `names hunk ${hunk} of ${path} twice`);
+        }
+        named.add(`${hunk} of ${path}`);
+      }
+      const skills = new Set(input.skills.map((skill) => `${skill.name} of ${skill.repo}`));
+      const targets = new Set<string>();
+      for (const [index, target] of answer.targets.entries()) {
+        if (target.kind === "none") continue;
+        const key =
+          target.kind === "dotfiles" ? target.path : `${target.skill.name} of ${target.skill.repo}`;
+        if (target.kind === "skill" && !skills.has(key)) {
+          refuse(ctx, ["targets", index, "skill"], `${key} is no skill of the list`);
+        } else if (targets.has(key))
+          refuse(ctx, ["targets", index], `names the target ${key} twice`);
+        targets.add(key);
+      }
+    }),
+  cached: (input) =>
+    [
+      `<diff pr="${input.diff.pr}">\n${input.diff.text}\n</diff>`,
+      `<hunks>\n${input.diff.files
+        .map(({ before, after, hunks }) => {
+          const moved = before !== null && after !== null && before !== after;
+          const how = before === null ? ' added="yes"' : after === null ? ' deleted="yes"' : "";
+          const list =
+            hunks.length === 0
+              ? "no hunk"
+              : hunks.map((header, index) => `hunk ${index}: ${header}`).join("\n");
+          return `<file path="${after ?? before}"${moved ? ` before="${before}"` : ""}${how}>\n${list}\n</file>`;
+        })
+        .join("\n")}\n</hunks>`,
+    ].join("\n\n"),
+  render: (input) =>
+    [
+      `<repository>\n${input.repository}\n</repository>`,
+      `<item id="${input.item.id}" state="${input.item.state}">\n${input.item.text}\n</item>`,
+      `<skills>\n${input.skills
+        .map((skill) => `<skill repo="${skill.repo}" name="${skill.name}"/>`)
+        .join("\n")}\n</skills>`,
+    ].join("\n\n"),
+};
+
+/** A target of a proposal with its text today: a file of the repository (`text` null when the
+ *  repository holds no such file at the commit read), or a skill a reader reads, with its files. */
+const TargetText = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("dotfiles"),
+    repo: z.string().min(1),
+    path: RepoPath,
+    text: z.string().nullable(),
+  }),
+  z.strictObject({
+    kind: z.literal("skill"),
+    repo: z.string().min(1),
+    name: z.string().min(1),
+    files: z.array(File).min(1),
+  }),
+]);
+export const ProposalInput = z
+  .strictObject({
+    item: ProposalItem,
+    /** The hunks that make the item (`proposal-target`'s answer): each with its file, its index in
+     *  that file, its `@@` line and its lines. */
+    hunks: z
+      .array(
+        z.strictObject({
+          file: z.string().min(1),
+          hunk: z.int().nonnegative(),
+          header: z.string().min(1),
+          lines: z.array(z.string()),
+        })
+      )
+      .min(1),
+    targets: z.array(TargetText).min(1),
+    /** The gaps of the findings entry of each target skill that has one with an answer. */
+    findings: z.array(
+      z.strictObject({ repo: z.string().min(1), name: z.string().min(1), gaps: z.array(CraftGap) })
+    ),
+    style: z.array(StyleRuleInput).min(1),
+    properties: z.array(ReaderPropertyInput),
+  })
+  .superRefine((input, ctx) => {
+    uniqueIds(input.style, ctx, "style");
+    uniqueIds(input.properties, ctx, "properties");
+    const skills = new Set(
+      input.targets.flatMap((target) =>
+        target.kind === "skill" ? [`${target.name} of ${target.repo}`] : []
+      )
+    );
+    for (const [index, { name, repo }] of input.findings.entries()) {
+      if (!skills.has(`${name} of ${repo}`)) {
+        refuse(ctx, ["findings", index], `are of ${name} of ${repo}, which is no target skill`);
+      }
+    }
+  });
+export type ProposalInput = z.infer<typeof ProposalInput>;
+const ProposalRule = z.string().regex(/^[SC][1-9]\d*$/, "is not S<n> or C<n>");
+/** What a proposal's change fixes (a finding of the input by its number, or a gap against a style
+ *  rule or a reader property) and makes (a gap against one), each with where and why, and a
+ *  summary. A file is one the input names; a line is a line of it, and needs its file. */
+export const ProposalAnswer = z.strictObject({
+  fixes: z.array(
+    z.strictObject({
+      finding: z.int().nonnegative().optional(),
+      rule: ProposalRule.optional(),
+      file: z.string().min(1).optional(),
+      line: z.int().positive().optional(),
+      why: NonBlank,
+    })
+  ),
+  makes: z.array(
+    z.strictObject({
+      rule: ProposalRule,
+      file: z.string().min(1).optional(),
+      line: z.int().positive().optional(),
+      why: NonBlank,
+    })
+  ),
+  summary: OneLine,
+});
+export type ProposalAnswer = z.infer<typeof ProposalAnswer>;
+
+const proposalReader: Reader<ProposalInput, ProposalAnswer> = {
+  input: ProposalInput,
+  answer: (input) =>
+    ProposalAnswer.superRefine((answer, ctx) => {
+      const ids = new Set([...input.style, ...input.properties].map((rule) => rule.id));
+      const findings = input.findings.reduce((sum, entry) => sum + entry.gaps.length, 0);
+      // Each file by the name the request gives it, with its line count where the request holds
+      // its text: each hunk's file, each dotfiles target's path, and each target skill's files as
+      // `<skill>/<path>`.
+      const files = new Map<string, number | undefined>(
+        input.hunks.map((hunk) => [hunk.file, undefined])
+      );
+      for (const target of input.targets) {
+        if (target.kind === "dotfiles") {
+          files.set(target.path, target.text === null ? undefined : textLines(target.text).length);
+        } else {
+          for (const file of target.files) {
+            files.set(`${target.name}/${file.path}`, textLines(file.text).length);
+          }
+        }
+      }
+      const checkPlace = (at: PropertyKey[], place: { file?: string; line?: number }) => {
+        const count = place.file === undefined ? undefined : files.get(place.file);
+        if (place.file !== undefined && !files.has(place.file)) {
+          refuse(ctx, [...at, "file"], "is no file of the targets or the hunks");
+        } else if (place.line === undefined) return;
+        else if (place.file === undefined) refuse(ctx, [...at, "line"], "names a line and no file");
+        else if (count !== undefined && place.line > count) {
+          refuse(ctx, [...at, "line"], `is past the last line, ${count}, of ${place.file}`);
+        }
+      };
+      for (const [index, fix] of answer.fixes.entries()) {
+        const at = ["fixes", index];
+        if (fix.finding !== undefined && fix.rule !== undefined) {
+          refuse(ctx, at, "gives both a finding and a rule: a fix is one or the other");
+        } else if (fix.finding === undefined && fix.rule === undefined) {
+          refuse(ctx, at, "gives neither a finding nor a rule");
+        }
+        if (fix.finding !== undefined && fix.finding >= findings) {
+          refuse(ctx, [...at, "finding"], `is no finding of the input, which holds ${findings}`);
+        }
+        if (fix.rule !== undefined && !ids.has(fix.rule)) {
+          refuse(ctx, [...at, "rule"], "is no style rule or reader property of the input");
+        }
+        checkPlace(at, fix);
+      }
+      for (const [index, make] of answer.makes.entries()) {
+        if (!ids.has(make.rule)) {
+          refuse(ctx, ["makes", index, "rule"], "is no style rule or reader property of the input");
+        }
+        checkPlace(["makes", index], make);
+      }
+    }),
+  render: (input) => {
+    const gaps = input.findings.flatMap((entry) => entry.gaps.map((gap) => ({ entry, gap })));
+    return [
+      `<item id="${input.item.id}" state="${input.item.state}">\n${input.item.text}\n</item>`,
+      `<hunks>\n${input.hunks
+        .map(
+          (hunk) =>
+            `<hunk file="${hunk.file}" index="${hunk.hunk}">\n${[hunk.header, ...hunk.lines].join("\n")}\n</hunk>`
+        )
+        .join("\n")}\n</hunks>`,
+      `<targets>\n${input.targets
+        .map((target) =>
+          target.kind === "dotfiles"
+            ? `<target kind="dotfiles" repo="${target.repo}">\n${
+                target.text === null
+                  ? `<file path="${target.path}">\nNone: the repository holds no such file at this commit.\n</file>`
+                  : fileBlocks([{ path: target.path, text: target.text }])
+              }\n</target>`
+            : `<target kind="skill" repo="${target.repo}" name="${target.name}">\n${fileBlocks(
+                target.files.map((file) => ({
+                  path: `${target.name}/${file.path}`,
+                  text: file.text,
+                }))
+              )}\n</target>`
+        )
+        .join("\n")}\n</targets>`,
+      `<findings>\n${
+        gaps.length === 0
+          ? "None: no target skill has a findings entry with an answer."
+          : gaps
+              .map(
+                ({ entry, gap }, index) =>
+                  `<finding index="${index}" skill="${entry.name}" repo="${entry.repo}" file="${entry.name}/${gap.file}" line="${gap.line}" rule="${gap.rule}" kind="${gap.kind}">\n${gap.why}\n</finding>`
+              )
+              .join("\n")
+      }\n</findings>`,
+      styleBlock(input.style),
+      propertiesBlock(input.properties),
+    ].join("\n\n");
+  },
 };
 
 /** Every reader, by the name of its prompt file. */
@@ -1250,12 +1592,14 @@ export const READERS = {
   craft: craftReader,
   nearest: nearestReader,
   claim: claimReader,
+  "proposal-target": proposalTargetReader,
+  proposal: proposalReader,
 } as const;
 export type ReaderName = keyof typeof READERS;
 export const READER_NAMES = Object.keys(READERS) as ReaderName[];
 
 /** A reader's answer, the refusals of the replies before it, and what each reply used. */
-interface ReaderResult {
+export interface ReaderResult {
   readonly answer: unknown;
   readonly refusals: readonly string[];
   readonly spent: readonly Spent[];
@@ -1275,10 +1619,17 @@ export class ReaderFailed extends Error {
   }
 }
 
+/** The parts of reader `name`'s user message for `input`, already parsed by its input schema: its
+ *  cached part first, marked for the prompt cache, where it has one, then the rest. */
+export function userParts(name: ReaderName, input: unknown): UserPart[] {
+  const reader: Reader<unknown, unknown> = READERS[name];
+  const rest = { text: reader.render(input) };
+  return reader.cached === undefined ? [rest] : [{ text: reader.cached(input), cache: true }, rest];
+}
+
 /** The request body of reader `name` for `input`, already parsed by its input schema. */
 export function readerBody(name: ReaderName, input: unknown): MessagesBody {
-  const reader: Reader<unknown, unknown> = READERS[name];
-  return promptBody(loadPrompt(name), [{ text: reader.render(input) }]);
+  return promptBody(loadPrompt(name), userParts(name, input));
 }
 
 /** Runs reader `name` on one input batch: one call, asked again while the answer is refused,
