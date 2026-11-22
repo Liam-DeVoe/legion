@@ -154,6 +154,24 @@ test("every other completion reports the commit the workspace stands on, and rea
   }
 });
 
+// Contract 221: a role of the deployment completes the step it works, `step`, which ends with no
+// handoff record, so it reports the commit its workspace stands on wherever its issue stands.
+test("a role of the deployment reports the commit the workspace stands on, and reads no record", async () => {
+  for (const [phase, role] of [
+    ["step", "checker"],
+    ["step", "code-checker"],
+    ["testing", "checker"],
+  ] as const) {
+    const { jj, calls } = fakeJj();
+    const { latestHandoff, reads } = recordingDispatch();
+    await expect(findHandoffReport({ phase, role, env, jj, latestHandoff })).resolves.toEqual({
+      commit: STANDING,
+    });
+    expect(calls).toEqual([["log", "-r", "@-", "--no-graph", "-T", "commit_id"]]);
+    expect(reads).toEqual([]);
+  }
+});
+
 test("a reviewer whose review moved its issue on reports its own newest review record and the head it names", async () => {
   // A request for changes moves the issue to implementing at once, an approval to accepting once
   // the pull request is mergeable, and the reviewer completes after it: the daemon records that
@@ -257,6 +275,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
     implementing: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     testing: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     reviewing: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    step: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     accepting: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     retro: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     merging: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
@@ -272,6 +291,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
     implementing: row({ thrown: PUSH_IT }, "@- and origin", "no request"),
     testing: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     reviewing: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    step: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     accepting: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     retro: row("@-", "@-", "200"),
     merging: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
@@ -287,6 +307,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
     implementing: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     testing: row({ record: "test" }, "nothing", "200"),
     reviewing: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    step: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     accepting: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     retro: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     merging: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
@@ -302,6 +323,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
     implementing: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     testing: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     reviewing: row({ record: "review" }, "nothing", "200"),
+    step: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     accepting: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     retro: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     merging: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
@@ -317,6 +339,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
     implementing: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
     testing: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
     reviewing: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    step: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
     accepting: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
     retro: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
     merging: row("@-", "@-", "200"),
@@ -332,6 +355,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
     implementing: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
     testing: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
     reviewing: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
+    step: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
     accepting: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
     retro: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
     merging: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),

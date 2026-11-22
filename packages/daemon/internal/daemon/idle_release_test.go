@@ -44,7 +44,7 @@ type releaseRuntime struct {
 	onImage   bool
 	bundle    runtime.WorkspaceBundle
 	bundleErr error
-	bundled   []claim.Role
+	bundled   []claim.Token
 	suspended int
 	refused   int
 	// teardowns are the issue-level teardowns the daemon asked for, by method and in order,
@@ -78,10 +78,10 @@ func (r *releaseRuntime) IssueSandbox(string) (string, bool) {
 	return r.sandboxName, true
 }
 
-func (r *releaseRuntime) BundleWorkspace(_ context.Context, _ string, role claim.Role) (runtime.WorkspaceBundle, error) {
+func (r *releaseRuntime) BundleWorkspace(_ context.Context, _ string, token claim.Token) (runtime.WorkspaceBundle, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.bundled = append(r.bundled, role)
+	r.bundled = append(r.bundled, token)
 	return r.bundle, r.bundleErr
 }
 
@@ -124,10 +124,10 @@ func (r *releaseRuntime) teardownsAsked() []string {
 	return slices.Clone(r.teardowns)
 }
 
-func (r *releaseRuntime) reads() (bundled []claim.Role, suspended int) {
+func (r *releaseRuntime) reads() (bundled []claim.Token, suspended int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]claim.Role(nil), r.bundled...), r.suspended
+	return append([]claim.Token(nil), r.bundled...), r.suspended
 }
 
 // refusals is how many times the runtime asked the store under its pod lock and was refused.
@@ -553,11 +553,11 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 		t.Fatalf("the claim after the release = %s by %s, want it released", got.State, got.SuspendedBy)
 	}
 
-	taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, pods.WakeDelivery, time.Now().UTC(), 0)
+	taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, claim.RoleImplementer, pods.WakeDelivery, time.Now().UTC(), 0)
 	if err != nil || !taken {
 		t.Fatalf("take the wake whose resume never ran = %t, %v; want it taken", taken, err)
 	}
-	resume, pause, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer)
+	resume, pause, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer, rig.token)
 	if err != nil || !open || pause != 0 {
 		t.Fatalf("the open resume after that take = %d, pause %d, %t, %v; want the one it recorded, which no pause held", resume, pause, open, err)
 	}
@@ -581,7 +581,7 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 	}
 	// The heal takes no wake of its own: the resume the first take recorded is still the one
 	// open, so the records hold one resume of this release rather than two.
-	again, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer)
+	again, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer, rig.token)
 	if err != nil || !open || again != resume {
 		t.Fatalf("the open resume after the heal = %d, %t, %v; want the first take's %d", again, open, err, resume)
 	}
@@ -643,8 +643,8 @@ func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testi
 	}
 
 	bundled, suspended := rig.rt.reads()
-	if len(bundled) != 1 || bundled[0] != claim.RoleImplementer {
-		t.Fatalf("bundle asked of %v, want the pod's one live role", bundled)
+	if len(bundled) != 1 || bundled[0] != rig.token {
+		t.Fatalf("bundle asked of %v, want the pod's one live claim %s", bundled, rig.token)
 	}
 	if suspended != 1 {
 		t.Fatalf("Sandbox teardowns = %d, want one", suspended)

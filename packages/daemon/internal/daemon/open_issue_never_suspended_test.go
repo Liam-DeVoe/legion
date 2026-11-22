@@ -286,6 +286,9 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 			child := record.Issue{Key: "LEGION-821", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root.Key, Parent: &parent, Title: "child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "B"}
 			putOutboxIssue(t, pool, records, root)
 			putOutboxIssue(t, pool, records, child)
+			// The child ran each role, so the daemon's store holds a claim of each, which the leave
+			// reads (record.Store.IssueClaims).
+			storeRoleClaims(t, pool, root.Key, child.Key)
 			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 				return records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now()})
 			}); err != nil {

@@ -166,7 +166,11 @@ func TestAHookPromptFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound(t *tes
 // Only a role with no live holder ends the row.
 func TestAHookPromptRetriesEveryFailureButNoHolder(t *testing.T) {
 	ctx := context.Background()
-	row := mustOutboxRow(t, "LEGION-208", firedHook, time.Now())
+	// The prompt names the claim of the implementer's step, as the workflow writes it (fireHook):
+	// this runner has no record to read the step from.
+	named := firedHook
+	named.Claim = mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
+	row := mustOutboxRow(t, "LEGION-208", named, time.Now())
 	row.ID = 61
 	publisher := &outboxPublisher{}
 	runner := &outbox{project: "legion", notices: publisher, log: quietLogger()}

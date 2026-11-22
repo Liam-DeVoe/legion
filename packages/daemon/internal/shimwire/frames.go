@@ -201,6 +201,10 @@ type LauncherHello struct {
 	LeakCheckTag       string `json:"leakCheckTag,omitempty"`
 	LeakCheckInstalled bool   `json:"leakCheckInstalled,omitempty"`
 	ResumesBySession   bool   `json:"resumesBySession,omitempty"`
+	// CredentialWait says this launcher starts a child only once its slot's gh files hold the
+	// credential its start names (LauncherStart.GitHubCredential). A launcher of an image before
+	// that wait sends no member.
+	CredentialWait bool `json:"credentialWait,omitempty"`
 }
 
 // LauncherHelloAck admits a launcher to receive child process commands, and hands it the
@@ -594,9 +598,11 @@ type LauncherState struct {
 // repeated request is idempotent only when its payload, Files included, is unchanged. Files are
 // the generation's credentials, the boot token among them: the launcher writes each, owner-only
 // and exclusively, into a fresh directory for this generation in its own memory-backed storage
-// before the child starts, and removes the directory when the child ends — so a role started in a
-// running pod never waits on the kubelet to propagate a Secret. Argv and Env name those files by
-// path; no credential is ever in Argv, Env, or an error.
+// before the child starts, and removes the directory when the child ends — so these credentials
+// never wait on the kubelet to propagate a Secret. Only the slot's gh files do: a start into a pod
+// the daemon kept names in GitHubCredential what they must hold, and the launcher starts the child
+// only once they hold it. Argv and Env name those files by path; no credential is ever in Argv,
+// Env, or an error.
 //
 // ResumeFile is the session file the child resumes. ResumeSession is the id of a session the
 // child resumes where the daemon knows no file of it: the launcher looks the id up in the session
@@ -619,6 +625,20 @@ type LauncherStart struct {
 	// knows the agent's process by it (internal/launcher's sessionPeer). It is empty for a
 	// Claude Code launch, whose agent writes no session itself.
 	AgentExecutable string `json:"agentExecutable,omitempty"`
+	// GitHubCredential is what the slot's gh files must hold before the child starts, set by a
+	// launch into a pod it keeps, which wrote the slot's credential just before: the kubelet then
+	// projects the slot's Secret anew within its sync period, and a child started before that
+	// would act as the App the files held. Absent for a launch that built its pod, whose Secret was
+	// written before the pod started.
+	GitHubCredential *LauncherGitHubCredential `json:"gitHubCredential,omitempty"`
+}
+
+// LauncherGitHubCredential names the credential a start's slot gh files must hold: HostsFile is
+// the default owner's hosts.yml, relative to the slot's gh directory, and TokenDigest the hex
+// SHA-256 of the token the daemon wrote into it.
+type LauncherGitHubCredential struct {
+	HostsFile   string `json:"hostsFile"`
+	TokenDigest string `json:"tokenDigest"`
 }
 
 // GenerationDir is the directory under a launcher's private directory that holds one generation's

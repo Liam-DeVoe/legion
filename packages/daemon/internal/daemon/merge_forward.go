@@ -34,7 +34,10 @@ import (
 // row is an ask or a hold and the merge forward has landed. Role-message rows run in no order of
 // the issue's, so a hold still queued behind its landed would otherwise tell the worker to wait for
 // a head that already came. What follows - a claim that failed or retired, the design gate, the
-// wake and the publish - is deliverHeld's, as it is a merge-queue removal's.
+// wake and the publish - is deliverHeld's, as it is a merge-queue removal's. The message reaches the
+// claim it names (record.MergeForwardMessage.Claim), the worker of its role's step when the
+// workflow wrote it; a row the release before wrote names none and reaches the claim the record
+// gives that step when it runs (workerToken).
 func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, payload record.MergeForwardMessage) error {
 	if r.notices == nil {
 		return errors.New("merge-forward message executor has no Envoy publisher")
@@ -42,7 +45,7 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 	if r.supervisor == nil {
 		return errors.New("merge-forward message executor has no claim supervisor")
 	}
-	token, err := roleToken(r.project, row, payload.Role)
+	token, err := r.workerToken(ctx, row, payload.Role, payload.Claim)
 	if err != nil {
 		return err
 	}

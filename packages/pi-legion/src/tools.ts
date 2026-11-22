@@ -1,4 +1,10 @@
-import { GATED_STEPS, LEGION_ROLES, type LegionRole } from "@legion/contracts";
+import {
+  GATED_STEPS,
+  isLegionRole,
+  isStepRole,
+  LEGION_ROLES,
+  type LegionStepRole,
+} from "@legion/contracts";
 import {
   LEGION_PHASES,
   LegionGateRegisterRequest,
@@ -284,7 +290,10 @@ function stateSummary(state: LegionState): string {
     }
     const claims: Array<readonly [string, SummaryClaim]> = [];
     if (issue.architect !== undefined) claims.push(["architect", issue.architect]);
-    for (const role of LEGION_ROLES) {
+    // Each worker of the issue's map: Legion's six in their workflow order, then each role of the
+    // deployment (contract 221) in the map's order.
+    const deployed = Object.keys(issue.workers ?? {}).filter((role) => !isLegionRole(role));
+    for (const role of [...LEGION_ROLES, ...deployed]) {
       const claim = issue.workers?.[role]?.claim;
       if (claim !== undefined) claims.push([role, claim]);
     }
@@ -392,7 +401,13 @@ function toolSchema(pi: PiApi): unknown {
     status: z.enum(ISSUE_STATUSES).optional(),
     phase: z.enum([...LEGION_PHASES]).optional(),
     settings: z.boolean().optional(),
-    role: z.enum(LEGION_ROLES).optional(),
+    // A claim's role, one of Legion's six or a role of the deployment (contract 221): the role
+    // grammar of Dispatch's step record. The operation's own check (`isStepRole`) also refuses the
+    // controller, whose claim holds no issue.
+    role: z
+      .string()
+      .regex(/^[a-z][a-z0-9-]{0,31}$/)
+      .optional(),
   });
 }
 
@@ -452,7 +467,7 @@ export function createLegionTool(deps: {
    * naming the remedy when the phase the role works has no record, Dispatch does not answer, or,
    * in implementing, the implementer's record names no head, the commit its workspace stands on
    * is not pushed, or its record's head is not that pushed commit. */
-  readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
+  readonly handoffReport: (phase: LegionPhase, role: LegionStepRole) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` an update signal reports, read with the pane's jj
    * (`findPushedBranchHead`), and `""` when the branch is not on the remote. */
   readonly branchHead: () => Promise<string>;
@@ -662,9 +677,11 @@ export function createLegionTool(deps: {
           // minted.
           const issue = requiredString(parameters, operation, "issue");
           if (operation === "fresh_session" || operation === "compact") {
-            const role = LEGION_ROLES.find((candidate) => candidate === parameters.role);
-            if (role === undefined) {
-              throw new Error(`${operation} requires role ${LEGION_ROLES.join(", ")}`);
+            const role = parameters.role;
+            if (typeof role !== "string" || !isStepRole(role)) {
+              throw new Error(
+                `${operation} requires role ${LEGION_ROLES.join(", ")} or a role of the deployment`
+              );
             }
             const { grantId } = await controllerGrant(active.sessionID);
             if (operation === "compact") {

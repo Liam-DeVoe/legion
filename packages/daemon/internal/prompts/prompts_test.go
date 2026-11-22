@@ -18,6 +18,26 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
+// A step of a role the deployment defines is told the headless mechanics every phase worker is
+// told, then the role's own prompt file, then Legion's own part every phase worker ends with
+// (worker-common.md, which holds the SEPARATE-POD line), in that order.
+func TestComposeStepIsTheHeadlessMechanicsThePromptFileAndWorkerCommon(t *testing.T) {
+	stateDir := t.TempDir()
+	composer, err := New(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promptFile := filepath.Join(t.TempDir(), "checker.md")
+	want := []string{
+		filepath.Join(stateDir, "prompts", "shared", "mechanics", "headless.md"),
+		promptFile,
+		filepath.Join(stateDir, "prompts", "go", "worker-common.md"),
+	}
+	if got := composer.ComposeStep(promptFile).RolePromptPaths; !slices.Equal(got, want) {
+		t.Errorf("ComposeStep = %q, want %q", got, want)
+	}
+}
+
 // A broken role sequence drops the shared core, uses a root prompt for a child, or makes the Go
 // daemon's instructions win before the shared role instructions. The prompt paths are what every
 // launch concatenates into the one prompt file its agent reads, so their order is the contract. The

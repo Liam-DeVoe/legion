@@ -136,6 +136,7 @@ func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 				Tree: "LEGION-208", Project: "LEGION", Title: "child", Parent: &parent, Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "V", LastDispatchSeq: 1}
 			seedIssue(t, pool, root)
 			seedIssue(t, pool, child)
+			seedRoleClaims(t, pool, root.Key, child.Key)
 			seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleImplementer, Claim: "implementer"})
 			seedPhase(t, pool, record.PhaseRow{Issue: child.Key, Role: claim.RoleImplementer, Claim: "child-implementer"})
 			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head-42", Failing: []string{}})

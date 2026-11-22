@@ -34,7 +34,7 @@ legion config check --config legion.yaml
 | `connect to Postgres at …: default_query_exec_mode=<mode> is refused: the store's text rule needs the type of each parameter, which pgx learns from the server only in cache_statement, cache_describe and describe_exec` | `postgres_dsn` sets `default_query_exec_mode` to `exec` or `simple_protocol`, in which pgx sends each value with no parameter type, so the store cannot apply its text rule to what it writes. Remove `default_query_exec_mode` from the DSN, or set another mode: `cache_statement` (pgx's default), `cache_describe` or `describe_exec`. |
 | `unknown key <key>` | A typo, or a setting Legion no longer has; the message says which when it knows. `Unknown key "projects.<KEY>.repo": the daemon takes each issue's repository from Dispatch …` is one: set the issue's repository, or the project's default repository, in Dispatch and delete the key ([Upgrade](/legion/legion/running-legion/#upgrade)). |
 | `omp_invocation is not used when runtime is kubernetes: …` | Remove it: every pod runs the worker image's Oh My Pi. |
-| `worker_backends.architect is claude (Claude Code), which runs only planner, implementer, tester, reviewer, merger: …` | Claude Code runs the phase workers alone; leave the architect on `omp`. |
+| `worker_backends.architect is claude (Claude Code), which runs only planner, implementer, tester, reviewer, merger and each role of the deployment: …` | Claude Code runs the phase workers and each role the deployment defines in `roles`; leave the architect on `omp`. |
 | `worker_backends runs a role on claude, and boot is missing …` | Under tmux, give the daemon's environment what the message names: `LEGION_CLAUDE_PATH` and `LEGION_BUN_PATH` (or `claude` and `bun` on `PATH`), and `LEGION_CLAUDE_PLUGIN_DIR`, the absolute path of a built `packages/claude-envoy`. A Kubernetes daemon needs none of them: the worker image carries the plugin and Claude Code's pin, and each Claude role's pod installs the pinned Claude Code at launch, so `worker_backends` is accepted there with nothing else set. A launch whose install fails or does not verify fails, printing a `legion claude-code: …` line, so such a pod must reach the npm registry. |
 | `role_config_files.<role> entry <file> is under no runtime.kubernetes.pod.volume_mounts mount_path: …` (or `… is not among the items volume <name> projects …`) | Under Kubernetes a role's overlay must be a file the operator's mounts carry: mount the ConfigMap holding it, or add the item. |
 | `role_config_files.<role> names <file>, which the <role>'s Oh My Pi could not read: …` | Under tmux the file must exist on the host and be readable by the daemon's user, as every pane is. |
@@ -549,9 +549,9 @@ compaction of its session that ran (`legion claims compact`, or the controller's
 Oh My Pi refused or skipped resets nothing, since the session is as it was), and when the claim's
 recorded session is forgotten, by `legion claims retry --fresh-session`, the controller's
 `fresh_session`, or `legion claims forget-session`. Only after one of those can another notice
-go. The notice is the claim's own — the issue and the role that names it — so
-two claims of one issue each get a notice of their own, and in a provider outage every claim that
-reaches six is told.
+go. The notice is the claim's own, keyed by its claim token, so two claims of one issue each get
+a notice of their own, two that hold one role among them (an agent on a step of another role,
+beside that role's own claim), and in a provider outage every claim that reaches six is told.
 
 When an agent's budget runs out (launches that failed, deaths with work outstanding, prompts it
 never took a turn on) the daemon stops relaunching it and holds the issue. The daemon logs JSON

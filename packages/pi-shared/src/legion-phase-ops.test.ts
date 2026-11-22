@@ -10,7 +10,7 @@ import { z } from "zod";
 import { PlanRatingCases } from "../../contracts/src/plan-rating-cases";
 import { stateAtPhase } from "../test/daemon-state";
 import { createLegionDaemonClient } from "./daemon-client";
-import type { HandoffReport } from "./handoff-record";
+import { findHandoffReport, type HandoffReport } from "./handoff-record";
 import {
   type ClaimCapability,
   executePhaseOp,
@@ -578,6 +578,86 @@ test("the description tells the tester its fail may name the step its task retur
   ]) {
     expect(description).toContain(words);
   }
+});
+
+/** The claim of a role of the deployment, `checker`, on LEGION-208 (contract 221). */
+const checker: ClaimCapability = {
+  ...implementer,
+  role: "checker",
+  claimToken: "legion-legion-legion-208-checker",
+};
+
+// Contract 221: a role of the deployment ends its step with its verdict and the commit its
+// workspace stands on, `@-`; it writes no handoff record, so none is looked up in Dispatch.
+test("a deployment role's completion sends its verdict and the commit it stands on, and no handoff record", async () => {
+  const standing = "c".repeat(40);
+  const looked: string[] = [];
+  const { ops, routes, posted } = runtime(checker, stateAtPhase("step"));
+  const pane: PhaseOpRuntime = {
+    ...ops,
+    handoffReport: (phase, role) =>
+      findHandoffReport({
+        phase,
+        role,
+        env: { LEGION_WORKSPACE: "/workspace", LEGION_ISSUE: "LEGION-208" },
+        jj: async () => standing,
+        latestHandoff: async (issue, word) => {
+          looked.push(`${issue} ${word}`);
+          throw new Error("a deployment role's step writes no handoff record");
+        },
+      }),
+  };
+  await expect(
+    executePhaseOp(pane, { op: "handoff_complete", summary: "Checked.", verdict: "pass" })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(looked).toEqual([]);
+  expect(routes).toEqual([
+    "/legion/v1/issues/LEGION-208/record",
+    "/legion/v1/grants",
+    "/legion/v1/handoff/complete",
+  ]);
+  expect(posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "Checked.",
+    verdict: "pass",
+    commit: standing,
+  });
+});
+
+// Contract 221: a move back may name the step it returns to, `return_to`, which goes on the wire
+// as the daemon's `returnTo`, as a failed completion's does; a move that names none sends none.
+test("request_backward_move sends return_to as returnTo", async () => {
+  const { ops, routes, posted } = runtime(checker, stateAtPhase("step"));
+  await expect(
+    executePhaseOp(ops, {
+      op: "request_backward_move",
+      to: "step",
+      reason: "The check needs the earlier checker's report again.",
+      return_to: 2,
+    })
+  ).resolves.toEqual({});
+  expect(routes).toEqual(["/legion/v1/grants", "/legion/v1/phase/backward"]);
+  expect(posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    to: "step",
+    reason: "The check needs the earlier checker's report again.",
+    returnTo: 2,
+  });
+  await executePhaseOp(ops, { op: "request_backward_move", to: "implementing", reason: "Red." });
+  expect(posted.at(-1)).not.toHaveProperty("returnTo");
+  await expect(
+    executePhaseOp(ops, { op: "request_backward_move", to: "step", reason: "r", return_to: 0 })
+  ).rejects.toThrow(
+    "request_backward_move's return_to is a whole number of 1 or more: the place of a step of your task, 1 for its first"
+  );
+});
+
+// Contract 221: the daemon takes a verdict from a role of the deployment too, and the one
+// description every role reads says so.
+test("the description gives a verdict to the tester or a role of the deployment", () => {
+  expect(legionToolDescription({ envoyPublish: "envoy_publish" })).toContain(
+    "`verdict` pass|fail from the tester or a role of the deployment on a phase completion"
+  );
 });
 
 // Workers named their own issue on handoff_complete and left it off read_record, and both were

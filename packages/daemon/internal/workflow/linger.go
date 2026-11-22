@@ -211,7 +211,7 @@ func (e *Engine) endTaskWithLeave(ctx context.Context, tx pgx.Tx, issue *record.
 	if err != nil {
 		return err
 	}
-	if err := e.moveTask(ctx, tx, issue, &w, phase.Done, leaveState(w, status)); err != nil {
+	if err := e.moveTask(ctx, tx, issue, &w, phase.Done, w.Place, leaveState(w, status)); err != nil {
 		return err
 	}
 	issue.Hold, issue.Awaiting = nil, nil
@@ -439,8 +439,8 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 //
 // The non-done clause reads the member's phase itself rather than a predicate written over a
 // hold, because the phase is the spec's own rule and a hold from the merge phase is a state no
-// live daemon writes: a hold is written only where phase.RoleFor(issue.WorkingPhase()) is the
-// role whose claim died (claimFailed), and the merger holds that phase, so its own death leaves
+// live daemon writes: a hold is written only where the role that works issue.WorkingPhase() is
+// the role whose claim died (claimFailed), and the merger holds that phase, so its own death leaves
 // the issue held from merging with its claim failed rather than held from a phase nobody works.
 func (e *Engine) unfinishedHandOvers(ctx context.Context, tx pgx.Tx, root record.Issue, members []record.Issue) ([]record.Issue, error) {
 	done := root.Status == "done"
@@ -508,10 +508,19 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 		return intake.Result{}, err
 	}
 	// Each row names the root generation whose linger it expires: a member keeps its own generation
-	// across re-admission, so only that tells this linger's rows from a later one's.
+	// across re-admission, so only that tells this linger's rows from a later one's. The rows reach
+	// the claims every request of every claim of a member reaches (claimTargets): each stored claim
+	// by its token, so a claim of a role a keyed agent took over gets its close too, and each role
+	// whose step's claim is none of those by the role alone, so a claim that comes up after this read
+	// gets its close when the row runs. The tree's cleanup waits for every claim these rows reach.
 	for _, member := range members {
-		for _, role := range claim.Roles {
-			closeRow := record.SuperviseRequest{Op: "tree_close", Tree: member.Tree, Role: role, Generation: member.Generation, Linger: issue.Generation}
+		targets, err := e.claimTargets(ctx, tx, member, "")
+		if err != nil {
+			return intake.Result{}, err
+		}
+		for _, target := range targets {
+			closeRow := record.SuperviseRequest{Op: "tree_close", Tree: member.Tree, Role: target.role, Claim: target.token,
+				Generation: member.Generation, Linger: issue.Generation}
 			if err := e.enqueue(ctx, tx, member.Key, closeRow); err != nil {
 				return intake.Result{}, err
 			}

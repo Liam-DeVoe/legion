@@ -59,7 +59,7 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { isLegionRole } from "@legion/contracts";
+import { isStepRole } from "@legion/contracts";
 import { SESSION_ID_PATH_SEGMENT } from "@legion/envoy-client/dispatch-session-directory";
 
 const UUID = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
@@ -139,11 +139,12 @@ function tomlBasicString(value: string): string | undefined {
   return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 
-/** Whether `role` may reach the overlay's `Legion-Role:` line: a Legion role (`isLegionRole`) or
- * the controller's. The match is containment as much as correctness, as the issue key's is: the
- * value is interpolated into a jj template inside a TOML literal. */
+/** Whether `role` may reach the overlay's `Legion-Role:` line: a role of the step grammar
+ * (`isStepRole`: one of Legion's six or a role of the deployment) or the controller's. The match
+ * is containment as much as correctness, as the issue key's is: the value is interpolated into a
+ * jj template inside a TOML literal, and the grammar holds no quote, backslash or newline. */
 function isTrailerRole(role: string | undefined): role is string {
-  return role !== undefined && (isLegionRole(role) || role === CONTROLLER_ROLE);
+  return role !== undefined && (isStepRole(role) || role === CONTROLLER_ROLE);
 }
 
 /** `templates.commit_trailers` giving `trailers`, one line each in order. The `\n` between them is
@@ -336,8 +337,8 @@ export async function exportJjSessionAttribution(
  * the issue's own clone, not to whatever else the pane's shell commits in.
  *
  * The role is `LEGION_ROLE`, only when it names a role a commit may carry (`isTrailerRole`: a
- * Legion role, or the controller's). Any other value is no role, and the pair is the session line
- * alone. This is the one place that reads the role for the overlay. */
+ * role of the step grammar, or the controller's). Any other value is no role, and the pair is the
+ * session line alone. This is the one place that reads the role for the overlay. */
 export function paneAttributionOptions(env: NodeJS.ProcessEnv): PaneAttribution {
   // biome-ignore-start lint/complexity/useLiteralKeys: claude-envoy's tsconfig refuses dot access
   const issueKey = env["LEGION_ISSUE_TRAILER"];

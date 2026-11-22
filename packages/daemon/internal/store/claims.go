@@ -572,6 +572,22 @@ func (s *Store) ClaimIssue(ctx context.Context, token claim.Token) (string, erro
 	return issue, nil
 }
 
+// ClaimRole is the stored role of the claim of token, the role of the step its agent does now,
+// from the daemon's own claims: what a tmux pane adopted after a restart holds the App of (the tmux
+// runtime's Options.ClaimRole), since a token names its agent and not its role. A token no claim
+// holds is refused.
+func (s *Store) ClaimRole(ctx context.Context, token claim.Token) (claim.Role, error) {
+	var role string
+	err := s.pool.QueryRow(ctx, `select role from claims where token = $1`, string(token)).Scan(&role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("no claim holds token %s", token)
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the role of claim %s: %w", token, err)
+	}
+	return claim.Role(role), nil
+}
+
 // claimMayRun is the stored claim that may still hold a process: one in a state that runs, or one
 // that still records a locator.
 const claimMayRun = `(state not in ('suspended', 'failed', 'retired') or locator is not null)`

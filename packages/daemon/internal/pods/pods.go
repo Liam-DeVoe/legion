@@ -38,6 +38,10 @@ const (
 // activity route alone and are deliberately absent from the claim insert's conflict update, so a
 // machine's in-memory claim shows their zero values until the claim is read again.
 type IdleClaim struct {
+	// Token is the claim's token, which names its agent: a release suspends each live claim by
+	// it, since two claims of the pod can hold one role (a keyed agent on a step of another role,
+	// beside that role's own claim from an earlier version of the plan).
+	Token          claim.Token
 	Role           claim.Role
 	State          supervise.ClaimState
 	PluginContract int
@@ -127,12 +131,20 @@ type IdleRoot struct {
 	Answered       bool
 }
 
+// StartWaitsForPodPrefix begins the last error of a start row that waits because the issue's live
+// pod lacks the slot of the start's claim or the role of its step, built before the deployment
+// defined that name (the outbox's roleWaitsForItsPod): the one text the outbox writes and the idle
+// view, the release's boundary and the served state read.
+const StartWaitsForPodPrefix = "the start waits for its issue's pod: "
+
 // IdleView is one issue's pod as the idle rule reads it, in one read per issue: every claim of
 // the pod, whether any queued outbox row is addressed to one of its roles, the issue's own place
 // in the workflow and its tree root's. Found is false for an issue the record does not hold under
 // the daemon's own project, which is no pod of the workflow's to release: a record another
 // project's daemon keeps of the issue on a shared database is not this daemon's
-// (store.readIdleView).
+// (store.readIdleView). StepRole is the role of the step the issue's task stands at, read from
+// its plan rows as the issue's own record reads it (record.Issue.StepRole), and "" where they
+// hold none: at step, the worker of the issue's open phase, which no phase names.
 //
 // It is a record type rather than a store type because the rule that reads it is the workflow's
 // (workflow.IdleRelease) and the store is what fills it, so neither of the two imports the other
@@ -142,14 +154,25 @@ type IdleView struct {
 	Tree        string
 	Found       bool
 	Phase       phase.Phase
+	StepRole    claim.Role
 	Status      string
 	Generation  uint64
 	LingerUntil *time.Time
 	Root        IdleRoot
 	Claims      []IdleClaim
 	// Waiting is whether a task, notice, message or start of the issue waits for delivery to a
-	// role of its pod. The rule reads only whether there is one, so the store reads only that.
+	// role of its pod. The rule reads only whether there is one, so the store reads only that. A
+	// start that waits because the pod lacks the slot of its claim or the role of its step
+	// (StartWaitsForPodPrefix) is no such delivery: the pod cannot run it, so it is counted in
+	// StartsWaitingForPod instead.
 	Waiting bool
+	// StartsWaitingForPod are the roles of the start rows, distinct and in the order the rows were
+	// queued, that wait because the issue's pod lacks the slot of the start's claim or the role of
+	// its step (an outbox start row whose last error begins with StartWaitsForPodPrefix): only the
+	// pod's update round or its release lets them start.
+	StartsWaitingForPod []claim.Role
+	// HeldFor is the reason of the pod's running hold streak (store's pod_holds), "" for none.
+	HeldFor string
 	// Releasing is whether a release of this pod is already marked in progress, which no second
 	// release starts behind.
 	Releasing bool

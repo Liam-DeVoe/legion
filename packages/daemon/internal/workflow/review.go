@@ -548,13 +548,13 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 		}
 		recipients = append(recipients, roleRecipient{issue: owner, role: claim.RoleArchitect, row: issue.Key})
 	}
-	for _, role := range []claim.Role{RoleFor(issue.Phase), claim.RoleImplementer} {
+	for _, role := range []claim.Role{issue.RoleAt(issue.Phase), claim.RoleImplementer} {
 		if role == claim.RoleArchitect || role == woken {
 			continue
 		}
 		recipients = append(recipients, roleRecipient{issue: issue.Key, role: role, row: issue.Key})
 	}
-	addressed, err := e.addressRoles(issue.Project, recipients, nil)
+	addressed, err := e.addressRoles(ctx, tx, issue.Project, recipients, nil)
 	if err != nil {
 		return err
 	}
@@ -749,17 +749,17 @@ func (e *Engine) ReviewerSession(ctx context.Context, tx pgx.Tx, issue string) (
 	return session, err
 }
 
-// reviewersClaim is the claim the daemon starts issue's reviewer under (reviewerToken) and the
+// reviewersClaim is the claim of the worker on issue's reviewer's step (workerClaim) and the
 // session the claims record holds for it (record.Store.ClaimSession), the session of that claim's
 // current launch: the one reading of who issue's reviewer is, for every judgement of a review-App
-// review (byReviewer). It finds the claim by that token, never by the claim the reviewer's row
-// names: the completion handler is the one writer of record.PhaseRow.Claim, and the reviewer
-// submits the review of its first round before it completes, so read from the row no session
-// would be recorded in round 1, and no review-App review, the reviewer's own among them, could
-// decide that round. The session is "" when the claim has no row or records none: the outbox makes
-// the claim with none, and only the registration of the reviewer's agent writes one.
+// review (byReviewer). The claim is the one the reviewer's entry wrote on its row (Engine.stepToken,
+// enter), which the entry writes before the round's first review, so a review of round 1 is judged
+// on the reviewer's own claim too; a row with no step, and an issue with no plan rows, reads as the
+// reviewer role's own token, as before. The session is "" when the claim has no row or records
+// none: the outbox makes the claim with none, and only the registration of the reviewer's agent
+// writes one.
 func (e *Engine) reviewersClaim(ctx context.Context, tx pgx.Tx, issue record.Issue) (claim.Token, string, error) {
-	token, err := reviewerToken(issue)
+	token, err := e.workerClaim(ctx, tx, issue, claim.RoleReviewer)
 	if err != nil {
 		return "", "", err
 	}
@@ -1204,7 +1204,7 @@ func undecidedReason(row record.PhaseRow, pr record.PullRequest) string {
 // moves nothing now, since the roles were told what it said when it arrived (checks,
 // dispatch://INFRA-714/spec R1).
 func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, pr *record.PullRequest) error {
-	return e.transition(ctx, tx, issue, TriggerImplementationReady, "", row, pr, "")
+	return e.transition(ctx, tx, issue, TriggerImplementationReady, record.TaskPlace{}, row, pr, "")
 }
 
 // settleRound acts on what issue's review round comes to (reviewRound, with row its reviewer's and
@@ -1229,9 +1229,9 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 			return false, err
 		}
-		return true, e.transition(ctx, tx, issue, TriggerReviewRejected, "", row, pr, row.Decision.Body)
+		return true, e.transition(ctx, tx, issue, TriggerReviewRejected, record.TaskPlace{}, row, pr, row.Decision.Body)
 	case roundApproved:
-		return true, e.transition(ctx, tx, issue, TriggerReviewApproved, "", row, pr, "")
+		return true, e.transition(ctx, tx, issue, TriggerReviewApproved, record.TaskPlace{}, row, pr, "")
 	case roundStuck:
 		if r.cause == stuckMergeState {
 			return false, e.tellStuckMergeState(ctx, tx, issue, row, r, by)
@@ -1244,7 +1244,7 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 			return false, err
 		}
-		reviewer, err := reviewerToken(issue)
+		reviewer, err := e.workerClaim(ctx, tx, issue, claim.RoleReviewer)
 		if err != nil {
 			return false, err
 		}
@@ -1279,7 +1279,7 @@ func (e *Engine) tellStuckMergeState(ctx context.Context, tx pgx.Tx, issue recor
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return err
 	}
-	reviewer, err := reviewerToken(issue)
+	reviewer, err := e.workerClaim(ctx, tx, issue, claim.RoleReviewer)
 	if err != nil {
 		return err
 	}
@@ -1293,16 +1293,6 @@ func (e *Engine) tellStuckMergeState(ctx context.Context, tx pgx.Tx, issue recor
 	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing,
 		Summary: by, Reason: r.reason})
-}
-
-// reviewerToken is the claim token of issue's reviewer, whose role topic the architect is given
-// to ask the decision on and whose role a message addresses.
-func reviewerToken(issue record.Issue) (claim.Token, error) {
-	project, err := claim.ProjectToken(issue.Project)
-	if err != nil {
-		return "", err
-	}
-	return claim.NewToken(project, issue.Key, claim.RoleReviewer)
 }
 
 // told says whether the notice a round GitHub will not merge from would write has already gone
@@ -1414,12 +1404,13 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 	return nil
 }
 
-// recordPass counts w's task one more pass through the implementing, testing and reviewing
-// stretch, which every move back into an earlier phase opens, counts the move itself under its own
-// pair, and fires the deployment's hooks that stand on the move (fireWorkBackHooks), each prompt
-// naming the task (taskLabel). The counts are the task's (record.Store.ReturnCounts): on its
-// plan_tasks row for an issue with plan rows, and on the implementer's phases row for an issue with
-// none, where they lived before plans.
+// recordPass counts task one more pass through the implementing, testing and reviewing stretch,
+// which every move back into an earlier phase opens, counts the move itself under its own pair,
+// and answers the backward-move counts the deployment's hooks that stand on the move fire on,
+// which the transition fires once its start is written (fireWorkBackHooks), each prompt naming the
+// task (taskLabel). The counts are the task's (record.Store.ReturnCounts): on its plan_tasks row
+// for an issue with plan rows, and on the implementer's phases row for an issue with none, where
+// they lived before plans.
 //
 // The pass bounds nothing: it is the counter the handoff completion key carries
 // (api/handoff.go), and its whole job is to make a completion at a commit an earlier pass
@@ -1430,29 +1421,28 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 // review requesting changes opens (recordRound): a hook standing on that count would never see a
 // tester's fail or a worker's own move back.
 //
-// A move the record holds as a conflict with the base raises no pair and fires no hook: nobody
-// sent the work back, so there is no move of a kind for a hook to count, and the pass it still
-// raises is the completion key's alone. Everything is written in the move's own transaction, so
-// a move the record holds and a prompt nobody wrote cannot happen, and nothing here holds the
-// move back: the transition starts the next role whatever a hook said.
-func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, from, to phase.Phase, pr *record.PullRequest) error {
-	task := w.Task
+// A move the record holds as a conflict with the base raises no pair and fires no hook, and
+// answers nil: nobody sent the work back, so there is no move of a kind for a hook to count, and
+// the pass it still raises is the completion key's alone. Everything is written in the move's own
+// transaction, so a move the record holds and a prompt nobody wrote cannot happen, and nothing here
+// holds the move back: the transition starts the next role whatever a hook said.
+func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue record.Issue, task string, from, to phase.Phase, pr *record.PullRequest) (map[string]int, error) {
 	counts, err := e.store.ReturnCounts(ctx, tx, issue.Key, issue.Generation, task)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	counts.Pass++
 	if pr != nil && classify.ConflictRound(*pr) {
-		return e.store.PutReturnCounts(ctx, tx, issue.Key, issue.Generation, task, counts)
+		return nil, e.store.PutReturnCounts(ctx, tx, issue.Key, issue.Generation, task, counts)
 	}
 	if counts.BackwardMoves == nil {
 		counts.BackwardMoves = make(map[string]int, 1)
 	}
 	counts.BackwardMoves[phase.Pair(from, to)]++
 	if err := e.store.PutReturnCounts(ctx, tx, issue.Key, issue.Generation, task, counts); err != nil {
-		return err
+		return nil, err
 	}
-	return e.fireWorkBackHooks(ctx, tx, issue.Key, taskLabel(w), from, to, counts.BackwardMoves, pr)
+	return counts.BackwardMoves, nil
 }
 
 // taskLabel is what a notice or a prompt about the returns of w's task puts before its reason:

@@ -46,8 +46,9 @@ const (
 	stepRecordsHead = "5e7f00d5a1b2c3d4e5f60718293a4b5c6d7e8f90"
 	// stepRecordsPerson is the account with write access whose reviews decide each round.
 	stepRecordsPerson = "a-person"
-	// stepRecordsModel is the model an agent of the walk answers with until its test gives the
-	// agent another (stepClaimant.model), as Oh My Pi's message_end names it: provider and model.
+	// stepRecordsModel is the model an agent of the walk answers with when its launch's spec names
+	// none, as every launch of Legion's own roles does, until its test gives the agent another
+	// (stepClaimant.model), as Oh My Pi's message_end names it: provider and model.
 	stepRecordsModel = "stand-in/model"
 	// stepRecordsWait bounds each wait of the walk on the daemon, which a loaded machine slows.
 	stepRecordsWait = 2 * time.Minute
@@ -386,7 +387,10 @@ func (r *stepRecordsRig) rollBackStepRecords() {
 // first, it takes the way back of each later migration that alters the plan's tables
 // (altersPlanTables), as a rollback past those releases does: the plan's way back drops the
 // tables they altered and leaves their version rows standing, so a roll forward would apply none
-// of them again and the plan's tables would come back without their columns.
+// of them again and the plan's tables would come back without their columns. The name of each
+// step's agent (planStepAgentMigration) is one of them: it adds a column to plan_steps, and left
+// recorded, its version would keep the roll forward from adding the column to the plan_steps it
+// creates again, and every later write of a plan would fail.
 func (r *stepRecordsRig) rollBackOwnersPlans() {
 	r.t.Helper()
 	all, err := migrations.All()
@@ -407,9 +411,36 @@ func (r *stepRecordsRig) rollBackOwnersPlans() {
 	r.exec(r.headerWayBack(all[plan]))
 }
 
+// headerTransaction is the way back the header of the embedded migration whose name ends with
+// suffix gives, from its `begin;` to its `commit;`, each line with the comment marker and its
+// indent taken off. It fails the test where no embedded migration ends with suffix, or where its
+// header holds no such block.
+func (r *stepRecordsRig) headerTransaction(suffix string) string {
+	r.t.Helper()
+	all, err := migrations.All()
+	if err != nil {
+		r.t.Fatalf("read the embedded migrations: %v", err)
+	}
+	for _, migration := range all {
+		if strings.HasSuffix(migration.Name, suffix) {
+			return r.headerBlock(migration)
+		}
+	}
+	r.t.Fatalf("no embedded migration ends %s", suffix)
+	return ""
+}
+
 // headerWayBack is the way back migration's header gives from `begin;` to `commit;`, with
 // <PROJECT> the run's project.
 func (r *stepRecordsRig) headerWayBack(migration migrations.Migration) string {
+	r.t.Helper()
+	return strings.ReplaceAll(r.headerBlock(migration), "<PROJECT>", r.cfg.Project)
+}
+
+// headerBlock is the way back migration's header gives, from its `begin;` to its `commit;`, each
+// line with the comment marker and its indent taken off. It fails the test where the header holds
+// no such block.
+func (r *stepRecordsRig) headerBlock(migration migrations.Migration) string {
 	r.t.Helper()
 	var block []string
 	for _, line := range strings.Split(migration.SQL, "\n") {
@@ -418,7 +449,7 @@ func (r *stepRecordsRig) headerWayBack(migration migrations.Migration) string {
 			continue
 		}
 		if block = append(block, statement); statement == "commit;" {
-			return strings.ReplaceAll(strings.Join(block, "\n"), "<PROJECT>", r.cfg.Project)
+			return strings.Join(block, "\n")
 		}
 	}
 	r.t.Fatalf("%s carries no way back from begin; to commit; in its header, read %d lines of it", migration.Name, len(block))
@@ -438,6 +469,10 @@ func altersPlanTables(sql string) bool {
 	}
 	return false
 }
+
+// planStepAgentMigration is the migration that adds plan_steps.agent, the name of each step's
+// agent.
+const planStepAgentMigration = "_plan_step_agent.up.sql"
 
 // The record of a member of a tree: a child's acceptance is the work of the architect that owns
 // the child when its step starts, so the record of its step 5 names that architect, with the

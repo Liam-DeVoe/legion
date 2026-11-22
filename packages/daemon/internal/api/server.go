@@ -24,7 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -104,6 +104,10 @@ type Options struct {
 	// named them: what register_gate resolves a registration's step against, and what the
 	// controller secret route answers `legion controller start`. The empty list gates no step.
 	Steps []record.DesignStep
+	// Deployment is the roles a step of this deployment names, each with its type
+	// (config.Config.Deployment): Legion's own and each role of `roles`. register_plan judges a
+	// plan against it. A server given none takes Legion's own (plan.BuiltinRoles).
+	Deployment plan.Deployment
 	// ControllerLaunched is the daemon launching the project's controller itself (`controller:
 	// daemon`): one controller runs per project, so the controller secret route refuses the operator
 	// and a registration registers the controller only from a launch of the controller's claim.
@@ -232,10 +236,6 @@ type Options struct {
 	// (scheduleChildReleaseRetry), exactly as for a child on no unread repository, rather than
 	// answer it released and wait. Nil leaves none, and holds every child released as before.
 	AwaitRecovery func(repo, tree, child, parent string) bool
-	// RoleFor is the role that works a phase (phase.RoleFor). The operator's retry of a failed
-	// phase worker applies its issue's held phase only when that phase's role is the claim's
-	// (retryClaim); nil retries no held phase, leaving every one to its architect.
-	RoleFor func(phase.Phase) claim.Role
 	// Record is the issue record the routes read and write (record.NewStore()). Nil is defaulted
 	// to one: the Postgres implementation is stateless, so a server given none still draws an
 	// operator tree's memory group. A route that needs a database as well tests Pool.
@@ -337,6 +337,8 @@ type server struct {
 	controller      ControllerStore
 	// steps is Options.Steps, resolved: the deployment's design-gate steps, nil never.
 	steps []record.DesignStep
+	// deployment is Options.Deployment, resolved: Legion's own roles where none was given.
+	deployment plan.Deployment
 	// controllerLaunched is Options.ControllerLaunched.
 	controllerLaunched bool
 	// pluginRelaunchable is Options.PluginRelaunchable, noPluginInstall Options.NoPluginInstall.
@@ -375,7 +377,6 @@ type server struct {
 	prepare     func(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error)
 	unread      func(resolved string) bool
 	await       func(repo, tree, child, parent string) bool
-	roleFor     func(phase.Phase) claim.Role
 	records     record.Store
 	dispatch    dispatch.Client
 	claimReady  func(c supervise.Claim)
@@ -416,6 +417,9 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	if serving == nil {
 		serving = func(recorded ghrepo.Repository) ghrepo.Repository { return recorded }
 	}
+	if opts.Deployment.Roles == nil {
+		opts.Deployment = plan.Deployment{Roles: plan.BuiltinRoles()}
+	}
 	served := opts.Served
 	if served == nil {
 		served = func(ghrepo.Repository) bool { return false }
@@ -434,6 +438,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		dispatchProject:    opts.DispatchProject,
 		controller:         opts.Controller,
 		steps:              opts.Steps,
+		deployment:         opts.Deployment,
 		controllerLaunched: opts.ControllerLaunched,
 		pluginRelaunchable: opts.PluginRelaunchable,
 		noPluginInstall:    opts.NoPluginInstall,
@@ -454,7 +459,6 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		prepare:            opts.PrepareRepository,
 		unread:             opts.RepositoryUnread,
 		await:              opts.AwaitRecovery,
-		roleFor:            opts.RoleFor,
 		records:            opts.Record,
 		dispatch:           opts.Dispatch,
 		claimReady:         opts.ClaimReady,

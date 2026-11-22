@@ -23,10 +23,10 @@ func TestTheCapNoticeAndTheHookPromptNameTheTask(t *testing.T) {
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester", "reviewer")
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	for range 3 {
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerTesterPassed, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
 		reviewRequestsChanges(t, pool, engine, root.Key)
 	}
 	testsFail(t, pool, engine, root.Key, 2)

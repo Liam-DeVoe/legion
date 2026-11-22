@@ -8,23 +8,28 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// beneathRetro is the issues beneath issue still in the workflow (openBeneath) where its move into
-// to is the pass of its task's last step into the retro, on a plan with no acceptance step, and
-// nothing for every other move. A parent's head proves its children's merged work, and
-// a task with no step acceptance:owner has no sign-off to refuse a parent while one of them runs
-// (SIGNOFF_CHILD_IN_WORKFLOW), so such a parent is held before its retro instead (transition),
-// from retro for its children (record.HoldForChildren), until none of them is open beneath it
-// (releaseHeldParents). The hold stands in place of the retro, which keeps no slot (record.KeepsSlot
-// reads record.StandsAt), so the parent holds none of the slots its children may need. An issue
-// with no plan rows walks today's line, whose retro follows the owner's acceptance, so it is never
-// held so.
+// beneathRetro is the issues beneath issue still in the workflow (openBeneath) where issue moves
+// into the retro (to) and its task's last step is not the owner's sign-off, and nothing for every
+// other move. A parent's head proves its children's merged work. The owner's sign-off is refused
+// while one of them runs (SIGNOFF_CHILD_IN_WORKFLOW), so a task whose last step is the sign-off
+// passes into its retro with none of them in the workflow. A task whose last step is another has
+// no such refusal before its retro: a task with no step acceptance:owner, and a task whose
+// sign-off stands before another step (`implementer acceptance:owner reviewer`), where an issue
+// beneath the parent may enter the workflow after the sign-off. Such a parent is held before its
+// retro instead (transition), from retro for its children (record.HoldForChildren), until none of
+// them is open beneath it (releaseHeldParents). The hold stands in place of the retro, which keeps
+// no slot (record.KeepsSlot reads record.StandsAt), so the parent holds none of the slots its
+// children may need. An issue with no plan rows walks today's line, whose retro follows the
+// owner's sign-off, so it is never held so.
 func (e *Engine) beneathRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, to phase.Phase) ([]string, error) {
-	if !w.Stored || to != phase.Retro || slices.Contains(w.Line, phase.Accepting) {
+	steps := w.steps()
+	if !w.Stored || to != phase.Retro || len(steps) == 0 || steps[len(steps)-1] == phase.Accepting {
 		return nil, nil
 	}
 	return e.openBeneath(ctx, tx, issue)
@@ -168,7 +173,9 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if len(steps) == 0 || w.Place != (record.TaskPlace{Kind: record.PlaceRetro}) {
 		return fmt.Errorf("start the held retro of %s: task %s stands at %+v of the line %v, not at its retro", parent.Key, w.Task, w.Place, w.Line)
 	}
-	last, err := e.phaseRow(ctx, tx, parent.Key, phase.RoleFor(steps[len(steps)-1]))
+	// The report of the task's last step is on the row of that step's role, whatever runs it: one of
+	// Legion's roles or a role the deployment defines, whose phase (step) names no role of its own.
+	last, err := e.phaseRow(ctx, tx, parent.Key, claim.Role(w.Steps[len(w.Steps)-1].Role))
 	if err != nil {
 		return err
 	}

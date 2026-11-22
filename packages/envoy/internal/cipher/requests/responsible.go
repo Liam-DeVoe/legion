@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/legionagents"
 )
 
 // Assignees answers the person a Dispatch issue is assigned to, "" for an issue nobody is. The
@@ -37,18 +38,22 @@ const assigneeBound = 3 * time.Second
 // documents it.
 const AssigneeUnreadMessage = "broker: the assignee of a Legion pod's issue could not be read; its request is listed for everyone"
 
-// claimToken is a Legion role claim token, legion-<project>-<issue project, lowercased>-<issue
-// number>-<role> (packages/daemon/internal/claim.NewToken). A project token holds no "-", so the
-// issue's project and number are the two groups. The controller's token, legion-<project>-
-// controller, names no issue and does not match.
-var claimToken = regexp.MustCompile(`^legion-[a-z0-9]+-([a-z][a-z0-9]*)-([0-9]+)-(architect|planner|implementer|tester|reviewer|merger)$`)
+// claimToken is a Legion claim token of an issue, legion-<project>-<issue project,
+// lowercased>-<issue number>-<agent> (packages/daemon/internal/claim.AgentToken), split by its
+// fields as the daemon's claim.Token.Cut splits it: a project token holds no "-", so the issue's
+// project and number are the first two groups, and the agent's name is everything after them,
+// which may hold a "-" of its own (code-checker). The controller's token,
+// legion-<project>-controller, names no issue number and does not match.
+var claimToken = regexp.MustCompile(`^legion-[a-z0-9]+-([a-z][a-z0-9]*)-([0-9]+)-(.+)$`)
 
 // issueKeyOfClaim is the Dispatch issue key a pod's claim (enrollments.claim) names, such as
-// ACME-7 for legion-acme-acme-7-planner, and "" for a claim that is no Legion role
-// claim token.
+// ACME-7 for legion-acme-acme-7-planner, and "" for a claim that is no Legion claim token of an
+// issue. The agent's name is the role of the agent's first step, one of Legion's six or a role
+// the deployment defines, so any name of the role grammar but controller names the issue: the
+// one rule each reader of an issue's role outside the registry takes (legionagents.IsRole).
 func issueKeyOfClaim(claim string) string {
 	match := claimToken.FindStringSubmatch(claim)
-	if match == nil {
+	if match == nil || !legionagents.IsRole(match[3]) {
 		return ""
 	}
 	return strings.ToUpper(match[1]) + "-" + match[2]

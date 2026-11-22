@@ -189,11 +189,13 @@ func (h IdleHold) String() string {
 
 // IdleDecision is what one of the two pod-release rules, IdleRelease or UnownedPodRelease,
 // decided about one pod: whether it is released, the hold that kept it when it is not, and the
-// roles whose live claims a release suspends, in the order the view read them. A pod no claim
-// owns has no such role, so UnownedPodRelease names none.
+// live claims a release suspends, each by its token (Claims) beside its stored role (Roles), in
+// the order the view read them. A pod no claim owns has no such claim, so UnownedPodRelease names
+// none.
 type IdleDecision struct {
 	Release bool
 	Hold    IdleHold
+	Claims  []claim.Token
 	Roles   []claim.Role
 	// HoldKinds names the hold more closely for the one hold that has more to say:
 	// IdleHoldBackgroundWork carries the kinds the held session reported (`subagent`,
@@ -284,14 +286,15 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	if view.IsRoot() && view.Root.AwaitingPerson && !view.Root.Answered {
 		return IdleDecision{Hold: IdleHoldAwaitingPerson}
 	}
+	var claims []claim.Token
 	var roles []claim.Role
 	for _, c := range view.Claims {
 		if !c.Live() {
 			continue
 		}
-		roles = append(roles, c.Role)
+		claims, roles = append(claims, c.Token), append(roles, c.Role)
 	}
-	if len(roles) == 0 {
+	if len(claims) == 0 {
 		return IdleDecision{Hold: IdleHoldNoLiveClaim}
 	}
 	if !onConfiguredImage {
@@ -338,7 +341,7 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	if !ok || now.Sub(since) < idle {
 		return IdleDecision{Hold: IdleHoldNotIdle}
 	}
-	return IdleDecision{Release: true, Roles: roles}
+	return IdleDecision{Release: true, Claims: claims, Roles: roles}
 }
 
 // UnownedPodRelease decides whether an issue's pod may be released because no claim of the issue
@@ -474,8 +477,9 @@ func idleStateReleasable(c pods.IdleClaim) bool {
 	return false
 }
 
-// idlePhaseOpen is whether the claim is the worker of the issue's open phase (OpenPhaseRole),
+// idlePhaseOpen is whether the claim is the worker of the issue's open phase (OpenRoleOf, which at
+// step is the role of the running step the view reads with the issue, pods.IdleView.StepRole),
 // serving the current generation: the one shape of claim a phase reminder is armed in.
 func idlePhaseOpen(view pods.IdleView, c pods.IdleClaim) bool {
-	return OpenPhaseRole(view.Phase) == c.Role && c.ServingGeneration == view.Generation
+	return OpenRoleOf(record.Issue{Phase: view.Phase, StepRole: view.StepRole}) == c.Role && c.ServingGeneration == view.Generation
 }

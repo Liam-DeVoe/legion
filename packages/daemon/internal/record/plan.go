@@ -271,7 +271,8 @@ func (s *Postgres) SetJoinConflicts(ctx context.Context, tx pgx.Tx, issue string
 }
 
 // PlanStep is one step of a task, at its place from 1: the role that runs it, the type of its
-// role's work (plan.Type) and the agent key the plan names for it ("" for none).
+// role's work (plan.Type), the agent key the plan names for it ("" for none) and the name of its
+// agent (Agent, read through AgentName).
 type PlanStep struct {
 	Issue      string
 	Generation uint64
@@ -280,6 +281,25 @@ type PlanStep struct {
 	Role       string
 	Type       plan.Type
 	AgentKey   string
+	// Agent is the name of the step's agent, the last part of its claim token, which NameAgents
+	// gives before the step is written and nothing else writes. A step a release before the column
+	// wrote holds none.
+	Agent claim.Agent
+}
+
+// AgentName is the name of the step's agent: the last part of its claim token, and the one reader
+// of Agent. A step of the key owner has none, since its agent is the tree's architect, whose token
+// names the tree and no name on the issue. A step a release before the column wrote holds none and
+// reads as its role: that release ran each role at most once in a task and refused every key but
+// the owner's, so its role named its agent.
+func (s PlanStep) AgentName() claim.Agent {
+	switch {
+	case plan.AgentOf(s.Task, s.Position, plan.Step{Role: s.Role, Key: s.AgentKey}).Owner():
+		return ""
+	case s.Agent != "":
+		return s.Agent
+	}
+	return claim.Agent(s.Role)
 }
 
 // StoredPlan is the plan of an issue at one generation: the version in force, every task ordered by
@@ -305,7 +325,8 @@ func (p *StoredPlan) Task() (PlanTask, error) {
 // leave beside a task that keeps its own; each refusal is made before anything is written, so the
 // transaction stays usable. A task the generation holds already takes v's text and attributes and
 // keeps where it stands, which the walk writes; a new task is written as given. The steps of each
-// task v gives are replaced by the steps v gives it.
+// task v gives are replaced by the steps v gives it, each with the name of its agent as it is given
+// (NameAgents names them before this write; PutPlan has no rule of its own).
 func (s *Postgres) PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks []PlanTask, steps []PlanStep) error {
 	describe := fmt.Sprintf("put version %d of the plan of %s at generation %d", v.Version, v.Issue, v.Generation)
 	given := make([]string, 0, len(tasks))
@@ -358,9 +379,9 @@ func (s *Postgres) PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks 
 		return fmt.Errorf("%s: %w", describe, err)
 	}
 	for _, step := range steps {
-		if _, err := tx.Exec(ctx, `insert into plan_steps (issue, generation, task, position, role, type, agent_key)
-			values ($1, $2, $3, $4, $5, $6, $7)`,
-			v.Issue, int64(v.Generation), step.Task, step.Position, step.Role, step.Type, step.AgentKey); err != nil {
+		if _, err := tx.Exec(ctx, `insert into plan_steps (issue, generation, task, position, role, type, agent_key, agent)
+			values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			v.Issue, int64(v.Generation), step.Task, step.Position, step.Role, step.Type, step.AgentKey, string(step.Agent)); err != nil {
 			return fmt.Errorf("%s: step %d of task %s: %w", describe, step.Position, step.Task, err)
 		}
 	}
@@ -389,7 +410,7 @@ func (s *Postgres) Plan(ctx context.Context, tx pgx.Tx, issue string, generation
 	if plan.Tasks, err = scanPlanTasks(rows); err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
-	steps, err := tx.Query(ctx, `select task, position, role, type, agent_key
+	steps, err := tx.Query(ctx, `select task, position, role, type, agent_key, agent
 		from plan_steps where issue = $1 and generation = $2 order by task, position`, issue, int64(generation))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
@@ -397,7 +418,7 @@ func (s *Postgres) Plan(ctx context.Context, tx pgx.Tx, issue string, generation
 	defer steps.Close()
 	for steps.Next() {
 		step := PlanStep{Issue: issue, Generation: generation}
-		if err := steps.Scan(&step.Task, &step.Position, &step.Role, &step.Type, &step.AgentKey); err != nil {
+		if err := steps.Scan(&step.Task, &step.Position, &step.Role, &step.Type, &step.AgentKey, &step.Agent); err != nil {
 			return nil, fmt.Errorf("%s: %w", describe, err)
 		}
 		plan.Steps[step.Task] = append(plan.Steps[step.Task], step)
@@ -406,6 +427,34 @@ func (s *Postgres) Plan(ctx context.Context, tx pgx.Tx, issue string, generation
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
 	return plan, nil
+}
+
+// PlanStepsOf is every plan_steps row of issue, of every generation, each with the name of its agent,
+// ordered by generation, task and place: what NameAgents reads as earlier before a version's steps
+// are written (PutPlan deletes the steps of each task it gives), so a key keeps the name an earlier
+// version or generation gave it.
+func (s *Postgres) PlanStepsOf(ctx context.Context, tx pgx.Tx, issue string) ([]PlanStep, error) {
+	describe := fmt.Sprintf("read every step of the plans of %s", issue)
+	rows, err := tx.Query(ctx, `select generation, task, position, role, type, agent_key, agent
+		from plan_steps where issue = $1 order by generation, task, position`, issue)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	defer rows.Close()
+	var steps []PlanStep
+	for rows.Next() {
+		step := PlanStep{Issue: issue}
+		var generation int64
+		if err := rows.Scan(&generation, &step.Task, &step.Position, &step.Role, &step.Type, &step.AgentKey, &step.Agent); err != nil {
+			return nil, fmt.Errorf("%s: %w", describe, err)
+		}
+		step.Generation = uint64(generation)
+		steps = append(steps, step)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	return steps, nil
 }
 
 // PlanTasksOf is every task of the plan of each issue of the Dispatch project at the issue's
@@ -580,8 +629,8 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 		`insert into issue_plans (issue, generation, version, source, artifact_id, given_by, given_at)
 			select issue, $3, version, source, artifact_id, given_by, given_at from issue_plans where issue = $1 and generation = $2`,
 		tasks,
-		`insert into plan_steps (issue, generation, task, position, role, type, agent_key)
-			select issue, $3, task, position, role, type, agent_key
+		`insert into plan_steps (issue, generation, task, position, role, type, agent_key, agent)
+			select issue, $3, task, position, role, type, agent_key, agent
 			from plan_steps where issue = $1 and generation = $2`,
 	}, names...) {
 		if _, err := tx.Exec(ctx, statement, issue, int64(from), int64(to)); err != nil {

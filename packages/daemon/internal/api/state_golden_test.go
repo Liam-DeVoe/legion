@@ -41,7 +41,8 @@ func goldenPath(name string) string {
 }
 
 // settingsFixtureFile is the maximal kubernetes legion.yaml the state golden and the settings tests
-// share: every key the loader models is set, and every value a credential, its source or its file
+// share: every key the loader models is set but `roles` and `role_types`, which
+// `internal/api/settings_test.go` pins, and every value a credential, its source or its file
 // could be is a planted fixture a test can look for in the wire bytes (a PEM that is no key, a DSN
 // password that opens nothing, `*_file` paths, the kubeconfig, the session DSN secret's key, each
 // provider key's store key, the pod's env values, volume, Secret and ServiceAccount names, userinfo
@@ -197,7 +198,20 @@ state_dir: /var/lib/legion
 // reading no environment, so the resolved values are the file's and the defaults alone.
 func loadSettingsFile(t *testing.T, body string) config.Config {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "legion.yaml")
+	return loadSettingsFileWith(t, body, nil)
+}
+
+// loadSettingsFileWith is loadSettingsFile with each of files, by name, written first in the
+// directory of the legion.yaml, where a relative path the file names resolves.
+func loadSettingsFileWith(t *testing.T, body string, files map[string]string) config.Config {
+	t.Helper()
+	dir := t.TempDir()
+	for name, contents := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	path := filepath.Join(dir, "legion.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write legion.yaml: %v", err)
 	}
@@ -302,8 +316,8 @@ func populatedState(t *testing.T) State {
 			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
 		},
 		Admission: Admission{
-			Cap:    5,
-			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219"},
+			Cap:    6,
+			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219", "LEGION-240"},
 			// The line is two long and carries one member of each of its two parts, in the order
 			// the line publishes them: LEGION-212, the root a person answered, stands at 1 in the
 			// part whose work came back, which takes the free slots first, and LEGION-211, a root
@@ -699,6 +713,41 @@ func populatedState(t *testing.T) State {
 			// `label_off`, which record.HeldReasonOf answers for that shape (measured against the
 			// ladder, not assumed). Its tree is no live tree and no draw reached it, so it carries
 			// no memory group.
+			// LEGION-240 stands at step: its task runs the step of checker, a role the deployment
+			// defines, which the phase alone does not name (`stepRole`). It holds a slot and is at
+			// work (deploymentRolesContract), but its pod was built before the deployment defined
+			// the checker, so the checker's start waits for that pod's update round or its release
+			// (record.Store.StartsWaitingForPod): the issue names the checker in `startWaitsForPod`
+			// and no claim of the checker exists yet, so it carries no worker.
+			// LEGION-241 is held from that step, its checker's claim failed, so its hold names the
+			// phase it left and the role of that step, and the failed claim stays its worker, keyed
+			// by the role of the deployment, as LEGION-210's failed implementer stays its own.
+			"LEGION-240": {
+				Key:              "LEGION-240",
+				Generation:       1,
+				Phase:            phase.Step,
+				StepRole:         "checker",
+				Status:           "in_progress",
+				Tree:             "LEGION-240",
+				Repo:             "acme/widgets",
+				DefaultBranch:    "main",
+				Workers:          map[claim.Role]PhaseView{},
+				StartWaitsForPod: []string{"checker"},
+			},
+			"LEGION-241": {
+				Key:           "LEGION-241",
+				Generation:    1,
+				Phase:         phase.Held,
+				HeldFrom:      string(phase.Step),
+				StepRole:      "checker",
+				Status:        "in_progress",
+				Tree:          "LEGION-241",
+				Repo:          "acme/widgets",
+				DefaultBranch: "main",
+				Workers: map[claim.Role]PhaseView{
+					"checker": {Claim: ClaimView{Session: "ses_checker_241", State: "failed"}},
+				},
+			},
 			"LEGION-214": {
 				Key:           "LEGION-214",
 				Generation:    1,
@@ -896,6 +945,7 @@ func populatedState(t *testing.T) State {
 			{Issue: "LEGION-210", Role: claim.RoleImplementer, State: "failed"},
 			{Issue: "LEGION-211", Role: claim.RoleImplementer, State: "suspended"},
 			{Issue: "LEGION-212", Role: claim.RoleTester, State: "retired"},
+			{Issue: "LEGION-241", Role: "checker", State: "failed"},
 		},
 		// A wave going out at the pace its operator set, with one wake of each lane still held:
 		// LEGION-207's implementer, working its production check in the pod the daemon keeps,
@@ -989,7 +1039,9 @@ func populatedState(t *testing.T) State {
 				Repo: "acme/legacy", Sandbox: "legion-legion-cache-acme-legacy-0a1b2c3d", State: "starting", RetainedUntil: time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC),
 			}},
 		},
-		// The resolved maximal kubernetes file, so the fixture pins every key `settings` can carry.
+		// The resolved maximal kubernetes file, so the fixture pins every key `settings` can carry
+		// but `roles` and `role_types`, which the resolved maximal file sets none of and
+		// TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret (settings_test.go) pins.
 		Settings: SettingsOf(settingsFixtureConfig(t)),
 		// The three durable consumers the daemon opens, in the order Lag answers them
 		// (intake.Consumers.Lag): the Dispatch consumer is caught up; the GitHub consumer has 412
@@ -1327,11 +1379,14 @@ func (s stubPauses) Paused() (int64, bool) { return s.paused, s.paused != 0 }
 
 // pauseRouteAnswer is what the operator's route at target answers with svc behind it (nil for a
 // daemon with no pause service), held to want and decoded strictly into into, so a key the Go type
-// does not name fails here before it reaches a fixture.
+// does not name fails here before it reaches a fixture. The server reads a record of its own: the
+// operator's spawn reads the claim of the agent on the role's step before the pause refuses it, so
+// the refusal names the claim the spawn would have reached.
 func pauseRouteAnswer(t *testing.T, svc PauseService, target string, body any, want int, into any) {
 	t.Helper()
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
-	handler := NewServer("127.0.0.1", 8437, Options{Project: testProject, OperatorToken: testOperatorToken, Pause: svc, Log: quiet}).Handler
+	handler := NewServer("127.0.0.1", 8437, Options{Project: testProject, OperatorToken: testOperatorToken, Pause: svc, Log: quiet,
+		Pool: testStore(t).Pool(), Record: record.NewStore()}).Handler
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)

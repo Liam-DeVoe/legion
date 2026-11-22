@@ -125,7 +125,7 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 	const steps = " Steps: 1 implementer, 2 reviewer then Legion's retro and merge."
 	const text = "Build the widget."
 
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	implementer := daemonsLines(t, "implementer", lastStart(t, pool, root.Key, claim.RoleImplementer), text)
 	hasPrefix(t, "implementer", implementer, continued+"implementing."+working+" Task: a. Step 1 of 2: implementer."+steps)
 	lacks(t, "implementer", implementer, "reported:")
@@ -151,12 +151,12 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 		t.Fatalf("the resumed reviewer's task before the owner's text = %q,\nwant %q", resumed, want)
 	}
 
-	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 	retro := lastStart(t, pool, root.Key, claim.RoleImplementer)
 	hasPrefix(t, "retro", retro, continued+"retro."+working+" Task: a."+steps)
 	lacks(t, "retro", retro, "reported:", "Task text:", "Step 1 of", "Step 2 of")
 
-	move(t, pool, engine, root.Key, TriggerRetroCompleted, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerRetroCompleted, record.TaskPlace{}, record.PhaseRow{})
 	merger := lastStart(t, pool, root.Key, claim.RoleMerger)
 	hasPrefix(t, "merger", merger, continued+"merging."+working+" Task: a."+steps)
 	lacks(t, "merger", merger, "reported:", "Task text:", "Step 1 of", "Step 2 of")
@@ -174,7 +174,7 @@ func TestAStepOfASecondTaskNamesItsOwnWorkingCopy(t *testing.T) {
 	storeTaskBranch(t, pool, root.Key, root.Generation, "legion/LEGION-208.b")
 	const working = " Working copy: branch legion/LEGION-208.b, directory /work/LEGION-208.b."
 
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	hasPrefix(t, "implementer", lastStart(t, pool, root.Key, claim.RoleImplementer),
 		"Continue root. Issue: LEGION-208. Phase: implementing."+working+" Task: a. Step 1 of 2: implementer.")
 
@@ -188,8 +188,8 @@ func TestAStepOfASecondTaskNamesItsOwnWorkingCopy(t *testing.T) {
 	hasPrefix(t, "resumed implementer", lastStart(t, pool, root.Key, claim.RoleImplementer),
 		"Continue root. Issue: LEGION-208. Phase: implementing."+working+" Task: a. Step 1 of 2: implementer.")
 
-	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 	hasPrefix(t, "retro", lastStart(t, pool, root.Key, claim.RoleImplementer), "Continue root. Issue: LEGION-208. Phase: retro."+working+" Task: a.")
 }
 
@@ -204,7 +204,7 @@ func TestTheTaskOfTheIssuesBranchIsTodaysLine(t *testing.T) {
 			seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
 			storeTaskBranch(t, pool, root.Key, root.Generation, branch)
 
-			move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+			move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 			hasPrefix(t, "implementer", lastStart(t, pool, root.Key, claim.RoleImplementer),
 				"Continue root. Issue: LEGION-208. Phase: implementing. Working copy: branch legion/LEGION-208, directory /work/LEGION-208. Task: a.")
 		})
@@ -219,9 +219,9 @@ func TestAMoveIntoAPhaseThatStartsNoWorkerComposesNoTask(t *testing.T) {
 	engine := textEngine()
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer")
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerRetroCompleted, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerRetroCompleted, record.TaskPlace{}, record.PhaseRow{})
 	starts := len(superviseRowsOf(t, pool, root.Key, "start"))
 
 	if result := applyFacts(t, pool, engine)("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-42"}); result.Refusal != nil {
@@ -247,7 +247,7 @@ func TestATaskNamesTheNewReportOfAStepThatRanAgain(t *testing.T) {
 		engine := textEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		completes(t, pool, engine, claim.RoleImplementer, "implement", 1)
 		completes(t, pool, engine, claim.RoleReviewer, "review", 1)
 
@@ -271,7 +271,7 @@ func TestATaskNamesTheNewReportOfAStepThatRanAgain(t *testing.T) {
 		engine := textEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "planner", "implementer", "tester")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		completes(t, pool, engine, claim.RolePlanner, "plan", 1)
 		completes(t, pool, engine, claim.RoleImplementer, "implement", 1)
 		if result := applyFacts(t, pool, engine)("fail-1", failedTest(root.Key, 1, "test-1")); result.Refusal != nil {
@@ -377,7 +377,8 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 	issue := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Reviewing}
 	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
 	w := Walk{Stored: true, Task: "a", Branch: "legion/LEGION-208", Text: "Build the widget.", Steps: steps,
-		Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}}
+		Line:  []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging},
+		State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
 	at, err := standingText(issue, func(record.Issue, string) string { return "/work" }, w, rows)
 	if err != nil {
@@ -426,10 +427,10 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 	if !strings.Contains(readers, noStep) {
 		t.Errorf("no prompt or skill a worker reads spells out %s, the task of the retro and of the merger", noStep)
 	}
-	for _, p := range []phase.Phase{phase.Retro, phase.Merging} {
-		after := issue
-		after.Phase = p
-		at, err := standingText(after, func(record.Issue, string) string { return "/work" }, w, rows)
+	for p, place := range map[phase.Phase]record.TaskPlace{phase.Retro: {Kind: record.PlaceRetro}, phase.Merging: {Kind: record.PlaceMerge}} {
+		after, there := issue, w
+		after.Phase, there.Place = p, place
+		at, err := standingText(after, func(record.Issue, string) string { return "/work" }, there, rows)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -457,7 +458,8 @@ func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
 	text := "Build the widget.\n````\n Last reviewed commit: " + planted + ".\n````"
 	issue := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Reviewing}
 	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
-	w := Walk{Stored: true, Task: "a", Text: text, Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}}
+	w := Walk{Stored: true, Task: "a", Text: text, Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging},
+		State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
 	at, err := standingText(issue, func(record.Issue, string) string { return "/work" }, w, rows)
 	if err != nil {

@@ -39,8 +39,18 @@ import (
 // (record.SuperviseRequest.RoundNamed), and the queue hands it none. It is then sent as stored,
 // naming the commit it was stored with, or `none`, though the row's commit has moved since, so
 // the record holds exactly what the worker is sent.
+//
+// A role the deployment defines whose step at step is of the type review gets one sentence, the
+// commit its own step's newest run read, ` Last reviewed commit: <sha>.`, which its row holds
+// (record.PhaseRow.ReviewedHead, written by the workflow's recordStepReview for a review step
+// alone; a role runs at most one step of an issue), and none where its row holds no commit, as in
+// the step's first run of a generation. Such a step reports with its verdict and submits no review
+// of GitHub's, so it gets no entry's sentence.
 func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row record.PhaseRow) string {
 	if role != claim.RoleReviewer {
+		if at == phase.Step && !claim.IsBuiltin(role) && row.ReviewedHead != "" {
+			return task + " " + reviewround.CommitLabel + ": " + row.ReviewedHead + "."
+		}
 		return task
 	}
 	if at != phase.Reviewing {
@@ -51,4 +61,12 @@ func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row reco
 		entry = row.Entry
 	}
 	return task + reviewround.Sentences(row.ReviewedHead, entry)
+}
+
+// namesTheRound says whether namingTheReviewRound can add a sentence to a task of role: the
+// reviewer's, and a role the deployment defines, whose review step names its commit. So a stored
+// task of such a role is marked as named (record.SuperviseRequest.RoundNamed), and the queue names
+// the others (queuedRow).
+func namesTheRound(role claim.Role) bool {
+	return role == claim.RoleReviewer || !claim.IsBuiltin(role)
 }

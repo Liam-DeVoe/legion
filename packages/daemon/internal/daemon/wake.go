@@ -202,7 +202,7 @@ func (w *workflowRuntime) podResume(c supervise.Claim, state supervise.ClaimStat
 		// hold mark of its own (store.ForConcurrentWorker).
 		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
 		defer cancel()
-		w.stampPodResume(ctx, c.Issue, c.Role, mark, what)
+		w.stampPodResume(ctx, c.Issue, c.Role, c.Token, mark, what)
 		if state == supervise.StateReady {
 			w.endPodHoldAtReady(ctx, c)
 		}
@@ -225,13 +225,13 @@ func (w *workflowRuntime) endPodHoldAtReady(ctx context.Context, c supervise.Cla
 	}
 }
 
-// stampPodResume writes one observation onto the newest resume of issue's role that has not
-// reached its first turn, when there is one. A claim that was never released has no open resume
-// and nothing is written, which is the ordinary case: every ready and every turn of every claim
-// passes here.
-func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role claim.Role,
+// stampPodResume writes one observation onto the newest resume of issue's role that is token's
+// and has not reached its first turn, when there is one. A claim that was never released has no
+// open resume and nothing is written, which is the ordinary case: every ready and every turn of
+// every claim passes here.
+func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role claim.Role, token claim.Token,
 	mark func(context.Context, int64, time.Time) error, what string) {
-	id, _, found, err := w.idleStore.OpenPodResume(ctx, w.projectID, issue, role)
+	id, _, found, err := w.idleStore.OpenPodResume(ctx, w.projectID, issue, role, token)
 	if err != nil {
 		w.log.Warn("wake: could not read the open resume of a role", "issue", issue, "role", role, "error", err)
 		return
@@ -318,7 +318,7 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 	if !wakeable {
 		return false, time.Time{}, nil
 	}
-	taken, err := r.trees.TakePodWake(ctx, r.project, issue.Key, token, pods.WakeDelivery, r.now().UTC(), mark)
+	taken, err := r.trees.TakePodWake(ctx, r.project, issue.Key, token, held.Role, pods.WakeDelivery, r.now().UTC(), mark)
 	if err != nil {
 		return false, time.Time{}, err
 	}
@@ -339,7 +339,7 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 			return true, time.Time{}, nil
 		}
 		reason = "a wake for " + detail + ", whose resume the record already held open"
-		r.logRefusedByOpenResume(ctx, issue.Key, held.Role, detail)
+		r.logRefusedByOpenResume(ctx, issue.Key, held.Role, token, detail)
 	} else {
 		r.log.Info("wake: a released pod is coming back for a delivery the daemon holds for one of its roles",
 			"issue", issue.Key, "role", held.Role, "detail", detail)
@@ -407,8 +407,8 @@ func (r *outbox) parkedWait(turn time.Time, text string) error {
 // open resume over a released claim is one whose process never came — a resume the store refused
 // after its take committed, or a daemon that stopped between the two — and the line says so at
 // Warn, as it does when the read fails, with its error: the resume goes ahead either way.
-func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role claim.Role, detail string) {
-	_, pause, open, err := r.trees.OpenPodResume(ctx, r.project, issue, role)
+func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role claim.Role, token claim.Token, detail string) {
+	_, pause, open, err := r.trees.OpenPodResume(ctx, r.project, issue, role, token)
 	if err == nil && open && pause != 0 {
 		r.log.Info("wake: a released role's open resume is its pause's held wake; this wake resumes the role through the wake pacing",
 			"issue", issue, "role", role, "detail", detail, "pause", pause)
@@ -422,9 +422,10 @@ func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role 
 }
 
 // armBackstops arms the backstop of a release that completed: backstop_minutes from now, for the
-// worker of the pod's open phase (workflow.OpenPhaseRole). An architect gets none — nothing of
-// its own is due, and a sub-architect woken for nothing would hold a pod open for the backstop
-// period — and neither does an issue whose phase no role works.
+// worker of the pod's open phase (workflow.OpenRoleOf, which at step is the role of the running
+// step, read with the issue). An architect gets none — nothing of its own is due, and a
+// sub-architect woken for nothing would hold a pod open for the backstop period — and neither does
+// an issue whose phase no role works.
 //
 // It also cancels the backstops the release before this one armed: that pod is gone, and its
 // backstop has nothing left to bring back.
@@ -435,7 +436,7 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 	if r.backstop <= 0 {
 		return nil
 	}
-	role := workflow.OpenPhaseRole(issue.Phase)
+	role := workflow.OpenRoleOf(issue)
 	if role == "" {
 		return nil
 	}

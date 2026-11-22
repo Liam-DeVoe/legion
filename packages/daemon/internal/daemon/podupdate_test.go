@@ -266,7 +266,9 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 	rig := &podUpdateRig{t: t, ctx: store.ForConcurrentWorker(ctx), s: s, sup: sup, rt: rt, pool: pool, records: records, clock: clock, conns: conns,
 		workers: map[claim.Role]*fake.Conn{}, tokens: tokens, st: st, logs: logs, log: log, engine: w.engine,
 		listener: &holderPublisher{}, asked: map[int64]record.UpdateAsk{}}
-	rig.lane = &outbox{project: podUpdateProject, notices: rig.listener, supervisor: sup, log: log}
+	// The lane reads the record: an ask that names no claim, as the release before wrote it,
+	// reaches the claim the record gives its role's step (outbox.workerToken).
+	rig.lane = &outbox{pool: pool, records: records, project: podUpdateProject, notices: rig.listener, supervisor: sup, log: log}
 	for _, role := range roles {
 		if !role.session {
 			continue
@@ -1664,7 +1666,7 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 	next := &podUpdateRig{t: r.t, ctx: r.ctx, sup: sup, rt: rt, pool: r.pool, records: r.records, clock: r.clock,
 		conns: conns, workers: workers, tokens: r.tokens, st: st, logs: r.logs, log: r.log,
 		listener: r.listener, asked: r.asked}
-	next.lane = &outbox{project: podUpdateProject, notices: next.listener, supervisor: sup, log: r.log}
+	next.lane = &outbox{pool: r.pool, records: r.records, project: podUpdateProject, notices: next.listener, supervisor: sup, log: r.log}
 	next.s = &supervision{
 		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup, enqueue: r.s.enqueue,
 		applySweepFacts: r.s.applySweepFacts,

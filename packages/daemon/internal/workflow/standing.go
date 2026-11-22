@@ -102,7 +102,7 @@ func ownersText(text string) string {
 func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (Standing, error) {
 	var rows []record.PhaseRow
 	var err error
-	if place, _ := w.PlaceOf(issue.Phase); w.Stored && place.Kind == record.PlaceStep {
+	if place, _ := w.placeIn(issue.Phase); w.Stored && place.Kind == record.PlaceStep {
 		if rows, err = e.store.Phases(ctx, tx, issue.Key); err != nil {
 			return Standing{}, err
 		}
@@ -118,7 +118,7 @@ func standingText(issue record.Issue, dir func(record.Issue, string) string, w W
 		return WorkingCopy(issue, dir), nil
 	}
 	at := taskWorkingCopy(issue, w.Branch, dir)
-	place, ok := w.PlaceOf(issue.Phase)
+	place, ok := w.placeIn(issue.Phase)
 	if !ok {
 		return Standing{}, fmt.Errorf("the task of a start of %s in %s: its task %s has no step, retro or merge in %s", issue.Key, issue.Phase, w.Task, issue.Phase)
 	}

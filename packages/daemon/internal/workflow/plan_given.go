@@ -41,13 +41,17 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 
 // givenVersion is what versionRefusal read of a version it takes: the issue the record holds (nil
 // for one it does not), whether the version is of the issue's own generation (recorded, false for
-// a plan waiting at generation 0), the plan in force at the fact's generation (nil for none), and
-// the tasks the version changes, adds or removes over it (plan.ChangedTasks).
+// a plan waiting at generation 0), the plan in force at the fact's generation (nil for none), the
+// tasks the version changes, adds or removes over it (plan.ChangedTasks), and the rows the write
+// stores (givenRows), each step named with its agent (record.NameAgents).
 type givenVersion struct {
 	issue    *record.Issue
 	recorded bool
 	stored   *record.StoredPlan
 	changed  []string
+	version  record.PlanVersion
+	tasks    []record.PlanTask
+	steps    []record.PlanStep
 }
 
 // versionRefusal judges fact's version, and answers what it read for the write, or the refusal.
@@ -66,6 +70,12 @@ type givenVersion struct {
 // version changes or removes must wait or be stopped: a running task is refused, one reason for
 // each, and so is a task that is done or left the workflow. A plan given in a lingering tree is
 // refused too.
+//
+// Each step of the version is named from every row of the issue as it stands now
+// (record.NameAgents, Store.PlanStepsOf), before anything is written, since the write deletes the
+// steps of each task it gives: so a key keeps its name, and a version in which a fresh agent would
+// need the name a key holds from an earlier version is refused as a plan (intake.AgentUnnamed),
+// never by the write.
 func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven) (givenVersion, *intake.Refusal, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil {
@@ -115,6 +125,19 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 			return givenVersion{}, refusalUnless(err, refusedLingering(*issue, fmt.Sprintf("version %d of the owner's plan", fact.Plan.Version)).Refusal), err
 		}
 	}
+	given.version, given.tasks, given.steps = givenRows(fact, given.stored, given.changed, e.cfg.DefaultSteps, e.cfg.Deployment, e.now())
+	earlier, err := e.store.PlanStepsOf(ctx, tx, fact.Issue)
+	if err != nil {
+		return givenVersion{}, nil, err
+	}
+	given.steps = record.NameAgents(earlier, given.steps)
+	if unnamed := record.UnnamedAgents(given.steps); len(unnamed) > 0 {
+		reasons := make([]plan.Refusal, len(unnamed))
+		for i, step := range unnamed {
+			reasons[i] = intake.AgentUnnamed(step.Task, step.Position, string(record.RoleName(step.Role)))
+		}
+		return givenVersion{}, intake.PlanRefused(reasons), nil
+	}
 	return given, nil, nil
 }
 
@@ -136,11 +159,12 @@ type writtenVersion struct {
 	started bool
 }
 
-// writeVersion stores fact's version as the version in force (givenRows): each task it leaves as
-// it was keeps its steps and where it stands, each task it changes takes the steps its block now
-// names, and each task it removes is deleted. It answers what it read of the version before.
+// writeVersion stores fact's version as the version in force, the rows versionRefusal built and
+// named (given): each task it leaves as it was keeps its steps and where it stands, each task it
+// changes takes the steps its block now names, and each task it removes is deleted. It answers what
+// it read of the version before.
 func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, given givenVersion) (writtenVersion, error) {
-	version, tasks, steps := givenRows(fact, given.stored, given.changed, e.cfg.DefaultSteps, e.now())
+	version, tasks, steps := given.version, given.tasks, given.steps
 	var removed []string
 	var written writtenVersion
 	if given.stored != nil {
@@ -258,8 +282,9 @@ func heldPlan(stored *record.StoredPlan) plan.Plan {
 // version's block, and a task new to the generation waits at no act (PutPlan keeps where a task
 // the generation holds stands). A task the version leaves as it was keeps its stored steps; any
 // other task takes the steps its block names (StepsOf), or, for a block that names none, defaults,
-// the project's default steps (Config.DefaultSteps), each with the type of its role (planSteps).
-func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []string, defaults []plan.Step, now time.Time) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
+// the project's default steps (Config.DefaultSteps), each with the type its role has in d, the
+// engine's deployment (planSteps).
+func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []string, defaults []plan.Step, d plan.Deployment, now time.Time) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
 	version := record.PlanVersion{Issue: fact.Issue, Generation: fact.Generation, Version: fact.Plan.Version, ArtifactID: fact.Plan.ArtifactID,
 		Source: record.PlanSourceOwner, GivenBy: fact.GivenBy, GivenAt: now}
 	var tasks []record.PlanTask
@@ -272,7 +297,7 @@ func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []strin
 			steps = append(steps, stored.Steps[given.ID]...)
 			continue
 		}
-		steps = append(steps, planSteps(fact.Issue, fact.Generation, given.ID, plan.StepsOf(given, defaults))...)
+		steps = append(steps, planSteps(d, fact.Issue, fact.Generation, given.ID, plan.StepsOf(given, defaults))...)
 	}
 	return version, tasks, steps
 }

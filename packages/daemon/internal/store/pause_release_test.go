@@ -197,7 +197,7 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 			if tc.woken {
 				records := podRecords(t, st)
 				inTx(t, st, func(tx pgx.Tx) error {
-					if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, pausedAt, pause.ID); err != nil || !taken {
+					if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, releasedToken, pods.WakeChecks, pausedAt, pause.ID); err != nil || !taken {
 						t.Fatalf("take the held wake = %t, %v", taken, err)
 					}
 					return nil
@@ -279,7 +279,7 @@ func TestACancelOfAReleaseOfAnotherProjectsIssueReadsThisProjectsPause(t *testin
 		}
 	}
 	pause, _ := pauseLegion(t, st, pausedAt)
-	resume := func(role claim.Role, generation uint64) (IdleReleaseRow, error) {
+	resume := func(_ claim.Token, role claim.Role, generation uint64) (IdleReleaseRow, error) {
 		return IdleReleaseRow{Kind: "supervise", Payload: []byte(fmt.Sprintf(
 			`{"op":"start","tree":%q,"role":%q,"generation":%d}`, otherIssue, role, generation))}, nil
 	}
@@ -324,10 +324,14 @@ func TestAReleaseCancelWithNoMomentIsRefused(t *testing.T) {
 }
 
 // heldOpenResume is the pause that holds role's open resume, and whether role has an open resume,
-// read as the delivery wake reads it (OpenPodResume).
+// read as the delivery wake reads it (OpenPodResume) for the role's own claim of LEGION-208.
 func heldOpenResume(t *testing.T, st *Store, role claim.Role) (int64, bool) {
 	t.Helper()
-	_, pause, open, err := st.OpenPodResume(context.Background(), "legion", rootIssue, role)
+	token, err := claim.NewToken("legion", rootIssue, role)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, pause, open, err := st.OpenPodResume(context.Background(), "legion", rootIssue, role, token)
 	if err != nil {
 		t.Fatalf("read the open resume of %s: %v", role, err)
 	}
@@ -343,12 +347,12 @@ func TestTheStuckAndStrandedReadsMeasureTheStuckClockAndPassOverAPausedProject(t
 	st := migratedStore(t)
 	woke := pausedAt.Add(-2 * time.Hour)
 	recordRelease(t, st, woke.Add(-time.Hour))
-	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, "legion-legion-legion-208-architect",
+	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", claim.RoleArchitect,
 		pods.WakeDelivery, woke, 0); err != nil || !taken {
 		t.Fatalf("take the architect's wake = %t, %v", taken, err)
 	}
 	clock := woke.Add(30 * time.Minute)
-	if _, err := st.SetResumeClock(ctx, "legion", rootIssue, claim.RoleArchitect, clock); err != nil {
+	if _, err := st.SetResumeClock(ctx, "legion", rootIssue, claim.RoleArchitect, "legion-legion-legion-208-architect", clock); err != nil {
 		t.Fatalf("start the architect's stuck clock at its let-out: %v", err)
 	}
 	reads := func(before time.Time) (stuck, unfinished []PodResume) {
@@ -379,7 +383,7 @@ func TestTheStuckAndStrandedReadsMeasureTheStuckClockAndPassOverAPausedProject(t
 	}
 	records := podRecords(t, st)
 	inTx(t, st, func(tx pgx.Tx) error {
-		if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, pausedAt, pause.ID); err != nil || !taken {
+		if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, releasedToken, pods.WakeChecks, pausedAt, pause.ID); err != nil || !taken {
 			t.Fatalf("take the implementer's held wake = %t, %v", taken, err)
 		}
 		return nil

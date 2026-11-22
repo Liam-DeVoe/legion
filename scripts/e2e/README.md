@@ -390,6 +390,14 @@ Each item below names a script, then what it proves.
   a step write that names another session is refused `403 STEP_WRITER`, and the same body as the daemon's own session is taken.
   No GitHub, no cluster
 
+- `agents.sh`
+
+  one key of an owner's plan is one agent in one session across roles, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with two issues whose owners give their plans:
+  `implementer:a tester:a reviewer` runs steps 1 and 2 in one agent and one session, the tester's step and the retro each a relaunch of the implementer's claim that resumes its session, and step 3 in another;
+  `dispatch steps --issue <KEY>`, run as a person with their personal token, prints the same agents the records name;
+  the control, `implementer:a tester reviewer`, runs step 2 in an agent and a session of its own.
+  No GitHub, no cluster
+
 - `step-records-read.sh`
 
   the read, after the merge, of the step records of one issue a deployed Legion ran to done: `dispatch steps --issue <ISSUE>` run once in the operator's own shell with the operator's own credential, judged.
@@ -415,11 +423,12 @@ Each item below names a script, then what it proves.
 
 - `owner-steps.sh`
 
-  the plan the owner of an issue gives picks which of today's steps run, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with four issues of one project:
+  the plan the owner of an issue gives picks which of today's steps run and in which order, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with five issues of one project:
   the owner writes `plan.md` with one task `a` whose steps are `implementer reviewer` through the real `dispatch artifact` command and gives it with `register_plan` before the gate opens, and the issue walks implementing, reviewing, retro and merging to done with no planner and no tester launched;
   `dispatch steps --issue <KEY>`, run as a person, prints task `a`'s two steps, then the retro and the merge;
   an issue given no plan walks the project's default steps and holds their rows;
-  its controls delete an issue's plan rows, during its planner's work and before its gate opens, and give a plan with a role nobody defines, which is refused `409 PLAN_REFUSED`.
+  an issue given `implementer reviewer tester` launches its steps in that order and walks them to done;
+  its controls delete an issue's plan rows, during its planner's work and before its gate opens, give a plan with a role nobody defines, which is refused `409 PLAN_REFUSED`, and give the plan `tester implementer`, which is refused `409 PLAN_REFUSED` too.
   No GitHub, no cluster
 
 - `owner-steps-client.sh`
@@ -429,6 +438,15 @@ Each item below names a script, then what it proves.
   a tester's `handoff_complete` with `return_to 1` returns task `a` to its step 1, and `return_to 2` is refused `409 RETURN_REFUSED`;
   `stop_task` holds the issue `task-stopped`, and the stopped task's report is refused `409 TASK_STOPPED`;
   the plugin of the release before, which the run builds from main itself, reads this daemon's state and its `TASK_STOPPED` within the turn its pane was in at the upgrade, and its own registration is refused `409`.
+  No GitHub, no cluster
+
+- `roles.sh`
+
+  a role the settings define runs a step of an issue's plan, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with three issues of one project:
+  the settings file defines `checker`, of the type `testing` with a prompt file and the model `checker-model`, and the driver's own load of it with `config.Load` answers that role;
+  the owner gives `implementer checker` with `register_plan` before the gate opens, the issue walks implementing, the checker's step on `checker-model` with its prompt file's text, the retro and the merge to done with no planner and no tester launched, and `dispatch steps --issue <KEY>` prints step 2 `checker`, type `testing`, with the model `checker-model`;
+  the architect's launch spec, composed, holds `checker (testing)`, and the retro's rating and reason reach the record and `dispatch plans`;
+  controls: a role with no model prints `stand-in/model`, and with `checker` taken out of the settings `register_plan` of the same plan is refused `409 PLAN_REFUSED` naming `checker`.
   No GitHub, no cluster
 
 - `review-range.sh`
@@ -522,7 +540,7 @@ gh run download <run id>    # every evidence directory the run uploaded
 ```
 
 Each job writes its evidence to one directory and uploads it as `e2e-<script>-<run id>-<run attempt>`, on a pass and on a failure.
-The job sets the evidence variable of the script it runs (`BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `NATS_CALLOUT_SESSIONS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`), so that script writes its transcript and its logs there.
+The job sets the evidence variable of the script it runs (`BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `NATS_CALLOUT_SESSIONS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `ROLES_EVIDENCE_DIR`), so that script writes its transcript and its logs there.
 It also keeps the run's own output as `output.log` in the same directory, which is what `stage1-skeleton.sh`, `dispatch-claimant-delivery.sh` and `verification-results.sh` leave a reader:
 they take no evidence variable and keep a work directory of their own, whose path that output names.
 
@@ -5090,6 +5108,47 @@ the Apps' tokens are placeholders; Envoy's listener is the package's `noticeList
 and no agent runs: each claim is launched by the package's fake runtime, which provisions its own workspace, and played by the driver over its pane's connection.
 `STEP_RECORDS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
 
+## agents.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/agents.sh     # → "agents e2e: PASS in <n>s", exit 0
+```
+
+The live proof that one key of an owner's plan is one agent in one session across roles, run before the change merges.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
+`LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`handoff-records.sh`](#handoff-recordssh), the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`.
+The script starts no database, and the broker is the run's own.
+A run takes two to five minutes, most of it building Dispatch and the driver.
+The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
+before them the script refuses a host with no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and runs the CLI out of.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | as for [`handoff-records.sh`](#handoff-recordssh) |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestAgentsLive` (`internal/daemon/agents_live_test.go`, `-tags e2e`) |
+| `proof` | the steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+
+Nothing of the key's path is stood in for.
+The driver starts Dispatch as `handoff-records.sh`'s driver does (`startHandoffDispatch`), on a database of its own with NATS off, creates a project of the run's own (`OS<6 hex>`), maps `acme/widgets` to it, and creates two issues, each in progress with the `legion` label and a spec.
+It seeds each issue in the daemon's store at `admitted` with no design gate, and boots the whole daemon through `run`, the function `legion start` calls, with `dispatch_url` at that server.
+Each issue's architect writes its plan on the issue and gives it to Legion (`POST /legion/v1/plans/register`), a person approves the spec, and the architect registers it as the gate (`POST /legion/v1/gates/register`).
+The issue then walks as the package's whole-daemon test of a key walks it (`walkOneKey`, `internal/daemon/agents_test.go`):
+each role over the daemon's worker stream and its own routes, and each relaunch of a claim on another role met by its pane registering again in the session its claim recorded (`relaunchedAs`), as the plugin does.
+The reader is the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.ts steps --issue <KEY>`), run as a person's own shell runs it, with the personal token Dispatch minted for the person who set the project up.
+
+| step | driven by | read back as |
+| :--- | :--- | :--- |
+| `one-key-two-roles` | the plan `implementer:a tester:a reviewer`; the implementer's completion; the tester's step, a relaunch of `…-implementer` with the role tester that resumes its session file, its task naming `Step 1 (implementer:a) reported:`; a person's approving review; the retro, a relaunch of `…-implementer` with its first role; GitHub's merge | the step records of steps 1 and 2 naming the agent `…-implementer` and one session, and step 3 `…-reviewer` in a session of its own; `dispatch steps --issue <KEY>` printing those same agents |
+| `control-no-key-on-step-2` | the plan `implementer:a tester reviewer`, walked the same way, with `…-implementer` launched once | step 2's record naming `…-tester` in a session of its own, and `dispatch steps` printing it |
+
+What the proof stands in for lies outside the key:
+the broker is a native `nats-server`; GitHub's REST API is the driver's stand-in for the one pull request;
+the Apps' tokens are placeholders; Envoy's listener is the package's `noticeListener`;
+and no agent runs: each claim is launched by the package's fake runtime, which provisions its own workspace, and played by the driver over its pane's connection.
+`AGENTS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
+
 ## step-records-read.sh
 
 ```sh
@@ -5281,7 +5340,7 @@ before them the script refuses a host with no `bun` or no `node_modules`, and ex
 
 Nothing of the plan's path is stood in for.
 Dispatch is the real server this checkout builds, the daemon is the whole daemon with `dispatch_url` at it, and `register_plan` reads the plan's version from Dispatch with the daemon's own client.
-The rig is the package's rig of an owner's plan (`ownerStepsRig`, `internal/daemon/owner_steps_rig_test.go`), over four issues of one project of the run's own (`OS<6 hex>`), each created with a spec and seeded at admitted with no design gate and no pull request, so nothing of an issue starts before a person approves its spec and its architect registers it.
+The rig is the package's rig of an owner's plan (`ownerStepsRig`, `internal/daemon/owner_steps_rig_test.go`), over five issues of one project of the run's own (`OS<6 hex>`), each created with a spec and seeded at admitted with no design gate and no pull request, so nothing of an issue starts before a person approves its spec and its architect registers it.
 Its walk takes the plan the owner gives and the answer of each step's agent (`walkSteps`), so a later check walks another plan or a failed step with the same rig.
 Each fact of GitHub reaches the daemon through its own reads and its own intake, never through a write to its store: the fake GitHub API lists the issue's pull request from the implementer's completion on, so the completion's own read of the branch applies the opened; a review is a person's on the run's broker; the merge is GitHub's envelope there.
 The owner writes with the real `dispatch` CLI under bun in the architect's session, and the reader of the steps is the same CLI as the person who set the project up, with their personal token.
@@ -5296,6 +5355,8 @@ The owner writes with the real `dispatch` CLI under bun in the architect's sessi
 | `control-default-rows-deleted` | the third issue, given no plan, with its rows deleted from `plan_steps`, `plan_tasks` and `issue_plans` while its planner works; it walks today's line to done | the check of `walk-default-steps`' rows fails on it, saying its `issue_plans` rows are `[]` | that check passes whatever the store holds |
 | `control-refused` | `register_plan` of a plan whose task `a` names `implementer checker` | `409 PLAN_REFUSED` with the reason `step 2 of task a names the role checker, which neither the deployment nor the plan defines.`, and no plan rows | the route takes a role nobody defines |
 | `control-no-plan-rows` | the fourth issue given the plan `implementer reviewer`, with its rows deleted before its spec is registered | it starts a planner, and the check of `walk-implementer-reviewer` fails on it, naming planning as its first step | that check passes on an issue that walks today's line |
+| `control-tester-first` | `register_plan` of the fifth issue's plan whose task `a` names `tester implementer`, while it stands at admitted | `409 PLAN_REFUSED` with the one reason `step 1 of task a names tester, and no step before it names the role implementer, whose pull request tester reads. This release of Legion does not carry it out yet.`, and no plan rows | the route takes a step that reads a pull request no step before it opens |
+| `walk-any-order` | the fifth issue given the plan `implementer reviewer tester`, its spec approved and registered; the walk of the plan: the implementer's completion, a person's approving review, the tester's pass, the retro, GitHub's merge | its implementer, its reviewer and its tester first launched in that order, then its merger; `dispatch steps --issue <KEY>` as the person prints the header `<KEY>: 5 steps in 1 tasks`, task `a`'s step 1 implementer, step 2 reviewer and step 3 tester, then the retro and the merge, each ended `passed` with an agent | the walk runs the steps in the order of the default steps rather than the plan's, or the route refuses a plan in another order |
 
 The control a person can run makes `walk-implementer-reviewer` fail with the code changed.
 In `packages/daemon/internal/workflow/line.go`, make `walk` read no stored plan, so an issue with plan rows walks today's line, by changing its first test to:
@@ -5356,6 +5417,53 @@ Three things are stood in for, beside what [`step-records.sh`](#step-recordssh) 
 - the older client's read of the state once an issue is held for a new reason is printed, not asserted: the daemon narrows the state for an older caller only in a pod (`stateFor` in `internal/api/server.go`), the fake runtime runs none, and `TestAnOlderCallerIsServedNoNewHoldReason` (`internal/api/hold_reason_test.go`) holds the pod's path.
 
 `OWNER_STEPS_CLIENT_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
+
+## roles.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/roles.sh     # → "roles e2e: PASS in <n>s", exit 0
+```
+
+The live proof that a role the settings define runs a step of an issue's plan, on the model the settings give it, run before the change merges.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
+`LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`handoff-records.sh`](#handoff-recordssh), the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`.
+The script starts no database, and the broker is the run's own.
+A run takes two to five minutes, most of it building Dispatch and the driver.
+The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
+before them the script refuses a host with no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and runs the CLI out of.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | as for [`handoff-records.sh`](#handoff-recordssh) |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestRolesLive` (`internal/daemon/roles_live_test.go`, `-tags e2e`) |
+| `proof` | the steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+
+Nothing of a step's path is stood in for.
+The driver writes a `legion.yaml` whose `roles` defines `checker` (`type: testing`, `prompt_file: checker.md`, `model: checker-model`) and `prober` (`type: testing`, `prompt_file: prober.md`, no model), each prompt file beside it, and reads it in its own process with `config.Load`, the loader the daemon's boot reads its file with; the daemon boots on the roles that load answers.
+It starts Dispatch as `handoff-records.sh`'s driver does (`startHandoffDispatch`), creates a project of the run's own (`DR<6 hex>`), maps `acme/widgets` to it, and creates three issues, each with a spec, in progress with the `legion` label.
+It seeds each issue in the daemon's store at `admitted` with no design gate and an open pull request at a clean head, and boots the whole daemon through `run`, the function `legion start` calls, with `dispatch_url` at that server.
+The issues walk as the package's whole-daemon tests of a deployment's roles walk them (`deploymentRolesRig`, `internal/daemon/deployment_roles_test.go`):
+the owner writes `plan.md` and gives it with `register_plan` before a person approves the spec and the architect registers the gate; each role over the daemon's worker stream and its own routes, each answer a `message_end` frame naming the model its launch's spec named, and `stand-in/model` for a launch that named none; a person's review and GitHub's merge as envelopes on the broker.
+The reader is the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.ts`), run as a person's own shell runs it by hand with the personal token Dispatch minted for the person who set the project up, as [`step-records.sh`](#step-recordssh)'s reader runs.
+
+| step | driven by | read back as |
+| :--- | :--- | :--- |
+| `checker-defined` | the settings file written and loaded with `config.Load` in the driver's process | `RoleOf(checker)` answers the type `testing`, the prompt file beside the file, the model `checker-model` and the review App, and the step prints that role; the step is the settings' load in the driver's process, not `legion start --check-config`, which the driver cannot run |
+| `plan-registered` | `plan.md` with one block `:::plan_task{#a steps="implementer checker"}` uploaded on the first issue; `POST /legion/v1/plans/register` of its version 1 under the architect's grant, before the gate opens | `200` with the plan at version 1, one task `a` naming `implementer` and `checker` |
+| `walk-implementer-checker` | the gate opened; the implementer's completion; the checker's pass with a commit and no handoff record; the retro rating the plan 4; GitHub's merge | the issue at `implementing`, then `step`, then `retro`, `merging` and `done`; the checker's spawn spec names `checker-model` and its prompt, composed, holds its prompt file's text; its task names the issue, the task's text and ` Step 1 (implementer) reported:`; no planner and no tester launched |
+| `checker-model` | `dispatch steps --issue <KEY>` as the person | step 2 of task `a` as `checker`, type `testing`, an agent, the model `checker-model`, ended `passed`, then the retro and the merge, each ended `passed` |
+| `owner-lists-checker` | the architect's launch spec, as the fake runtime recorded it (`CallsOf("Spawn")`), composed with `runtime.ComposePrompt` as a live launch composes it | the text holds `checker (testing)`; the step is the architect's launch spec, not the prompt as an agent read it, since no agent runs |
+| `retro-rated` | `GET /api/v1/issues/{key}/steps`, the read `dispatch steps` makes; `dispatch plans --project <PROJECT>` as the person | the retro's record names rating 4 and the reason `The plan fit the work.`; the issue's line prints `plan owner (1 tasks: implementer checker)` and `ratings 4/5 "The plan fit the work."` |
+| `control-no-model` | the second issue given `implementer prober` and walked to done | the prober's spawn spec names no model, and `dispatch steps` prints its step 2 with the model `stand-in/model` |
+| `control-no-role` | the daemon restarted on the settings loaded again with `checker` taken out; `register_plan` of `implementer checker` on the third issue | `409 PLAN_REFUSED` naming `checker` |
+
+What the proof stands in for lies outside the steps:
+the broker is a native `nats-server`; GitHub's REST API is the driver's stand-in (`internal/githubtest`) for the issues' pull requests;
+the Apps' tokens are placeholders; Envoy's listener is the package's `noticeListener`;
+and no agent runs: each claim is launched by the package's fake runtime, which provisions its own workspace, and played by the driver over its pane's connection.
+`ROLES_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
 
 ## plan-pointer-drive.sh
 
@@ -7354,7 +7462,7 @@ On any exit it stops the `nats-server`, removes the work directory and prints `L
 | `LABEL` | the run's name in its last line: `busy relaunch delivery`, or `busy relaunch delivery at <sha12>` for its negative control's base run, `child adoption`, `conflict no takeover`, `behind entry fence`, `phase entry converge`, `handoff records`, `review range`, `merge wait readable`, `step records`, `plan ratings`, `owner steps`, `owner steps client`, `provider error retry`, `claim compaction`, `role prompt rule`, `late completion` |
 | `SLUG` | the name of the run's own files under `TMPDIR` (or `/tmp` when it is unset): the work directory `legion-e2e-SLUG.<pid>.*`, which holds the broker's store and the driver binary `SLUG.test`, and the evidence directory `legion-e2e-SLUG-evidence.*` when `EVIDENCE` is empty |
 | `TEST` | the one test the driver runs (`-test.run '^TEST$'`); `proof` fails unless the driver reports `--- PASS: TEST`, so a driver that skipped, or a pattern that matched nothing, is no pass |
-| `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
+| `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `ROLES_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
 
 The drivers share their Go harness the same way:
 `internal/daemon/live_proof_test.go` (no build tag, so the package's ordinary `go test` builds it too) holds the broker and log variables (`LEGION_E2E_NATS_URL`, `LEGION_E2E_DAEMON_LOG`);

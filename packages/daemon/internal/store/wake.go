@@ -131,8 +131,9 @@ func (s *Store) CancelPodBackstopsOf(ctx context.Context, project, issue string,
 // is for released (internal/daemon's wakeForDelivery). Inside a fact's transaction the workflow
 // takes its wakes through PodRecords.TakePodWake, which is where taking a wake is written out.
 //
-// token is the claim the wake brings back, and the role it names is the role woken: a token that
-// names no role is an error. mark is the pause that held the outbox row the wake is taken for
+// token is the claim the wake brings back and role the role that claim holds now (claims.role),
+// which the caller has read with the claim: a claim's token names its agent and no role, so it is
+// never read off the token. mark is the pause that held the outbox row the wake is taken for
 // (record.OutboxRow.HeldByPause, which the resume writes on every row its pause holds), 0 for a
 // row no pause held. PodRecords.PauseOfWake reads which pause holds the wake from the token and
 // the mark. A project's pause holds a row, whatever its due time, and the row runs, and wakes its
@@ -146,11 +147,7 @@ func (s *Store) CancelPodBackstopsOf(ctx context.Context, project, issue string,
 // project is the project token the claim-keyed tables hold, as it is for every other
 // project-keyed method of this file: the daemon derives it once at boot (claim.ProjectToken,
 // internal/daemon/bootreads.go) and its outbox carries that, so nothing is derived again here.
-func (s *Store) TakePodWake(ctx context.Context, project, issue string, token claim.Token, kind string, at time.Time, mark int64) (bool, error) {
-	role, ok := token.Role()
-	if !ok {
-		return false, fmt.Errorf("take a wake of %s: claim token %q names no role", issue, token)
-	}
+func (s *Store) TakePodWake(ctx context.Context, project, issue string, token claim.Token, role claim.Role, kind string, at time.Time, mark int64) (bool, error) {
 	records := &PodRecords{store: s, project: project}
 	var taken bool
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
@@ -158,7 +155,7 @@ func (s *Store) TakePodWake(ctx context.Context, project, issue string, token cl
 		if err != nil {
 			return err
 		}
-		taken, err = records.TakePodWake(ctx, tx, issue, role, kind, at, pause)
+		taken, err = records.TakePodWake(ctx, tx, issue, role, token, kind, at, pause)
 		return err
 	})
 	return taken, err
@@ -330,9 +327,9 @@ func RecordPodWakeTx(ctx context.Context, tx pgx.Tx, res PodResume) (id int64, t
 	if err != nil {
 		return 0, false, err
 	}
-	err = tx.QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, kind, at, seen_release, clock_at, pause_id)
-		values ($1, $2, $3, $4, $5, $6, $7, $6, nullif($8::bigint, 0)) on conflict do nothing returning id`,
-		res.Release, res.Project, res.Issue, res.Role, res.Kind, res.At, seen, res.Pause).Scan(&id)
+	err = tx.QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, claim, kind, at, seen_release, clock_at, pause_id)
+		values ($1, $2, $3, $4, $9, $5, $6, $7, $6, nullif($8::bigint, 0)) on conflict do nothing returning id`,
+		res.Release, res.Project, res.Issue, res.Role, res.Kind, res.At, seen, res.Pause, res.Claim).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
 	}
@@ -390,23 +387,26 @@ func LatestPodRelease(ctx context.Context, tx pgx.Tx, project, issue string) (in
 	return id, nil
 }
 
-// OpenPodResume is the newest wake of issue's role with no first turn yet, the project pause that
-// held it (pod_resumes.pause_id, 0 for a wake no pause held), and whether there is one: the resume
-// a pod-ready or first-turn observation stamps, and the resume a delivery wake meets when the take
-// refuses it (internal/daemon's wakeForDelivery), which says by the pause whether that resume is a
-// pause's held wake waiting on its start (decision 15 of dispatch://INFRA-3759). It is read rather
-// than remembered so a daemon that restarted between the wake and the first turn still stamps it.
-func (s *Store) OpenPodResume(ctx context.Context, project, issue string, role claim.Role) (id, pause int64, found bool, err error) {
-	return openPodResume(ctx, s.pool, project, issue, role)
+// OpenPodResume is the newest wake of issue's role with no first turn yet that is token's — the
+// resume names token, or names no claim, as a resume the release before wrote — the project pause
+// that held it (pod_resumes.pause_id, 0 for a wake no pause held), and whether there is one: the
+// resume a pod-ready or first-turn observation stamps, and the resume a delivery wake meets when
+// the take refuses it (internal/daemon's wakeForDelivery), which says by the pause whether that
+// resume is a pause's held wake waiting on its start (decision 15 of dispatch://INFRA-3759). It is
+// read rather than remembered so a daemon that restarted between the wake and the first turn still
+// stamps it.
+func (s *Store) OpenPodResume(ctx context.Context, project, issue string, role claim.Role, token claim.Token) (id, pause int64, found bool, err error) {
+	return openPodResume(ctx, s.pool, project, issue, role, token)
 }
 
 // openPodResume is OpenPodResume through db: the pool, or the transaction of a cancel of a
-// release made while the project is paused, which reads by it whether a wake already owes a role
-// the release stopped its launch (stopReleasedForPause).
-func openPodResume(ctx context.Context, db queryRower, project, issue string, role claim.Role) (id, pause int64, found bool, err error) {
+// release made while the project is paused, which reads by it whether a wake already owes a claim
+// the release stopped its launch (stopReleasedForPause). Two claims can hold one role, and the
+// wake brought back one of them, so the resume is read for the claim (pod_resumes.claim).
+func openPodResume(ctx context.Context, db queryRower, project, issue string, role claim.Role, token claim.Token) (id, pause int64, found bool, err error) {
 	err = db.QueryRow(ctx, `select id, coalesce(pause_id, 0) from pod_resumes
-		where project = $1 and issue = $2 and role = $3 and first_turn_at is null and closed_at is null
-		order by id desc limit 1`, project, issue, string(role)).Scan(&id, &pause)
+		where project = $1 and issue = $2 and role = $3 and (claim = $4 or claim = '') and first_turn_at is null and closed_at is null
+		order by id desc limit 1`, project, issue, string(role), string(token)).Scan(&id, &pause)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, 0, false, nil
 	}
@@ -416,14 +416,15 @@ func openPodResume(ctx context.Context, db queryRower, project, issue string, ro
 	return id, pause, true, nil
 }
 
-// CloseRoleOpenResumeTx closes, at at, the open resume of issue's role — the one no first turn has
-// stamped and nothing has closed — and answers whether one was open: the stop transaction of a
-// pause closes it (decision 6), since the role it waited for has stopped again before it took a
-// turn. project is the project token, as pod_resumes holds it.
-func CloseRoleOpenResumeTx(ctx context.Context, tx pgx.Tx, project, issue string, role claim.Role, at time.Time) (bool, error) {
+// CloseRoleOpenResumeTx closes, at at, the open resume of issue's role that is token's — it names
+// token, or names no claim — the one no first turn has stamped and nothing has closed, and answers
+// whether one was open: the stop transaction of a pause closes it (decision 6), since the claim it
+// waited for has stopped again before it took a turn. Another claim of the role keeps its resume.
+// project is the project token, as pod_resumes holds it.
+func CloseRoleOpenResumeTx(ctx context.Context, tx pgx.Tx, project, issue string, role claim.Role, token claim.Token, at time.Time) (bool, error) {
 	tag, err := tx.Exec(ctx, `update pod_resumes set closed_at = $4
-		where project = $1 and issue = $2 and role = $3 and first_turn_at is null and closed_at is null`,
-		project, issue, string(role), at)
+		where project = $1 and issue = $2 and role = $3 and (claim = $5 or claim = '') and first_turn_at is null and closed_at is null`,
+		project, issue, string(role), at, string(token))
 	if err != nil {
 		return false, fmt.Errorf("close the open resume of %s's %s: %w", issue, role, err)
 	}
@@ -431,14 +432,15 @@ func CloseRoleOpenResumeTx(ctx context.Context, tx pgx.Tx, project, issue string
 }
 
 // SetResumeClock moves the stuck clock (pod_resumes.clock_at) of the open resume of issue's role
-// to at, the moment the wake pacing lets that role's launch out (decision 14), and answers whether
-// the role had an open resume. It never moves a clock backwards (greatest): a clock a resume of
-// the project or a later reservation already moved stays. project is the project token, as
-// pod_resumes holds it.
-func (s *Store) SetResumeClock(ctx context.Context, project, issue string, role claim.Role, at time.Time) (bool, error) {
+// that is token's — it names token, or names no claim — to at, the moment the wake pacing lets
+// that claim's launch out (decision 14), and answers whether the claim had an open resume. Two
+// claims can hold one role, and the let-out is one claim's, so another claim's resume keeps its
+// clock. It never moves a clock backwards (greatest): a clock a resume of the project or a later
+// reservation already moved stays. project is the project token, as pod_resumes holds it.
+func (s *Store) SetResumeClock(ctx context.Context, project, issue string, role claim.Role, token claim.Token, at time.Time) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `update pod_resumes set clock_at = greatest(clock_at, $4)
-		where project = $1 and issue = $2 and role = $3 and first_turn_at is null and closed_at is null`,
-		project, issue, string(role), at)
+		where project = $1 and issue = $2 and role = $3 and (claim = $5 or claim = '') and first_turn_at is null and closed_at is null`,
+		project, issue, string(role), at, string(token))
 	if err != nil {
 		return false, fmt.Errorf("set the stuck clock of %s's %s: %w", issue, role, err)
 	}
@@ -545,20 +547,6 @@ func (p *PodRecords) RecordListenerReady(ctx context.Context, tx pgx.Tx, at time
 	return nil
 }
 
-// ReleasedClaimOfRole is the released claim of issue's role, and whether there is one.
-func (p *PodRecords) ReleasedClaimOfRole(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (supervise.Claim, bool, error) {
-	claims, err := ReleasedClaimsOf(ctx, tx, p.project, issue)
-	if err != nil {
-		return supervise.Claim{}, false, err
-	}
-	for _, c := range claims {
-		if c.Role == role {
-			return c, true, nil
-		}
-	}
-	return supervise.Claim{}, false, nil
-}
-
 // ReleasedClaimByToken is the released claim whose token is token, and whether this daemon's
 // project holds one. The listener reports a role token it saw a message published to and knows
 // nothing of which daemon owns it, so every daemon reads its own claims and the one that holds a
@@ -613,7 +601,7 @@ func (p *PodRecords) ReleasedClaimBySession(ctx context.Context, tx pgx.Tx, sess
 // pause on the resume (pod_resumes.pause_id) and pairs with release 0 rather than the issue's
 // latest release (decision 15 of dispatch://INFRA-3759): the pause, not a release, is what kept
 // the role down, so the release measurements leave its wait out.
-func (p *PodRecords) TakePodWake(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, kind string, at time.Time, pause int64) (bool, error) {
+func (p *PodRecords) TakePodWake(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, token claim.Token, kind string, at time.Time, pause int64) (bool, error) {
 	var release int64
 	if pause == 0 {
 		var err error
@@ -622,7 +610,7 @@ func (p *PodRecords) TakePodWake(ctx context.Context, tx pgx.Tx, issue string, r
 		}
 	}
 	_, taken, err := RecordPodWakeTx(ctx, tx, PodResume{Release: release, Project: p.project, Issue: issue,
-		Role: string(role), Kind: kind, At: at, Pause: pause})
+		Role: string(role), Claim: string(token), Kind: kind, At: at, Pause: pause})
 	if err != nil || !taken {
 		return false, err
 	}

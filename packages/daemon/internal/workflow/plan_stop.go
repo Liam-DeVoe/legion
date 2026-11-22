@@ -29,8 +29,11 @@ import (
 // status, since held has none (PhaseStatus). The process of the step's role is stopped with its
 // session kept (the op step_stop, whose source is the daemon's, said as its reason), except for
 // accepting, whose architect is the owner itself and runs no process of Legion's for the step, and a
-// phase no role works. The task's state is the caller's to have read: a task done or left is no task
-// to stop (StopTask refuses it).
+// phase no role works. The stop's row names the claim of the agent that ran the step, read here in
+// the fact's transaction (workerClaim), and the outbox stops that claim: a restart of the task before
+// the row runs enters the first step and writes its agent on the role's row, and a row resolved when
+// it runs would stop that agent and leave the stopped step's running. The task's state is the
+// caller's to have read: a task done or left is no task to stop (StopTask refuses it).
 func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, why, said string, end StepEnd) (*intake.Refusal, error) {
 	if refusal := stopRefusal(issue, w.Task); refusal != nil {
 		return refusal, nil
@@ -67,22 +70,28 @@ func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 	if role == "" {
 		return nil, nil
 	}
-	return nil, e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "step_stop", Tree: issue.Tree, Role: role, Generation: issue.Generation, Reason: said})
+	agent, err := e.workerClaim(ctx, tx, issue, role)
+	if err != nil {
+		return nil, err
+	}
+	return nil, e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "step_stop", Tree: issue.Tree, Role: role, Claim: agent,
+		Generation: issue.Generation, Reason: said})
 }
 
 // StoppedStepRole is the role whose process the stop of issue's task stopped (stopTask's
-// step_stop): the role of the phase a task-stopped hold is from, and no role for an issue held for
-// any other reason or not held, for a stop at a phase no role works, and for a stop at accepting,
-// whose architect is the owner itself and runs no process of Legion's for the step. That role
-// starts again only when its task does: a later version of the plan that starts the task again,
-// or a person's todo on a stopped root, clears the hold in the same write that queues the role's
-// start (restartTask), and every other start of that role while the hold stands finishes without
-// acting where every start of a role is run (the daemon outbox's start).
+// step_stop): the role that works the step a task-stopped hold is from (record.Issue.RoleAt, at
+// step the role of the deployment that runs it), and no role for an issue held for any other
+// reason or not held, for a stop at a phase no role works, and for a stop at accepting, whose
+// architect is the owner itself and runs no process of Legion's for the step. That role starts
+// again only when its task does: a later version of the plan that starts the task again, or a
+// person's todo on a stopped root, clears the hold in the same write that queues the role's start
+// (restartTask), and every other start of that role while the hold stands finishes without acting
+// where every start of a role is run (the daemon outbox's start).
 func StoppedStepRole(issue record.Issue) claim.Role {
 	if !record.HeldFor(issue, record.HoldTaskStopped) {
 		return ""
 	}
-	if role := phase.RoleFor(issue.Hold.From); role != claim.RoleArchitect {
+	if role := issue.RoleAt(issue.Hold.From); role != claim.RoleArchitect {
 		return role
 	}
 	return ""
@@ -110,7 +119,7 @@ func stopRefusal(issue record.Issue, task string) *intake.Refusal {
 // pair, round or hook is counted. A failed step stands in the phase of its role, where a hold
 // always stands, so the stop's refusal is an error.
 func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, end StepEnd) error {
-	place, _ := w.PlaceOf(issue.Phase)
+	place := w.Place
 	why := fmt.Sprintf("step %d (%s) failed and no earlier step of the type implementation can take the work", place.Position, w.Steps[place.Position-1].Role)
 	said := fmt.Sprintf("task %s of %s was stopped: %s", w.Task, issue.Key, why)
 	refusal, err := e.stopTask(ctx, tx, issue, w, why, said, end)
@@ -202,7 +211,7 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 	if err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
-	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "task-stopped", Role: phase.RoleFor(from), Phase: from,
+	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "task-stopped", Role: issue.RoleAt(from), Phase: from,
 		StoppedBy: fact.By, Reason: why + ", the architect " + string(fact.By)})
 }
 
@@ -252,7 +261,7 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 			return err
 		}
 	}
-	if err := e.moveTask(ctx, tx, &issue, &w, first, record.TaskRunning); err != nil {
+	if err := e.moveTask(ctx, tx, &issue, &w, first, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning); err != nil {
 		return err
 	}
 	issue.Hold, issue.Status = nil, status
@@ -266,7 +275,9 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	}
 	e.logOnCommit(ctx, "workflow: a stopped task starts again at its first step", "issue", issue.Key, "tree", issue.Tree, "task", w.Task,
 		"act", "task_restarted", "from", from, "to", first, "reason", reason)
-	role := phase.RoleFor(first)
+	// The role of the task's first step (Walk.RoleAt), so a first step of a role the deployment
+	// defines starts that role again.
+	role := w.RoleAt(record.TaskPlace{Kind: record.PlaceStep, Position: 1})
 	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
 		return err
 	}
@@ -290,7 +301,7 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // Dispatch status of its own (PhaseStatus), so none is written. The issue leaves held, which is a
 // movement (the rule in dispatchIssue). The act is task_released, which the log line names.
 func (e *Engine) waitForFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, reason string) error {
-	if err := e.moveTask(ctx, tx, &issue, &w, phase.Admitted, record.TaskWaiting); err != nil {
+	if err := e.moveTask(ctx, tx, &issue, &w, phase.Admitted, record.TaskPlace{}, record.TaskWaiting); err != nil {
 		return err
 	}
 	issue.Hold = nil

@@ -286,6 +286,11 @@ type Issue struct {
 	// that queues the notice, and PutIssue keeps the stored value as it does for moved_at: every
 	// pass that records an issue holds a copy read before its own telling.
 	TreeStalledToldAt *time.Time
+	// StepRole is the role of the step at the place of the issue's task, running or stopped: read
+	// with the issue from its run's plan rows (plan_tasks and plan_steps at the issue's
+	// generation), "" where the run has no plan rows or its task stands at no step. It is read
+	// only: PutIssue writes nothing of it, and workflow's moveTask sets it on the issue it moves.
+	StepRole claim.Role
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -491,6 +496,16 @@ func (i Issue) WorkingPhase() phase.Phase {
 		return i.Hold.From
 	}
 	return i.Phase
+}
+
+// RoleAt is the role that works the issue at p: the role of the step its task stands at
+// (StepRole) for phase.Step, whose role the plan names, and phase.RoleFor(p) for every other
+// phase.
+func (i Issue) RoleAt(p phase.Phase) claim.Role {
+	if p == phase.Step {
+		return i.StepRole
+	}
+	return phase.RoleFor(p)
 }
 
 // EventMark places a Dispatch event in its issue's event log: its sequence on the issue (Seq) and
@@ -758,7 +773,8 @@ type PhaseRole struct {
 // PhaseEntry is what a batched read of many issues' phases rows answers for one of them
 // (Store.PhaseEntries): the entry the row names, the moment the transition raised it and whether
 // its task is one to send as written, which are the three fields of PhaseRow a pass over every
-// slot holder reads. RaisedAt is zero on a row no entry has been raised on, where Entry is zero
+// slot holder reads, and the claim the row names with the task of the step it runs, which
+// WorkerClaimOf reads. RaisedAt is zero on a row no entry has been raised on, where Entry is zero
 // too.
 type PhaseEntry struct {
 	Entry    int64
@@ -769,6 +785,9 @@ type PhaseEntry struct {
 	// keeps a root the answer's own pass promoted past admitted in the reach, in every phase that
 	// carries a run but awaiting_person, where the answer to the new wait raises an entry of its own.
 	Verbatim bool
+	// Claim and StepTask are the row's PhaseRow.Claim and PhaseRow.StepTask.
+	Claim    claim.Token
+	StepTask string
 }
 
 // ReviewDecision is what one review decided: its state (changes_requested or approved), its body,
@@ -1114,13 +1133,14 @@ const (
 )
 
 // MergeForwardPhases is the phases a merge forward is asked in: implementing, where the work
-// already is, and every phase after it up to the merge, which the issue keeps while the
-// implementer merges (dispatch://INFRA-4374 R1). An issue that stands in none of them - before its
-// implementation, or out of the workflow - has no pull request work to merge forward. They are
-// also the phases a head move is read for a conflict in (classify.MergeStateReadOwed), since that
-// read is what can lead to the ask. Both read it through StandsIn, so a hold from one of them
-// counts as standing there.
-var MergeForwardPhases = []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging}
+// already is, every phase after it up to the merge, which the issue keeps while the implementer
+// merges (dispatch://INFRA-4374 R1), and step, where a role the deployment defines runs, after the
+// implementer or before it (a step before it has no pull request, so nothing is asked there). An
+// issue that stands in none of them - before its implementation, or out of the workflow - has no
+// pull request work to merge forward. They are also the phases a head move is read for a conflict
+// in (classify.MergeStateReadOwed), since that read is what can lead to the ask. Both read it
+// through StandsIn, so a hold from one of them counts as standing there.
+var MergeForwardPhases = []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Step, phase.Accepting, phase.Retro, phase.Merging}
 
 // BaseRules is what the daemon read of the rules a pull request's base branch holds for its
 // required status checks, on a read that found the head conflicting with that base
@@ -2114,6 +2134,14 @@ type Store interface {
 	// nil where the generation has no plan rows: an issue that ran before plans, and a generation
 	// no plan reached yet.
 	Plan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*StoredPlan, error)
+	// PlanStepsOf is every plan_steps row of issue, of every generation, each with the name of its
+	// agent, ordered by generation, task and place: the earlier rows NameAgents names a version's
+	// agents from.
+	PlanStepsOf(ctx context.Context, tx pgx.Tx, issue string) ([]PlanStep, error)
+	// IssueClaims is every stored claim of issue in project (the claims' project token), in any
+	// state, with its stored role, ordered by token: what a walk over every claim of an issue
+	// reads, so each row it writes names one stored claim.
+	IssueClaims(ctx context.Context, tx pgx.Tx, project, issue string) ([]IssueClaim, error)
 	// OwnersNewestPlan is the newest plan in force, of any generation, generation 0 included, that
 	// an architect of issue's tree now gave (ArchitectOfTree); nil where no owner gave one in force.
 	OwnersNewestPlan(ctx context.Context, tx pgx.Tx, issue Issue) (*StoredPlan, error)
@@ -2273,10 +2301,12 @@ type Store interface {
 	// ControllerNoticePending says whether the outbox of the Dispatch project key project still
 	// holds an unpublished controller notice of kind, so a wake is never queued behind an
 	// identical one. Issue "" reads every issue of the project, which is what a wake about the
-	// project alone asks; an issue, and with it a role, narrow the read to that one claim's own
-	// rows, for a kind whose notice stands per claim (NoticePerClaim). A role of "" narrows
-	// nothing further, so an issue alone reads every role of that issue.
-	ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issue string, role claim.Role) (bool, error)
+	// project alone asks; an issue narrows the read to that issue's rows, and, for a kind whose
+	// notice stands per claim (NoticePerClaim), a claim narrows it to the rows naming that claim
+	// (ControllerNotice.Claim), or, where the notice names none, a role to that role's rows. A
+	// claim and a role of "" narrow nothing further, so an issue alone reads every row of that
+	// issue.
+	ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issue string, role claim.Role, token claim.Token) (bool, error)
 	// ControllerNoticesPending is that same read made of many issues at once: the issues among
 	// issues whose own unpublished controller notice of kind the outbox of the Dispatch project
 	// key project still holds, as a set keyed by issue. It is the one statement above with the
@@ -2371,6 +2401,10 @@ type Store interface {
 	// row, that row while it runs — by next_at then id. A start behind a branch row no one is
 	// running is not listed. Issue "" is every issue of project.
 	HeldRows(ctx context.Context, tx pgx.Tx, project, issue string, now time.Time) ([]HeldRow, error)
+	// StartsWaitingForPod is, for each issue of project, the roles of the start rows that wait
+	// because the issue's pod lacks the slot of the start's claim or the role of its step (its last
+	// error begins with pods.StartWaitsForPodPrefix), distinct and in the order of their rows.
+	StartsWaitingForPod(ctx context.Context, tx pgx.Tx, project string) (map[string][]claim.Role, error)
 	// FinishOutbox deletes row id while leaseToken holds it; a stale lease's finish is a no-op, so
 	// a worker whose lease expired never removes the row its replacement now holds.
 	FinishOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error
@@ -2624,12 +2658,12 @@ func TreeLingers(ctx context.Context, store Store, tx pgx.Tx, tree string) (bool
 // recorded issue (api's architectForIssue and register_plan) and the giver of a stored plan at the
 // issue's first step (PlansOfEarlierOwners, which the workflow's gateOpened reads). So an
 // architect whose issue moved to another tree, or whose tree the issue left, is no owner of it any
-// longer, whatever tree its claim was registered in. A claim that ends in no architect role is
+// longer, whatever tree its claim was registered in. A claim whose agent is not the architect is
 // none; a member whose key yields no claim token holds no claim, so it matches nothing. The tree
 // root's architect, the owner of most issues, is answered from issue alone; only another
 // architect costs the read of the tree.
 func ArchitectOfTree(ctx context.Context, store Store, tx pgx.Tx, architect claim.Token, issue Issue) (bool, error) {
-	if _, role, ok := architect.Cut(); !ok || role != claim.RoleArchitect {
+	if _, agent, ok := architect.Cut(); !ok || agent != claim.Agent(claim.RoleArchitect) {
 		return false, nil
 	}
 	project, err := claim.ProjectToken(issue.Project)
@@ -2678,7 +2712,7 @@ const (
 // walk stays in that tree. The route judges it on its own read and the fact again under the lock,
 // so the two never judge different rules.
 func ArchitectAbove(ctx context.Context, store Store, tx pgx.Tx, architect claim.Token, issue Issue) (bool, error) {
-	if _, role, ok := architect.Cut(); !ok || role != claim.RoleArchitect {
+	if _, agent, ok := architect.Cut(); !ok || agent != claim.Agent(claim.RoleArchitect) {
 		return false, nil
 	}
 	project, err := claim.ProjectToken(issue.Project)
@@ -2714,9 +2748,9 @@ func ArchitectAbove(ctx context.Context, store Store, tx pgx.Tx, architect claim
 // and holds no claim. Every reader of one role's row among an issue's picks it here — the state
 // the projection writes (projection.Project), the entry the admission pass weighs a claim against
 // (admit's resumeSlottedWorkers), the outbox's fence on a start whose entry its role has left
-// (internal/daemon's outbox), the completion route's position (api's handoffPosition) and the
-// engine's own read (workflow's phaseRow) — so that rule is stated once and read the same way by
-// all of them.
+// (internal/daemon's outbox), the completion route's position (api's handoffPosition), the claim
+// of a role's worker (WorkerClaim) and the engine's own read (workflow's phaseRow) — so that rule
+// is stated once and read the same way by all of them.
 func PhaseRowOf(rows []PhaseRow, role claim.Role) PhaseRow {
 	for _, row := range rows {
 		if row.Role == role {
@@ -2724,6 +2758,31 @@ func PhaseRowOf(rows []PhaseRow, role claim.Role) PhaseRow {
 		}
 	}
 	return PhaseRow{}
+}
+
+// WorkerClaim is the claim of the agent that works role's step of issue now, read from the record:
+// the claim role's row names (PhaseRow.Claim) while that row runs a step of the issue's plan
+// (StepTask set), which the step's entry writes. A step's agent can be the agent of a key, whose
+// claim is the one it started on an earlier step of another role, so a role's own token does not
+// name it. Every other row gives that token, claim.NewToken(project, issue, role): an issue with no
+// plan rows, a row a new generation cleared (ClearGeneration clears StepTask and keeps Claim), a
+// row no entry was raised on, and a row the release before wrote. project is the project's token,
+// as claim.NewToken takes it, and a role that is no role of Legion yields its refusal.
+//
+// Each derivation of the claim of a role's worker from an issue and a role calls it, so a row that
+// names a role reaches the agent that works that role's step when the row runs.
+func WorkerClaim(project, issue string, role claim.Role, rows []PhaseRow) (claim.Token, error) {
+	if row := PhaseRowOf(rows, role); row.StepTask != "" && row.Claim != "" {
+		return row.Claim, nil
+	}
+	return claim.NewToken(project, issue, role)
+}
+
+// WorkerClaimOf is WorkerClaim over entries, a batched read of many issues' phases rows
+// (Store.PhaseEntries), for a pass over many issues that reads their rows in one statement.
+func WorkerClaimOf(project, issue string, role claim.Role, entries map[PhaseRole]PhaseEntry) (claim.Token, error) {
+	entry := entries[PhaseRole{Issue: issue, Role: role}]
+	return WorkerClaim(project, issue, role, []PhaseRow{{Issue: issue, Role: role, Claim: entry.Claim, StepTask: entry.StepTask}})
 }
 
 // Lingers says whether the root lingers after its close: its linger deadline is set, and
@@ -2787,15 +2846,33 @@ func (i Issue) Standing() pods.Standing {
 // other issue's.
 func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase != phase.Done }
 
-// PhaseHolds says whether a task queued for phase queuedFor on run generation is still the work
-// of issue, the record of the issue its claim works: the issue is in that phase and, for a task
-// of a run (generation above 0), on that run. An issue the record does not hold (nil) holds every
-// task, since only a claim the workflow never made has none. It is the one definition of that
-// question: the daemon answers supervise's Deps.PhaseHolds with it (daemon's
-// workflowRuntime.phaseHolds, which says why each half is compared), and a test that wires the
-// answer itself calls it too, so the rule it exercises is the one production runs.
-func PhaseHolds(issue *Issue, queuedFor phase.Phase, generation uint64) bool {
-	return issue == nil || (issue.Phase == queuedFor && (generation == 0 || generation == issue.Generation))
+// HoldsQueued says whether work of role queued for phase queuedFor — a start, an owed start, or the
+// task a start delivers — is the work of the place the issue stands at now: the issue stands in
+// queuedFor and, at the phase step, at a step of role (StepRole). Every role a deployment defines
+// runs as step, so a start or a task queued for the step of one role names a phase that still
+// reads the same while the task stands at the step of another; the role is what tells the two
+// apart. At step the role names the step: a role runs at most one step of a task, since a plan, an
+// owner's or a project's default steps, that names a role at two steps is refused (plan.Supported),
+// as the phases row of a role assumes too (PhaseRow.StepPlace). Away from step the phase alone is
+// compared: one role works several phases (the implementer implementing and retro), and a phase
+// names its one role. It is the one definition of that question, which the four judges of queued
+// work ask, each on its own read: the outbox before it runs a start (daemon's supervise), the
+// admission pass before it lets an owed start take a slot (admit's finishFencedStarts), the
+// supervisor before it sends a queued task (PhaseHolds), and the supervisor again before it
+// brings a claim back for a start (supervise.StartWork, through PhaseHolds).
+func (i Issue) HoldsQueued(role claim.Role, queuedFor phase.Phase) bool {
+	return i.Phase == queuedFor && (queuedFor != phase.Step || i.StepRole == role)
+}
+
+// PhaseHolds says whether a task queued for role at phase queuedFor on run generation is still
+// the work of issue, the record of the issue its claim works: the issue holds the work
+// (HoldsQueued) and, for a task of a run (generation above 0), is on that run. An issue the record
+// does not hold (nil) holds every task, since only a claim the workflow never made has none. It is
+// the one definition of that question: the daemon answers supervise's Deps.PhaseHolds with it
+// (daemon's workflowRuntime.phaseHolds, which says why each half is compared), and a test that
+// wires the answer itself calls it too, so the rule it exercises is the one production runs.
+func PhaseHolds(issue *Issue, role claim.Role, queuedFor phase.Phase, generation uint64) bool {
+	return issue == nil || (issue.HoldsQueued(role, queuedFor) && (generation == 0 || generation == issue.Generation))
 }
 
 // ParentOf is an observed parent key as a record holds it: nil for none. Dispatch says "no parent"

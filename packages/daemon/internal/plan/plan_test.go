@@ -55,28 +55,57 @@ func TestParseSteps(t *testing.T) {
 	}
 }
 
+// Each step has one agent. The steps of one key are one agent, in any task; a step with no key is
+// an agent of that step alone, the same at each return to it; and the key owner is the owner of
+// the task. The fault: a keyed step given a fresh agent, so implementer:a and tester:a run in two
+// sessions.
+func TestStepsOfOneKeyHaveOneAgent(t *testing.T) {
+	steps, err := ParseSteps("implementer:a tester:a reviewer acceptance:owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]Agent, len(steps))
+	for i, s := range steps {
+		got[i] = AgentOf("t", i+1, s)
+	}
+	if got[0] != got[1] {
+		t.Errorf("implementer:a and tester:a: agents %+v and %+v, want one", got[0], got[1])
+	}
+	if other := AgentOf("u", 2, Step{Role: "reviewer", Key: "a"}); other != got[0] {
+		t.Errorf("reviewer:a of task u: agent %+v, want %+v, the agent of the key a in task t", other, got[0])
+	}
+	if got[2] == got[0] || got[2] != (Agent{Task: "t", Place: 3}) {
+		t.Errorf("reviewer: agent %+v, want a fresh agent of step 3", got[2])
+	}
+	if again := AgentOf("t", 3, steps[2]); again != got[2] {
+		t.Errorf("reviewer again: agent %+v, want %+v, the agent it had", again, got[2])
+	}
+	if !got[3].Owner() || got[0].Owner() || got[2].Owner() {
+		t.Errorf("owner: %v, %v and %v, want only acceptance:owner", got[3].Owner(), got[0].Owner(), got[2].Owner())
+	}
+}
+
 // The default steps walk today's line: the five steps' phases in order, then Legion's own retro
 // and merge.
 func TestLineOfTheDefaultStepsIsTodaysOrder(t *testing.T) {
-	if got := Line(defaultSteps(t), Deployment{Roles: BuiltinRoles()}); !reflect.DeepEqual(got, phase.Order) {
+	if got := Line(defaultSteps(t)); !reflect.DeepEqual(got, phase.Order) {
 		t.Fatalf("Line(default steps) = %v, want %v", got, phase.Order)
 	}
 	steps, _ := ParseSteps("implementer reviewer")
 	want := []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}
-	if got := Line(steps, Deployment{Roles: BuiltinRoles()}); !reflect.DeepEqual(got, want) {
+	if got := Line(steps); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Line(implementer reviewer) = %v, want %v", got, want)
 	}
 }
 
-// Each role of a step in this release is one of Legion's five, with the type and the phase of
-// today's line that it runs as.
+// Each of Legion's own roles of a step is one of five, with the type of work it does.
 func TestBuiltinRolesAreLegionsFiveStepRoles(t *testing.T) {
 	want := map[string]RoleDef{
-		"planner":     {Name: "planner", Type: TypePlanning, Phase: phase.Planning},
-		"implementer": {Name: "implementer", Type: TypeImplementation, Phase: phase.Implementing},
-		"tester":      {Name: "tester", Type: TypeTesting, Phase: phase.Testing},
-		"reviewer":    {Name: "reviewer", Type: TypeReview, Phase: phase.Reviewing},
-		"acceptance":  {Name: "acceptance", Type: TypeReview, Phase: phase.Accepting},
+		"planner":     {Name: "planner", Type: TypePlanning},
+		"implementer": {Name: "implementer", Type: TypeImplementation},
+		"tester":      {Name: "tester", Type: TypeTesting},
+		"reviewer":    {Name: "reviewer", Type: TypeReview},
+		"acceptance":  {Name: "acceptance", Type: TypeReview},
 	}
 	roles := BuiltinRoles()
 	if !reflect.DeepEqual(roles, want) {
@@ -85,6 +114,26 @@ func TestBuiltinRolesAreLegionsFiveStepRoles(t *testing.T) {
 	delete(roles, "planner")
 	if _, ok := BuiltinRoles()["planner"]; !ok {
 		t.Fatal("a caller that changed one answer of BuiltinRoles changed the next")
+	}
+}
+
+// How a step runs is decided by its role alone: each of Legion's five roles of a step runs as its
+// own phase, and every other role, a role of the deployment, runs as the phase step. No type is
+// read, so a role of the deployment whose type is review still runs as step.
+func TestHowAStepRunsIsItsRolesAndNeverItsType(t *testing.T) {
+	for role, want := range map[string]phase.Phase{
+		"planner": phase.Planning, "implementer": phase.Implementing, "tester": phase.Testing,
+		"reviewer": phase.Reviewing, "acceptance": phase.Accepting,
+		"checker": phase.Step, "linter": phase.Step, "owner": phase.Step,
+	} {
+		if got := RunsAs(role); got != want {
+			t.Errorf("RunsAs(%q) = %q, want %q", role, got, want)
+		}
+	}
+	steps, _ := ParseSteps("implementer checker linter")
+	want := []phase.Phase{phase.Implementing, phase.Step, phase.Step, phase.Retro, phase.Merging}
+	if got := Line(steps); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Line(implementer checker linter) = %v, want %v", got, want)
 	}
 }
 
@@ -110,7 +159,7 @@ func TestATaskWithNoStepsRunsTheDefaultSteps(t *testing.T) {
 		if len(p.Tasks) != 1 || p.Tasks[0].NamesSteps() || p.Tasks[0].Steps != nil {
 			t.Fatalf("FromBlocks(%v) = %+v, want one task with no steps", attributes, p.Tasks)
 		}
-		if r := Supported(p); len(r) != 0 {
+		if r := Supported(p, Deployment{Roles: BuiltinRoles()}); len(r) != 0 {
 			t.Fatalf("Supported(%v) = %+v, want none", attributes, r)
 		}
 		if r := Validate(p, Deployment{Roles: BuiltinRoles()}); len(r) != 0 {

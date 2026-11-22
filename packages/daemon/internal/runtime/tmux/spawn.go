@@ -125,7 +125,8 @@ func validateSpawnSpec(spec runtime.SpawnSpec, providerKeys []string, operatorEn
 		return err
 	}
 	// The token names the pane's secret files, and it is one file name: the shared validation
-	// above holds it to the one claim.NewToken derives, which has no separator in it.
+	// above holds it to the token of an agent of the spec's issue (claim.AgentToken), which has no
+	// separator in it.
 	token := string(spec.Claim)
 	refuse := func(format string, args ...any) error {
 		return fmt.Errorf("spawn %s: "+format, append([]any{token}, args...)...)
@@ -729,7 +730,12 @@ func (r *Runtime) mintGitHubCredential(ctx context.Context, spec runtime.SpawnSp
 	if spec.Role == claim.RoleController {
 		bundle, err = r.controllerCredential(ctx, "")
 	} else {
-		bundle, err = r.gitHubCredential(ctx, spec.Role, spec.Repository)
+		// The pane holds the App of the step its claim does now (runtime.SlotRole), which is the
+		// claim's stored role: the spec's role, which the machine builds from it.
+		var role claim.Role
+		if role, err = runtime.SlotRole(ctx, r.actsAs, spec.Claim, spec.Role); err == nil {
+			bundle, err = r.gitHubCredential(ctx, role, spec.Repository)
+		}
 	}
 	noOwner := spec.Role == claim.RoleController && errors.Is(err, runtime.ErrNoGitHubOwner)
 	if err != nil && !noOwner {
@@ -809,7 +815,7 @@ func (r *Runtime) openPane(ctx context.Context, spec runtime.SpawnSpec, ghDefaul
 		Incarnation: incarnation{pid: report.pid, ticks: ticks}.String(),
 		Tmux:        &runtime.TmuxLocator{Window: report.window, Pane: report.pane},
 	}
-	r.track(loc, key, spec.Repository, ghDefault)
+	r.track(loc, key, spec.Repository, ghDefault, spec.Role)
 	return loc, nil
 }
 
