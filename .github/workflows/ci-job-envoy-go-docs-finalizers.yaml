@@ -47,8 +47,9 @@ jobs:
     # 44846096964 at 28ce7c74 (job 136669775984) at 999.4 s, 59.5 % of 28m, whose job took
     # 1,056 s, run 44939290502 at 3a4ffe0b (job 136952816521) at 964.4 s, 57.4 %, whose job took
     # 1,014 s, run 44953084676 at 4165260d (job 136995819870) at 958.3 s, 57.0 %, whose job took
-    # 1,021 s, and run 44979729824 at 66cba4b8 (job 137077480326) at 902.1 s, 53.7 %, whose job
-    # took 957 s; all five are under those, so none raised either limit. Measure again before
+    # 1,021 s, run 44979729824 at 66cba4b8 (job 137077480326) at 902.1 s, 53.7 %, whose job took
+    # 957 s, and run 45016553609 at 28834edb (job 137190086168) at 945.7 s, 56.3 %, whose job took
+    # 999 s; all six are under those, so none raised either limit. Measure again before
     # changing either: a package that has grown past 60 % of its deadline is a deadline to raise,
     # not a flake to re-run.
     timeout-minutes: 34

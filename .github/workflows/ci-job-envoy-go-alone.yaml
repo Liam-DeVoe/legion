@@ -43,18 +43,15 @@ jobs:
     # (waitEventsStart) leaves of the deadline so that its failure prints rather than being cut
     # off by the package timeout; 2m clears it, by 60.0 s over its slowest reading.
     #
-    # timeout-minutes 21 is provisional: no run has read this job, so it comes from the readings
-    # there are, those of run 44979729824 at 66cba4b8 (envoy-go's job 137077480236), where these
-    # two calls ran at the end of envoy-go's unit step. The job's set-up, as envoy-go's own steps
-    # took it there (from the job's start to its last read-back step, less bun's 6 s and the steps
-    # this job does not run), 44 s; the shutdown call's stream, 7.3 s; the rows-alone call's,
-    # 278.2 s, from its first event to its last; the rolling-update test, which ran in the package
-    # list then, 105.85 s; and the upload, report, post and stop steps after them, 16 s: 451.35 s,
-    # 7.52 minutes, plus the largest -timeout, 7m, plus 6, 20.52, so 21. The test binaries' build
-    # is in none of those readings, since envoy-go's package list had built them, and the job
-    # restores envoy-go's build cache. One dispatch run at this head sets the bound by the same
-    # formula from its own time.
-    timeout-minutes: 21
+    # timeout-minutes is by R6 from the one dispatch run at this head, run 45016553609 at 28834edb,
+    # the first to read this job (the architect, 2026-11-22T08:45Z): the job took 495 s (job
+    # 137190085821, which the run's second attempt carried over as job 137200507645), 8.25 minutes,
+    # plus the largest -timeout, the rows-alone call's 7m, plus 6: 8.25 + 7 + 6 = 21.25, so 22,
+    # raised from the 21 estimated before any run read the job. Its test step took 450 s of that:
+    # the shutdown call's stream ran 8.2 s and the rows-alone call's 381.6 s, each from its first
+    # event to its last, the rolling-update test 83.7 s of it. envoy-go ran beside it for 1,327 s
+    # (job 137190085868).
+    timeout-minutes: 22
     services:
       # The first service: envoy-go's postgres service, for the reasons given there - the five
       # settings on its command line and the options below - which the rows-alone call runs
@@ -89,7 +86,7 @@ jobs:
           --health-timeout 5s
           --health-retries 50
     env:
-      JOB_TIMEOUT_MINUTES: 21 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 22 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
@@ -167,7 +164,9 @@ jobs:
           # 30.00 s, loadtest 12.00 s, duty 6.49 s, legionagents 4.04 s, pglisten 2.50 s, cistore
           # 2.06 s, testnats 2.03 s, architecture 1.59 s and pmdoc 0.87 s; the largest,
           # 192.67 / 30 = 6.42, so 7m. Run 44979729824 read the packages alone, in envoy-go then,
-          # under those sums: cmd/dispatch 52.7 s and outbox 79.6 s.
+          # under those sums: cmd/dispatch 52.7 s and outbox 79.6 s; run 45016553609, the first in
+          # this job (job 137190085821), read cmd/dispatch at 138.1 s, 32.9 % of the 7m, and outbox
+          # at 79.4 s.
           a=0
           go test -json -count=1 -p 1 -parallel 1 -timeout 7m -run '^(TestABatchCutOffInFlightKeepsItsOrder|TestABucketWaitWhoseLookupsAreHeldFailsByNameInTime|TestAClaimLeftByAnotherProcessIsTakenWhenItLapses|TestADeletedBucketFailsAWriteWithinTheBudget|TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal|TestAProcessReportsASilentNATSCutWithinSeconds|TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce|TestAStalledListingFailsWithinTheReadTimeout|TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites|TestAStandbyTakesAFreeHoldWithNoNotification|TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce|TestAWriteIsEmbeddedOnItsNotification|TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded|TestAnOutboxThatLosesNATSReleasesThePublisher|TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther|TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering|TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown|TestExecLearnsOfAGrantAfterAFullHold|TestExecLearnsOfTheGrantWithinASecond|TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken|TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering|TestHealthzAnswersWhilePostgresStopsAnswering|TestHoldExpiryMatchesTheDatabaseClock|TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail|TestHoldTakesOverOnTheFirstTryAfterTheLapse|TestIdentity|TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds|TestOnlyOneOutboxPublishesAtATime|TestParseResolvesUnmatchedReferencesWithoutComparingEveryDefinition|TestReserveTokensSharesItsBudgetAcrossConnections|TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument|TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget|TestSamplerHeapReadDelaysNoSample|TestScanPassReturnsWhenThePendingRowsFallDue|TestSyncDeadlineIsRecordedOnTheRow|TestTheIdentityStepsRunOnceTheQueueFirstEmbeds|TestTheListenerReplacesAHalfOpenConnection|TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop|TestTheOutboxDoesNotScanWhileIdle)$' ./cmd/cipher ./cmd/dispatch ./internal/cistore ./internal/dispatch/architecture ./internal/dispatch/duty ./internal/dispatch/embedqueue ./internal/dispatch/outbox ./internal/dispatch/pmdoc ./internal/dispatch/textversions ./internal/legionagents ./internal/pglisten ./internal/testnats ./loadtest > "$RUNNER_TEMP/go-test-json/alone-unit.json" 2> "$RUNNER_TEMP/go-test-logs/alone-unit.log" || a=$?
           # One group per call, in the order the calls ran. The step's status is the first non-zero

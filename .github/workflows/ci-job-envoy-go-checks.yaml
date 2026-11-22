@@ -65,9 +65,10 @@ jobs:
     # and 853 s in the pair (run 44657322918, job 136026780288, and run 44657415021, job
     # 136039517954), 988 s in run 44687712471 at 56f4dabc (job 136126010901), 1,042 s in run
     # 44790111577 at 85f6b018 (job 136476756211), 1,000 s in run 44846096964 at 28ce7c74 (job
-    # 136669775694), 1,008 s in run 44953084676 at 4165260d (job 136995819928) and 1,082 s in run
-    # 44979729824 at 66cba4b8 (job 137077480081), 21.58 minutes, plus the largest -timeout of its
-    # go test calls, the alone step's 2m, plus 6:
+    # 136669775694), 1,008 s in run 44953084676 at 4165260d (job 136995819928), 1,082 s in run
+    # 44979729824 at 66cba4b8 (job 137077480081) and 1,142 s in run 45016553609 at 28834edb (job
+    # 137190086046), 21.58 minutes, plus the largest -timeout of its go test calls, the alone
+    # step's 2m, plus 6:
     # 21.58 + 2 + 6 = 29.58, so 30, raised from the 29 that run 44717243297 set
     # (20.13 + 2 + 6 = 28.13). Its other go commands are builds, the darwin vet and two `go run`s,
     # which run no test binary and carry no -timeout. The step that tests the API's wall-clock
@@ -326,10 +327,11 @@ jobs:
       # table then failed to read in the first build and read in the second. No other step builds
       # pmdoc without inlining.
       #
-      # -timeout 1m, the smallest whole minute there is: the step came from main (#4842) after the
-      # pair at 8cfd2682 and the dispatch runs since, so no CI run of this branch has read it yet,
-      # and the next run's sweep sets it by R6. The `go test -json` stream goes to a file the
-      # upload step below publishes and is replayed to the log, as the fixture step above does.
+      # -timeout 1m, by R6: the step came from main (#4842) after the pair at 8cfd2682, and its
+      # first CI reading on this branch, internal/dispatch/pmdoc 2.1 s in run 45016553609 at
+      # 28834edb (job 137190086046), gives 2.1 / 30 = 0.07, so 1m, the smallest whole minute there
+      # is. The `go test -json` stream goes to a file the upload step below publishes and is
+      # replayed to the log, as the fixture step above does.
       - name: Test pmdoc's tables in a build without inlining
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json"

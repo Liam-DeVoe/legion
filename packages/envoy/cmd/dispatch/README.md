@@ -5584,7 +5584,7 @@ go vet ./...
 ```
 
 `internal/dispatch/api` is the module's largest Postgres-backed package by its number of tests and ran past `go test`'s default ten-minute package deadline on its own, 665 s in a CI run that ran it whole without `-race` (run 41703055842; the last two such runs of INFRA-1075's branch before it left `envoy-go`'s package list read 521.3 s and 555.0 s), so every command that includes it passes `-timeout 20m` (`docs/testing.md`, "Go's package deadline").
-Its claim model, `TestTheMentionSenderClaimModel`, runs by name in the `envoy-go-claim-model` job, whose step took up to 1,245 s (20 min 45 s, run 44790111577), so the first command leaves it out.
+Its claim model, `TestTheMentionSenderClaimModel`, runs by name in the `envoy-go-claim-model` job, whose step took up to 1,271 s (21 min 11 s, run 45016553609), so the first command leaves it out.
 It no longer runs first or by itself: its independent tests run in parallel, as the other packages' do (`docs/testing.md`, "A test that calls `t.Parallel()`").
 
 The commands run against the throwaway server `./scripts/dev-postgres.sh --throwaway` starts, not the `dispatch-pg` container on 55432:

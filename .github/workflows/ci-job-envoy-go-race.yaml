@@ -37,36 +37,39 @@ jobs:
     # which may raise a limit and never lower one (the architect's rule of 2026-11-20, the issue's
     # open-items.md). The step's -timeout is the smallest whole minute at which its slowest
     # package's slowest reading takes at most half of it: cmd/listener, 886.8 s in run 44979729824
-    # at 66cba4b8 (job 137077480061), 886.8 / 30 = 29.56, so 30m, against 871.3 s in run 44939290502
-    # at 3a4ffe0b (job 136952816335), 869.4 s in run 44953084676 at 4165260d (job 136995820227),
-    # 829.4 s in run 44846096964 at 28ce7c74 (job 136669775371) and 825.0 s in run 44790111577 at
-    # 85f6b018 (job 136476756188). Run 44939290502, 871.3 / 30 = 29.04, raised it from the 28m that
-    # run 44717243297 at 66058706 (job 136223826856) had raised it to from the pair's 23m: that run
-    # read 812.3 s, 812.3 / 30 = 27.08, against 680.5 s and 686.0 s in the pair (run 44657322918,
-    # job 136026780235, and run 44657415021, job 136039518500). The package grew because main's
-    # #4387 added 22 top-level tests to it, 135.4 s of summed elapsed time in run 44717243297's
-    # stream, while the 646 tests that run and the pair both hold took 793.3 s against 797.4 s and
-    # 804.1 s. Run 44687712471 at 56f4dabc (job 136126011379) read cmd/listener at 679.7 s and the
-    # job at 920 s, under the pair's. The job's bound is its slowest time, 1,156 s (run 44979729824,
-    # job 137077480061), against 1,133 s in run 44939290502 (job 136952816335), 1,127 s in run
-    # 44953084676 (job 136995820227), 1,085 s in run 44846096964 (job 136669775371), 1,080 s in run
-    # 44790111577 (job 136476756188), 1,048 s in run 44717243297 (job 136223826856) and 916 s and
-    # 939 s in the pair (jobs 136026780235 and 136039518500), 19.27 minutes, plus that -timeout plus
-    # 6: 19.27 + 30 + 6 = 55.27, so 56. Run 44979729824 raised it from the 55 that run 44939290502
-    # set (18.88 + 30 + 6 = 54.88), which raised it from the 53 that run 44846096964 set
+    # at 66cba4b8 (job 137077480061), 886.8 / 30 = 29.56, so 30m, against 873.2 s and 870.4 s in the
+    # two attempts of run 45016553609 at 28834edb (jobs 137190086051 and 137200506888), 871.3 s in
+    # run 44939290502 at 3a4ffe0b (job 136952816335), 869.4 s in run 44953084676 at 4165260d (job
+    # 136995820227), 829.4 s in run 44846096964 at 28ce7c74 (job 136669775371) and 825.0 s in run
+    # 44790111577 at 85f6b018 (job 136476756188). Run 44939290502, 871.3 / 30 = 29.04, raised it
+    # from the 28m that run 44717243297 at 66058706 (job 136223826856) had raised it to from the
+    # pair's 23m: that run read 812.3 s, 812.3 / 30 = 27.08, against 680.5 s and 686.0 s in the pair
+    # (run 44657322918, job 136026780235, and run 44657415021, job 136039518500). The package grew
+    # because main's #4387 added 22 top-level tests to it, 135.4 s of summed elapsed time in run
+    # 44717243297's stream, while the 646 tests that run and the pair both hold took 793.3 s against
+    # 797.4 s and 804.1 s. Run 44687712471 at 56f4dabc (job 136126011379) read cmd/listener at
+    # 679.7 s and the job at 920 s, under the pair's. The job's bound is its slowest time, 1,156 s
+    # (run 44979729824, job 137077480061), against 1,137 s and 1,121 s in the two attempts of run
+    # 45016553609 (jobs 137190086051 and 137200506888; the first failed on main's storetest row that
+    # main's #4962 fixes, and the re-run passed), 1,133 s in run 44939290502 (job 136952816335),
+    # 1,127 s in run 44953084676 (job 136995820227), 1,085 s in run 44846096964 (job 136669775371),
+    # 1,080 s in run 44790111577 (job 136476756188), 1,048 s in run 44717243297 (job 136223826856)
+    # and 916 s and 939 s in the pair (jobs 136026780235 and 136039518500), 19.27 minutes, plus that
+    # -timeout plus 6: 19.27 + 30 + 6 = 55.27, so 56. Run 44979729824 raised it from the 55 that run
+    # 44939290502 set (18.88 + 30 + 6 = 54.88), which raised it from the 53 that run 44846096964 set
     # (18.08 + 28 + 6 = 52.08) over the 52 that run 44717243297 set (17.47 + 28 + 6 = 51.47) and run
     # 44790111577 met exactly (18.00 + 28 + 6 = 52.00). The limit must fire before the runner
-    # cancels the job, so a hung test prints the dump that names it. The pair and the seven dispatch
+    # cancels the job, so a hung test prints the dump that names it. The pair and the eight dispatch
     # runs since it ran this job on arm64 (ubuntu-24.04-arm); the pair at 4f1f4436 read cmd/listener
     # at 585.3 s at most, on x64 (ubuntu-24.04). natscred and the NATS auth service
     # (internal/cipher/natscallout, then internal/broker/natscallout), which main added to the step
-    # after that earlier pair (#4139), are in this pair: 31.1 s and 101.3 s at most. In the seven
-    # dispatch runs since, natscred read no more, and the auth service read 113.5 s at most (run
-    # 44979729824, job 137077480061). The step that tests the wall-clock measurements alone is in
-    # this pair too, and its comment gives its reading. The sign-in code flow (internal/oidc) adds
-    # one test binary and one package, whose run under -race took 11 s on a dev box, all of it
-    # in-process against oidctest's issuer, and 39.0 s at most in CI (run 44979729824, job
-    # 137077480061).
+    # after that earlier pair (#4139), are in this pair: 31.1 s and 101.3 s at most. In the eight
+    # dispatch runs since, natscred read 31.2 s at most (run 45016553609, job 137190086051) and the
+    # auth service 113.5 s (run 44979729824, job 137077480061). The step that tests the wall-clock
+    # measurements alone is in this pair too, and its comment gives its reading. The sign-in code
+    # flow (internal/oidc) adds one test binary and one package, whose run under -race took 11 s on
+    # a dev box, all of it in-process against oidctest's issuer, and 39.0 s at most in CI (run
+    # 44979729824, job 137077480061).
     timeout-minutes: 56
     services:
       postgres:

@@ -56,3 +56,6 @@ lane's longest job. So the two calls moved into this job of their own, which run
 (the architect, 2026-11-22T08:45Z): it reuses envoy-go's filter and `changes` output, so it is held
 to the merge queue and to `full-ci` exactly as envoy-go is, and envoy-go's go-envoy-test restore,
 since it builds a part of what envoy-go's package list builds.
+In the job's first dispatch run, 45016553609 at 28834edb, it took 495 s (job 137190085821) beside
+envoy-go's 1,327 s (job 137190085868) and envoy-go-race-docs' 1,673 s (job 137190085876); the
+rows-alone call's stream ran 381.6 s, the rolling-update test 83.7 s of it.
