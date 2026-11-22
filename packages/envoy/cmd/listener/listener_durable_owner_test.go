@@ -281,3 +281,44 @@ func createRawConsumer(t *testing.T, conn *natsgo.Conn, config natsgo.ConsumerCo
 		}
 	}
 }
+
+// The listener's own durable, as the server stored it from the listener's create, needs no
+// correction: the shared correction compares each setting after the server's own defaulting
+// (bus.CorrectedConfig), and the listener's create sets every setting the server defaults
+// (ack wait, max ack pending, max deliver, inactive threshold; a push consumer has no max waiting),
+// so no bind of it sends an update. The control is the same candidate stored with max deliver 5,
+// which the correction brings back to the listener's 20.
+func TestTheListenersStoredDurableNeedsNoCorrection(t *testing.T) {
+	r := newDurableRig(t, consumernames.ModeFresh)
+	ctx := context.Background()
+	for _, c := range []struct {
+		name, suffix string
+		setting      map[string]any
+		changed      bool
+	}{
+		{name: "as the listener creates it", suffix: "AS"},
+		{name: "control: stored with max deliver 5", suffix: "CONTROL", setting: map[string]any{"max_deliver": 5}, changed: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			candidate := r.durable + "~STORED" + c.suffix
+			made := durableCreateConfig(candidate, r.durable, bus.StreamSubjects())
+			made.DeliverPolicy, made.OptStartSeq = natsgo.DeliverByStartSequencePolicy, 1
+			createRawConsumer(t, r.conn, made, c.setting)
+			info, err := r.client.ConsumerInfo(ctx, candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			create, err := jetstreamConfig(made)
+			if err != nil {
+				t.Fatal(err)
+			}
+			next, changed := bus.CorrectedConfig(info.Config, create)
+			if changed != c.changed {
+				t.Fatalf("the correction of %s as the server stored it = changed %t, want %t:\nstored %+v\nnext   %+v", candidate, changed, c.changed, info.Config, next)
+			}
+			if c.changed && next.MaxDeliver != 20 {
+				t.Fatalf("the correction writes max deliver %d, want the listener's 20", next.MaxDeliver)
+			}
+		})
+	}
+}
