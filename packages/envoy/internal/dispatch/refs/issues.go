@@ -162,11 +162,11 @@ const IssueRepoJoin = `left join repo on repo.key = i.key
 	left join projects repo_default on repo_default.key = i.project_key`
 
 // projectDefaultRepoSQL is the default repository of the project projectExpr names, read as
-// IssueRepoJoin reads it (the project's default mapping), null where it has none: the repository an
-// issue of that project resolves to when its chain names none. RepositoryClause's index path
-// (repositorySeen) reads it, so the default comes from this file's one read of it.
+// IssueRepoJoin reads it (projects.default_repo), null where it has none: the repository an issue
+// of that project resolves to when its chain names none. RepositoryClause's index path
+// (repositorySeen) reads it, so the default comes from the column IssueRepoJoin reads.
 func projectDefaultRepoSQL(projectExpr string) string {
-	return `(select max(repo_default.repo) from repo_projects repo_default where repo_default.project = (` + projectExpr + `) and repo_default.is_default)`
+	return `(select repo_default.default_repo from projects repo_default where repo_default.key = (` + projectExpr + `))`
 }
 
 // IssueRepoResolved is the repository an issue resolves to, over IssueRepoJoin: the nearest one
