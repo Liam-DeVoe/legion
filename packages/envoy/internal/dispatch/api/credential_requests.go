@@ -761,7 +761,8 @@ func ownMachineLogins(ctx context.Context, client *cipher.Client, person string)
 }
 
 // memberMachineLogins is the machine logins a restricted member lists and revokes: the broker's
-// own set for such a member (requests' restricted_approver.go), the logins of their own machines
+// own set for such a member (enroll.Service.OwnLiveCredentials, which the broker's machine-login
+// routes choose for them in machineLoginsOwnOnly), the logins of their own machines
 // (ownMachineLogins' rule) and the logins of the pods whose Kubernetes account the broker's
 // BROKER_POD_OPERATORS maps to them, whose person field names them. A service's login is in
 // neither, whoever approved it, so it is no restricted member's to list or revoke.

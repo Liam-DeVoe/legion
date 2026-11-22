@@ -66,9 +66,13 @@ func TestAServerWithNoDatabaseReadsAsTheClosedViewer(t *testing.T) {
 // own machine logins (restrictedOwnLoginRoutes), has its own rows
 // (TestARestrictedMemberListsAndRevokesOnlyTheirOwnMachineLogins,
 // TestARestrictedMembersTokensListAndRevokeNoMachineLogin), and is the only one the walk leaves out.
+// The walk must hold GET /api/v1/priorities, GET /metrics and GET /api/v1/credential-requests, the
+// pending list, which a restricted member is refused because they decide no credential request: a
+// row that left the deployment's class would leave the walk, and the walk would still pass.
 //
-// Control in access/access.go: a credential that lists projects read as not open (the listing
-// tokens are refused every row).
+// Controls: in access/access.go, a credential that lists projects read as not open (the listing
+// tokens are refused every row); and GET /api/v1/credential-requests classed readclass.Caller (its
+// refusal to a restricted member dropped), and the walk fails naming the row.
 func TestADeploymentReadIsRefusedToAViewerThatIsNotOpen(t *testing.T) {
 	seed := seedPrivateProject(t)
 	var walked, ownLogin []string
@@ -97,7 +101,7 @@ func TestADeploymentReadIsRefusedToAViewerThatIsNotOpen(t *testing.T) {
 			}
 		}
 	}
-	for _, row := range []string{"/api/v1/priorities", "/metrics"} {
+	for _, row := range []string{"/api/v1/priorities", "/metrics", "/api/v1/credential-requests"} {
 		if !slices.Contains(walked, row) {
 			t.Fatalf("the walk read the deployment's rows %q, without GET %s", walked, row)
 		}
