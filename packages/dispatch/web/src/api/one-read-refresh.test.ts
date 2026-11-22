@@ -1,17 +1,23 @@
 import { expect, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
-import { issueAsk } from "../features/inbox/inbox-fixture";
-import { agentRow, replyRow } from "../features/threads/replies-fixture";
+
+import { issueAsk, oneReadAnswer } from "../features/inbox/inbox-fixture";
+import {
+  AGENT_CONVERSATION,
+  agentRow,
+  replyRow,
+  withConversation,
+} from "../features/threads/replies-fixture";
 import { eventRefreshTargets } from "./event-refresh";
 import { meInboxQuery } from "./queries";
 import { refreshQueries } from "./query-refresh";
-import type { DispatchEvent, MeInboxEntry, MeInboxResponse, MessageRead } from "./types";
+import type { DispatchEvent, MeInboxResponse } from "./types";
 
 /**
- * What refreshes the one read behind the Inbox's opt-in (`meInboxQuery`): it holds the reader's
- * half of the Inbox read, their threads and each Agent row's conversation, so an event that
- * refreshes one of those refreshes it, by the same test over the rows of that read it holds - an
- * issue's retitle where it holds an ask or a thread of that issue and not otherwise, and a
+ * What refreshes the one read (`meInboxQuery`), which the Inbox draws the reader's own rows from:
+ * it holds the reader's own asks, their threads and each Agent row's conversation, so an event
+ * that refreshes one of those refreshes it, by the same test over the rows of that read it holds -
+ * an issue's retitle where it holds an ask or a thread of that issue and not otherwise, and a
  * session's reply where it holds an Agent row of that session.
  */
 
@@ -58,43 +64,6 @@ function sessionReply(session: string): DispatchEvent {
   );
 }
 
-function entry(id: string, carried: Partial<MeInboxEntry>): MeInboxEntry {
-  return {
-    moment: "2026-11-16T00:00:00Z",
-    node: { id, kind: "comment" },
-    relations: [{ at: "2026-11-16T00:00:00Z", direction: "inbound", kind: "delivered_to" }],
-    ...carried,
-  };
-}
-
-function answer(entries: MeInboxEntry[]): MeInboxResponse {
-  return {
-    as_of: "2026-11-16T00:00:00Z",
-    entries,
-    horizon: 1,
-    limit: 0,
-    offset: 0,
-    person: "alice",
-    total: entries.length,
-  };
-}
-
-const CONVERSATION: MessageRead = {
-  message: {
-    author: { id: "alice", kind: "user" },
-    body: "Please check the staging gate.",
-    broadcast_id: null,
-    created_at: "2026-11-16T00:00:00Z",
-    deliveries: [],
-    id: "message-1",
-    in_reply_to: null,
-    issue_key: null,
-    reply_block: null,
-    target: "session:s1",
-  },
-  replies: [],
-};
-
 /** Whether `event`'s refresh marks the one read holding `held` stale. */
 function refreshesOneRead(event: DispatchEvent, held: MeInboxResponse): boolean {
   const client = new QueryClient();
@@ -104,17 +73,15 @@ function refreshesOneRead(event: DispatchEvent, held: MeInboxResponse): boolean 
 }
 
 test("a retitle refreshes the one read where it holds an ask of that issue", () => {
-  expect(refreshesOneRead(RETITLE, answer([entry("ask-a", { ask: issueAsk() })]))).toBe(true);
+  expect(refreshesOneRead(RETITLE, oneReadAnswer([issueAsk()]))).toBe(true);
   expect(
     refreshesOneRead(
       RETITLE,
-      answer([
-        entry("ask-b", {
-          ask: issueAsk({
-            id: "ask-b",
-            issue: { assignee: "alice", key: "CORE-2", title: "Other" },
-            issue_key: "CORE-2",
-          }),
+      oneReadAnswer([
+        issueAsk({
+          id: "ask-b",
+          issue: { assignee: "alice", key: "CORE-2", title: "Other" },
+          issue_key: "CORE-2",
         }),
       ])
     )
@@ -122,21 +89,17 @@ test("a retitle refreshes the one read where it holds an ask of that issue", () 
 });
 
 test("a retitle refreshes the one read where it holds a thread of that issue", () => {
-  expect(refreshesOneRead(RETITLE, answer([entry("c1", { thread: replyRow("c1") })]))).toBe(true);
+  expect(refreshesOneRead(RETITLE, oneReadAnswer([replyRow("c1")]))).toBe(true);
   expect(
     refreshesOneRead(
       RETITLE,
-      answer([
-        entry("c2", { thread: replyRow("c2", { issue: { key: "CORE-2", title: "Other" } }) }),
-      ])
+      oneReadAnswer([replyRow("c2", { issue: { key: "CORE-2", title: "Other" } })])
     )
   ).toBe(false);
 });
 
 test("a session's reply refreshes the one read where it holds that session's Agent row", () => {
-  const held = answer([
-    entry("message-1", { agent: { ...agentRow("message-1"), conversation: CONVERSATION } }),
-  ]);
+  const held = oneReadAnswer([withConversation(agentRow("message-1"), AGENT_CONVERSATION)]);
   expect(refreshesOneRead(sessionReply("s1"), held)).toBe(true);
   expect(refreshesOneRead(sessionReply("s2"), held)).toBe(false);
 });

@@ -86,6 +86,7 @@ import {
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
+import { agentConversationQuery } from "../../api/queries";
 import type { IssueSummary, Message } from "../../api/types";
 import { AuthGate } from "../../app";
 import type { ReplyTarget } from "../conversation/composer-model";
@@ -253,7 +254,9 @@ async function openAgents(): Promise<Page> {
     dropMessageA: async () => {
       messages.mockResolvedValue([{ message: messageB, replies: [] }]);
       await act(() =>
-        queryClient.invalidateQueries({ queryKey: ["agents", "planner-session", "conversation"] })
+        queryClient.invalidateQueries({
+          queryKey: agentConversationQuery("planner-session").queryKey,
+        })
       );
       await waitFor(() =>
         expect(row().querySelector('[data-turn="message:message-1"]')).toBe(null)

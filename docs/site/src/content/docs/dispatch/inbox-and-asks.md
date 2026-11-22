@@ -144,9 +144,9 @@ people as you like; the button then names the one you picked, or how many.
   every project names a default assignee, so it shows an empty list.
 - Clear the filter to see every open ask.
 
-Your own asks are read with your threads. The first time the filter shows anybody else's asks, the
-Inbox reads every open ask once; each pick after that, between one person and another, narrows
-what it holds and asks the server nothing.
+Your own asks are read with your threads, and anybody else's with every open ask at once, which
+Dispatch reads on every page; each pick in the filter, between one person and another, narrows
+what the Inbox holds and asks the server nothing.
 
 The **Assign to me** button is on an ask Dispatch names no person for, so no ask carries it while
 every project names a default assignee. Choosing it makes the issue yours, so the ask is in your

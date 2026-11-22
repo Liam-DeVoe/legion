@@ -12,6 +12,7 @@ import { ApiError, api, NetworkError } from "../../api/client";
 import { meInboxQuery } from "../../api/queries";
 import type { Artifact, ArtifactApproval, ArtifactReview } from "../../api/types";
 import { ArtifactHeader } from "../artifacts/ArtifactHeader";
+import { oneReadAnswer } from "../inbox/inbox-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath, parseIssuePath } from "../refs/routes";
 import { stoppedWriteNote } from "../writes/keyed-write";
@@ -391,15 +392,7 @@ test("a change request made with its answer lost closes the dialog, refuses noth
   });
   queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   queryClient.setQueryData(["artifact-reviews", "artifact-1"], []);
-  queryClient.setQueryData(meInboxQuery().queryKey, {
-    as_of: "2026-10-12T02:00:00Z",
-    entries: [],
-    horizon: 1,
-    limit: 0,
-    offset: 0,
-    person: "alice",
-    total: 0,
-  });
+  queryClient.setQueryData(meInboxQuery().queryKey, oneReadAnswer([]));
   const view = render(
     <QueryClientProvider client={queryClient}>
       <ApprovalChip

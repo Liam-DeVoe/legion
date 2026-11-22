@@ -11,6 +11,7 @@
  * their own callbacks.
  */
 
+import { inboxEntryThread, meInboxThreads } from "@legion/contracts";
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
 
 import {
@@ -27,7 +28,7 @@ export type MeInboxSnapshot = readonly (readonly [QueryKey, unknown])[];
 
 /** How a write leaves one entry of an answer: the entry it leaves, or undefined where it takes the
  *  entry out. The entry itself where it changes nothing. */
-export type MeInboxEntryEdit = (entry: MeInboxEntry) => MeInboxEntry | undefined;
+type MeInboxEntryEdit = (entry: MeInboxEntry) => MeInboxEntry | undefined;
 
 /** `answer` as `edit` leaves its entries, each entry taken out lowering its `total`; the answer
  *  itself where no entry changed. */
@@ -93,7 +94,7 @@ export function invalidateMeInbox(queryClient: QueryClient): Promise<void> {
 
 /** Edits every cached read of the one read: each answer's entries by `edit`, and the unread count
  *  by `count` where one is given. */
-export function patchMeInbox(
+function patchMeInbox(
   queryClient: QueryClient,
   edit: MeInboxEntryEdit,
   count?: (count: number) => number
@@ -123,7 +124,7 @@ export function patchMeInboxAsks(
   joined: readonly OpenAskRow[] = []
 ): void {
   patchMeInbox(queryClient, (entry) => {
-    if (entry.ask === undefined || entry.ask === null) return entry;
+    if (entry.ask === undefined) return entry;
     const ask = edit(entry.ask);
     if (ask === undefined) return undefined;
     return ask === entry.ask ? entry : { ...entry, ask };
@@ -156,40 +157,24 @@ export function patchMeInboxThreads(
   count?: (count: number) => number
 ): void {
   const threadEdit: MeInboxEntryEdit = (entry) => {
-    if (entry.thread !== undefined && entry.thread !== null) {
-      const thread = edit(entry.thread);
-      if (thread === undefined) return undefined;
-      return thread === entry.thread ? entry : { ...entry, thread };
-    }
-    if (entry.agent !== undefined && entry.agent !== null) {
-      const agent = edit(entry.agent as MyReplyRow);
-      if (agent === undefined) return undefined;
-      return agent === entry.agent ? entry : { ...entry, agent: agent as typeof entry.agent };
-    }
-    return entry;
+    const thread = inboxEntryThread(entry);
+    if (thread === undefined) return entry;
+    const next = edit(thread);
+    if (next === undefined) return undefined;
+    if (next === thread) return entry;
+    return entry.agent === undefined
+      ? { ...entry, thread: next }
+      : { ...entry, agent: next as MeInboxEntry["agent"] };
   };
   for (const [queryKey] of meInboxSnapshot(queryClient)) {
     replaceQueryData(queryClient, queryKey, (data: unknown) => editRead(data, threadEdit, count));
   }
 }
 
-/** The Reply and Agent rows the reader's own Inbox answer of the one read holds, or of its
- *  `dismissed` pages where `dismissed` is set: what a write reads to know which rows it moves. */
-export function meInboxThreadRows(
-  queryClient: QueryClient,
-  dismissed = false
-): readonly MyReplyRow[] {
-  const rowsOf = (answer: MeInboxResponse | undefined): MyReplyRow[] =>
-    (answer?.entries ?? []).flatMap((entry) => {
-      if (entry.thread !== undefined && entry.thread !== null) return [entry.thread];
-      if (entry.agent !== undefined && entry.agent !== null) return [entry.agent as MyReplyRow];
-      return [];
-    });
-  if (!dismissed) return rowsOf(queryClient.getQueryData<MeInboxResponse>(meInboxQuery().queryKey));
-  const paged = queryClient.getQueryData<{ readonly pages: readonly MeInboxResponse[] }>(
-    meInboxDismissedQuery().queryKey
-  );
-  return (paged?.pages ?? []).flatMap(rowsOf);
+/** The Reply and Agent rows the reader's own Inbox answer of the one read holds: what a write
+ *  reads to know which rows it moves. */
+export function meInboxThreadRows(queryClient: QueryClient): readonly MyReplyRow[] {
+  return meInboxThreads(queryClient.getQueryData<MeInboxResponse>(meInboxQuery().queryKey));
 }
 
 /**
@@ -206,8 +191,8 @@ export function dropMeInboxThreads(
 ): readonly MyReplyRow[] {
   const dropped: MyReplyRow[] = [];
   const edit: MeInboxEntryEdit = (entry) => {
-    const thread = entry.thread ?? (entry.agent as MyReplyRow | undefined | null);
-    if (thread === undefined || thread === null || !drops(thread)) return entry;
+    const thread = inboxEntryThread(entry);
+    if (thread === undefined || !drops(thread)) return entry;
     dropped.push(thread);
     return undefined;
   };

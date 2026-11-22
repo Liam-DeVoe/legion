@@ -26,7 +26,7 @@ export function askArtifactId(ask: Ask): string {
  */
 export function invalidateOwnerReads(queryClient: QueryClient, ask: Ask): void {
   void invalidateOpenAsks(queryClient);
-  invalidateMeInbox(queryClient);
+  void invalidateMeInbox(queryClient);
   if (ask.issue_key === null) {
     void queryClient.invalidateQueries({ queryKey: ["artifact", askArtifactId(ask)] });
     void queryClient.invalidateQueries({ queryKey: projectsQuery().queryKey });

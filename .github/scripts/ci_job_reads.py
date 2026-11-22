@@ -3606,13 +3606,6 @@ GATES = [
              "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.ServerConnections",
              {"mode": "build"}),
         ]),
-        # The browser half's stack connection limit, read before its two browser steps, which
-        # start the harness's own Postgres rather than using the service.
-        pinned_step(TWO_BUILDS_JOB, TWO_BUILDS_CONNECTIONS_STEP, ENVOY, BROWSER_CONNECTIONS_SCRIPT, [
-            (ENVOY, ["./internal/dispatch/store/cmd/connections"],
-             "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.ServerConnections",
-             {"mode": "build"}),
-        ]),
     ], reads=reads(
         ("packages/dispatch/**", at(TWO_BUILDS_JOB, "Browser-test each build's page against the other build's server")),
         ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:127-150 (build:web)"),

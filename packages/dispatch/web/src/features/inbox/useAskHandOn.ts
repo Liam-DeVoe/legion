@@ -1,17 +1,17 @@
 import { useQueryClient } from "@tanstack/react-query";
 
 import { api } from "../../api/client";
-import { meInboxQuery, whoAmIQuery } from "../../api/queries";
+import { whoAmIQuery } from "../../api/queries";
 import type { Ask, OpenAskRow } from "../../api/types";
 import { askWritten } from "../../api/write-events";
 import { livePress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
-import { cancelMeInbox, meInboxSnapshot, patchMeInboxAsks, restoreMeInbox } from "./one-read-cache";
 import {
-  cancelOpenAsks,
-  openAsksKeys,
-  openAsksSnapshot,
-  patchOpenAsks,
-  restoreOpenAsks,
+  cancelInboxAsks,
+  inboxAsksKeys,
+  inboxAsksSnapshot,
+  type OpenAsksSnapshot,
+  patchInboxAsks,
+  restoreInboxAsks,
 } from "./open-asks-cache";
 import { invalidateOwnerReads } from "./owner-reads";
 
@@ -68,14 +68,13 @@ export function useAskHandOn(ask: Ask): AskHandOnWrite {
       api.handAskTo(press.ask.id, press.askedOf, bounds),
     holds: (press) => ({
       endsOn: askWritten(press.ask.id, ["ask.asked_of"]),
-      keys: [...openAsksKeys(queryClient), meInboxQuery().queryKey],
+      keys: inboxAsksKeys(queryClient),
     }),
     inline: true,
     label: ({ askedOf }) => `Ask handed to ${askedOf}`,
     onMutate: async (press) => {
-      await Promise.all([cancelOpenAsks(queryClient), cancelMeInbox(queryClient)]);
-      const openAsks = openAsksSnapshot(queryClient);
-      const oneRead = meInboxSnapshot(queryClient);
+      await cancelInboxAsks(queryClient);
+      const previous = inboxAsksSnapshot(queryClient);
       const by = queryClient.getQueryData(whoAmIQuery().queryKey)?.login ?? null;
       const at = new Date().toISOString();
       const handedOn = (row: OpenAskRow): OpenAskRow =>
@@ -91,23 +90,14 @@ export function useAskHandOn(ask: Ask): AskHandOnWrite {
               waiting_on_person: press.askedOf,
             }
           : row;
-      patchOpenAsks(queryClient, handedOn);
-      // The rows the open asks held of the ask, any one of them, which join the reader's own
-      // Inbox answer where the ask is handed to them and it held no entry of it yet.
-      const joined =
-        press.askedOf === by
-          ? openAsks
-              .flatMap(([, rows]) => rows ?? [])
-              .filter((row) => row.id === press.ask.id)
-              .slice(0, 1)
-              .map(handedOn)
-          : [];
-      patchMeInboxAsks(queryClient, handedOn, joined);
-      return { oneRead, openAsks };
+      // The first row the open asks held of the ask, which joins the reader's own Inbox answer
+      // where the ask is handed to them and it held no entry of it yet.
+      const held = press.askedOf === by ? firstRowOf(previous.openAsks, press.ask.id) : undefined;
+      patchInboxAsks(queryClient, handedOn, held === undefined ? [] : [handedOn(held)]);
+      return previous;
     },
     onError: (_error, _press, previous) => {
-      restoreOpenAsks(queryClient, previous?.openAsks);
-      restoreMeInbox(queryClient, previous?.oneRead);
+      restoreInboxAsks(queryClient, previous);
     },
     onSettled: (_data, _error, press) => {
       // Every surface that draws this ask follows the write, not the `ask.asked_of` event that
@@ -133,4 +123,13 @@ export function useAskHandOn(ask: Ask): AskHandOnWrite {
     retry: mutation.retry,
     submit: (askedOf) => mutation.mutate({ ask, askedOf }),
   };
+}
+
+/** The first row of `askId` that `reads`, each read of the open asks as a write kept it, holds. */
+function firstRowOf(reads: OpenAsksSnapshot, askId: string): OpenAskRow | undefined {
+  for (const [, rows] of reads) {
+    const row = rows?.find((each) => each.id === askId);
+    if (row !== undefined) return row;
+  }
+  return undefined;
 }

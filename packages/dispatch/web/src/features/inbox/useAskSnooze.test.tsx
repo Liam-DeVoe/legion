@@ -3,7 +3,7 @@
  * asks they move the rows in: a read asked while a snooze is out waits for Dispatch's answer.
  */
 
-import { expect, spyOn, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -11,13 +11,13 @@ import type { ReactNode } from "react";
 import { jump, onFakeClock, settle } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAskSnoozes } from "../../__tests__/send-answers";
-import { ApiError, api, NetworkError } from "../../api/client";
+import { ApiError, NetworkError } from "../../api/client";
 import { openAsksQuery, whoAmIQuery } from "../../api/queries";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type { AskSnooze, DispatchEvent, OpenAskRow } from "../../api/types";
 import { FIRST_BACKOFF_MS, SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
-import { issueAsk, openAsksAnswer } from "./inbox-fixture";
+import { answerOpenAsks, issueAsk } from "./inbox-fixture";
 import { type AskSnoozeFailure, useAskSnooze, useAskSnoozeMany } from "./useAskSnooze";
 
 const UNTIL = "2026-11-20T09:00:00Z";
@@ -30,9 +30,7 @@ const UNTIL = "2026-11-20T09:00:00Z";
 function renderBesideInbox<T>(served: { rows: OpenAskRow[] }, use: () => T) {
   const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
-  const listOpenAsks = spyOn(api, "listOpenAsks").mockImplementation(async () =>
-    openAsksAnswer(served.rows)
-  );
+  const listOpenAsks = answerOpenAsks(() => served.rows);
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
@@ -42,15 +40,15 @@ function renderBesideInbox<T>(served: { rows: OpenAskRow[] }, use: () => T) {
   return { client, listOpenAsks, hook };
 }
 
-/** When each row of an Inbox read is snoozed until. */
+/** When each row of a read of the open asks is snoozed until. */
 function snoozedUntil(rows: readonly OpenAskRow[] | undefined): (string | null)[] | undefined {
   return rows?.map((row) => row.snoozed_until);
 }
 
-// A read of the Inbox asked while a snooze is out - an event's refresh, another surface - can
+// A read of the open asks asked while a snooze is out - an event's refresh, another surface - can
 // reach Dispatch before the snooze does, and its answer would bring the row back out of Later
 // while the control still says it is saving.
-test("a read of the Inbox asked while a snooze is out waits for its answer, and never brings the row back out of Later", async () => {
+test("a read of the open asks asked while a snooze is out waits for its answer, and never brings the row back out of Later", async () => {
   const served = { rows: [issueAsk({ id: "ask-1" })] };
   const snooze = Promise.withResolvers<AskSnooze>();
   const snoozeAsk = answerAskSnoozes().mockReturnValue(snooze.promise);
@@ -89,7 +87,7 @@ test("a read of the Inbox asked while a snooze is out waits for its answer, and 
 // A bulk snooze moves every marked row into Later at once and is out until the last of its asks
 // is decided: a read answered before then would bring back out of Later the rows Dispatch has not
 // taken yet.
-test("a read of the Inbox asked while a bulk snooze is out waits until the last of its asks is decided", async () => {
+test("a read of the open asks asked while a bulk snooze is out waits until the last of its asks is decided", async () => {
   const served = { rows: [issueAsk({ id: "ask-1" }), issueAsk({ id: "ask-2" })] };
   const answers = new Map<string, ReturnType<typeof Promise.withResolvers<AskSnooze>>>();
   answerAskSnoozes().mockImplementation((id) => {
@@ -163,7 +161,7 @@ function userStateEvent(login: string, changed: readonly string[]): DispatchEven
 // alice's state, its snoozes moved - says Dispatch has taken it: the held read goes then, and draws
 // the row in Later beside the new question while the snooze's answer is still out. Bob's snooze,
 // or a change of alice's state that moves no snooze, leaves the read held.
-test("a read of the Inbox held behind a snooze goes on the snooze's own event, and shows a question asked meanwhile before its answer", async () => {
+test("a read of the open asks held behind a snooze goes on the snooze's own event, and shows a question asked meanwhile before its answer", async () => {
   const served = { rows: [issueAsk({ id: "ask-1" })] };
   const snooze = Promise.withResolvers<AskSnooze>();
   const snoozeAsk = answerAskSnoozes().mockReturnValue(snooze.promise);

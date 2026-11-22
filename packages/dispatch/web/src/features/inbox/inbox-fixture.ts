@@ -7,6 +7,7 @@ import { api } from "../../api/client";
 import { meInboxQuery, openAsksKey, openAsksQuery } from "../../api/queries";
 import type { MeInboxEntry, MeInboxResponse, MyReplyRow, OpenAskRow } from "../../api/types";
 import { askProject, askWaitingOnPerson } from "./list-row";
+import { meInboxAskEntry } from "./one-read-cache";
 
 /** The mocks every Inbox render needs: the signed-in login, the credential requests waiting on
  *  it, and the one read, which the page draws the reader's own rows from (`answerOneRead`; empty
@@ -162,9 +163,7 @@ export const ONE_READ_AS_OF = "2026-10-12T02:00:00Z";
  *  waits on the reader by the ask itself, a Reply row by its thread, and an Agent row by its
  *  conversation with the session, each at the moment it last moved. */
 export function oneReadEntry(row: OpenAskRow | MyReplyRow): MeInboxEntry {
-  if (!("thread_id" in row)) {
-    return { ask: row, moment: row.created_at, node: { id: row.id, kind: "ask" }, relations: [] };
-  }
+  if (!("thread_id" in row)) return meInboxAskEntry(row);
   const moment = row.reply.created_at;
   if (row.kind === "agent") {
     return {
@@ -192,6 +191,11 @@ export function oneReadAnswer(
 ): MeInboxResponse {
   const entries = rows.map(oneReadEntry);
   return { as_of: asOf, entries, horizon: 1, limit: 0, offset: 0, person, total: entries.length };
+}
+
+/** The Dismissed view's cached read (`meInboxDismissedQuery`) as one settled page listing `rows`. */
+export function oneReadDismissedPages(rows: readonly MyReplyRow[]) {
+  return { pageParams: [undefined], pages: [oneReadAnswer(rows)] };
 }
 
 /**

@@ -65,7 +65,7 @@ export function ProjectPage(): ReactNode {
   const route = parseProjectPath(location.pathname, location.search);
   const projectKey = route?.project;
   // The project's own open asks, which its Blocked on you pill counts.
-  const inbox = useQuery({
+  const openAsks = useQuery({
     ...openAsksQuery(projectKey ?? ""),
     enabled: projectKey !== undefined,
   });
@@ -187,7 +187,7 @@ export function ProjectPage(): ReactNode {
             list is global (a request belongs to no project), so counting one here would make
             this project's number partly about another page. */}
         <BlockedOnYou
-          asks={inbox.data ?? []}
+          asks={openAsks.data ?? []}
           className="order-3 shrink-0 md:order-5"
           variant="pill"
           viewer={viewer}

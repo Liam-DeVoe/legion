@@ -509,7 +509,7 @@ function readAgain(client: QueryClient, issueKey: string): void {
   void client.invalidateQueries({ queryKey: ["issue", issueKey] });
   void client.invalidateQueries({ queryKey: ["issues"] });
   void client.invalidateQueries({ queryKey: openAsksKey });
-  invalidateMeInbox(client);
+  void invalidateMeInbox(client);
 }
 
 /** Holds each read out now on a cache a pick shows on that was sent before the answer `record`

@@ -121,8 +121,8 @@ function setViewport(width: number): void {
 }
 
 /** The shell at `width` over `inbox` as every ask the read of the open asks lists, with
- *  `unreadThreads` of the reader's threads unread. The reader's own asks and threads reach the
- *  header's count through the one read, which the Inbox draws them from. */
+ *  `unreadThreads` of the reader's threads unread. The one read answers every ask of `inbox` as
+ *  well, so the header's count is the shell's own narrowing to the asks that wait on the reader. */
 function renderShellAt(
   width: number,
   inbox: OpenAskRow[] = [],
@@ -132,8 +132,7 @@ function renderShellAt(
   setViewport(width);
   api.whoAmI = async () => ({ event_head: "0", kind: "user", login: "alice" });
   const threads = Array.from({ length: unreadThreads }, (_, index) => replyRow(`c${index}`));
-  const asks = inbox.filter((ask) => ask.waiting_on_person === "alice");
-  api.getMeInbox = async (query = {}) => oneReadReply(query, { asks, threads });
+  api.getMeInbox = async (query = {}) => oneReadReply(query, { asks: inbox, threads });
   api.listIssues = async () => [
     {
       advances: [],

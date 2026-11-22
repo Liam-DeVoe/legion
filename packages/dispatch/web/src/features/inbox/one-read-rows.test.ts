@@ -5,36 +5,20 @@
  */
 
 import { expect, test } from "bun:test";
+import { meInboxAsks, meInboxThreads } from "@legion/contracts";
 
-import type { MeInboxAgentRow, MeInboxEntry, MeInboxResponse, MessageRead } from "../../api/types";
-import { agentRow, replyRow } from "../threads/replies-fixture";
+import type { MeInboxEntry, MeInboxResponse } from "../../api/types";
+import {
+  AGENT_CONVERSATION,
+  agentRow,
+  replyRow,
+  withConversation,
+} from "../threads/replies-fixture";
 import { issueAsk } from "./inbox-fixture";
 import { rowId } from "./list-row";
-import {
-  agentConversation,
-  meInboxAsks,
-  meInboxCachedRows,
-  meInboxListRows,
-  meInboxThreads,
-} from "./one-read-rows";
+import { agentConversation, meInboxCachedRows, meInboxListRows } from "./one-read-rows";
 
-const CONVERSATION: MessageRead = {
-  message: {
-    author: { id: "alice", kind: "user" },
-    body: "Please check the staging gate.",
-    broadcast_id: null,
-    created_at: "2026-10-12T00:00:00Z",
-    deliveries: [],
-    id: "message-1",
-    in_reply_to: null,
-    issue_key: null,
-    reply_block: null,
-    target: "session:s1",
-  },
-  replies: [],
-};
-
-const AGENT: MeInboxAgentRow = { ...agentRow("message-1"), conversation: CONVERSATION };
+const AGENT = withConversation(agentRow("message-1"), AGENT_CONVERSATION);
 
 function entry(kind: string, id: string, carried: Partial<MeInboxEntry> = {}): MeInboxEntry {
   return {
@@ -87,6 +71,8 @@ test("a cached read is one answer or the pages of the paged one, and anything el
 
 test("an Agent row of the one read carries its conversation, and one of the threads' read none", () => {
   const [, , agent] = meInboxListRows(ANSWER.entries);
-  expect(agent?.kind === "thread" ? agentConversation(agent.thread) : undefined).toBe(CONVERSATION);
+  expect(agent?.kind === "thread" ? agentConversation(agent.thread) : undefined).toBe(
+    AGENT_CONVERSATION
+  );
   expect(agentConversation(agentRow("message-1"))).toBeUndefined();
 });

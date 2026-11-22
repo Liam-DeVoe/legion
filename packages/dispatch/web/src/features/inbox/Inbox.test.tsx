@@ -1,4 +1,4 @@
-import { beforeAll, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, a blur naming no target, and the Enter presses whose survival only fireEvent reports.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -217,11 +217,7 @@ test("a cold Inbox hydrates every ask thread from its one list response", async 
       ).toEqual(rows.map((row) => row.thread.replies?.[0]?.body))
     );
     // The reader's own list is the one read's `inbox` state, read once; it reads no open asks.
-    expect(
-      (api.getMeInbox as Mock<typeof api.getMeInbox>).mock.calls.filter(
-        ([query]) => query?.state === "inbox"
-      )
-    ).toHaveLength(1);
+    expect(ownListReads()).toBe(1);
     expect(listOpenAsks).not.toHaveBeenCalled();
     await waitFor(() => expect(getAsk).toHaveBeenCalledTimes(0));
     await waitFor(() => expect(mocks.getReferences).toHaveBeenCalledTimes(0));
@@ -1783,9 +1779,7 @@ async function filterTrigger(user: UserEvent): Promise<HTMLElement> {
 /** How many times the page has read the reader's own list: the one read's `inbox` state, which
  *  every list without somebody else in its filter is drawn from. */
 function ownListReads(): number {
-  return (api.getMeInbox as Mock<typeof api.getMeInbox>).mock.calls.filter(
-    ([query]) => query?.state === "inbox"
-  ).length;
+  return mocks.getMeInbox.mock.calls.filter(([query]) => query?.state === "inbox").length;
 }
 
 /** Opens the assignee filter if it is shut and toggles one of its rows. The popover is portalled
@@ -1915,8 +1909,8 @@ test("the reader's own list reads no open asks", async () => {
 });
 
 // The open asks are read once, whoever the filter names, and the page narrows them itself: a
-// move of the filter from one person to another asks the server nothing.
-test("moving the filter from one person to another makes no request", async () => {
+// move of the filter from one person to another reads neither them nor the one read again.
+test("moving the filter from one person to another reads neither the open asks nor the one read again", async () => {
   const user = userEvent.setup();
   const rows = filterRows();
   const listOpenAsks = mockInboxReads(rows);
@@ -1931,7 +1925,7 @@ test("moving the filter from one person to another makes no request", async () =
     await screen.findByText("Bob's question?");
     expect(listOpenAsks).toHaveBeenCalledTimes(1);
     expect(listOpenAsks).toHaveBeenCalledWith({});
-    const oneReads = (api.getMeInbox as Mock<typeof api.getMeInbox>).mock.calls.length;
+    const oneReads = mocks.getMeInbox.mock.calls.length;
 
     await toggleAssignee(user, new RegExp(FIXTURE_PROJECT_DEFAULT));
     await toggleAssignee(user, /bob/);
@@ -1941,7 +1935,7 @@ test("moving the filter from one person to another makes no request", async () =
     );
     expect([...rowIds()].sort()).toEqual(["ask-1", "ask-orphan"]);
     expect(listOpenAsks).toHaveBeenCalledTimes(1);
-    expect((api.getMeInbox as Mock<typeof api.getMeInbox>).mock.calls.length).toBe(oneReads);
+    expect(mocks.getMeInbox.mock.calls.length).toBe(oneReads);
   } finally {
     unmount();
     listUsers.mockRestore();

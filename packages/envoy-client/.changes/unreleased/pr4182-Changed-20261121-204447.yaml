@@ -1,5 +1,5 @@
 kind: Changed
-body: '`dispatch inbox` reads the one read, `GET /api/v1/me/inbox`, for its asks and its threads, and prints them as before, in the same order.'
+body: '`dispatch inbox` reads `GET /api/v1/me/inbox` for its asks and its threads, and prints them as before, in the same order.'
 time: 2026-11-21T20:44:47.951973048Z
 custom:
     Issue: pr4182

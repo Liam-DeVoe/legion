@@ -85,9 +85,10 @@ function MachineView({ host }: { host: string }): ReactNode {
   // deep-linkable. The server is in the value because tmux numbers windows per server, so a
   // bare `@1` would name a window on every server of the machine at once (`windowChoice`).
   const [picked] = useCappedSearchParam("window");
-  // What the viewer is owed, read once for the page from the two queries the shell already
-  // makes - never once per pane - so a pane that needs them reads `needs-you`, the first of
-  // the four states, and the page adds no request of its own.
+  // What the viewer is owed, read once for the page - never once per pane - so a pane that needs
+  // them reads `needs-you`, the first of the four states, from two reads every page already
+  // makes: every open ask, which the margin the shell mounts on every route reads too
+  // (`useMarginItems`), and the agent state the shell reads. The page adds no request of its own.
   const openAsks = useQuery(openAsksQuery());
   // Until `/auth/whoami` answers, no question is counted as the reader's.
   const viewer = useQuery(whoAmIQuery()).data?.login;

@@ -52,7 +52,8 @@ function id(letter: string): string {
 
 function renderMachine(agents: readonly Agent[], host = HOST, agentState: UserAgentStates = {}) {
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([...agents]);
-  // The two reads the page takes its `Needs you` count from, which the shell already makes.
+  // The reads the page takes its `Needs you` count from, which every page already makes: the open
+  // asks, which the margin reads, and who is signed in, which the shell reads.
   const listOpenAsks = answerOpenAsks([]);
   const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
     event_head: "0",

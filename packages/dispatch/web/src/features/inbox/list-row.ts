@@ -1,12 +1,11 @@
 /**
  * What a row of the Inbox is, now that the list holds two kinds of them.
  *
- * Every Inbox helper used to be typed on `OpenAskRow`, the open ask the server lists. The list
- * also holds the reader's own threads - a reply somebody wrote where they wrote, and an agent's
- * answer to a message they sent - which are `MyReplyRow`s from another route entirely. The two
- * share nothing but the fields the list sorts, groups, filters and draws by, so those fields are
- * read through the accessors below and nowhere else: the bar's counts, the grouping, the sort,
- * the selection and the row itself all ask the same seven questions of whichever row they hold.
+ * A row is an open ask (`OpenAskRow`) or one of the reader's own threads - a reply somebody wrote
+ * where they wrote, or an agent's answer to a message they sent - a `MyReplyRow`. The two share
+ * nothing but the fields the list sorts, groups, filters and draws by, so those fields are read
+ * through the accessors below and nowhere else: the bar's counts, the grouping, the sort, the
+ * selection and the row itself all ask the same seven questions of whichever row they hold.
  */
 
 import { inboxThreadRow } from "@legion/contracts";

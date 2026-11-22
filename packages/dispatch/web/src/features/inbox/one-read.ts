@@ -5,13 +5,13 @@
  * the open asks, `GET /api/v1/asks/open`, which the page makes only while its filter shows them.
  */
 
+import { meInboxAsks } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 
 import { meInboxQuery, openAsksQuery } from "../../api/queries";
 import type { OpenAskRow } from "../../api/types";
 import { useIsHuman } from "../../hooks/useIsHuman";
-import { meInboxAsks } from "./one-read-rows";
 import { isMine, isOwnList } from "./sections";
 
 /** The open asks the Inbox lists (`useInboxAsks`), and the state of the reads they are drawn

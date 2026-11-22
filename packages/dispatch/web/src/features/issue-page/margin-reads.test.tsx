@@ -118,8 +118,8 @@ const BESIDE = [
 // them the same way: a window focus past the app's 30 s staleness reads neither again. Beside the
 // shown spec it reads the decisions too, which the outline also reads under this key and keeps
 // fresh by events, and the same focus reads them again no more than it reads the asks and the
-// comments. The inbox and the reader's state keep the app's defaults there too, so their second
-// read shows the focus was handled.
+// comments. The open asks and the reader's state keep the app's defaults there too, so their
+// second read shows the focus was handled.
 test.each(
   BESIDE
 )("in Details beside %s, a focus past 30 s sends no read of the margin's asks, comments or decisions", async (_beside, spec) => {
