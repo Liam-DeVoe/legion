@@ -166,13 +166,19 @@ func credentialKind(req Request) string {
 	return credentialNone
 }
 
-// serviceGrant is entry's kind's grant, before it is held to the entry's projects.
+// serviceGrant is entry's kind's grant, before it is held to the entry's projects. An edge
+// listener's projects were read by config.ParseNATSServices, by the rule natsgrant.Edge holds them
+// to, so Edge refuses none of them; a list it did refuse answers its zero Permissions, no grant,
+// which the guard refuses as every empty grant is (guard, natsgrant.OpenDirection).
 func serviceGrant(entry config.NATSService) natsgrant.Permissions {
 	switch entry.Kind {
 	case config.NATSDispatch:
 		return natsgrant.Dispatch(entry.MachineID)
 	case config.NATSListener:
 		return natsgrant.Listener(entry.MachineID)
+	case config.NATSEdgeListener:
+		grant, _ := natsgrant.Edge(entry.MachineID, entry.Projects)
+		return grant
 	case config.NATSDaemon:
 		return natsgrant.Daemon()
 	case config.NATSMeasure:
@@ -186,9 +192,8 @@ func serviceGrant(entry config.NATSService) natsgrant.Permissions {
 // over req's nonce; a service with its kind's grant, held to its projects (scopeGrant), once its
 // platform token verifies and lives no longer than a token login may (an hour, beside the proof
 // clock skew) and its account is listed in services, a Kubernetes account's from an issuer its
-// entry names. An edge listener's entry admits no connection, whatever issuer signed its token
-// (scopeGrant). The grant it answers is not yet checked: every answer passes the guard in admit
-// (callout.go), whatever decided it.
+// entry names, an edge listener's as every other's. The grant it answers is not yet checked: every
+// answer passes the guard in admit (callout.go), whatever decided it.
 func Decide(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
 	switch credentialKind(req) {
 	case credentialSession:
@@ -295,9 +300,9 @@ func decideService(ctx context.Context, deps Deps, services []config.NATSService
 	}
 	// A listed Kubernetes account's token is taken only from an issuer its entry names: the same
 	// account name in another cluster is another ServiceAccount, which the entry does not list. An
-	// edge listener's entry is refused by scopeGrant whatever issuer signed its token, so its
-	// refusal is the same for every issuer.
-	if entry == nil || entry.Kind != config.NATSEdgeListener && !entry.Google && !slices.Contains(entry.Issuers, identity.Issuer) {
+	// edge listener's entry is held to its issuers as every other is, since its token from an
+	// issuer it names is answered with the edge's grant (scopeGrant).
+	if entry == nil || !entry.Google && !slices.Contains(entry.Issuers, identity.Issuer) {
 		return Decision{}, refuse(labelServiceNotListed, "service not listed: "+identity.Account)
 	}
 	grant, err := scopeGrant(*entry, serviceGrant(*entry))
