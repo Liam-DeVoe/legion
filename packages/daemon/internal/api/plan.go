@@ -149,8 +149,15 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	// FromBlocks read each need as the task it names, so a need that names no task is Validate's,
 	// and the plan recorded and answered holds task ids, which every reader of a need reads. Both
 	// checks run, so a plan with two causes gets two reasons: what this release does not carry out
-	// yet, then what no release can.
-	refusals := append(plan.Supported(given), plan.Validate(given, plan.Deployment{Roles: plan.BuiltinRoles()})...)
+	// yet, then what no release can. Validate checks a plan its owner wrote, before the fact lock,
+	// so it runs on the request's context and stops when the request ends, recording nothing.
+	invalid, err := plan.Validate(r.Context(), given, plan.Deployment{Roles: plan.BuiltinRoles()})
+	if err != nil {
+		s.logRequestFailure(r, err, "api: the check of a plan stopped", "issue", req.Issue, "artifact", artifactID, "version", req.Version)
+		s.refuse(w, r, http.StatusServiceUnavailable, "register_plan stopped before it finished checking the plan, because its request ended; nothing was recorded")
+		return
+	}
+	refusals := append(plan.Supported(given), invalid...)
 	if len(refusals) > 0 {
 		s.writeRefusal(w, r, intake.PlanRefused(refusals))
 		return

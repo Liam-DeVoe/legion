@@ -8,6 +8,17 @@ import (
 // yet ends each refusal of something a later release carries out.
 const yet = " This release of Legion does not carry it out yet."
 
+// validated is Validate's refusals of p under the test's context, which ends only with the test,
+// so Validate's one error, its context's end, fails the test.
+func validated(t *testing.T, p Plan, d Deployment) []Refusal {
+	t.Helper()
+	refusals, err := Validate(t.Context(), p, d)
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	return refusals
+}
+
 // What no release carries out, as this release checks it: a step that names a role neither the
 // deployment nor the plan defines is refused, naming the step, its task and the role. Legion
 // refuses no plan for a step that it lacks, so each plan of Legion's own roles is taken whatever
@@ -16,26 +27,26 @@ const yet = " This release of Legion does not carry it out yet."
 // `implementer reviewer`.
 func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
-	r := Validate(oneTask("a", "implementer prober"), d)
+	r := validated(t, oneTask("a", "implementer prober"), d)
 	want := Refusal{Task: "a", Reason: "step 2 of task a names the role prober, which neither the deployment nor the plan defines."}
 	if len(r) != 1 || r[0] != want {
 		t.Fatalf("got %+v, want %+v", r, want)
 	}
 	for _, taken := range []Plan{oneTask("a", "implementer tester"), oneTask("a", "implementer reviewer"), oneTask("a", "implementer")} {
-		if r := Validate(taken, d); len(r) != 0 {
+		if r := validated(t, taken, d); len(r) != 0 {
 			t.Fatalf("%v refused: %+v", taken, r)
 		}
 	}
 	// architect, merger and controller are no roles of a step: the step roles are Legion's five.
 	for _, role := range []string{"architect", "merger", "controller"} {
-		r := Validate(oneTask("a", "implementer "+role), d)
+		r := validated(t, oneTask("a", "implementer "+role), d)
 		want := Refusal{Task: "a", Reason: "step 2 of task a names the role " + role + ", which neither the deployment nor the plan defines."}
 		if len(r) != 1 || r[0] != want {
 			t.Fatalf("Validate(implementer %s) = %+v, want %+v", role, r, want)
 		}
 	}
 	// A role named at two steps is one cause, refused once at its first step.
-	if r := Validate(oneTask("a", "prober implementer prober"), d); !reflect.DeepEqual(r, []Refusal{
+	if r := validated(t, oneTask("a", "prober implementer prober"), d); !reflect.DeepEqual(r, []Refusal{
 		{Task: "a", Reason: "step 1 of task a names the role prober, which neither the deployment nor the plan defines."},
 	}) {
 		t.Fatalf("Validate(prober implementer prober) = %+v", r)
@@ -43,7 +54,7 @@ func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 	// A role the plan's own role block defines is defined (Supported refuses the role block).
 	defined := oneTask("a", "implementer prober")
 	defined.RoleBlocks = []string{"prober"}
-	if r := Validate(defined, d); len(r) != 0 {
+	if r := validated(t, defined, d); len(r) != 0 {
 		t.Fatalf("Validate(a role the plan defines) = %+v, want none", r)
 	}
 }
@@ -61,7 +72,7 @@ func TestValidateRefusesAPlanWithNoTask(t *testing.T) {
 		t.Fatalf("FromBlocks(no task block) tasks = %+v, want none", empty.Tasks)
 	}
 	want := []Refusal{{Task: "", Reason: "the plan has no task block, so it gives Legion no work."}}
-	if r := Validate(empty, d); !reflect.DeepEqual(r, want) {
+	if r := validated(t, empty, d); !reflect.DeepEqual(r, want) {
 		t.Fatalf("Validate(no task) = %+v, want %+v", r, want)
 	}
 	if r := Supported(empty); len(r) != 0 {
@@ -71,7 +82,7 @@ func TestValidateRefusesAPlanWithNoTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromBlocks(one block): %v", err)
 	}
-	if r := append(Supported(taken), Validate(taken, d)...); len(r) != 0 {
+	if r := append(Supported(taken), validated(t, taken, d)...); len(r) != 0 {
 		t.Fatalf("a plan of one block with no steps refused: %+v", r)
 	}
 }
@@ -143,7 +154,7 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 	// Both checks run, so a plan with causes of each kind gets the reasons of both.
 	twoTasks := oneTask("a", "implementer prober")
 	twoTasks.Tasks = append(twoTasks.Tasks, Task{ID: "b", Steps: implementer})
-	got := append(Supported(twoTasks), Validate(twoTasks, Deployment{Roles: BuiltinRoles()})...)
+	got := append(Supported(twoTasks), validated(t, twoTasks, Deployment{Roles: BuiltinRoles()})...)
 	want := []Refusal{
 		{Task: "", Reason: "the plan has 2 tasks (a, b), and this release runs one task for each issue." + yet},
 		{Task: "", Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself." + yet},
