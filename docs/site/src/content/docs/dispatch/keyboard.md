@@ -151,6 +151,7 @@ On the List table, `j` and `k` follow the current sorted, filtered page, skip co
 | `l` | Edit labels |
 | `e` | Edit the title |
 | `Shift+P` | Pin or unpin the issue |
+| `w` | Show or hide the agent's own wording of a title and spec the reviewer rewrote |
 | `t s` | Spec tab |
 | `t k` | Verification tab |
 | `t p` | Plan tab |
@@ -164,7 +165,7 @@ On the List table, `j` and `k` follow the current sorted, filtered page, skip co
 | `Escape` | Back out of the focused status or priority |
 
 `0` – `3` and `Shift+P` do nothing while focus is in an ask's card or on a checkbox or option,
-where the key belongs to that control.
+where the key belongs to that control. In an ask's card, `w` is the card's own.
 
 ## Document
 

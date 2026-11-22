@@ -2292,7 +2292,10 @@ ungraded writes none and exits 1.
 
 `asked-words` reads a score run's `undefined` grades of the question cases and reports the recall
 of the words the owner asked about (`owner_reply.verdict.words`) that the agent text uses: an
-asked word counts when a finding's words hold its words, or its words hold the finding's.
+asked word counts when a finding's words hold its words, or its words hold the finding's. It
+refuses, with exit 2 and before it loads the build or reads the grades, a `--cases` build whose
+`cases.jsonl.gz` is not the one the run scored (the `cases_sha256` its `run.json` records), as
+`score --texts-from` refuses one.
 
 ### local and load
 

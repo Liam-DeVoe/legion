@@ -28,7 +28,10 @@ body: |-
   while the first is held is answered the first's held answer, with no `ask_waiting_on`, as a
   reply sent again after its post is answered, and nothing more is held. A held reply from the
   live holder of the role its delivery went to posts on what the listener said when it was
-  written.
+  written. A held ask, comment or message waits on the same session's earlier held text, not yet
+  posted, on its issue or document, or to the session or role a message goes to: it is reviewed
+  at once, its answer's `held.waits_on` names that text, and it posts only after it, so the
+  session's texts there post in the order written.
   With `after`, the text posts at once, and the findings of the review after it go to the writer.
   Nothing more happens if the writer does not act.
   A writer has `DISPATCH_REVIEWER_WRITER_WINDOW` (default `5m`) to act, and a writer session that

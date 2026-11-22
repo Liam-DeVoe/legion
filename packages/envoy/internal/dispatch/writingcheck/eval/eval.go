@@ -40,6 +40,10 @@ type Pending struct {
 	Reason  string `yaml:"reason,omitempty"`
 }
 
+// Mark is the Pending itself: each pending-able field embeds Pending, so the field has Mark through
+// the embedding and is read as its Pending without naming its type.
+func (p *Pending) Mark() *Pending { return p }
+
 // Description is a description file.
 type Description struct {
 	SchemaVersion      int                 `yaml:"schema_version"`

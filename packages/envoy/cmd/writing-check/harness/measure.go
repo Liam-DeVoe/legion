@@ -577,6 +577,15 @@ func runAskedWords(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(1, fmt.Errorf("the run's run.json: %w", err))
 	}
+	// The run's grades are of the cases it scored: a --cases build of other cases is refused before
+	// the build is loaded or the run's grades are read, as score --texts-from refuses one.
+	casesSHA, err := fileSHA256(filepath.Join(*casesDir, casesFile))
+	if err != nil {
+		return fail(1, err)
+	}
+	if params.CasesSHA256 != casesSHA {
+		return fail(2, fmt.Errorf("--run %s scored other cases than --cases holds: its run.json records cases_sha256 %s, and %s of --cases is %s", *run, params.CasesSHA256, casesFile, casesSHA))
+	}
 	ds, err := LoadDataset(*casesDir, params.Part, docLimit)
 	if err != nil {
 		return fail(1, err)

@@ -59,7 +59,12 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
-import { originalWording, toggleOriginal, useOriginalShown } from "../inbox/ask-rewrite";
+import {
+  originalToggleProps,
+  originalWording,
+  toggleOriginal,
+  useOriginalShown,
+} from "../inbox/ask-rewrite";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { RewriteBadge } from "../inbox/RewriteBadge";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
@@ -490,19 +495,24 @@ export function IssueHeader({
                     badge, after the title's last word, shows both as the agent wrote them, in
                     place (the spec in its tab, `IssuePage`), and the title is not edited while
                     they show. A press, a focus or a key on the badge is the badge's, not the
-                    title's, which would open the title's editor. */}
+                    title's, which would open the title's editor: its `w` shows or hides the
+                    original, as the page's `w` does (`IssuePage`). */}
                 {issue.rewrite?.state !== "rewritten" ? null : (
                   // biome-ignore lint/a11y/noStaticElementInteractions: keeps the badge button's own press, focus and keys from reaching the title, which would open its editor; the button is the control
                   <span
                     className="ml-2 inline-flex translate-y-[-3px] align-middle"
                     onClick={(event) => event.stopPropagation()}
                     onFocus={(event) => event.stopPropagation()}
-                    onKeyDown={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => {
+                      originalToggleProps(issue.key, true).onKeyDown(event);
+                      event.stopPropagation();
+                    }}
                   >
                     <RewriteBadge
                       onToggle={() => toggleOriginal(issue.key)}
                       rewrite={issue.rewrite}
                       showingOriginal={original !== undefined}
+                      toggleKey="w"
                     />
                   </span>
                 )}

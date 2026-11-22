@@ -209,24 +209,19 @@ func validateDescription(d *eval.Description, descPath, manifestsDir string, log
 	return failures
 }
 
+// pendable is a pointer to a pending-able field: one that embeds eval.Pending, whose Mark it has
+// through the embedding.
+type pendable[T any] interface {
+	*T
+	Mark() *eval.Pending
+}
+
 // pendingOf is the Pending of a pending-able field, nil for an absent one.
-func pendingOf[T any](v *T) *eval.Pending {
+func pendingOf[T any, F pendable[T]](v F) *eval.Pending {
 	if v == nil {
 		return nil
 	}
-	switch f := any(v).(type) {
-	case *eval.ErrorAnalysis:
-		return &f.Pending
-	case *eval.FinalTest:
-		return &f.Pending
-	case *eval.BundleDigest:
-		return &f.Pending
-	case *eval.AcceptanceBar:
-		return &f.Pending
-	case *eval.Labellers:
-		return &f.Pending
-	}
-	return nil
+	return v.Mark()
 }
 
 // checkManifestRows checks one set's rows: each names a group that no other set holds, and no

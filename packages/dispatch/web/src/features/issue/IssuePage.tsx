@@ -19,7 +19,7 @@ import { ArtifactRoutePanel } from "../artifacts/ArtifactRoutePanel";
 import { ConversationTab } from "../conversation/ConversationTab";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { outsideAskCard } from "../inbox/ask-card";
-import { originalWording, useOriginalShown } from "../inbox/ask-rewrite";
+import { originalWording, toggleOriginal, useOriginalShown } from "../inbox/ask-rewrite";
 import { PlanTab } from "../plan/PlanTab";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import {
@@ -315,6 +315,17 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       label: "Pin or unpin the issue",
       run: () => usableControl(PIN_TOGGLE)?.click(),
       when: () => usableControl(PIN_TOGGLE) !== null && outsideInputsAndAskCards(),
+    },
+    {
+      // The reviewer rewrote the title and the spec as the agent opened the issue: `w` shows
+      // both as the agent wrote them, as a press on the title's badge does (`IssueHeader`), and
+      // the rewrite again. A rewritten text that holds the focus takes its own `w` first
+      // (`originalToggleProps`), and inside an ask card the card's keys are its own.
+      id: "original",
+      keys: "w",
+      label: "Show or hide the original wording of the title and spec",
+      run: () => toggleOriginal(route.key),
+      when: () => issue.data?.rewrite?.state === "rewritten" && outsideAskCard(),
     },
     {
       // `s` and `p` put focus in a native select, where every single-key binding is suspended

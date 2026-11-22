@@ -16,7 +16,9 @@ body: |-
   earlier results (`label --resume`, `fetch --resume`, `readers --state`, `dataset fetch`,
   `dataset classify`, `harness score` and `harness phrases-labels`) reuses them only under the
   same inputs, by their digests,
-  and refuses or redoes the rest; a run whose model calls failed or stopped (`probe-model`, `label`,
+  and refuses or redoes the rest; `harness asked-words` measures a run only against the cases it
+  scored, and refuses with exit 2 a `--cases` build of other cases; a run whose model calls failed
+  or stopped (`probe-model`, `label`,
   `regress`, `score`, `reading`) exits 1, and a stopped `harness probe` exits 1 and writes no `--out`; and every
   command sends a key or a token over http only to a host inside the
   machine or the cluster. Every command refuses, with exit 2 and before it writes anything, an

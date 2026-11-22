@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -125,5 +126,48 @@ func TestAskedWordsRecall(t *testing.T) {
 	// in the text. q2: the finding holds "lane session". The answer case is not counted.
 	if r.Cases != 2 || r.Asked != 3 || r.NotInText != 1 || r.Recall.Hits != 2 || r.Recall.Cases != 3 {
 		t.Errorf("the recall: %+v", r)
+	}
+}
+
+// asked-words measures a run against the build it scored, and refuses with exit 2, before it loads
+// the build or reads the grades, a --cases build of other cases than the cases_sha256 the run's
+// run.json records, as score --texts-from refuses one: it writes no --out.
+func TestAskedWordsRefusesARunOfOtherCases(t *testing.T) {
+	build, _ := writeFixture(t)
+	casesSHA, err := fileSHA256(filepath.Join(build, casesFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, out := t.TempDir(), t.TempDir()
+	writeJSONFile(t, filepath.Join(run, "run.json"), map[string]any{"part": PartDevelopment, "cases_sha256": casesSHA})
+	writeJSONFile(t, filepath.Join(run, "cases.jsonl"), CaseResult{
+		CaseID: "question/comment:q1@11", Grades: map[Judgement]*Grade{JUndefined: {Items: []Item{{Quote: "zork train"}}}},
+	})
+	if code, _, stderr := runHarness("asked-words", "--run", run, "--cases", build, "--out", filepath.Join(out, "same.json"), "--draws", "50"); code != 0 {
+		t.Fatalf("asked-words on the build the run scored = %d: %s", code, stderr)
+	}
+	// Another build: the same cases, one agent text changed.
+	other := t.TempDir()
+	cases := fixtureCases()
+	cases[0].Agent.Text = "The zork train left at noon."
+	var lines []any
+	for _, c := range cases {
+		lines = append(lines, c)
+	}
+	writeGzipLines(t, filepath.Join(other, casesFile), lines...)
+	documents, err := os.ReadFile(filepath.Join(build, documentsFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, documentsFile), documents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	refused := filepath.Join(out, "other.json")
+	code, stdout, stderr := runHarness("asked-words", "--run", run, "--cases", other, "--out", refused, "--draws", "50")
+	if code != 2 || !strings.Contains(stderr, "scored other cases than --cases holds: its run.json records cases_sha256 "+casesSHA) || stdout != "" {
+		t.Errorf("asked-words on a build of other cases = %d:\n%s\n%s", code, stdout, stderr)
+	}
+	if _, err := os.Stat(refused); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the refused run wrote --out %s (%v)", refused, err)
 	}
 }

@@ -285,6 +285,69 @@ func (rig *reviewRig) requireThreadedUnder(id, parent string) {
 	}
 }
 
+// One writer's two held comments on one issue, and two held messages to one session, post in
+// the order written: the second's review runs at once and passes while the first waits on its
+// writer, and the second still posts only once the first has, as its answer says (`waits_on`).
+func TestOneWritersHeldTextsAtOnePlacePostInTheOrderWritten(t *testing.T) {
+	const recipient = "s-recipient"
+	for name, place := range map[string]struct {
+		cfg          ReviewerConfig
+		route, table string
+		fields       map[string]any
+	}{
+		"comments on an issue":  {holdComments(), "comments", "comments", nil},
+		"messages to a session": {ReviewerConfig{Messages: ReviewHold, WriterWindow: time.Minute}, "messages", "messages", map[string]any{"target": "session:" + recipient, "delivery": "btw"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rig := newReviewRig(t, place.cfg, nil)
+			rig.listener.start(recipient)
+			write := func(what, body string) heldWriteAnswer {
+				t.Helper()
+				fields := map[string]any{"body": body}
+				for key, value := range place.fields {
+					fields[key] = value
+				}
+				return rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/"+place.route, fields), what)
+			}
+			first := write("the first", "Status\nWe spin up the node. "+vacuousPhrase)
+			rig.waitHeld(first.ID, heldAwaitingWriter)
+			second := write("the second", "The node answers on its port now.")
+			pollUntil(t, 20*time.Second, "the second's review to end", func() bool {
+				return rig.heldRow(second.ID).outcome != ""
+			})
+			rig.served.detached.wait()
+			rig.served.postReady()
+			if row := rig.heldRow(second.ID); row.state != heldPosting || row.outcome != reviewPassed {
+				t.Fatalf("the second is %s %s (%s) while the first waits on its writer, want it passed and waiting to post", row.state, row.outcome, row.detail)
+			}
+			if second.Held.WaitsOn != first.ID {
+				t.Fatalf("the second's answer waits on %q, want the first, %s", second.Held.WaitsOn, first.ID)
+			}
+			rig.postHeldAsWritten(first.ID)
+			rig.waitHeld(second.ID, heldPosted)
+			var order []string
+			rows, err := rig.database.Pool.Query(context.Background(),
+				`select id::text from `+place.table+` where id::text = any($1) order by created_at`, []string{second.ID, first.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for rows.Next() {
+				var id string
+				if err := rows.Scan(&id); err != nil {
+					t.Fatal(err)
+				}
+				order = append(order, id)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if want := []string{first.ID, second.ID}; !slices.Equal(order, want) {
+				t.Fatalf("the %s posted in the order %v, want the order written %v", place.table, order, want)
+			}
+		})
+	}
+}
+
 // A reply the reviewer does not read - a plugin's generated text, a line a person typed in the
 // writer's session - sent while the same writer's reply to the same delivery is held, is held
 // beside it unreviewed: the held reply posts as the delivery's reply once its writer posts it,

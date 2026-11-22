@@ -44,6 +44,15 @@ const (
 // 20261119050004_held_texts), which a query naming these states reads through.
 const heldOpenStatesSQL = "('" + heldReviewing + "', '" + heldAwaitingWriter + "', '" + heldPosting + "')"
 
+// heldReviewWaitsSQL holds where the review of the held text h waits for the text it waits on
+// (depends_on) to post, as its record reads that text: a write kept whole (a reply, reviewed once
+// the writer's earlier reply to its delivery has posted) and a write whose request names that text
+// (a child of a held issue, an ask or a comment on one, a reply to a held comment). A text that
+// waits on its writer's earlier held text at its place (heldBeforeOf) names none: its place has
+// posted, so its review runs at once, and only its post waits for its turn.
+const heldReviewWaitsSQL = `(h.request @> '{"replay": true}' or
+	jsonb_path_exists(h.request, '$.** ? (@ == $id)', jsonb_build_object('id', h.depends_on)))`
+
 // heldNotReviewed is the outcome of a held text the reviewer does not read before it posts: a
 // write that waits on a held text with its own kind's setting not hold.
 const heldNotReviewed = "not_reviewed"
@@ -272,10 +281,34 @@ func (s *server) heldParentOf(ctx context.Context, names []string) (*heldParent,
 	return &parent, nil
 }
 
+// heldBeforeOf is the newest held text, not yet posted, that writer wrote to the place write
+// posts to (heldRequest.place), "" where it holds none there: the text a held ask, comment or
+// message posts after, so one writer's texts at one place post in the order written whichever
+// review ends first, as its replies to one delivery do (heldReplyPlaceOf).
+func (s *server) heldBeforeOf(ctx context.Context, writer string, write reviewedWrite) (string, error) {
+	place := write.request.place()
+	if writer == "" || place == "" {
+		return "", nil
+	}
+	rows, err := s.loadHeldRows(ctx, `writer = $1 and state in `+heldOpenStatesSQL+` order by seq desc`, writer)
+	if err != nil {
+		return "", fmt.Errorf("read the writer's held texts: %w", err)
+	}
+	for _, row := range rows {
+		if held, err := row.write(); err == nil && held.request.place() == place {
+			return row.id, nil
+		}
+	}
+	return "", nil
+}
+
 // heldWriteOf is what reviewWrite decided of a write it holds.
 type heldWriteOf struct {
 	route, reader, project string
 	parent                 *heldParent
+	// before is the writer's held text at the place the write posts to (heldBeforeOf), which it
+	// posts after; "" for none, and where parent is set.
+	before string
 	// reviewed is whether the reviewer reads the text before it posts.
 	reviewed bool
 	// event is the writing_check_events row of the write, its outcome left to set.
@@ -287,11 +320,12 @@ type heldWriteOf struct {
 
 // holdWrite stores write as a held text and answers the write: its id reserved (an issue's key
 // from its project's sequence, else a uuid), its request, its text as written, its actor, writer,
-// reader and project, and the held text it waits on. A text the reviewer reads is recorded held
-// and its review started; one it does not waits, decided, for its parent to post. A text that
-// waits on no held text first runs its whole write in a transaction that is rolled back (dryRunHeld),
-// so a write its own path refuses is refused now, as with the reviewer off, and never fails at
-// its post; a reply its route answers with no new text is answered so now, and nothing is held.
+// reader and project, and the held text it waits on: its parent, else the writer's held text at
+// its place (of.before). A text the reviewer reads is recorded held and its review started; one it
+// does not waits, decided, for its parent to post. A text that names no held text first runs its
+// whole write in a transaction that is rolled back (dryRunHeld), so a write its own path refuses
+// is refused now, as with the reviewer off, and never fails at its post; a reply its route
+// answers with no new text is answered so now, and nothing is held.
 // The answer carries the advice the write's own answer carries (heldAdvice), worked out before
 // the id is reserved, and, for a new issue, the assignee its post writes: the one its dry run filed
 // it under, else heldIssueAssignee's. What else the post writes it reads off the dry run
@@ -352,7 +386,7 @@ func (s *server) holdWrite(w http.ResponseWriter, r *http.Request, actor model.A
 	if !of.reviewed {
 		state, outcome = heldPosting, heldNotReviewed
 	}
-	dependsOn := ""
+	dependsOn := of.before
 	if of.parent != nil {
 		dependsOn = of.parent.id
 	}
@@ -382,9 +416,10 @@ func (s *server) holdWrite(w http.ResponseWriter, r *http.Request, actor model.A
 		event := of.event
 		event.Outcome, event.WriteID = reviewHeld, id
 		s.recordWritingCheck(ctx, event)
-		// A text that waits on a held text is reviewed once that text posts (claimHeldReview,
-		// afterHeldPost); this start takes it at once where the text posted before this row was
-		// committed, and nothing otherwise.
+		// A text whose review reads the held text it waits on is reviewed once that text posts
+		// (claimHeldReview, afterHeldPost); this start takes it at once where the text posted
+		// before this row was committed, or where it waits only for its turn at its place
+		// (of.before), and nothing otherwise.
 		s.startReview(id)
 	} else {
 		// Its parent may have posted while this write was held beside it.
@@ -771,16 +806,17 @@ func (h *heldPost) finishRepeat(ctx context.Context, tx pgx.Tx) error {
 }
 
 // claimHeldReview takes the held text id for a review: it must be in review, with no review
-// holding it or one held past staleClaim, and the held text it waits on, if any, must have posted.
-// A text whose parent has not posted is read in a record that misses that parent (a new ask, a
-// comment or a child on a held issue), so its review waits for the parent's post, which starts it
-// (afterHeldPost).
+// holding it or one held past staleClaim, and the held text it waits on, if its record reads that
+// text (heldReviewWaitsSQL), must have posted. A text whose parent has not posted is read in a
+// record that misses that parent (a new ask, a comment or a child on a held issue), so its review
+// waits for the parent's post, which starts it (afterHeldPost). A text that waits only for its
+// turn at its place (heldBeforeOf) is reviewed at once.
 func (s *server) claimHeldReview(ctx context.Context, id string) (heldRow, bool, error) {
 	row, err := scanHeld(s.deps.Store.Pool.QueryRow(ctx, `
 		update held_texts h set claimed_at = now()
 		where h.id = $1 and h.state = 'reviewing'
 			and (h.claimed_at is null or h.claimed_at < now() - $2::interval)
-			and (h.depends_on is null or exists (
+			and (h.depends_on is null or not `+heldReviewWaitsSQL+` or exists (
 				select 1 from held_texts p where p.id = h.depends_on and p.state = 'posted'))
 		returning `+heldColumns, id, intervalOf(s.deps.Reviewer.staleClaim())))
 	if errors.Is(err, pgx.ErrNoRows) {

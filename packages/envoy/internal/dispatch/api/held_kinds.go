@@ -16,10 +16,10 @@ import (
 )
 
 // held_kinds.go is each kind of write the reviewer holds, as the one interface the hold, the edit,
-// the post and the rewrite read it through (heldRequest): a new ask (askCreate), a new issue
-// (issueCreate), a comment (commentCreate), a message (messageCreate), a write kept whole
-// (heldReplay) and a decision block's hold (decisionBlockHold). A new kind is one type that
-// implements it.
+// the post, the rewrite and the order of one writer's texts read it through (heldRequest): a new
+// ask (askCreate), a new issue (issueCreate), a comment (commentCreate), a message
+// (messageCreate), a write kept whole (heldReplay) and a decision block's hold
+// (decisionBlockHold). A new kind is one type that implements it.
 
 // heldRequest is a held write's request, decoded: what a held text stores and its post runs.
 type heldRequest interface {
@@ -41,6 +41,24 @@ type heldRequest interface {
 	// rewritten is the write of kind with rewrite's wording in place of its own, false for a kind
 	// whose wording no rewrite replaces (withRewrite).
 	rewritten(kind reviewer.Kind, rewrite reviewer.Text) (reviewedWrite, bool)
+	// place is where the text posts, for the order of one writer's held texts there
+	// (heldBeforeOf): the issue or the document of an ask or a comment, the session or the role a
+	// message goes to, else its issue. It is "" for a write whose order something else keeps: a
+	// new issue, by the parent it names; a write kept whole, by the delivery a reply answers or the
+	// held text its path names (heldReplyPlaceOf, awaitHeldTarget); a decision block, by its place
+	// in its document.
+	place() string
+}
+
+// placeOf is the place of a text on o (heldRequest.place): its issue, else its document.
+func placeOf(o owner) string {
+	switch {
+	case o.IssueKey != nil:
+		return "issue " + *o.IssueKey
+	case o.ArtifactID != nil:
+		return "document " + *o.ArtifactID
+	}
+	return ""
 }
 
 // refuseHeldEdit is an edit's refusal of a field its kind does not hold, or of an edit that
@@ -168,6 +186,8 @@ func (c askCreate) rewritten(_ reviewer.Kind, rewrite reviewer.Text) (reviewedWr
 	return c.reviewed(), true
 }
 
+func (c askCreate) place() string { return placeOf(c.Owner) }
+
 // The new issue.
 
 func (c issueCreate) answer(_ reviewer.Kind, id string, actor model.Actor, at time.Time, dry *heldDryRun, _ bool) any {
@@ -285,6 +305,8 @@ func (c issueCreate) rewritten(_ reviewer.Kind, rewrite reviewer.Text) (reviewed
 	return c.reviewed(), true
 }
 
+func (c issueCreate) place() string { return "" }
+
 // The comment.
 
 func (c commentCreate) answer(_ reviewer.Kind, id string, actor model.Actor, at time.Time, dry *heldDryRun, trees bool) any {
@@ -339,6 +361,8 @@ func (c commentCreate) rewritten(_ reviewer.Kind, rewrite reviewer.Text) (review
 	return c.reviewed(), true
 }
 
+func (c commentCreate) place() string { return placeOf(c.Owner) }
+
 // The message.
 
 func (c messageCreate) answer(_ reviewer.Kind, id string, actor model.Actor, at time.Time, dry *heldDryRun, trees bool) any {
@@ -385,6 +409,13 @@ func (c messageCreate) edited(input heldEditInput) (heldRequest, error) {
 func (c messageCreate) rewritten(_ reviewer.Kind, rewrite reviewer.Text) (reviewedWrite, bool) {
 	c.Input.Body = rewrite.Body
 	return c.reviewed(), true
+}
+
+func (c messageCreate) place() string {
+	if target := deref(c.Input.Target); target != "" {
+		return "to " + target
+	}
+	return "issue " + deref(c.IssueKey)
 }
 
 // The write kept whole: a reply, or a write that names a held text.
@@ -456,6 +487,8 @@ func (c heldReplay) rewritten(kind reviewer.Kind, rewrite reviewer.Text) (review
 	return edited.reviewed(kind), true
 }
 
+func (c heldReplay) place() string { return "" }
+
 // The decision block's hold: the block is in its document already, so its hold answers nothing,
 // runs no dry run, takes no edit and no rewrite of its request; its post ends the hold
 // (releaseDecisionBlock).
@@ -484,3 +517,5 @@ func (c decisionBlockHold) edited(heldEditInput) (heldRequest, error) {
 func (c decisionBlockHold) rewritten(reviewer.Kind, reviewer.Text) (reviewedWrite, bool) {
 	return reviewedWrite{}, false
 }
+
+func (c decisionBlockHold) place() string { return "" }

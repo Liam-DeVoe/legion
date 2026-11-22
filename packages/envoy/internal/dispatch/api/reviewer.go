@@ -208,10 +208,12 @@ type postedReview struct {
 // check (writingCheck). A person's typed write posts at once, recorded exempt_person_typed. A
 // session's write that names a held text as its parent or as the text it answers is held beside
 // it whatever the setting says, and posts right after it, through its own review where the
-// setting is hold and no person typed it. A person signed in at a browser learns nothing of a held
-// text: their write is the route's own, which finds no such text, as awaitHeldTarget answers
-// their other writes. Call it as writingCheck is called: once the input is decoded and the actor
-// resolved, before any transaction.
+// setting is hold and no person typed it. A held text that names none waits on its writer's
+// newest held text at its place, if any (heldBeforeOf): it is reviewed at once and posts after
+// that text, so one writer's texts at one place post in the order written. A person signed in at
+// a browser learns nothing of a held text: their write is the route's own, which finds no such
+// text, as awaitHeldTarget answers their other writes. Call it as writingCheck is called: once the
+// input is decoded and the actor resolved, before any transaction.
 func (s *server) reviewWrite(w http.ResponseWriter, r *http.Request, actor model.Actor, input any, write reviewedWrite) (*postedReview, bool) {
 	rv := s.deps.Reviewer
 	if !rv.reviewsAny() || s.deps.Store == nil {
@@ -275,9 +277,16 @@ func (s *server) reviewWrite(w http.ResponseWriter, r *http.Request, actor model
 		// write, and it posts right after the text it waits on.
 		s.writingCheck(r, actor, input)
 	}
+	before := ""
+	if holds && parent == nil {
+		if before, err = s.heldBeforeOf(ctx, writerOf(actor), write); err != nil {
+			s.writeHandlerError(w, err)
+			return nil, false
+		}
+	}
 	s.holdWrite(w, r, actor, write, heldWriteOf{
-		route: method + " " + route, reader: reader, project: project, parent: parent, reviewed: holds, event: event,
-		personTyped: typed,
+		route: method + " " + route, reader: reader, project: project, parent: parent, before: before, reviewed: holds,
+		event: event, personTyped: typed,
 	})
 	return nil, false
 }
@@ -631,9 +640,9 @@ const (
 // sweepHeld is one pass of the reviewer's sweep, which one process runs every
 // ReviewerSweepInterval under its lease (cmd/dispatch). It fails the held texts that wait on one
 // that failed; reviews again each text a stopped process left in review, once the text it waits
-// on, if any, has posted (claimHeldReview); posts, as DISPATCH_REVIEWER_UNEDITED says, each text
-// whose writer has not acted in time or whose writer session has gone; and posts every decided
-// text whose turn has come.
+// on has posted where its record reads that text (claimHeldReview); posts, as
+// DISPATCH_REVIEWER_UNEDITED says, each text whose writer has not acted in time or whose writer
+// session has gone; and posts every decided text whose turn has come.
 func (s *server) sweepHeld(ctx context.Context) {
 	if s.deps.Store == nil {
 		return
@@ -645,7 +654,7 @@ func (s *server) sweepHeld(ctx context.Context) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select h.id from held_texts h
 		where h.state = 'reviewing' and coalesce(h.claimed_at, h.updated_at) < now() - $1::interval
-			and (h.depends_on is null or exists (
+			and (h.depends_on is null or not `+heldReviewWaitsSQL+` or exists (
 				select 1 from held_texts p where p.id = h.depends_on and p.state = 'posted'))
 		order by h.seq limit 50`, stale)
 	if err == nil {

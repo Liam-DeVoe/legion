@@ -203,18 +203,44 @@ async function releaseFocus(page: Page): Promise<void> {
   });
 }
 
+/** How many times, 100 ms apart, an absence is read: half a second, far past the one task after a
+ *  selection changes in which the bar reads it, and past the press's own render in which a quote
+ *  lands in its box. */
+const ABSENT_READS = 6;
+
+/** That `found` finds nothing at every read of a poll, ABSENT_READS reads 100 ms apart: a bar or a
+ *  quote that shows at any read of that window fails the row, where one read after a fixed wait
+ *  passes one that shows a moment after it. */
+async function expectNoneThroughout(
+  what: string,
+  found: () => Promise<readonly string[]>
+): Promise<void> {
+  let reads = 0;
+  await expect
+    .poll(
+      async () => {
+        expect(await found(), `${what}, at read ${reads + 1} of ${ABSENT_READS}`).toEqual([]);
+        reads += 1;
+        return reads;
+      },
+      { intervals: [100], message: `${what}: ${ABSENT_READS} reads`, timeout: 10_000 }
+    )
+    .toBe(ABSENT_READS);
+}
+
 /** That the selection standing now draws no bar, and that `q` then quotes into no box. */
 async function expectNoQuoteReply(page: Page): Promise<void> {
-  // The bar reads a selection one task after it changes; half a second is far past that.
-  await page.waitForTimeout(500);
-  await expect(bar(page)).toHaveCount(0);
+  await expectNoneThroughout("the bars over the selection", () => bar(page).allTextContents());
   await page.keyboard.press("q");
-  // A quote lands in its box within the press's own render; half a second is far past that.
-  await page.waitForTimeout(500);
-  const values = await page
-    .locator("textarea")
-    .evaluateAll((boxes) => boxes.map((box) => (box as HTMLTextAreaElement).value));
-  expect(values.filter((value) => value.includes(">"))).toEqual([]);
+  await expectNoneThroughout("the boxes holding a quote", () =>
+    page
+      .locator("textarea")
+      .evaluateAll((boxes) =>
+        boxes
+          .map((box) => (box as HTMLTextAreaElement).value)
+          .filter((value) => value.includes(">"))
+      )
+  );
 }
 
 // SLOW(>=2s): a seed, the Inbox, and one selection quoted twice, by the bar's button and by q.
