@@ -66,8 +66,7 @@ func ExitCode(stderr io.Writer, program string, err error) int {
 	if err == nil {
 		return 0
 	}
-	var unknown *Unknown
-	if errors.As(err, &unknown) || errors.Is(err, holdrecord.ErrUnknown) {
+	if isUnknown(err) {
 		line := err.Error()
 		if !strings.HasPrefix(line, "UNKNOWN") {
 			line = "UNKNOWN " + line
@@ -77,4 +76,12 @@ func ExitCode(stderr io.Writer, program string, err error) int {
 	}
 	fmt.Fprintf(stderr, "%s: %v\n", program, err)
 	return 1
+}
+
+// isUnknown reports whether err is an UNKNOWN reading: an *Unknown, or holdrecord.ErrUnknown (a
+// row or record that does not verify). ExitCode answers 2 for one, and a held command's stop after
+// one records `unknown: read …; unread …` (RunHeld), never holdrecord.LeftUnchanged.
+func isUnknown(err error) bool {
+	var unknown *Unknown
+	return errors.As(err, &unknown) || errors.Is(err, holdrecord.ErrUnknown)
 }

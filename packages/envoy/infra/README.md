@@ -3398,8 +3398,10 @@ entry must record each bucket's archive sha256, and each archive must be there, 
 hash to it; anything less refuses, naming the bucket, and deletes nothing.
 Each command changes the buckets on the operator's one connection under the held grant, checks
 each protected stream against what it did (the postcheck) and writes its done entry. A command
-that fails after its intent writes a stop entry recording what it left: `unchanged`, or what it
-changed (a recreate that deleted a bucket, a restore that left its stream deleted); `hold release`
+that fails after its intent writes a stop entry recording what its runs left: `unchanged`, or
+every change they made and did not undo (a recreate that deleted a bucket, a restore that left its
+stream deleted, a census's removals and its barrier key in the selection bucket), and after an
+UNKNOWN `unknown: read …; unread …; <what changed>`, never `unchanged`; `hold release`
 then ends the hold when every stop left nothing changed, and `hold abort` when one changed
 something. Once `hold release` or `hold abort` is done, no command is admitted in that hold. The
 hold stays set until then: `envoy-infra hold release --hold ID` ends it. A `create` that finds

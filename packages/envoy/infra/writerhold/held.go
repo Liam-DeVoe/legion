@@ -39,6 +39,9 @@ type HeldCommand struct {
 	// holdID, and says what it did to each protected stream it changed (a stream it does not name
 	// is kept, unwritten) and its done entry's outputs.
 	Change func(ctx context.Context, nc *nats.Conn, holdID string) (map[string]Change, map[string]string, error)
+	// Reads, when set, is what Change has read so far, which a stop after an UNKNOWN names
+	// (unknownLeft) beside RunHeld's own readings.
+	Reads func() []string
 }
 
 // RunHeld runs c inside its hold and returns the hold's id. With no HoldID it prepares a hold of
@@ -111,9 +114,14 @@ func RunHeld(ctx context.Context, records *holdrecord.Client, op *Operator, c He
 		return id, err
 	}
 	// A Stoppable command's failure after its intent writes a stop entry recording what it left
-	// (holdrecord.AppendStopLeft): LeftUnchanged when neither this run nor an earlier one changed
-	// anything outside the journal, else what changed. A command that is not Stoppable leaves its
-	// intent pending, and the table admits its rerun (holdrecord.Stoppable).
+	// (holdrecord.AppendStopLeft): every change its runs made and did not undo, LeftUnchanged only
+	// when neither this run nor an earlier one changed anything outside the journal. After an
+	// UNKNOWN the record is `unknown: read <what this run read since its intent>; unread <what it
+	// could not read>; <what the runs changed>` (unknownLeft), never LeftUnchanged: a reading that
+	// is not whole cannot say what it left, so release stays refused and abort is the way out. A
+	// command that is not Stoppable leaves its intent pending, and the table admits its rerun
+	// (holdrecord.Stoppable).
+	var reads []string
 	stop := func(cause error, left string) error {
 		if !holdrecord.Stoppable(d.Workflow, c.Command) {
 			return cause
@@ -125,6 +133,12 @@ func RunHeld(ctx context.Context, records *holdrecord.Client, op *Operator, c He
 				left = prior + "; " + left
 			}
 		}
+		if isUnknown(cause) {
+			if c.Reads != nil {
+				reads = append(reads, c.Reads()...)
+			}
+			left = unknownLeft(reads, cause, left)
+		}
 		if err := records.AppendStopLeft(ctx, id, c.Command, cause.Error(), left); err != nil {
 			return errors.Join(cause, err)
 		}
@@ -134,6 +148,7 @@ func RunHeld(ctx context.Context, records *holdrecord.Client, op *Operator, c He
 	if err != nil {
 		return id, stop(err, holdrecord.LeftUnchanged)
 	}
+	reads = append(reads, "the protected streams")
 	changes, outputs, err := c.Change(ctx, nc, id)
 	if err != nil {
 		left := holdrecord.LeftUnchanged
@@ -164,6 +179,24 @@ type Left struct {
 func (l *Left) Error() string { return l.Err.Error() }
 
 func (l *Left) Unwrap() error { return l.Err }
+
+// unknownLeftPrefix begins every stop's record of what its command left after an UNKNOWN.
+const unknownLeftPrefix = "unknown: "
+
+// unknownLeft is a stop's record of what its command left after err, an UNKNOWN exit:
+// `unknown: read <reads, or nothing since its intent>; unread <err, without its UNKNOWN word>;
+// <left>`, where left is what the runs changed, or "no change it could see" for LeftUnchanged. It
+// is never LeftUnchanged, so holdrecord's release rule does not follow it.
+func unknownLeft(reads []string, err error, left string) string {
+	read := "nothing since its intent"
+	if len(reads) > 0 {
+		read = strings.Join(reads, ", ")
+	}
+	if left == holdrecord.LeftUnchanged {
+		left = "no change it could see"
+	}
+	return unknownLeftPrefix + "read " + read + "; unread " + strings.TrimPrefix(err.Error(), "UNKNOWN ") + "; " + left
+}
 
 // priorLeft is what earlier runs of command in d left, or "" when every one recorded
 // LeftUnchanged: a run cut after its intent, with no stop or done entry after it (holdrecord's

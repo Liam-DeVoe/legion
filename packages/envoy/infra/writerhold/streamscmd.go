@@ -334,13 +334,16 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 		c.Change = func(ctx context.Context, nc *nats.Conn, _ string) (map[string]Change, map[string]string, error) {
 			r, err := streams.Update(ctx, nc, settings, held)
 			result, reported = r, madeReport(r, err)
-			return streamChanges(r), nil, leftBy(r, streamsRefusal(r, err))
+			return streamChanges(r), nil, leftBy(r, nil, streamsRefusal(r, err))
 		}
 	case "census":
 		c.Command = CommandStreamsCensus
 		if o.holdID == "" {
 			c.Workflow = holdrecord.WorkflowStreamsCensus
 		}
+		// censusReads are what the census read since its intent, which a stop after an UNKNOWN names.
+		var censusReads []string
+		c.Reads = func() []string { return censusReads }
 		c.Change = func(ctx context.Context, nc *nats.Conn, holdID string) (map[string]Change, map[string]string, error) {
 			js, err := jetstream.New(nc)
 			if err != nil {
@@ -368,6 +371,7 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 					if err != nil {
 						return nil, err
 					}
+					censusReads = append(censusReads, "the cutover rows")
 					states := make(map[string]string, len(rows))
 					for _, row := range rows {
 						states[row.Family] = row.State
@@ -375,24 +379,31 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 					return states, nil
 				},
 				Barrier: func(ctx context.Context, bucket string) error {
-					if err := holdrecord.Barrier(ctx, js, bucket, holdID); err != nil {
-						return err
-					}
+					// Counted before the put: a put whose answer is lost may have landed, and the
+					// stop names each key the census may have left (leftBy). A put that fails stops
+					// the census before its postcheck, so the postcheck counts only acknowledged puts.
 					barriers[bucket]++
-					return nil
+					return holdrecord.Barrier(ctx, js, bucket, holdID)
 				},
 				Consumers: streams.DeclaredConsumers(streams.ConsumerSet{ListenerMachineIDs: o.machineIDs, Daemons: shapes}),
 				RecordedSessionConsumers: func(ctx context.Context) ([]streams.ConsumerShape, error) {
 					if d.Readers.Recorded == nil {
 						return nil, ErrNoRecordReader
 					}
-					return d.Readers.Recorded(ctx, nc)
+					shapes, err := d.Readers.Recorded(ctx, nc)
+					if err == nil {
+						censusReads = append(censusReads, "the recorded session consumers")
+					}
+					return shapes, err
 				},
 				RecordedFreshNames: func(ctx context.Context) (map[string][]string, map[string]string, error) {
 					if d.Readers.FreshNames == nil {
 						return nil, nil, ErrNoFreshNamesReader
 					}
 					fresh, err := d.Readers.FreshNames(ctx, nc, deployments, families, o.dispatchDatabaseFile, o.daemonDatabases)
+					if err == nil {
+						censusReads = append(censusReads, "the recorded fresh names")
+					}
 					return fresh.Names, fresh.Gone, err
 				},
 			})
@@ -410,11 +421,14 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 			for bucket, n := range barriers {
 				write(kvStreamPrefix+bucket, n)
 			}
+			if reported {
+				censusReads = append(censusReads, "the streams and consumers the census listed")
+			}
 			if refused := streamsRefusal(r, err); refused != nil {
-				return changes, nil, leftBy(r, refused)
+				return changes, nil, leftBy(r, barriers, refused)
 			}
 			outputs, err := reconcileStreamIDs(ctx, nc, d.Readers.Stores, deployments, families, o.daemonDatabases, stdout)
-			return changes, outputs, leftBy(r, err)
+			return changes, outputs, leftBy(r, barriers, err)
 		}
 	}
 	_, err = RunHeld(ctx, records, op, c, d.Clock(), stdout)
@@ -431,10 +445,12 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 
 // leftBy is err, a streams run's failure after its intent, as the stop's record of what the run
 // left: a *Left naming each change the report made (a stream made or raised, a consumer or stream
-// removed) and each a *Left err carries (a daemon store's stream id rewritten before the census
-// stopped, reconcileStreamIDs) when there is any, else err itself, which RunHeld records as
-// holdrecord.LeftUnchanged. The bucket barrier's keys are the hold's own, and are no change.
-func leftBy(r streams.Report, err error) error {
+// removed), this hold's barrier key in each bucket of barriers, which the census put and nothing it
+// does deletes (a stop names every change its command's runs made and did not undo), and each
+// change a *Left err carries (a daemon store's stream id rewritten before the census stopped,
+// reconcileStreamIDs) when there is any, else err itself, which RunHeld records as
+// holdrecord.LeftUnchanged, or as an UNKNOWN's account (unknownLeft).
+func leftBy(r streams.Report, barriers map[string]uint64, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -442,6 +458,12 @@ func leftBy(r streams.Report, err error) error {
 	for _, f := range r.Changes {
 		changed = append(changed, f.String())
 	}
+	var keys []string
+	for bucket := range barriers {
+		keys = append(keys, "this hold's barrier key in "+kvStreamPrefix+bucket)
+	}
+	slices.Sort(keys)
+	changed = append(changed, keys...)
 	var inner *Left
 	if errors.As(err, &inner) {
 		changed = append(changed, inner.What)

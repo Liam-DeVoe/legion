@@ -122,6 +122,15 @@ Every command writes an `intent` entry before its first change, and then `done`,
 what it left. Once `hold release` or `hold abort` is `done`, the hold has ended and no command is
 admitted in it: "the hold has ended: hold release is done".
 
+A held command's stop records every change its runs in the hold made and did not undo: each stream
+it made or changed, each consumer or stream it removed, and this hold's barrier key in each bucket
+the census put it in, which nothing deletes. It records `unchanged` only when no run changed
+anything outside the journal and every reading was whole. After an UNKNOWN it records `unknown:
+read <what the run read since its intent>; unread <what it could not read>; <what the runs
+changed>`, never `unchanged`. `hold release` follows only stops that record `unchanged`; over any
+other, `hold abort` is the way out. `hold set`'s own stops record no such account: its restart and
+its meta barrier change no stored data, and release's rule reads none of set's entries.
+
 `streams census` reads and reconciles every family the broker's cutover rows hold (`session`,
 `dispatch` and each `daemon/<P>`), as hub-restore's abort reads the daemon ones, and its convert
 check refuses one whose row is not `done`. `--family` is optional; when any is given, the values

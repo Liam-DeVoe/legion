@@ -317,16 +317,17 @@ func TestHoldTheStreamsWordsRunOnlyInTheirHolds(t *testing.T) {
 // `hold release` succeeds after a streams-census hold: the census, its only command, writes its
 // intent and its done entry, which completes the record. The census runs with the stack's every
 // family converted (each cutover row done) and a stub reader of the recorded session consumers.
-// A census with no reader is UNKNOWN (exit 2) and, as every command can, writes a stop entry,
-// `unchanged`. The control is a census killed after its intent, with no stop: release is refused
-// while that intent is pending.
+// A census with no reader is UNKNOWN (exit 2) and, as every command can, writes a stop entry, whose
+// record is the UNKNOWN's account with this hold's barrier key, which the census put before its
+// reader, never `unchanged`. The control is a census killed after its intent, with no stop: release
+// is refused while that intent is pending.
 func TestHoldReleaseAfterAStreamsCensus(t *testing.T) {
 	h := newHeldStack(t)
 	h.seedProtectedStreams()
 	ctx := context.Background()
 	stub := func(context.Context, *nats.Conn) ([]streams.ConsumerShape, error) { return nil, nil }
 
-	// No reader: UNKNOWN, and a stop entry that left nothing changed.
+	// No reader: UNKNOWN, and a stop entry naming the barrier key it left.
 	code, _, stderr := h.streamsRun(nil, "census")
 	id := h.row().HoldID
 	_, err := h.s.Records.PutCutover(ctx, "session", "done", id)
@@ -340,7 +341,9 @@ func TestHoldReleaseAfterAStreamsCensus(t *testing.T) {
 	require.Contains(t, stderr, ErrNoRecordReader.Error())
 	last := h.journal(id).Ops[len(h.journal(id).Ops)-1]
 	require.Equal(t, CommandStreamsCensus+" "+holdrecord.StateStop, last.Command+" "+last.State)
-	require.Equal(t, holdrecord.LeftUnchanged, last.Outputs["left"])
+	require.True(t, strings.HasPrefix(last.Outputs["left"], "unknown: read "), "the stop's left: %q", last.Outputs["left"])
+	require.Contains(t, last.Outputs["left"], "unread postcheck")
+	require.Contains(t, last.Outputs["left"], "this hold's barrier key in KV_"+bus.SessionConsumersBucket)
 
 	// The control: the census run again and killed after its intent, with no stop.
 	_, err = h.s.Records.Admit(ctx, id, holdrecord.Request{Command: CommandStreamsCensus}, nil)
