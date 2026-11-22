@@ -264,16 +264,20 @@ records that it replaced it (`ours.replacedOwn`). Each read of a file of their s
 in the history becomes a read of `skill://<ours>/<the same path inside the skill>`, answered from
 our directory at our installed directory (theirs, with our name as its last part); where ours
 has no such file, the read call and its result are removed as the arm with no skill removes them,
-and the stage records the read's path (`ours.removedReads`). So a renamed unchanged copy of their
-skill gives old's texts but for the name. In a reply, a read of `skill://<ours>/…` is answered
-from our directory, and a read of their skill gets Oh My Pi's `Unknown skill: <theirs>` text; both
-are answered, not judged. A block of their skill that reaches the session beside its listing and
-its reads ("A skill can reach a session other than by its listing line" below) carries our text
-in its place: the Envoy plugin's dispatch-first block is the plugin's function of our SKILL.md,
-and an autoloaded block is rebuilt from our SKILL.md under the recorded path with our name as its
-skill directory's last part, its details naming our skill and that path. The capture lists our
-skill under its own name and description, and a subagent's recorded listing names ours in their
-skill's line. Its captures are kept under `<out>/captures/ours-<digest of our directory>/`.
+and the stage records the read's path (`ours.removedReads`). A whole read of the cut's copy by its
+path (a case's `pathCopy`) is treated the same way: our file at that path, in Oh My Pi's path-read
+form, or the call and its result removed (and the path recorded) where ours has no such file. So a
+renamed unchanged copy of their skill gives old's texts but for the name. In a reply, a read of
+`skill://<ours>/…` is answered from our directory, a read of the copy by its path from our file at
+that path (or as not found where ours has none), and a read of their skill gets Oh My Pi's
+`Unknown skill: <theirs>` text; all are answered, not judged. A block of their skill that reaches
+the session beside its listing and its reads ("A skill can reach a session other than by its
+listing line" below) carries our text in its place: the Envoy plugin's dispatch-first block is the
+plugin's function of our SKILL.md, and an autoloaded block is rebuilt from our SKILL.md under the
+recorded path with our name as its skill directory's last part, its details naming our skill and
+that path. The capture lists our skill under its own name and description, and a subagent's
+recorded listing names ours in their skill's line. Its captures are kept under
+`<out>/captures/ours-<digest of our directory>/`.
 
 #### The judge reads no skill name
 

@@ -18,7 +18,10 @@ import {
   InjectionRefused,
   injectionFault,
   injectionFaults,
+  pathFile,
+  pathFormFault,
   skillFile,
+  snapshotTag,
   unknownSkill,
 } from "./arms";
 import { type Case, pathHash } from "./cases";
@@ -1225,4 +1228,306 @@ test("in the arm of ours, an autoloaded block is ours under our name and install
     { by: "plugin", plugin: "pi-envoy", name: "dispatch-first", at: 0 },
   ]);
   expect(built.dispatch).toEqual(dispatchOf(dispatch));
+});
+
+// Reads of the cut's own copy of alpha by its path on disk (arms.ts's header). COPY is the copy a
+// made-up dev box's session read, SHOWN the directory Oh My Pi's hashline line shows its files
+// under (relative to the home directory), and OTHER_COPY another copy of alpha (an eval
+// checkout's), which is not the cut's.
+const COPY = "/home/agent/src/acme-skills/skills/alpha";
+const SHOWN = "~/src/acme-skills/skills/alpha";
+const OTHER_COPY = "/tmp/eval/acme-skills/skills/alpha";
+
+/** A `read` call of `target`, alone in an assistant message. */
+function readCall(id: string, target: string): SessionMessage {
+  return {
+    role: "assistant",
+    content: [{ type: "toolCall", id, name: "read", arguments: { path: target } }],
+  };
+}
+
+/** Oh My Pi's result for a whole read by path of `file` of COPY whose text is `text` and whose
+ *  snapshot tag is `tag`, in a session that shows hashline rows, as the pinned Oh My Pi writes
+ *  one: the line `[<path>#<tag>]`, then each line after its number and `:`. */
+function pathResult(id: string, file: string, text: string, tag: string): SessionMessage {
+  const lines = text.replace(/\n$/, "").split("\n");
+  return {
+    role: "toolResult",
+    toolCallId: id,
+    toolName: "read",
+    content: [
+      {
+        type: "text",
+        text: `[${SHOWN}/${file}#${tag}]\n${lines.map((line, i) => `${i + 1}:${line}`).join("\n")}`,
+      },
+    ],
+    details: {
+      totalLines: lines.length,
+      rowPrefixes: true,
+      displayContent: {
+        text: lines.join("\n"),
+        startLine: 1,
+        lineNumbers: lines.map((_, i) => i + 1),
+      },
+      fileSize: Buffer.byteLength(text),
+      meta: { source: { type: "path", value: `${COPY}/${file}` }, pagedSource: true },
+    },
+    isError: false,
+    timestamp: 1795139990000,
+  };
+}
+
+/** A read result in a session that shows hashline rows, of `target`, showing `text`. */
+function recordedRead(id: string, shown: string, text: string): SessionMessage {
+  return {
+    role: "toolResult",
+    toolCallId: id,
+    toolName: "read",
+    content: [{ type: "text", text: `[${shown}#BF93]\n${text}` }],
+    details: { rowPrefixes: true, meta: { source: { type: "path", value: shown } } },
+    isError: false,
+  };
+}
+
+/** Oh My Pi's not-found result for a read by path of `target`, in the place of `message`. */
+function pathNotFound(message: SessionMessage | undefined, target: string): SessionMessage {
+  return {
+    ...message,
+    content: [{ type: "text", text: `Path '${target}' not found` }],
+    details: {},
+    isError: true,
+  };
+}
+
+/** F1's case whose session also read alpha's two files whole by path in COPY (indices 8 and 10;
+ *  BF93 and B3C8 are Oh My Pi's tags of F1's SKILL.md and references/x.md), the first five lines
+ *  of its SKILL.md there (12), and OTHER_COPY's SKILL.md (14). */
+const pathMessages: SessionMessage[] = [
+  ...messages.slice(0, 7),
+  readCall("read_path_skill", `${COPY}/SKILL.md`),
+  pathResult("read_path_skill", "SKILL.md", f1File(2), "BF93"),
+  readCall("read_path_x", `${COPY}/references/x.md`),
+  pathResult("read_path_x", "references/x.md", f1File(4), "B3C8"),
+  readCall("read_path_range", `${COPY}/SKILL.md:1-5`),
+  recordedRead("read_path_range", `${SHOWN}/SKILL.md`, "1:---\n2:name: alpha"),
+  readCall("read_other_copy", `${OTHER_COPY}/SKILL.md`),
+  recordedRead("read_other_copy", `${OTHER_COPY}/SKILL.md`, "1:---\n2:name: alpha"),
+];
+const pathCase: Case = {
+  ...f1Case,
+  id: "c-path",
+  messages: pathMessages,
+  skillReads: [2, 4, 8, 10],
+  pathCopy: { dir: COPY },
+};
+
+/** The arm `name` of `c`, from F1's old directory and `fresh` as the new one. */
+function pathArm(c: Case, name: ArmName, fresh = newDir): Arm {
+  return buildArm(c, name, { old: oldDir, new: fresh }, path.join(scratch, `path-${c.id}-${name}`));
+}
+
+// Catches: an arm that keeps the recorded text of a read of the skill by its path on disk, so
+// every arm sends the base text there, or that shows its own directory in it.
+test("a whole read by path of the cut's own copy carries each arm's own text at the path the session read, and none answers it as not found", () => {
+  // Built from the files the session read, the old arm gives the case's own messages, byte for
+  // byte: the form, the tag and the record are Oh My Pi's.
+  const old = pathArm(pathCase, "old");
+  expect(JSON.stringify(old.messages)).toBe(JSON.stringify(pathCase.messages));
+  expect(old.pathCopy).toEqual({ dir: COPY, shownDir: SHOWN, rows: "hashline" });
+
+  const fresh = pathArm(pathCase, "new");
+  expect(fresh.messages[8]).toEqual(
+    pathResult("read_path_skill", "SKILL.md", newSkill, snapshotTag(newSkill))
+  );
+  expect(snapshotTag(newSkill)).not.toBe("BF93");
+  // The new text has no references/x.md: Oh My Pi's not-found result for the path read.
+  expect(fresh.messages[10]).toEqual(pathNotFound(pathMessages[10], `${COPY}/references/x.md`));
+  expect(JSON.stringify(fresh.messages)).not.toContain(newDir);
+  // A new read, as replay asks one, is answered the same way.
+  expect(pathFile(fresh, `${COPY}/SKILL.md`)).toEqual({
+    text: textOf(fresh.messages[8]),
+    isError: false,
+  });
+  expect(pathFile(fresh, `${COPY}/references/x.md`)).toEqual({
+    text: `Path '${COPY}/references/x.md' not found`,
+    isError: true,
+  });
+
+  const minus = pathArm(pathCase, "minus");
+  const less = f1File(2).replace(`${LINE}\n`, "");
+  expect(minus.messages[8]).toEqual(
+    pathResult("read_path_skill", "SKILL.md", less, snapshotTag(less))
+  );
+
+  // none keeps each read call by path, its result Oh My Pi's not-found one; its skill:// reads
+  // go, as before.
+  const none = pathArm(pathCase, "none");
+  expect(none.messages).toContainEqual(pathNotFound(pathMessages[8], `${COPY}/SKILL.md`));
+  expect(none.messages).toContainEqual(pathNotFound(pathMessages[10], `${COPY}/references/x.md`));
+  expect(none.messages).toContainEqual(pathMessages[7]);
+  expect(none.messages).not.toContainEqual(pathMessages[8]);
+  expect(none.messages.filter((message) => readIds.includes(message.toolCallId))).toEqual([]);
+  expect(pathFile(none, `${COPY}/SKILL.md`)).toEqual({
+    text: `Path '${COPY}/SKILL.md' not found`,
+    isError: true,
+  });
+});
+
+// Catches: an arm that rewrites a read the cut's copy does not answer whole: one with a line
+// range, one of another copy, or one of a case that names no copy.
+test("a read by path with a selector, one of another copy, and one of a case with no pathCopy stay as recorded", () => {
+  const { pathCopy: _, ...noCopy } = { ...pathCase, id: "c-no-copy", skillReads: [2, 4] };
+  for (const name of ["old", "new", "minus", "twin", "none"] as const) {
+    const each = pathArm(pathCase, name);
+    for (const index of [11, 12, 13, 14]) {
+      expect(each.messages).toContainEqual(pathMessages[index]);
+    }
+    expect(pathFile(each, `${COPY}/SKILL.md:1-5`)).toBeUndefined();
+    expect(pathFile(each, `${OTHER_COPY}/SKILL.md`)).toBeUndefined();
+    const bare = pathArm(noCopy, name);
+    expect(bare.pathCopy).toBeUndefined();
+    for (const index of [7, 8, 9, 10, 11, 12, 13, 14]) {
+      expect(bare.messages).toContainEqual(pathMessages[index]);
+    }
+    expect(pathFile(bare, `${COPY}/SKILL.md`)).toBeUndefined();
+  }
+});
+
+// Catches: the arm of ours keeping their text in a whole read by path of the cut's own copy, or
+// answering a read of a file ours lacks where it removes the skill:// read of that file.
+test("in the arm of ours, a whole read by path of the cut's own copy carries our file at the same path, and goes with its call when ours lacks the file", () => {
+  // alpha-ours: our SKILL.md at the path the session read, and references/x.md as recorded.
+  const renamed = withOurs(pathCase, "ours", RENAMED);
+  const oursSkill = readFileSync(path.join(renamedDir, "SKILL.md"), "utf8");
+  expect(renamed.pathCopy).toEqual({ dir: COPY, shownDir: SHOWN, rows: "hashline" });
+  expect(renamed.messages[7]).toEqual(pathMessages[7]);
+  expect(renamed.messages[8]).toEqual(
+    pathResult("read_path_skill", "SKILL.md", oursSkill, snapshotTag(oursSkill))
+  );
+  expect(renamed.messages.slice(9)).toEqual(pathMessages.slice(9));
+  expect(renamed.ours?.removedReads).toEqual([]);
+  expect(JSON.stringify(renamed.messages)).not.toContain(renamedDir);
+
+  // alpha-short has no references/x.md: its skill:// read and its read by path go with their
+  // calls, and the arm records both, in the history's order.
+  const short = withOurs(pathCase, "ours", SHORT);
+  expect(short.ours?.removedReads).toEqual(["references/x.md", "references/x.md"]);
+  expect(short.messages).toContainEqual(pathMessages[7]);
+  expect(short.messages).toContainEqual(
+    pathResult("read_path_skill", "SKILL.md", SHORT_SKILL, snapshotTag(SHORT_SKILL))
+  );
+  const ids = short.messages.flatMap((message) => [
+    message.toolCallId,
+    ...(message.content ?? []).map((part) => part.id),
+  ]);
+  expect(ids).not.toContain("read_path_x");
+  expect(short.messages.slice(-4)).toEqual(pathMessages.slice(11));
+
+  // A new read, as replay asks one: our file at the path read, or Oh My Pi's not-found result for
+  // a file ours lacks.
+  expect(pathFile(renamed, `${COPY}/SKILL.md`)).toEqual({
+    text: textOf(renamed.messages[8]),
+    isError: false,
+  });
+  expect(pathFile(short, `${COPY}/references/x.md`)).toEqual({
+    text: `Path '${COPY}/references/x.md' not found`,
+    isError: true,
+  });
+});
+
+// Catches: a long line of an arm's file shown whole where Oh My Pi cuts it, and a file Oh My Pi
+// shows in another form answered as if it showed it whole.
+test("a line past 768 characters is cut as Oh My Pi cuts it, with its notice, and a file Oh My Pi shows in a form the arms do not rebuild is refused, naming the case", () => {
+  const long = `${"x".repeat(799)}.`;
+  const last = "3. Stop after the third step.";
+  const wide = f1File(2).replace(LINE, `${LINE} ${long}`).replace(last, `${last} ${long}`);
+  const wideDir = skillDir("wide", { "SKILL.md": wide });
+  const answer = textOf(pathArm(pathCase, "new", wideDir).messages[8]);
+  const rows = answer.split("\n");
+  expect(rows[9]).toBe(`9:${`${LINE} ${long}`.slice(0, 768)}…`);
+  expect(rows[10]).toBe(`10:${`${last} ${long}`.slice(0, 768)}…`);
+  expect(answer).toEndWith(
+    "\n\n[Some lines truncated to 768 chars. Use :raw:9-9 to read line 9 whole; cut lines run to line 10, each read the same way]"
+  );
+  expect(detailsOf(pathArm(pathCase, "new", wideDir).messages[8]).meta).toEqual({
+    source: { type: "path", value: `${COPY}/SKILL.md` },
+    pagedSource: true,
+    limits: {
+      columnTruncated: {
+        maxColumn: 768,
+        unit: "chars",
+        lines: { first: 9, last: 10 },
+        selectorBase: "",
+      },
+    },
+  });
+
+  const tall = `${f1File(2)}${"More.\n".repeat(291)}`;
+  const tallDir = skillDir("tall", { "SKILL.md": tall });
+  expect(() => pathArm(pathCase, "new", tallDir)).toThrow(
+    `case c-path: the new arm cannot answer the read of ${COPY}/SKILL.md: SKILL.md has 301 lines, and a read by path shows 300, then the end of each block past them, a form the arms do not rebuild`
+  );
+  const tallArm: Arm = { ...pathArm(pathCase, "old"), skillDir: tallDir };
+  expect(pathFile(tallArm, `${COPY}/SKILL.md`)).toBeUndefined();
+});
+
+// Catches: a read answered with hashline rows in a session whose reads show the lines alone.
+test("a read whose result shows the lines alone is answered with the lines alone, and snapshotTag is Oh My Pi's", () => {
+  const plain = structuredClone(pathCase);
+  plain.id = "c-plain";
+  const result = plain.messages[8];
+  if (result === undefined) throw new Error("no result at 8");
+  result.content = [{ type: "text", text: f1File(2).replace(/\n$/, "") }];
+  result.details = { ...detailsOf(result), rowPrefixes: false };
+  const fresh = pathArm(plain, "new");
+  expect(textOf(fresh.messages[8])).toBe(newSkill.replace(/\n$/, ""));
+  expect(detailsOf(fresh.messages[8]).rowPrefixes).toBe(false);
+  // The tags of crates/pi-edit/src/store.rs's own test (lines 485-489 at the pin).
+  expect(snapshotTag("a \n b\t\r\nc")).toBe("80BA");
+  expect(snapshotTag("hello\n")).toBe("5BF9");
+  expect(snapshotTag("")).toBe("5D05");
+});
+
+// Catches: a case builder that cannot tell, before it writes a case, which files buildArm refuses
+// to answer by path, so a behaviour run fails on one.
+test("pathFormFault names each form of a file the arms do not rebuild, as buildArm refuses it, and none for a file they rebuild", () => {
+  expect(pathFormFault("SKILL.md", Buffer.from(f1File(2)))).toBeUndefined();
+  // A view into a larger buffer reads its own bytes only.
+  expect(pathFormFault("SKILL.md", Buffer.from(`\0\0${f1File(2)}`).subarray(2))).toBeUndefined();
+  expect(pathFormFault("notes.txt", Buffer.from("One note.\n"))).toBeUndefined();
+  // A line Oh My Pi cuts at 768 characters is a form the arms rebuild.
+  expect(pathFormFault("SKILL.md", Buffer.from(`${"x".repeat(800)}\n`))).toBeUndefined();
+  expect(pathFormFault("SKILL.md", Buffer.from("A line.\n".repeat(300)))).toBeUndefined();
+
+  expect(pathFormFault("scripts/run.py", Buffer.from("print(1)\n"))).toBe(
+    "scripts/run.py is no Markdown or plain-text file, the only kinds whose read by path the arms rebuild"
+  );
+  expect(pathFormFault("SKILL.md", Uint8Array.of(0x61, 0x00, 0x62))).toBe(
+    "SKILL.md is not UTF-8 text"
+  );
+  expect(pathFormFault("SKILL.md", Uint8Array.of(0x61, 0xff, 0x62))).toBe(
+    "SKILL.md is not UTF-8 text"
+  );
+  expect(pathFormFault("SKILL.md", Buffer.from("A line.\n".repeat(301)))).toBe(
+    "SKILL.md has 301 lines, and a read by path shows 300, then the end of each block past them"
+  );
+  const merging = Buffer.from("# Merging\n\n<<<<<<< ours\n");
+  expect(pathFormFault("SKILL.md", merging)).toBe(
+    "line 3 of SKILL.md opens a git conflict block, which a read by path follows with a warning"
+  );
+  // 100 lines of 500 characters come to 50,099 bytes with their newlines: past the 50,000 a read
+  // shows of rows that show their numbers, within the 51,200 it shows of the lines alone. Left
+  // out, the rows are taken to show their numbers.
+  const wide = Buffer.from(`${"y".repeat(500)}\n`.repeat(100));
+  const past =
+    "the lines of SKILL.md a read by path shows come to 50099 bytes, past the 50000 it shows";
+  expect(pathFormFault("SKILL.md", wide)).toBe(past);
+  expect(pathFormFault("SKILL.md", wide, "numbered")).toBe(past);
+  expect(pathFormFault("SKILL.md", wide, "plain")).toBeUndefined();
+
+  // buildArm refuses the arm's file with the fault pathFormFault names.
+  const mergeDir = skillDir("merging", { "SKILL.md": merging.toString() });
+  expect(() => pathArm(pathCase, "new", mergeDir)).toThrow(
+    `case c-path: the new arm cannot answer the read of ${COPY}/SKILL.md: ${pathFormFault("SKILL.md", merging)}, a form the arms do not rebuild`
+  );
 });

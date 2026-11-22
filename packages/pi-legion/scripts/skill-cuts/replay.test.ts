@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import type { Arm } from "./arms";
+import { type Arm, snapshotTag } from "./arms";
 import {
   bodyIdentity,
   createGateway,
@@ -383,6 +383,84 @@ test("a read of a file the arm lacks is answered with the not-found result", asy
   });
 });
 
+/** The made-up copy of alpha the case's session read by path, and the directory Oh My Pi's
+ *  hashline line shows its files under. */
+const COPY = "/home/agent/src/acme-skills/skills/alpha";
+const SHOWN = "~/src/acme-skills/skills/alpha";
+
+/** A reply, not streamed, holding `content`. */
+function jsonReply(content: Record<string, unknown>[], stop: string): Response {
+  return Response.json({
+    id: "msg_made_up_path",
+    type: "message",
+    role: "assistant",
+    model: "claude-sonnet-5-5",
+    content,
+    stop_reason: stop,
+    usage: { input_tokens: 10, output_tokens: 5 },
+  });
+}
+
+// Catches: a reply's read of the skill by its path on disk taken for the judged step, so an arm
+// is judged while it still loads the skill, or answered with one text in every arm.
+test("answers a reply's whole read by path of the cut's own copy by arm, and a read of it with a selector is the judged step", async () => {
+  const pathCopy = { dir: COPY, shownDir: SHOWN, rows: "hashline" as const };
+  const old: Arm = {
+    ...armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD }),
+    pathCopy,
+  };
+  const lacking: Arm = { ...armWith("new", { "SKILL.md": SKILL_MD }), pathCopy };
+  const none: Arm = {
+    name: "none",
+    skill: "alpha",
+    skillDir: undefined,
+    installedDir: INSTALLED,
+    messages: [],
+    profileSkills: PROFILE_SKILLS.filter((skill) => skill.name !== "alpha"),
+    pathCopy,
+  };
+  const call = { type: "tool_use", id: "toolu_path", name: "read" };
+  const answers: [Arm, string, boolean][] = [
+    // 0098 is Oh My Pi's tag of X_MD.
+    [
+      old,
+      `[${SHOWN}/references/x.md#0098]\n1:# X\n2:\n3:Each alpha step's result is one short line.`,
+      false,
+    ],
+    [lacking, `Path '${COPY}/references/x.md' not found`, true],
+    [none, `Path '${COPY}/references/x.md' not found`, true],
+  ];
+  for (const [arm, text, isError] of answers) {
+    const read = { ...call, input: { path: `${COPY}/references/x.md` } };
+    const { gateway, bodies } = world((n) =>
+      n === 1
+        ? jsonReply([read], "tool_use")
+        : jsonReply([{ type: "text", text: "Step 4." }], "end_turn")
+    );
+    const replayed = await replayOnce({ ...BODY, stream: false }, arm, gateway);
+    expect({ arm: arm.name, rounds: replayed.rounds }).toEqual({ arm: arm.name, rounds: 1 });
+    expect(bodies[1]?.messages.at(-1)).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "toolu_path",
+          content: [{ type: "text", text }],
+          is_error: isError,
+        },
+      ],
+    });
+    expect(JSON.stringify(bodies)).not.toContain(arm.skillDir ?? "no directory");
+  }
+
+  const ranged = { ...call, input: { path: `${COPY}/SKILL.md:1-5` } };
+  const { gateway, bodies } = world(() => jsonReply([ranged], "tool_use"));
+  const replayed = await replayOnce({ ...BODY, stream: false }, old, gateway);
+  expect(bodies).toHaveLength(1);
+  expect(replayed.rounds).toBe(0);
+  expect(replayed.step.message.content).toEqual([ranged]);
+});
+
 // Catches: a round that sends one arm's runs as a batch before another's, an order that is not
 // the seed's, an arm's first run that does not go alone among its arm's, or a failed run that
 // takes the round's other outcomes with it.
@@ -544,7 +622,8 @@ test("a run's requests carry an id no other run carries, the same in every round
 // The batch probe of 2026-11-21 as a test: one made-up body, a stand-in gateway that answers by
 // the body's session id, and three variants interleaved in one seeded order. With a fixed id a
 // variant's every run gets the one answer that id gets, so the id is a factor of its batch; the
-// runner draws a fresh id for every run, so it never sends one id in two runs.
+// runner draws a fresh id for every run, so it never sends one id in two runs. Its 180 streamed
+// replies took past bun's 5-second default in a loaded pod, so the row has 30 seconds.
 test("the batch probe: a fixed session id sets its batch's count, and the runner never sends one id in two runs", async () => {
   const FIXED_A = JSON.stringify({ session_id: "00000000-0000-4000-8000-000000000002" });
   const FIXED_B = JSON.stringify({ session_id: "00000000-0000-4000-8000-000000000001" });
@@ -621,7 +700,7 @@ test("the batch probe: a fixed session id sets its batch's count, and the runner
     expect(passes).toBeGreaterThan(0);
     expect(passes).toBeLessThan(30);
   }
-});
+}, 30_000);
 
 // Catches: a run whose bytes differ from replayOnce's in more than its own session id.
 test("each run sends its arm's body as replayOnce sends it, but for a session id of its own", async () => {
@@ -874,4 +953,57 @@ test("in ours, a reply's read of skill://<ours> is answered from our directory a
     ],
   });
   expect(JSON.stringify(bodies)).not.toContain(ours.skillDir);
+});
+
+// Catches: a reply in the arm of ours whose whole read by path of the cut's own copy is judged as
+// the step, or answered with their text where ours has the file.
+test("in ours, a reply's whole read by path of the cut's own copy is answered from our file at that path, or as not found where ours lacks it", async () => {
+  const pathCopy = { dir: COPY, shownDir: SHOWN, rows: "hashline" as const };
+  const oursSkill = SKILL_MD.replace("name: alpha\n", "name: alpha-ours\n");
+  const oursX = "# X\n\nOurs: each step's result is one line.\n";
+  const ours = (files: Record<string, string>): Arm => ({
+    ...armWith("ours", files),
+    skill: "alpha-ours",
+    installedDir: path.join(path.dirname(INSTALLED), "alpha-ours"),
+    profileSkills: PROFILE_SKILLS.map((skill) =>
+      skill.name === "alpha" ? { ...skill, name: "alpha-ours" } : skill
+    ),
+    ours: { theirs: "alpha", replacedOwn: false, removedReads: [] },
+    pathCopy,
+  });
+  const answers: [Arm, string, boolean][] = [
+    [
+      ours({ "SKILL.md": oursSkill, "references/x.md": oursX }),
+      `[${SHOWN}/references/x.md#${snapshotTag(oursX)}]\n1:# X\n2:\n3:Ours: each step's result is one line.`,
+      false,
+    ],
+    [ours({ "SKILL.md": oursSkill }), `Path '${COPY}/references/x.md' not found`, true],
+  ];
+  for (const [arm, text, isError] of answers) {
+    const read = {
+      type: "tool_use",
+      id: "toolu_path",
+      name: "read",
+      input: { path: `${COPY}/references/x.md` },
+    };
+    const { gateway, bodies } = world((n) =>
+      n === 1
+        ? jsonReply([read], "tool_use")
+        : jsonReply([{ type: "text", text: "Step 4." }], "end_turn")
+    );
+    const replayed = await replayOnce({ ...BODY, stream: false }, arm, gateway);
+    expect(replayed.rounds).toBe(1);
+    expect(bodies[1]?.messages.at(-1)).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "toolu_path",
+          content: [{ type: "text", text }],
+          is_error: isError,
+        },
+      ],
+    });
+    expect(JSON.stringify(bodies)).not.toContain(arm.skillDir ?? "no directory");
+  }
 });

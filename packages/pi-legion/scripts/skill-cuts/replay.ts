@@ -5,23 +5,26 @@
  * the body in its own API, on the case's own model.
  *
  * A reply whose every tool call is a read of a file of the arm's skill (a `read` of
- * `skill://<skill>` or `skill://<skill>/<path>`, as cases.ts's `skillReadFile` reads one) is not
- * the step: the agent is still loading the skill. Each of those reads is answered the way the
+ * `skill://<skill>` or `skill://<skill>/<path>`, as cases.ts's `skillReadFile` reads one, or a
+ * whole read by path of a file of the cut's own copy of the skill, as `pathReadFile` reads one) is
+ * not the step: the agent is still loading the skill. Each of those reads is answered the way the
  * arm's files would answer it (arms.ts's `skillFile`: the file under a `[Skill file: <path>]`
  * header whose path is the skill's installed one, the same in every arm, or Oh My Pi's not-found
- * result for a file the arm lacks), in the form Oh My Pi sends a tool result in the body's API,
- * and the body goes again with the reply and the answers added; at most `maxSkillRounds` times
- * (MAX_SKILL_ROUNDS). In the arm of ours, whose skill is ours under its own name, a read of the
- * case's skill is such a read too, answered with Oh My Pi's unknown-skill text (arms.ts's
- * `unknownSkill`), since that arm does not install it. A Messages reply goes back as the
- * assistant's message and its answers as one user message of `tool_result` blocks (F2); a
- * Responses reply's output items go back as they came
- * (its reasoning items' encrypted content included), and after all of them, in the order of the
- * reply's calls, one `function_call_output` item per call holding the answer's text (F8: the
- * Responses API takes no error flag, and Oh My Pi sends none). The first reply that holds no tool
- * call, or any other tool call (a read of another skill, a read of a path on disk, a read of a
- * directory of the skill, any other tool), is the judged step, and so is the reply after the last
- * round, whatever it holds.
+ * result for a file the arm lacks; `pathFile` for a read by path: Oh My Pi's result for that path,
+ * at the path read, or its not-found result), in the form Oh My Pi sends a tool result in the
+ * body's API, and the body goes again with the reply and the answers added; at most
+ * `maxSkillRounds` times (MAX_SKILL_ROUNDS). In the arm of ours, whose skill is ours under its own
+ * name, a read of the case's skill is such a read too, answered with Oh My Pi's unknown-skill text
+ * (arms.ts's `unknownSkill`), since that arm does not install it; a read by path of the cut's own
+ * copy is answered from our file at that path. A Messages reply goes back as the assistant's
+ * message and its answers as one user message of `tool_result` blocks (F2); a Responses reply's
+ * output items go back as they came (its reasoning items' encrypted content included), and after
+ * all of them, in the order of the reply's calls, one `function_call_output` item per call holding
+ * the answer's text (F8: the Responses API takes no error flag, and Oh My Pi sends none). The
+ * first reply that holds no tool call, or any other tool call (a read of another skill, a read of
+ * another path on disk, a read of a directory of the skill, a read by path of a file Oh My Pi
+ * shows in a form the arms do not rebuild, any other tool), is the judged step, and so is the
+ * reply after the last round, whatever it holds.
  * Every round goes with the same headers (`ReplayOptions.headers`), the ones Oh My Pi sent beside
  * the body (none beside a Responses body).
  *
@@ -47,7 +50,7 @@
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import path from "node:path";
-import { type Arm, type ArmName, skillFile, unknownSkill } from "./arms";
+import { type Arm, type ArmName, pathFile, skillFile, unknownSkill } from "./arms";
 import { skillReadFile } from "./cases";
 import {
   type ContentBlock,
@@ -157,17 +160,17 @@ export interface ReplayOptions extends SendOptions {
   readonly maxSkillRounds?: number;
 }
 
-/** A tool call that reads a file of the arm's skill: the call's id and the file, as a path inside
- *  the skill's directory; or, in the arm of ours, a read of the skill it does not install
- *  (`unknown`, that skill's name). */
-interface SkillRead {
-  readonly id: string;
-  readonly file: string;
-  readonly unknown?: string;
-}
+/** A tool call that reads a file of the arm's skill: the call's id, and either the file, as a
+ *  path inside the skill's directory, of a `skill://` read, or the arm's answer to any other read
+ *  it answers: a read by path of the cut's own copy (arms.ts's `pathFile`), or, in the arm of
+ *  ours, a read of the skill it does not install (`unknownSkill`). */
+type SkillRead =
+  | { readonly id: string; readonly file: string }
+  | { readonly id: string; readonly answer: { readonly text: string; readonly isError: boolean } };
 
 /** The skill read `call` is, or undefined when it is any other tool call. A read of a directory
- *  of the skill is none: Oh My Pi answers it with a listing, which the arm does not rebuild. */
+ *  of the skill is none: Oh My Pi answers it with a listing, which the arm does not rebuild; nor
+ *  is a read by path that `pathFile` does not answer. */
 function skillRead(call: ToolCall, arm: Arm): SkillRead | undefined {
   const { id, name, input } = call;
   if (id === undefined || name !== "read") return undefined;
@@ -176,8 +179,11 @@ function skillRead(call: ToolCall, arm: Arm): SkillRead | undefined {
   const file = skillReadFile(arm.skill, input.path);
   if (file === undefined) {
     const theirs = arm.ours?.theirs;
-    const read = theirs === undefined ? undefined : skillReadFile(theirs, input.path);
-    return read === undefined ? undefined : { id, file: read, unknown: theirs };
+    const answer =
+      theirs !== undefined && skillReadFile(theirs, input.path) !== undefined
+        ? unknownSkill(arm, theirs)
+        : pathFile(arm, input.path);
+    return answer === undefined ? undefined : { id, answer };
   }
   if (arm.skillDir !== undefined) {
     const stats = statSync(path.resolve(arm.skillDir, file), { throwIfNoEntry: false });
@@ -196,7 +202,7 @@ function answered(
 ): RequestBody {
   const answers = reads.map((read) => ({
     id: read.id,
-    ...(read.unknown === undefined ? skillFile(arm, read.file) : unknownSkill(arm, read.unknown)),
+    ...("answer" in read ? read.answer : skillFile(arm, read.file)),
   }));
   if (isResponsesBody(body)) {
     const outputs = answers.map(({ id, text }) => ({

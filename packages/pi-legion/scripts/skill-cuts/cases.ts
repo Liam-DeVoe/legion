@@ -6,10 +6,12 @@
  * directories.
  *
  * A read of a skill file is a `read` tool call of `skill://<skill>` (its SKILL.md) or
- * `skill://<skill>/<path>`, as `skillReadFile` reads one. Oh My Pi answers a read of a skill file
- * by its path on disk in another form (a `[<path>#<hash>]` line, then numbered lines), which the
- * arms do not rebuild: a skillReads index that answers one is refused, and a session that read
- * the skill that way gives no case, since that read's base text would stay in every arm.
+ * `skill://<skill>/<path>`, as `skillReadFile` reads one, or a whole read (no read selector) of a
+ * file of the cut's own copy of the skill by its path on disk, when the case names that copy
+ * (`pathCopy`), as `pathReadFile` reads one; `caseReadFile` says which file either reads. Every
+ * read result of the case's messages that answers one is in `skillReads`, and the arms answer it
+ * with their own text (arms.ts). A read of another copy, or one with a selector, stays as the
+ * session had it.
  */
 import { createHash } from "node:crypto";
 import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
@@ -107,6 +109,18 @@ const InsidePath = z
     "is not a path inside the skill directory"
   );
 
+/** An absolute directory as a session reads files under it: `/`, then parts that are neither
+ * empty, `.` nor `..`, with no `/` at its end. */
+const AbsoluteDir = z.string().refine(
+  (dir) =>
+    dir.startsWith("/") &&
+    dir
+      .slice(1)
+      .split("/")
+      .every((part) => part !== "" && part !== "." && part !== ".."),
+  "is not an absolute directory with no / at its end"
+);
+
 /** One case. `line` is the line of the cut's base text that the step exercises: its text,
  * `lineNumber` (from 1) and `lineCount` (the lines of `baseFile`; a final newline ends the last
  * line, it does not start one). `criterion` says what the line requires at this step, when a reply
@@ -115,8 +129,11 @@ const InsidePath = z
  * `devbox`, `legion:<project>:<role>` (`architect-root` for a tree's root architect), or
  * `subagent:<agent>` for a subagent's session, whose profile carries its recorded system prompt
  * and tools. `messages` are the session's Oh My Pi messages up to the step, `skillReads` the
- * indices in `messages` of the read results of this skill's files, and `realStep` the real
- * agent's next assistant message.
+ * indices in `messages` of the read results of this skill's files (`caseReadFile`), and
+ * `realStep` the real agent's next assistant message. `pathCopy`, when the case builder wrote it,
+ * is the cut's own copy of the skill as the session read it by path: `dir`, its absolute
+ * directory, with no `/` at its end; a case whose session read the skill by `skill://` only has
+ * none.
  * `violatingStep` is an assistant message the case reader wrote before any run: a plausible next
  * step that breaks the line and otherwise looks like a valid one (the same goal, the same kind of
  * tool calls); the judge must fail it (judge.ts, `judgeControls`). `source`
@@ -148,6 +165,7 @@ export const Case = z.strictObject({
   profile: Profile,
   messages: z.array(SessionMessage),
   skillReads: z.array(z.int().nonnegative()),
+  pathCopy: z.strictObject({ dir: AbsoluteDir }).optional(),
   realStep: SessionMessage.refine(
     (message) => message.role === "assistant",
     "is not an assistant message"
@@ -224,6 +242,30 @@ export function stepSkillFiles(
   return [...new Set(read)];
 }
 
+/** The file of the case's own copy of its skill (`pathCopy`) that a `read` of the path `target`
+ * reads whole, as a path inside the copy (`SKILL.md` for `<dir>/SKILL.md`), or undefined when the
+ * case names no copy, `target` is not under `<dir>/`, carries a read selector (a `:` after its last
+ * `/`, as `:1-180` or `:raw`), names a directory (a `/` at its end), or leaves the copy. */
+export function pathReadFile(
+  c: { readonly pathCopy?: { readonly dir: string } },
+  target: string
+): string | undefined {
+  if (c.pathCopy === undefined || !target.startsWith(`${c.pathCopy.dir}/`)) return undefined;
+  const file = target.slice(c.pathCopy.dir.length + 1);
+  if (file.endsWith("/") || file.slice(file.lastIndexOf("/") + 1).includes(":")) return undefined;
+  return InsidePath.safeParse(file).success ? file : undefined;
+}
+
+/** The file of `c`'s skill that a `read` of `target` reads, as a path inside the skill's
+ * directory: a `skill://` read's (`skillReadFile`) or a whole read's of the case's own copy by
+ * path (`pathReadFile`); undefined for any other read. */
+export function caseReadFile(
+  c: Pick<Case, "skill" | "pathCopy">,
+  target: string
+): string | undefined {
+  return skillReadFile(c.skill, target) ?? pathReadFile(c, target);
+}
+
 /** The lines of a file's text: a final newline ends the last line, it does not start one. */
 export function textLines(text: string): string[] {
   return text.replace(/\n$/, "").split("\n");
@@ -252,21 +294,25 @@ function refusal(
     return `its profile does not install the skill ${c.skill}`;
   }
   const targets = readTargets(c.messages);
+  const files =
+    c.pathCopy === undefined
+      ? `a skill://${c.skill} file`
+      : `a skill://${c.skill} file or a whole read of a file of ${c.pathCopy.dir}`;
   for (const index of c.skillReads) {
     const message = c.messages[index];
     if (message?.role !== "toolResult" || message.toolName !== "read") {
       return `skillReads index ${index} is not a read result`;
     }
     const target = targets.get(message.toolCallId ?? "");
-    if (target === undefined || skillReadFile(c.skill, target) === undefined) {
-      return `skillReads index ${index} answers ${target === undefined ? "no read call before it" : `a read of ${target}`}, not a read of a skill://${c.skill} file`;
+    if (target === undefined || caseReadFile(c, target) === undefined) {
+      return `skillReads index ${index} answers ${target === undefined ? "no read call before it" : `a read of ${target}`}, not a read of ${files}`;
     }
   }
   // A read of the skill's files left out of skillReads would keep the base text in every arm.
   for (const [index, message] of c.messages.entries()) {
     if (message.role !== "toolResult" || c.skillReads.includes(index)) continue;
     const target = targets.get(message.toolCallId ?? "");
-    if (target !== undefined && skillReadFile(c.skill, target) !== undefined) {
+    if (target !== undefined && caseReadFile(c, target) !== undefined) {
       return `the read result at index ${index} (${target}) is not in skillReads`;
     }
   }
@@ -304,7 +350,8 @@ function* fileLines(file: string): Generator<string> {
  * (the skill's own directory, SKILL.md at its top). Throws one error that names each case it
  * refuses and why: a line that is no case, a missing realStep or violatingStep, a line.text that
  * is not a whole line (trimmed) of `baseDir/<baseFile>` or is not at its lineNumber, a skillReads
- * index that is not a read result of a `skill://<skill>` file, a read result of one that
+ * index that is not a read result of a file of the skill (`caseReadFile`: a `skill://<skill>`
+ * file, or a file of the case's own copy read whole by path), a read result of one that
  * skillReads leaves out, a skill its profile does not install, an id given twice, or cases of
  * more than one skill. */
 export function loadCases(file: string, baseDir: string): Case[] {
