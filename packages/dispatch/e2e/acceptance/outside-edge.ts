@@ -1569,6 +1569,19 @@ async function run(env: NodeJS.ProcessEnv): Promise<number> {
   const rows = new Rows(inputs.tsv, [token, decoded]);
   console.log(`outside-edge: origin ${inputs.origin}`);
   console.log(`outside-edge: time ${new Date().toISOString()}`);
+  // The rows the sign-in steps do not make, each a line that is no row, so none reads PASS and no
+  // verdict waits on it; printed first, so a run that stops names them too.
+  if (asked.steps === SIGN_IN_STEPS) {
+    const why = `OUTSIDE_EDGE_STEPS is ${SIGN_IN_STEPS}`;
+    for (const row of ["device-login", "relay"]) {
+      console.log(`outside-edge: not run: ${row}: ${why}`);
+    }
+    for (const limit of asked.unasked) {
+      console.log(
+        `outside-edge: not run: ${limitRow(limit)}: ${why}, which asks ${limit.host} nothing`
+      );
+    }
+  }
   // Why the run's requests are not a whole run's, once a step was not run: step 4 does not pass a
   // threshold on such a count.
   let cut: string | undefined;
@@ -1576,11 +1589,6 @@ async function run(env: NodeJS.ProcessEnv): Promise<number> {
     cut ??= `the run did not reach ${row}: ${why}`;
     rows.add({ row, want, got: `not run: ${why}`, verdict: "UNKNOWN" });
   };
-  // A row the sign-in steps do not make, printed as a line of no row: it never reads PASS, and no
-  // verdict waits on it.
-  const skipped = (row: string, why: string) =>
-    console.log(`outside-edge: not run: ${row}: ${why}`);
-  const signInOnly = `OUTSIDE_EDGE_STEPS is ${SIGN_IN_STEPS}`;
   let browser: Browser | undefined;
   try {
     browser = await launchBrowser();
@@ -1596,24 +1604,25 @@ async function run(env: NodeJS.ProcessEnv): Promise<number> {
           "the sign-in did not pass"
         );
       }
-      skipped("device-login", signInOnly);
-      skipped("relay", signInOnly);
-    } else if (person === undefined) {
-      notRun("device-login", "a device login approved on the page", "the sign-in did not pass");
-      if (asked.inputs.tailnetCode !== undefined)
-        notRun("tailnet-code", `APPROVED ${asked.inputs.tailnetCode}`, "the sign-in did not pass");
-      notRun("relay", "a reply from the peer on the relay socket", "the sign-in did not pass");
     } else {
       const every = asked.inputs;
-      const login = await deviceLogin(page, person, every, rows);
-      if (every.tailnetCode !== undefined) await tailnetCode(page, every.tailnetCode, every, rows);
-      if (login === undefined)
-        notRun(
-          "relay",
-          "a reply from the peer on the relay socket",
-          "the device login did not pass"
-        );
-      else await relay(every, rows);
+      if (person === undefined) {
+        notRun("device-login", "a device login approved on the page", "the sign-in did not pass");
+        if (every.tailnetCode !== undefined)
+          notRun("tailnet-code", `APPROVED ${every.tailnetCode}`, "the sign-in did not pass");
+        notRun("relay", "a reply from the peer on the relay socket", "the sign-in did not pass");
+      } else {
+        const login = await deviceLogin(page, person, every, rows);
+        if (every.tailnetCode !== undefined)
+          await tailnetCode(page, every.tailnetCode, every, rows);
+        if (login === undefined)
+          notRun(
+            "relay",
+            "a reply from the peer on the relay socket",
+            "the device login did not pass"
+          );
+        else await relay(every, rows);
+      }
     }
   } catch (error) {
     // An error no step read, such as a page closed under a step, a browser that did not start, or
@@ -1630,11 +1639,6 @@ async function run(env: NodeJS.ProcessEnv): Promise<number> {
     });
   } finally {
     await closeBrowser(browser);
-  }
-  if (asked.steps === SIGN_IN_STEPS) {
-    for (const limit of asked.unasked) {
-      skipped(limitRow(limit), `${signInOnly}, which asks ${limit.host} nothing`);
-    }
   }
   const judged = judgeLimits(inputs.limits, counted, cut);
   for (const { host, perMinute } of judged.hostPeaks) {
