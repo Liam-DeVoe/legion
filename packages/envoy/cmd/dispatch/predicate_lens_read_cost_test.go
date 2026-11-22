@@ -433,8 +433,8 @@ type predicateCostRead struct {
 // predicateCostClosureBound is the bound main's #4554 puts on an issue's reference closure walk
 // (api's referencesClosureBound): a GET of an issue's references whose walk runs past it answers
 // 503 REFERENCES_TIMEOUT. Over the shape of a person with 50,000 rows of unrelated history the
-// read took 0.9 to 1.2 s at both builds on the build farm, close enough to the bound that either
-// build may cut a reading of it there.
+// read's p50 was 0.9 to 1.4 s over seven runs on the build farm, the two builds within 4% of each
+// other in each run: close enough to the bound that either build may cut a reading of it there.
 const predicateCostClosureBound = 2 * time.Second
 
 func predicateCostReads() []predicateCostRead {
