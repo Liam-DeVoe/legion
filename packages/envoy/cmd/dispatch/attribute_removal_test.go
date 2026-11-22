@@ -11,6 +11,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +30,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -132,6 +135,51 @@ func approveAndCapture(t *testing.T, ctx context.Context, p *dispatchProcess, da
 	return approvedDocument{name: label, issue: issue, id: artifactID, version: number, markdown: markdown, review: string(review)}
 }
 
+// reviewHash is a review and the digest it holds of the bytes it approved, content_sha256: the
+// insert's trigger takes it of the version's stored markdown (artifact_version_text_sha256,
+// migration 20261105084017), and no statement moves it after.
+type reviewHash struct {
+	review, hash string
+}
+
+// reviewHashOf is the review the person gave of document, read off the answer captured with it, and
+// the digest that review holds now.
+func reviewHashOf(t *testing.T, ctx context.Context, database *pgx.Conn, document approvedDocument) reviewHash {
+	t.Helper()
+	var answered struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(document.review), &answered); err != nil || answered.ID == "" {
+		t.Fatalf("read the review of %s back: %v: %s", document.name, err, document.review)
+	}
+	held := reviewHash{review: answered.ID}
+	if err := database.QueryRow(ctx, `select coalesce(content_sha256, '') from artifact_reviews where id = $1::uuid`, held.review).Scan(&held.hash); err != nil {
+		t.Fatalf("read the hash of the review %s of %s: %v", held.review, document.name, err)
+	}
+	return held
+}
+
+// textHash is the sha256 of markdown's UTF-8 bytes in hex, as artifact_version_text_sha256 takes it
+// of a stored version.
+func textHash(markdown string) string {
+	sum := sha256.Sum256([]byte(markdown))
+	return hex.EncodeToString(sum[:])
+}
+
+// versionHashOf is the digest the store takes now of the bytes the version number of document holds
+// (artifact_version_text_sha256), and the hash its newest review there holds (docs.ReviewOrder).
+func versionHashOf(t *testing.T, ctx context.Context, database *pgx.Conn, document string, number int) (stored, reviewed string) {
+	t.Helper()
+	if err := database.QueryRow(ctx, `
+		select coalesce(artifact_version_text_sha256($1::uuid, $2), ''),
+		       coalesce((select content_sha256 from artifact_reviews where artifact_id = $1::uuid and version = $2
+		                 order by `+docs.ReviewOrder+` limit 1), '')
+	`, document, number).Scan(&stored, &reviewed); err != nil {
+		t.Fatalf("read the hashes of version %d of %s: %v", number, document, err)
+	}
+	return stored, reviewed
+}
+
 // One version whose only change is in the server-owned ask attributes carries a person's
 // approval, and nothing wider does (c-attribute-removal). The base release writes the documents, a
 // person approves them and an agent requests approval of one; this head writes a document holding
@@ -221,6 +269,18 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 	}
 	t.Logf("the base release %s wrote the documents; the person approved the first at version %d and the second at version %d; reviews %s %s",
 		baseCommit, one.version, two.version, one.review, two.review)
+	// The review's hash, captured before this branch boots: the digest the base release's store
+	// took of the bytes the person approved, which is the digest of the markdown captured.
+	approvedHashes := map[string]reviewHash{}
+	for _, document := range []approvedDocument{one, two} {
+		approved := reviewHashOf(t, ctx, database, document)
+		if approved.hash == "" || approved.hash != textHash(document.markdown) {
+			t.Fatalf("the base release's review %s of %s holds the hash %q, want the sha256 of the markdown the person approved, %s",
+				approved.review, document.name, approved.hash, textHash(document.markdown))
+		}
+		approvedHashes[document.id] = approved
+		t.Logf("%s: the person's review %s holds the hash %s of the approved version %d", document.name, approved.review, approved.hash, document.version)
+	}
 	stopProcess(t, previous)
 
 	// This head writes a third document holding a reading inside an answered ask.
@@ -466,6 +526,23 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 		if strippedApproved != strippedNew {
 			t.Errorf("%s: without the eight attributes the approved markdown and the new rendering differ:\n%s\n----\n%s", document.name, strippedApproved, strippedNew)
 		}
+		// The person's review still holds the hash captured before the upgrade, and the version it
+		// names still holds the bytes that hash is the digest of: the carry read the bytes already
+		// stored and rewrote none of them. The carried review is a review of its own, over the bytes
+		// the new version holds.
+		approved := approvedHashes[document.id]
+		if now := reviewHashOf(t, ctx, database, document); now.hash != approved.hash {
+			t.Errorf("%s: the person's review %s holds the hash %q once the fleet is one build, want the hash %q captured before the upgrade",
+				document.name, approved.review, now.hash, approved.hash)
+		}
+		if stored, _ := versionHashOf(t, ctx, database, document.id, document.version); stored != approved.hash {
+			t.Errorf("%s: version %d, which the person approved, holds bytes whose digest is %q once the first write on one build carried the approval, want the review's hash %q captured before the upgrade: the carry rewrote the bytes already stored",
+				document.name, document.version, stored, approved.hash)
+		}
+		if stored, reviewed := versionHashOf(t, ctx, database, document.id, number); reviewed != stored || reviewed != textHash(rendering) || reviewed == approved.hash {
+			t.Errorf("%s: the carried review at version %d holds the hash %q, want the digest of that version's bytes, %q (the store's %q), which is not the person's review's %q",
+				document.name, number, reviewed, textHash(rendering), stored, approved.hash)
+		}
 	}
 
 	// An answer keeps the turn of an approval request. On a fleet of one build an agent writes a
@@ -692,13 +769,17 @@ type keptBlock struct {
 	block, ask, copied string
 }
 
+// serverOwnedAskAttributes is the eight server-owned attributes of an ask block.
+var serverOwnedAskAttributes = []string{"state", "answered_by", "answered_at", "selected", "answer", "invalid", "copied_from", "copied_from_document"}
+
 // requireKeptForm fails t unless the ask block kept.block of markdown, a version written once the
 // fleet is one build, holds of the eight server-owned attributes exactly the form R10 keeps, each
 // value as the node of kept.ask holds it: state where the ask is answered or resolved and none
 // where it is open, answered_by and answered_at where it is answered, and, for a copy,
 // copied_from naming kept.ask and copied_from_document naming kept.copied, whatever the source's
-// state. It never holds selected, answer or invalid.
-func requireKeptForm(t *testing.T, ctx context.Context, database *pgx.Conn, what, markdown string, kept keptBlock) {
+// state. It never holds selected, answer or invalid. A block that differs is printed. It answers
+// the answer_state the node holds.
+func requireKeptForm(t *testing.T, ctx context.Context, database *pgx.Conn, what, markdown string, kept keptBlock) string {
 	t.Helper()
 	held := askNodeHolds(t, ctx, database, kept.ask)
 	state := held[graphstore.TupleAnswerState].ToID
@@ -717,16 +798,43 @@ func requireKeptForm(t *testing.T, ctx context.Context, database *pgx.Conn, what
 		want["copied_from"], want["copied_from_document"] = kept.ask, kept.copied
 	}
 	block := storedAskBlock(t, markdown, kept.block)
-	for _, name := range []string{"state", "answered_by", "answered_at", "selected", "answer", "invalid", "copied_from", "copied_from_document"} {
+	differs := false
+	for _, name := range serverOwnedAskAttributes {
 		wanted, isWanted := want[name]
 		got, isHeld := block.Attrs[name]
 		value, _ := got.(string)
 		same := isHeld == isWanted && (!isWanted || value == wanted || name == "answered_at" && sameInstant(value, wanted))
 		if !same {
+			differs = true
 			t.Errorf("%s: the block %s holds %s=%s (held %t), want %q (held %t): the form R10 keeps, from the node of ask %s, which holds %q",
 				what, kept.block, name, mustJSON(t, got), isHeld, wanted, isWanted, kept.ask, state)
 		}
 	}
+	if differs {
+		t.Errorf("%s: the ask block %s, which differs from the form R10 keeps:\n%s", what, kept.block, askBlockText(markdown, kept.block))
+	}
+	return state
+}
+
+// askBlockText is the ask block blockID of markdown as the version writes it, from its opening
+// line to its closing fence, for a failure to print; markdown whole where no opening line names
+// blockID.
+func askBlockText(markdown, blockID string) string {
+	lines := strings.Split(markdown, "\n")
+	for start, line := range lines {
+		if !askOpener.MatchString(line) || !strings.Contains(line, "{#"+blockID+" ") && !strings.Contains(line, "{#"+blockID+"}") {
+			continue
+		}
+		fence := strings.TrimLeft(line, "> \t-")
+		fence = fence[:len(fence)-len(strings.TrimLeft(fence, ":"))]
+		for end := start + 1; end < len(lines); end++ {
+			if strings.TrimRight(strings.TrimLeft(lines[end], "> \t"), " \t") == fence {
+				return strings.Join(lines[start:end+1], "\n")
+			}
+		}
+		return strings.Join(lines[start:], "\n")
+	}
+	return markdown
 }
 
 // sameInstant reports whether a and b, two RFC 3339 times, name one instant.
