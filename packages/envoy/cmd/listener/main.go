@@ -1867,6 +1867,7 @@ func main() {
 		sessions: sessions,
 		deps:     ready,
 		relays:   relays,
+		edge:     edge != nil,
 		logger:   logger,
 	}, sessionConsumerSweepInterval))
 

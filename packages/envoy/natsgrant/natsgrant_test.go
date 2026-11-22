@@ -276,11 +276,12 @@ func TestTheEdgeGrantIsTheGolden(t *testing.T) {
 // notification topic, the finite list of the edge's own subjects - the agent subjects, each
 // project's role subjects, the relay subjects, every edge machine's relay receipts, the resume
 // lane, and the exception lanes of the agent subjects and of each project's role subjects - and no
-// create or update of the stream or of any bucket's stream, and no direct get of any bucket. In
-// subscribe: its own machine's inbox prefix in place of every
-// reply inbox, every session's relay subject and its own machine's relay receipts, and neither
-// role-lane queue group. So a change to Listener reaches Edge, and the golden above says that it
-// did.
+// create or update of the stream or of any bucket's stream, and no direct get of any bucket; and
+// in place of the write of every key of the selection bucket, a session's record (a key of one
+// token) and its own durable's record. In subscribe: its own machine's inbox prefix in place of
+// every reply inbox, every session's relay subject and its own machine's relay receipts, and
+// neither role-lane queue group. So a change to Listener reaches Edge, and the golden above says
+// that it did.
 func TestTheEdgeGrantIsTheListenersWithTheEdgesChanges(t *testing.T) {
 	for _, id := range []string{"m", "example-hub"} {
 		require.Equal(t, "_INBOX_envoy_edge_"+id, natsgrant.EdgeInboxPrefix(id), "EdgeInboxPrefix(%q)", id)
@@ -292,6 +293,9 @@ func TestTheEdgeGrantIsTheListenersWithTheEdgesChanges(t *testing.T) {
 				return strings.HasPrefix(entry, "$JS.API.STREAM.CREATE.") || strings.HasPrefix(entry, "$JS.API.STREAM.UPDATE.") || strings.HasPrefix(entry, "$JS.API.DIRECT.GET.")
 			})
 			require.Len(t, kept, len(listener.Publish)-1-2*(1+len(bus.ListenerBuckets()))-len(bus.ListenerBuckets()), "Listener(%q) holds every notification topic, the create and update of the stream and of each bucket's stream, and each bucket's direct get", id)
+			selection := slices.Index(kept, "$KV.envoy_session_consumers.>")
+			require.NotEqual(t, -1, selection, "Listener(%q) writes every key of the selection bucket", id)
+			kept = slices.Replace(kept, selection, selection+1, "$KV.envoy_session_consumers.*", "$KV.envoy_session_consumers.durable.listener-"+id)
 			own := []string{"notifications.agent.>"}
 			for _, project := range projects {
 				own = append(own, "notifications.role."+project+".>")

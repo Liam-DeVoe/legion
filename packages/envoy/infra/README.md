@@ -4184,11 +4184,16 @@ What the lists do not hold back:
   takeover subjects wherever a client subscribes them: the cycle refusal above holds only for the
   notification stream's own consumers. No row creates such a consumer: this one is read from the
   server's rule above.
-- Its selection bucket calls (`$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers` and
-  `$KV.envoy_session_consumers.>`, as `ListenerPermissions` holds them) write every session's
-  selection record, which names the consumer a session's messages come from in the fresh naming
-  mode. That is no reach past the consumer calls above, which already create, update and delete
-  any session's consumer.
+- Its selection bucket calls are `ListenerPermissions`' leader read
+  (`$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers`) and, in place of its write of every key, the
+  writes of a session's record and of its own durable's: `$KV.envoy_session_consumers.*` (a session
+  id is one token) and `$KV.envoy_session_consumers.durable.listener-<machine id>`. So it writes
+  every session's selection record, which names the consumer a session's messages come from in the
+  fresh naming mode: no reach past the consumer calls above, which already create, update and
+  delete any session's consumer. It writes neither the bucket's sentinel (`envoy.bucket`), where a
+  cutover marker it wrote would stop every fixed-mode listener at its next connect, nor another
+  listener's durable record; ending the bucket's replay mode, which rewrites the sentinel, is the
+  shared listeners' sweeps' (`natsgrant/edge_selection_test.go` holds both on a real server).
 
 Its read is the whole bus until subjects and keys name their project, and its writes through the
 consumer calls are as wide until something other than the edge creates its consumers. The auth

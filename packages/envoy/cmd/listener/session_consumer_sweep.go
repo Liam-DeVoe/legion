@@ -77,6 +77,10 @@ type sessionConsumerSweep struct {
 	// relays holds this task's machine durable binding (sessionRelays.owned), which the pass
 	// requires: the task of a rolling deploy that relays nothing sweeps nothing either.
 	relays *sessionRelays
+	// edge is set for an edge listener, whose grant writes no sentinel of the selection bucket
+	// (natsgrant.Edge): its pass leaves ending replay mode (endReplay), a rewrite of the sentinel,
+	// to the shared listeners' sweeps.
+	edge   bool
 	logger *logging.Logger
 }
 
@@ -141,7 +145,9 @@ func (s *sessionConsumerSweep) pass(ctx context.Context) {
 	// For each session the consumer the server created last: in the fixed mode its one consumer,
 	// and in the fresh mode the delete takes it as its listed info only when it is the current.
 	listed := bus.NewestOfEach(sets)
-	s.endReplay(ctx, sets)
+	if !s.edge {
+		s.endReplay(ctx, sets)
+	}
 	if len(listed) == 0 {
 		return
 	}
@@ -214,7 +220,8 @@ func (s *sessionConsumerSweep) cleanRetired(ctx context.Context, sets map[string
 // endReplay ends the selection bucket's replay mode, in the fresh mode, once none of the orphans
 // its sentinel lists is among the consumers this pass listed (bus.SessionConsumers.EndReplay, which
 // does nothing in the fixed mode). A listed orphan is one no record selects, so no relay pulls it
-// and the server removes it at its inactive threshold; replay mode lasts until then.
+// and the server removes it at its inactive threshold; replay mode lasts until then. An edge
+// listener's pass does not call it: its grant writes no sentinel.
 func (s *sessionConsumerSweep) endReplay(ctx context.Context, sets map[string][]*jetstream.ConsumerInfo) {
 	held := map[string]bool{}
 	for _, set := range sets {

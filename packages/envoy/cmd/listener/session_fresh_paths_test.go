@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // freshSessionRecord reads sessionID's selection record through admin, with its revision.
@@ -158,5 +159,36 @@ func TestTheFreshSweepDeletesALiveSessionsRetiredNameAndKeepsItsCurrent(t *testi
 	}
 	if after, _ := freshSessionRecord(t, admin, sessionID); after.Current != current || len(after.Retired) != 0 {
 		t.Fatalf("after the sweep's pass the record is %+v; want %s current and no retired name", after, current)
+	}
+}
+
+// An edge listener's grant writes no sentinel of the selection bucket (natsgrant.Edge), so its
+// sweep leaves ending replay mode, which rewrites the sentinel, to the shared listeners' sweeps:
+// its pass over a bucket in replay mode whose orphans are all gone keeps the sentinel as it was,
+// and sends no write the server would refuse it at every pass. The control is a shared listener's
+// pass over the same bucket, which ends replay mode.
+func TestAnEdgeListenersSweepLeavesReplayModeToTheSharedListeners(t *testing.T) {
+	for _, edge := range []bool{true, false} {
+		t.Run(map[bool]string{true: "an edge listener's pass", false: "control: a shared listener's pass"}[edge], func(t *testing.T) {
+			_, uri := testnats.Start(t)
+			admin := testnats.Connect(t, uri)
+			t.Cleanup(admin.Close)
+			ctx := context.Background()
+			if _, err := consumernames.CreateSessionBucket(ctx, admin, 1, consumernames.StoreState{Cutover: consumernames.CutoverDone, Boundary: 1, ReplayFrom: 4}); err != nil {
+				t.Fatal(err)
+			}
+			delivery, _ := freshDelivery(t, uri)
+			relays := &sessionRelays{}
+			relays.owned.Store(true)
+			sweep := &sessionConsumerSweep{delivery: delivery, sessions: liveSessions{}, relays: relays, edge: edge, logger: logging.NewWithWriter("test", io.Discard)}
+			sweep.pass(ctx)
+			state, err := consumernames.NewKVStore(consumernames.ConnRequester{Conn: admin}).State(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := map[bool]uint64{true: 4, false: 0}[edge]; state.ReplayFrom != want {
+				t.Fatalf("after the pass the sentinel's replay_from is %d, want %d", state.ReplayFrom, want)
+			}
+		})
 	}
 }
