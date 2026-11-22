@@ -1,10 +1,12 @@
 // How the `dispatch` command reads the text of every `--<field>-file <path>` and
 // `--<field>-json-file <path>`, and of stdin for `-`: as bytes, decoded as UTF-8 strictly. A lenient
 // read writes each byte that is not UTF-8 as U+FFFD, which the call then stores in place of the
-// writer's byte; this read throws `NotUtf8Error` instead, and `parseCommand` refuses the command
-// with Dispatch's own refusal of such a byte (`notUtf8Refusal`), its dry run and its call alike. A
-// byte order mark is kept, as U+FEFF, as the lenient read kept it. The `dispatch` entry
-// (`bin/dispatch.ts`) reads through `readFileText`, and a test hands it stdin's bytes.
+// writer's byte; this read throws `NotUtf8Error` instead, which carries the bytes, and the command
+// refuses them in Dispatch's own words, its dry run and its call alike (`parseCommand`'s
+// `unstorable` parse, which `runDispatchCli` refuses). A byte order mark is kept, as U+FEFF, as the
+// lenient read kept it. The `dispatch` entry (`bin/dispatch.ts`) reads through `readFileText`, and
+// a test hands it stdin's bytes. Dispatch's refusal of bytes it cannot store (`unstorableBytes`)
+// names the first U+0000 or byte that is not UTF-8, whichever comes first, as Dispatch names it.
 import { readFileSync } from "node:fs";
 
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -14,20 +16,13 @@ function byteText(byte: number): string {
   return `0x${byte.toString(16).toUpperCase().padStart(2, "0")}`;
 }
 
-/**
- * Bytes that are not UTF-8: `byte` is the first byte that is not, and `character` where it
- * stands, counted from 1 in UTF-16 units, as Dispatch counts it (`unstorableText`,
- * packages/envoy/internal/dispatch/api/storable_text.go, which counts `itemblocks.Units16` of the
- * text before the byte, plus one).
- */
+/** Bytes a file or stdin held that are not UTF-8, which `readFileText` does not decode: `bytes`
+ *  is every byte it read, which the command refuses in Dispatch's own words. */
 export class NotUtf8Error extends Error {
   override readonly name = "NotUtf8Error";
 
-  constructor(
-    readonly byte: number,
-    readonly character: number
-  ) {
-    super(`a byte that is not UTF-8 (${byteText(byte)}) at character ${character}`);
+  constructor(readonly bytes: Uint8Array) {
+    super("the bytes are not UTF-8");
   }
 }
 
@@ -73,16 +68,52 @@ function firstNotUtf8(bytes: Uint8Array): number {
   return -1;
 }
 
+/**
+ * The first character of `bytes` Dispatch cannot store, as its `unstorableText`
+ * (packages/envoy/internal/dispatch/api/storable_text.go) finds it, reading the bytes in order with
+ * Go's `utf8.DecodeRune`: a NUL (U+0000, `byte` 0) or a byte that is not UTF-8 (`firstNotUtf8`),
+ * whichever comes first, or undefined for bytes it stores. `character` is where it stands, counted
+ * from 1 in UTF-16 units, as Dispatch counts it (`itemblocks.Units16` of the text before it, plus
+ * one); a byte order mark before it is one unit, as U+FEFF.
+ */
+function firstUnstorable(
+  bytes: Uint8Array
+): { readonly byte: number; readonly character: number } | undefined {
+  const notUtf8 = firstNotUtf8(bytes);
+  const nul = bytes.indexOf(0);
+  // A NUL is a whole character of UTF-8. Where it cuts short a sequence that a byte before it
+  // opens, that byte comes first, and `firstNotUtf8` names it.
+  const at = nul !== -1 && (notUtf8 === -1 || nul < notUtf8) ? nul : notUtf8;
+  if (at === -1) return undefined;
+  // Every byte before `at` is UTF-8, so the decoder takes them.
+  return { byte: bytes[at] as number, character: decoder.decode(bytes.subarray(0, at)).length + 1 };
+}
+
+/**
+ * Dispatch's refusal of `field` holding `bytes`, or undefined for bytes it stores: the first
+ * U+0000 or byte that is not UTF-8 among them (`firstUnstorable`), in the code and words
+ * `unstorableText` refuses it with, NUL_CHARACTER or INVALID_UTF8, which `messageFor` prints as it
+ * prints that refusal from Dispatch.
+ */
+export function unstorableBytes(field: string, bytes: Uint8Array): Error | undefined {
+  const first = firstUnstorable(bytes);
+  if (first === undefined) return undefined;
+  const { byte, character } = first;
+  return new Error(
+    byte === 0
+      ? `NUL_CHARACTER: ${field} holds a NUL character (U+0000) at character ${character}, which Dispatch cannot store`
+      : `INVALID_UTF8: ${field} holds a byte that is not UTF-8 (${byteText(byte)}) at character ${character}, which Dispatch cannot store`
+  );
+}
+
 /** `bytes` decoded as UTF-8, a byte order mark kept as U+FEFF; `NotUtf8Error` for bytes that are
- *  not UTF-8, naming the first such byte and where it stands. */
+ *  not UTF-8. */
 function utf8Text(bytes: Uint8Array): string {
   try {
     return decoder.decode(bytes);
   } catch (error) {
-    const at = firstNotUtf8(bytes);
-    if (at === -1) throw error;
-    // Every byte before `at` is UTF-8, so the decoder takes them.
-    throw new NotUtf8Error(bytes[at] as number, decoder.decode(bytes.subarray(0, at)).length + 1);
+    if (firstNotUtf8(bytes) === -1) throw error;
+    throw new NotUtf8Error(bytes);
   }
 }
 
@@ -93,11 +124,4 @@ export function readFileText(
   readStdin: () => Uint8Array = () => readFileSync(0)
 ): string {
   return utf8Text(path === "-" ? readStdin() : readFileSync(path));
-}
-
-/** Dispatch's refusal of `field` holding the bytes `error` names, in the code and words it refuses
- *  such a byte in a form field with (`unstorableText`'s INVALID_UTF8), which `messageFor` prints
- *  as it prints that refusal from Dispatch. */
-export function notUtf8Refusal(field: string, error: NotUtf8Error): Error {
-  return new Error(`INVALID_UTF8: ${field} holds ${error.message}, which Dispatch cannot store`);
 }

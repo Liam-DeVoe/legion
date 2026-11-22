@@ -2,7 +2,9 @@
 // refuses its text for its size, and, for inline text, whether Dispatch would store the text under
 // another spelling, read from the store's own parse and render. `dispatch artifact` and its dry run
 // both make it, chosen by one function (`artifactTextCheck`, which `artifactCommand` and
-// `artifactDryRun` in documents.ts call), so the two answer alike.
+// `artifactDryRun` in documents.ts call), so the two answer alike. A document's bytes, a `--path`
+// file's or inline text's that are not UTF-8, are refused in the upload's order, their size first
+// and then the first U+0000 or byte that is not UTF-8, by one function (`documentBytesRefusal`).
 import {
   MARKDOWN_DOCUMENT_MAX_BYTES,
   MARKDOWN_DOCUMENT_TOO_LARGE,
@@ -12,6 +14,7 @@ import {
 } from "@legion/contracts";
 import { goBlankPattern } from "@legion/contracts/go-blank";
 import type { BunFile } from "bun";
+import { unstorableBytes } from "../dispatch-file-text";
 import { type DispatchClient, DispatchServiceError } from "../dispatch-http";
 import { messageFor } from "../errors";
 import { ToolInputError } from "../tool-input-errors";
@@ -176,8 +179,10 @@ export type StoredTextCheck =
  * as it prints that answer, for an upload within the server's 25 MiB file cap; past that cap the
  * server answers `artifact blob exceeds 25 MB` instead (errUploadTooLarge). The server refuses
  * such an upload whatever name it carries, so `dispatch artifact` refuses such text first: the
- * call before it reads whether the owner holds the name (`artifactCommand`), and the call and its
- * dry run before they ask the round trip (`storedTextCheck`, and `documentFileBytes` for a file).
+ * call before it reads whether the owner holds the name (`artifactCommand`), the call and its dry
+ * run before they ask the round trip (`storedTextCheck`, and `documentFileBytes` for a file), and
+ * a document's bytes before the first U+0000 or byte that is not UTF-8 in them
+ * (`documentBytesRefusal`).
  */
 function documentTooLarge(measured: string | Uint8Array | number): Error | undefined {
   const bytes =
@@ -189,6 +194,20 @@ function documentTooLarge(measured: string | Uint8Array | number): Error | undef
   return bytes > MARKDOWN_DOCUMENT_MAX_BYTES
     ? new Error(`CAP_EXCEEDED: ${MARKDOWN_DOCUMENT_TOO_LARGE}`)
     : undefined;
+}
+
+/**
+ * The refusal of a Markdown document's bytes, in the order Dispatch's upload refuses a file's
+ * (`documentTextRefusal`, packages/envoy/internal/dispatch/api/artifacts.go), or undefined for
+ * bytes that order passes: first the size (`documentTooLarge`), and then the first U+0000 or
+ * byte that is not UTF-8, whichever comes first (`unstorableBytes`), in Dispatch's own code,
+ * words and count, under `field`. `field` is the field the upload names: `file` for a `--path`
+ * file (`documentFileBytes`), `content` for inline text a flag read from a file or stdin whose
+ * bytes are not UTF-8 (`runDispatchCli`). Both call this, so the same bytes get the same refusal
+ * but for the field, whichever way they are given.
+ */
+export function documentBytesRefusal(field: string, bytes: Uint8Array): Error | undefined {
+  return documentTooLarge(bytes) ?? unstorableBytes(field, bytes);
 }
 
 /**
@@ -211,29 +230,29 @@ export function uploadedFile(local: string): BunFile {
  * (`uploadedFile`), under the type its upload declares, and Dispatch stores an upload as a
  * document exactly when that type is `text/markdown`, its parameters and its case aside. The bytes
  * are the ones the call checks and sends: `held`, those the CLI read for AskGate's check where it
- * read them, or else the file's own, read once. They are checked against the bytes one document
- * holds before they are answered, with `documentTooLarge`'s refusal, which this throws, so no
- * caller checks them again: a file whose size is past that is refused before it is read, and
- * bytes read past it, from a file whose size could not be read or that grew since, once they are
- * read.
+ * read them, or else the file's own, read once. They are refused before they are answered, with
+ * the refusal this throws, so no caller checks them again: a file whose size is past the bytes
+ * one document holds (`documentTooLarge`) before it is read, and the bytes in hand, held or read,
+ * by `documentBytesRefusal`, which refuses bytes past that size, from a file whose size could not
+ * be read or that grew since, and then the first U+0000 or byte that is not UTF-8 in them. So such
+ * a file is refused in Dispatch's own words before anything is asked, as its upload refuses it.
  */
 export async function documentFileBytes(
   file: BunFile,
   held?: Uint8Array<ArrayBuffer>
 ): Promise<Uint8Array<ArrayBuffer> | undefined> {
   if (file.type.split(";", 1)[0]?.trim().toLowerCase() !== "text/markdown") return undefined;
-  const size =
-    held?.byteLength ??
-    (await file.stat().then(
+  if (held === undefined) {
+    const size = await file.stat().then(
       (stats) => stats.size,
       () => undefined
-    ));
-  const tooLarge = size === undefined ? undefined : documentTooLarge(size);
-  if (tooLarge !== undefined) throw tooLarge;
-  if (held !== undefined) return held;
-  const bytes = await file.bytes();
-  const readTooLarge = documentTooLarge(bytes);
-  if (readTooLarge !== undefined) throw readTooLarge;
+    );
+    const tooLarge = size === undefined ? undefined : documentTooLarge(size);
+    if (tooLarge !== undefined) throw tooLarge;
+  }
+  const bytes = held ?? (await file.bytes());
+  const refusal = documentBytesRefusal("file", bytes);
+  if (refusal !== undefined) throw refusal;
   return bytes;
 }
 
@@ -361,14 +380,16 @@ async function storedTextCheck(
 
 /**
  * The stored-text check of a `--path` file Dispatch stores as a Markdown document, `bytes` its
- * content as `documentFileBytes` answers it, already held to the bytes one document holds, and
- * `force` the upload's `--force`. `dispatch artifact` and its dry run both make it, with the bytes
- * the call sends, so the two never answer differently. The file round trip is asked about the
- * file's bytes as they are (`fileRoundTrip`), for a new document's refusals too where the call
- * makes a new document, without `force`, and only its refusal is taken (`askRoundTrip`): Dispatch
- * refuses there, in the upload's own words, the bytes the upload of that file refuses for the text
- * alone - a NUL, a byte that is not UTF-8, the parse's refusal, an ask that breaks its content
- * rule, a text or a rendering too large - and the call throws that refusal before it uploads.
+ * content as `documentFileBytes` answers it, already held to the bytes one document holds and
+ * free of U+0000 and of bytes that are not UTF-8, and `force` the upload's `--force`. `dispatch
+ * artifact` and its dry run both make it, with the bytes the call sends, so the two never answer
+ * differently. The file round trip is asked about the file's bytes as they are (`fileRoundTrip`),
+ * for a new document's refusals too where the call makes a new document, without `force`, and only
+ * its refusal is taken (`askRoundTrip`): Dispatch refuses there, in the upload's own words, the
+ * bytes the upload of that file refuses for the text alone - the parse's refusal, an ask that
+ * breaks its content rule, a rendering too large, and the size, a NUL and a byte that is not UTF-8,
+ * which `documentFileBytes` refused already in the same words - and the call throws that refusal
+ * before it uploads.
  * Whatever spelling it answers is `kept`: the call stores a Markdown file as the store spells it,
  * with no refusal for its spelling. The upload refuses the file for everything the round trip
  * would refuse its bytes for, so a round trip that gave no answer - none in time, a failure, or a

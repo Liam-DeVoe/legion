@@ -573,24 +573,18 @@ describe("a bare - given to a text flag", () => {
 });
 
 describe("a file flag whose bytes are not UTF-8", () => {
+  const bytes = Uint8Array.of(0x41, 0xff);
   const notUtf8 = {
     readText: (path: string): string => {
-      if (path === "bad") throw new NotUtf8Error(0xff, 1);
+      if (path === "bad") throw new NotUtf8Error(bytes);
       throw new Error(`unexpected read ${path}`);
     },
   };
 
-  test("is Dispatch's refusal of the text, unless the argv is refused for a field given twice, in either order", () => {
+  test("is refused for the bytes, naming the field the flag sets, unless the argv is refused for a field given twice, in either order", () => {
     expect(
       parseCommand(["comment", "--issue", "DSP-1", "--body-file", "bad"], notUtf8)
-    ).toMatchObject({
-      kind: "unstorable",
-      tool: "dispatch_comment",
-      refusal: {
-        message:
-          "INVALID_UTF8: body holds a byte that is not UTF-8 (0xFF) at character 1, which Dispatch cannot store",
-      },
-    });
+    ).toStrictEqual({ kind: "unstorable", tool: "dispatch_comment", field: "body", bytes });
     expect(
       parseCommand(["comment", "--issue", "DSP-1", "--body-file", "bad", "--body", "x"], notUtf8)
     ).toStrictEqual({

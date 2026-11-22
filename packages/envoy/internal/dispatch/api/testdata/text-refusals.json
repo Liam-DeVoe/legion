@@ -65,7 +65,31 @@
     "command": ["inline"],
     "status": 400,
     "code": "INVALID_UTF8",
-    "words": "holds a byte that is not UTF-8 (0xFF) at character 11",
+    "words": "holds a byte that is not UTF-8 (0xFF) at character 11, which Dispatch cannot store",
+    "scope": "upload"
+  },
+  {
+    "name": "a file holding U+0000 before a byte that is not UTF-8",
+    "text": [{ "text": "A\u0000B" }, { "base64": "/w==" }],
+    "sent": ["file"],
+    "command": ["inline"],
+    "status": 400,
+    "code": "NUL_CHARACTER",
+    "words": "holds a NUL character (U+0000) at character 2, which Dispatch cannot store",
+    "scope": "upload"
+  },
+  {
+    "name": "a file past the bytes one document holds holding a byte that is not UTF-8",
+    "text": [
+      { "text": "# Notes\n\nA" },
+      { "base64": "/w==" },
+      { "repeat": "word ", "bytes": 1048576 }
+    ],
+    "sent": ["file"],
+    "command": ["inline"],
+    "status": 413,
+    "code": "CAP_EXCEEDED",
+    "words": "a markdown document is at most 1 MiB; a larger file is stored as a binary artifact under another content type",
     "scope": "upload"
   },
   {

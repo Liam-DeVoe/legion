@@ -40,11 +40,13 @@ import { expect, test } from "./test";
  *
  * A way the row's `command` names is one the command refuses the text itself in, before it asks
  * Dispatch anything: given inline, a file's or stdin's bytes that are not UTF-8, which it reads as
- * bytes, and which the route tests cannot send inline, since no JSON string carries them. The dry
- * run and the call are refused alike in every combination of it, exit 1, the same stdout naming
- * the row's code and words, and nothing is stored. The file and stdin each hand the command the
- * row's bytes, so a refusal naming the byte (0xFF) is one the command made of that byte, and not of
- * the U+FFFD a lenient read would have stored in its place.
+ * bytes, and which the route tests cannot send inline, since no JSON string carries them. It
+ * refuses them as a Markdown `--path` file of the same bytes is refused, in that upload's order:
+ * the size first, then the first U+0000 or byte that is not UTF-8. The dry run and the call are
+ * refused alike in every combination of it, exit 1, the same stdout naming the row's code and
+ * words, and nothing is stored. The file and stdin each hand the command the row's bytes, so a
+ * refusal naming the byte (0xFF) is one the command made of that byte, and not of the U+FFFD a
+ * lenient read would have stored in its place.
  */
 
 /** One part of a row's text, as the Go comment above `textRefusalsFile` names the four. */
@@ -179,9 +181,11 @@ async function expectedOf(
   rendering: () => Promise<string>
 ): Promise<Expected> {
   // A way the row's `command` names: the command refuses the text itself, `--force` or not,
-  // before it asks Dispatch anything, in Dispatch's code and words, naming the field it read.
+  // before it asks Dispatch anything, in Dispatch's code and words. Words that name a character
+  // (`holds …`) follow the field the command read, `content`; the size's words name no field.
   if (byCommand) {
-    return { kind: "refused alike", exit: 1, names: [`${row.code}: content ${row.words}`] };
+    const field = row.words.startsWith("holds ") ? "content " : "";
+    return { kind: "refused alike", exit: 1, names: [`${row.code}: ${field}${row.words}`] };
   }
   if (row.scope === "upload" || !force) {
     return { kind: "refused alike", exit: 1, names: [`${row.code}: `, row.words] };

@@ -299,12 +299,14 @@ type roundTripReplaced struct {
 // list of parts joined in order; sent, ["inline", "file"] or ["file"]; status; code; words, ""
 // where the row names none; scope; and replaced, absent where it is the zero value, with
 // {status, code, words} or {rendering}, each id the parse mints written "minted". Every member but
-// replaced and command is written on every row. command, absent where it is empty, names the ways
-// the dispatch command refuses the text itself, before it asks Dispatch: ["inline"] for a text it
-// refuses given inline, from a --content-file or on stdin, in Dispatch's own code and in words
-// holding the row's words, which the route tests cannot send inline - bytes that are not UTF-8,
-// which no JSON string carries, and which the command reads as bytes. The end-to-end spec runs
-// those ways too; the route tests read command for nothing but its check here.
+// replaced and command is written on every row. command, absent where it is empty, names the
+// inline ways the dispatch command takes a text in that the route tests cannot send inline, and
+// refuses itself, before it asks Dispatch: ["inline"] for a text it refuses given inline, from a
+// --content-file or on stdin, in Dispatch's own code and in words holding the row's words - bytes
+// that are not UTF-8, which no JSON string carries, and which the command reads as bytes, refused
+// as a Markdown --path file of the same bytes is, the size first, then the first U+0000 or byte
+// that is not UTF-8. The end-to-end spec runs those ways too; the route tests read command for
+// nothing but its check here.
 //
 // scope is a fact of the tests, which they sort the rows by; Dispatch's answers carry no scope.
 // It is "upload" where every upload of the text refuses it with the row's status, code and words,
@@ -436,8 +438,10 @@ func roundTripRefusals(t *testing.T) []roundTripRefusal {
 		return refusal
 	}
 
-	if pastBytes := rowNamed("text past the bytes one document holds").text; len(pastBytes) <= maxDocumentMarkdownBytes {
-		t.Fatalf("the text is %d bytes, want more than a document's %d", len(pastBytes), maxDocumentMarkdownBytes)
+	for _, name := range []string{"text past the bytes one document holds", "a file past the bytes one document holds holding a byte that is not UTF-8"} {
+		if pastBytes := rowNamed(name).text; len(pastBytes) <= maxDocumentMarkdownBytes {
+			t.Fatalf("%q is %d bytes, want more than a document's %d", name, len(pastBytes), maxDocumentMarkdownBytes)
+		}
 	}
 	// A paragraph line at the bytes one document holds, with no final line feed: the rendering ends
 	// it with one, a byte past the bytes.
@@ -455,7 +459,10 @@ func roundTripRefusals(t *testing.T) []roundTripRefusal {
 		t.Fatal("the no-break space paragraphs are not blank to strings.TrimSpace")
 	}
 
-	constants := map[string]string{"text past the bytes one document holds": contracts.MarkdownDocumentTooLarge}
+	constants := map[string]string{
+		"text past the bytes one document holds":                                    contracts.MarkdownDocumentTooLarge,
+		"a file past the bytes one document holds holding a byte that is not UTF-8": contracts.MarkdownDocumentTooLarge,
+	}
 	for _, rule := range ciCheckBreaks {
 		constants["a check proved by CI with "+rule.name] = ciCheckRefusal("c2", rule.rule)
 	}

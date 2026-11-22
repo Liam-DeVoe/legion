@@ -5,7 +5,7 @@ import {
   zodSchemaApi,
 } from "@legion/contracts";
 import { z } from "zod";
-import { NotUtf8Error, notUtf8Refusal } from "./dispatch-file-text";
+import { NotUtf8Error } from "./dispatch-file-text";
 import { messageFor } from "./errors";
 
 /**
@@ -26,8 +26,8 @@ import { messageFor } from "./errors";
  *   writes for such a list so every list round-trips;
  * - any other object or array: `--<field>-json <json>` and `--<field>-json-file <path>`.
  * A file's or stdin's text is `io.readText`'s, which the `dispatch` entry reads as bytes that must
- * be UTF-8 (`readFileText`): bytes that are not refuse the command as Dispatch refuses them (an
- * `unstorable` parse).
+ * be UTF-8 (`readFileText`): bytes that are not refuse the command in Dispatch's own words (an
+ * `unstorable` parse, which `runDispatchCli` refuses).
  * A JSON flag's help lists the keys of its object, or of each item of its list, from the same
  * schema, with each key's type, whether it is required, and its description (`shapeLines`).
  * Every command also takes `--help` and `--dry-run`.
@@ -99,12 +99,14 @@ export type ParsedCommand =
       readonly aboutAFlag?: false;
     }
   | {
-      /** A file or stdin a flag read holds a byte that is not UTF-8, which Dispatch cannot store:
-       *  `refusal` is Dispatch's own refusal of the first such byte, naming the field the flag
-       *  sets (`notUtf8Refusal`). Any other problem of the argv is a `refused` instead. */
+      /** A file or stdin a flag read holds bytes that are not UTF-8, which Dispatch cannot store:
+       *  `field` is the field the flag sets and `bytes` every byte it read, of the first such
+       *  flag. `runDispatchCli` refuses them in Dispatch's own words, which name the field. Any
+       *  other problem of the argv is a `refused` instead. */
       readonly kind: "unstorable";
       readonly tool: string;
-      readonly refusal: Error;
+      readonly field: string;
+      readonly bytes: Uint8Array;
     };
 
 export interface CommandFlagRow {
@@ -419,8 +421,8 @@ export function parseCommand(
   let help = false;
   let dryRun = false;
   let stdinFlag: string | undefined;
-  // Dispatch's refusal of the first file or stdin a flag read that holds a byte that is not UTF-8.
-  let unstorable: Error | undefined;
+  // The field and the bytes of the first file or stdin a flag read whose bytes are not UTF-8.
+  let unstorable: { readonly field: string; readonly bytes: Uint8Array } | undefined;
 
   const read = (flag: string, field: string, path: string): string | undefined => {
     if (path === STDIN) {
@@ -437,7 +439,7 @@ export function parseCommand(
         // The field is claimed, as a field read whole is, so a field given twice is still refused
         // for that, with exit 2, before this refusal.
         claim(field, flag, false);
-        unstorable ??= notUtf8Refusal(field, error);
+        unstorable ??= { field, bytes: error.bytes };
         return undefined;
       }
       problems.push(
@@ -593,7 +595,7 @@ export function parseCommand(
       ? { kind: "refused", tool, problems, aboutAFlag: false }
       : { kind: "refused", tool, problems };
   }
-  if (unstorable !== undefined) return { kind: "unstorable", tool, refusal: unstorable };
+  if (unstorable !== undefined) return { kind: "unstorable", tool, ...unstorable };
   return { kind: "call", tool, args, dryRun };
 }
 

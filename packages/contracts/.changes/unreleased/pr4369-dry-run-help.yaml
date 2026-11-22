@@ -6,8 +6,11 @@ body: |-
   The `dispatch_artifact` spec's sentence says that the dry run asks Dispatch how it would store
   inline text, and refuses a text that Dispatch would store under another spelling or that the
   call refuses for the text alone; that for a Markdown file it refuses a file past the document
-  limit and sends Dispatch the file's bytes, refusing what Dispatch refuses of them but never
-  their spelling; and that with force it asks for none of a new document's refusals and checks
+  limit, and then one holding a NUL character or a byte that is not UTF-8, in the words of its
+  upload, and sends Dispatch the bytes of any other, refusing what Dispatch refuses of them but
+  never their spelling; that a text read from content-file or stdin whose bytes are not UTF-8 is
+  refused as a Markdown file of the same bytes is; and that with force it asks for none of a new
+  document's refusals and checks
   the spelling Dispatch answers as for any text, so under a name the owner does not hold, which
   the call uploads as a new document, it passes with no warning a text that upload then refuses
   for one of them. It also says that the dry run does not read whether the owner holds the name,

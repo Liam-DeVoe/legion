@@ -1157,12 +1157,16 @@ for such a list), and `--<field>-json` for any other object. Only one flag of a 
 stdin. The command reads each file and stdin as bytes and decodes them as UTF-8, keeping a byte
 order mark as U+FEFF (`readFileText`, `dispatch-file-text.ts`, which `bin/dispatch.ts` hands
 `runDispatchCli`). Bytes that are not UTF-8, which it once stored as U+FFFD, refuse the command,
-for every field and every command, with Dispatch's own refusal of such a byte in a form field and
-exit 1, before anything is sent: `INVALID_UTF8: <field> holds a byte that is not UTF-8 (0xFF) at
+for every field and every command, with exit 1, before anything is sent, in Dispatch's own refusal
+of the first U+0000 or byte that is not UTF-8 among them, whichever comes first, as Dispatch reads
+them (`unstorableBytes`): `NUL_CHARACTER: <field> holds a NUL character (U+0000) at character N,
+which Dispatch cannot store` or `INVALID_UTF8: <field> holds a byte that is not UTF-8 (0xFF) at
 character N, which Dispatch cannot store`, where `<field>` is the argument the flag sets
-(`content` for `--content-file`), the byte is the first that is not UTF-8, and N is where it
-stands, counted from 1 in UTF-16 units, as Dispatch counts it. A value given inline is no such
-case: Bun hands the command its argv already decoded, each such byte written as U+FFFD.
+(`content` for `--content-file`) and N is where the character stands, counted from 1 in UTF-16
+units, as Dispatch counts it. `dispatch artifact`'s `content` is refused as a Markdown `--path`
+file of the same bytes is, in that upload's order (`documentBytesRefusal`): text past 1 MiB with
+`CAP_EXCEEDED` first, then the first U+0000 or byte that is not UTF-8. A value given inline is no
+such case: Bun hands the command its argv already decoded, each such byte written as U+FFFD.
 For a string or enum field, the command refuses `--<field> -` and `--<field>=-` with exit 2,
 and its refusal names `--<field>-file`. The one exception is `dispatch artifact --path`, whose value
 names a local file. `dispatch --help` lists the commands, `dispatch <command> --help` its flags and
@@ -1171,8 +1175,8 @@ strict schema, the cross-field checks and the picture files), refusing the argum
 refuse with the call's message, and otherwise prints the arguments as given, not as the call fills
 them (an issue from LEGION_ISSUE or the ref). It stores nothing, and reads no state of this session
 but what a `dispatch result` record's dry run reads (below). A file or stdin holding bytes that are
-not UTF-8 is refused before that check, by the dry run as by the call, with the same `INVALID_UTF8`
-line and exit 1, so `dispatch artifact` refuses such inline text without asking Dispatch.
+not UTF-8 is refused before that check, by the dry run as by the call, with the same refusal line
+and exit 1, so `dispatch artifact` refuses such inline text without asking Dispatch.
 A command whose call asks Dispatch something before it writes asks it in its dry run too, through
 its step in the command table (`DispatchCommand.dryRun`, `dispatch-commands/table.ts`). The one
 such step is `dispatch artifact`'s: for inline content, it makes the call's own stored-text check
@@ -1214,7 +1218,11 @@ run with no change here. An unmarked answer says nothing of the text, whatever i
 (a path ending in .md or .markdown, which the upload carries as `text/markdown`) is held to the
 same size: it is read once, as the call reads it (`documentFileBytes`), which refuses a file past
 1 MiB by its size before it reads it, or, where AskGate's check read it, by the bytes it holds,
-and measures the bytes it read again, so its callers take bytes already checked. The call and its
+and measures the bytes it read again, so its callers take bytes already checked. It then refuses
+the first U+0000 or byte that is not UTF-8 in those bytes before anything is asked, in the
+upload's words, which name the field `file` (`documentBytesRefusal`, the function that also
+refuses `dispatch artifact`'s content read from a file or stdin whose bytes are not UTF-8, under
+`content`, so the same bytes get the same refusal either way). The call and its
 dry run then send those bytes to their own round trip (`POST /api/v1/markdown/file-round-trip`,
 `file` in base64, with `new_document` as for inline text), which Dispatch checks as it checks an
 upload's file part, and take only its refusal (`storedFileCheck`), never a spelling, since the call

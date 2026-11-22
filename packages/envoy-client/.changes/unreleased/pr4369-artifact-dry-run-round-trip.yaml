@@ -22,10 +22,11 @@ body: |-
   `--force` uploads a new document, so its dry run passes, with no warning, a text that upload
   then refuses for one of a new document's checks. An answer it does not mark is no answer about
   the text. Blank inline text, other than the empty string, is asked too, for a refusal alone and
-  never for its spelling. The dry run of such a Markdown file sends the file's bytes to their own
-  round trip (`POST /api/v1/markdown/file-round-trip`), so a byte that is not UTF-8 is refused as
-  the upload refuses it, and takes its refusal alone, never a spelling, since the call stores a
-  Markdown file as the store spells it; a file stored as its bytes is asked nothing. Each of these
+  never for its spelling. The dry run of such a Markdown file refuses a U+0000 or a byte that is
+  not UTF-8 in it before it asks anything, in the words its upload refuses it with, then sends the
+  file's bytes to their own round trip (`POST /api/v1/markdown/file-round-trip`), and takes its
+  refusal alone, never a spelling, since the call stores a Markdown file as the store spells it; a
+  file stored as its bytes is asked nothing. Each of these
   refusals exits 1. The call of such a Markdown file asks the same file round trip as its dry run
   asks it, with the dry run's own client options - once, within 5 s, with no wait before asking a
   route again - about the bytes it then uploads, and refuses what it refuses before it uploads,

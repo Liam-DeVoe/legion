@@ -719,7 +719,8 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // The file a path names, as its upload sends it (uploadedFile), under the type that upload
   // declares, which is what Dispatch reads for whether it stores the file as a Markdown document.
   // Such a file is read once, here (documentFileBytes), and refused there, before anything is
-  // asked, past the bytes one document may hold, so the bytes the file round trip is asked about
+  // asked, past the bytes one document may hold and then for its first U+0000 or byte that is not
+  // UTF-8, in the upload's order and words, so the bytes the file round trip is asked about
   // below are the bytes sent; any other file is not read here. The bytes AskGate's check read,
   // where it read them, are the bytes the call checks and sends, copied once into a plain buffer
   // of their own, which a Blob takes.
@@ -855,9 +856,10 @@ function endedSentence(text: string): string {
  * the call's own refusal and exit code, and stores nothing. The check is chosen as the call chooses
  * it (`artifactTextCheck`). Inline text takes the call's check (`storedTextCheck`), which decides
  * what blank text is asked. A `--path` file Dispatch stores as a Markdown document is read as the
- * call reads it (`documentFileBytes`), which makes the call's size check, and then takes the call's
- * file check (`storedFileCheck`), which asks the file round trip for its refusal alone: the round
- * trip refuses, in the upload's own words, what the upload of that file is refused for, and the
+ * call reads it (`documentFileBytes`), which makes the call's checks of its size and then of its
+ * first U+0000 or byte that is not UTF-8, and then takes the call's file check
+ * (`storedFileCheck`), which asks the file round trip for its refusal alone: the round trip
+ * refuses, in the upload's own words, what the upload of that file is refused for, and the
  * call throws that refusal before it uploads. Any other file, and a name alone, is asked nothing,
  * by the call as by the dry run. Both checks ask for a new document's refusals only without
  * `--force`, as the call's do, so every refusal the dry run gets is the call's. With `--force` they

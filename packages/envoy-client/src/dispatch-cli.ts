@@ -18,6 +18,7 @@ import {
 } from "./dispatch-command";
 import { askOnceWithinDryRun, DRY_RUN_DEADLINE_MS, defined } from "./dispatch-commands/context";
 import { loginCommand } from "./dispatch-commands/login";
+import { documentBytesRefusal } from "./dispatch-commands/stored-text";
 import { type DispatchToolName, dispatchCommands } from "./dispatch-commands/table";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
@@ -27,6 +28,7 @@ import {
   dryRunAsksDispatch,
   executeDispatchTool,
 } from "./dispatch-execute";
+import { unstorableBytes } from "./dispatch-file-text";
 import { DispatchClient, DispatchWriteLandedError } from "./dispatch-http";
 import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
 import {
@@ -77,8 +79,9 @@ export interface DispatchCliIo {
 /** Exit codes, as `skill://dispatch` states them: written or read, a refusal, and a usage error.
  *  REFUSED is a call Dispatch itself turned down (a near copy, an AskGate block, a server
  *  refusal), or text this CLI refuses in Dispatch's own refusal before it asks (a file or stdin
- *  holding a byte that is not UTF-8, a document past the bytes one holds); any other argument
- *  this CLI refuses before any request is USAGE, whether the argv named a command or not. */
+ *  holding a byte that is not UTF-8, a document past the bytes one holds or holding U+0000); any
+ *  other argument this CLI refuses before any request is USAGE, whether the argv named a command
+ *  or not. */
 const OK = 0;
 const REFUSED = 1;
 const USAGE = 2;
@@ -339,10 +342,20 @@ export async function runDispatchCli(
         );
   }
   if (parsed.kind === "unstorable") {
-    // A file or stdin a flag read holds a byte that is not UTF-8, which Dispatch cannot store: the
-    // dry run and the call refuse it here alike, before either sends anything, with Dispatch's
-    // own refusal of such a byte and its exit code.
-    return refuse(messageFor(parsed.refusal), REFUSED, parsed.tool);
+    // A file or stdin a flag read holds bytes that are not UTF-8, which Dispatch cannot store: the
+    // dry run and the call refuse them here alike, before either sends anything, with Dispatch's
+    // own refusal and its exit code. `dispatch artifact`'s content is the text of a Markdown
+    // document, refused as a `--path` file's bytes are, in the upload's order: the size first, then
+    // the first U+0000 or byte that is not UTF-8 (`documentBytesRefusal`). Any other field is
+    // refused at its first U+0000 or byte that is not UTF-8 (`unstorableBytes`), which Dispatch
+    // would name first if the bytes reached it. Bytes that are not UTF-8 hold such a byte, so each
+    // finds a refusal.
+    const { tool, field, bytes } = parsed;
+    const refusal =
+      tool === "dispatch_artifact" && field === "content"
+        ? documentBytesRefusal(field, bytes)
+        : unstorableBytes(field, bytes);
+    return refuse(messageFor(refusal), REFUSED, tool);
   }
 
   const hostName = ledgerHost();
