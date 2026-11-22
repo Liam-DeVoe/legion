@@ -30,13 +30,17 @@ type ArchiveState struct {
 
 // Change is a held command's own account of one protected stream: what it did (Kind), how many
 // writes it made to it (Writes: since step 1 for a kept stream, after its create for a recreated
-// one, after the restore for a restored one), and, for a restore, the archive's state. A write
-// whose answer was lost counts when the command read its own record or revision back (§2,
-// "Ambiguous results"): the command states it here, and the postcheck does not guess.
+// one, after the restore for a restored one), how many of those writes replaced a key the stream
+// already held (Replaced: a KV put to a key there raises last_seq and leaves the message count, as
+// `buckets create`'s sentinel replaces a restored archive's), and, for a restore, the archive's
+// state. Replaced is never more than Writes. A write whose answer was lost counts when the command
+// read its own record or revision back (§2, "Ambiguous results"): the command states it here, and
+// the postcheck does not guess.
 type Change struct {
-	Kind    ChangeKind
-	Writes  uint64
-	Archive ArchiveState
+	Kind     ChangeKind
+	Writes   uint64
+	Replaced uint64
+	Archive  ArchiveState
 }
 
 // Postcheck is the postcheck of a held command (§3a, "The postcheck, per stream incarnation and per
@@ -50,8 +54,9 @@ type Change struct {
 //   - a restored stream's `created` is not compared, since no version keeps it the same way:
 //     nats-server 2.15.1 snapshots in its V2 archive (stream.go:9477), whose restore
 //     (stream_backup.go's RestoreStreamV2) sets a new one, while the V1 restore of 2.10.29 keeps
-//     the archive's (stream.go:9622-9623); its `last_seq` and message count are the archive's
-//     plus the command's writes after the restore;
+//     the archive's (stream.go:9622-9623); its `last_seq` is the archive's plus the command's
+//     writes after the restore, and its message count the archive's plus those writes less the
+//     ones that replaced a key (Replaced);
 //   - a stream step 1 found absent and the command did not create stays absent, and no other
 //     stream is absent.
 //
@@ -74,6 +79,9 @@ func Postcheck(ctx context.Context, nc *nats.Conn, step1 []StreamReading, change
 		case ChangeKept, ChangeRecreated, ChangeRestored:
 		default:
 			return nil, unknownf(StepPostcheck, nil, "the command states change %q to %s, which is not kept, recreated or restored", change.Kind, name)
+		}
+		if change.Replaced > change.Writes {
+			return nil, refusef(StepPostcheck, "the command states %d replaced keys of %s among its %d writes: a replaced key is one of the writes", change.Replaced, name, change.Writes)
 		}
 	}
 	readings := make([]StreamReading, 0, len(names))
@@ -141,8 +149,8 @@ func compare(name string, was, now StreamReading, change Change) error {
 		if now.LastSeq != change.Archive.LastSeq+change.Writes {
 			return refusef(StepPostcheck, "%s's last_seq is %d, and the archive's %d plus the command's %d writes after the restore is %d", name, now.LastSeq, change.Archive.LastSeq, change.Writes, change.Archive.LastSeq+change.Writes)
 		}
-		if now.Messages != change.Archive.Messages+change.Writes {
-			return refusef(StepPostcheck, "%s holds %d messages, and the archive's %d plus the command's %d writes after the restore is %d", name, now.Messages, change.Archive.Messages, change.Writes, change.Archive.Messages+change.Writes)
+		if now.Messages != change.Archive.Messages+change.Writes-change.Replaced {
+			return refusef(StepPostcheck, "%s holds %d messages, and the archive's %d plus the command's %d writes after the restore less its %d replaced keys is %d", name, now.Messages, change.Archive.Messages, change.Writes, change.Replaced, change.Archive.Messages+change.Writes-change.Replaced)
 		}
 	}
 	return nil
