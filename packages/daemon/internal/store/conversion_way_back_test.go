@@ -129,7 +129,7 @@ func decodedBeforeTheConversion(kind record.OutboxKind, payload []byte) string {
 // What this cannot show is the earlier daemon running, whose binary is not here (its decode is
 // the copy above), and the relabel of a Sandbox, which the block's last statement prints the
 // rows of and a cluster's kubectl does.
-func TestTheConversionsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
+func TestTheTreeConversionWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
 	if _, err := store.Migrate(ctx); err != nil {

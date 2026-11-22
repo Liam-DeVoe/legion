@@ -535,7 +535,9 @@ func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) 
 // record of another project's (projectRecords): on a shared database another project's daemon
 // records its own issue awaiting a merge that GitHub reported, and this daemon's boot leaves it
 // where that daemon stands it — still merging, lingering nowhere, with no production check
-// opened and no row queued keyed by it — while it closes its own.
+// opened and no row queued keyed by it — while it closes its own. The close of its own is the
+// status write of done (R24 of dispatch://INFRA-3320, workflow's closeMerged): the issue stays in
+// merging with its close pending until Dispatch shows it done.
 func TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -578,7 +580,7 @@ func TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands(t *testing.
 	}
 	var own, theirs *record.Issue
 	var check *record.ProductionCheck
-	var rows int
+	var rows, closes int
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		var err error
 		if own, err = raw.Issue(ctx, tx, ownIssue.Key); err != nil {
@@ -590,12 +592,17 @@ func TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands(t *testing.
 		if check, err = raw.ProductionCheck(ctx, tx, theirIssue.Key); err != nil {
 			return err
 		}
+		if err := tx.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = $2 and payload->>'kind' = $3 and payload->>'status' = 'done'`,
+			ownIssue.Key, string(record.OutboxKindDispatchStatus), string(record.CloseStatusRow)).Scan(&closes); err != nil {
+			return err
+		}
 		return tx.QueryRow(ctx, `select count(*) from outbox where issue = $1`, theirIssue.Key).Scan(&rows)
 	}); err != nil {
 		t.Fatalf("read the records after the boot: %v", err)
 	}
-	if own == nil || own.Phase != phase.Done {
-		t.Fatalf("%s after the boot = %+v, want it closed: its merge was reported", ownIssue.Key, own)
+	if own == nil || own.Phase != phase.Merging || own.PendingClose == nil || closes != 1 {
+		t.Fatalf("%s after the boot = %+v with %d close rows queued, want it in merging with its close pending and its done queued once: its merge was reported",
+			ownIssue.Key, own, closes)
 	}
 	if theirs == nil || theirs.Project != "OTHER" || theirs.Phase != phase.Merging || theirs.Status != "retro" || theirs.LingerUntil != nil {
 		t.Errorf("%s after the boot = %+v, want OTHER's record merging and lingering nowhere, as OTHER's daemon left it", theirIssue.Key, theirs)

@@ -84,7 +84,7 @@
 -- <PROJECT>, which the operator replaces with its key; the claims and the lifecycles name it by
 -- its claim token, the key in lower case (claim.ProjectToken). The way back is the last paragraph
 -- of this header (migrations.WayBack), and internal/store's
--- TestTheConversionsWayBackLeavesWhatTheReleaseBeforeReads runs it.
+-- TestTheTreeConversionWayBackLeavesWhatTheReleaseBeforeReads runs it.
 --
 -- -- The rows of one project the release before cannot run.
 -- delete from outbox where split_part(issue, '-', 1) = '<PROJECT>' and (kind = 'retention_end'
