@@ -12,9 +12,9 @@ import { type Location, type NavigateFunction, useLocation, useNavigate } from "
 import { api, writeRequest } from "../../../api/client";
 import { issueTreeKey } from "../../../api/queries";
 import { type RefreshTarget, refreshQueries } from "../../../api/query-refresh";
-import { buildIssuePath, parseIssuePath } from "../../refs/routes";
+import { parseIssuePath } from "../../refs/routes";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
-import { issueAddress } from "../issue-address";
+import { issueAddress, presetPath } from "../issue-address";
 import { LENS_WORDS } from "../page-words";
 import { dropViews } from "../tree-read/tree-read";
 
@@ -97,13 +97,20 @@ export function useStandingAddress(): StandingAddress {
   return standing;
 }
 
-/** Whether `location` is the outline of the issue `issueKey`, read as `TreeRows` reads the
- *  address to offer the act: the one address a landing moves. */
-function onOutlineOf(issueKey: string, { pathname, search }: Location): boolean {
+/** The issue an address names and whether its preset is the outline, read as the page's slots
+ *  read their address: what `TreeRows` offers the Lens act by, and the one address a landing
+ *  moves. Undefined for an address that names no issue. */
+export function lensPlaceOf(
+  pathname: string,
+  search: string
+): { readonly issueKey: string; readonly outline: boolean } | undefined {
   const route = parseIssuePath(pathname, search);
-  return (
-    route?.key === issueKey && issueAddress(route, search, "", undefined).preset === "conversation"
-  );
+  return route === undefined
+    ? undefined
+    : {
+        issueKey: route.key,
+        outline: issueAddress(route, search, "", undefined).preset === "conversation",
+      };
 }
 
 /**
@@ -227,12 +234,13 @@ export function useInvokeLens(
       const invoked = await made.mutateAsync(kind);
       await readTreeAgain(queryClient, issueKey);
       const now = standing.current;
-      if (invoked !== null && now !== undefined && onOutlineOf(issueKey, now.location)) {
+      const place =
+        now === undefined ? undefined : lensPlaceOf(now.location.pathname, now.location.search);
+      if (invoked !== null && now !== undefined && place?.issueKey === issueKey && place.outline) {
         const filter = new URLSearchParams(now.location.search).get("q");
         const landing = new URLSearchParams(filter === null ? {} : { q: filter });
         landing.set("node", lensReadId(invoked));
-        const outline = buildIssuePath({ key: issueKey, kind: "issue" });
-        now.navigate(`${outline}?${landing}`, { replace: true });
+        now.navigate(`${presetPath(issueKey, "conversation")}?${landing}`, { replace: true });
       }
       return invoked;
     },
