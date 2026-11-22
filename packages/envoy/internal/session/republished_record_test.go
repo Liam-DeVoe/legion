@@ -20,7 +20,7 @@ import (
 // names - with that stream's headers, so a direct get reports it at that stream's sequence, the
 // control, and a delete fenced there is refused. After that refusal the conditional delete and the
 // plain delete each read the key from the stream's leader, find a message the server wrote, and
-// delete it at the sequence it is stored at (bus.KeyValue.DeleteServerWritten). The leader's read
+// delete it at the sequence it is stored at (bus.KeyValue.DeleteAt). The leader's read
 // the edge confirms a session by (StoredByWriter) reads the session's own record as a writer's and
 // the republished one as none.
 func TestADeleteOverARepublishedRecordDeletesItAtItsTrueSequence(t *testing.T) {
@@ -240,7 +240,7 @@ func TestAGapWriteDoesNotLaunderARepublishedRecordForTheEdge(t *testing.T) {
 // faultyDeleteKeyValue injects a chosen error on the nth Delete call through this handle, counting
 // from 1, so a test drives the fenced delete's refusal (bus.KeyValue.DeleteAt) without a real race:
 // the real delete runs where fault answers nil. NewestFromLeader reads the stream, not this
-// handle's Delete, so DeleteServerWritten still classifies the key's record while its own delete is
+// handle's Delete, so DeleteAt's leader read still classifies the key's record while its own delete is
 // faulted.
 type faultyDeleteKeyValue struct {
 	nats.KeyValue

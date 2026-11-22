@@ -544,7 +544,7 @@ func (kv KeyValue) DeleteAtRead(ctx context.Context, key string, readable func(v
 // revision the delete landed at. A delete the bucket refuses as a compare-and-swap conflict
 // (IsCASConflict - a wrong last sequence, reported as ErrKeyExists for a key holding a value and as
 // a wrong-last-sequence error otherwise) is followed by one read of the key from the stream's
-// leader: a record the server wrote (DeleteServerWritten), which a direct get reports at another
+// leader: a record the server wrote (ReadFromLeader, LeaderServerWritten), which a direct get reports at another
 // stream's sequence however its value reads, is deleted at the sequence it is stored at and that
 // sequence returned; any other compare-and-swap refusal is returned as its error with revision, a
 // write that landed between the read and the delete being kept. A delete refused for any other
@@ -554,29 +554,14 @@ func (kv KeyValue) DeleteAt(ctx context.Context, key string, revision uint64) (u
 	if err == nil || !IsCASConflict(err) {
 		return revision, err
 	}
-	if written, deleted, dropErr := kv.DeleteServerWritten(ctx, key); deleted {
-		return written, dropErr
+	// A record the server wrote, which a direct get reports at another stream's sequence however
+	// its value reads (ReadFromLeader, LeaderServerWritten), is deleted at the sequence the leader
+	// reports it stored at, fenced there. Any other newest message - a writer's record, a marker,
+	// none - and a leader read that failed, leave the refusal standing for the caller to answer.
+	if leader, readErr := kv.ReadFromLeader(ctx, key); readErr == nil && leader.WrittenByServer() {
+		return leader.Revision, kv.Delete(key, nats.LastRevision(leader.Revision))
 	}
 	return revision, err
-}
-
-// DeleteServerWritten deletes key's newest message when it is one the server wrote
-// (ReadFromLeader, LeaderServerWritten), at the sequence the stream's leader reports it stored at, fenced there, and
-// reports that sequence and whether it made the delete. It is the step a fenced delete the bucket
-// refused takes (DeleteAtRead, session.SessionRegistry.DeleteIf): a direct get reports such a
-// message at another stream's sequence however its value reads, so the delete fenced on that is
-// refused at every attempt. Any other newest message - a writer's record, a marker, none - is left
-// as it is and answered not deleted, with no error: the refusal stands for its caller to answer.
-// A read of the leader that fails is answered not deleted with its error.
-func (kv KeyValue) DeleteServerWritten(ctx context.Context, key string) (uint64, bool, error) {
-	leader, err := kv.ReadFromLeader(ctx, key)
-	if err != nil {
-		return 0, false, err
-	}
-	if !leader.WrittenByServer() {
-		return 0, false, nil
-	}
-	return leader.Revision, true, kv.Delete(key, nats.LastRevision(leader.Revision))
 }
 
 func (kv KeyValue) Purge(key string, opts ...nats.DeleteOpt) error {

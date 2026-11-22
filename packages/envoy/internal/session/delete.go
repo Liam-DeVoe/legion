@@ -173,7 +173,7 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 		revision := entry.Revision()
 		// A server-written record that does not decode as sessionID's registration is read as no
 		// record here (DecodeEntry refuses it) and, where the delete runs, deleted at the fenced
-		// delete's leader read (DeleteServerWritten below). One that does decode as the registration
+		// delete's leader read (DeleteAt below). One that does decode as the registration
 		// is read like the registration it looks like - a leader read would be needed to tell it
 		// from one, which this delete does not make - and no reader trusts it: every reader confirms
 		// a session by the leader read (StoredByWriter), which reads such a record as absent.
@@ -213,7 +213,7 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 		switch {
 		case err == nil:
 			// DeleteAt landed the fenced delete, or deleted a record the server wrote at the
-			// sequence it is stored at (bus.KeyValue.DeleteServerWritten): the entry is gone.
+			// sequence it is stored at (bus.KeyValue.DeleteAt's leader read): the entry is gone.
 			r.reconcileDeleted(ctx, kv, epoch, sessionID, max(fence, deletedAt))
 			return EntryDeleted, nil
 		case bus.IsCASConflict(err):
