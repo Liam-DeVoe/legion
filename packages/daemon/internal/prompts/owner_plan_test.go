@@ -16,9 +16,10 @@ import (
 // notice tells of (a failed step's, and another architect's stop_task, whose notice names that
 // architect) and the stop it is not sent for (its own), when a plan must be given and how a plan
 // replaces the default steps once the work started, and the answers a later version gets from the
-// workflow (workflow.planGiven): the running task's block, its text included, is refused and the
-// unchanged block taken, each refusal names its cause and changes nothing so the same version can
-// be given again, and an issue that started its work before Legion took plans takes none. A new
+// workflow (workflow.planGiven): a change of the running task's block, its text included, or of a
+// role its steps name is refused, and the unchanged block and roles are taken, each refusal names
+// its cause and changes nothing so the same version can be given again, and an issue that started
+// its work before Legion took plans takes none. A new
 // version of `plan.md` names the token of the text it replaces, since Dispatch refuses a replacing
 // upload that names none (envoy's PRECONDITION_REQUIRED), and a parked or done child takes a new
 // plan only after its rerun, since a version for its done or left task is refused TASK_DONE
@@ -86,10 +87,12 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				// An issue already at work runs the task default: stop it, then give the plan.
 				{"stop_task", "default", "register_plan"},
 				// A later version changes only a task that waits or is stopped, refuses a change
-				// of the running task, and takes its block unchanged.
+				// of the running task or of a role its steps name, and takes its block and those
+				// roles unchanged.
 				{"later version", "waits", "stopped"},
 				{"running task", "`PLAN_REFUSED`", "task <id> is running"},
-				{"running task's block", "goes on"},
+				{"a role block that a step of the running task names", "`PLAN_REFUSED`"},
+				{"running task's block", "each role its steps name", "goes on"},
 				// A refusal changes nothing, so the same version is given again, and an issue
 				// that started before plans takes none.
 				{"changes nothing", "given again"},

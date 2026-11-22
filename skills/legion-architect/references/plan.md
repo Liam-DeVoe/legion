@@ -38,10 +38,51 @@ Without `acceptance:owner`, two steps still hold the checks:
 a reviewer step approves only once a pass stands for every `before_merge` check at the head, and retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read, which moves nothing back (`skill://legion-retro`).
 So on a task with no reviewer step and no `acceptance:owner`, such a check holds the merge only where it is among the checks the base branch requires.
 
+## A role of your plan
+
+A plan can define a role of its own in a `plan_role` block, and a step names that role by its name, as the task below names `prober`:
+
+```markdown
+:::plan_role{#prober type="testing" model="<a listed model>"}
+The role's prompt: what its agent does at each step that names it, and what its report says.
+It can hold headings, lists and code.
+:::
+
+:::plan_task{#a steps="implementer prober reviewer"}
+What the task must deliver.
+:::
+```
+
+- The block's id is the role's name, and its text is the role's prompt.
+  The role's agent runs on Oh My Pi and starts with that prompt.
+
+- `type` is the type of the role's step, as the table above gives each of Legion's; a role with no `type` is taken too.
+  A role of the type implementation acts as the implement App, and a role of any other type, or of none, as the review App.
+  No step after the first `implementer` step is of the type implementation, since the implementer also works the retro.
+
+- `model` is the model the role's agent starts on, one of the models of this deployment, which your addressing names after the roles of this deployment.
+  A role with no `model` starts on the default model, and where the deployment lists no model, a role of your plan names none.
+
+- A role's prompt has no bound of its own, but a launch into an issue pod carries the role's whole system prompt, its prompt with Legion's parts around it, to the pod's launcher in one message of at most 1 MiB.
+  Legion refuses a launch whose prompt is larger: the role's claim fails at once, the issue is held, and you get a `held` and a `worker-died` notice whose failure names the prompt's size and the limit.
+  Stop the task with `stop_task`, then give a later version whose role has a shorter prompt.
+
+### A role under a running task
+
+- A later version that changes or takes away a role block that a step of the running task names, its type, its model or its prompt, is refused as a change of that task's block is (`task <id> is running: stop it with stop_task before you change it.`).
+  Stop the task with `stop_task` first, then give the version.
+  A change of a role block that no step names changes no task.
+
+- Once an operator adds a role of the deployment with the name of a role your plan defines, your issue keeps its plan's role, but Legion refuses every later version that keeps a role of that name (`the plan defines the role <role>, which the deployment or Legion defines already; …`).
+  A version that gives the role a new name changes each task whose steps name it, so Legion refuses it while such a task runs:
+  stop that task with `stop_task` first, then give a version whose role has a new name.
+
 ## What Legion refuses
 
 `register_plan` answers `409 PLAN_REFUSED` with `reasons: [{task, reason}]`, one reason for each cause, its `task` empty for a cause of the whole plan.
 Fix each reason and give a new version.
+A role block is refused for a name that is not of the form `[a-z][a-z0-9-]*` with at most 32 characters, for a name Legion or the deployment defines already (`… which the deployment or Legion defines already; a role of a plan takes a name of its own.`), for a `type` that is set and is not of that form (`… Dispatch's step record takes no other.`), and for a `model` the deployment does not list (`… the deployment does not list; it lists <m1>, <m2>.`, or `it lists none.`).
+The steps of one key, `<role>:<key>`, are one agent, so a key whose steps name roles of two models is refused (`… one agent runs on one model.`), and so is one whose steps name roles of two harnesses, as a role of your plan, which runs on Oh My Pi, and a role of the deployment that runs on Claude Code (`… one agent runs on one harness.`).
 A reason that ends `This release of Legion does not carry it out yet.` names a plan a later release takes: write it again within the table above.
 
 The reasons a version gets for where its task stands are in `skill://legion-architect/references/plan-changes.md`.

@@ -857,6 +857,24 @@ test("the plan guide says which checks retro does not send back", () => {
   ).toEqual([]);
 });
 
+// A plan can define a role of its own, so the plan guide gives the block a step names, the
+// refusals of a role's name and model, and what a later version does to a role a running task's
+// steps name, a role whose name the deployment took since among them.
+test("the plan guide gives a role block, its refusals and a role under a running task", () => {
+  expect(
+    lacks("legion-architect/references/plan.md", [
+      /:::plan_role\{#prober type="testing" model="<a listed model>"\}/,
+      /which the deployment or Legion defines already; a role of a plan takes a name of its own/,
+      /the deployment does not list; it lists <m1>, <m2>/,
+      /one agent runs on one model/,
+      /one agent runs on one harness/,
+      /changes or takes away a role block that a step of the running task names/,
+      /refuses every later version that keeps a role of that name/,
+      /stop that task with `stop_task` first, then give a version whose role has a new name/,
+    ])
+  ).toEqual([]);
+});
+
 // The wake table sends the three notices an owner's plan adds to the reference that holds their
 // handling, and a conflict merged forward in `accepting` to the reference that waits for a review
 // only where the task has a reviewer step.
