@@ -149,22 +149,23 @@ const FIELD_KEYS: Record<string, true> = {
  *  and X paste, copy and cut, Z and Y undo and redo (Ctrl+Shift+Z redoes too), A selects all,
  *  Backspace and Delete delete a word, and the arrows, Home and End move the caret, and select
  *  with Shift (Ctrl+Shift+← selects a word). Each key by its name in lower case, as
- *  `BROWSER_KEYS`, so a letter counts in either case. */
+ *  `BROWSER_KEYS`, so a letter counts in either case, in the order a refusal names them
+ *  (`FIELD_COMMAND_LISTED`). */
 const FIELD_COMMAND_KEYS: Record<string, true> = {
+  v: true,
+  c: true,
+  x: true,
+  z: true,
+  y: true,
   a: true,
+  backspace: true,
+  delete: true,
   arrowdown: true,
   arrowleft: true,
   arrowright: true,
   arrowup: true,
-  backspace: true,
-  c: true,
-  delete: true,
-  end: true,
   home: true,
-  v: true,
-  x: true,
-  y: true,
-  z: true,
+  end: true,
 };
 
 /** The keys a Mac's text field takes as its own with Control, whatever else the press holds, by
@@ -188,13 +189,38 @@ const MAC_FIELD_CONTROL_KEYS: Record<string, true> = {
   y: true,
 };
 
-/** The keys of `MAC_FIELD_CONTROL_KEYS` a refusal names as a Mac text field's with Control, in
+/** `words` as a sentence lists them: a comma between two, and `conjunction` before the last
+ *  (`B, D and E`). */
+function listed(words: readonly string[], conjunction: "and" | "or"): string {
+  return words.length < 2
+    ? words.join("")
+    : `${words.slice(0, -1).join(", ")} ${conjunction} ${words[words.length - 1]}`;
+}
+
+/** The keys of `FIELD_COMMAND_KEYS` as a refusal lists them, in the table's order: a letter in
+ *  upper case, as the keycaps print it, another key by its name with a capital (`Backspace`),
+ *  and the four arrows once, as "an arrow". A key added to the table is named with the rest. */
+const FIELD_COMMAND_LISTED = listed(
+  [
+    ...new Set(
+      Object.keys(FIELD_COMMAND_KEYS).map((key) =>
+        key.startsWith("arrow") ? "an arrow" : `${key.charAt(0).toUpperCase()}${key.slice(1)}`
+      )
+    ),
+  ],
+  "or"
+);
+
+/** The keys of `MAC_FIELD_CONTROL_KEYS` a refusal lists as a Mac text field's with Control, in
  *  upper case as the keycaps print them: each that is not one of `FIELD_COMMAND_KEYS`, which the
  *  refusal names already for every modifier, nor one of `BROWSER_KEYS`, which the check refuses
  *  first (`isBrowsers`). A key added to the table is named with the rest. */
-const MAC_FIELD_CONTROL_NAMED: readonly string[] = Object.keys(MAC_FIELD_CONTROL_KEYS)
-  .filter((key) => FIELD_COMMAND_KEYS[key] !== true && BROWSER_KEYS[key] !== true)
-  .map((key) => key.toUpperCase());
+const MAC_FIELD_CONTROL_LISTED = listed(
+  Object.keys(MAC_FIELD_CONTROL_KEYS)
+    .filter((key) => FIELD_COMMAND_KEYS[key] !== true && BROWSER_KEYS[key] !== true)
+    .map((key) => key.toUpperCase()),
+  "and"
+);
 
 /** Whether a text field takes `combo` as its own, so that an `inEditable` binding of it would take
  *  the press from every field: a press with Ctrl, Cmd or Meta whose key is one of
@@ -295,12 +321,11 @@ export function refusalOf(
     if (chord.some(isBrowsers)) return refused(`${named(key)} is the browser's own key.`);
     if (entry.inEditable === true && chord.some((combo) => actsInField(combo, isMac))) {
       const command = `${named("$mod")} or ${named(isMac ? "Control" : "Meta")}`;
-      const last = MAC_FIELD_CONTROL_NAMED.length - 1;
       const macControl = isMac
-        ? ` With ${named("Control")}, a Mac text field also uses ${MAC_FIELD_CONTROL_NAMED.slice(0, last).join(", ")} and ${MAC_FIELD_CONTROL_NAMED[last]} to move the cursor and edit.`
+        ? ` With ${named("Control")}, a Mac text field also uses ${MAC_FIELD_CONTROL_LISTED} to move the cursor and edit.`
         : "";
       return refused(
-        `${named(key)} would be taken from every text field: ${entry.label} also works while you type, so its key needs ${command} with a key other than V, C, X, Z, Y, A, Backspace, Delete, an arrow, Home or End, or ${named("Alt")} with a key that types nothing, such as ${named("Alt+Enter")}.${macControl}`
+        `${named(key)} would be taken from every text field: ${entry.label} also works while you type, so its key needs ${command} with a key other than ${FIELD_COMMAND_LISTED}, or ${named("Alt")} with a key that types nothing, such as ${named("Alt+Enter")}.${macControl}`
       );
     }
     for (const earlier of taken) {

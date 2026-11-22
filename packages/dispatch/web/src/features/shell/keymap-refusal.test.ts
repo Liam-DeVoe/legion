@@ -157,23 +157,90 @@ test("on a Mac an action that also works while the reader types takes no Control
   }
 });
 
+/** What the check says of `key` for Search and actions, an action that also works while the
+ *  reader types, on a Mac or elsewhere: its refusal, or nothing where it takes the key. */
+function messageOf(key: string, isMac: boolean): string {
+  const verdict = refusalOf("global.search", [key], NO_PERSON_KEYS, isMac);
+  return verdict.kind === "refused" ? verdict.message : "";
+}
+
+/** The words of the refusal of a key a text field takes as its own (`actsInField`). */
+const FIELD_REFUSAL = "would be taken from every text field";
+
+// The message's list of a text field's own keys with Ctrl or Cmd is the check's own
+// (`FIELD_COMMAND_KEYS`): each key whose `$mod` press the check refuses as a text field's is
+// named, a letter in upper case and the four arrows once, as "an arrow", and the list names no
+// other key. The row reads the table through the check, so a key added to the table is a key the
+// message must name.
+test("the refusal names each key it refuses as a text field's with Ctrl or Cmd, and no other", () => {
+  const candidates = [
+    ..."abcdefghijklmnopqrstuvwxyz0123456789",
+    "ArrowDown",
+    "ArrowLeft",
+    "ArrowRight",
+    "ArrowUp",
+    "Backspace",
+    "Delete",
+    "End",
+    "Enter",
+    "Escape",
+    "F2",
+    "Home",
+    "Insert",
+    "PageDown",
+    "PageUp",
+    "Space",
+    "Tab",
+  ];
+  const refused = candidates.filter((key) =>
+    messageOf(`$mod+${key}`, false).includes(FIELD_REFUSAL)
+  );
+  const expected = [
+    ...new Set(
+      refused.map((key) =>
+        key.startsWith("Arrow") ? "an arrow" : key.length === 1 ? key.toUpperCase() : key
+      )
+    ),
+  ];
+  // Today's table, which the probe reaches; a key added to the table joins it.
+  expect(expected).toEqual(
+    expect.arrayContaining([
+      "A",
+      "C",
+      "V",
+      "X",
+      "Y",
+      "Z",
+      "an arrow",
+      "Backspace",
+      "Delete",
+      "End",
+      "Home",
+    ])
+  );
+
+  const listed =
+    /with a key other than (.+), or Alt with a key that types nothing/.exec(
+      messageOf("$mod+v", false)
+    )?.[1] ?? "";
+  const named = listed.split(/, | or /);
+  // The table holds each key in lower case, so a name is read without its case.
+  const folded = (words: readonly string[]) => words.map((word) => word.toLowerCase()).sort();
+  expect(folded(named), "the keys the message names").toEqual(folded(expected));
+});
+
 // The message's list of a Mac text field's own Control keys is the check's own: each letter
 // whose Control press the check refuses on a Mac as a text field's (`MAC_FIELD_CONTROL_KEYS`),
 // but for those it names already with every modifier (V, C, X, Z, Y, A), and no letter whose
 // Control press it refuses first as the browser's own (`isBrowsers`: N and T among them).
 test("on a Mac the refusal names each Control key it refuses as a Mac text field's, and none the browser keeps", () => {
-  const messageOf = (key: string, isMac: boolean) => {
-    const verdict = refusalOf("global.search", [key], NO_PERSON_KEYS, isMac);
-    return verdict.kind === "refused" ? verdict.message : "";
-  };
-  const fieldRefusal = "would be taken from every text field";
   const letters = [..."abcdefghijklmnopqrstuvwxyz"];
   const commandLetters = letters.filter((letter) =>
-    messageOf(`$mod+${letter}`, false).includes(fieldRefusal)
+    messageOf(`$mod+${letter}`, false).includes(FIELD_REFUSAL)
   );
   const macControlLetters = letters.filter(
     (letter) =>
-      messageOf(`Control+${letter}`, true).includes(fieldRefusal) &&
+      messageOf(`Control+${letter}`, true).includes(FIELD_REFUSAL) &&
       !commandLetters.includes(letter)
   );
   const browsers = letters.filter((letter) =>
