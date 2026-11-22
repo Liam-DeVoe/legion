@@ -40,6 +40,7 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../theme/classes";
+import { TruncatedText } from "./TruncatedText";
 
 const EMPTY_COUNTS: ReadonlyMap<string, number> = new Map();
 const NO_SELECTION: RowSelectionState = {};
@@ -486,7 +487,7 @@ function TableHeaderCell<TData>({
       >
         {column.getCanSort() ? (
           <button
-            className="flex min-w-0 items-center gap-1 truncate whitespace-nowrap"
+            className="flex min-w-0 items-center gap-1 whitespace-nowrap"
             draggable={!pinned}
             onClick={column.getToggleSortingHandler()}
             onDragEnd={() => setDragColumn(undefined)}
@@ -498,8 +499,17 @@ function TableHeaderCell<TData>({
             }
             type="button"
           >
-            {flexRender(column.columnDef.header, header.getContext())}
-            <span className={textMutedOnCanvas}>
+            {/* The name shortens to an ellipsis inside the button and the sort arrow keeps its
+                width, so a narrow column cuts neither with no sign. */}
+            <TruncatedText
+              className="min-w-0"
+              title={
+                typeof column.columnDef.header === "string" ? column.columnDef.header : undefined
+              }
+            >
+              {flexRender(column.columnDef.header, header.getContext())}
+            </TruncatedText>
+            <span className={`shrink-0 ${textMutedOnCanvas}`}>
               {{ asc: "▲", desc: "▼" }[column.getIsSorted() as string] ?? ""}
             </span>
           </button>
