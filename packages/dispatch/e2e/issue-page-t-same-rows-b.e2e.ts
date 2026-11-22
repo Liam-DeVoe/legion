@@ -1,19 +1,12 @@
-import { phase } from "./issue-page";
-import { fixtureSeed } from "./issue-page-t";
 import {
-  BESIDE_STAMPED_TITLE,
   DECISION_SEEDS,
-  expectDecisionsFromNodes,
-  firstRowOutOfPlace,
-  outlineDifferences,
-  readOutline,
+  expectSameRows,
+  expectSameRowsDecisions,
+  expectSameRowsStampedTitle,
   SAME_ROWS_B_SEEDS,
   SAME_ROWS_MS,
-  STAMPED_TITLE,
 } from "./issue-page-t-rows";
-import { convertedGate, decisionNodesGate, owedUnless, treeReadGate } from "./issue-page-t-tree";
-import { sessionTitleGate } from "./issue-page-u";
-import { expect, test } from "./test";
+import { test } from "./test";
 
 /**
  * Row 1 of the rows that draw the new issue page from the tree read, "the outline drawn from the
@@ -32,20 +25,7 @@ for (const [name, seed] of SAME_ROWS_B_SEEDS) {
   // every row's body read in turn, each reading taken twice until it holds still.
   test(title, async ({ browser }) => {
     test.setTimeout(SAME_ROWS_MS);
-    await phase(browser, seed, async (page, seeded) => {
-      owedUnless(await treeReadGate(page, seeded.key));
-      owedUnless(await convertedGate(page, seeded.key));
-      const outline = await readOutline(page, seeded);
-      expect(
-        firstRowOutOfPlace("as the page opens", outline.opened, outline) ??
-          firstRowOutOfPlace("with every branch open", outline.rows, outline),
-        "each row stands under the parent the tree read answers"
-      ).toBeUndefined();
-      expect(
-        outlineDifferences(outline, name, BESIDE_STAMPED_TITLE).found,
-        "each row reads as the reads drew it"
-      ).toEqual([]);
-    });
+    await expectSameRows(browser, name, seed);
   });
 
   if (DECISION_SEEDS.has(name)) {
@@ -54,13 +34,7 @@ for (const [name, seed] of SAME_ROWS_B_SEEDS) {
     // each reading taken twice until it holds still.
     test(`${title}, its decisions as nodes of the tree read @owed`, async ({ browser }) => {
       test.setTimeout(SAME_ROWS_MS);
-      await phase(browser, seed, async (page, seeded) => {
-        owedUnless(await treeReadGate(page, seeded.key));
-        owedUnless(await convertedGate(page, seeded.key));
-        const outline = await readOutline(page, seeded, { bodies: false });
-        owedUnless(decisionNodesGate(outline.answer, outline.decisions));
-        expectDecisionsFromNodes(outline, fixtureSeed(name));
-      });
+      await expectSameRowsDecisions(browser, name, seed);
     });
 
     // c-same-rows' author of an agent's decision on one seed, owed on `sessionTitleGate`: the
@@ -71,19 +45,7 @@ for (const [name, seed] of SAME_ROWS_B_SEEDS) {
       browser,
     }) => {
       test.setTimeout(SAME_ROWS_MS);
-      await phase(browser, seed, async (page, seeded) => {
-        owedUnless(await treeReadGate(page, seeded.key));
-        owedUnless(await convertedGate(page, seeded.key));
-        owedUnless(await sessionTitleGate(seeded.key));
-        const outline = await readOutline(page, seeded);
-        const { compared, found } = outlineDifferences(outline, name, STAMPED_TITLE);
-        expect(
-          compared,
-          `no row the page draws of ${name} is an agent's decision the fixture holds, so the ` +
-            "row would compare nothing"
-        ).toBeGreaterThan(0);
-        expect(found, "each agent's decision draws the title its session stamped").toEqual([]);
-      });
+      await expectSameRowsStampedTitle(browser, name, seed);
     });
   }
 }

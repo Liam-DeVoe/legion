@@ -591,7 +591,7 @@ test("a node the address names stands where the tree places it, whether its filt
     [treeTuple("serves", "c1", "r1")],
     { view: "verification" }
   );
-  const tree = (views: TreeNode["views"] | undefined) =>
+  const tree = (views: TreeNode["views"]) =>
     node(
       "CORE-1",
       "issue",

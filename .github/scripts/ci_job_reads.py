@@ -3170,7 +3170,7 @@ GATES = [
          "before it started, which it makes a bucket in and writes, reads back and deletes one "
          "object in"),
         (".github/scripts/dispatch-browser-shard-suite.sh",
-         f"{at_browser(BROWSER_SHARD_SPECS)} runs it for this leg's quarter of the lane's rows"),
+         f"{at_browser(BROWSER_SHARD_SPECS)} runs it for the rows the deal gives this leg"),
         (".github/scripts/dispatch-browser-shard-record.sh",
          f"{at_browser(BROWSER_RECORD_STEP)} runs it to print and collect the file store's log "
          "and the stacks' own logs"),

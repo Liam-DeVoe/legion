@@ -282,10 +282,10 @@ such a row loses is feedback on the pull request itself.
 | `e2e/issue-page-p.e2e.ts` | each row writes the header's issue, its questions and its approval requests through the server and reads back what the header's controls write: the title, the status, the priority, the pin and an approval |
 | `e2e/issue-page-q.e2e.ts` | the server's decisions read sorts the view; a sent Change is re-read |
 | `e2e/issue-page-switch.e2e.ts` | the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold |
-| `e2e/issue-page-t-reads.e2e.ts` | the rows draw the tree read and its views the server answers for each seeded issue, count the reads the page sends it, and write a status and a reply whose refresh is the server's tree read |
-| `e2e/issue-page-t-same-rows-a.e2e.ts` | the rows draw the tree read and its views the server answers for each seeded issue, count the reads the page sends it, and write a status and a reply whose refresh is the server's tree read |
-| `e2e/issue-page-t-same-rows-b.e2e.ts` | the rows draw the tree read and its views the server answers for each seeded issue, count the reads the page sends it, and write a status and a reply whose refresh is the server's tree read |
-| `e2e/issue-page-t-write.e2e.ts` | the rows draw the tree read and its views the server answers for each seeded issue, count the reads the page sends it, and write a status and a reply whose refresh is the server's tree read |
+| `e2e/issue-page-t-reads.e2e.ts` | the rows count the tree and view reads the page sends the server and draw each filter from the view it answers |
+| `e2e/issue-page-t-same-rows-a.e2e.ts` | the rows draw the tree read the server answers for each seeded issue, compared with the recorded rows |
+| `e2e/issue-page-t-same-rows-b.e2e.ts` | the rows draw the tree read the server answers for each seeded issue, compared with the recorded rows |
+| `e2e/issue-page-t-write.e2e.ts` | the rows write a status, a reply and a Keep through the server and read each back: the status from its issue read, the reply and the Keep as the rows its tree and Decisions view reads draw again, with no reload |
 | `e2e/issue-page-u.e2e.ts` | the server's decision nodes, their review state and the comment under each, read through the tree and its views |
 | `e2e/issue-page-v.e2e.ts` | the rows record and withdraw results and file a child through the server, and the view draws its coverage and results reads |
 | `e2e/issue.e2e.ts` | asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read |

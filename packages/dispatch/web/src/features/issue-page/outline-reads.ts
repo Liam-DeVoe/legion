@@ -210,14 +210,13 @@ function failedLines(
  * stands failed holds nothing either (`standsFailed`): the page cannot say what it would have
  * held, so the outline says that the read failed (`failed`). One whose refresh failed holds the
  * answer it had, which its rows are drawn from, and says nothing. The names' line stands while
- * the names reads' count of failures is above 0 (`IssueTreeView.namesFailure`): from a failure of
- * a names read that holds no answer under its set of addresses until every one of them holds
- * one, so it stays while a read under a new set is out, though no names read stands failed then -
- * the tree draws the names an older set's read gave meanwhile. Its Retry asks again every names
- * read that holds no answer under its set, a first read of a new set included, and no other read,
- * and the line is busy while one of those runs (`retrying`). Whether the names are held is the
- * tree's own answer (`IssueTreeView.namesHeld`). The conversation's reads are kept too, which
- * tell a turn the outline leaves out (`useAddressFallback`).
+ * the one names read's count of failures is above 0 (`IssueTreeView.namesFailure`): from a
+ * failure while it holds no answer under its set of addresses until it holds one, so it stays
+ * while its read under a new set is out - the tree draws the names an older set's answer gave
+ * meanwhile. Its Retry asks that read again, and no other read, and the line is busy while it
+ * runs (`retrying`). Whether the names are held is the tree's own answer
+ * (`IssueTreeView.namesHeld`). The conversation's reads are kept too, which tell a turn the
+ * outline leaves out (`useAddressFallback`).
  */
 export function useOutlineReads(issue: IssueDetails): OutlineReads {
   // The tree read's `pending` and `failed` are `useIssueTree`'s, under its key, so they cost no

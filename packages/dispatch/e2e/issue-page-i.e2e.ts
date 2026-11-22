@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import type { Browser, BrowserContext, Locator, Page } from "@playwright/test";
 import type { IssueTreeRead } from "../web/src/api/types";
-import { decisionContent } from "../web/src/features/issue-page/decision-review";
+import { blockIdOfNode, decisionContent } from "../web/src/features/issue-page/decision-review";
 import {
   FOOT_HEIGHT_PROPERTY,
   IDENTITY_HEIGHT_PROPERTY,
@@ -3382,6 +3382,7 @@ test("Tab enters and leaves the tree at one stop and every move keeps the row on
     const opened = order.indexOf(
       blockNodeId(await primarySlug(seeded.key), OPEN_QUESTION_BLOCK_ID)
     );
+    expect(opened, "the open question is no visible row").toBeGreaterThanOrEqual(0);
     expect(inside, "j moved to no row inside the tree").toBe(order[opened + 1]);
     await page.keyboard.press("Tab");
     expect(
@@ -4538,7 +4539,7 @@ test("a read that drops the focused comment's row leaves the focus on a row of t
       const body = (await answer.json()) as IssueTreeRead;
       // The comment's node, by the id the outline draws it by: its block id, else its own.
       const dropped = new Set(
-        (body.nodes ?? []).filter((node) => (node.block_id ?? node.id) === gone).map(({ id }) => id)
+        (body.nodes ?? []).filter((node) => blockIdOfNode(node) === gone).map(({ id }) => id)
       );
       await route.fulfill({
         json: {

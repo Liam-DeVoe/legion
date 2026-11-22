@@ -1631,7 +1631,8 @@ test("an ask block's row draws the asks read's question, not the options its blo
 test("a requirement whose From line cites a document carries its chip from the tree read's text", () => {
   const notes = artifact("artifact-notes", "notes-md", "notes.md");
   const cites = `dispatch://${KEY}/artifact/notes-md`;
-  const issue = { ...issueDetails(), artifacts: [...(issueDetails().artifacts ?? []), notes] };
+  const details = issueDetails();
+  const issue = { ...details, artifacts: [...(details.artifacts ?? []), notes] };
   const words = "The measurements behind it are kept.";
   const { root } = drawn(
     answer([

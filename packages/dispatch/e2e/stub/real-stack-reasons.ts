@@ -185,13 +185,13 @@ export const realStackReasons: Record<string, string> = {
   "issue-page-k.e2e.ts": "the view orders the plan's blocks and needs the server stored",
   "issue-page-q.e2e.ts": "the server's decisions read sorts the view; a sent Change is re-read",
   "issue-page-t-reads.e2e.ts":
-    "the rows draw the tree read and its views the server answers for each seeded issue, count the reads the page sends it, and write a status and a reply whose refresh is the server's tree read",
+    "the rows count the tree and view reads the page sends the server and draw each filter from the view it answers",
   "issue-page-t-same-rows-a.e2e.ts":
-    "the rows draw the tree read and its views the server answers for each seeded issue, count the reads the page sends it, and write a status and a reply whose refresh is the server's tree read",
+    "the rows draw the tree read the server answers for each seeded issue, compared with the recorded rows",
   "issue-page-t-same-rows-b.e2e.ts":
-    "the rows draw the tree read and its views the server answers for each seeded issue, count the reads the page sends it, and write a status and a reply whose refresh is the server's tree read",
+    "the rows draw the tree read the server answers for each seeded issue, compared with the recorded rows",
   "issue-page-t-write.e2e.ts":
-    "the rows draw the tree read and its views the server answers for each seeded issue, count the reads the page sends it, and write a status and a reply whose refresh is the server's tree read",
+    "the rows write a status, a reply and a Keep through the server and read each back: the status from its issue read, the reply and the Keep as the rows its tree and Decisions view reads draw again, with no reload",
   "issue-page-u.e2e.ts":
     "the server's decision nodes, their review state and the comment under each, read through the tree and its views",
   "issue-page-v.e2e.ts":
