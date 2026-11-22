@@ -176,7 +176,7 @@ func TestEveryReadOfAnAnswerReadsTheAsksNodeNotItsRow(t *testing.T) {
 
 	const oneRead = "the one read's Ask rows (GET /api/v1/me/inbox?state=inbox, meInboxPageRows)"
 	if one.WaitingOnPerson == "" {
-		t.Fatalf("%s: ask %s waits on nobody, so no person's read would prove anything", oneRead, askID)
+		t.Fatalf("%s: ask %s names no person it waits on, so no person's read would prove anything", oneRead, askID)
 	}
 	if entry, held := meInboxEntryOfNode(readMeInboxAs(t, handler, one.WaitingOnPerson, url.Values{"state": {"inbox"}}), graphstore.KindAsk, askID); held && entry.Ask != nil {
 		t.Errorf("%s of %s hold ask %s, which its node holds answered by alice", oneRead, one.WaitingOnPerson, askID)
