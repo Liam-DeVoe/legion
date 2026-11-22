@@ -179,10 +179,11 @@ repository setting or an App permission a person must change — reaches you, fr
 
 ## Completion
 
-Where this child's task holds your step `acceptance:owner`, your last act is `sign_off` of it in
+Where this child's task holds your step `acceptance:owner`, you accept it with `sign_off` in
 `accepting`, once its evidence holds and, when it has children of its own, its last round is done
-(`skill://legion-architect`, sections 4, 6 and 7); the steps after your acceptance in its task,
-its retro and its merge then run without you. On a task without that step you sign off nothing,
+(`skill://legion-architect`, sections 4, 6 and 7); you start none of the steps after your
+acceptance in its task, its retro or its merge, and a later step that sends the work back to a
+step before your acceptance brings the child to your acceptance again. On a task without that step you sign off nothing,
 and the pass of its last step starts its retro, as the acceptance paragraph above says. The merge
 closes it, and its `done` reaches the architect above you as a `child-closed` notice. Like the
 root architect, you run no file-backed phase: write no

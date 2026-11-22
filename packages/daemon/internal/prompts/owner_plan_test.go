@@ -500,8 +500,14 @@ func TestEachStepIsToldTheStepsAroundItInAnyOrder(t *testing.T) {
 		{"core/tester.md", []string{"so a defect comes back before the steps after yours run"}, []string{"so a defect comes back before the review"}},
 		{
 			"reviewer.md",
-			append(slices.Clone(planRead), "After your approval, the head changes only when a later step of your task sends the work back"),
-			append(slices.Clone(planRetired), "After approval, no implementation or further review change may happen"),
+			append(slices.Clone(planRead),
+				"After your approval, a later step of your task can send the work back, and the new head then comes to your review again",
+				"the daemon asks you to approve that head only where the merge lands in `accepting`, `retro` or `merging`",
+				"so the merger merges the head you approved last, or the head of a merge forward that landed after it"),
+			append(slices.Clone(planRetired),
+				"After approval, no implementation or further review change may happen",
+				"the head changes only when a later step of your task sends the work back",
+				"nothing of this tree pushes above it"),
 		},
 		{
 			"implementer.md",
@@ -570,9 +576,10 @@ func TestSignOffMovesTheTaskToItsNextStepInTheRoleParts(t *testing.T) {
 			[]string{
 				moves,
 				"the daemon starts the implementer on it once the task's last step passes",
-				"the steps after your acceptance in its task, its retro and its merge then run without you",
+				"you start none of the steps after your acceptance in its task, its retro or its merge",
+				"a later step that sends the work back to a step before your acceptance brings the child to your acceptance again",
 			},
-			[]string{"which moves the child to retro", "once you sign off"},
+			[]string{"which moves the child to retro", "once you sign off", "your last act is `sign_off`", "then run without you"},
 		},
 		{"architect-root.md", []string{moves}, []string{"(which moves it to retro)"}},
 	} {
@@ -634,4 +641,66 @@ func TestNoPartPutsTheAcceptancePastTheReview(t *testing.T) {
 			holdsAndRetires(t, tc.part, tc.read(t), tc.want, tc.gone)
 		})
 	}
+}
+
+// Each sentence that the acceptance of these words showed false says what the daemon does. The
+// daemon takes a move back only from the role that works the issue's phase (workflow's
+// backwardRefusal), so the architect asks that role for one outside `accepting`; the merger's own
+// move back is the other way out of `merging`, and a merged child waits there for the issues
+// beneath it; the implementer resolves the threads the reviewer accepted; and the sentence for a
+// step with no planner step before it stands outside the paragraph that is for the steps working
+// from a planner's plan. Each part is read alone, by its name. This shows the text is loaded, never
+// that an agent follows it.
+func TestTheSentencesTheAcceptanceShowedFalseSayWhatTheDaemonDoes(t *testing.T) {
+	for _, tc := range []struct {
+		part       string
+		want, gone []string
+	}{
+		{
+			"architect-common.md",
+			[]string{
+				"ask the role that works the ancestor's phase, the implementer in `retro` or the merger in `merging`, to take it back with `request_backward_move`",
+				"The daemon takes a move back only from the role that works the issue's phase, so yours is refused outside `accepting`.",
+				"so ask the reviewer, which works `reviewing`, to send the issue back with `request_backward_move` to `implementing` and the reason",
+				"a red required check is the implementer's, so ask the reviewer to send the issue back with `request_backward_move` to `implementing`",
+			},
+			[]string{
+				"Take the ancestor back with `request_backward_move`",
+				"both of which take a push, so `request_backward_move` to `implementing` with the reason",
+				"a red required check is the implementer's, `request_backward_move` to `implementing`",
+			},
+		},
+		{
+			"merger.md",
+			[]string{
+				"That is the one move forward out of `merging`, beside your own `request_backward_move` back",
+				"a child with an issue beneath it still in the workflow stays there until the last of them is done or parked",
+			},
+			[]string{"That is the one move out of `merging`", "and closes then; a child closes at once"},
+		},
+		{"reviewer.md", []string{"the implementer resolves the threads you tell it you accepted"}, []string{"resolve the ones you answered"}},
+	} {
+		t.Run(tc.part, func(t *testing.T) {
+			holdsAndRetires(t, "go/"+tc.part, goPart(t, tc.part), tc.want, tc.gone)
+		})
+	}
+	t.Run("worker-common.md", func(t *testing.T) {
+		const scope = "the rest of this paragraph is for the steps that work from it"
+		const noPlanner = "A step with no planner step before it in its task has no planner's plan"
+		text := goPart(t, "worker-common.md")
+		scoped := 0
+		for _, paragraph := range strings.Split(text, "\n\n") {
+			if !strings.Contains(paragraph, scope) {
+				continue
+			}
+			scoped++
+			if strings.Contains(paragraph, noPlanner) {
+				t.Errorf("go/worker-common.md: the paragraph that says %q also holds %q, which is for the steps outside it", scope, noPlanner)
+			}
+		}
+		if scoped != 1 {
+			t.Errorf("go/worker-common.md: %d paragraphs say %q, want 1", scoped, scope)
+		}
+		holdsAndRetires(t, "go/worker-common.md", text, []string{noPlanner}, nil)
+	})
 }
