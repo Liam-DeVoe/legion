@@ -46,6 +46,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -288,7 +289,7 @@ var goingToolRoutes = map[string][]goingToolRoute{
 	"dispatch_pointer": {{
 		Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/nodes/{id}/pointers",
 		Path:      map[string]string{"key": "issue", "id": "node"},
-		Relations: []string{"has_kind", "triggered_by", "constrained_by", "prevented_by"},
+		Relations: graphstore.PointerKinds(),
 	}},
 	// A node's state (dispatch_state) has no row, and neither has its settle (dispatch_settle):
 	// the state route moves a node out of settled, undoing a settle, and into gone, which is

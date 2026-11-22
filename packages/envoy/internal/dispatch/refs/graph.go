@@ -287,12 +287,11 @@ func keyedTupleArm(blockKind string) string {
 // other arm (VisibleEnd over AnyKind). The kinds it reads are storeArmPointers out of any node,
 // and storeArmPlacements and authored_by only out of a node of the store's own kinds or a finding.
 func keyedStoreArm(blockKind string) string {
-	finding := `t.from_kind = '` + BlockNodeKind + `' and t.from_id like '` + graphstore.KindLens + `/%'`
+	finding := `t.from_kind = '` + BlockNodeKind + `' and ` + graphstore.FindingIDSQL(`t.from_id`)
 	pointers := quotedKinds(storeArmPointers)
 	placements := quotedKinds(slices.Concat(storeArmPlacements, []string{graphstore.TupleAuthoredBy}))
 	sources := quotedKinds([]string{graphstore.KindInteraction, graphstore.KindLens, graphstore.KindRisk, graphstore.KindConstraint})
-	return `select case when newest.from_kind = '` + BlockNodeKind + `' and newest.from_id like '` + graphstore.KindLens + `/%'
-					then '` + graphstore.KindLensBlock + `' else newest.from_kind end,
+	return `select ` + graphstore.AddressKindSQL(`newest.from_kind`, `newest.from_id`) + `,
 				       newest.from_id, newest.kind, newest.to_kind, newest.to_id, newest.at, newest.legacy_source_seq
 				from (` + graphstore.CurrentTupleRead(`t.kind, t.from_kind, t.from_id`,
 		`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id, t.at, t.legacy_source_seq, t.asserted`,
