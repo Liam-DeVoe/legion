@@ -195,9 +195,9 @@ func publicRows() map[string]projectaccesstest.Row {
 func TestAFailedPrivateListReadFencesByTheStoredList(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("(a) an empty store with Dispatch down: today's answer", func(t *testing.T) {
+	t.Run("(a) an empty store with the list route down: today's answer", func(t *testing.T) {
 		m, grantID, dispatch := publicGrant(t, privRows(), true)
-		dispatch.SetDown(true)
+		dispatch.SetPrivateProjectsDown(true)
 		got, read := releaseSlack(t, m, grantID)
 		todays(t, "(a)", got, read)
 	})
@@ -219,10 +219,10 @@ func TestAFailedPrivateListReadFencesByTheStoredList(t *testing.T) {
 		})
 	}
 
-	t.Run("(c) a store holding PRIV with C1 and Dispatch down: [C1], read again within a minute", func(t *testing.T) {
+	t.Run("(c) a store holding PRIV with C1 and the list route down: [C1], read again within a minute", func(t *testing.T) {
 		m, grantID, dispatch := publicGrant(t, privRows(), true)
 		storeList(t, m.Store, store.KnownPrivateProject{Key: privProject, SlackChannels: []string{privChannel}})
-		dispatch.SetDown(true)
+		dispatch.SetPrivateProjectsDown(true)
 		got, read := releaseSlack(t, m, grantID)
 		fencedBy(t, "(c)", got, read, privChannel)
 	})
@@ -235,46 +235,46 @@ func TestAFailedPrivateListReadFencesByTheStoredList(t *testing.T) {
 		fencedBy(t, "(d)", got, read, privChannel)
 	})
 
-	t.Run("(e) a fresh pod over a store another pod filled, Dispatch down from its start: [C1]", func(t *testing.T) {
+	t.Run("(e) a fresh pod over a store another pod filled, the list route down from its start: [C1]", func(t *testing.T) {
 		m, grantID, dispatch := publicGrant(t, privRows(), true)
 		if got, _ := releaseSlack(t, m, grantID); !slices.Equal(got.Excluded, []string{privChannel}) {
 			t.Fatalf("the first pod's release while Dispatch answers = Excluded %#v; want [%s]", got.Excluded, privChannel)
 		}
-		dispatch.SetDown(true)
+		dispatch.SetPrivateProjectsDown(true)
 		pod := podOf(m, m.Store, dispatch)
 		got, read := releaseSlack(t, pod, grantID)
 		fencedBy(t, "(e) the fresh pod's first release", got, read, privChannel)
 	})
 
-	t.Run("(f) a held row of unknown channels with Dispatch down: unread", func(t *testing.T) {
+	t.Run("(f) a held row of unknown channels with the list route down: unread", func(t *testing.T) {
 		m, grantID, dispatch := publicGrant(t, privRows(), true)
 		storeUnknown(t, m.Store, privProject)
-		dispatch.SetDown(true)
+		dispatch.SetPrivateProjectsDown(true)
 		got, read := releaseSlack(t, m, grantID)
 		unread(t, "(f)", got, read)
 	})
 
-	t.Run("(g) a store it cannot read, with Dispatch down: unread", func(t *testing.T) {
+	t.Run("(g) a store it cannot read, with the list route down: unread", func(t *testing.T) {
 		m, grantID, dispatch := publicGrant(t, privRows(), true)
 		if _, err := m.Store.Pool.Exec(ctx, `drop table known_private_projects`); err != nil {
 			t.Fatalf("drop known_private_projects: %v", err)
 		}
-		dispatch.SetDown(true)
+		dispatch.SetPrivateProjectsDown(true)
 		got, read := releaseSlack(t, m, grantID)
 		unread(t, "(g)", got, read)
 	})
 
 	t.Run("(h) outside the airlock: released over an empty store, denied over one holding C1", func(t *testing.T) {
 		empty := newOutsideBroker(t, privRows())
-		empty.dispatch.SetDown(true)
+		empty.dispatch.SetPrivateProjectsDown(true)
 		if request, err := empty.create(t); err != nil || request.GrantID == nil {
-			t.Fatalf("(h) %s outside the airlock over an empty store with Dispatch down = %+v, %v; want granted, as today", slackToken, request, err)
+			t.Fatalf("(h) %s outside the airlock over an empty store with the list route down = %+v, %v; want granted, as today", slackToken, request, err)
 		}
 		holding := newOutsideBroker(t, privRows())
 		storeList(t, holding.m.Store, store.KnownPrivateProject{Key: privProject, SlackChannels: []string{privChannel}})
-		holding.dispatch.SetDown(true)
+		holding.dispatch.SetPrivateProjectsDown(true)
 		request, err := holding.create(t)
-		deniedFor(t, "(h) "+slackToken+" outside the airlock over a store holding "+privChannel+" with Dispatch down", request, err, slackToken, policy.ReasonProjectChannelsNeedAirlock)
+		deniedFor(t, "(h) "+slackToken+" outside the airlock over a store holding "+privChannel+" with the list route down", request, err, slackToken, policy.ReasonProjectChannelsNeedAirlock)
 	})
 
 	t.Run("(i) a fresh read keeps the list, and a cached one writes nothing", func(t *testing.T) {
@@ -309,11 +309,11 @@ func TestAFailedPrivateListReadFencesByTheStoredList(t *testing.T) {
 	}
 	advance := func(st *store.Store, d time.Duration) { st.DatabaseClockOffset.Set(st.DatabaseClockOffset.Get() + d) }
 
-	t.Run("(j) a refused switch's record, forgotten with its record, Dispatch down: today's answer", func(t *testing.T) {
+	t.Run("(j) a refused switch's record, forgotten with its record, the list route down: today's answer", func(t *testing.T) {
 		m, grantID, dispatch := publicGrant(t, publicRows(), true)
 		record := recordSwitch(t, m.Store, switchProject, switchChannel)
 		forget(t, m.Store, switchProject, &record)
-		dispatch.SetDown(true)
+		dispatch.SetPrivateProjectsDown(true)
 		got, read := releaseSlack(t, m, grantID)
 		todays(t, "(j) SWITCH's refused record, forgotten", got, read)
 	})
@@ -321,7 +321,7 @@ func TestAFailedPrivateListReadFencesByTheStoredList(t *testing.T) {
 	t.Run("(k) the same with its forget not yet taken, within 3 min: [C2] alone", func(t *testing.T) {
 		m, grantID, dispatch := publicGrant(t, publicRows(), true)
 		recordSwitch(t, m.Store, switchProject, switchChannel)
-		dispatch.SetDown(true)
+		dispatch.SetPrivateProjectsDown(true)
 		got, read := releaseSlack(t, m, grantID)
 		fencedBy(t, "(k) SWITCH's record before its forget", got, read, switchChannel)
 	})
@@ -334,16 +334,16 @@ func TestAFailedPrivateListReadFencesByTheStoredList(t *testing.T) {
 		if n := storedRows(t, m.Store); n != 0 {
 			t.Fatalf("(l) the stored private list holds %d row(s) after a good read more than 3 min after SWITCH's record; want SWITCH gone", n)
 		}
-		dispatch.SetDown(true)
+		dispatch.SetPrivateProjectsDown(true)
 		freshClient(m, dispatch)
 		got, read := releaseSlack(t, m, grantID)
 		todays(t, "(l) the outage after SWITCH left", got, read)
 	})
 
-	t.Run("(m) a record of no channel, not forgotten, Dispatch down: no Excluded", func(t *testing.T) {
+	t.Run("(m) a record of no channel, not forgotten, the list route down: no Excluded", func(t *testing.T) {
 		m, grantID, dispatch := publicGrant(t, publicRows(), true)
 		recordSwitch(t, m.Store, switchProject)
-		dispatch.SetDown(true)
+		dispatch.SetPrivateProjectsDown(true)
 		got, _ := releaseSlack(t, m, grantID)
 		if len(got.Excluded) != 0 || got.ExcludedUnread || got.Limited {
 			t.Fatalf("(m) an R9 row: %s over SWITCH's record of no channel = Excluded %#v ExcludedUnread %v; want no fence and no refusal", slackToken, got.Excluded, got.ExcludedUnread)
@@ -357,11 +357,11 @@ func TestAFailedPrivateListReadFencesByTheStoredList(t *testing.T) {
 		advance(st, store.KnownPrivateHold+time.Second)
 	}
 
-	t.Run("(n) a formerly private project made public and forgotten, Dispatch down: today's answer", func(t *testing.T) {
+	t.Run("(n) a formerly private project made public and forgotten, the list route down: today's answer", func(t *testing.T) {
 		m, grantID, dispatch := publicGrant(t, publicRows(), true)
 		former(t, m.Store)
 		forget(t, m.Store, formerProject, nil)
-		dispatch.SetDown(true)
+		dispatch.SetPrivateProjectsDown(true)
 		got, read := releaseSlack(t, m, grantID)
 		todays(t, "(n) FORMER, forgotten", got, read)
 	})
@@ -369,7 +369,7 @@ func TestAFailedPrivateListReadFencesByTheStoredList(t *testing.T) {
 	t.Run("(o) the same with its forget not yet taken: [C3] alone", func(t *testing.T) {
 		m, grantID, dispatch := publicGrant(t, publicRows(), true)
 		former(t, m.Store)
-		dispatch.SetDown(true)
+		dispatch.SetPrivateProjectsDown(true)
 		got, read := releaseSlack(t, m, grantID)
 		fencedBy(t, "(o) FORMER before its forget", got, read, formerChannel)
 	})
@@ -385,7 +385,7 @@ func TestAFailedPrivateListReadFencesByTheStoredList(t *testing.T) {
 		first := recordSwitch(t, m.Store, switchProject, switchChannel)
 		forget(t, ahead, switchProject, &first)
 		recordSwitch(t, behind, switchProject, switchChannel)
-		dispatch.SetDown(true)
+		dispatch.SetPrivateProjectsDown(true)
 		pod := podOf(m, behind, dispatch)
 		got, read := releaseSlack(t, pod, grantID)
 		fencedBy(t, "(p) SWITCH recorded through pod B after pod A forgot it", got, read, switchChannel)

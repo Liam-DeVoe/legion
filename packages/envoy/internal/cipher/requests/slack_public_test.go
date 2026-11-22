@@ -253,8 +253,10 @@ func TestAPublicSlackGrantCarriesEveryPrivateChannel(t *testing.T) {
 	t.Run("a fresh pod with no key declared fences every private project's channel from its first release", func(t *testing.T) {
 		got, dispatch, read := publicRelease(t, fenceRows())
 		fenced(t, "a session naming no project, on a pod that has read no private answer", got, read)
-		if calls, list := dispatch.Calls(), dispatch.PrivateProjectsCalls(); calls != 1 || list != 1 {
-			t.Fatalf("the release asked Dispatch %d time(s), %d of them for the list; want the list once and nothing else", calls, list)
+		// The member-kind read every release of a person's session makes (restrictedOperator)
+		// is the person route's, which these counts leave out.
+		if calls, list := dispatch.ProjectCalls(), dispatch.PrivateProjectsCalls(); calls != 0 || list != 1 {
+			t.Fatalf("the release asked Dispatch's project route %d time(s) and the list %d; want the list once and no project", calls, list)
 		}
 	})
 
@@ -281,8 +283,8 @@ func TestAPublicSlackGrantCarriesEveryPrivateChannel(t *testing.T) {
 			}
 			unfenced(t, fmt.Sprintf("release %d with no private project", release), values[slackToken], read)
 		}
-		if calls, list := dispatch.Calls(), dispatch.PrivateProjectsCalls(); calls != 1 || list != 1 {
-			t.Fatalf("two releases inside CacheTTL asked Dispatch %d time(s), %d of them for the list; want the list once, kept for the second, and nothing else", calls, list)
+		if calls, list := dispatch.ProjectCalls(), dispatch.PrivateProjectsCalls(); calls != 0 || list != 1 {
+			t.Fatalf("two releases inside CacheTTL asked Dispatch's project route %d time(s) and the list %d; want the list once, kept for the second, and no project", calls, list)
 		}
 	})
 

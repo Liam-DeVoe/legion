@@ -297,12 +297,15 @@ func TestAPublicSlackGrantIsTodaysWithNoPrivateProject(t *testing.T) {
 					t.Fatalf("read %d of %s = Limited %v Excluded %#v ExcludedUnread %v Expires %v; want unlimited and unfenced, bounded", i+1, slackName, got.Limited, got.Excluded, got.ExcludedUnread, got.Expires)
 				}
 			}
-			lists, calls := w.dispatch.PrivateProjectsCalls(), w.dispatch.Calls()
+			// The member-kind read every release of a person's session makes on a broker with
+			// project access (requests.Machine.restrictedOperator) is the person route's, which the
+			// count with access leaves out.
+			lists, projects, calls := w.dispatch.PrivateProjectsCalls(), w.dispatch.ProjectCalls(), w.dispatch.Calls()
 			switch {
 			case !access && calls != 0:
 				t.Fatalf("Dispatch was asked %d time(s) by a broker with no project-access client; want none", calls)
-			case access && (calls != lists || lists != 2):
-				t.Fatalf("Dispatch was asked %d time(s), %d of them for the list of private projects, over 3 releases in two windows of %v; want the list alone, once in each window", calls, lists, projectaccess.CacheTTL)
+			case access && (projects != 0 || lists != 2):
+				t.Fatalf("Dispatch's project route was asked %d time(s) and its list of private projects %d, over 3 releases in two windows of %v; want the list alone, once in each window", projects, lists, projectaccess.CacheTTL)
 			}
 		})
 	}
@@ -316,38 +319,40 @@ const (
 )
 
 // TestAPublicSlackGrantKeepsTheStoredFenceWhileDispatchIsDown: through the proxy against the real
-// request machine, a session naming no project and Dispatch down. Over a stored private list
-// holding PRIV with C1, a read of C1 is refused PRIVATE_CHANNEL before Slack is called, while a
-// post to a public channel and auth.test are served. With every project public and only a
-// not-yet-forgotten record of SWITCH with C2 (a window of the R9 exception), conversations.replies
-// and chat.postMessage naming C2 are refused, the same two naming a public channel by its id and
-// auth.test are served, and conversations.history naming a public channel is refused by the method
-// rule. Over an empty store, or with SWITCH forgotten, and with Dispatch down or the list route
-// answering 404, every call is served as today with no body read, conversations.history of a
-// public channel included (the R9 rows).
+// request machine, a session naming no project and Dispatch's list route down (the person route
+// answers: a person's session gets no release at all while Dispatch cannot say what kind of member
+// the person is). Over a stored private list holding PRIV with C1, a read of C1 is refused
+// PRIVATE_CHANNEL before Slack is called, while a post to a public channel and auth.test are
+// served. With every project public and only a not-yet-forgotten record of SWITCH with C2 (a
+// window of the R9 exception), conversations.replies and chat.postMessage naming C2 are refused,
+// the same two naming a public channel by its id and auth.test are served, and
+// conversations.history naming a public channel is refused by the method rule. Over an empty
+// store, or with SWITCH forgotten, and with the list route down or answering 404, every call is
+// served as today with no body read, conversations.history of a public channel included (the R9
+// rows).
 func TestAPublicSlackGrantKeepsTheStoredFenceWhileDispatchIsDown(t *testing.T) {
 	auth := slackPost{method: http.MethodGet, path: "/api/auth.test"}
-	t.Run("a store holding PRIV with C1, Dispatch down", func(t *testing.T) {
+	t.Run("a store holding PRIV with C1, the list route down", func(t *testing.T) {
 		w := newFenceWorld(t, map[string]projectaccesstest.Row{privKey: privateRow([]string{privChannel}, slackPerson)}, true)
 		storeList(t, w.st, store.KnownPrivateProject{Key: privKey, SlackChannels: []string{privChannel}})
-		w.dispatch.SetDown(true)
+		w.dispatch.SetPrivateProjectsDown(true)
 		p := w.pod(t, "public")
-		p.send(t, readOf(privChannel)).refusedAs(t, "a read of PRIV's channel with Dispatch down", readOf(privChannel), codePrivateChannel, privateChannel)
+		p.send(t, readOf(privChannel)).refusedAs(t, "a read of PRIV's channel with the list route down", readOf(privChannel), codePrivateChannel, privateChannel)
 		toPublic := jsonPost(postTo(pubChannel))
-		p.send(t, toPublic).served(t, "a post to a public channel with Dispatch down", toPublic, slackValue)
-		p.send(t, auth).served(t, "auth.test with Dispatch down", auth, slackValue)
+		p.send(t, toPublic).served(t, "a post to a public channel with the list route down", toPublic, slackValue)
+		p.send(t, auth).served(t, "auth.test with the list route down", auth, slackValue)
 	})
 
 	public := map[string]projectaccesstest.Row{
 		pubKey:    {Visibility: "public", Owner: slackOwner, SlackChannels: []string{pubChannel}},
 		switchKey: {Visibility: "public", Owner: slackOwner, SlackChannels: []string{switchChannel}},
 	}
-	t.Run("every project public, SWITCH's record not yet forgotten, Dispatch down", func(t *testing.T) {
+	t.Run("every project public, SWITCH's record not yet forgotten, the list route down", func(t *testing.T) {
 		w := newFenceWorld(t, public, true)
 		if _, err := w.st.RecordPrivateProject(t.Context(), switchKey, []string{switchChannel}); err != nil {
 			t.Fatalf("RecordPrivateProject(%s): %v", switchKey, err)
 		}
-		w.dispatch.SetDown(true)
+		w.dispatch.SetPrivateProjectsDown(true)
 		p := w.pod(t, "public")
 		for _, call := range []slackPost{readOf(switchChannel), jsonPost(postTo(switchChannel))} {
 			p.send(t, call).refusedAs(t, "a call naming SWITCH's channel in the window", call, codePrivateChannel, privateChannel)
@@ -371,9 +376,9 @@ func TestAPublicSlackGrantKeepsTheStoredFenceWhileDispatchIsDown(t *testing.T) {
 		forget bool
 		fail   func(*projectaccesstest.Server)
 	}{
-		{"an empty store, Dispatch down", false, func(s *projectaccesstest.Server) { s.SetDown(true) }},
+		{"an empty store, the list route down", false, func(s *projectaccesstest.Server) { s.SetPrivateProjectsDown(true) }},
 		{"an empty store, the list route answering 404", false, func(s *projectaccesstest.Server) { s.SetPrivateProjectsAbsent(true) }},
-		{"SWITCH forgotten, Dispatch down", true, func(s *projectaccesstest.Server) { s.SetDown(true) }},
+		{"SWITCH forgotten, the list route down", true, func(s *projectaccesstest.Server) { s.SetPrivateProjectsDown(true) }},
 		{"SWITCH forgotten, the list route answering 404", true, func(s *projectaccesstest.Server) { s.SetPrivateProjectsAbsent(true) }},
 	} {
 		t.Run("the R9 row: "+c.name, func(t *testing.T) {
@@ -434,8 +439,8 @@ func TestAValueReleasedBeforeTheFirstPrivateChannelLearnsIt(t *testing.T) {
 		if first.Expires.Before(read.Add(ownerChangeHeard)) || first.Expires.After(w.clock.now().Add(ownerChangeHeard)) {
 			t.Errorf("%s for a public session expires %v; want the read time plus %v", slackName, first.Expires, ownerChangeHeard)
 		}
-		if lists, calls := w.dispatch.PrivateProjectsCalls(), w.dispatch.Calls(); calls != lists || lists != 1 {
-			t.Errorf("the release with no private project asked Dispatch %d time(s), %d of them for the list of private projects; want the list alone, once", calls, lists)
+		if lists, projects := w.dispatch.PrivateProjectsCalls(), w.dispatch.ProjectCalls(); projects != 0 || lists != 1 {
+			t.Errorf("the release with no private project asked Dispatch's project route %d time(s) and its list of private projects %d; want the list alone, once", projects, lists)
 		}
 
 		private := privateRow([]string{privChannel}, slackPerson)
