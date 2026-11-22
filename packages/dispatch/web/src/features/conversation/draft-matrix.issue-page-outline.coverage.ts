@@ -23,14 +23,6 @@ const REASONS = {
   10: "10. A refused or stopped send holds the box on its own target (the writer's `redirectedReplyTarget` and `keptOnTarget`), so the box keeps nothing away for that target and has no kept line whose way back can go; only a typed draft is kept for a target the box moved away from, the typed cells of the gone rows.",
 } as const;
 
-/** The census's text of the write line's look, as `WriteLine` hands it to the composer. */
-const WRITE_LOOK =
-  "outline={{ anchor, cancelReply: CONTROL_LABELS.write_on_issue, end, kept: { issue: ANSWER_LINES.kept_on_issue, statement: ANSWER_LINES.kept_on_statement }, kinds: writesKinds ? KINDS : [], placeholder: aimed ? place.phone ? CONTROL_LABELS.reply_placeholder_phone : CONTROL_LABELS.reply_placeholder : place.phone ? CONTROL_LABELS.issue_placeholder_phone : CONTROL_LABELS.issue_placeholder, retry: CONTROL_LABELS.retry, send: CONTROL_LABELS.send, sending: ANSWER_LINES.sending, statementTwice: ANSWER_LINES.statement_twice, target: reply !== null ? ( <ReplyTargetLine issueKey={issueKey} reply={reply} /> ) : statement === undefined ? undefined : ( <> <span {...pageChrome}>{CONTROL_LABELS.replying_to}</span>{\" \"} {/* A statement a Reply aimed the line at is named by its row's words; a row's text is the coverage read's words, which leave every reference out, so its tree's references are named whole. One taken up from a held send is its quote alone, named in plain words as a row's statement is. */} <TargetWords markdown={statement.item?.text ?? statement.quote} namesAll={statement.item !== undefined} source={statement.item?.source} tree={statement.item?.tree} /> </> ), statements: drawn === undefined ? undefined : { drawn: (shown) => drawn.statements.get(shown.artifact)?.has(shown.quote) === true, gone: ANSWER_LINES.kept_statement_gone, goneWaits: ANSWER_LINES.kept_statement_gone_waits, }, uploadedUnanswered: ANSWER_LINES.uploaded_unanswered, uploading: ANSWER_LINES.uploading, }}";
-
-/** The census's text of the edit line's look, as `EditLine` hands it to the composer. */
-const EDIT_LOOK =
-  'outline={{ cancelReply: CONTROL_LABELS.write_on_issue, end: back, kinds: [], placeholder: place.phone ? CONTROL_LABELS.edit_placeholder_phone : CONTROL_LABELS.edit_placeholder, retry: CONTROL_LABELS.retry, send: CONTROL_LABELS.save, sending: ANSWER_LINES.saving_field, target: ( <> <span {...pageChrome}>{CONTROL_LABELS.editing}</span>{" "} <TargetWords markdown={editing.body} source={textSourceOf("comment", editing.id, issueKey)} tree={tree} /> </> ), uploadedUnanswered: ANSWER_LINES.uploaded_unanswered, uploading: ANSWER_LINES.uploading, }}';
-
 const WRITE_MOUNT = "WriteLine <MentionComposer mutationKey={writer.sendKey}>";
 const EDIT_MOUNT = "EditLine <MentionComposer mutationKey={mutationKey}>";
 
@@ -53,7 +45,7 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[2] }
   ),
   ...answers(
-    `WriteLine | ${WRITE_MOUNT} | address prop | ${WRITE_LOOK}`,
+    `WriteLine | ${WRITE_MOUNT} | address prop | outline={look}`,
     cells(`${HOST} · a comment on a statement, Reply on another row, then back`),
     cells(`${HOST} · Write on the issue instead`),
     cells(`${HOST} · Escape over a reply`),
@@ -73,7 +65,7 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · Escape over a reply`),
     cells(`${HOST} · Write on the issue instead, the issue keeping a comment of its own`)
   ),
-  ...answers(`WriteLine | ${WRITE_MOUNT} | form | ${WRITE_LOOK}`, { reason: REASONS[7] }),
+  ...answers(`WriteLine | ${WRITE_MOUNT} | form | outline={look}`, { reason: REASONS[7] }),
   ...answers("WriteLine | - | form | (place.phone) ? …", { reason: REASONS[7] }),
   ...answers(
     `WriteLine | ${WRITE_MOUNT} | lifetime | <MentionComposer mutationKey={writer.sendKey}>`,
@@ -93,14 +85,14 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[2] }
   ),
   ...answers(
-    `EditLine | ${EDIT_MOUNT} | address prop | ${EDIT_LOOK}`,
+    `EditLine | ${EDIT_MOUNT} | address prop | outline={look}`,
     cells(`${EDITING} · Escape, then Edit again`)
   ),
   ...answers(
     `EditLine | ${EDIT_MOUNT} | address prop | owner={owner}`,
     cells(`${EDITING} · issue left, then Edit again`)
   ),
-  ...answers(`EditLine | ${EDIT_MOUNT} | form | ${EDIT_LOOK}`, { reason: REASONS[7] }),
+  ...answers(`EditLine | ${EDIT_MOUNT} | form | outline={look}`, { reason: REASONS[7] }),
   ...answers("EditLine | - | form | (place.phone) ? …", { reason: REASONS[7] }),
   ...answers(
     `EditLine | ${EDIT_MOUNT} | lifetime | <MentionComposer mutationKey={mutationKey}>`,
