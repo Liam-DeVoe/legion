@@ -36,12 +36,10 @@ import (
 //     OWNER/REPO URL with nothing the wrapper cannot read (isPlainGitHubURL), since git takes a
 //     `<transport>::<address>` URL (`ssh::…`, `ext::…`) as a program to run, and a path or
 //     another host is a repository the call's routing never counted;
-//   - gh-stack's stack file, `<git common dir>/gh-stack`, which it loads without checking a name
-//     and passes each branch last to `git rebase --onto <new> <old> <branch>` (gh-stack v0.3.0
-//     cmd/utils.go, internal/modify/apply.go): a branch that starts with `-`, that is no name
-//     `git check-ref-format` reads as a branch, or a head or base that is no commit id, is
-//     refused, and so is a local branch whose name starts with `-`, which gh-stack finds and
-//     hands to git the same way.
+//   - gh-stack's stack file, `<git common dir>/gh-stack`, whose branch names and commit ids
+//     gh-stack hands to git as arguments: a branch name that starts with `-` or that
+//     `git check-ref-format` refuses, and a head or base that is no commit id, are refused, and
+//     so is a local branch whose name starts with `-`.
 
 // ghStackGitConfigKeys are the configuration keys, canonical as gitConfigKey writes them, that a
 // file of the repository may set for `legion gh stack` to run: what a clone, a Legion workspace
