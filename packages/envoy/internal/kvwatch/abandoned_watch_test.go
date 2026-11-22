@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -159,14 +158,14 @@ func TestAnAbandonedWatchersDiscardEnds(t *testing.T) {
 				if !tc.ends && err != nil {
 					t.Fatalf("an overtaken watch answered %v, want nil", err)
 				}
-			case <-time.After(2 * time.Second):
-				t.Fatal("the watch did not return within 2s: it waited out the discarded watcher's stop")
+			case <-untilDeadline(t):
+				t.Fatal("the watch did not return: it waited out the discarded watcher's stop, which is held until the test releases it")
 			}
 
 			release()
 			select {
 			case <-abandon.stopped:
-			case <-time.After(10 * time.Second):
+			case <-untilDeadline(t):
 				t.Fatal("the discarded watcher was never stopped")
 			}
 			eventually(t, "the discard's goroutine to end", func() bool { return subscriptionGoroutines() <= goroutines })

@@ -55,22 +55,21 @@ func TestEndEndsAWatcherArmedAfterTheStop(t *testing.T) {
 	w.Start()
 	select {
 	case <-held.watched:
-	case <-time.After(5 * time.Second):
+	case <-untilDeadline(t):
 		close(held.release)
 		t.Fatal("the watch never armed its watcher")
 	}
 	w.Stop()
 	ended := make(chan struct{})
+	ctx := testContext(t)
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
 		w.End(ctx)
 		close(ended)
 	}()
 	close(held.release)
 	select {
 	case <-ended:
-	case <-time.After(15 * time.Second):
+	case <-untilDeadline(t):
 		t.Fatal("End never returned")
 	}
 	if consumers := testConsumers(t, conn); len(consumers) != 0 {
@@ -93,7 +92,7 @@ func TestAWatchStillStartingAtEndsDeadlineIsAnError(t *testing.T) {
 	w.Start()
 	select {
 	case <-held.watched:
-	case <-time.After(5 * time.Second):
+	case <-untilDeadline(t):
 		close(held.release)
 		t.Fatal("the watch never armed its watcher")
 	}
@@ -151,7 +150,7 @@ func TestALateWatchAfterALostConnectionIsAWarning(t *testing.T) {
 	w.Start()
 	select {
 	case <-held.watched:
-	case <-time.After(5 * time.Second):
+	case <-untilDeadline(t):
 		close(held.release)
 		t.Fatal("the watch never armed its watcher")
 	}
@@ -180,7 +179,7 @@ func TestADeleteConsumerAnsweredErrDisconnectedDuringEndIsAWarning(t *testing.T)
 	w.Start()
 	select {
 	case <-held.watched:
-	case <-time.After(5 * time.Second):
+	case <-untilDeadline(t):
 		close(held.release)
 		t.Fatal("the watch never armed its watcher")
 	}
@@ -223,12 +222,11 @@ func TestEndCalledTwiceAtOnceReturnsForBoth(t *testing.T) {
 	w.Start()
 	select {
 	case <-held.watched:
-	case <-time.After(5 * time.Second):
+	case <-untilDeadline(t):
 		close(held.release)
 		t.Fatal("the watch never armed its watcher")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	ctx := testContext(t)
 	ended := make(chan struct{}, 2)
 	for range 2 {
 		go func() {
@@ -241,7 +239,7 @@ func TestEndCalledTwiceAtOnceReturnsForBoth(t *testing.T) {
 	for range 2 {
 		select {
 		case <-ended:
-		case <-time.After(5 * time.Second):
+		case <-untilDeadline(t):
 			t.Fatal("an End did not return once the watch it waited for had finished")
 		}
 	}
@@ -269,9 +267,7 @@ func TestAFailedConsumerDeleteAtTheEndIsAnError(t *testing.T) {
 	if err := js.DeleteKeyValue("kvwatch-test"); err != nil {
 		t.Fatalf("delete bucket: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	w.End(ctx)
+	w.End(testContext(t))
 	if got, want := strings.Join(warnings(records()), ", "), "ERROR test cache watcher end failed: nats: stream not found"; got != want {
 		t.Fatalf("End logged %q, want %q", got, want)
 	}

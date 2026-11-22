@@ -72,7 +72,7 @@ func TestASubscriptionEndingMidScanNeverPanics(t *testing.T) {
 		var started time.Time
 		select {
 		case started = <-first:
-		case <-time.After(10 * time.Second):
+		case <-untilDeadline(t):
 			t.Fatalf("round %d: the first record never reached the cache", round)
 		}
 		time.Sleep(time.Until(started.Add(hold)))

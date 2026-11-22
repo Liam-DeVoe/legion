@@ -288,12 +288,13 @@ func (h *heldEnd) step() watchStep {
 	}
 }
 
-// wait waits for ch, which names what, failing the test after 10 s.
+// wait waits for ch, which names what, until waitSpare before the test binary's deadline
+// (untilDeadline), failing the test by name if it has not been closed by then.
 func wait(t *testing.T, ch <-chan struct{}, what string) {
 	t.Helper()
 	select {
 	case <-ch:
-	case <-time.After(10 * time.Second):
+	case <-untilDeadline(t):
 		t.Fatalf("timed out waiting for %s", what)
 	}
 }
@@ -337,9 +338,7 @@ func wrap(t *testing.T, conn *natsgo.Conn, kv natsgo.KeyValue) bus.KeyValue {
 // jetStreamEntry reads key through kv's jetstream handle, as a watcher would deliver it.
 func jetStreamEntry(t *testing.T, kv bus.KeyValue, key string) jetstream.KeyValueEntry {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	entry, err := kv.WatchHandle().Get(ctx, key)
+	entry, err := kv.WatchHandle().Get(testContext(t), key)
 	if err != nil {
 		t.Fatalf("get %s: %v", key, err)
 	}
@@ -364,9 +363,40 @@ func waitingForTheApplyLock() bool {
 	return false
 }
 
+// eventually waits for cond, asking it every 20 ms, until testwait's own margin before the test
+// binary's deadline (testwait.UntilPolling), and fails the test naming what it waited for. No span
+// of its own ends it: on a loaded machine a fact that is merely late is not a failure.
 func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, what, cond)
+	testwait.UntilPolling(t, 20*time.Millisecond, what, func() (bool, bool) {
+		held := cond()
+		return held, held
+	})
+}
+
+// waitSpare is how long before the test binary's deadline untilDeadline fires and testContext
+// ends, testwait's own margin: the time a test that waited that long has left to fail by name and
+// run its cleanups.
+const waitSpare = 30 * time.Second
+
+// untilDeadline is a channel that receives waitSpare before the test binary's deadline
+// (testwait.Remaining), and never under -timeout 0: the end of a wait in a select whose failure
+// branch has work of its own to do, such as releasing a hold, before it fails the test.
+func untilDeadline(t *testing.T) <-chan time.Time {
+	t.Helper()
+	return time.After(testwait.Remaining(t, waitSpare))
+}
+
+// testContext is a context that ends waitSpare before the test binary's deadline
+// (testwait.Remaining): the context of each request a test makes itself, and of each call of the
+// code under test whose bound is not the test's subject, so a server or a watcher that answers late
+// on a loaded machine costs the test time and not its result, as a request of a testnats.MaxWait
+// context does.
+func testContext(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t, waitSpare))
+	t.Cleanup(cancel)
+	return ctx
 }
 
 // The cache is ready once the first watcher has delivered every existing key, and not before. Its
@@ -391,9 +421,7 @@ func TestTheCacheIsReadyAfterTheFirstScan(t *testing.T) {
 
 	w.Start()
 	for range 2 {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err := w.WaitReady(ctx)
-		cancel()
+		err := w.WaitReady(testContext(t))
 		if err != nil {
 			t.Fatalf("WaitReady after Start: %v", err)
 		}
@@ -419,9 +447,7 @@ func TestAFailedFirstStartIsReadyAndRecordsItsError(t *testing.T) {
 	w := kvwatch.New("test cache", kv, newSeen())
 
 	w.Start()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := w.WaitReady(ctx); err != nil {
+	if err := w.WaitReady(testContext(t)); err != nil {
 		t.Fatalf("WaitReady after a failed first start: %v", err)
 	}
 	if w.Err() == nil {
@@ -444,7 +470,7 @@ func TestAStartedWatcherNeedsNoReadUntilItsFirstWatchFails(t *testing.T) {
 		w.Start()
 		select {
 		case <-held.watched:
-		case <-time.After(5 * time.Second):
+		case <-untilDeadline(t):
 			close(held.release)
 			t.Fatal("the watch never armed its watcher")
 		}
@@ -468,9 +494,7 @@ func TestAStartedWatcherNeedsNoReadUntilItsFirstWatchFails(t *testing.T) {
 		w := kvwatch.New("test cache", kv, newSeen())
 
 		w.Start()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := w.WaitReady(ctx); err != nil {
+		if err := w.WaitReady(testContext(t)); err != nil {
 			t.Fatalf("WaitReady after a failed first start: %v", err)
 		}
 		if !w.NeedsRead() {
@@ -494,9 +518,7 @@ func TestAFirstStartFailingAfterARewatchLeavesTheLiveWatcherHealthy(t *testing.T
 	live := w.KV()
 
 	w.Start()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := w.WaitReady(ctx); err != nil {
+	if err := w.WaitReady(testContext(t)); err != nil {
 		t.Fatalf("WaitReady: %v", err)
 	}
 	time.Sleep(200 * time.Millisecond)
@@ -617,7 +639,7 @@ func TestAFirstStartFailingDuringARewatchScanWaitsForThatScan(t *testing.T) {
 	}
 	select {
 	case <-entered:
-	case <-time.After(5 * time.Second):
+	case <-untilDeadline(t):
 		t.Fatal("the Rewatch's scan never reached the held key")
 	}
 
@@ -832,12 +854,6 @@ func TestStopMakesTheEndSilentAndRewatchANoOp(t *testing.T) {
 	if into.has("after-stop") {
 		t.Fatal("a Rewatch after Stop armed a watcher")
 	}
-}
-
-// eventuallyWithin is eventually with its own deadline, for a wait that spans a NATS restart.
-func eventuallyWithin(t *testing.T, within time.Duration, what string, cond func() bool) {
-	t.Helper()
-	testwait.WithinPolling(t, within, 20*time.Millisecond, what, cond)
 }
 
 // staleBound is the default stale bound, which these tests move the injected clock past.
@@ -1230,7 +1246,7 @@ func TestADisconnectStartsAStaleEpisodeThatTheReadAfterTheReconnectEnds(t *testi
 	refuses(t, w, "after a Rewatch failed during the outage")
 
 	srv.Start(t)
-	eventuallyWithin(t, 30*time.Second, "the reconnect hook's read to complete", w.Following)
+	eventually(t, "the reconnect hook's read to complete", w.Following)
 	serves(t, w, "after the read that followed the reconnect")
 	if !into.has("kept") || w.Err() != nil {
 		t.Fatalf("after the reconnect: kept %v, Err %v; want the key and no error", into.has("kept"), w.Err())
@@ -1291,9 +1307,7 @@ func TestAReplacedWatchersBufferedEntryIsDropped(t *testing.T) {
 	w := kvwatch.New("test cache", kv, withApply{seen: newSeen(), before: apply})
 	w.Start()
 	t.Cleanup(w.Stop)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := w.WaitReady(ctx); err != nil {
+	if err := w.WaitReady(testContext(t)); err != nil {
 		t.Fatalf("WaitReady: %v", err)
 	}
 	if _, err := kv.Put("late1", []byte("1")); err != nil {
@@ -1301,7 +1315,7 @@ func TestAReplacedWatchersBufferedEntryIsDropped(t *testing.T) {
 	}
 	select {
 	case <-entered:
-	case <-time.After(5 * time.Second):
+	case <-untilDeadline(t):
 		t.Fatal("the first watcher never applied late1")
 	}
 	const queued = 40
@@ -1327,7 +1341,7 @@ func TestAReplacedWatchersBufferedEntryIsDropped(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Rewatch: %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-untilDeadline(t):
 		t.Fatal("Rewatch never returned")
 	}
 	// The premise the lock wait sets up: the switch came while the first watcher still held most of
@@ -1419,7 +1433,7 @@ func TestConcurrentRewatchesOntoARecreatedBucketKeepTheNewKeys(t *testing.T) {
 	go func() { err := w.Rewatch(context.Background(), conn); doneA <- err }()
 	select {
 	case <-slow.entered:
-	case <-time.After(5 * time.Second):
+	case <-untilDeadline(t):
 		t.Fatal("Rewatch A never stopped the replaced watcher")
 	}
 	if !into.has("ghost") {
@@ -1511,7 +1525,7 @@ func TestAWatchOfTheOldStreamDoesNotReplaceANewerOne(t *testing.T) {
 	w.Start()
 	select {
 	case <-held.watched:
-	case <-time.After(5 * time.Second):
+	case <-untilDeadline(t):
 		t.Fatal("the first watch never armed its watcher")
 	}
 
@@ -1572,7 +1586,7 @@ func TestADiscardedWatchOfTheOldStreamIsDrainedUntilItEnds(t *testing.T) {
 	w.Start()
 	select {
 	case <-held.watched:
-	case <-time.After(5 * time.Second):
+	case <-untilDeadline(t):
 		t.Fatal("the first watch never armed its watcher")
 	}
 	updates := held.watcher.Updates()
@@ -1595,7 +1609,7 @@ func TestADiscardedWatchOfTheOldStreamIsDrainedUntilItEnds(t *testing.T) {
 
 	select {
 	case <-held.ended:
-	case <-time.After(10 * time.Second):
+	case <-untilDeadline(t):
 		t.Fatal("the discarded watcher never ended: it was left unread (its delivery goroutine parks on a full buffer) or never stopped")
 	}
 }
@@ -1639,7 +1653,7 @@ func TestAReplacedWatchersSentinelDoesNotReleaseReadiness(t *testing.T) {
 	w.Start()
 	select {
 	case <-entered:
-	case <-time.After(5 * time.Second):
+	case <-untilDeadline(t):
 		t.Fatal("the first watcher never applied k000")
 	}
 	// The first watcher is held on its first key; its buffer holds the rest of its scan and its
@@ -1682,11 +1696,12 @@ func TestAReplacedWatchersSentinelDoesNotReleaseReadiness(t *testing.T) {
 // stream the server restores here is newer than the live one. The test's reads therefore go through
 // kvwatch.WatchOn, the install a Rewatch makes once it has opened its handle, on a handle that reads
 // the restored stream with the first bucket's creation time (createdAs), as a restore that keeps the
-// snapshot's creation time reports it. Every request the test makes itself waits until answerWait's
-// end, and every wait of its own until the test binary's deadline, not a bound of nats.go's own.
+// snapshot's creation time reports it. Every request the test makes itself, and every wait of its
+// own, ends only near the test binary's deadline (testContext, testwait), not at a bound of
+// nats.go's own.
 func TestARewatchOntoABucketRestoredWithAnOlderStreamRefillsTheCache(t *testing.T) {
 	const stream = "KV_" + testBucketName
-	ctx := answerWait(t)
+	ctx := testContext(t)
 	// The first bucket lives, and is deleted, on a server of its own. nats-server's file store
 	// answers a stream delete once it has renamed the stream's directory to "."+name, and removes
 	// that directory in a goroutine of its own (filestore.go, fileStore.Delete). A second delete of
@@ -1828,10 +1843,10 @@ type snapshot struct {
 }
 
 // snapshotStream snapshots stream through the raw JetStream API, which nats.go does not wrap. Each
-// request and each chunk waits until answerWait's end.
+// request and each chunk waits until testContext's end.
 func snapshotStream(t *testing.T, conn *natsgo.Conn, stream string) snapshot {
 	t.Helper()
-	ctx := answerWait(t)
+	ctx := testContext(t)
 	inbox := natsgo.NewInbox()
 	chunks, err := conn.SubscribeSync(inbox)
 	if err != nil {
@@ -1867,13 +1882,13 @@ func snapshotStream(t *testing.T, conn *natsgo.Conn, stream string) snapshot {
 }
 
 // restoreStream restores snap as stream through the raw JetStream API, each request waiting until
-// answerWait's end, and fails the test unless the server answers the end of the data with no error:
+// testContext's end, and fails the test unless the server answers the end of the data with no error:
 // a restore that fails can still leave a stream behind (nats-server v2.15.1 stream_backup.go,
 // RestoreStreamV2 makes the stream it built active on its way out). nats-server v2.15.1 gives the
 // restored stream the time of the restore as its creation time, not the snapshot's.
 func restoreStream(t *testing.T, conn *natsgo.Conn, stream string, snap snapshot) {
 	t.Helper()
-	ctx := answerWait(t)
+	ctx := testContext(t)
 	req, _ := json.Marshal(map[string]any{"config": snap.config, "state": snap.state})
 	msg, err := conn.RequestWithContext(ctx, "$JS.API.STREAM.RESTORE."+stream, req)
 	if err != nil {
@@ -1932,19 +1947,4 @@ func (s createdStream) CachedInfo() *jetstream.StreamInfo {
 	info := *s.Stream.CachedInfo()
 	info.Created = s.created
 	return &info
-}
-
-// answerSpare is how long before the test binary's deadline answerWait's context ends.
-const answerSpare = 30 * time.Second
-
-// answerWait is the context of each JetStream request the restored-bucket row makes itself, its
-// snapshot's and its restore's raw requests among them, and of each wait for a snapshot's next
-// chunk: it ends answerSpare before the test binary's deadline (testwait.Remaining), not at a fixed
-// span, so a server that answers late on a loaded machine costs the test time and not its result,
-// as a request of a testnats.MaxWait context does.
-func answerWait(t *testing.T) context.Context {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t, answerSpare))
-	t.Cleanup(cancel)
-	return ctx
 }

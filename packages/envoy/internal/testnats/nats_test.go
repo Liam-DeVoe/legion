@@ -737,7 +737,10 @@ const natsDefaultWait = 5 * time.Second
 // A JetStream request of a context a test makes with MaxWait or RequestTimeout waits past
 // nats.go's own five seconds for a server that answers late: each context's account info, sent to
 // a frozen server, is answered once the server is thawed a second after nats.go's own wait would
-// have ended it, and neither request fails.
+// have ended it, and neither request fails. The second is counted from the moment the connection
+// has published both requests (Stats().OutMsgs), and each request's wait began before its publish:
+// nats.go makes both contexts' timeouts before it sends (nats.go v1.55.0 jsm.go getJSContextOpts,
+// jetstream/jetstream.go wrapContextWithoutDeadline).
 func TestAJetStreamRequestOfATestsContextOutwaitsNatsGosFiveSeconds(t *testing.T) {
 	server, uri := Start(t)
 	conn := Connect(t, uri)
@@ -751,6 +754,7 @@ func TestAJetStreamRequestOfATestsContextOutwaitsNatsGosFiveSeconds(t *testing.T
 		t.Fatalf("the JetStream client: %v", err)
 	}
 
+	sentBefore := conn.Stats().OutMsgs
 	thaw := server.Freeze(t)
 	defer thaw()
 	type answer struct {
@@ -758,19 +762,18 @@ func TestAJetStreamRequestOfATestsContextOutwaitsNatsGosFiveSeconds(t *testing.T
 		err     error
 	}
 	answers := make(chan answer, 2)
-	sending := make(chan struct{}, 2)
 	go func() {
-		sending <- struct{}{}
 		_, err := legacy.AccountInfo()
 		answers <- answer{"the legacy context (MaxWait)", err}
 	}()
 	go func() {
-		sending <- struct{}{}
 		_, err := client.AccountInfo(context.Background())
 		answers <- answer{"the JetStream client (RequestTimeout)", err}
 	}()
-	testwait.Receive(t, "the legacy context's request to be sent", sending)
-	testwait.Receive(t, "the JetStream client's request to be sent", sending)
+	testwait.Until(t, "the connection to publish both requests", func() (uint64, bool) {
+		sent := conn.Stats().OutMsgs - sentBefore
+		return sent, sent >= 2
+	})
 	time.Sleep(natsDefaultWait + time.Second)
 	thaw()
 	for range 2 {

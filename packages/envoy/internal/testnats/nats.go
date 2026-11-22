@@ -1175,13 +1175,12 @@ func waitForJetStream(t testing.TB, check func(context.Context) error) {
 // wall clock unless natsgo.MaxWait sets another, and a test's requests rarely carry that option.
 // So a server that answers late on a loaded machine, or a relay a reload holds, would fail the
 // test with "nats: timeout" or "context deadline exceeded". With this option such a request waits
-// until testDeadline, the end of every wait of this package on a server's own fact, and with no
-// deadline (-timeout 0) for no bound a test can reach, so a late answer costs the test time and
-// not its result. The same wait is the default expiry of a pull subscription's Fetch and the time
-// a KV watcher waits for its initial values, so neither ends early either. A wait that sends a
-// request again when it draws no answer bounds each send by a step of its own instead (Connect's
-// jetStreamStep): with this option a send the server never answers would hold that wait until the
-// deadline.
+// as long as requestWait says, which reaches testDeadline, the end of every wait of this package
+// on a server's own fact, so a late answer costs the test time and not its result. The same wait
+// is the default expiry of a pull subscription's Fetch and the time a KV watcher waits for its
+// initial values, so neither ends early either. A wait that sends a request again when it draws no
+// answer bounds each send by a step of its own instead (Connect's jetStreamStep): with this option
+// a send the server never answers would hold that wait until the deadline.
 func MaxWait(t testing.TB) natsgo.JSOpt {
 	return natsgo.MaxWait(requestWait(t))
 }
@@ -1197,8 +1196,11 @@ func RequestTimeout(t testing.TB) jetstream.JetStreamOpt {
 }
 
 // requestWait is how long a request of a context MaxWait or RequestTimeout made waits for its
-// answer: until testDeadline, never under a millisecond (waitEnd.step), and under -timeout 0
-// noDeadline, a day.
+// answer: what is left until testDeadline, never under a millisecond (waitEnd.step), and at most
+// noDeadline, a day, which is also its wait under -timeout 0 (no deadline). It is measured once,
+// when the option is made, and nats.go gives every request of the context that same span: a
+// request a test sends long after it made the context can wait past testDeadline by that much,
+// and is then still ended by the binary's own -timeout.
 func requestWait(t testing.TB) time.Duration {
 	return boundOf(t).step(noDeadline)
 }

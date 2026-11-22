@@ -84,7 +84,7 @@ func TestAWatchsRunDoesNotWaitOutThePreviousWatchersDelete(t *testing.T) {
 			go func() { rewatched <- w.Rewatch(run, conn) }()
 			select {
 			case <-held.entered:
-			case <-time.After(10 * time.Second):
+			case <-untilDeadline(t):
 				t.Fatal("the Rewatch never stopped the watcher it replaced")
 			}
 			// While the run is live the watch waits for the stop.
@@ -101,8 +101,8 @@ func TestAWatchsRunDoesNotWaitOutThePreviousWatchersDelete(t *testing.T) {
 					if err != nil {
 						t.Fatalf("rewatch: %v", err)
 					}
-				case <-time.After(time.Second):
-					t.Fatal("the Rewatch did not return within 1s of its run ending: it waited out the replaced watcher's Stop")
+				case <-untilDeadline(t):
+					t.Fatal("the Rewatch did not return after its run ended: it waited out the replaced watcher's Stop, which is held until the test releases it")
 				}
 				select {
 				case <-held.returned:
@@ -121,8 +121,8 @@ func TestAWatchsRunDoesNotWaitOutThePreviousWatchersDelete(t *testing.T) {
 					if err != nil {
 						t.Fatalf("rewatch: %v", err)
 					}
-				case <-time.After(10 * time.Second):
-					t.Fatal("the Rewatch did not return within 10s of the replaced watcher's Stop returning")
+				case <-untilDeadline(t):
+					t.Fatal("the Rewatch did not return after the replaced watcher's Stop returned")
 				}
 				select {
 				case <-held.returned:

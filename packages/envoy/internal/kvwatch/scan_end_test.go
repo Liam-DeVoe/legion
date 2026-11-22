@@ -72,7 +72,7 @@ func TestASubscriptionEndingMidScanDisarmsTheIdleWaitAndReleasesItsContext(t *te
 				if err != nil {
 					t.Fatalf("the replacing watch: %v", err)
 				}
-			case <-time.After(10 * time.Second):
+			case <-untilDeadline(t):
 				t.Fatal("the replacing watch never returned")
 			}
 		}},
@@ -81,7 +81,7 @@ func TestASubscriptionEndingMidScanDisarmsTheIdleWaitAndReleasesItsContext(t *te
 			release()
 		}},
 		{name: "End stops it at shutdown", end: func(t *testing.T, w *kvwatch.Watcher, _ *natsgo.Conn, _ string, release func()) {
-			endWithin(t, w)
+			w.End(testContext(t))
 			release()
 		}},
 	} {
@@ -126,7 +126,7 @@ func TestASubscriptionEndingMidScanDisarmsTheIdleWaitAndReleasesItsContext(t *te
 			if test.replaced {
 				live = 1
 			}
-			eventuallyWithin(t, 10*time.Second, "nats.go's goroutine on the ended watch's context to be released",
+			eventually(t, "nats.go's goroutine on the ended watch's context to be released",
 				func() bool { return natsContextWaits() <= baseline+live })
 			if test.stopped != "" {
 				eventually(t, "the ended watcher's error", func() bool { return w.Err() != nil })
