@@ -9,11 +9,14 @@ body: |-
   renders a stored rendering of version 1 again when it reads it. A text that another renderer
   version stored and that reads as the same tree counts as unchanged: no version is written for
   the renderer change alone, the stored-order check reports no mismatch, an approval carries to a
-  version that holds the approved text, a kept decision stays kept, and a top-level block keeps
-  its changed version and time where its stored text reads alone. A block inside a list item, a
-  quote, a footnote definition or a typed block takes a new changed version, because its text read
-  alone loses its container's prefix. A kept decision is read alone only where it stood in no
-  typed block then and stands in no container now. A block or a decision whose text holds `[^` is
+  version that holds the approved text, a kept decision stays kept, and a block keeps its
+  changed version and time where its stored text reads alone: a top-level block, or one that typed
+  blocks alone enclose, since a typed block writes its blocks with no prefix. A block inside a list
+  item, a quote or a footnote definition takes a new changed version, because its text read alone
+  loses its container's prefix, and so does a typed block inside one. A kept decision is read
+  alone where its text, then and now, stands in no list item, quote or footnote definition and
+  holds no typed block's opening or closing line without the other: at the top level, around
+  whole typed blocks, or wholly inside one. A block or a decision whose text holds `[^` is
   not read alone either, because whether that text is a footnote reference depends on the labels its
   document defines. A check result's words read as moved only when the check's sum and its
   changed version both moved. The decisions view cuts a document at the headings and typed blocks

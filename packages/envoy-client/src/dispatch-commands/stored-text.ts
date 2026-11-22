@@ -115,8 +115,8 @@ function documentTooLarge(measured: string | Uint8Array | number): Error | undef
  * byte that is not UTF-8, whichever comes first (`unstorableBytes`), in Dispatch's own code,
  * words and count, under `field`. `field` is the field the upload names: `file` for a `--path`
  * file (`documentFileBytes`), `content` for inline text a flag read from a file or stdin whose
- * bytes are not UTF-8 (`runDispatchCli`). Both call this, so the same bytes get the same refusal
- * but for the field, whichever way they are given.
+ * bytes are not UTF-8 (`artifactFileBytesRefusal`). Both call this, so the same bytes get the same
+ * refusal but for the field, whichever way they are given.
  */
 export function documentBytesRefusal(field: string, bytes: Uint8Array): Error | undefined {
   return documentTooLarge(bytes) ?? unstorableBytes(field, bytes);

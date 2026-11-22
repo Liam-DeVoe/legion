@@ -18,7 +18,6 @@ import {
 } from "./dispatch-command";
 import { askOnceWithinDryRun, DRY_RUN_DEADLINE_MS, defined } from "./dispatch-commands/context";
 import { loginCommand } from "./dispatch-commands/login";
-import { documentBytesRefusal } from "./dispatch-commands/stored-text";
 import { type DispatchToolName, dispatchCommands } from "./dispatch-commands/table";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
@@ -344,17 +343,16 @@ export async function runDispatchCli(
   if (parsed.kind === "unstorable") {
     // A file or stdin a flag read holds bytes that are not UTF-8, which Dispatch cannot store: the
     // dry run and the call refuse them here alike, before either sends anything, with Dispatch's
-    // own refusal and its exit code. `dispatch artifact`'s content is the text of a Markdown
+    // own refusal and its exit code. A command that refuses them by a rule of its own declares it
+    // (`DispatchCommand.fileBytesRefusal`): `dispatch artifact`'s content is the text of a Markdown
     // document, refused as a `--path` file's bytes are, in the upload's order: the size first, then
-    // the first U+0000 or byte that is not UTF-8 (`documentBytesRefusal`). Any other field is
-    // refused at its first U+0000 or byte that is not UTF-8 (`unstorableBytes`), which Dispatch
-    // would name first if the bytes reached it. Bytes that are not UTF-8 hold such a byte, so each
-    // finds a refusal.
+    // the first U+0000 or byte that is not UTF-8. Any other field is refused at its first U+0000 or
+    // byte that is not UTF-8 (`unstorableBytes`). Bytes that are not UTF-8 hold such a byte, so
+    // each finds a refusal.
     const { tool, field, bytes } = parsed;
-    const refusal =
-      tool === "dispatch_artifact" && field === "content"
-        ? documentBytesRefusal(field, bytes)
-        : unstorableBytes(field, bytes);
+    const refusal = (
+      dispatchCommands[tool as DispatchToolName]?.fileBytesRefusal ?? unstorableBytes
+    )(field, bytes);
     return refuse(messageFor(refusal), REFUSED, tool);
   }
 

@@ -40,10 +40,8 @@ import (
 // version stored, or none stamped, are read in one query (otherRendererDecisionsAt), and a
 // version this renderer version stored is not read, so a decisions view pays nothing for a keep
 // whose version this renderer version wrote. Each version read is cut by scanStoredDecisions, and
-// only a keep whose text there has the keep's sum also pays pmdoc.FragmentReadsAs: a parse and a
-// render of that text, and, where that renders otherwise than the decision's text now, a parse
-// and a render of the text now too. It answers every version it read, for the links' pass
-// (markStaleLinks).
+// only a keep whose text there has the keep's sum also pays pmdoc.FragmentReadsAs. It answers
+// every version it read, for the links' pass (markStaleLinks).
 func (s *server) markKeptAcrossRenderers(
 	ctx context.Context, artifactID string, decisions []model.Decision, keys []sectionKey,
 	current documentCut,
@@ -100,9 +98,8 @@ type storedDecisions struct {
 // stands: its text of that decision has now's sum, or, for a version of another renderer version,
 // both texts stand alone (decisionCut.alone) and this build reads its text of that decision as
 // now's text, both alone (pmdoc.FragmentReadsAs), which a text that holds `[^` on either side does
-// not. Only a version of another renderer version whose sum differs pays a parse and a render of
-// its text, and, where that renders otherwise than now's text, a parse and a render of now's text
-// too. A version that gives the decision no text holds none of it.
+// not. Only a version of another renderer version whose sum differs pays pmdoc.FragmentReadsAs. A
+// version that gives the decision no text holds none of it.
 func (v storedDecisions) holds(key sectionKey, now decisionCut) bool {
 	stored, ok := v.decisions[key]
 	return ok && (stored.sum == now.sum || v.otherRenderer && stored.alone && now.alone && pmdoc.FragmentReadsAs(stored.text, now.text))

@@ -23,6 +23,7 @@ import {
 import {
   artifactCommand,
   artifactDryRun,
+  artifactFileBytesRefusal,
   docEditCommand,
   docReadCommand,
   planApproveCommand,
@@ -64,7 +65,10 @@ export type DispatchDryRunStep = (context: DryRunContext) => Promise<DryRunVerdi
  * One command, and whether running it resolves this call's origin. `origin: "none"` is a command
  * that answers on the session's context alone, so no subprocess runs for it; every other command
  * is handed the context `commandContext` builds. `dryRun` is the command's dry-run step, when it
- * has one.
+ * has one. `fileBytesRefusal` is the command's own refusal of bytes that are not UTF-8, read from
+ * a file or stdin for the flag of `field`, when it has one: `dispatch artifact` refuses its
+ * content in its upload's order, the size first. `runDispatchCli` refuses such bytes with it, and,
+ * for a command that has none, at their first U+0000 or byte that is not UTF-8 (`unstorableBytes`).
  */
 export type DispatchCommand = (
   | {
@@ -75,7 +79,10 @@ export type DispatchCommand = (
       readonly origin: "none";
       readonly run: (context: SessionContext) => Promise<DispatchToolResult>;
     }
-) & { readonly dryRun?: DispatchDryRunStep };
+) & {
+  readonly dryRun?: DispatchDryRunStep;
+  readonly fileBytesRefusal?: (field: string, bytes: Uint8Array) => Error | undefined;
+};
 
 /** A command that acts for the session: it is handed the context whose origin was resolved. */
 function acting(run: (context: CommandContext) => Promise<DispatchToolResult>): DispatchCommand {
@@ -116,7 +123,11 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_review: acting(reviewCommand),
   dispatch_result: acting(resultCommand),
   dispatch_results: acting(resultsCommand),
-  dispatch_artifact: { ...acting(artifactCommand), dryRun: artifactDryRun },
+  dispatch_artifact: {
+    ...acting(artifactCommand),
+    dryRun: artifactDryRun,
+    fileBytesRefusal: artifactFileBytesRefusal,
+  },
   dispatch_handoff_write: acting(handoffWriteCommand),
   dispatch_handoff_read: acting(handoffReadCommand),
   dispatch_steps: acting(stepsCommand),

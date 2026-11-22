@@ -10,6 +10,7 @@ import type {
 import { typedBlockIdAttribute } from "@legion/contracts";
 import { goBlankPattern } from "@legion/contracts/go-blank";
 import { commandName } from "../dispatch-command";
+import { unstorableBytes } from "../dispatch-file-text";
 import type { DispatchClient } from "../dispatch-http";
 import {
   dispatchChildRef,
@@ -56,6 +57,7 @@ import {
 } from "./results";
 import {
   artifactTextCheck,
+  documentBytesRefusal,
   documentFileBytes,
   type StoredTextCheck,
   storedTextCheckFailed,
@@ -946,4 +948,16 @@ export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerd
       ? uploadsUnchecked
       : "The call refuses the upload until Dispatch answers."
   );
+}
+
+/**
+ * `dispatch artifact`'s refusal of bytes that are not UTF-8, read from a file or stdin for the
+ * flag of `field` (`DispatchCommand.fileBytesRefusal`). `content` is the text of a Markdown
+ * document, so its bytes are refused as a `--path` file of the same bytes is, in the upload's
+ * order: the size first, then the first U+0000 or byte that is not UTF-8
+ * (`documentBytesRefusal`). Any other field is refused at its first U+0000 or byte that is not
+ * UTF-8, as every command's is (`unstorableBytes`).
+ */
+export function artifactFileBytesRefusal(field: string, bytes: Uint8Array): Error | undefined {
+  return field === "content" ? documentBytesRefusal(field, bytes) : unstorableBytes(field, bytes);
 }

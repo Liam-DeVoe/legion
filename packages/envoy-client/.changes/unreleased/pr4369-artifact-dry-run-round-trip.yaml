@@ -37,10 +37,10 @@ body: |-
   call asks once more and uploads the file unchecked if it gets no answer either. The call checks
   the text, inline or a file's, before it reads whether the owner holds the name, so a text
   refused for the text alone under a name the owner holds gets that refusal, as from its dry run,
-  not the refusal of the held name. The dry run refuses a text past the document limit without
-  asking Dispatch, so with no Dispatch configured too. For any other text,
-  when Dispatch gives no answer within 5 s, or has no such route, or is not configured, the dry
-  run passes and says so on stderr, so its standard output is the arguments' JSON alone. The dry
+  not the refusal of the held name. The dry run refuses a text past the document limit, and a
+  Markdown `--path` file that holds a U+0000 or a byte that is not UTF-8, without asking Dispatch,
+  so with no Dispatch configured too. For any other text, when Dispatch gives no answer within
+  5 s, or has no such route, or is not configured, the dry run passes and says so on stderr, so its standard output is the arguments' JSON alone. The dry
   run sends no second attempt after a failed one, and names the failure Dispatch answers, such as
   a 500; where Dispatch says the token is no longer live, it presents a fresh token once.
   `DISPATCH_DRY_RUN_LOCAL=1` keeps an upload's dry run local: it then checks the arguments alone,

@@ -411,10 +411,9 @@ func (s *server) markStaleLinks(
 		if !ok || len(decision.Links) == 0 {
 			continue
 		}
-		// One decision's links mostly name the same few versions, and a version another renderer
-		// version stored is compared by a parse and a render of its text, and, where that renders
-		// otherwise than the text now, a parse and a render of the text now too, so each version is
-		// compared with the decision once.
+		// One decision's links mostly name the same few versions, and comparing a version another
+		// renderer version stored can pay pmdoc.FragmentReadsAs (storedDecisions.holds), so each
+		// version is compared with the decision once.
 		compared := map[int]bool{}
 		heldAt := func(number int) (bool, bool) {
 			version, read := versions[number]
