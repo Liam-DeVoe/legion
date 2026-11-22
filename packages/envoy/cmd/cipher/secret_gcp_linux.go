@@ -17,47 +17,65 @@ import (
 // (superviseGcloud, runGcloudSupervisor): its arguments are gcloud's path and gcloud's own.
 const gcloudSupervisorEnv = "AGENT_SECRETS_GCLOUD_SUPERVISOR"
 
+// selfExe is the path that names this process's own executable, re-executed as gcloud's
+// supervisor: the file the process runs, even where its path now names another file, as it does
+// once the binary is replaced during a call (os.Executable reads the path, " (deleted)" trimmed).
+const selfExe = "/proc/self/exe"
+
 // superviseGcloud makes cmd, a gcloud command killGroupOnCancel sets up, start this binary as
-// gcloud's supervisor, with gcloud's path and arguments for its own: the supervisor leads gcloud's
-// process group, starts gcloud in it, and ends with gcloud's own exit (runGcloudSupervisor). Where
-// this command ends by a SIGKILL, which runs none of its code, the kernel sends the supervisor the
-// parent-death signal it starts with (gcloudProcAttr), and the supervisor kills the whole group,
-// gcloud and whatever gcloud started. gcloud itself cannot carry that signal: the kernel clears it
-// at the exec of a setuid or file-capability launcher, such as a snap install's /snap/bin/gcloud
-// (snap-confine), and the supervisor, this same binary, has neither. The group is the supervisor's,
-// so the kills at a deadline, at a signal this command handles and after the wait (killGroupOnCancel,
-// killRunningGcloud, killGroupLeft) reach gcloud as before. A gcloud that cannot be found is left
-// as it is, so Start answers that, as without a supervisor; so is a binary that cannot name its
-// own path, whose gcloud then gets the parent-death signal itself.
-func superviseGcloud(cmd *exec.Cmd) {
+// gcloud's supervisor, with gcloud's path and arguments for its own, and reports whether it did:
+// the supervisor leads gcloud's process group, starts gcloud in it, and ends as gcloud ends
+// (runGcloudSupervisor). Where this command ends by a SIGKILL, which runs none of its code, the
+// kernel sends the supervisor the parent-death signal it starts with (gcloudProcAttr), and the
+// supervisor kills the whole group, gcloud and whatever gcloud started in it. gcloud itself cannot
+// carry that signal: the kernel clears it at the exec of a setuid or file-capability launcher, such
+// as a snap install's /snap/bin/gcloud (snap-confine), and the supervisor, this same binary, has
+// neither. A launcher that moves gcloud into a session or process group of its own (setsid,
+// setpgid) takes it out of the group, which no kill of the group then reaches. The group is the
+// supervisor's, so the kills at a deadline, at a signal this command handles and after the wait
+// (killGroupOnCancel, killRunningGcloud, killGroupLeft) reach gcloud as before. It leaves cmd as it
+// is, and reports false, for a gcloud that cannot be found (cmd.Err, which Start then answers) and
+// where /proc does not name this binary; gcloud then carries the parent-death signal itself.
+// A gcloud the supervisor cannot start ends the supervisor with status 127, and its reason, which
+// the supervisor writes on its standard error, is lost with what runGcloud discards there: the call
+// fails with "exit status 127".
+func superviseGcloud(cmd *exec.Cmd) bool {
 	if cmd.Err != nil {
-		return
+		return false
 	}
-	self, err := os.Executable()
-	if err != nil {
-		return
+	if _, err := os.Stat(selfExe); err != nil {
+		return false
 	}
 	env := cmd.Env
 	if env == nil {
 		env = os.Environ()
 	}
-	cmd.Args = append([]string{self, cmd.Path}, cmd.Args[1:]...)
-	cmd.Path = self
+	cmd.Args = append([]string{cmd.Args[0], cmd.Path}, cmd.Args[1:]...)
+	cmd.Path = selfExe
 	cmd.Env = append(env[:len(env):len(env)], gcloudSupervisorEnv+"=1")
+	return true
 }
 
-// gcloudProcAttr starts gcloud's supervisor (superviseGcloud) leading a process group of its own
-// (killGroupOnCancel), with SIGTERM as its parent-death signal, which the supervisor handles by
-// killing the group. The signal follows the thread that started the supervisor, not this process,
-// so runRecorded keeps that thread from Start until the supervisor has been waited for.
-func gcloudProcAttr() *syscall.SysProcAttr {
-	return &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGTERM}
+// gcloudProcAttr starts gcloud, or its supervisor where supervised (superviseGcloud), leading a
+// process group of its own (killGroupOnCancel), with a parent-death signal: SIGTERM for the
+// supervisor, which handles it by killing the group, and SIGKILL for gcloud itself, as before the
+// supervisor, since a gcloud may handle SIGTERM and live on. The signal follows the thread that
+// started the process, not this process, so runRecorded keeps that thread from Start until the
+// process has been waited for.
+func gcloudProcAttr(supervised bool) *syscall.SysProcAttr {
+	if supervised {
+		return &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGTERM}
+	}
+	return &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 }
 
 // A run of this binary as a gcloud supervisor does that and nothing else, before any command: in
 // the agent-secrets binary and in its test binary alike, since neither runs main or TestMain first.
+// It is one only where it also leads its own process group, as superviseGcloud starts it
+// (gcloudProcAttr): a marker that strays into another run's environment makes no supervisor of it,
+// whose SIGTERM would then kill its caller's group.
 func init() {
-	if os.Getenv(gcloudSupervisorEnv) == "" {
+	if os.Getenv(gcloudSupervisorEnv) == "" || syscall.Getpgrp() != os.Getpid() {
 		return
 	}
 	os.Exit(runGcloudSupervisor(os.Args[1:]))
@@ -66,8 +84,11 @@ func init() {
 // runGcloudSupervisor is a gcloud supervisor's whole run (superviseGcloud): it starts args, gcloud's
 // path and its arguments, in its own process group with its own standard input, output and error,
 // and waits for it. On SIGTERM, the parent-death signal its parent left it, it kills its group with
-// SIGKILL, itself included. Otherwise it ends as gcloud ended: with gcloud's exit status, or by the
-// signal that ended gcloud. gcloud does not inherit gcloudSupervisorEnv.
+// SIGKILL, itself included. Otherwise it answers gcloud's exit status, or 128 plus the number of
+// the signal that ended gcloud, as a shell reports one; it does not end by that signal itself. A
+// gcloud it cannot start answers 127, its reason on the standard error. gcloud does not inherit
+// gcloudSupervisorEnv. Its status is read only by the agent-secrets that started it, as runGcloud's
+// error, never as the command's own exit (cipher-refgen's notAgentSecretsExits).
 func runGcloudSupervisor(args []string) int {
 	parentGone := make(chan os.Signal, 1)
 	signal.Notify(parentGone, syscall.SIGTERM)
@@ -93,11 +114,8 @@ func runGcloudSupervisor(args []string) int {
 		select {}
 	case <-waited:
 	}
-	status, _ := gcloud.ProcessState.Sys().(syscall.WaitStatus)
-	if !status.Signaled() {
-		return gcloud.ProcessState.ExitCode()
+	if status, ok := gcloud.ProcessState.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+		return 128 + int(status.Signal())
 	}
-	signal.Reset(status.Signal())
-	_ = syscall.Kill(os.Getpid(), status.Signal())
-	return 128 + int(status.Signal())
+	return gcloud.ProcessState.ExitCode()
 }

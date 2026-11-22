@@ -25,8 +25,7 @@ import (
 // killGcloudGroup). An end this command cannot handle, a SIGKILL, ends the group too where the
 // platform can (superviseGcloud, gcloudProcAttr): nothing of this command is left to kill it then.
 func killGroupOnCancel(cmd *exec.Cmd) {
-	superviseGcloud(cmd)
-	cmd.SysProcAttr = gcloudProcAttr()
+	cmd.SysProcAttr = gcloudProcAttr(superviseGcloud(cmd))
 	cmd.Cancel = func() error {
 		err := signalGroup(cmd.Process.Pid, syscall.SIGKILL)
 		if errors.Is(err, syscall.ESRCH) {
