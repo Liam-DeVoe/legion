@@ -136,13 +136,17 @@ chmod +x "$work/bin/git"
 # list_files <event> <directory> [VAR=value...]: runs the script with --budget $BUDGET under a
 # `timeout` of CASE_SECONDS (the budget and 15 s by default) over $work/event.json, writing the
 # repository to <directory>; sets out, err and status, and leaves the stand-ins' call logs in
-# gh_calls, rate_limit_calls and fetches.
+# gh_calls, rate_limit_calls and fetches. The script runs without JOB_TIMEOUT_MINUTES and
+# STEP_TIMEOUT_MINUTES, as in the changes job, which sets neither: the test job that runs this
+# harness sets the first for gh-read.sh's wait, and with it gh-read.sh would stop the ladder at
+# its first rate-limit refusal, before the bound over the read that the rate-limit cases test.
 list_files() {
   local event_name=$1 dest=$2
   shift 2
   rm -f "$work/gh-calls" "$work/rate-limit-calls" "$work/git-fetches"
   set +e
-  out=$(env PATH="$work/bin:$PATH" GITHUB_EVENT_NAME="$event_name" GITHUB_EVENT_PATH="$work/event.json" "$@" \
+  out=$(env -u JOB_TIMEOUT_MINUTES -u STEP_TIMEOUT_MINUTES PATH="$work/bin:$PATH" GITHUB_EVENT_NAME="$event_name" \
+    GITHUB_EVENT_PATH="$work/event.json" "$@" \
     timeout "${CASE_SECONDS:-$((BUDGET + 15))}" "$script_dir/changed-files.sh" --budget "$BUDGET" "$dest" 2> "$work/err")
   status=$?
   set -e
