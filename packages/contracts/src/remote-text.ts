@@ -346,8 +346,9 @@ function withheldRemoteText(text: string): RemoteText {
  * its methods reads it in one of three ways alone: as the argument of the rule, as an operand of a
  * comparison or a parse whose answer is a boolean or a parsed value, or in the one assignment the
  * constructor makes. Code that tells fields apart compares through {@link equals},
- * {@link equalsIgnoringCase}, {@link startsWith} and {@link isEmpty}, which read the field as it
- * came, and reads a time through {@link date}; none answers the text. Go's `redact.RemoteText`.
+ * {@link equalsIgnoringCase}, {@link startsWith}, {@link endsWith} and {@link isEmpty}, which read
+ * the field as it came, and reads a time through {@link date}; none answers the text. Go's
+ * `redact.RemoteText`.
  */
 export class RemoteText {
   readonly #text: string;
@@ -390,6 +391,11 @@ export class RemoteText {
   /** Whether the field begins with `prefix`, compared as it came. It answers no text. */
   startsWith(prefix: string): boolean {
     return this.#text.startsWith(prefix);
+  }
+
+  /** Whether the field ends with `suffix`, compared as it came. It answers no text. */
+  endsWith(suffix: string): boolean {
+    return this.#text.endsWith(suffix);
   }
 
   /** Whether the field is `text` under Unicode case folding, compared as it came, as Go's

@@ -38,7 +38,7 @@ func TestAnAdminAPIRefusalPrintsNoBearerItEchoes(t *testing.T) {
 		_, _ = fmt.Fprintf(w, `{"error":{"code":403,"message":"the gateway saw %s","status":"PERMISSION_DENIED"}}`, r.Header.Get("Authorization"))
 	}))
 	defer admin.Close()
-	opts, err := connectorOptions(context.Background(), account, handlerTransport{iam})
+	opts, err := connectorOptions(context.Background(), Signer{Account: account}, googleEndpoints{iam: handlerTransport{iam}})
 	if err != nil {
 		t.Fatalf("connectorOptions: %v", err)
 	}

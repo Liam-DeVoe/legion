@@ -23,7 +23,7 @@ func TestAnImpersonationRefusalPrintsNoCredentialItEchoes(t *testing.T) {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = io.WriteString(w, "proxy refused; the request carried Authorization: "+r.Header.Get("Authorization"))
 	})
-	err := dialThroughConnector(t, "legion-sessions@example-project.iam.gserviceaccount.com", echo, admin.url)
+	err := dialThroughConnector(t, Signer{Account: "legion-sessions@example-project.iam.gserviceaccount.com"}, googleEndpoints{iam: handlerTransport{echo}}, admin.url)
 	if err == nil {
 		t.Fatal("the dial succeeded")
 	}

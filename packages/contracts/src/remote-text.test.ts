@@ -126,13 +126,17 @@ test.each(
   expect(printed).toBe(row.readable ? (row.printed as string) : WORDS_NOT_READABLE);
 });
 
-test("a RemoteText compares ignoring case and parses a time, and answers no text", () => {
+test("a RemoteText compares ignoring case, by its ends and parses a time, and answers no text", () => {
   const probe = corpus.rows.find((row) => row.id === "probe");
   if (probe === undefined) throw new Error("the fixture has no probe row");
   expect(new RemoteText("dpop").equalsIgnoringCase("DPoP")).toBe(true);
   expect(new RemoteText("Bearer").equalsIgnoringCase("DPoP")).toBe(false);
   expect(new RemoteText("a.b").equalsIgnoringCase("a?b")).toBe(false);
   expect(new RemoteText("axb").equalsIgnoringCase("a.b")).toBe(false);
+  // The probe ends with a credential the rule redacts; the comparison reads the field as it came.
+  expect(new RemoteText(probe.field).endsWith(probe.field.slice(-12))).toBe(true);
+  expect(new RemoteText(probe.field).endsWith("[redacted]")).toBe(false);
+  expect(new RemoteText("Token is not valid.").startsWith("Token")).toBe(true);
   expect(new RemoteText("2026-12-01T00:00:00Z").date()?.toISOString()).toBe(
     "2026-12-01T00:00:00.000Z"
   );

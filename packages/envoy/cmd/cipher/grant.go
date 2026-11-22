@@ -104,7 +104,7 @@ func grantRow(base cipheraddr.Address, g OperatorGrant) []string {
 		names[i] = name.String()
 	}
 	cells := []string{
-		"", strings.Join(names, ","), g.Granted.String(), orDashPtr(g.Approver), orDashPtr(g.DecidedBy),
+		"", strings.Join(names, ","), g.Granted.String(), orDashSaid(g.Approver), orDashSaid(g.DecidedBy),
 		session, orDash(g.Enrollment.Operator.String()), grantExpiry(g.ExpiresAt),
 	}
 	for i, cell := range cells {
@@ -114,13 +114,21 @@ func grantRow(base cipheraddr.Address, g OperatorGrant) []string {
 	return cells
 }
 
-// orDashPtr is the rule's reading of what field points at (RemoteText.String), or "-" where it
+// orDashSaid is the rule's reading of what field points at (RemoteText.String), or "-" where it
 // points at nothing or at no text: a cell the broker's answer leaves null.
-func orDashPtr(field *redact.RemoteText) string {
+func orDashSaid(field *redact.RemoteText) string {
 	if field == nil {
 		return "-"
 	}
 	return orDash(field.String())
+}
+
+// orDashPtr is what s points at, or "-" where it points at nothing or at no text.
+func orDashPtr(s *string) string {
+	if s == nil {
+		return "-"
+	}
+	return orDash(*s)
 }
 
 // inSession reports whether this process is inside a session: its key dir is a launcher's
@@ -140,9 +148,10 @@ func inSession(dir string) bool {
 
 // cmdGrantRevoke implements "grant revoke GRANT_ID". Inside a session it is the session's own
 // revoke, which `agent-secrets revoke` makes too (revokeAsSession): the broker ends only a grant
-// of the enrollment that signs and refuses any other NOT_YOURS. So a session ends the grant its
-// use command was given, and so does every session that signs as the same broker identity, such
-// as each session of a person who ran `agent-secrets login`. Outside a session it is the
+// of the enrollment that signs and refuses any other NOT_YOURS, or answers it as an unknown grant
+// (NOT_FOUND) when it is a private project's grant the signing session does not name. So a session
+// ends the grant its use command was given, and so does every session that signs as the same broker
+// identity, such as each session of a person who ran `agent-secrets login`. Outside a session it is the
 // operator's revoke, as Dispatch's Live grants page does it: the operator's revoke of a grant a
 // session got automatically also withholds those secrets from that session, so it asks before it
 // gets them again. One run never tries both routes.

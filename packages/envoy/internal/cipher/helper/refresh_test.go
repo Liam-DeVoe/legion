@@ -531,7 +531,7 @@ func TestALauncherRefusalSettlesTheMachineFileAtOnce(t *testing.T) {
 	f.enrollUnauthorizedNext = 1
 	f.refreshOutcome = "invalid_grant"
 	f.mu.Unlock()
-	if _, _, err := b.EnrollSessionKey(ctx, "rt", "tp", nil); !errors.Is(err, errNoCredential) {
+	if _, _, err := b.EnrollSessionKey(ctx, "rt", "tp", nil, nil); !errors.Is(err, errNoCredential) {
 		t.Fatalf("an enroll the broker refused: %v; want errNoCredential", err)
 	}
 	waitFor(t, func() bool {
@@ -563,7 +563,7 @@ func TestALauncherRefusalTheBrokerStillRefreshesKeepsTheFile(t *testing.T) {
 	f.mu.Lock()
 	f.enrollUnauthorizedNext = 1
 	f.mu.Unlock()
-	if _, _, err := b.EnrollSessionKey(ctx, "rt", "tp", nil); !errors.Is(err, errNoCredential) {
+	if _, _, err := b.EnrollSessionKey(ctx, "rt", "tp", nil, nil); !errors.Is(err, errNoCredential) {
 		t.Fatalf("an enroll the broker refused: %v; want errNoCredential", err)
 	}
 	waitFor(t, func() bool {
@@ -649,7 +649,7 @@ func TestALauncherRefusalWhoseSettlementSaveFailsIsRetried(t *testing.T) {
 	f.mu.Lock()
 	f.enrollUnauthorizedNext = 1
 	f.mu.Unlock()
-	if _, _, err := b.EnrollSessionKey(ctx, "rt", "tp", nil); !errors.Is(err, errNoCredential) {
+	if _, _, err := b.EnrollSessionKey(ctx, "rt", "tp", nil, nil); !errors.Is(err, errNoCredential) {
 		t.Fatalf("an enroll the broker refused: %v; want errNoCredential", err)
 	}
 	waitFor(t, b.HasCredential)

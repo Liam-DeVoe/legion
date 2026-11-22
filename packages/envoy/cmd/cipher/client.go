@@ -735,6 +735,9 @@ type SelfResult struct {
 	Operator       *redact.RemoteText `json:"operator"`
 	LeaseExpiresAt time.Time          `json:"lease_expires_at"`
 	Grants         []Grant            `json:"grants"`
+	// Projects are the Dispatch projects the session named when it enrolled; none from a broker
+	// from before the field.
+	Projects []redact.RemoteText `json:"projects"`
 }
 
 func (c *client) Self(ctx context.Context, signer Signer) (SelfResult, *redact.Answer, error) {

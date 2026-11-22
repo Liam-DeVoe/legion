@@ -41,11 +41,13 @@ import {
 } from "openid-client";
 import type { DpopKey } from "./dpop";
 import { messageOf } from "./error-text";
+import type { RefusalContext } from "./refusal-text";
 import type { SubjectToken, TokenSource } from "./source";
 import {
   BrokerRefusedError,
   BrokerTradeFailedError,
   isFinalRefusal,
+  LockHeldError,
   RegistrationPendingError,
   TokenClientClosedError,
   TradeRetryingError,
@@ -91,8 +93,9 @@ export interface BrokerToken {
 }
 
 /** What names the broker's URL in a text where it does not parse (`urlForText`); the constructor
- *  refuses such a URL, and `brokerTokenClient` names AGENT_SECRETS_URL in its refusal. */
-const BROKER_URL_SETTING = "the broker URL";
+ *  refuses such a URL, and `brokerTokenClient` names AGENT_SECRETS_URL in its refusal. A device
+ *  login names it the same way (`device-login.ts`). */
+export const BROKER_URL_SETTING = "the broker URL";
 
 /** The first wait before trading again after a trade the broker did not answer, answered with a
  *  5xx, its 429 or a DPoP refusal, or that failed before it reached the broker, doubling to
@@ -119,10 +122,12 @@ const UNREGISTERED_LOG_EVERY_MS = 30 * 60_000;
 export const TRADE_ATTEMPT_MS = 30_000;
 
 /** Waits `ms`, or less when `signal` aborts first: the default of
- *  {@link BrokerTokenClientOptions.sleep}. Its timer holds no process open: the wait runs behind
- *  the calls that need it, and a `dispatch` command that is done exits rather than waiting out a
- *  retry nobody awaits. */
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+ *  {@link BrokerTokenClientOptions.sleep}, of the device login's poll and of its lock's wait.
+ *  `holdsProcess` says whether its timer holds the process open. The retry loop's does not: the
+ *  wait runs behind the calls that need it, and a `dispatch` command that is done exits rather
+ *  than waiting out a retry nobody awaits. A wait its caller awaits to go on (a poll of a code, a
+ *  lock another process holds) does, or the process would exit printing nothing of why. */
+export function sleep(ms: number, signal?: AbortSignal, holdsProcess = false): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   if (signal?.aborted) {
     resolve();
@@ -134,7 +139,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     resolve();
   };
   const timer = setTimeout(done, ms);
-  timer.unref();
+  if (!holdsProcess) timer.unref();
   signal?.addEventListener("abort", done, { once: true });
   return promise;
 }
@@ -248,6 +253,43 @@ export function statusOf(error: unknown): number {
 }
 
 /**
+ * What a failed request to the broker's `endpoint` is, the one way every client of this package
+ * words it: a trade, and a device login's code request, poll and refresh. An OAuth error the
+ * broker answered with a 4xx is its refusal of `refused` (`BrokerRefusedError`), which shows the
+ * code only where it is one the clients know and the description only where it is a known
+ * refusal; anything else (no answer, a 5xx, a 4xx with no OAuth error, an answer that is not the
+ * grant's) is a failure of `doing` it (`BrokerTradeFailedError`), named by the status where there
+ * is one and by the error's class, never by its message, which can repeat the URL it was handed,
+ * and with no `cause`: an answer the library refused hangs off its error (oauth4webapi's `cause`
+ * is the body it read), and that answer can hold a minted token, which no log may carry.
+ * `context` is what the request sent that a known refusal may name. `error` crossed
+ * {@link callLibrary}, so it is a {@link LibraryError}, whose code and description are the
+ * broker's words held as {@link RemoteText} and whose words print only as the rule reads them.
+ */
+export function brokerRefusal(
+  doing: string,
+  refused: string,
+  endpoint: string,
+  error: unknown,
+  context: RefusalContext = {}
+): BrokerRefusedError | BrokerTradeFailedError {
+  if (
+    error instanceof LibraryError &&
+    error.name === "ResponseBodyError" &&
+    error.status >= 400 &&
+    error.status < 500
+  ) {
+    return new BrokerRefusedError(error.status, error.code, error.description, refused, context);
+  }
+  const status = statusOf(error);
+  const failure = error instanceof LibraryError ? error.thrownClass : errorClass(error);
+  const said = status === 0 ? failure : `HTTP ${status}: ${failure}`;
+  return new BrokerTradeFailedError(
+    `${doing} ${refused} at ${urlForText(endpoint, BROKER_URL_SETTING)}: ${said}`
+  );
+}
+
+/**
  * The request `openid-client` asked for in `options`, sent with `headers`: its method, its body,
  * its redirect rule, and its own signal beside the caller's `signal`, either of which aborts it.
  * The broker's exchange and the person's identity source (`person-identity.ts`) both send what
@@ -270,6 +312,54 @@ export function requestInit(
   };
 }
 
+/** The most recent `DPoP-Nonce` a server sent one client, which every later proof to it carries
+ *  (RFC 9449 Section 8). */
+export interface DpopNonce {
+  value: string;
+}
+
+/**
+ * One request `openid-client` asked for in `options`, sent through `fetch` with a DPoP proof of
+ * `key` naming the request's method and URL and the nonce `nonce` holds, and sent once more when
+ * the server answers `use_dpop_nonce` with a nonce to carry. A nonce any answer sends is kept in
+ * `nonce` for the next proof. The broker's exchange and a device login's poll and refresh
+ * (`device-login.ts`) send through it, so every request to the token endpoint is proved alike.
+ * The request goes out through {@link refusalFetch} below the proof as well as above it (the
+ * fetch handed to openid-client), so a refusal's record holds the DPoP proof set here.
+ */
+export async function sendWithProof(
+  proved: { readonly key: DpopKey; readonly fetch: typeof fetch; readonly nonce: DpopNonce },
+  url: string,
+  options: CustomFetchOptions,
+  signal: AbortSignal | undefined
+): Promise<Response> {
+  const recorded = refusalFetch((target: string, init: RequestInit) => proved.fetch(target, init));
+  const send = async (): Promise<Response> => {
+    const headers = new Headers(options.headers);
+    headers.set(
+      "DPoP",
+      await proved.key.proof({ method: options.method, url, nonce: proved.nonce.value })
+    );
+    return await recorded(url, requestInit(options, signal, headers));
+  };
+  let answer = await send();
+  const given = answer.headers.get("DPoP-Nonce") ?? "";
+  if (given !== "") proved.nonce.value = given;
+  if (answer.status === 400 && given !== "") {
+    const body: unknown = await answer
+      .clone()
+      .json()
+      .catch(() => null);
+    const asked =
+      typeof body === "object" &&
+      body !== null &&
+      "error" in body &&
+      body.error === "use_dpop_nonce";
+    if (asked) answer = await send();
+  }
+  return answer;
+}
+
 /** Trades this client's identity for the broker's access tokens and keeps one live. */
 export class BrokerTokenClient {
   readonly #brokerUrl: string;
@@ -287,7 +377,7 @@ export class BrokerTokenClient {
   readonly #fetch: typeof fetch;
   readonly #random: () => number;
   /** The most recent `DPoP-Nonce` the broker sent, carried in every later proof. */
-  #nonce = "";
+  readonly #nonce: DpopNonce = { value: "" };
   #held: BrokerToken | null = null;
   /** The retry loop under way (`#run`), so the callers that need a token make one trade per slot
    *  of its schedule however many they are. It runs on no caller's signal: each caller stops
@@ -625,9 +715,10 @@ export class BrokerTokenClient {
    * What a failed trade came to, as a class the loop retries ({@link Retried}), or null for a
    * refusal no trade cures ({@link isFinalRefusal}). Each class's text names the identity traded
    * and the session and nothing the broker wrote: a refusal prints as it prints
-   * (`BrokerRefusedError.said`), a trade that got no answer as broker-client words it
-   * (`BrokerTradeFailedError`), and a trade its identity's source could not make in that
-   * source's own words, scrubbed: the words a caller of `token` was always handed.
+   * (`BrokerRefusedError.said`), a trade that got no answer as cipher-client words it
+   * (`BrokerTradeFailedError`), a trade whose time ran out while its source waited for a lock
+   * (`LockHeldError`) as a trade never sent, and a trade its identity's source could not make in
+   * that source's own words, scrubbed: the words a caller of `token` was always handed.
    */
   #failure(error: unknown, timedOut: boolean): Retried | null {
     if (isFinalRefusal(error)) return null;
@@ -640,6 +731,12 @@ export class BrokerTokenClient {
         };
       }
       return { kind: "busy", said: error.message };
+    }
+    if (error instanceof LockHeldError) {
+      return {
+        kind: "unsent",
+        said: `the trade of ${this.describe()} could not be made: ${scrub(error.message)}`,
+      };
     }
     if (timedOut) {
       return {
@@ -655,17 +752,29 @@ export class BrokerTokenClient {
   }
 
   /**
-   * One RFC 8693 exchange: the subject token this moment's source answers, the actor token where a
-   * person is signing in, the session name, whether this trade declines the launcher credential
-   * its identity holds, and a DPoP proof of this client's key.
+   * One RFC 8693 exchange of this moment's subject token: through the source's own `spend`
+   * where it has one, so a token another process can end stays good until the exchange settles
+   * (a device login's), and otherwise of the token the source reads (`#exchange`).
+   */
+  async #trade(signal: AbortSignal | undefined): Promise<BrokerToken> {
+    const source = this.#subject;
+    if (source.spend !== undefined) {
+      return await source.spend((subject) => this.#exchange(subject, signal), signal);
+    }
+    return await this.#exchange(await source.read(signal), signal);
+  }
+
+  /**
+   * One RFC 8693 exchange: `subject`, the actor token where a person is signing in, the session
+   * name, whether this trade declines the launcher credential its identity holds, and a DPoP
+   * proof of this client's key.
    *
    * `openid-client` makes the request and reads the answer — the grant type, the client id, the
    * form encoding, the endpoint and the shape of what came back — and the proof is signed by the
    * fetch it is given, so one signer serves the token endpoint and every later request this
    * process makes with the token it got.
    */
-  async #trade(signal: AbortSignal | undefined): Promise<BrokerToken> {
-    const subject = await this.#subject.read(signal);
+  async #exchange(subject: SubjectToken, signal: AbortSignal | undefined): Promise<BrokerToken> {
     // Held, with the actor's and the minted token, so every line this process prints is scrubbed
     // of them (`@legion/contracts/held-secrets`): a broker at the wrong URL can echo them. Each is
     // held until an hour past its lapse (`heldUntil`), so a session that trades all its life holds
@@ -720,57 +829,19 @@ export class BrokerTokenClient {
         genericGrantRequest(config, GRANT_TYPE_TOKEN_EXCHANGE, form)
       );
     } catch (error) {
-      throw this.#refusal(endpoint, error);
+      throw brokerRefusal("trade", this.#subject.describe(), endpoint, error, {
+        ...(this.#subject.person === undefined ? {} : { person: this.#subject.person }),
+        ...(this.#session === "" ? {} : { session: this.#session }),
+      });
     }
     // Named as every text of a trade names the broker (`urlForText`).
     return this.#read(urlForText(endpoint, BROKER_URL_SETTING), answered, raw.body);
   }
 
   /**
-   * What a failed trade is. An OAuth error the broker answered with a 4xx is a refusal of the
-   * identity, which no retry can cure; everything else — a broker that did not answer, a 5xx, an
-   * answer that is not this grant's — is an error a renewal may ask about again. A status the
-   * library reports without naming it is named here, since "the broker answered HTTP 503" is what
-   * tells a reader to look at the broker rather than at this process. `error` crossed
-   * {@link callLibrary}, so it is a {@link LibraryError}, whose words print only as the rule reads
-   * them and which keeps nothing of the answer: the cause the error below holds is that one, never
-   * the library's own, whose body can hold a token the answer minted.
-   */
-  #refusal(endpoint: string, error: unknown): Error {
-    if (
-      error instanceof LibraryError &&
-      error.name === "ResponseBodyError" &&
-      error.status >= 400 &&
-      error.status < 500
-    ) {
-      return new BrokerRefusedError(
-        error.status,
-        error.code,
-        error.description,
-        this.#subject.describe(),
-        {
-          ...(this.#subject.person === undefined ? {} : { person: this.#subject.person }),
-          ...(this.#session === "" ? {} : { session: this.#session }),
-        }
-      );
-    }
-    const status = statusOf(error);
-    const failure = error instanceof LibraryError ? error.thrownClass : errorClass(error);
-    const said = status === 0 ? failure : `HTTP ${status}: ${failure}`;
-    // The broker as `urlForText` names it, and the failure by its class: the library's or the
-    // runtime's message can repeat the URL it was handed. No `cause`: an answer the library
-    // refused hangs off its error (oauth4webapi's `cause` is the body it read), and that answer can
-    // hold the minted token, which no log of this error may carry.
-    return new BrokerTradeFailedError(
-      `trade ${this.#subject.describe()} at ${urlForText(endpoint, BROKER_URL_SETTING)}: ${said}`
-    );
-  }
-
-  /**
-   * One request through the caller's fetch with a DPoP proof of this client's key, retried once
-   * when the broker answers `use_dpop_nonce` with a nonce to carry (RFC 9449 Section 8). The
-   * answer's own body is kept in `raw`, since `openid-client` lowercases `token_type` (RFC 6749
-   * makes it case-insensitive) while the corpus names the spelling the broker wrote.
+   * One request with a proof of this client's key ({@link sendWithProof}). The answer's own body
+   * is kept in `raw`, since `openid-client` lowercases `token_type` (RFC 6749 makes it
+   * case-insensitive) while the corpus names the spelling the broker wrote.
    */
   async #send(
     url: string,
@@ -778,34 +849,12 @@ export class BrokerTokenClient {
     signal: AbortSignal | undefined,
     raw: { body: unknown }
   ): Promise<Response> {
-    // The request goes out through refusalFetch below the proof as well as above it (the fetch
-    // handed to openid-client), so a refusal's record holds the DPoP proof this client set.
-    const send = async (): Promise<Response> => {
-      const headers = new Headers(options.headers);
-      headers.set(
-        "DPoP",
-        await this.#key.proof({ method: options.method, url, nonce: this.#nonce })
-      );
-      const recorded = refusalFetch((target: string, init: RequestInit) =>
-        this.#fetch(target, init)
-      );
-      return await recorded(url, requestInit(options, signal, headers));
-    };
-    let answer = await send();
-    const given = answer.headers.get("DPoP-Nonce") ?? "";
-    if (given !== "") this.#nonce = given;
-    if (answer.status === 400 && given !== "") {
-      const body: unknown = await answer
-        .clone()
-        .json()
-        .catch(() => null);
-      const asked =
-        typeof body === "object" &&
-        body !== null &&
-        "error" in body &&
-        body.error === "use_dpop_nonce";
-      if (asked) answer = await send();
-    }
+    const answer = await sendWithProof(
+      { key: this.#key, fetch: this.#fetch, nonce: this.#nonce },
+      url,
+      options,
+      signal
+    );
     raw.body = await answer
       .clone()
       .json()

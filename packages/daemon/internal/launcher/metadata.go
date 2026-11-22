@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 )
 
 // The pod-local metadata endpoint, which an issue pod's launcher serves when the pod runs in a GKE
@@ -87,12 +88,8 @@ const (
 	// metadataPrefix is the version of the metadata API Google's clients read. Every path under it
 	// needs the flavor header, as GKE's server has it; the two directories above it do not.
 	metadataPrefix = "/computeMetadata/v1/"
-	// stsTokenURL is the exchange GKE's own server makes.
-	stsTokenURL = "https://sts.googleapis.com/v1/token"
 	// workloadPoolSuffix ends every Workload Identity pool; the project is what comes before it.
 	workloadPoolSuffix = ".svc.id.goog"
-	// subjectTokenType is the projected ServiceAccount token's type, a JWT.
-	subjectTokenType = "urn:ietf:params:oauth:token-type:jwt"
 	// cloudPlatformScope is the scope of a token request that names none, as GKE's server has it.
 	cloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
 	// tokenEarlyRefresh is how long before its expiry a cached token is exchanged again, so no
@@ -238,7 +235,7 @@ func newMetadataServer(ctx context.Context, cfg MetadataConfig, logf func(format
 		ctx:       context.WithValue(ctx, oauth2.HTTPClient, oauth2call.RefusalClient(&http.Client{Timeout: exchangeTimeout})),
 		pool:      cfg.WorkloadPool,
 		audience:  "identitynamespace:" + cfg.WorkloadPool + ":" + cfg.IdentityProvider,
-		tokenFile: cfg.tokenFile, tokenURL: cmp.Or(cfg.tokenURL, stsTokenURL),
+		tokenFile: cfg.tokenFile, tokenURL: cmp.Or(cfg.tokenURL, sessionproxy.STSTokenURL),
 		answers: metadataAnswers{
 			root:            metadataList("computeMetadata/"),
 			computeMetadata: metadataList("v1/"),
@@ -411,7 +408,7 @@ func (s *metadataServer) tokenSource(scopes []string) (oauth2.TokenSource, error
 	call := oauth2call.Scope[oauth2.TokenSource](s.ctx)
 	source, err := oauth2call.Call(call.Read(externalaccount.NewTokenSource(call.Context(), externalaccount.Config{
 		Audience:         s.audience,
-		SubjectTokenType: subjectTokenType,
+		SubjectTokenType: sessionproxy.JWTTokenType,
 		TokenURL:         s.tokenURL,
 		Scopes:           scopes,
 		CredentialSource: &externalaccount.CredentialSource{File: s.tokenFile},

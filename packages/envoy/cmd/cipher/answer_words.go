@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -149,6 +150,20 @@ func idWordsOf(base cipheraddr.Address, id redact.RemoteText) string {
 		return idWords(base, text)
 	}
 	return base.WordsOf(id)
+}
+
+// projectsWordsOf is the projects a session named when it enrolled, as the broker's self answers
+// them: each as base lets the broker's words print (cipheraddr.Address.WordsOf), joined as
+// oauthwire.JoinProjects joins them, or "-" for none.
+func projectsWordsOf(base cipheraddr.Address, projects []redact.RemoteText) string {
+	if len(projects) == 0 {
+		return "-"
+	}
+	shown := make([]string, len(projects))
+	for i, project := range projects {
+		shown[i] = base.WordsOf(project)
+	}
+	return oauthwire.JoinProjects(shown)
 }
 
 // plainAddress reports whether base, as written, has no user info, no query, no fragment and no

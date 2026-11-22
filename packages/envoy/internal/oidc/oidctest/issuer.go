@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"time"
 
@@ -88,7 +89,10 @@ type Issuer struct {
 	keysDelay         time.Duration
 	omitCodeFlow      bool
 	omitRevocation    bool
-	codeFlow          *codeFlow
+	// tokenAuthMethods is the discovery document's token_endpoint_auth_methods_supported, no such
+	// member when empty (AdvertiseTokenAuthMethods). Each issuer holds its own copy.
+	tokenAuthMethods []string
+	codeFlow         *codeFlow
 }
 
 // New starts an issuer on a random loopback port, serving no keys yet. The
@@ -106,6 +110,7 @@ func New(t TB) *Issuer {
 	issuer.server = httptest.NewServer(mux)
 	t.Cleanup(issuer.server.Close)
 	issuer.issuerClaim = issuer.server.URL
+	issuer.tokenAuthMethods = slices.Clone(googleTokenAuthMethods)
 	return issuer
 }
 
@@ -140,6 +145,13 @@ func (i *Issuer) Publish(key *Key) {
 		Algorithm: string(key.alg),
 		Use:       "sig",
 	})
+}
+
+// Withdraw removes the key kid from the served set, as an issuer does once that key has leaked.
+func (i *Issuer) Withdraw(kid string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.served = slices.DeleteFunc(i.served, func(key jose.JSONWebKey) bool { return key.KeyID == kid })
 }
 
 // AdvertiseIssuer makes the discovery document name a different issuer than the
@@ -251,13 +263,10 @@ func (i *Issuer) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	i.mu.Lock()
 	i.discoveryRequests++
 	status, issuer, omitCodeFlow, omitRevocation, delay := i.discoveryStatus, i.issuerClaim, i.omitCodeFlow, i.omitRevocation, i.discoveryDelay
+	tokenAuthMethods := i.tokenAuthMethods
 	i.mu.Unlock()
-	if delay > 0 {
-		select {
-		case <-time.After(delay):
-		case <-r.Context().Done():
-			return
-		}
+	if !wait(r, delay) {
+		return
 	}
 	if status != 0 {
 		http.Error(w, "discovery unavailable", status)
@@ -273,6 +282,9 @@ func (i *Issuer) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 		document["token_endpoint"] = i.server.URL + "/token"
 		document["device_authorization_endpoint"] = i.server.URL + "/device_authorization"
 		document["grant_types_supported"] = []string{"authorization_code", "refresh_token", deviceCodeGrantType}
+		if len(tokenAuthMethods) > 0 {
+			document["token_endpoint_auth_methods_supported"] = tokenAuthMethods
+		}
 	}
 	if !omitRevocation {
 		document["revocation_endpoint"] = i.server.URL + "/revoke"
@@ -281,6 +293,19 @@ func (i *Issuer) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(document)
 }
 
+// wait holds an answer back for delay, or until the client hangs up, and reports whether the
+// client is still there to answer.
+func wait(r *http.Request, delay time.Duration) bool {
+	if delay <= 0 {
+		return true
+	}
+	select {
+	case <-time.After(delay):
+		return true
+	case <-r.Context().Done():
+		return false
+	}
+}
 func (i *Issuer) handleKeys(w http.ResponseWriter, _ *http.Request) {
 	i.mu.Lock()
 	i.jwksRequests++
