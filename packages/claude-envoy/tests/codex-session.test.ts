@@ -69,12 +69,21 @@ describe("the Codex session record", () => {
     expect(recordOfProcess(record, exited)).toBe(false)
   })
 
-  test("Codex's shared app server is told apart from a codex process of its own", () => {
+  test("Codex's shared app server is told apart from a codex process of its own", async () => {
     // `sleep 5; :` so the shell cannot exec sleep in its own place, which would drop app-server
     // from its arguments. `-c` takes a value for codex as for sh, so the subcommand is app-server.
     const shared = Bun.spawn(["sh", "-c", "sleep 5; :", "app-server"])
     const own = Bun.spawn(["sh", "-c", "sleep 5; :"])
     try {
+      // Bun.spawn returns once the child is forked, which can be before it has exec'd sh: until
+      // then its /proc/<pid>/cmdline is still bun's, with no app-server in it. Ask only once
+      // each child is sh.
+      for (const child of [shared, own]) {
+        await waitFor(
+          async () => readFileSync(`/proc/${child.pid}/cmdline`, "utf8").split("\0")[0] === "sh",
+          `child ${child.pid} to exec sh`,
+        )
+      }
       expect(sharedAppServer(shared.pid)).toBe(true)
       expect(sharedAppServer(own.pid)).toBe(false)
     } finally {
