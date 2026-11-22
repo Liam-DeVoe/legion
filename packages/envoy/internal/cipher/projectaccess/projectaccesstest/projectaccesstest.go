@@ -156,7 +156,9 @@ func (s *Server) SetDown(down bool) {
 
 // SetPrivateProjectsDown makes every later request of the private-projects route fail 503 (true)
 // or be answered again (false), while the project and person routes go on answering: a Dispatch
-// that answers one project but not the list of all of them.
+// that answers one project but not the list of all of them. The 503 names no code, a gateway's
+// page, as SetDown's does, so the client reads it as Dispatch not answering
+// (projectaccess.Unanswered).
 func (s *Server) SetPrivateProjectsDown(down bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -305,7 +307,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if privateDown {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "UNAVAILABLE", "error": "the stand-in's private-projects route is down"})
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "the stand-in's private-projects route is down"})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"projects": s.privateProjects()})
