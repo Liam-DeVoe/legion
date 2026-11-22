@@ -1804,9 +1804,12 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "oneOf": [
+                  "anyOf": [
                     {
                       "$ref": "#/components/schemas/EditPreconditionError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
                     },
                     {
                       "$ref": "#/components/schemas/EditLostError"
@@ -5777,7 +5780,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssueDuplicateError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IssueDuplicateError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -5937,6 +5947,23 @@
                         }
                       },
                       "type": "object"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForeignChildOpenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
                     }
                   ]
                 }
@@ -6288,9 +6315,12 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "oneOf": [
+                  "anyOf": [
                     {
                       "$ref": "#/components/schemas/EditPreconditionError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
                     },
                     {
                       "$ref": "#/components/schemas/EditLostError"
@@ -6701,7 +6731,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssueClaimedError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IssueClaimedError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -6767,7 +6804,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssueClaimedError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IssueClaimedError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -9307,7 +9351,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/UserStateStaleError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/UserStateStaleError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -11172,9 +11223,12 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "oneOf": [
+                  "anyOf": [
                     {
                       "$ref": "#/components/schemas/EditPreconditionError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
                     },
                     {
                       "$ref": "#/components/schemas/EditLostError"
@@ -21107,6 +21161,50 @@
         ],
         "type": "object"
       },
+      "ForeignChildOpen": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "project",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ForeignChildOpenError": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/ForeignChildOpen"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "issues"
+        ],
+        "type": "object"
+      },
       "GoingAction": {
         "properties": {
           "action": {
@@ -28847,6 +28945,9 @@
                 "type": "null"
               }
             ]
+          },
+          "refuse_open_foreign_children": {
+            "type": "boolean"
           },
           "repo": {
             "anyOf": [
