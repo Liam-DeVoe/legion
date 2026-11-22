@@ -3764,11 +3764,17 @@ test("k-filter-keys: on the Agents page and the Delivery list Shift+F opens the 
 });
 
 // ---------------------------------------------------------------------------
-// k-list-focus: every host of the shared single- or multi-pick list (`MultiSelect`), its list
-// opened by the keyboard, a choice reached by the arrows and picked by Enter. Where the list stays
-// open the focus is in its search box, also where the pick takes the picked row away; where the
-// pick closes the list the focus is on its trigger; and in no case is it on the page's body or on
-// another control. Every step's message names the list, so a failure names the host it failed on.
+// k-list-focus: the six lists of the shared single- or multi-pick list (`MultiSelect`) the check
+// names - the Agents Filter's Role and Machine lists, Details' labels and components lists, and
+// the assignee and the repository of today's issue page header - each opened by the keyboard, a
+// choice reached by the arrows and picked by Enter. Where the list stays open the focus is in its
+// search box, also where the pick takes the picked row away; where the pick closes the list the
+// focus is on its trigger; and in no case is it on the page's body or on another control. Two
+// other hosts take their whole list away on a pick by design and leave the focus to their panel's
+// hand-off: the search bar's Filter, whose Project or Status list a pick removes
+// (`SearchPalette.tsx`), and a Delivery facet whose last picked value is unpicked and which has no
+// values (`DeliveryPage.tsx`'s `Facet`). Every step's message names the list, so a failure names
+// the host it failed on.
 // ---------------------------------------------------------------------------
 
 /** Where the focus is, read against `target` at once: `on it` where `target` holds it, else what
@@ -4036,8 +4042,9 @@ async function seedDetailsLists(): Promise<string> {
 
 // SLOW(>=2s): the fake GitHub's architecture imported, the new issue page loaded, and two lists
 // of Details opened by key and picked from.
-// @webkit @firefox: where each engine leaves the focus as a pick moves the picked row to the top
-// of the list, which the list reads through `focusLost`.
+// @webkit @firefox: where each engine leaves the focus as Escape closes the labels list, which
+// takes its focused search box off the page and asks `focusLost` (`MultiSelect`'s close); the
+// Enter picks in the search box keep the focus there and ask it nothing.
 test("k-list-focus: in Details on the new issue page, Enter on a label or a component the arrows reach leaves the focus in the labels or the components list's search box @firefox @webkit", async ({
   page,
 }) => {
@@ -4080,7 +4087,7 @@ test("k-list-focus: in Details on the new issue page, Enter on a label or a comp
 /** From the page itself: Tab reaches the trigger of the single-pick list `what`, Enter opens the
  *  list on its search box, ArrowDown moves the highlight off the value it opened on, and Enter
  *  picks the row it moved to, which closes the list with the focus on its trigger, before and
- *  after the one write of `writes`, the `sent`th, lands. */
+ *  after the one write of `writes`, the `sent`th, goes out. */
 async function singlePickFocus(
   page: Page,
   what: string,
@@ -4106,14 +4113,14 @@ async function singlePickFocus(
   await expectFocusOn(
     page,
     trigger,
-    say("the focus is on the list's trigger once the pick's write has landed")
+    say("the focus is on the list's trigger once the pick's write has gone out")
   );
 }
 
 // SLOW(>=2s): today's issue page loaded, and its assignee's and its repository's lists each
 // opened by key, picked from and written.
-// @webkit @firefox: where each engine leaves the focus as a single pick closes its list and its
-// write lands.
+// @webkit @firefox: where each engine leaves the focus as a single pick closes its list: the pick
+// focuses the list's trigger before the commit that takes the list off the page.
 test("k-list-focus: on today's issue page, Enter on an assignee or a repository the arrows reach closes its list with the focus on the list's trigger @firefox @webkit", async ({
   page,
 }) => {

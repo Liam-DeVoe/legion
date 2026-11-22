@@ -1295,8 +1295,8 @@ function PanelListHost() {
 // and takes the row away inside the panel, whose hand-off then finds the row gone and the focus
 // lost by the reader's press, and puts the focus on the control at the row's place: the list's
 // trigger. The list's own check runs before the panel's, so the focus goes to its search box and
-// the list stays open. No key moves the focus from the search box to a row, whose Tab closes the
-// list, so the row is focused as a screen reader's cursor focuses it.
+// the list stays open. No key moves the focus from the search box to a row, since the search
+// box's Tab closes the list, so the row is focused as a screen reader's cursor focuses it.
 test("a focused row its pick takes off the page, in a list inside a panel, gives the focus to the list's search box and not to its trigger", async () => {
   const user = userEvent.setup();
   const view = render(<PanelListHost />);

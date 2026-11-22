@@ -6,7 +6,8 @@
  * text writes `Ctrl`, `Cmd`, `Shift`, `Alt`, `Option`, `⌘`, `⌃`, `⌥` or `⇧`. `aria-keyshortcuts`
  * names its keys as ARIA does, `Control`, `Meta`, `Shift`, `Alt` (`ariaKeyshortcuts`,
  * `keymap.ts`). The reader's guide (`docs/site/src/content/docs/dispatch/keyboard.md`) states the
- * same table.
+ * same table. The module also holds `listed`, which writes a list of words as a sentence does,
+ * as a refusal names the keys it lists.
  *
  * The module imports nothing: `page-words.ts` reads it, which a browser spec's own Node process
  * loads, where `keymap.ts` cannot load, since it reads `import.meta.env` as it loads.
@@ -88,8 +89,7 @@ export function keyText(keys: string, isMac: boolean = IS_MAC): string {
 }
 
 /** `words` as a sentence lists them: a comma between two, and `conjunction` before the last
- *  (`B, D and E`). A refusal lists keys so (`keymap-refusal.ts`), and so does the board's word for
- *  the keys that move a card (`IssueBoard.tsx`). */
+ *  (`B, D and E`). */
 export function listed(words: readonly string[], conjunction: "and" | "or"): string {
   return words.length < 2
     ? words.join("")
