@@ -53,6 +53,10 @@ func seedTwoTasks(t *testing.T, pool *store.Pool) {
 			if err := records.MoveTask(ctx, tx, "CAPTURE-1", 1, task.id, record.TaskPlace{Kind: record.PlaceStep, Position: task.at}, record.TaskRunning); err != nil {
 				return err
 			}
+			// The move writes the wait of a start for its join; this seed stands for a task whose join ended.
+			if err := records.SetStepWait(ctx, tx, "CAPTURE-1", 1, task.id, record.StepWaitNone, nil); err != nil {
+				return err
+			}
 		}
 		if err := records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "CAPTURE-1", Repo: "acme/widgets", Number: 86,
 			Branch: "legion/CAPTURE-1", HeadSHA: "code", Failing: []string{}}); err != nil {
