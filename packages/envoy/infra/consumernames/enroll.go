@@ -10,6 +10,7 @@ import (
 
 	selection "github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/holdrecord"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // enrollCommand is the enroll's command in the hold's journal, the one command of the workflow
@@ -20,6 +21,10 @@ const enrollCommand = "consumer-names enroll"
 // store made after the window, which no cutover converted, as converted, so its daemon in the
 // fresh mode serves (selection.Admit) and every census reads its family as it reads the others.
 // Dispatch has one store, which the window converts, so the command takes a daemon's store alone.
+//
+// Before its intent, after the held re-read, it refuses a --daemon that is not the daemon an
+// earlier run of enroll in this hold named, naming both (enrollOneDaemon): the journal admits a
+// rerun by its command alone, and the hold's one enroll belongs to the store its first run began.
 //
 // Under its intent it reads the store first by the census's rule for the daemon stores
 // (daemonStoreByRule), at exactly the address the project's one source names, its Deployment or its
@@ -67,7 +72,13 @@ func (r *run) enroll(ctx context.Context) error {
 			return fmt.Errorf("--daemon %q names no daemon whose consumers can be named: %w", project, err)
 		}
 	}
-	a, err := r.admit(ctx, enrollCommand, map[string]string{"daemon": project})
+	if _, err := r.requirePhase(ctx, natsgrant.OperatorPhaseHeld); err != nil {
+		return err
+	}
+	if err := r.enrollOneDaemon(ctx, project); err != nil {
+		return err
+	}
+	a, err := r.intent(ctx, enrollCommand, map[string]string{"daemon": project})
 	if err != nil {
 		return err
 	}
@@ -76,6 +87,28 @@ func (r *run) enroll(ctx context.Context) error {
 	err = r.enrollHeld(ctx, a, project, &p)
 	unchanged, account := p.account(family, r.o.holdID)
 	return a.end(ctx, err, unchanged, account)
+}
+
+// enrollOneDaemon refuses, before enroll's intent, a run of enroll whose --daemon is not the daemon
+// of an earlier run of enroll in this hold (that run's intent's input daemon), naming both. The
+// journal admits a rerun by its command alone, so a run of another daemon would take the hold's one
+// enroll from a store the earlier run may have marked before it was cut or stopped, whose cutover
+// record no run would then write, and a done entry would then complete the hold over that marker.
+// The way out is the earlier daemon's rerun, which finishes what its run began or stops; then hold
+// release or hold abort ends the hold, and the other daemon is enrolled in a hold of its own. A
+// journal it cannot read is UNKNOWN.
+func (r *run) enrollOneDaemon(ctx context.Context, project string) error {
+	d, _, err := r.records.Journal(ctx, r.o.holdID)
+	if err != nil {
+		return unknownf(err, "the hold's journal, which names the daemon of each earlier run of enroll")
+	}
+	for _, op := range d.Ops {
+		if earlier := op.Inputs["daemon"]; op.Command == enrollCommand && op.State == "intent" && earlier != project {
+			return fmt.Errorf("enroll --daemon %s: this hold's earlier run of enroll was --daemon %s, which may have marked that store; rerun enroll --daemon %s, which finishes what that run began or stops, then end this hold with hold release or hold abort and enroll %s in a hold of its own",
+				project, earlier, earlier, project)
+		}
+	}
+	return nil
 }
 
 // enrollProgress is what a run of enroll knows of this hold's own writes since its intent, which

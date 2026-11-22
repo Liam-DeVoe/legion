@@ -641,11 +641,14 @@ durable as [the deployment's README](../../deploy/README.md#recreating-a-listene
 ### `enroll`
 
 `enroll --daemon P --daemon-database P=F --hold ID <hold flags>`, in an `enroll` hold, marks a
-daemon store made after the cutover converted. It reads P's store first by the address rule, and
-marks that store alone, through the connection the rule opened at that address: a store the rule
-leaves unreconciled (among them a source of P that names a database and instance another source
-names too, and a store with no `intake_consumers` table) or finds gone stops it, naming why and the
-source, before it reads or writes anything else. It stops, naming what it found, when:
+daemon store made after the cutover converted. Before its intent it refuses a `--daemon` other than
+the one an earlier run of `enroll` in this hold named, naming both, since the journal admits a
+rerun by its command alone: rerun the first, then end the hold and enroll the other in a hold of
+its own. It reads P's store first by the address rule, and marks that store alone, through the
+connection the rule opened at that address: a store the rule leaves unreconciled (among them a
+source of P that names a database and instance another source names too, and a store with no
+`intake_consumers` table) or finds gone stops it, naming why and the source, before it reads or
+writes anything else. It stops, naming what it found, when:
 
 - the stream lists a consumer of one of P's logical names, fixed or fresh;
 - the store holds a checkpoint (`consumer_positions`) or a selection row, or lacks its
