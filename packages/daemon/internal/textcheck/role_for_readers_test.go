@@ -65,7 +65,9 @@ type roleForReader struct {
 // phase but step and its place's, which admitted never is, to the readers this list holds
 // (record.Issue.RoleAt), or reads the phase a held issue's retry restores only past the refusal of
 // a plan's own hold, which is the one hold an issue at admitted takes (Engine.retryOrEscalate, for
-// the retry of a named claim), or never reads admitted at all because a check before it refuses
+// the retry of a named claim), or settles nothing at admitted whatever it reads, since it settles
+// a round only in reviewing (Engine.settleRound, which reads whether the owner works the review
+// step), or never reads admitted at all because a check before it refuses
 // that phase, which is what each named test holds it to. The owner walk reads no role: where it
 // starts is its caller's to say (record.NoticeStartsAtParent, for a notice).
 //
@@ -148,6 +150,10 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/retro_hold.go", fn: "Engine.startHeldRetro"}: {calls: 1, tests: []string{
 		"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro", "TestAHeldRetroAfterADeploymentStepGetsItsReport"}},
 	{file: "internal/workflow/retro_hold.go", fn: "retroHeldNotice"}: {calls: 1, tests: []string{"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"}},
+	// Whether the owner works the review step, where no round is settled; outside reviewing no
+	// round is settled either (reviewRound), so its architect at admitted changes nothing.
+	{file: "internal/workflow/review.go", fn: "Engine.settleRound"}: {calls: 1, tests: []string{
+		"TestAnOwnersReviewStepEndsByItsReport"}},
 	{file: "internal/workflow/review.go", fn: "Engine.tellChecks"}: {calls: 1, tests: []string{
 		"TestASettlementMovesNothingAndTellsTheThreeRoles", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole"}},
 	{file: "internal/workflow/standing.go", fn: "reportsBefore"}: {calls: 1, tests: []string{"TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt"}},

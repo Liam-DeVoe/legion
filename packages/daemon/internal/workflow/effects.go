@@ -1170,13 +1170,14 @@ const (
 // accepted, whatever was written to the phase since; a commit is named, as `Handoff commit:`,
 // whenever the completion reported one: the head the planner's, the implementer's, the tester's or
 // the reviewer's record names, and the commit retro and the merger stand on.
-// A verdict of one of Legion's roles is always the tester's, since the daemon accepts one from no
-// other of them on a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the implementer's
-// check report is no phase completion and starts nobody), so the line names the tester: the
-// reviewer it starts on a pass reads it as the tester's report, never as a field of its own
-// completion. A role the deployment defines reports a verdict and writes no handoff record, so its
-// report is named by its own step and role, ` Step <i> (<role>) reported: <verdict>.`, with its
-// summary after it: <i> is the place of the step the row's entry was raised for (StepPlace).
+// The tester's verdict is named as the tester's, so the reviewer it starts on a pass reads it as
+// the tester's report, never as a field of its own completion. Every other role's verdict is
+// named by its own step and role, ` Step <i> (<role>) reported: <verdict>.`, with its summary
+// after it: a role the deployment defines, which writes no handoff record, and the steps of the
+// type review whose verdict ends them because no review on GitHub decides them (the reviewer of
+// an issue with no pull request, a review step the owner does; api/handoff.go takes the verdict
+// from those alone, and refuses one from Legion's other roles, VERDICT_ROLE_FORBIDDEN). <i> is
+// the place of the step the row's entry was raised for (StepPlace).
 //
 // A merger started in merging at the head a merge forward landed past the review, while the
 // review that landing asked of the reviewer stands for that head (mergeForwardReviewOwed), is told
@@ -1196,7 +1197,7 @@ func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.P
 	}
 	switch {
 	case handoff.Verdict == "":
-	case handoff.Role != "" && !claim.IsBuiltin(handoff.Role):
+	case handoff.Role != "" && handoff.Role != claim.RoleTester:
 		text += fmt.Sprintf(" Step %d (%s) %s: %s.", handoff.StepPlace, handoff.Role, reportedLabel, handoff.Verdict)
 		if summary := strings.TrimSpace(handoff.Summary); summary != "" {
 			text += " " + sentence(summary)

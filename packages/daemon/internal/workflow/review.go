@@ -1222,7 +1222,15 @@ func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue recor
 // A round GitHub will not merge from (stuckMergeState) is the one cause the reviewer cannot
 // decide, and the whole of its path - its own dedup, its own message to the reviewer, a notice
 // with no topic - is tellStuckMergeState's, which this asks for once.
+//
+// A review step the owner does (the claim that works the issue's place is the architect,
+// record.Issue.RoleAt) has no round to settle: it ends by the owner's own report, its verdict
+// (handoff's reviewing case), so no review on GitHub decides it, the owner's own among them, and
+// nothing is told of it. Its review on GitHub is for the repository's rule of a merge alone.
 func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, pr *record.PullRequest, before round, by string) (bool, error) {
+	if issue.RoleAt(issue.Phase) == claim.RoleArchitect {
+		return false, nil
+	}
 	r := e.reviewRound(issue, row, pr)
 	switch r.outcome {
 	case roundRejected:

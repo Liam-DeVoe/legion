@@ -1,11 +1,13 @@
 package workflow
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -85,4 +87,55 @@ func TestATaskWithNoPullRequestIsDoneWhenItsRetroEnds(t *testing.T) {
 			t.Fatalf("%s's retro wrote %d starts of the merger, want one", root.Key, len(starts))
 		}
 	})
+}
+
+// reviewersVerdict is the reviewer's completion of its step of key with verdict, under the claim
+// and at the entry its start wrote on its row, as the route hands it to the engine.
+func reviewersVerdict(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, verdict string) intake.HandoffComplete {
+	t.Helper()
+	row := roleRowOf(t, pool, engine, key, claim.RoleReviewer)
+	return intake.HandoffComplete{Issue: key, Role: claim.RoleReviewer, Claim: row.Claim, Generation: 1, Entry: row.Entry,
+		Summary: "The plan names no rollback.", Commit: stepHead, Verdict: verdict, HandoffRecord: "review-1", HandoffVersion: 1}
+}
+
+// A step of the type review in a task with no pull request ends by its verdict, since no review
+// on GitHub can decide it: on `planner reviewer`, the reviewer's fail stops the task, which has no
+// step of the type implementation before the review to take the work, and the owner is told once
+// with the task and the step; its pass starts the retro, which the owner does, since the task has
+// no step of the type implementation. The control is today's reviewing case, every completion to
+// settleRound, which leaves the issue at reviewing whatever the verdict.
+func TestAStepOfTheTypeReviewWithNoPullRequestEndsByItsVerdict(t *testing.T) {
+	for _, tc := range []struct {
+		verdict string
+		check   func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string)
+	}{
+		{verdict: "fail", check: func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
+			if task := taskOf(t, pool, engine, key); task.State != record.TaskStopped {
+				t.Fatalf("task a of %s after the reviewer's fail is %s, want stopped", key, task.State)
+			}
+			told := noticesOf(t, pool, key, "task-stopped")
+			if len(told) != 1 || !strings.Contains(told[0].Reason, "task a of "+key+" was stopped: step 2 (reviewer) failed") {
+				t.Fatalf("the fail told %+v, want one task-stopped naming task a and step 2", told)
+			}
+		}},
+		{verdict: "pass", check: func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
+			assertWalksAt(t, pool, engine, key, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
+			if told := ownerSteps(t, pool, key); len(told) != 1 || told[0].Role != "" || told[0].Phase != phase.Retro {
+				t.Fatalf("the pass told %+v, want one owner-step of the retro", told)
+			}
+		}},
+	} {
+		t.Run("the reviewer's "+tc.verdict, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := returnEngine()
+			root := rootWithNoPullRequest(t, pool, "planner", "reviewer")
+			move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+			move(t, pool, engine, root.Key, TriggerPlannerCompleted, record.TaskPlace{}, record.PhaseRow{})
+			assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(2))
+			if result := applyFacts(t, pool, engine)(tc.verdict, reviewersVerdict(t, pool, engine, root.Key, tc.verdict)); result.Refusal != nil {
+				t.Fatalf("the reviewer's %s was refused: %+v", tc.verdict, result.Refusal)
+			}
+			tc.check(t, pool, engine, root.Key)
+		})
+	}
 }
