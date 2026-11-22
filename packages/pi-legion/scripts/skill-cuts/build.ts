@@ -4591,13 +4591,14 @@ function listsSkill(
  * branch, so the units its host had, at their commits then, their plugins and the context files; a
  * subagent's recorded system prompt (its secrets taken out) and tools. A subagent's is read at its
  * root's last prompt build before its start (PARENT_LOAD_RULE); a top-level session's at its first
- * build (TOP_BUILD_RULE: a task runs as its first message), or, for a context session, at the
- * build its subagent `spawned` (the one its listing measure uses: its path hash and start) was
- * spawned under. Each copy of the tested skill `skill`'s source (cases.ts's `testedCopy`) is left
- * out of the skills, since the load test installs it; a copy of another source that shares the
- * name stays, under its namespace. The evidence says where the session's host had the tested
- * source at another install path too (`held once`). Throws, naming why, when the session gives
- * none.
+ * build (TOP_BUILD_RULE: a task runs as its first message). A context session (`asContext`) has no
+ * step: it is read at the build its subagent `spawned` (the one its listing measure uses: its path
+ * hash and start) was spawned under, or, when no subagent names a build, at its first build, and
+ * `unspawned` says why none does. Each copy of the tested skill `skill`'s source (cases.ts's
+ * `testedCopy`) is left out of the skills, since the load test installs it; a copy of another
+ * source that shares the name stays, under its namespace. The evidence says where the session's
+ * host had the tested source at another install path too (`held once`). Throws, naming why, when
+ * the session gives none.
  */
 async function sessionProfile(
   run: ProfileRun,
@@ -4605,27 +4606,40 @@ async function sessionProfile(
   transcriptPath: string,
   t: Transcript,
   skill: string,
-  spawned?: { readonly pathHash: string; readonly at: string }
+  asContext?:
+    | { readonly spawned: { readonly pathHash: string; readonly at: string } }
+    | { readonly unspawned: string }
 ): Promise<SessionProfile> {
   const header = sessionHeader(t);
   if ("drop" in header) throw new Error(`${header.drop}: ${header.detail}`);
   const rebuilt = sessionContext(store, t, transcriptPath);
   if ("drop" in rebuilt) throw new Error(`${rebuilt.drop}: ${rebuilt.detail}`);
   const { context, project, evidence, init } = rebuilt;
+  // The window a context session's subagents were asked for: every time (rebuiltContext).
+  const anyTime = { from: null, to: null, words: "at any time" };
   let readTime: ReadTime;
   let build: BuildWindow | undefined;
   if (init !== undefined) {
     const hash = pathHash(transcriptPath);
     const rows = await digestRows(run.config.psqlCommand, store.name, [hash]);
     readTime = parentLoad(rows.get(hash), header.sessionStart, store.name);
-  } else if (spawned === undefined) {
+  } else if (asContext === undefined) {
     ({ read: readTime, window: build } = topBuild(
       digestLines(t),
       header.sessionStart,
       -1,
       "a task runs as its session's first message, under the session's first prompt build"
     ));
+  } else if ("unspawned" in asContext) {
+    ({ read: readTime } = topBuild(
+      digestLines(t),
+      header.sessionStart,
+      -1,
+      `a context session has no step, and no subagent names the build it is read at: ${asContext.unspawned}`
+    ));
+    build = anyTime;
   } else {
+    const { spawned } = asContext;
     const lines = digestLines(t);
     const index = lines.findLastIndex((line) => Date.parse(line.at) < Date.parse(spawned.at));
     ({ read: readTime } = topBuild(
@@ -4636,8 +4650,7 @@ async function sessionProfile(
       "the prompt build its measured subagent was spawned under"
     ));
     build = {
-      from: null,
-      to: null,
+      ...anyTime,
       words:
         "at any time, the profile being read at the build the earliest of them was spawned under",
     };
@@ -6523,7 +6536,15 @@ async function rebuiltContext(
       filePath,
       t,
       skill,
-      placed ? { pathHash: listing.pathHash, at: listing.start ?? "" } : undefined
+      placed
+        ? { spawned: { pathHash: listing.pathHash, at: listing.start ?? "" } }
+        : {
+            unspawned:
+              unplaced ??
+              (found === undefined
+                ? "the store holds no subagent of it (subagents.sql, asked for those spawned at any time)"
+                : `none of its ${found.subagents} subagents records a skill listing (subagents.sql, asked for those spawned at any time)`),
+          }
     );
   } catch (error) {
     throw new Error(`${named}: ${messageFor(error)}`);

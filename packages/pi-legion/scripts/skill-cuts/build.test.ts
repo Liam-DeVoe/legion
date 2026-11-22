@@ -3360,14 +3360,26 @@ test("a dev-box profile installs the units its dev box's own installers install 
   expect(measure.added).not.toContain("shy");
   // A load task's profile of the same session: every copy of the tested source (acme/skills'
   // alpha) is left out, the home's alpha stays under its namespace, and the evidence says the
-  // package installs the tested source again (`held once`).
-  const from = await profiledTasks();
+  // package installs the tested source again (`held once`). One task from the good session's
+  // twin /sessions/task-4.jsonl (F1 as the good session has it), rebuilt by --reprofile.
+  const from = path.join(scratch, "devbox-home", "tasks.jsonl");
+  writeFileSync(
+    from,
+    `${JSON.stringify({
+      id: "t1",
+      text: TASK_ROWS[0]?.text,
+      label: "need",
+      source: "session",
+      store: "store_a",
+      pathHash: pathHash("/sessions/task-4.jsonl"),
+    })}\n`
+  );
+  writeFileSync(`${from}.summary.json`, JSON.stringify({ command: "build-tasks", skill: "alpha" }));
   const dir = path.join(scratch, "devbox-home", "profiles");
   const args = ["build-tasks", "--config", config, "--copies", copies, "--count", countDir];
   expect(await main([...args, "--reprofile", from, "--profiles-out", dir], io([]))).toBe(EXIT.ok);
-  const task = reprofileSummary(dir).profiles.tasks.find((each) =>
-    each.differs.added.some((item) => item.item.startsWith("held once: "))
-  );
+  const [task] = reprofileSummary(dir).profiles.tasks;
+  expect(task?.outcome).toBe("changed");
   const held = task?.differs.added.find((item) => item.item.startsWith("held once: "));
   expect(held?.item).toBe("held once: skill alpha (acme/skills skills/alpha)");
   expect(held?.source).toStartWith(
@@ -5044,7 +5056,7 @@ test("build-tasks with no bound writes the pinned bytes: the tasks, the summary,
     "model summary": "fd2cf470c0eaa72f67f8a326ecfaeafd58a63ed82764f9aae296cfffc84bff8b",
     "model printed": "bf894d108dd96d68557fc836907c898f504618a57f906e073f786c51c1144dc3",
     "profiles tasks": "6978ce55a25eb77c1f126e1b0e35e0f4899d63975797aee26b9e32d53ff3dea0",
-    "profiles summary": "103bdb79ab65b005bfaa24089b6352153918942fd8ca2d7cd47dc8023668ffc6",
+    "profiles summary": "d55948c92214318081f732b92f557f7118708818af63b01a92274f485d5bf000",
     "profiles printed": "6e4a4b3f3da89a2faa7e4e21ab71ad7d844a05da52f0aa836ebc41b6baee1532",
     "profiles profiles": "26bf1079e50926d2c9e1bdc9482bca041b0a71392fb091f4352c437ab81932c4",
   });
@@ -6068,6 +6080,28 @@ test("build-tasks in the reader's mode measures a task from a session against th
   expect(none.why).toEndWith(
     "the store holds no subagent of it (subagents.sql, asked for those spawned under the session's first prompt build, the one its profile is read at (no later line))"
   );
+}, 120_000);
+
+// Catches: a context session that no subagent places at a build said to be read at its first build
+// because "a task runs as its session's first message": a context session has no step and is no
+// task's session.
+test("a context session no subagent of which records a skill listing is read at its first build, and its read times and listing measure say why: no subagent names the build, the store having been asked for those spawned at any time", async () => {
+  const from = await profiledTasks();
+  const summary = JSON.parse(readFileSync(`${from}.summary.json`, "utf8")) as {
+    profiles: { contextSession: { evidence: Item[] } };
+  };
+  const sources = Object.fromEntries(
+    summary.profiles.contextSession.evidence.map((each) => [each.item, each.source])
+  );
+  // The legion session: one system-prompt-digest line, and no file below its directory.
+  const asked =
+    "the store holds no subagent of it (subagents.sql, asked for those spawned at any time)";
+  expect(sources["read times"]).toStartWith(
+    `a context session has no step, and no subagent names the build it is read at: ${asked}; so it is the session's first build (its line is the first of the session's 1 system-prompt-digest line, at 2026-11-20T01:59:48.959Z, digest 46874d907e557998), and each repository, a pool's too, is read at the session's start ${F1_START}`
+  );
+  const measure = ListingMeasure.parse(JSON.parse(sources[LISTING_MEASURE] ?? "{}"));
+  expect(measure.kind).toBe("not measurable");
+  expect(measure.why).toEndWith(asked);
 }, 120_000);
 
 describe("GithubReads", () => {
