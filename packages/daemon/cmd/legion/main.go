@@ -190,8 +190,8 @@ func pluginsLine(cfg config.Config) string {
 			pair.PiLegion, pair.PiEnvoy, pluginsSourceWords(source))
 	}
 	// The roles Claude Code runs here: Legion's phase workers that worker_backends puts on it, in
-	// the order the workflow reaches them, then each role of the deployment it puts there, in the
-	// file's order; the loader refuses any other.
+	// claim.Roles' order (the default steps' order), then each role of the deployment it puts
+	// there, in the file's order; the loader refuses any other.
 	var claude []string
 	for _, role := range runtime.Backends[runtime.BackendClaude].Roles {
 		if cfg.BackendFor(role) == runtime.BackendClaude {

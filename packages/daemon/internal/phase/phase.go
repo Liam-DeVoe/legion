@@ -43,10 +43,11 @@ var All = []Phase{
 	Merging, Done, Held,
 }
 
-// Order is the line an issue walks forward, and the only phases a move back is read against. It
-// differs from All: All is every phase the daemon writes, admitted, awaiting_person, done and
-// held among them, while Order holds the seven working phases alone, in the order the workflow
-// advances them. A phase outside Order has no place in that line, so no move into it and no move
+// Order is the line an issue of the default steps walks forward, and the phases a move back is
+// read against for an issue with no plan rows; a task's own line reads its own moves back
+// (workflow's Walk.MovesBack). It differs from All: All is every phase the daemon writes, admitted,
+// awaiting_person, done and held among them, while Order holds the seven working phases alone, in
+// the order of the default steps. A phase outside Order has no place in that line, so no move into it and no move
 // out of it is a move back: an issue put on held, or closed as done, went nowhere backward, and
 // MovesBack answers false for it.
 //

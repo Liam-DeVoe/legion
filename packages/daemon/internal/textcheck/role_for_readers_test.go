@@ -55,13 +55,14 @@ type roleForReader struct {
 // (phase.Of, and the completion route's answerCompletion, which reads the phase LeftBy answers
 // where the role does not work the issue's), or reads only the places of a plan's steps, which
 // admitted never is (reportsBefore, Walk.RoleAt, and Engine.restartTask, which reads its task's
-// first step: a planner's, an implementer's or a role of the deployment's, as plan.Supported takes
-// the acceptance only after an implementer), or reads the retro's own phase (retroHeldNotice and
-// Engine.startHeldRetro, which run only for a parent held before its retro for the issues beneath
-// it), or answers RoleFor's role for every phase but step to the readers this list holds
-// (record.Issue.RoleAt), or never reads admitted at all because a check before it refuses that
-// phase, which is what each named test holds it to. The owner walk reads no role: where it starts
-// is its caller's to say (record.NoticeStartsAtParent, for a notice).
+// first step: a planner's, an implementer's or a role of the deployment's, as plan.Supported
+// holds every task to an implementer step with each tester, reviewer and acceptance step after
+// it), or reads the retro's own phase (retroHeldNotice and Engine.startHeldRetro, which run only
+// for a parent held before its retro for the issues beneath it), or answers RoleFor's role for
+// every phase but step to the readers this list holds (record.Issue.RoleAt), or never reads
+// admitted at all because a check before it refuses that phase, which is what each named test
+// holds it to. The owner walk reads no role: where it starts is its caller's to say
+// (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.

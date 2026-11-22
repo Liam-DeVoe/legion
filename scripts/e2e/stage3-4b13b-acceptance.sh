@@ -1051,10 +1051,11 @@ note "planner notice (control): verdict line absent: $(grep -c 'verdict:' <<<"$p
 pass
 
 begin reviewers
-# A review ends when its reviewer completes it: the reviewer approves the head it has, then commits
-# and pushes its handoff, so the pull request's head moves past the approved commit before the issue
-# leaves reviewing, and the retro's handoff moves it again. Whether that approval still stands for
-# the head the round ends on is the daemon's judgement (classify.ApprovalStands), recorded on the
+# An approval ends the review round once GitHub reports the approved head one the issue may advance
+# on, whether the reviewer's completion came before it or after it; no handoff is a commit, and
+# retro commits nothing, so the head stays where the reviewer approved it unless a merge forward
+# moves it. Whether that approval still stands for the head the round ends on is the daemon's
+# judgement (classify.ApprovalStands), recorded on the
 # round as its decision; the proof checks the review App approved and the daemon ended the round on
 # that approval, which moves the issue to accepting, where no worker runs: the tree's architect
 # accepts with the legion tool's sign_off (→ retro), told here by the proof, since it acts on no

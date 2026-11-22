@@ -154,8 +154,8 @@ const conflictConfirmWait = time.Minute
 
 // mergeability records what GitHub's last read found for whether the pull request's head can be
 // merged into its base (intake.PullRequestMergeability, readPullRequest's own GitHub answer), and
-// acts on a conflict only once a second read has confirmed it and the issue's next step needs a
-// head that merges.
+// acts on a conflict only once a second read has confirmed it and R0's decision says the head
+// must be merged forward now (classify.ConflictNeedsMerge).
 //
 // A head that conflicts with its base is judged in two reads (dispatch://INFRA-4374 R2). GitHub
 // computes mergeability in a background job and can answer CONFLICTING about a base it has not
@@ -187,7 +187,8 @@ const conflictConfirmWait = time.Minute
 // GitHub would merge this head now, which the tri-state mergeability cannot, and it is what an
 // approval standing on the head waits for (reviewRound). So in reviewing the round is asked again
 // once the state is recorded, whatever the read decided - this read is the one that moves an
-// approved issue to accepting, as often as not. The base the read names is recorded with
+// approved issue on to its task's next step (accepting, in the default steps), as often as not.
+// The base the read names is recorded with
 // them, since that read is the only one that names the base of a pull request opened before the
 // record kept one: it is what a push onto that branch finds the pull request by (basePush), and a
 // read that answers for a base push already recorded clears the push's mark, the two having been
@@ -1085,9 +1086,10 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 // An approval of a head the record holds in a confirmed conflict with its base
 // (classify.ConflictRound) ends the round too, whatever GitHub's merge state for it
 // (dispatch://INFRA-4374 R0): nothing GitHub answers about that head changes until the
-// implementer merges the base forward, and the merge is what the issue needs next once its review
-// is over, so the move into accepting asks for it (transition, mergeForwardOnEntry,
-// record.ConflictMergeNext). While the first conflicting read of the head waits for its second
+// implementer merges the base forward, and the merge forward is asked on the issue's move into
+// accepting, retro or merging (transition, mergeForwardOnEntry, record.ConflictMergeNext), which
+// in the default steps is the move this approval makes, into accepting. While the first
+// conflicting read of the head waits for its second
 // (record.PullRequest.ConflictRead), the approval waits where it stands and is never reported
 // stuck: GitHub's `dirty` is not yet a conflict the daemon holds, and the second read decides it.
 // An approval that stands on the head of a pull request closed without merging keeps the round
@@ -1197,7 +1199,8 @@ func undecidedReason(row record.PhaseRow, pr record.PullRequest) string {
 	return reason
 }
 
-// implementationReady moves issue from implementing to testing on the implementer's completion of
+// implementationReady moves issue from implementing to its task's next step (testing, in the
+// default steps) on the implementer's completion of
 // the round that row records, once the pull request pr is recorded open or merged
 // (TriggerImplementationReady: a record closed without merging, or none, moves nothing). It
 // reads no CI result: a settlement that arrived while the implementer worked moved nothing and
@@ -1414,8 +1417,9 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 	return nil
 }
 
-// recordPass counts task one more pass through the implementing, testing and reviewing stretch,
-// which every move back into an earlier phase opens, counts the move itself under its own pair,
+// recordPass counts task one more pass through its steps from the one a move back goes to, which
+// every move back to an earlier step of the task opens (Walk.MovesBack), counts the move itself
+// under its own pair,
 // and fires the deployment's hooks that stand on the move (fireWorkBackHooks). The counts are the
 // task's (record.Store.ReturnCounts): on its plan_tasks row for an issue with plan rows, and on the
 // implementer's phases row for an issue with none, where they lived before plans.
@@ -1423,7 +1427,7 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 // The pass bounds nothing: it is the counter the handoff completion key carries
 // (api/handoff.go), and its whole job is to make a completion at a commit an earlier pass
 // reported a fact of its own. BackwardMoves is what a hook counts, under the move's own
-// "<from>-<to>" pair, spelled as phase.BackwardPairs() spells the pairs (phase.Pair): a review
+// "<from>-<to>" pair, spelled as phase.MovePairs() spells the pairs (phase.Pair): a review
 // that sends the work back and a test that sends it back are two counts and never one. Both rise
 // here, where every backward move passes, rather than beside the review round, which only a
 // review requesting changes opens (recordRound): a hook standing on that count would never see a

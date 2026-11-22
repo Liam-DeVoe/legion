@@ -265,8 +265,9 @@ func TestARoleTheDeploymentDefinesHoldsARoleOfAnIssue(t *testing.T) {
 	}
 }
 
-// The set reads back in the order the workflow reaches the roles, whatever order the publication
-// named them in. The PUT answers in that order too.
+// The set reads back in the order of legionagents.Roles, the order of the default steps (each
+// task names its own), whatever order the publication named them in. The PUT answers in that
+// order too.
 func TestTheRoleHoldersOfAnIssueReadInWorkflowOrder(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)

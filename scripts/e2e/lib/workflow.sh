@@ -503,9 +503,10 @@ pull_request_legion_only_commits() {
   done
 }
 # request_changes_as_reviewer ISSUE ROUND BODY [NOTE] has the reviewer pane post a round's
-# changes-requested review and complete its phase. A review ends when its reviewer completes it —
-# the reviewer's handoff is part of the phase — so the round is driven through the reviewer worker,
-# as the final approval is, rather than posted from the proof's own gh. BODY is the review's text;
+# changes-requested review and complete its phase. The review ends the round whether or not the
+# reviewer has completed, and its completion names the round's handoff record, so the round is
+# driven through the reviewer worker, as the final approval is, rather than posted from the
+# proof's own gh. BODY is the review's text;
 # the reviewer ends it with the Legion footer naming its own session, as its role ends every review,
 # since the daemon sets aside a review-App review whose footer does not name the session recorded on
 # the reviewer's claim (workflow.Engine.DecidesRound). NOTE, when given, is a further step for the

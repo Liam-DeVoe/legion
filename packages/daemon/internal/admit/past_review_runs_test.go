@@ -88,10 +88,11 @@ func leaseStart(t *testing.T, pool *pgxpool.Pool, issue string) {
 	})
 }
 
-// The phases past an issue's review run on no row of the cap's at all. The cap counts the issues
-// whose change is still to write, and the sign-off, the retro and the merge write no more of it
-// (record.KeepsSlot), so the start of each of those phases waits for no row (workflow.StartOrOwe
-// reads record.PhaseKeepsSlot) and is claimable the moment it is written.
+// Accepting, retro and merging (record.PastReview; in the default steps, the phases after the
+// review) run on no row of the cap's at all. The cap counts the issues whose change is still to
+// write, and the sign-off, the retro and the merge write no more of it (record.KeepsSlot), so the
+// start of each of those phases waits for no row (workflow.StartOrOwe reads
+// record.PhaseKeepsSlot) and is claimable the moment it is written.
 //
 // The cap is full throughout, which is what tells the two kinds of start apart: in the same
 // reading, the start of an issue at work that holds no row stays unclaimable, and so does the
@@ -100,10 +101,10 @@ func leaseStart(t *testing.T, pool *pgxpool.Pool, issue string) {
 // phase the start is for.
 //
 // The subtests that close it read what such a start is written as. An issue holds one pending
-// start however many a worker past its review is written — an operator's retry of a held retro
-// goes over the queued row rather than beside it — because two rows would start that worker
-// twice for one assignment and no fence of the outbox's would end the second. The control
-// beside it is the row a lane already holds, which is left alone with the task it is
+// start however many starts a worker in accepting, retro or merging is written — an operator's
+// retry of a held retro goes over the queued row rather than beside it — because two rows would
+// start that worker twice for one assignment and no fence of the outbox's would end the second.
+// The control beside it is the row a lane already holds, which is left alone with the task it is
 // delivering. The last reads where the rule stops: a start that waits for a row is written over
 // no queued start that waits for none, since the place in the line belongs to the row that
 // waits, and the two never name one phase, so the outbox's phase fence ends the stale one.
@@ -128,7 +129,7 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 	applyFact(t, pool, admission, "sign-off", intake.SignOff{Issue: accepted, By: by, Generation: generation, Entry: entry})
 
 	if got := issue(t, pool, accepted); got.Phase != phase.Retro {
-		t.Fatalf("the accepted issue = %#v, want it in retro: the sign-off moves it there", got)
+		t.Fatalf("the accepted issue = %#v, want it in retro: the acceptance is its task's last step (it has no plan rows, so it walks the default steps), and the sign-off moves it there", got)
 	}
 	if holdsSlot(t, pool, accepted) {
 		t.Fatalf("rows = %#v, want %s holding none: its work is past its review", slots(t, pool), accepted)
@@ -160,7 +161,8 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 	// and that merge closes the issue, so there is no further phase for a row to be asked for.
 
 	// An issue whose architect sends the work back from accepting to implementing writes the
-	// change again, so its start waits for a row as any phase worker's start does.
+	// change again, so its start waits for a row, as the start of a worker in any phase that
+	// keeps one does (record.PhaseKeepsSlot).
 	const sentBack = "LEGION-400"
 	pastReviewRoot(t, pool, sentBack, phase.Accepting, "needs_review", "E")
 
@@ -240,8 +242,8 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 		}
 	})
 
-	// Where the rule stops: a start that waits for a row is written over no queued start of a
-	// phase past the review, and none over it. The two never name one phase, so the outbox's
+	// Where the rule stops: a start that waits for a row is written over no queued start of
+	// accepting, retro or merging, and none over it. The two never name one phase, so the outbox's
 	// phase fence ends the one the issue has left; what writing over it would cost is the
 	// waiting line, whose place belongs to the row that waits, and the issue would stand in it
 	// from the moment a row it never waited on was queued, ahead of one that came to wait
@@ -269,12 +271,12 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 	})
 }
 
-// The repair of a worker that has lost its task reaches an issue standing past its review, which
-// holds no row to be found by (admit's resumeSlottedWorkers). The retro's implementer and the
-// merger are started again, exactly as a row holder's worker is, and nothing else would ever
-// start them: the start their transition wrote has been finished without acting, so the entry
-// their phases row names is one their claim was never given (workflow.OwedEntry), which is what
-// a worker that lost its task is on the entry model.
+// The repair of a worker that has lost its task reaches an issue standing in accepting, retro or
+// merging (record.PastReview), which holds no row to be found by (admit's resumeSlottedWorkers).
+// The retro's implementer and the merger are started again, exactly as a row holder's worker is,
+// and nothing else would ever start them: the start their transition wrote has been finished
+// without acting, so the entry their phases row names is one their claim was never given
+// (workflow.OwedEntry), which is what a worker that lost its task is on the entry model.
 //
 // What the repair does not reach is an issue at work that holds no row, because it waits in the
 // line for one and starting it would put a worker to work on an issue the cap has not admitted.
