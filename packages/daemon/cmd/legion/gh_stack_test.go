@@ -204,7 +204,25 @@ func TestGhStackRefusesAGitSettingThatMovesOrRunsItsGit(t *testing.T) {
 			t.Errorf("with branch.main.remote=., git's name for this repository, ghTargetOf = %v; want acme's directory", err)
 		}
 	})
-	for _, key := range []string{"remote.origin.receivepack", "remote.origin.uploadpack", "core.sshCommand", "protocol.ext.allow", "protocol.allow"} {
+	// git applies a URL rewrite to `.` too, and `git remote -v` lists no `.`, so `.` is refused
+	// while an insteadOf or pushInsteadOf of `.`, or of the empty prefix, would move it.
+	for _, rewrite := range []string{"pushInsteadOf = .", "insteadOf = .", "pushInsteadOf ="} {
+		t.Run("branch.main.pushRemote=. under "+rewrite, func(t *testing.T) {
+			repository := inClone(t, []string{"config", "branch.main.pushRemote", "."})
+			appendTo(t, filepath.Join(repository, ".git", "config"), "[url \"https://github.com/acme/elsewhere.git\"]\n\t"+rewrite+"\n")
+			if err := push(); err == nil || !strings.Contains(err.Error(), "branch.main.pushremote") || !strings.Contains(err.Error(), "is no remote") {
+				t.Errorf("with branch.main.pushRemote=. and %s, ghTargetOf = %v; want a refusal naming branch.main.pushremote", rewrite, err)
+			}
+		})
+	}
+	t.Run("a rewrite of another URL leaves . alone", func(t *testing.T) {
+		repository := inClone(t, []string{"config", "branch.main.pushRemote", "."})
+		appendTo(t, filepath.Join(repository, ".git", "config"), "[url \"https://github.com/acme/elsewhere.git\"]\n\tinsteadOf = https://example.com/\n")
+		if err := push(); err != nil {
+			t.Errorf("with a rewrite of another URL, ghTargetOf = %v; want acme's directory", err)
+		}
+	})
+	for _, key := range []string{"remote.origin.receivepack", "remote.origin.uploadpack", "core.sshCommand", "core.gitProxy", "core.askPass", "protocol.ext.allow", "protocol.allow"} {
 		t.Run(key, func(t *testing.T) {
 			repository := inClone(t)
 			set(t, repository, key, "touch PWNED")

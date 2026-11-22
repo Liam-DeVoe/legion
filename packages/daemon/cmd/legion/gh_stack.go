@@ -118,11 +118,13 @@ var ghStackCommands = func() map[string]ghStackCommand {
 var ghStackAlone = []string{"-h", "--help", "-v", "--version"}
 
 // ghStackRemoteSettings are the git settings gh-stack takes a remote's name from where --remote
-// is absent (internal/git/gitops.go, ResolveRemote), and the settings that make the git it runs
-// for a fetch or a push run another program (a remote's uploadpack and receivepack,
-// core.sshCommand) or take a transport that runs one (protocol.allow and protocol.<name>.allow,
-// which admit `ext::`), as `git config --get-regexp` matches their canonical, lower-case names.
-const ghStackRemoteSettings = `^(branch\..*\.(pushremote|remote)|remote\.pushdefault|gh-stack\.remote|remote\..*\.(uploadpack|receivepack)|core\.sshcommand|protocol\.(.*\.)?allow)$`
+// is absent (internal/git/gitops.go, ResolveRemote); the settings that make the git it runs for a
+// fetch or a push run another program (a remote's uploadpack and receivepack, core.sshCommand,
+// core.gitProxy, core.askPass) or take a transport that runs one (protocol.allow and
+// protocol.<name>.allow, which admit `ext::`); and the URL rewrites, which git applies to `.`
+// too, though `git remote -v` lists no `.`; as `git config --get-regexp` matches their canonical,
+// lower-case names.
+const ghStackRemoteSettings = `^(branch\..*\.(pushremote|remote)|remote\.pushdefault|gh-stack\.remote|remote\..*\.(uploadpack|receivepack)|core\.(sshcommand|gitproxy|askpass)|protocol\.(.*\.)?allow|url\..*\.(insteadof|pushinsteadof))$`
 
 // ghStackTarget is the target of `gh stack args…` (the file's comment says how it is read).
 func ghStackTarget(args []string, env map[string]string, remotes func() ([]ghRemote, error), dirFor func(owner, name string) (string, error)) (ghTarget, error) {
@@ -319,7 +321,9 @@ func commandSuffix(name string) string {
 // value is no such remote and not `.` (git's name for this repository), and any setting that makes
 // git run another program (ghStackRemoteSettings): gh-stack hands the remote to `git fetch` or
 // `git push` ahead of its refspecs, where git reads `-…` as an option of its own, and a URL or a
-// path there pushes outside every repository this routed by.
+// path there pushes outside every repository this routed by. `.` is no remote only while no
+// url.*.insteadOf or pushInsteadOf rewrites it, that is while none of them is `.` or empty, the
+// two values that are a prefix of `.`.
 func ghStackRemotesAreNames(call ghStackCall, lines []ghRemote) error {
 	var names []string
 	for _, line := range lines {
@@ -340,11 +344,19 @@ func ghStackRemotesAreNames(call ghStackCall, lines []ghRemote) error {
 	if err != nil {
 		return err
 	}
+	dotRewritten := false
+	for _, line := range settings {
+		key, value, _ := strings.Cut(line, " ")
+		if strings.HasPrefix(key, "url.") && (value == "" || value == ".") {
+			dotRewritten = true
+		}
+	}
 	for _, line := range settings {
 		key, value, _ := strings.Cut(line, " ")
 		switch {
+		case strings.HasPrefix(key, "url."):
 		case strings.HasPrefix(key, "branch.") || key == "remote.pushdefault" || key == "gh-stack.remote":
-			if value != "." && !slices.Contains(names, value) {
+			if (value != "." || dotRewritten) && !slices.Contains(names, value) {
 				return fmt.Errorf("the git setting %s names %q, which is no remote `git remote -v` lists here, and gh-stack would push or fetch there, outside the repository this call is routed by, so `gh stack` sends nothing; set it to one of them or unset it", key, value)
 			}
 		default:

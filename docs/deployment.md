@@ -194,9 +194,11 @@ own (`--upload-pack=<command>` runs that command), so every flag is read against
 release's, and an unknown flag or command, `--`, a value that starts with `-`, a `--remote` that
 names no listed remote and a remote whose name starts with `-` are refused. A
 `branch.*.pushRemote`, `remote.pushDefault`, `branch.*.remote` or `gh-stack.remote` setting must
-name a listed remote or `.`, since a URL or a path there pushes outside the routed repository,
-and a remote's `uploadpack` or `receivepack`, `core.sshCommand` or a `protocol` `allow` setting,
-each of which makes git run another program, is refused. `submit` without `--auto` is refused,
+name a listed remote, or `.` while no `url.*.insteadOf` or `pushInsteadOf` rewrites `.`, since a
+URL or a path there pushes outside the routed repository, and a remote's `uploadpack` or
+`receivepack`, `core.sshCommand`, `core.gitProxy`, `core.askPass` or a `protocol` `allow`
+setting, each of which makes git run another program, is refused. `submit` without `--auto` is
+refused,
 since its editor writes pull request text no guard reads, and so are `alias` and `feedback`.
 `submit` and `link` must find one repository, the one their pushes went to, and hand the guard
 the pull request template they would post. Its update check, which reads github/gh-stack's
