@@ -88,7 +88,7 @@ func TestAKeyHoldingNoRecordOfItsOwnIsRefusedNamingTheKeyAndItsSequence(t *testi
 				t.Fatalf("control: today's decode of the copy = %+v at %d, want ses_owner's record naming %s at %d", lenient, revision, owner.Record.Current, copied)
 			}
 			_, _, err := live.store.Read(ctx, key)
-			if !errors.Is(err, ErrMalformedRecord) || !strings.Contains(err.Error(), "key "+key+" ") || !strings.Contains(err.Error(), "sequence "+strconv.FormatUint(revision, 10)) {
+			if !errors.Is(err, ErrMalformedRecord) || !strings.Contains(err.Error(), "key "+key+":") || !strings.Contains(err.Error(), "sequence "+strconv.FormatUint(revision, 10)) {
 				t.Fatalf("Read of %s = %v, want ErrMalformedRecord naming the key and its sequence %d", key, err, revision)
 			}
 			if sel, created, err := names.Ensure(ctx, key, request(key)); !errors.Is(err, ErrMalformedRecord) || created {

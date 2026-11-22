@@ -100,7 +100,7 @@ func TestAFreshListenerOnDispatchsGrantFollowsItsDurableThroughADroppedConnectio
 	deps.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil), consumer: durable})
 	healthz := func() (int, map[string]any) {
 		recorder := httptest.NewRecorder()
-		healthzHandler(&deps, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		healthzHandler(&deps, nil, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var body map[string]any
 		_ = json.Unmarshal(recorder.Body.Bytes(), &body)
 		return recorder.Code, body

@@ -1,6 +1,6 @@
 // The family fence, the owner check and adoption: which consumers a record of a logical name may
 // name, which consumer the server holds is that logical name's own, and which candidate an open
-// operation may publish. Names applies the fence to every record it reads (checkNames), the owner
+// operation may publish. Names applies the fence to every record it reads (Check), the owner
 // check to every read and delete of a name a record supplies (info, deleteOwned), and the adoption
 // check to every candidate it did not see created (adopt).
 
@@ -32,13 +32,15 @@ func (n *Names) freshOf(logical, name string) bool {
 	})
 }
 
-// checkNames refuses, as ErrMalformedRecord, a record of logical that names a consumer outside
-// logical's own family: its current, each retired name and an open operation's candidate must be
-// fresh names of logical (freshOf), and an open operation's old name one of those or logical's fixed
-// name, which the cutover's convert replaces. Each is a name the protocol creates, binds, updates or
-// deletes, so a record that names another family's consumer (a daemon's durable, a session's of
-// another prefix) never gets one of those calls on it.
-func (n *Names) checkNames(logical string, record Record) error {
+// Check refuses, as ErrMalformedRecord naming the field and the name, a record of logical that
+// names a consumer outside logical's own family: its current, each retired name and an open
+// operation's candidate must be fresh names of logical (freshOf), and an open operation's old name
+// one of those or logical's fixed name, which the cutover's convert replaces. Each is a name the
+// protocol creates, binds, updates or deletes, so a record that names another family's consumer (a
+// daemon's durable, a session's of another prefix) never gets one of those calls on it. It is the
+// creator's own check of every record it reads (read), so a reader of the store that judges a record
+// healthy (an operator's status, census or cleanup) judges it as the creator does.
+func (n *Names) Check(logical string, record Record) error {
 	refuse := func(field, name string) error {
 		return fmt.Errorf("%w: the key %s's %s %q is no %s~<nuid> name", ErrMalformedRecord, logical, field, name, n.cfg.Prefix(logical))
 	}

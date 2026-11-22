@@ -275,8 +275,11 @@ var (
 	// ErrNoStore is a selection store that is missing: the KV bucket or the table.
 	ErrNoStore = errors.New("consumer names: the selection store is missing")
 	// ErrNoSentinel is a store whose sentinel is absent: its key holds nothing, so a lost record
-	// cannot be told from a new key. It is the one sentinel error a creator in the fixed mode may
-	// read as no marker; a sentinel key holding anything else is ErrMalformedSentinel.
+	// cannot be told from a new key. A creator in the fixed mode may read it as no marker for a
+	// Postgres store (PGStore) alone, as Dispatch and the daemons do. In the session bucket an absent
+	// sentinel, a delete or purge marker among them, is never no marker: the listener reads it as a
+	// failed read and reads again (bus.Client.ReadMarker), and only a bucket that does not exist is
+	// no marker. A sentinel key holding anything else is ErrMalformedSentinel, in either store.
 	ErrNoSentinel = errors.New("consumer names: the selection store's sentinel is missing")
 	// ErrMalformedSentinel is a store whose sentinel key holds something other than the store's own
 	// exact sentinel (decodeSentinel): another JSON document, a field this build does not know (a
@@ -364,6 +367,27 @@ func decodeSentinel(key, family string, data []byte) (StoreState, error) {
 		return StoreState{}, fmt.Errorf("%w: %w", ErrMalformedSentinel, err)
 	}
 	return state, nil
+}
+
+// DecodeKVValue reads data, the value of key in the session bucket (SessionBucket), as KVStore
+// reads it: under SentinelKey the session family's sentinel (decodeSentinel, isSentinel true),
+// under any other key that key's record (decodeRecord). A value that is not that key's own record
+// or the bucket's own sentinel is ErrMalformedRecord or ErrMalformedSentinel, naming the key: the
+// answer KVStore's Read and State give, which call it, so a reader of the bucket's raw messages
+// decodes them as the store does. It reads no delete or purge marker: a reader that sees the
+// message's KV-Operation header answers ErrRecordDeleted, or ErrNoSentinel under SentinelKey,
+// itself, as KVStore does, before it decodes anything.
+func DecodeKVValue(key string, data []byte) (record Record, state StoreState, isSentinel bool, err error) {
+	if key == SentinelKey {
+		if state, err = decodeSentinel(key, SessionFamily, data); err != nil {
+			return Record{}, StoreState{}, true, fmt.Errorf("consumer names: the key %s: %w", key, err)
+		}
+		return Record{}, state, true, nil
+	}
+	if record, err = decodeRecord(key, data); err != nil {
+		return Record{}, StoreState{}, false, fmt.Errorf("consumer names: the key %s: %w", key, err)
+	}
+	return record, StoreState{}, false, nil
 }
 
 // decodeStrict decodes data into v, which is a struct: data must be one JSON object, with no field

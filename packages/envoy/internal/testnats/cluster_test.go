@@ -123,7 +123,7 @@ func TestALameDuckMemberSendsItsClientsToAnotherMember(t *testing.T) {
 }
 
 // deadlineTB is a fatalRecorder whose test deadline is at, so a wait bounded by the test's deadline
-// (waitBound) reads that one.
+// (testDeadline) reads that one.
 type deadlineTB struct {
 	*fatalRecorder
 	at time.Time
@@ -131,12 +131,13 @@ type deadlineTB struct {
 
 func (d deadlineTB) Deadline() (time.Time, bool) { return d.at, true }
 
-// AwaitReady waits on the cluster's state, bounded by the test's own deadline less readyMargin, not
+// AwaitReady waits on the cluster's state, bounded by the test's own deadline (testDeadline), not
 // by a fixed time: a ready cluster passes at once under a deadline only seconds away, and a cluster
 // that cannot become ready (one member started again alone, which can win no election) fails the
-// wait by that deadline, naming the deadline and the state it waited for. That failure is the
+// wait before that deadline, naming the deadline and the state it waited for. That failure is the
 // control that the state is checked and the bound is the test's.
 func TestAwaitReadyWaitsOnTheClustersStateUntilTheTestsDeadline(t *testing.T) {
+	const left = 6 * time.Second
 	cluster := StartCluster(t, 3)
 	await := func(at time.Time) (string, time.Duration) {
 		recorder := deadlineTB{&fatalRecorder{TB: t}, at}
@@ -149,7 +150,7 @@ func TestAwaitReadyWaitsOnTheClustersStateUntilTheTestsDeadline(t *testing.T) {
 		<-done
 		return recorder.message, time.Since(start)
 	}
-	if message, took := await(time.Now().Add(readyMargin + 3*time.Second)); message != "" {
+	if message, took := await(time.Now().Add(left)); message != "" {
 		t.Fatalf("a ready cluster failed the wait after %s: %s", took, message)
 	}
 	// One member started again on its own, with the other two stopped, can win no election: two of
@@ -158,11 +159,11 @@ func TestAwaitReadyWaitsOnTheClustersStateUntilTheTestsDeadline(t *testing.T) {
 		server.Stop(t)
 	}
 	cluster.Servers[0].Start(t)
-	message, took := await(time.Now().Add(readyMargin + 3*time.Second))
-	if !strings.Contains(message, "not ready by the test's deadline") || !strings.Contains(message, "meta group") {
-		t.Fatalf("control: a cluster with no meta leader answered %q after %s; want the wait to fail by the test's deadline, naming the meta group's state", message, took)
+	message, took := await(time.Now().Add(left))
+	if !strings.Contains(message, "short of the test's deadline") || !strings.Contains(message, "meta group") {
+		t.Fatalf("control: a cluster with no meta leader answered %q after %s; want the wait to fail short of the test's deadline, naming the meta group's state", message, took)
 	}
-	if took > 3*time.Second+5*time.Second {
-		t.Fatalf("control: the wait failed only after %s, past the test's deadline less readyMargin (3 s)", took)
+	if took > left {
+		t.Fatalf("control: the wait failed only after %s, past the test's deadline %s away", took, left)
 	}
 }
