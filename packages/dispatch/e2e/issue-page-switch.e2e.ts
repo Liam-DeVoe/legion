@@ -473,7 +473,7 @@ test("another tab turning the new issue page on leaves this tab's shown-once age
     .locator("code")
     .first();
   // textContent waits for the code element to attach, and an element's text is never null, so
-  // the check below only narrows the type.
+  // the `?? ""` in the last check below only narrows the type.
   const token = await shown.textContent();
   expect(token).toMatch(/^dsp_/);
 

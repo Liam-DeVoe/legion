@@ -17,7 +17,7 @@ import type { ShellNavigation } from "./shell-navigation";
  * its code in the entry chunk every page parses before it draws (`asset-sizes-in-build.ts`
  * holds that chunk to its budget). One context costs a few bytes there; the margin slot's four,
  * the shell navigation's, the opener's and the reference names' store, each a provider of its
- * own, would cost about two thousand.
+ * own, would each put a provider's code there too.
  *
  * So this carries only what crosses between the shell, the page and the margin. What the frame
  * computes from the shell's state - Details and the navigation for the page's header - is the

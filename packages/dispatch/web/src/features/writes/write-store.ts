@@ -357,12 +357,13 @@ const takeUpsWaiting = new Set<() => void>();
  * Ends every take-up of what a reload kept still waiting for the kinds of write (`Writes.resume`),
  * since they are in: `kinds.ts` calls this once its imports have defined every kind, whichever
  * load evaluated it. So a take-up whose own ask failed with no reload to follow - the page was
- * being left, the reader chose to stay at the leave prompt a write pressed meanwhile opens, or the
- * tab's recovery reloads are spent - still ends once another load brings the kinds in, such as
- * the writes host's (`write-hosts.tsx`), and the kept writes go out, every write pressed
- * meanwhile behind them, with no reload by hand. Letting the writes pressed meanwhile into their
- * lines while the take-up waits would not do: a kept write taken up after a newer press on its
- * line would land after it.
+ * being left, the reader chose to stay at the leave prompt that the writes the reload kept
+ * (`WriteStorage.load`) or a write pressed meanwhile open, or the tab's recovery reloads are
+ * spent - still ends once another load brings the kinds in, such as the writes host's
+ * (`write-hosts.tsx`), and the kept writes go out, every write pressed meanwhile behind them,
+ * with no reload by hand. Letting the writes pressed meanwhile into their lines while the
+ * take-up waits would not do: a kept write taken up after a newer press on its line would land
+ * after it.
  */
 export function kindsRegistered(): void {
   for (const end of takeUpsWaiting) end();

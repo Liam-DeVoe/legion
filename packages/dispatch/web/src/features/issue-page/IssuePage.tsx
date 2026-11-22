@@ -24,11 +24,11 @@ const IssueOutlinePage = lazyChunk(() =>
 export function IssuePage(): ReactNode {
   const outline = useIssuePageChoice()[0] === "outline";
   // A landing on an issue's Spec holds the shell's extras - the margin, the reference preview,
-  // the event map and the writes host's three chunks - until its live document draws (`app.tsx`,
-  // `preloadRouteChunk`), and today's page ends that hold when its document draws or its reads
-  // say it draws none. The new page draws no live document, so it ends the hold here; else the
-  // reader's extras would wait for `HOLD_LIMIT_MS` or their first key or click
-  // (`features/shell/content-drawn.ts`).
+  // the event map, the Create issue dialog's chunk and the writes host's three chunks - until its
+  // live document draws (`app.tsx`, `preloadRouteChunk`), and today's page ends that hold when
+  // its document draws or its reads say it draws none. The new page draws no live document, so
+  // it ends the hold here; else the reader's extras would wait for `HOLD_LIMIT_MS` or their first
+  // key or click (`features/shell/content-drawn.ts`).
   useEndHoldWhen(outline);
   return outline ? <IssueOutlinePage /> : <TodaysIssuePage />;
 }

@@ -674,13 +674,15 @@ function visits(seed: Seeded): readonly Visit[] {
     { route: "/pipeline", shows: (page) => [heading(page, "Pipeline")], url: "/pipeline" },
     { route: "*", shows: (page) => [heading(page, "Page not found")], url: "/no-such-page" },
     {
-      // Only a reader with the new issue page turned on loads its chunk (`IssueOutlinePage`), and
-      // only that reader's shell loads the frame's chunk
-      // (`web/src/features/issue-page/frame-chunk.ts`), so no visit above loads either. The frame
-      // draws the icon rail from Tailwind's `md` up: the window here is the
-      // project's Desktop Chrome one, 1280 px wide, and the rail among the landmarks is what
-      // shows that chunk ran. This visit is last because the init script stays on the walk's one
-      // context: an issue visit after it would draw the new page rather than today's.
+      // Only a reader with the new issue page turned on loads its chunk (`IssueOutlinePage`), so
+      // no visit above loads it, and only that reader's shell draws from the frame's chunk
+      // (`web/src/features/issue-page/frame-chunk.ts`): the `/settings` visit above fetches that
+      // chunk too, since Settings starts it as it draws its switch (`IssuePagePreference.tsx`),
+      // but draws nothing from it. The frame draws the icon rail from Tailwind's `md` up: the
+      // window here is the project's Desktop Chrome one, 1280 px wide, and the rail among the
+      // landmarks is what shows that chunk ran. This visit is last because the init script stays
+      // on the walk's one context: an issue visit after it would draw the new page rather than
+      // today's.
       loads: ["frame-shell"],
       prepare: (page) => withIssuePage(page.context(), "alice"),
       route: "/issues/:key/*",

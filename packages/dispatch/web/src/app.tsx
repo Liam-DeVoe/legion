@@ -280,11 +280,13 @@ export function preloadRouteChunk(pathname: string): void {
 // its failure is one the chunk-failure recovery must reload for. Only a chunk nothing is waiting
 // on may be passed over, which is what every `prefetchChunk` call is: the preload above, the
 // Inbox peek's chunk after a page's first paint (`features/inbox/InboxHost.tsx`), the search
-// bar's, the Create issue dialog's and the shortcut sheet's after the same paint
-// (`features/search/SearchPaletteHost.tsx`, `features/issue/CreateIssueDialogHost.tsx`,
-// `features/shell/ShortcutHelpHost.tsx`), the two lists of writes'
-// and the kinds of write's once the page has drawn (`features/writes/write-hosts.tsx`), the new
-// issue page's frame once Settings draws its switch
+// bar's and the shortcut sheet's after the same paint (`features/search/SearchPaletteHost.tsx`,
+// `features/shell/ShortcutHelpHost.tsx`), the Create issue dialog's, the two lists of writes'
+// and the kinds of write's once the page has drawn (`features/issue/CreateIssueDialogHost.tsx`,
+// `features/writes/write-hosts.tsx`), the kinds of write's again on the sign-in page
+// (`KeptWritesHost`), the download of a key's surface, beside the `renderChunk` that counts it
+// while the reader waits on it (`features/shell/asked-surface.tsx`), the new issue page's frame
+// once Settings draws its switch
 // (`features/issue-page/IssuePagePreference.tsx`) and the boot warm of the Markdown engine
 // (`features/shell/DeploymentResilience.tsx`). Left bare, a
 // route chunk that failed while one of those prefetches was still out would be read as that
@@ -1236,8 +1238,9 @@ function AppShell({
  * pressed keeps the focus, and every tab of the login keeps its open dialogs, its live views and
  * what the reader typed and has not sent.
  *
- * THE FRAME'S CODE is a chunk of its own, asked for while the reader's choice is the new page:
- * the entry starts it at boot (`preloadRouteChunk`), and Settings as it draws its switch
+ * THE FRAME'S CODE is a chunk of its own. The shell asks for it while the reader's choice is the
+ * new page; the entry starts it at boot wherever a login of this browser chose that page
+ * (`preloadRouteChunk`), and Settings as it draws its switch, whatever the choice
  * (`IssuePagePreference.tsx`). The shell's first draw waits for it, under the skeleton the
  * sign-in check draws, so a reader who chose the new page never sees today's shell drawn first
  * and the frame a moment after it (R10). After that first draw nothing waits for it again: a
@@ -1246,10 +1249,12 @@ function AppShell({
  *
  * A DOWNLOAD THAT FAILS while the browser is online goes to the chunk-failure recovery, as every
  * chunk a reader waits on does (`renderChunk`), and the reload that asks for does not always
- * follow: the reader can stay at the leave prompt of a write out, a page asks for one reload
- * only, and the tab's budget of reloads can be spent. The shell is then today's, which needs
- * nothing of that chunk: the reader stays signed in, with the navigation, the writes and the
- * page, and an issue's address draws the new page with no frame around it. Turning the new page
+ * follow: the page can still count as being left after a navigation that never went, until the
+ * reader presses on it or it is shown again (`DeploymentResilience.tsx`), the reader can stay at
+ * the leave prompt of a write out, a page asks for one reload only, and the tab's budget of
+ * reloads can be spent. The shell is then today's, which needs nothing of that chunk: the reader
+ * stays signed in, with the navigation, the writes and the page, and an issue's address draws
+ * the new page with no frame around it. Turning the new page
  * off forgets the failure, so turning it on again asks for the frame again rather than drawing
  * today's shell for the life of this one. Nothing is thrown into the render for it: outside the
  * page's error boundary a throw would reach the app's top one (`main.tsx`), which replaces the

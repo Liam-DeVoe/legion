@@ -8,10 +8,11 @@ import { plainWrite, writesOf } from "./write-store";
 
 // The store's take-up of what a reload kept waits for every kind of write, a chunk of its own
 // (`kinds.ts`), and its own ask for that chunk can fail with no reload to follow: the page being
-// left, the reader staying at the leave prompt a write pressed meanwhile opens, or the tab's
-// recovery reloads spent. The writes host asks for the same chunk once the page has drawn, and the
-// chunk ends every take-up still waiting as it is evaluated (`kindsRegistered`), so the write
-// pressed meanwhile goes out with no second press to ask again. Nothing this file imports loads
+// left, the reader staying at the leave prompt that the writes the reload kept
+// (`WriteStorage.load`) or a write pressed meanwhile open, or the tab's recovery reloads spent.
+// The writes host asks for the same chunk once the page has drawn, and the chunk ends every
+// take-up still waiting as it is evaluated (`kindsRegistered`), so the write pressed meanwhile
+// goes out with no second press to ask again. Nothing this file imports loads
 // `kinds.ts`, and each test file loads its modules afresh (`--parallel` implies `--isolate`), so
 // the host's is the one load here that can evaluate it. The write is one the indicator does not
 // show (`composer`): the host draws nothing, and the row reads the store alone.

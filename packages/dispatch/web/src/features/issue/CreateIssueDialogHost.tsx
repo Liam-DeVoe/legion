@@ -7,7 +7,7 @@ import { useContentDrawn } from "../shell/content-drawn";
 
 /**
  * Where the shell places the Create issue dialog, and where that dialog's code is fetched: once
- * the page has drawn, never before it.
+ * the page has drawn, or at the `c` that opens it if that comes first (below).
  *
  * The shell imported the dialog itself until dispatch://INFRA-1109, so every page of the
  * dashboard parsed the form, its project list, its duplicate check and the related-items list

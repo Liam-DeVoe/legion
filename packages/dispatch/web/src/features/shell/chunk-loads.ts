@@ -12,15 +12,17 @@ import { type ComponentType, type LazyExoticComponent, lazy } from "react";
 // nothing although the reader is in front of a page that cannot draw. Before
 // dispatch://INFRA-1109 the `lazy` routes of `app.tsx`, the machine sign-in route, the live view,
 // the margin, the editor library and Yjs transport a mounting document awaits, the Yjs a past
-// version awaits, the headless Markdown engine a drawn body awaits and the delivery timeline's
-// charting library were all started bare, and that cost nothing while the shell prefetched no
-// chunk, since the recovery then reloaded, within its budget, for every chunk that failed online.
-// The shell now starts prefetches at a page's first paint - the search bar's, the Create issue
-// dialog's and the shortcut sheet's, the Markdown engine's warm, the writes host's three (the two
-// lists of writes and the kinds of write, `write-hosts.tsx`) and, on an address the landing read
-// takes for the Inbox, the Inbox peek's - and Settings starts the new issue page's frame as it
-// draws its switch (`features/issue-page/IssuePagePreference.tsx`), so a bare chunk that failed in
-// that window would reload nothing.
+// version awaits, the pending-edit store a removed document's edits are deleted from, the parts
+// of the hold a row's editor awaits (`features/issue-page/node-caret.ts`), the headless Markdown
+// engine a drawn body awaits and the delivery timeline's charting library were all started bare,
+// and that cost nothing while the shell prefetched no chunk, since the recovery then reloaded,
+// within its budget, for every chunk that failed online. The shell now starts prefetches at a
+// page's first paint - the search bar's and the shortcut sheet's, the Markdown engine's warm and,
+// on an address the landing read takes for the Inbox, the Inbox peek's - and once the page's
+// content has drawn (`content-drawn.ts`) - the Create issue dialog's and the writes host's three
+// (the two lists of writes and the kinds of write, `write-hosts.tsx`) - and Settings starts the
+// new issue page's frame as it draws its switch (`features/issue-page/IssuePagePreference.tsx`),
+// so a bare chunk that failed in that window would reload nothing.
 //
 // So: a chunk a render waits on goes through `renderChunk`, a chunk nothing waits on through
 // `prefetchChunk`, and nothing imports a chunk through neither. A component a `Suspense` waits
@@ -45,8 +47,9 @@ let renderedChunksOut = 0;
 /** Starts a chunk nothing is waiting for yet, and swallows its failure: the same import runs
  *  again under `renderChunk` when a reader comes to wait on it - the router rendering the route,
  *  a host drawing the component the chunk carries, a document or the write store's take-up
- *  awaiting the modules, or a body drawn after a failed warm of the Markdown engine, which keeps
- *  no failed load (`keptUntilRejected`) - and that is where a reader meets a chunk that will not
+ *  awaiting the modules, the shell awaiting the new issue page's frame (`app.tsx`,
+ *  `ChosenShell`), or a body drawn after a failed warm of the Markdown engine, which keeps no
+ *  failed load (`keptUntilRejected`) - and that is where a reader meets a chunk that will not
  *  download. */
 export function prefetchChunk(load: () => Promise<unknown>): void {
   prefetchedChunksOut += 1;
@@ -114,8 +117,10 @@ export function keptUntilRejected<T>(load: () => Promise<T>): () => Promise<T> {
  * `loadEditorLibrary` and `loadTransportModules`), the Yjs a past version awaits
  * (`features/doc/editor.ts`, `createDoc`) and the pending-edit store a removed document's edits
  * are deleted from (`features/doc/ProofDocument.tsx`) - the kinds of write the write store's
- * take-up waits for (`features/writes/write-hosts.tsx`, `loadWriteKinds`), every `lazyChunk`,
- * every `chunkComponent` (`chunk-component.tsx`) and every surface a reader opens with a key
+ * take-up waits for (`features/writes/write-hosts.tsx`, `loadWriteKinds`), the new issue page's
+ * frame the shell waits for (`app.tsx`, `ChosenShell`), the parts of the hold a row's editor
+ * awaits (`features/issue-page/node-caret.ts`, `loadHoldParts`), every `lazyChunk`, every
+ * `chunkComponent` (`chunk-component.tsx`) and every surface a reader opens with a key
  * (`asked-surface.tsx`).
  */
 export async function importWhenOnline<T>(load: () => Promise<T>): Promise<T> {
@@ -136,7 +141,9 @@ export async function importWhenOnline<T>(load: () => Promise<T>): Promise<T> {
 /**
  * React's `lazy`, with the download under `renderChunk` and `importWhenOnline`: how every
  * component of this app whose chunk a `Suspense` waits on is written - a route, the Inbox's own
- * page, the reference-preview layer, a page behind a gate. React asks for the chunk the first
+ * page, a page behind a gate, the new issue page (`features/issue-page/IssuePage.tsx`), the
+ * margin (`features/margin/MarginColumn.tsx`) and the live view
+ * (`features/agent-view/MountedLiveViews.tsx`). React asks for the chunk the first
  * time it renders the component, so a reader is in front of the boundary that waits on it, and a
  * download that fails must spend one of the tab's recovery reloads however many prefetches are
  * in flight beside it. A surface a reader opens with a key is not written so: its keys would
@@ -144,11 +151,14 @@ export async function importWhenOnline<T>(load: () => Promise<T>): Promise<T> {
  *
  * WHY `importWhenOnline`. React's `lazy` keeps the promise its loader returned for the life of
  * the page and never calls the loader again, so a rejection it holds answers every later render
- * of the component with the same failure. Online the rejection does not outlive the page: the
- * failure is Vite's `vite:preloadError` while `renderChunk` counts the render as waiting, so the
- * recovery reloads the tab while its budget lasts, and the page that kept the rejection goes with
- * it unless the reader stays at the leave prompt a write not yet confirmed opens. Offline the
- * recovery reloads nothing (`DeploymentResilience.tsx`, `reloadForChunkFailure`),
+ * of the component with the same failure. Online that failure is Vite's `vite:preloadError`
+ * while `renderChunk` counts the render as waiting, so the recovery reloads the tab, and the page
+ * that kept the rejection goes with it - unless no reload follows: the page still counts as being
+ * left, the reader stays at the leave prompt a write not yet confirmed opens, the page has asked
+ * for its one reload already, or the tab's budget of reloads is spent. The rejection then outlives
+ * the page, and the error boundary around the component (`ErrorBoundary.tsx`) draws the failure
+ * in its region's place, with a reload of its own, while the rest of the page stays drawn.
+ * Offline the recovery reloads nothing (`DeploymentResilience.tsx`, `reloadForChunkFailure`),
  * so a rejection kept there would leave the component broken for the life of the tab. Under
  * `importWhenOnline` the promise `lazy` keeps rejects only while the browser is online, where a
  * failure reloads; offline, the boundary's `Suspense` keeps its fallback until the window fires

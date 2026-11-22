@@ -2914,7 +2914,7 @@ GATES = [
         (BUILD_BINARIES, f"docs/site/scripts/generate.ts:116 runs it ({at_docs('Build the docs site')})"),
         (RUN_SERVER, f"packages/dispatch/e2e/harness-listeners.ts's dispatchServer runs it ({at_docs('Take the screenshots')})"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds the server's port through it"),
-        (f"{ENVOY}/scripts/lib/pg-url.sh", "packages/dispatch/e2e/run-broker.sh:62 sources it, and packages/dispatch/e2e/harness-listeners.ts:188,197 "
+        (f"{ENVOY}/scripts/lib/pg-url.sh", "packages/dispatch/e2e/run-broker.sh:63 sources it, and packages/dispatch/e2e/harness-listeners.ts:188,197 "
                                            f"start that script in a one-process run on the fake broker, which {at_docs('Take the screenshots')} is"),
         # broker-refgen (docs/site/generators/broker-reference.sh:15) parses these at run time,
         # each directory's non-test .go files alone (packages/envoy/cmd/cipher-refgen/source.go:34-45),
@@ -3059,7 +3059,7 @@ GATES = [
         (f"{FIX}/capability-redaction-plugin-report.json", "packages/pi-legion/src/capability-report.test.ts:968 (PLUGIN_REPORT :854)"),
         ("packages/dispatch/e2e/**", "packages/pi-legion/scripts/skill-scenarios/seed.ts:111 imports packages/dispatch/e2e/api.ts (typecheck includes scripts/skill-scenarios/*.ts), and that program holds six of that directory's modules: api.ts, harness-ports.ts, harness-broker.ts, harness-processes.ts, harness-real-broker.ts and harness-signin.ts"),
         ("packages/dispatch/web/src/api/types.ts", "packages/dispatch/e2e/api.ts:20"),
-        ("packages/dispatch/web/src/api/paths.ts", "packages/dispatch/e2e/api.ts:8-19 imports PathsOf, Op, PathParams, QueryParams, RequestBody, Query, Body and Answer from it, since that client is keyed on the generated document's path patterns"),
+        ("packages/dispatch/web/src/api/paths.ts", "packages/dispatch/e2e/api.ts:8-19 imports PathsOf, Op, PathParams, QueryParams, RequestBody, Query, Body, Result, repoParams and routeUrl from it, since that client is keyed on the generated document's path patterns"),
         ("skills/**", "packages/pi-legion/src/skills-guard.test.ts:44 stages them and :204-208 reads the roots at :194-202; scripts/skill-scenarios/rig.test.ts:954,1170; prepack stages skills"),
         ("scripts/pi-plugin-prepack.sh", f"packages/pi-legion/package.json prepack ({at('pi-legion', 'Pack pi-legion')}); packages/pi-shared/test/skills-guard.ts:17,34"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:97,100"),
@@ -3189,7 +3189,7 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds each stack's server port through it"),
-        (f"{ENVOY}/scripts/lib/pg-url.sh", "packages/dispatch/e2e/run-broker.sh:62 sources it, and packages/dispatch/e2e/harness-listeners.ts:188,197 "
+        (f"{ENVOY}/scripts/lib/pg-url.sh", "packages/dispatch/e2e/run-broker.sh:63 sources it, and packages/dispatch/e2e/harness-listeners.ts:188,197 "
                                            f"start that script in a one-process run on the fake broker: {at_browser(BROWSER_SHARD_SPECS)} and "
                                            f"{at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}"),
         (".github/scripts/dispatch-browser-samples.sh",

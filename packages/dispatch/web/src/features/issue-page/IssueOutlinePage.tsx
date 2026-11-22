@@ -36,10 +36,10 @@ import { ViewRowSlot } from "./slots/view-row";
  *
  * The providers only this page reads are its own, mounted here around all it draws: the names
  * its one batched read found for the references it draws (`ReferenceNamesProvider`, which every
- * reader of those names sits under, Details' fill included, since that fill draws none of them),
- * the navigation its header draws its `☰` from, and what its Keys control opens. The last two
- * are the shell's, which hands them over in its frame context (`frame-context.ts`): the shell
- * draws that context for every reader, so a change of the issue-page choice mounts nothing
+ * reader of those names sits under; Details' fill draws in the margin, outside it, and reads none
+ * of them), the navigation its header draws its `☰` from, and what its Keys control opens. The
+ * last two are the shell's, which hands them over in its frame context (`frame-context.ts`): the
+ * shell draws that context for every reader, so a change of the issue-page choice mounts nothing
  * above this page, and a provider only this page reads costs nothing in the entry chunk.
  */
 export function IssueOutlinePage(): ReactNode {

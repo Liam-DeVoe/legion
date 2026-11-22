@@ -26,8 +26,9 @@ interface ChunkBoundaryProps {
  * lists of writes (`features/writes/write-hosts.tsx`), drawn in the status corner of every
  * signed-in page and on the sign-in page; the reference-preview layer
  * (`features/refs/RefPreviewLayer.tsx`); and the surfaces a reader opens with a key - the Create
- * issue dialog, the shortcut sheet, the search bar and the Inbox peek (`askedSurface`), whose
- * bodies draw decision cards from a chunk of their own too (`features/doc/TextAskCardHost.tsx`).
+ * issue dialog, the shortcut sheet, the search bar and the Inbox peek (`askedSurface`); the
+ * bodies in the peek draw their decision cards from a chunk of their own too
+ * (`features/doc/TextAskCardHost.tsx`).
  *
  * WHY EACH SUCH HOST NEEDS ONE. A chunk that fails to download while the browser is online is
  * thrown into the render that waits on it (`chunkComponent`, `chunk-component.tsx`), and the
@@ -36,10 +37,12 @@ interface ChunkBoundaryProps {
  * sign-in channel listener and its sign-in check, so the tab stops answering another tab's
  * sign-out and stops showing the sign-in page on a 401 while its writes go on. The recovery's
  * reload, which a failure like this asks for (`DeploymentResilience.tsx`), does not always follow
- * to bring the page back: the reader can stay at the leave prompt a write out raises, a page asks
- * for one reload only, and the tab's budget of reloads can be spent. So the failure stops here,
- * and the rest of the page stays drawn and signed in. This boundary only stops the throw: the
- * reload is still asked for, as it is for any chunk a reader waits on.
+ * to bring the page back: the page can still count as being left after a navigation that never
+ * went, until the reader presses on it or it is shown again, the reader can stay at the leave
+ * prompt a write out raises, a page asks for one reload only, and the tab's budget of reloads can
+ * be spent. So the failure stops here, and the rest of the page stays drawn and signed in. This
+ * boundary only stops the throw: the reload is still asked for, as it is for any chunk a reader
+ * waits on.
  *
  * Why not `ErrorBoundary`: that one tells the reader which region failed, with a reload button,
  * in the region's own place. A list of writes in the status corner draws nothing while it has

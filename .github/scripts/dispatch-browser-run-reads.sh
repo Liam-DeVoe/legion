@@ -416,8 +416,10 @@ case "$mode" in
     # not cancelled is one whose seconds this figure then understates, and this budget is the
     # looser for it by exactly the difference. The same holds for a wait out of a GitHub rate
     # limit: since main's #4893 a read of the jobs API waits for the limit's reset within the
-    # job's 4 minutes (gh-read.sh's gh_wait_reset, with JOB_TIMEOUT_MINUTES on the merge job),
-    # and none of the runs the 44 s was read from waited, so that wait is outside the figure.
+    # step's 3 minutes and the job's 4, whichever ends first (gh-read.sh's gh_wait_reset, with
+    # STEP_TIMEOUT_MINUTES on "Reading one, the rows", the step that makes that read, and
+    # JOB_TIMEOUT_MINUTES on the merge job), and none of the runs the 44 s was read from waited,
+    # so that wait is outside the figure.
     # Subtracting the maximum rather than the median is what keeps this reading stricter than
     # the ceiling itself and never looser: a lane that passes here at 3,156 s and then spends a
     # worst-case 44 s in this job lands on 3,200 exactly.

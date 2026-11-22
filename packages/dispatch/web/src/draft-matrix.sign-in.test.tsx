@@ -49,14 +49,15 @@
  * above; the check not yet answered (`whoAmI.isPending`), before which no shell, and so no
  * composer, is drawn, which the first row's check still out makes; and the page signed out
  * (`signedOut`), which reason 3 answers. Below them it finds the person the shell is handed
- * (`user`), whom the rows above hold to the check's answer, and the shell the person's choice of
- * issue page draws (`ChosenShell`), which reason 6 answers.
+ * (`user`), whom the rows above hold to the check's answer, and the one `AppShell` both choices
+ * of issue page draw (`ChosenShell`), whose first draw, for a reader who chose the new page,
+ * waits under the skeleton for the frame's chunk: reason 6 answers both.
  *
  * The numbered reasons - the first row's two clients, the cell another file makes, the page
  * signed out, the forms of the layout the composer census found that the rows above do not
- * make, and the shell the choice of issue page draws - are `REASONS` in
- * `draft-matrix.sign-in.coverage.ts`, which holds each census item this file answers for to a
- * test above or to one of them.
+ * make, and the one shell both choices of issue page draw, with its first draw's wait - are
+ * `REASONS` in `draft-matrix.sign-in.coverage.ts`, which holds each census item this file answers
+ * for to a test above or to one of them.
  */
 import { expect, jest, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClient } from "@tanstack/react-query";

@@ -18,7 +18,8 @@ import { useCloseOnNavigation } from "./useDialog";
 /** What a surface drawn through `askedSurface` takes, beside its own props. */
 export interface AskedSurfaceProps {
   /** Closes the surface: what its host does when the reader closes it, and what this does when
-   *  the reader cancels the open before the surface's chunk is in, or the chunk cannot load. */
+   *  the reader cancels the open before the surface's chunk is in, when the chunk cannot load,
+   *  and when a render under the surface throws (`ChunkBoundary`'s `onError`). */
   readonly onClose: () => void;
   /** Whether the reader has the surface open. A host that draws its surface only while it is
    *  open - the Create issue dialog, the shortcut sheet - leaves it unset, and the surface is

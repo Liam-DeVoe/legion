@@ -90,9 +90,10 @@ export function PendingWritesHost(): ReactNode {
   // that page rather than a moment after it. So are the kinds of write: the take-up asked for
   // them as the person signed in, and this finds that download in or on its way. One the take-up
   // lost before the page drew, with no reload to follow - the page was being left, the reader
-  // chose to stay at the leave prompt a write pressed meanwhile opens, or the tab's recovery
-  // reloads are spent - is asked for again here, and once it is in, its kinds end the take-up
-  // (`kindsRegistered`) with no press to ask for them (`Writes.run`).
+  // chose to stay at the leave prompt that the writes the reload kept (`WriteStorage.load`) or a
+  // write pressed meanwhile open, or the tab's recovery reloads are spent - is asked for again
+  // here, and once it is in, its kinds end the take-up (`kindsRegistered`) with no press to ask
+  // for them (`Writes.run`).
   const drawn = useContentDrawn();
   useEffect(() => {
     if (!drawn) return;

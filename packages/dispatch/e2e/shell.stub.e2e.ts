@@ -243,10 +243,12 @@ test("a chunk the shell only prefetched reloads nothing when it fails @pr", asyn
 });
 
 // The same prefetch, failing in one of the module preload links Vite inserts for it: the bar's
-// chunk imports the shortcut sheet's, which no page has asked for yet. `web/index.html`'s inline
-// script leaves such a link to the bundle while the bundle's recovery runs
-// (`__dispatchChunkRecovery`), and the bundle knows it for a prefetch; the inline script alone
-// would reload for it as for an asset the document itself names.
+// chunk imports the shortcut sheet's, which the sheet's own host prefetches too
+// (`web/src/features/shell/ShortcutHelpHost.tsx`), and the route below fails every request for
+// it, that prefetch's among them. `web/index.html`'s inline script leaves such a link to the
+// bundle while the bundle's recovery runs (`__dispatchChunkRecovery`), and the bundle knows it
+// for a prefetch; the inline script alone would reload for it as for an asset the document
+// itself names.
 test("a module preload that fails for a chunk the shell only prefetched is left to the bundle and reloads nothing @pr", async ({
   baseURL,
   page,

@@ -82,8 +82,9 @@ export function MarginSlotProvider({
   children: ReactNode;
   /** The drawer the margin is on this page, where it is one. */
   drawer?: MarginDrawer;
-  /** Whether the margin is keeping a column for the page's panel right now. The shell answers
-   *  it, because the shell holds the reader's collapse preference and the width. */
+  /** Whether the margin is keeping a column for the page's panel right now. The shell leaves it
+   *  unset (`frame-context.ts`), and the margin then draws the panel exactly where it is the
+   *  drawer; this provider, which no shell draws, sets it, false unless the test says otherwise. */
   drawsSlot?: boolean;
 }): ReactNode {
   const shell = useContext(ShellFrameContext);
@@ -125,8 +126,8 @@ export function useMarginSlotFill(): MarginFill | undefined {
 
 /** Whether the margin draws the page's panel. A page draws it in its own column wherever this
  *  is false, so every property is on the screen at every width and with every preference
- *  (R11). The shell's margin draws it exactly where it is the drawer; false outside the shell,
- *  and false while the margin is a column collapsed to its rail or is the phone sheet. */
+ *  (R11). The shell's margin draws it exactly where it is the drawer, and nowhere else: not
+ *  outside the shell, and not where the margin is its column, open or collapsed to its rail. */
 export function useMarginDrawsSlot(): boolean {
   const shell = useContext(ShellFrameContext);
   return shell?.drawsSlot ?? shell?.drawer !== undefined;

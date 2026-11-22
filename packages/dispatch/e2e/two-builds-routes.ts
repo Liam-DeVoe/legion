@@ -69,9 +69,11 @@ export const lazyPieces = {
     "the new issue page's frame (features/issue-page/frame-shell.tsx, named once in " +
     "features/issue-page/frame-chunk.ts): the code the shell computes the frame from, its " +
     "fallback and the icon rail, which the shell loads only for a reader whose stored " +
-    "issue-page choice is `outline`, and which the entry starts beside the landing read on every " +
-    "address once a stored choice reads `outline` (app.tsx, preloadRouteChunk); the rail it " +
-    "draws from `md` up is what shows it ran",
+    "issue-page choice is `outline`, which the entry starts beside the landing read on every " +
+    "address once a stored choice reads `outline` (app.tsx, preloadRouteChunk), and which " +
+    "Settings starts as it draws its switch, whatever the choice " +
+    "(features/issue-page/IssuePagePreference.tsx); the rail it draws from `md` up is what " +
+    "shows it ran",
   "headless-markdown":
     "the headless Markdown renderer, @legion/proof-editor/headless, which every page warms at " +
     "boot (features/refs/markdown-engine.ts)",
