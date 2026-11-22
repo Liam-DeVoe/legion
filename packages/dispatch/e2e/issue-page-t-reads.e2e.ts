@@ -17,6 +17,7 @@ import {
   unexplainedDifferences,
   VIEW_FILTERS,
   VIEW_SEEDS,
+  watchLiveFrames,
 } from "./issue-page-t-rows";
 import {
   besideViewRead,
@@ -55,7 +56,9 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
 // a slot the stage mounts again past the app's 30 s `staleTime` sends no read of its own, shown
 // on Plan, whose slot reads only through `useIssueTree`.
 // SLOW(>=2s): the whole seeded issue, its load waited out to a 1.5 s quiet window, Details
-// opened, and three filters each pressed on, off and on again with each press waited out.
+// opened, three filters each pressed on, off and on again with each press waited out, and each
+// of Plan's two 31 s jumps of the clock held until the live socket's last frame is 2 to 10 s old,
+// up to one 15 s heartbeat.
 test("the first load reads the tree once and a filter its view once", async ({ browser }) => {
   test.setTimeout(ROW_MS);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
@@ -66,6 +69,7 @@ test("the first load reads the tree once and a filter its view once", async ({ b
       verification: viewAnswerOf(page, "verification"),
     } satisfies Record<(typeof VIEW_FILTERS)[number], TreeAnswerWatch>;
     const traffic = watchApiRequests(page);
+    const live = watchLiveFrames(page);
     await page.clock.install();
     const load = await firstLoad(page, traffic, seeded.key);
     await expect(headerStatus(page), "the page draws no header").toBeVisible();
@@ -89,7 +93,7 @@ test("the first load reads the tree once and a filter its view once", async ({ b
     for (const filter of VIEW_FILTERS) {
       const name = PRESET_NAMES[filter];
       const late = filter === "plan";
-      if (late) await pastStaleTime(page, traffic);
+      if (late) await pastStaleTime(page, traffic, live);
       const first = traffic.requests.length;
       await pressFilter(page, traffic, filter);
       await heldAnswer(views[filter], `the ${name} view read`);
@@ -104,7 +108,7 @@ test("the first load reads the tree once and a filter its view once", async ({ b
         ).toEqual([]);
       }
       await releaseFilter(page, filter);
-      if (late) await pastStaleTime(page, traffic);
+      if (late) await pastStaleTime(page, traffic, live);
       const again = traffic.requests.length;
       await pressFilter(page, traffic, filter);
       if (late) await expectLoadSettled(traffic);

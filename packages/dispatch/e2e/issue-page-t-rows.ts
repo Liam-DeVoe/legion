@@ -42,6 +42,7 @@ import {
   treeAnswerOf,
   treeReadGate,
 } from "./issue-page-t-tree";
+import { isLiveSocket } from "./live-socket-watch";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 
 /**
@@ -607,10 +608,76 @@ export async function releaseFilter(page: Page, filter: TreeView): Promise<void>
   await expectActivePreset(page, PRESET_NAMES.conversation);
 }
 
-/** Moves the page's clock 31 s on, past the app's 30 s `staleTime` (`web/src/main.tsx`), and
- *  waits out whatever a timer due in that time sent, so what follows counts what a press sends. */
-export async function pastStaleTime(page: Page, traffic: ApiRequests): Promise<void> {
+/** When the page's live socket last received a frame, by this process's clock, which
+ *  `page.clock` does not move: undefined before its first frame, and again after each jump of
+ *  `pastStaleTime`, since a frame from before a jump is 31 s older to the page than to this
+ *  process. */
+export interface LiveFrames {
+  at: number | undefined;
+}
+
+/** Records when the page's live socket receives each frame. Called before the page loads, it
+ *  watches every live socket the page opens. */
+export function watchLiveFrames(page: Page): LiveFrames {
+  const live: LiveFrames = { at: undefined };
+  page.on("websocket", (socket) => {
+    if (!isLiveSocket(socket)) return;
+    socket.on("framereceived", () => {
+      live.at = Date.now();
+    });
+  });
+  return live;
+}
+
+/** The youngest the live socket's last frame may be as `pastStaleTime` jumps. */
+const JUMP_FRAME_MIN_AGE_MS = 2_000;
+
+/** The oldest the live socket's last frame may be as `pastStaleTime` jumps. */
+const JUMP_FRAME_MAX_AGE_MS = 10_000;
+
+/** How long `pastStaleTime` waits for a frame of that age: two of the server's heartbeats. */
+const JUMP_FRAME_WAIT_MS = 30_000;
+
+/**
+ * Moves the page's clock 31 s on, past the app's 30 s `staleTime` (`web/src/main.tsx`), and
+ * waits out whatever a timer due in that time sent, so what follows counts what a press sends.
+ *
+ * It jumps only once the live socket's last frame is 2 to 10 s old, by this process's clock. The
+ * page replaces a socket that has carried no frame for 45 s (`LIVE_SOCKET_SILENT_MS`,
+ * `web/src/api/live-socket.ts`), and its check for that, every 15 s, falls due inside the jump,
+ * so it runs once at the jump's end and finds the last frame 31 s older. The server sends a
+ * heartbeat frame every 15 s (`defaultStreamHeartbeat`), so a jump made more than 14 s after the
+ * last frame replaces the socket, and the new socket's feed reads the issue, the tree and the
+ * open view again inside the press that counts them. A frame under 10 s old is at most 41 s old
+ * to that check. The next check comes 15 s after the jump and replaces the socket unless a frame
+ * came since. A last frame at least 2 s old means the last heartbeat came at least 2 s before
+ * the jump, so the next one comes inside those 15 s.
+ */
+export async function pastStaleTime(
+  page: Page,
+  traffic: ApiRequests,
+  live: LiveFrames
+): Promise<void> {
+  await expect
+    .poll(
+      () => {
+        if (live.at === undefined) return false;
+        const age = Date.now() - live.at;
+        return age >= JUMP_FRAME_MIN_AGE_MS && age < JUMP_FRAME_MAX_AGE_MS;
+      },
+      {
+        message:
+          `no frame came on the page's live socket in ${JUMP_FRAME_WAIT_MS / 1000} s, though ` +
+          "the server sends a heartbeat every 15 s, so the clock cannot jump 31 s without the " +
+          "page replacing the socket",
+        timeout: JUMP_FRAME_WAIT_MS,
+      }
+    )
+    .toBe(true);
   await page.clock.fastForward("00:31");
+  // A frame from before the jump is 31 s older to the page than to this process, so the next
+  // jump waits for one after it.
+  live.at = undefined;
   await expectLoadSettled(traffic);
 }
 
