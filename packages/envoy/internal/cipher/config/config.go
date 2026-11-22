@@ -440,7 +440,11 @@ type Config struct {
 	// (requests.Machine.Projects), and while Dispatch cannot say what kind of member a person is,
 	// every enrollment under that person's login and every secret request and release of their
 	// sessions is refused 503 MEMBER_KIND_UNCHECKABLE, and an approval of one decides nothing
-	// (the approval page says it could not decide the request). Set with
+	// (the approval page says it could not decide the request). The broker keeps the kind
+	// Dispatch last answered for each person in person_standing (projectaccess.Client.Keep), so
+	// while Dispatch does not answer a person it last answered a full member is served as one,
+	// and only a person it last answered a restricted member, or of whom it keeps no kind, is
+	// refused so. Set with
 	// BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with neither, the broker asks Dispatch
 	// nothing. It then refuses every secret carrying a dispatch-project tag (project-unchecked)
 	// and serves every other secret as before; a token that names no project, and an operator

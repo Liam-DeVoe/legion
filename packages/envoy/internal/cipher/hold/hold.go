@@ -262,9 +262,12 @@ func (g *Gate) notHeld(person string, until, asOf time.Time) (time.Time, error) 
 }
 
 // answered is the check answered from Dispatch's answer. Each answer is written once, the first
-// time the gate sees it, whichever caller's ask fetched it. A held answer that write fails is
-// remembered and written again at each check until a write takes it or a later answer from
-// Dispatch replaces it; a not-held one is served, and the next answer is written as any is.
+// time the gate sees it, whichever caller's ask fetched it, with its deadline and its member kind
+// (projectaccess.Client.MemberKind reads the kind while Dispatch cannot be asked); the client
+// writes the same answer as it fetches it, and whichever write lands second changes nothing. A
+// held answer that write fails is remembered and written again at each check until a write takes
+// it or a later answer from Dispatch replaces it; a not-held one is served, and the next answer is
+// written as any is.
 func (g *Gate) answered(ctx context.Context, person string, answer projectaccess.PersonAnswer) (time.Time, error) {
 	g.mu.Lock()
 	if asOf, ok := g.unwritten[person]; ok && answer.AsOf.After(asOf) {
@@ -278,7 +281,7 @@ func (g *Gate) answered(ctx context.Context, person string, answer projectaccess
 	g.mu.Unlock()
 	var writeErr error
 	if write {
-		writeErr = g.keep(ctx, person, answer.Held, answer.AsOf, deadlineOf(answer))
+		writeErr = g.keep(ctx, person, answer.Held, answer.AsOf, answer.KeptDeadline(), answer.MemberKind)
 		g.mu.Lock()
 		switch asOf, remembered := g.unwritten[person]; {
 		case writeErr == nil && remembered && !asOf.After(answer.AsOf):
@@ -306,16 +309,6 @@ func (g *Gate) answered(ctx context.Context, person string, answer projectaccess
 		return time.Time{}, heldUnwritten(person, writeErr)
 	}
 	return time.Time{}, fmt.Errorf("%w: %s", ErrHeld, person)
-}
-
-// deadlineOf is the deadline answer writes to person_standing beside it: its not_held_until when
-// it is not held and names one, and none otherwise, so a held answer keeps no deadline whatever it
-// carried.
-func deadlineOf(answer projectaccess.PersonAnswer) *time.Time {
-	if answer.Held || answer.NotHeldUntil.IsZero() {
-		return nil
-	}
-	return &answer.NotHeldUntil
 }
 
 // unasked is the check answered while Dispatch cannot be asked (cause): from the later, by as_of,
@@ -370,7 +363,8 @@ func (g *Gate) unasked(ctx context.Context, person string, cause error) (time.Ti
 }
 
 // writeUnwritten writes again the held answer for person this gate could not write, if there is
-// one, forgets it once a write takes it, and answers the write's failure.
+// one, forgets it once a write takes it, and answers the write's failure. It writes no member kind:
+// a held person is refused whatever their kind, and the person's next answer writes its own.
 func (g *Gate) writeUnwritten(ctx context.Context, person string) error {
 	g.mu.Lock()
 	asOf, ok := g.unwritten[person]
@@ -378,7 +372,7 @@ func (g *Gate) writeUnwritten(ctx context.Context, person string) error {
 	if !ok {
 		return nil
 	}
-	if err := g.keep(ctx, person, true, asOf, nil); err != nil {
+	if err := g.keep(ctx, person, true, asOf, nil, ""); err != nil {
 		return err
 	}
 	g.mu.Lock()
@@ -389,12 +383,13 @@ func (g *Gate) writeUnwritten(ctx context.Context, person string) error {
 	return nil
 }
 
-// keep writes Dispatch's answer for person, with its deadline until (nil for none), to
-// person_standing, apart from the caller's request and bounded by writeTimeout.
-func (g *Gate) keep(ctx context.Context, person string, held bool, asOf time.Time, until *time.Time) error {
+// keep writes Dispatch's answer for person, with its deadline until (nil for none) and its member
+// kind kind ("" for none), to person_standing, apart from the caller's request and bounded by
+// writeTimeout.
+func (g *Gate) keep(ctx context.Context, person string, held bool, asOf time.Time, until *time.Time, kind string) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
 	defer cancel()
-	return g.store.KeepPersonStanding(ctx, person, held, asOf, until)
+	return g.store.KeepPersonStanding(ctx, person, held, asOf, until, kind)
 }
 
 // logRefusal logs Dispatch refusing the broker's own account at ERROR, once a minute for every

@@ -31,17 +31,17 @@ func TestPersonStandingKeepsTheLaterAnswerOfACanonicalLogin(t *testing.T) {
 		held bool
 		asOf time.Time
 	}{{true, t2}, {false, t1}} {
-		if err := st.KeepPersonStanding(ctx, ada, write.held, write.asOf, nil); err != nil {
+		if err := st.KeepPersonStanding(ctx, ada, write.held, write.asOf, nil, ""); err != nil {
 			t.Fatalf("KeepPersonStanding(ada, %t, %v): %v", write.held, write.asOf, err)
 		}
 	}
 	read(true, t2, "a held answer as of t2, then a not-held one as of t1")
-	if err := st.KeepPersonStanding(ctx, ada, false, t3, nil); err != nil {
+	if err := st.KeepPersonStanding(ctx, ada, false, t3, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	read(false, t3, "a not-held answer as of t3")
 	for _, spelled := range []string{"Ada@example.com", " ada@example.com", "ada@example.com ", ""} {
-		if err := st.KeepPersonStanding(ctx, spelled, true, t3, nil); !isCheckViolation(err) {
+		if err := st.KeepPersonStanding(ctx, spelled, true, t3, nil, ""); !isCheckViolation(err) {
 			t.Errorf("KeepPersonStanding(%q) = %v, want the table's check to refuse a login not spelled canonically", spelled, err)
 		}
 	}
@@ -78,7 +78,7 @@ func TestPersonStandingKeepsTheDeadlineWithItsAnswer(t *testing.T) {
 		{false, t3, deadline(t3), false, t3, deadline(t3), "a not-held answer as of t3 with its deadline"},
 		{false, t4, nil, false, t4, nil, "a not-held answer as of t4 naming no deadline"},
 	} {
-		if err := st.KeepPersonStanding(ctx, ada, step.held, step.asOf, step.until); err != nil {
+		if err := st.KeepPersonStanding(ctx, ada, step.held, step.asOf, step.until, ""); err != nil {
 			t.Fatalf("KeepPersonStanding for %s: %v", step.write, err)
 		}
 		held, at, until, found, err := st.PersonStanding(ctx, ada)
@@ -86,6 +86,47 @@ func TestPersonStandingKeepsTheDeadlineWithItsAnswer(t *testing.T) {
 			(until != nil && !until.Equal(*step.wantUntil)) {
 			t.Fatalf("PersonStanding(ada) after %s = held %t as of %v until %v (found %t, %v); want held %t as of %v until %v",
 				step.write, held, at, until, found, err, step.wantHeld, step.wantAsOf, step.wantUntil)
+		}
+	}
+}
+
+// TestPersonStandingKeepsTheMemberKindWithItsAnswer: an answer's member kind is written with that
+// answer under the same rule, so the row's kind is always the latest answer's: a person nothing is
+// kept for is not found; a later restricted answer replaces a full one; an older full answer
+// written after it changes nothing; a later answer naming no kind keeps none; and a later full one
+// writes its own. The kind is kept as Dispatch spelled it, one this broker does not know included.
+//
+// Control: KeepPersonStanding's update leaving member_kind out of its set list; the restricted
+// answer as of t2 reads back full, and the test fails naming that write.
+func TestPersonStandingKeepsTheMemberKindWithItsAnswer(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := t.Context()
+	const ada = "ada@example.com"
+	if kind, at, found, err := st.KeptMemberKind(ctx, ada); err != nil || found || kind != "" || !at.IsZero() {
+		t.Fatalf("KeptMemberKind(ada) with nothing kept = %q, %v, %t, %v; want not found", kind, at, found, err)
+	}
+	t1 := time.Date(2026, 11, 22, 0, 0, 1, 0, time.UTC)
+	t2, t3, t4, t5 := t1.Add(time.Second), t1.Add(2*time.Second), t1.Add(3*time.Second), t1.Add(4*time.Second)
+	for _, step := range []struct {
+		kind     string
+		asOf     time.Time
+		wantKind string
+		wantAsOf time.Time
+		write    string
+	}{
+		{"full", t1, "full", t1, "a full answer as of t1"},
+		{"restricted", t2, "restricted", t2, "a restricted answer as of t2"},
+		{"full", t1, "restricted", t2, "the full answer as of t1 again, older than the row's"},
+		{"", t3, "", t3, "an answer as of t3 naming no kind"},
+		{"full", t4, "full", t4, "a full answer as of t4"},
+		{"guest-of-honour", t5, "guest-of-honour", t5, "an answer as of t5 naming a kind this broker does not know"},
+	} {
+		if err := st.KeepPersonStanding(ctx, ada, false, step.asOf, nil, step.kind); err != nil {
+			t.Fatalf("KeepPersonStanding for %s: %v", step.write, err)
+		}
+		kind, at, found, err := st.KeptMemberKind(ctx, ada)
+		if err != nil || !found || kind != step.wantKind || !at.Equal(step.wantAsOf) {
+			t.Fatalf("KeptMemberKind(ada) after %s = %q as of %v (found %t, %v); want %q as of %v", step.write, kind, at, found, err, step.wantKind, step.wantAsOf)
 		}
 	}
 }

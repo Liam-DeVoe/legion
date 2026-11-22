@@ -630,7 +630,7 @@ func TestHeldAirlockCarriedCallWhileDispatchIsDown(t *testing.T) {
 		bob := h.openSide(t, "bob", bobPlaceholder, bobValue, bobGrantID)
 
 		h.dispatchDown()
-		if err := h.store.KeepPersonStanding(context.Background(), heldPerson, true, time.Now(), nil); err != nil {
+		if err := h.store.KeepPersonStanding(context.Background(), heldPerson, true, time.Now(), nil, ""); err != nil {
 			t.Fatalf("keep a held answer of %s: %v", heldPerson, err)
 		}
 		h.passThirtySeconds()

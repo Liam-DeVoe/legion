@@ -24,6 +24,14 @@
 // reads in flight together, MemberKind's and Person's alike, share one call, so an outage costs
 // each person one call at a time, not one per caller. A read under Fresh takes neither: it asks
 // Dispatch itself.
+//
+// A broker keeps each answer of the person route it fetches in its database (Keep, the hold's
+// person_standing), whichever read fetched it, under the later-as_of rule, so that while Dispatch
+// cannot be asked (Unanswered) MemberKind answers from the member kind Dispatch last gave: a person
+// last kept as a full member is served as one, and every other person, one kept restricted, one of
+// whom no kind is kept, and one whose kept kind cannot be read, is refused as before. A demotion
+// that Dispatch answers during an outage is written and refuses from then on; one it never
+// answered takes effect when it answers again. An answer Dispatch gives always wins.
 package projectaccess
 
 import (
@@ -31,6 +39,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -40,6 +49,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // The member kinds Dispatch answers for a person.
@@ -83,6 +93,30 @@ const maxAnswerBytes = 64 << 10
 // cannot grow the cache without bound. An answer that does not fit is not kept, which costs that
 // question a call to Dispatch and nothing else.
 const maxCached = 4096
+
+// keepTimeout bounds the write of one answer to the Keeper, and keptReadTimeout the read of the
+// kept member kind while Dispatch cannot be asked. Each runs apart from its caller's context, so a
+// read whose caller's own bound passed while Dispatch did not answer (RelayedReadBound) is still
+// decided by the kept kind, and a caller that hangs up stops no write.
+const (
+	keepTimeout     = time.Second
+	keptReadTimeout = time.Second
+)
+
+// keptLogEvery is how often MemberKind counts, per person, a read it answered from the kept member
+// kind while Dispatch could not be asked, and logs one it served (KeptFullMessage).
+const keptLogEvery = time.Minute
+
+// KeptFullMessage is logged at WARN, at most once a minute per person, when MemberKind answers a
+// person full from the member kind kept for them because Dispatch could not be asked, followed by
+// person=<the canonical login>, as_of=<the time the kept answer rests on> and error=<why Dispatch
+// could not be asked>.
+const KeptFullMessage = "broker: Dispatch could not be asked what kind of member a person is; serving them as the full member Dispatch last answered"
+
+// keepFailedMessage is logged at WARN when an answer of the person route could not be kept: while
+// Dispatch cannot be asked the person is answered from the answer kept before it, and refused
+// where this one named a kind other than full (Client.unkept).
+const keepFailedMessage = "broker: Dispatch's answer of what kind of member a person is could not be kept; while Dispatch cannot be asked they are answered from the answer kept before it, and refused where this one is not full"
 
 // The paths of Dispatch's two routes.
 const (
@@ -207,10 +241,12 @@ func (e *NotVisibleError) Unwrap() error { return ErrNotVisible }
 const UncheckableCode = "MEMBER_KIND_UNCHECKABLE"
 
 // MemberKindUncheckable is the refusal of something done for Person — an enrollment, a secret
-// request, a release — because Dispatch could not be asked what kind of member Person is: a
-// check that cannot decide refuses rather than answer as if the person were a full member. Err is
-// the failure, which a caller logs. Error names the person and why in uncheckableReason's fixed
-// words and never Err, which can carry Dispatch's address, so a caller answers it as it is.
+// request, a release — because Dispatch could not be asked what kind of member Person is (and,
+// where Dispatch does not answer, the broker keeps no answer that Person is a full member:
+// Client.Keep): a check that cannot decide refuses rather than answer as if the person were a full
+// member. Err is the failure, which a caller logs. Error names the person and why in
+// uncheckableReason's fixed words and never Err, which can carry Dispatch's address, so a caller
+// answers it as it is.
 type MemberKindUncheckable struct {
 	Person string
 	Err    error
@@ -252,6 +288,8 @@ func uncheckableReason(err error) string {
 // caller about to enroll, decide or release something for that person. MemberFull and MemberNone
 // are not; any other kind, and any MemberKind failure, is a *MemberKindUncheckable naming person,
 // which the caller returns as it is: a check that cannot decide refuses, whatever Access answered.
+// While Dispatch cannot be asked, a client that keeps its answers (Client.Keep) answers a person
+// last kept full as MemberFull, so only everyone else is refused so.
 func Restricted(ctx context.Context, a Access, person string) (bool, error) {
 	kind, err := a.MemberKind(ctx, person)
 	if err != nil {
@@ -352,6 +390,22 @@ type Access interface {
 	States(ctx context.Context, projects []string) (map[string]Answer, error)
 }
 
+// Keeper is where a Client keeps each answer of Dispatch's person route, and reads back the member
+// kind of the last one, so that while Dispatch cannot be asked MemberKind answers from the kind
+// Dispatch last gave (Keep): the broker's person_standing (internal/cipher/store), where the hold
+// gate keeps the same answers (internal/cipher/hold). A write keeps its answer unless the row holds
+// one Dispatch gave later by its own clock (as_of), so every broker process and a restart read the
+// same kind.
+type Keeper interface {
+	// KeepPersonStanding writes Dispatch's answer for person: held as of asOf, with the deadline
+	// notHeldUntil (nil for none) and the member kind memberKind ("" for none), unless the row
+	// holds an answer Dispatch gave later.
+	KeepPersonStanding(ctx context.Context, person string, held bool, asOf time.Time, notHeldUntil *time.Time, memberKind string) error
+	// KeptMemberKind is the member kind of the last answer kept for person, "" for one that named
+	// none, and the as_of it rests on; found is false when no answer is kept.
+	KeptMemberKind(ctx context.Context, person string) (kind string, asOf time.Time, found bool, err error)
+}
+
 // Client asks Dispatch's routes at one base URL, presenting the broker's own account token.
 type Client struct {
 	read dispatchread.Reader
@@ -368,6 +422,33 @@ type Client struct {
 	// joined, when set, runs each time a read joins one already in flight for the same person: a
 	// test's signal that the read waits on that call rather than making its own.
 	joined func()
+
+	// keeper, when set (Keep), keeps each answer of the person route this client fetches and
+	// answers a member-kind read while Dispatch cannot be asked; keepLog takes the WARN lines of
+	// both, and keptUnchecked counts each person's reads answered from the kept kind.
+	keeper        Keeper
+	keepLog       *slog.Logger
+	keptUnchecked *metrics.Counter
+	// unkept is, for each person, the latest answer of the person route naming a kind other than
+	// full that no write has kept: while Dispatch cannot be asked it stands over an older kept
+	// answer, so a kind this process last read as not full is never served on an older full. It is
+	// forgotten once a write keeps that answer or a later one, and never otherwise.
+	unkept map[string]unkeptKind
+	// keptNoted is when MemberKind last counted each person's read answered from the kept kind,
+	// and under which label, so it counts, and logs a served one, once a minute per person.
+	keptNoted map[string]keptNote
+}
+
+// unkeptKind is an answer's member kind that no write has kept, and the as_of it rests on.
+type unkeptKind struct {
+	kind string
+	asOf time.Time
+}
+
+// keptNote is one count of a person's read answered from the kept kind: its label and when.
+type keptNote struct {
+	kept string
+	at   time.Time
 }
 
 type accessKey struct{ project, person string }
@@ -409,12 +490,31 @@ type personFlight struct {
 // 10 s whatever the client.
 func New(baseURL string, account ciphertoken.Account, httpClient *http.Client) *Client {
 	return &Client{
-		read:     dispatchread.New(baseURL, account, httpClient, requestTimeout, maxAnswerBytes),
-		now:      time.Now,
-		answers:  map[accessKey]cachedAnswer{},
-		people:   map[string]cachedPerson{},
-		failures: map[string]failedKind{},
-		flights:  map[string]*personFlight{},
+		read:      dispatchread.New(baseURL, account, httpClient, requestTimeout, maxAnswerBytes),
+		now:       time.Now,
+		answers:   map[accessKey]cachedAnswer{},
+		people:    map[string]cachedPerson{},
+		failures:  map[string]failedKind{},
+		flights:   map[string]*personFlight{},
+		unkept:    map[string]unkeptKind{},
+		keptNoted: map[string]keptNote{},
+	}
+}
+
+// Keep makes c keep each answer of Dispatch's person route it fetches in keeper, whichever read
+// fetched it, and answer a member-kind read from the kind kept there while Dispatch cannot be asked
+// (MemberKind). Its WARN lines go to log (nil is slog.Default()), and
+// broker_member_kind_unchecked_total is counted on registry (nil counts nothing). It is set before
+// c is first used, as UseClock is. A client never given a keeper keeps nothing and refuses every
+// member-kind read Dispatch does not answer.
+func (c *Client) Keep(keeper Keeper, log *slog.Logger, registry *metrics.Registry) {
+	if log == nil {
+		log = slog.Default()
+	}
+	c.keeper, c.keepLog = keeper, log
+	if registry != nil {
+		c.keptUnchecked = registry.NewCounter("broker_member_kind_unchecked_total",
+			"Member-kind reads the broker answered from the kind it kept for the person because Dispatch could not be asked, at most one a minute per person, by that kind: full, served; restricted, none or unreadable, refused.")
 	}
 }
 
@@ -547,6 +647,13 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 // have been asked before the change it must see, and takes no kept failure: it asks Dispatch
 // itself (personAnswerNow). Under CachedOnly it answers a young cached answer or ErrNotCached, and
 // asks nothing.
+//
+// A client given a Keeper (Keep) answers a read Dispatch did not answer (Unanswered: no answer, a
+// timeout, the caller's own bound included, or Dispatch's own outage status) from the member kind
+// it kept for the person (keptKind): MemberFull for a person last kept full, and the read's failure
+// for everyone else, as with no Keeper. Every other failure is returned as it is: Dispatch refusing
+// the broker's own account, a kind this broker does not know, an answer it cannot read, and a read
+// whose caller hung up (context.Canceled), which says nothing of Dispatch.
 func (c *Client) MemberKind(ctx context.Context, person string) (string, error) {
 	person = record.CanonicalLogin(person)
 	if person == "" {
@@ -559,12 +666,104 @@ func (c *Client) MemberKind(ctx context.Context, person string) (string, error) 
 		return CacheTTL
 	})
 	if err != nil {
+		if c.keeper != nil && Unanswered(err) {
+			return c.keptKind(ctx, person, err)
+		}
 		return "", err
 	}
 	if !knownKind(answer.kind) {
 		return "", fmt.Errorf("%w: %q for %s", ErrUnknownMemberKind, answer.kind, person)
 	}
 	return answer.kind, nil
+}
+
+// The labels of broker_member_kind_unchecked_total: the kind kept for a person whose member-kind
+// read Dispatch did not answer. keptFull is served; every other is refused.
+const (
+	keptFull       = MemberFull
+	keptRestricted = MemberRestricted
+	// keptNone is no answer kept for the person, or a kept answer naming no kind or MemberNone.
+	keptNone = "none"
+	// keptUnreadable is a kept answer the database could not read, or one naming a kind this
+	// broker does not know.
+	keptUnreadable = "unreadable"
+)
+
+// keptKind is MemberKind's answer for person while Dispatch cannot be asked (cause): MemberFull
+// where the last answer kept for them is full, and cause otherwise, wrapped with what was kept, so
+// the caller refuses as it refuses with no Keeper (Restricted's *MemberKindUncheckable, in
+// uncheckableReason's words). The last answer is the later, by as_of, of the one the Keeper holds
+// and one this process read and could not keep (unkept), which is never full; the Keeper is read
+// apart from ctx, bounded by keptReadTimeout. Each read is counted in
+// broker_member_kind_unchecked_total by its label (keptFull, keptRestricted, keptNone or
+// keptUnreadable), and a served one logged at WARN (KeptFullMessage), at most once a minute per
+// person.
+func (c *Client) keptKind(ctx context.Context, person string, cause error) (string, error) {
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), keptReadTimeout)
+	kind, asOf, found, readErr := c.keeper.KeptMemberKind(readCtx, person)
+	cancel()
+	c.mu.Lock()
+	unkept, remembered := c.unkept[person]
+	c.mu.Unlock()
+	var kept string
+	switch {
+	case remembered && (readErr != nil || !found || !unkept.asOf.Before(asOf)):
+		kept, asOf = keptLabel(unkept.kind), unkept.asOf
+	case readErr != nil:
+		kept = keptUnreadable
+	case !found:
+		kept = keptNone
+	default:
+		kept = keptLabel(kind)
+	}
+	c.noteKept(person, kept, asOf, cause)
+	switch {
+	case kept == keptFull:
+		return MemberFull, nil
+	case readErr != nil && kept == keptUnreadable:
+		return "", fmt.Errorf("%w; the member kind kept for %s could not be read either: %v", cause, person, readErr)
+	}
+	return "", fmt.Errorf("%w; the member kind kept for %s is %s, and only a kept full is served while Dispatch cannot be asked", cause, person, kept)
+}
+
+// keptLabel is the label of a kept member kind: MemberFull and MemberRestricted as they are,
+// MemberNone and no kind keptNone, and a kind this broker does not know keptUnreadable.
+func keptLabel(kind string) string {
+	switch kind {
+	case MemberFull, MemberRestricted:
+		return kind
+	case MemberNone, "":
+		return keptNone
+	}
+	return keptUnreadable
+}
+
+// noteKept counts a read of person answered from the kept kind under kept, and logs one served
+// (keptFull) at WARN with the as_of it rests on and cause, at most once a minute per person and
+// again at once when the label changes.
+func (c *Client) noteKept(person, kept string, asOf time.Time, cause error) {
+	now := c.now()
+	c.mu.Lock()
+	last, noted := c.keptNoted[person]
+	due := !noted || last.kept != kept || now.Sub(last.at) >= keptLogEvery
+	if due {
+		if len(c.keptNoted) >= maxCached {
+			for other, note := range c.keptNoted {
+				if now.Sub(note.at) >= keptLogEvery {
+					delete(c.keptNoted, other)
+				}
+			}
+		}
+		c.keptNoted[person] = keptNote{kept: kept, at: now}
+	}
+	c.mu.Unlock()
+	if !due {
+		return
+	}
+	c.keptUnchecked.Inc([2]string{"kept", kept})
+	if kept == keptFull {
+		c.keepLog.Warn(KeptFullMessage, "person", person, "as_of", asOf.UTC().Format(time.RFC3339Nano), "error", cause)
+	}
 }
 
 // knownKind reports whether kind is one of the three member kinds this broker knows.
@@ -594,6 +793,17 @@ type PersonAnswer struct {
 	// AskedAt is when the question this answers was asked, by the client's clock, read before it
 	// was sent. Every read of one cached answer carries the same AskedAt.
 	AskedAt time.Time
+}
+
+// KeptDeadline is the deadline kept beside a in person_standing (Keeper.KeepPersonStanding): its
+// NotHeldUntil when it is not held and names one, and none otherwise, so a held answer keeps no
+// deadline whatever it carried. The client and the hold gate both write by it.
+func (a PersonAnswer) KeptDeadline() *time.Time {
+	if a.Held || a.NotHeldUntil.IsZero() {
+		return nil
+	}
+	until := a.NotHeldUntil
+	return &until
 }
 
 // noHeldRetry is how long Person answers ErrNoHeldField from a cached answer with no held before
@@ -633,7 +843,12 @@ func (c *Client) Person(ctx context.Context, person string) (PersonAnswer, error
 	case answer.asOf.IsZero():
 		return PersonAnswer{}, fmt.Errorf("projectaccess: dispatch's answer for %s names held and no as_of", person)
 	}
-	return PersonAnswer{MemberKind: answer.kind, Held: *answer.held, AsOf: answer.asOf, NotHeldUntil: answer.until, AskedAt: answer.at}, nil
+	return answer.answer(), nil
+}
+
+// answer is p as Person answers it, for an answer whose held is set (not held where it is not).
+func (p cachedPerson) answer() PersonAnswer {
+	return PersonAnswer{MemberKind: p.kind, Held: p.held != nil && *p.held, AsOf: p.asOf, NotHeldUntil: p.until, AskedAt: p.at}
 }
 
 // personAnswer is the cached answer for person, a canonical login, while it is younger than keep
@@ -691,7 +906,8 @@ func (c *Client) personAnswer(ctx context.Context, person string, memberKind boo
 // requests.Machine.RevokeByApprover), so that what it lets through lasts no longer than Dispatch
 // does not answer. The call runs on the caller's own context, so a call that failed because that
 // context ended, its deadline passed or its caller cancelled, keeps no failure for the person's
-// next reads: that ending says nothing of Dispatch.
+// next reads: that ending says nothing of Dispatch. An answer is kept (keepPerson) before it is
+// settled.
 func (c *Client) personAnswerNow(ctx context.Context, person string, memberKind bool, keep func(cachedPerson) time.Duration) (cachedPerson, error) {
 	c.mu.Lock()
 	if cached, ok := c.people[person]; ok && !fresh(ctx) && c.now().Sub(cached.at) < keep(cached) {
@@ -703,23 +919,60 @@ func (c *Client) personAnswerNow(ctx context.Context, person string, memberKind 
 	if err != nil && ctx.Err() != nil {
 		return cachedPerson{}, err
 	}
+	if err == nil {
+		c.keepPerson(ctx, person, answer)
+	}
 	c.mu.Lock()
 	c.settleLocked(person, answer, err, memberKind)
 	c.mu.Unlock()
 	return answer, err
 }
 
-// askPerson makes flight's one call of the person route for person and settles it (settleLocked),
-// keeping a failure where the read that started the flight is a member-kind read. The flight leaves
-// c.flights under the same lock, so a read that finds no flight finds what this one settled.
+// askPerson makes flight's one call of the person route for person, keeps an answer (keepPerson)
+// and settles it (settleLocked), keeping a failure where the read that started the flight is a
+// member-kind read. The flight leaves c.flights under the same lock, so a read that finds no
+// flight finds what this one settled, and every reader of the flight returns after its answer is
+// kept.
 func (c *Client) askPerson(ctx context.Context, person string, flight *personFlight, keepFailure bool) {
 	answer, err := c.readPerson(ctx, person, c.now())
+	if err == nil {
+		c.keepPerson(ctx, person, answer)
+	}
 	c.mu.Lock()
 	delete(c.flights, person)
 	c.settleLocked(person, answer, err, keepFailure)
 	c.mu.Unlock()
 	flight.answer, flight.err = answer, err
 	close(flight.done)
+}
+
+// keepPerson writes answer, the person route's answer for person, to c's Keeper (Keep), apart from
+// ctx and bounded by keepTimeout, whichever read fetched it, with the deadline the hold gate writes
+// beside it (PersonAnswer.KeptDeadline). An answer with no held or no as_of, from a Dispatch older
+// than the hold, cannot be ordered against a kept one, and is not written. A write that fails is
+// logged at WARN, and an answer naming a kind other than full that no write took is remembered
+// (unkept) until a write keeps it or a later answer, so a later outage answers that person from it
+// rather than from an older kept full. A write that takes forgets an unkept answer no later than
+// its own.
+func (c *Client) keepPerson(ctx context.Context, person string, answer cachedPerson) {
+	if c.keeper == nil || answer.held == nil || answer.asOf.IsZero() {
+		return
+	}
+	kept := answer.answer()
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), keepTimeout)
+	err := c.keeper.KeepPersonStanding(writeCtx, person, kept.Held, kept.AsOf, kept.KeptDeadline(), kept.MemberKind)
+	cancel()
+	c.mu.Lock()
+	switch remembered, ok := c.unkept[person]; {
+	case err == nil && ok && !remembered.asOf.After(kept.AsOf):
+		delete(c.unkept, person)
+	case err != nil && kept.MemberKind != MemberFull && (!ok || kept.AsOf.After(remembered.asOf)):
+		c.unkept[person] = unkeptKind{kind: kept.MemberKind, asOf: kept.AsOf}
+	}
+	c.mu.Unlock()
+	if err != nil {
+		c.keepLog.Warn(keepFailedMessage, "person", person, "member_kind", kept.MemberKind, "as_of", kept.AsOf.UTC().Format(time.RFC3339Nano), "error", err)
+	}
 }
 
 // settleLocked keeps the outcome of a call of the person route for person: an answer is kept,
@@ -988,7 +1241,9 @@ func (c *Client) clock() time.Time { return c.now() }
 // logs that it did so unchecked. Because that failure lets the list through, the member kind is
 // asked afresh (AskedNow, which any Access that hands the context on honours), never answered by
 // a failure an earlier read kept: the list goes through unchecked only while Dispatch does not
-// answer.
+// answer. A client that keeps its answers (Client.Keep) answers a person last kept full as
+// MemberFull meanwhile, so their empty list goes through as a full member's, logged by MemberKind
+// rather than as unchecked.
 func ListAllowed(ctx context.Context, a Access, person string, projects []string) error {
 	if len(projects) > 0 {
 		return Visible(ctx, a, person, projects)
