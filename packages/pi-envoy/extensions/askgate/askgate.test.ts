@@ -4506,6 +4506,20 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       expect(g.entries.map((e) => [e.tool, e.outcome])).toEqual([["dispatch_artifact", "verdict"]]);
       expect(markersIn(g.store)).toMatchObject([{ outcome: "verdict" }]);
     });
+    // INFRA-4071, review at 1299d195: the CLI resolves --path, which drops a trailing `/`, so
+    // `--name Plan --path notes.md/` sends notes.md as text/markdown, a document, and the CLI
+    // gates it (uploadIsDocument reads the resolved path). The gate read the path as written,
+    // which ends in `/`, and let the upload run unread.
+    test("(o2) Plan sent from notes.md/ is reviewed and marked, as the CLI gates it", async () => {
+      fs.writeFileSync(path.join(work, "notes.md"), BRIEF);
+      const g = bind({ env: STUB, cwd: work });
+      await g.bash("o2", "dispatch artifact --issue DSP-1 --name Plan --path notes.md/");
+      expect(g.calls).toHaveLength(1);
+      expect(g.calls[0].user).toContain(uploadRule);
+      expect(g.calls[0].user).toContain(JSON.stringify(BRIEF));
+      expect(g.entries.map((e) => [e.tool, e.outcome])).toEqual([["dispatch_artifact", "verdict"]]);
+      expect(markersIn(g.store)).toMatchObject([{ outcome: "verdict" }]);
+    });
     test("other writes keep the full rules and do not get the upload instruction", async () => {
       const g = bind({ env: STUB, cwd: work });
       await g.bash("u8", ASK);

@@ -7,8 +7,9 @@ import type {
   EditPrecondition,
   UploadPrecondition,
 } from "@legion/contracts";
-import { typedBlockIdAttribute, uploadExtensionOf, uploadTypeOf } from "@legion/contracts";
+import { typedBlockIdAttribute, uploadExtensionOf } from "@legion/contracts";
 import { goBlankPattern } from "@legion/contracts/go-blank";
+import { uploadIsDocument } from "../askgate-marker";
 import { commandName } from "../dispatch-command";
 import type { DispatchClient } from "../dispatch-http";
 import {
@@ -611,37 +612,42 @@ export async function planApproveCommand(context: CommandContext): Promise<Dispa
 /**
  * The file `dispatch artifact --path` sends, under the type Dispatch stores it by: an upload
  * declared `text/markdown` is a document, and any other is a picture or a file
- * (`artifactKind`, packages/envoy/internal/dispatch/api/artifacts.go). The name says the type
- * wherever it has an extension. It is read once, for the extension that decides
- * (uploadExtensionOf, past trailing extensions of digits alone), which uploadTypeOf classifies as
- * uploadTypeFrom does (INFRA-4071 R15): a name whose extension is .md or .markdown declares
- * `text/markdown` whatever the path, so a plan written to plan.txt and sent as plan.md is a
- * document, as the plan the issue reads must be, and a name with any other extension declares the
- * type Bun gives that extension alone (`x.<extension>`), whatever the path, so cases.txt sent
- * from cases.md is a file of the bytes as written, notes.txt.1 goes up as `text/plain` and
- * rows.jsonl.1 as `application/octet-stream`. Only a name with no extension declares the type Bun
- * reads from the path, so a Markdown file sent under a title (`Design notes`, `Plan v1.2`,
- * `notes.md/`) is still a document. `bytes` are the bytes AskGate's check read, when it read
- * them.
+ * (`artifactKind`, packages/envoy/internal/dispatch/api/artifacts.go). The type is
+ * `text/markdown` exactly when AskGate's predicate holds the upload as a document
+ * (uploadIsDocument, ../askgate-marker.ts), from its name and `path` resolved against `cwd`, the
+ * file this sends, and never otherwise, so Dispatch stores as a document every upload AskGate
+ * holds as one and no other (INFRA-4071 R15): a plan written to plan.txt and sent as plan.md is a
+ * document, as the plan the issue reads must be, and so is a Markdown file sent under a title
+ * (`Design notes`, `Plan v1.2`, `notes.md/`) or from `notes.md/`, which the path resolves to
+ * notes.md. Every other upload declares the type Bun gives the extension that decides in its
+ * name (`x.<extension>`, uploadExtensionOf, past trailing extensions of digits alone), whatever
+ * the path, so cases.txt sent from cases.md is a file of the bytes as written, notes.txt.1 goes
+ * up as `text/plain` and rows.jsonl.1 as `application/octet-stream`; a name with no extension
+ * declares the type Bun reads from the resolved path. A type of those that is still
+ * `text/markdown` goes up as `application/octet-stream`. `bytes` are the bytes AskGate's check
+ * read, when it read them.
  */
-function uploadedFile(local: string, name: string, bytes: Uint8Array | undefined): Blob {
-  const extension = uploadExtensionOf(name);
-  const type =
-    extension === undefined
-      ? Bun.file(local).type
-      : uploadTypeOf(extension) === "markdown"
-        ? "text/markdown"
-        : extensionType(extension);
+function uploadedFile(
+  cwd: string,
+  path: string,
+  name: string,
+  bytes: Uint8Array | undefined
+): Blob {
+  const local = resolvePath(cwd, path);
+  let type = "text/markdown";
+  if (!uploadIsDocument({ name, path }, cwd)) {
+    const extension = uploadExtensionOf(name);
+    type = notMarkdown(Bun.file(extension === undefined ? local : `x.${extension}`).type);
+  }
   return bytes === undefined
     ? Bun.file(local, { type })
     : // The copy gives the bytes a plain buffer of their own, which a Blob takes.
       new Blob([new Uint8Array(bytes)], { type });
 }
 
-/** The type Bun gives a name with `extension`, one that is not .md or .markdown. */
-function extensionType(extension: string): string {
-  const type = Bun.file(`x.${extension}`).type;
-  // The gate reads a name with this extension as a file, so it must not be stored as a document.
+/** `type`, or `application/octet-stream` for `text/markdown`, which only an upload AskGate holds
+ *  as a document declares (uploadedFile). */
+function notMarkdown(type: string): string {
   return type.split(";", 1)[0]?.trim().toLowerCase() === "text/markdown"
     ? "application/octet-stream"
     : type;
@@ -743,7 +749,7 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // neither makes an empty document the writer fills in afterwards with dispatch doc-edit.
   const artifactInput =
     path !== undefined
-      ? { ...options, file: uploadedFile(resolvePath(input.cwd, path), name, input.uploadBytes) }
+      ? { ...options, file: uploadedFile(input.cwd, path, name, input.uploadBytes) }
       : content !== undefined
         ? { ...options, content }
         : options;

@@ -28,6 +28,7 @@ import {
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
+import { gatedWrite } from "../askgate-marker";
 import { bearerCredential } from "../bearer";
 import { cliRefusals } from "../dispatch-cli";
 import { linkFor } from "../dispatch-commands/links";
@@ -11519,6 +11520,16 @@ describe("executeDispatchTool", () => {
     async function upload(name: string, file: string, bytes: Uint8Array, gated: boolean) {
       const cwd = makeDirectory();
       writeFileSync(path.join(cwd, file), bytes);
+      return uploadFrom(cwd, name, file, bytes, gated);
+    }
+    /** `upload` from `cwd`, where `bytes` are already written at the file `file` resolves to. */
+    async function uploadFrom(
+      cwd: string,
+      name: string,
+      file: string,
+      bytes: Uint8Array,
+      gated: boolean
+    ) {
       const declared: string[] = [];
       const sent: string[] = [];
       const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -11706,6 +11717,65 @@ describe("executeDispatchTool", () => {
         });
       });
     }
+
+    // INFRA-4071, review at 1299d195: an upload declares text/markdown exactly when AskGate holds
+    // it as a document (gatedWrite, the CLI's gate), which reads the name and the path as the
+    // command resolves it, dropping a trailing `/`, `/.` and `x/..`. At 1299d195 the gate read
+    // the path as written, so `--name Plan --path notes.md/` went up as text/markdown, a document
+    // neither gate held. Each pair whose two answers part is named with both.
+    test("declares text/markdown exactly when AskGate holds the upload as a document", async () => {
+      const ABSOLUTE = "<cwd>/notes.md/";
+      const pairs: Array<[name: string, sent: string]> = [
+        ["Plan", "notes.md/"],
+        ["Plan", "notes.md/."],
+        ["Plan", "notes.md//"],
+        ["Plan", "notes.md/x/.."],
+        ["Plan", "./notes.md/./"],
+        ["Plan", ABSOLUTE],
+        ["Plan", ".md"],
+        ["Plan", "notes.md"],
+        ["Plan v1.2", "notes.markdown/"],
+        ["notes.md/", "notes.md"],
+        ["notes.md/", "cases.txt"],
+        ["x.markdown", "x.txt"],
+        ["cases.txt", "cases.md"],
+        ["notes.txt\u0000", "notes.md"],
+        ["cases.txt\u0085", "cases.md"],
+      ];
+      const notes = text("# Notes\n");
+      const parted: Array<{ name: string; path: string; held: boolean; declared: string }> = [];
+      for (const [name, sent] of pairs) {
+        const cwd = makeDirectory();
+        const file = sent === ABSOLUTE ? `${path.join(cwd, "notes.md")}/` : sent;
+        writeFileSync(path.resolve(cwd, file), notes);
+        const held = gatedWrite("dispatch_artifact", { issue: "DSP-42", name, path: file }, cwd);
+        const [declared = ""] = (await uploadFrom(cwd, name, file, notes, false)).declared;
+        const markdown = declared.split(";", 1)[0]?.trim().toLowerCase() === "text/markdown";
+        if (held !== markdown) parted.push({ name, path: sent, held, declared });
+      }
+      expect(parted).toEqual([]);
+    });
+
+    // A name with no extension takes the type its path gives, so notes.md/ sent from cases.txt is
+    // a file of the bytes sent, which AskGate does not hold either.
+    test("notes.md/ sent from cases.txt is declared text/plain, a file", async () => {
+      const cases = text("# Cases\n");
+      expect(await upload("notes.md/", "cases.txt", cases, false)).toEqual({
+        declared: ["text/plain;charset=utf-8"],
+        sent: [sha256(cases)],
+        text:
+          "Uploaded notes.md/ as version 1, a file " +
+          "(kind file; artifact slug notes-md-; dispatch://DSP-42/artifact/notes-md-)",
+      });
+    });
+
+    // An extension holds no control character, so a name ending in U+0000 has none and its path
+    // decides. The command never builds a path of the name for Bun to open, so the upload goes up.
+    test("a name holding U+0000 goes up under the type its path gives", async () => {
+      const notes = text("# Notes\n");
+      const { declared, sent } = await upload("notes.txt\u0000", "notes.md", notes, false);
+      expect({ declared, sent }).toEqual({ declared: ["text/markdown"], sent: [sha256(notes)] });
+    });
   });
 
   test("uploads inline artifact content as JSON", async () => {
@@ -11962,6 +12032,9 @@ describe("executeDispatchTool", () => {
     "отчёт.данные",
     "rows.jsonl.1",
     "row data.jsonl.1",
+    // Dispatch trims a name with Go's strings.TrimSpace, which cuts U+0085 (goTrimSpace), so
+    // this is a .txt name; at 1299d195 it was read with `trim`, which keeps it, as no extension.
+    "cases.txt\u0085",
   ])("refuses inline content named %j before it sends anything, naming --path", async (name) => {
     const requests: string[] = [];
     await expect(

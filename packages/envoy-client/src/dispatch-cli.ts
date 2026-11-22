@@ -499,7 +499,7 @@ export async function runDispatchCli(
   // this directory) posts a gated write only with one marker the gate minted for this exact argv,
   // whatever ran the CLI. A session no live process records needs none.
   let uploadBytes: Uint8Array | undefined;
-  if (gatedWrite(parsed.tool, parsed.args)) {
+  if (gatedWrite(parsed.tool, parsed.args, io.cwd)) {
     const notCalled = `dispatch ${commandName(parsed.tool)} was not called:`;
     try {
       const gate = askgateState(dir);

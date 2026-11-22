@@ -1335,7 +1335,10 @@ describe("dispatchToolSpecs", () => {
 
   // INFRA-4071 R15, review 6011588028: the name is read once, from its end, and its last part is
   // an extension only when an extension can hold it. `notes.md/` has none, so its path decides,
-  // for the type the command sends and for AskGate alike; a tail longer than 32 is no type.
+  // for the type the command sends and for AskGate alike; a tail longer than 32 is no type. The
+  // name is trimmed as Dispatch trims it, with Go's strings.TrimSpace (goTrimSpace): U+0085 is
+  // cut, so `cases.txt` then U+0085 is a .txt name, and U+FEFF is kept, so it is part of the last
+  // part, which an extension cannot hold.
   test("reads the extension that decides an upload's type, once, from the name's end", () => {
     const rows: Array<[string, string | undefined]> = [
       ["notes.md/", undefined],
@@ -1356,6 +1359,8 @@ describe("dispatchToolSpecs", () => {
       ["x.t\u0000xt", undefined],
       [`x.${"a".repeat(32)}`, "a".repeat(32)],
       [`x.${"a".repeat(33)}`, undefined],
+      ["cases.txt\u0085", "txt"],
+      ["notes.md\uFEFF", undefined],
     ];
     expect(rows.map(([name]) => [name, uploadExtensionOf(name)])).toEqual(rows);
   });

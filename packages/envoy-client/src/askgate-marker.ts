@@ -105,34 +105,46 @@ const MARKDOWN_PATH = /\.(md|markdown)$/i;
 /**
  * Whether an upload's arguments make a markdown document with text: inline text, or a file the CLI
  * sends as `text/markdown`, which its name decides as `uploadTypeFrom` reads it (trimmed as
- * Dispatch trims it, from the extension that decides, uploadExtensionOf). A name whose extension
- * is .md or .markdown makes one whatever the path (`x.markdown` sent from x.txt), a name with any
- * other extension makes a file whatever the path (`cases.txt` sent from cases.md), and a name
- * with no extension (`Plan v1.2`, `notes.md/`) makes one when the path, whose type Bun then reads,
- * ends in .md or .markdown. With no name, the path alone decides. A call with neither text nor a
- * path makes an empty document from its name alone, which writes no text, so it is none: pi's
- * gate, which reviews no upload without `--path`, reads it the same way.
+ * Dispatch trims it, with Go's `strings.TrimSpace`, `goTrimSpace`, from the extension that
+ * decides, uploadExtensionOf). A name whose extension is .md or .markdown makes one whatever the
+ * path (`x.markdown` sent from x.txt), a name with any other extension makes a file whatever the
+ * path (`cases.txt` sent from cases.md), and a name with no extension (`Plan v1.2`, `notes.md/`)
+ * makes one when the path the CLI sends, `path` resolved against `cwd` as the upload resolves it
+ * (`resolve`, which drops a trailing `/`, `/.` and `x/..`), ends in .md or .markdown: `notes.md/`,
+ * `notes.md/.`, `notes.md/x/..` and `.md` all do. The path is read only as resolved, so a caller
+ * gives the directory the CLI resolves it against. With no name, the path alone decides. A call
+ * with neither text nor a path makes an empty document from its name alone, which writes no
+ * text, so it is none: pi's gate, which reviews no upload without `--path`, reads it the same way.
+ *
+ * `dispatch artifact` declares an upload `text/markdown` exactly when this answers true
+ * (uploadedFile, dispatch-commands/documents.ts), so Dispatch stores as a document every upload
+ * AskGate holds as one, and no other.
  */
-export function uploadIsDocument(args: Readonly<Record<string, unknown>>): boolean {
+export function uploadIsDocument(args: Readonly<Record<string, unknown>>, cwd: string): boolean {
   const { content, name, path } = args;
   if (typeof content === "string") return true;
   if (typeof path !== "string") return false;
   const from = typeof name === "string" ? uploadTypeFrom(name) : "path";
   if (from !== "path") return from === "markdown";
-  return MARKDOWN_PATH.test(path);
+  return MARKDOWN_PATH.test(resolve(cwd, path));
 }
 
 /**
  * The one predicate of a gated write, the gate's and the CLI's: `ask`, `message`, `edit-ask`,
  * `comment`, `doc-edit` and `request-approval`, an `issue` with a spec, and an `artifact` that
- * uploads a markdown document.
+ * uploads a markdown document (uploadIsDocument, its path resolved against `cwd`, the directory
+ * the CLI runs in).
  */
-export function gatedWrite(tool: string, args: Readonly<Record<string, unknown>>): boolean {
+export function gatedWrite(
+  tool: string,
+  args: Readonly<Record<string, unknown>>,
+  cwd: string
+): boolean {
   // `=== true`, so a name on Object's prototype (`constructor`) is no gated tool.
   if (ALWAYS_GATED[tool] === true) return true;
   const { spec } = args;
   if (tool === "dispatch_issue") return spec !== undefined;
-  if (tool === "dispatch_artifact") return uploadIsDocument(args);
+  if (tool === "dispatch_artifact") return uploadIsDocument(args, cwd);
   return false;
 }
 
