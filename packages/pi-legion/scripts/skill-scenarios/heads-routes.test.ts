@@ -441,7 +441,7 @@ for (const [call, expected] of [
     "gh pr checks --required 703",
     { stderr: "no required checks reported on the 'legion/ACME-7-703' branch\n", exit: 1 },
   ],
-] as const satisfies readonly (readonly [string, Route])[]) {
+] as const satisfies readonly (readonly [string, Partial<Route>])[]) {
   test(`a flag first after the command is seen as it is later: ${call}`, () => {
     const route = routeOf(plain, call);
     expect(route).toMatchObject(expected);
