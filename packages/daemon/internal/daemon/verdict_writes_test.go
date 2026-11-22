@@ -635,15 +635,24 @@ func personsReview(id int64, state string) intake.PullRequestReview {
 }
 
 // signOff is the owner's acceptance of CAPTURE-1 by the architect of its tree, as its route reads
-// it (api's signOff): the issue's generation and the run of accepting that stands.
+// it (api's signOff): the issue's generation, the run of accepting that stands, and the head the
+// owner read, which is the head the record holds for its pull request when the owner signs off.
 func (rig *verdictRig) signOff(t *testing.T) intake.SignOff {
 	t.Helper()
 	var entry record.StepEntry
+	var head string
 	inStore(t, rig.pool, func(ctx context.Context, tx pgx.Tx) (err error) {
-		entry, err = record.NewStore().OpenStep(ctx, tx, "CAPTURE-1")
+		store := record.NewStore()
+		if entry, err = store.OpenStep(ctx, tx, "CAPTURE-1"); err != nil {
+			return err
+		}
+		pr, err := store.PullRequest(ctx, tx, "CAPTURE-1")
+		if pr != nil {
+			head = pr.HeadSHA
+		}
 		return err
 	})
-	return intake.SignOff{Issue: "CAPTURE-1", By: captureArchitect, Generation: 1, Entry: entry}
+	return intake.SignOff{Issue: "CAPTURE-1", By: captureArchitect, Generation: 1, Entry: entry, Commit: head}
 }
 
 // soleRun fails the test unless legion-verdict has exactly one run on head, concluding conclusion,
