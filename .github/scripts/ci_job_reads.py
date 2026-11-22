@@ -1084,10 +1084,11 @@ def json_stream_script(command: str, stream: str) -> str:
     $RUNNER_TEMP/go-test-json and replays it to the log: the package result lines of a green run,
     the whole stream of a red one (the envoy-go unit step in ci-job-envoy-go.yaml says why). The
     race lane's envoy-go-race, the alone steps of envoy-go-race and envoy-go-checks
-    (ALONE_STEPS), and envoy-go-checks' architecture-note tests, listenerwire tests and
-    display-tree fixture check, are the steps of this shape; envoy-go's unit step runs ten calls
-    and builds its own (UNIT_TEST_SCRIPT), and envoy-go-race-api's step and envoy-go's count step
-    keep theirs through database-skips.sh's --keep (RACE_API_SCRIPT, DATABASE_SKIPS_RUN)."""
+    (ALONE_STEPS), and envoy-go-checks' architecture-note tests, listenerwire tests,
+    display-tree fixture check and pmdoc's table tests without inlining, are the steps of this
+    shape; envoy-go's unit step runs ten calls and builds its own (UNIT_TEST_SCRIPT), and
+    envoy-go-race-api's step and envoy-go's count step keep theirs through database-skips.sh's
+    --keep (RACE_API_SCRIPT, DATABASE_SKIPS_RUN)."""
     return f"""\
 mkdir -p "$RUNNER_TEMP/go-test-json"
 s=0
@@ -1103,13 +1104,14 @@ exit $s"""
 # The steps whose go commands are not in the simple form, pinned whole: envoy-go-checks' pack
 # step, envoy-smoke's schema step, the tag steps below, and every step that writes a `go test
 # -json` stream - envoy-go's unit step, which writes the streams of nine of its ten calls,
-# envoy-go-checks' architecture-note tests, listenerwire tests and display-tree fixture check, the
-# race lane's envoy-go-race, and the alone steps of envoy-go-race and envoy-go-checks - since
-# neither -json nor the redirect that keeps the stream is a form the check reduces. Three are
-# pinned for a reason of their own: envoy-go-race-docs' two lines make a directory and run the
-# package under .github/scripts/race_memory.py (RACE_DOCS_SCRIPT below), and envoy-go-race-api's
-# race step and envoy-go's database-skips step run their go test inside database-skips.sh, which
-# keeps each one's stream through --keep (RACE_API_SCRIPT, DATABASE_SKIPS_RUN).
+# envoy-go-checks' architecture-note tests, listenerwire tests, display-tree fixture check and
+# pmdoc's table tests without inlining, the race lane's envoy-go-race, and the alone steps of
+# envoy-go-race and envoy-go-checks - since neither -json nor the redirect that keeps the stream
+# is a form the check reduces. Three are pinned for a reason of their own: envoy-go-race-docs' two
+# lines make a directory and run the package under .github/scripts/race_memory.py
+# (RACE_DOCS_SCRIPT below), and envoy-go-race-api's race step and envoy-go's database-skips step
+# run their go test inside database-skips.sh, which keeps each one's stream through --keep
+# (RACE_API_SCRIPT, DATABASE_SKIPS_RUN).
 PACK_STEP = "Pack envoy binaries"
 PACK_SCRIPT = """\
 pids=()
@@ -1945,6 +1947,19 @@ WEB_FIXTURE_PATTERN = names_pattern(WEB_FIXTURE_TESTS)
 FIXTURE_SCRIPT = json_stream_script(
     f"go test -json -count=1 -timeout 1m -run {WEB_FIXTURE_PATTERN} ./{WEB_FIXTURE_PACKAGE}/ -args --check",
     "web-fixture.json")
+# pmdoc's readers on tables in a build made without inlining (-gcflags=all=-l), envoy-go-checks'
+# step of its own: goldmark builds pmdoc's readers through an interface, which Go's initialization
+# order does not look through, so a reader that copies a variable of pmdoc can be handed nil in
+# that build alone. The table tests read through the block reader, and the display fixture test
+# through the display reader. It writes a `go test -json` stream (json_stream_script), and its
+# `-run` and `-gcflags` are not flags the simple form reduces either, and they move no closure:
+# the whole pmdoc package compiles, whichever test the run selects. Its -timeout is the call's own
+# (the comment on the step in ci-job-envoy-go-checks.yaml).
+NO_INLINE_TABLE_STEP = "Test pmdoc's tables in a build without inlining"
+NO_INLINE_TABLE_SCRIPT = json_stream_script(
+    f"go test -json -count=1 -timeout 1m -gcflags=all=-l "
+    f"-run '^(TestTable.*|TestReadForDisplayMatchesItsFixtures)$' ./{WEB_FIXTURE_PACKAGE}/",
+    "no-inline-tables.json")
 # The skip belongs to the call that would otherwise run these tests, so the two are held together
 # here rather than by a reader noticing: the unit step's package list runs every package of the
 # module its `grep -Ev` does not take out, and pmdoc taken out of it - moved into the race lane,
@@ -4221,6 +4236,11 @@ GATES = [
         # The display-tree fixture check: one test of pmdoc, which compiles that package.
         pinned_step("envoy-go-checks", FIXTURE_STEP, ENVOY, FIXTURE_SCRIPT, [
             (ENVOY, ["./internal/dispatch/pmdoc/"], "go test ./internal/dispatch/pmdoc/", {}),
+        ]),
+        # The table tests of pmdoc in a build without inlining: the same package, compiled again
+        # with -gcflags=all=-l.
+        pinned_step("envoy-go-checks", NO_INLINE_TABLE_STEP, ENVOY, NO_INLINE_TABLE_SCRIPT, [
+            (ENVOY, ["./internal/dispatch/pmdoc/"], "go test -gcflags=all=-l ./internal/dispatch/pmdoc/", {}),
         ]),
         darwin_vet("envoy-go-checks", ENVOY_DARWIN_VET, ENVOY),
     ], reads=reads(
