@@ -65,6 +65,21 @@ type KeyValue struct {
 	// noStreamWait is how long a write the server answers "no response from stream" is sent again
 	// (writtenOn): RequestTimeout when zero, as every constructor leaves it. A test sets its own.
 	noStreamWait time.Duration
+	// caller is the context of the caller the handle was given to by Within, which ends the sends
+	// again of its writes too (writtenOn); nil for a handle no caller bound.
+	caller context.Context
+}
+
+// Within is kv for a caller that gives up on a write when ctx ends (Bounded, or a call it runs on
+// its own goroutine): a write through it that the server answers "no response from stream" is sent
+// again only while ctx lasts, as well as within noStreamWait (writtenOn). A write its caller has
+// given up on starts no send after ctx has ended, so the latest it can land is that of a send begun
+// before then, as a write that is never sent again; without Within its sends again go on for the
+// whole noStreamWait, after the caller has moved on and written again. The send in flight when ctx
+// ends runs out its own wait, as one did before writes were sent again.
+func (kv KeyValue) Within(ctx context.Context) KeyValue {
+	kv.caller = ctx
+	return kv
 }
 
 // RequestTimeout bounds one send of a read through the jetstream handle whose caller holds no
@@ -217,16 +232,21 @@ func refusedAfterOn[T any](kv KeyValue, subjects func() []string, call func() (T
 }
 
 // writtenOn is refusedAfterOn for call, a write of one key, sent again while the server answers
-// that no stream took it (sentAgainWhileNoStream), for up to kv's noStreamWait from the first
-// send: RequestTimeout, the JetStream wait every production handle is opened with, so the resends
-// end inside the span one send of such a handle could already take. A send that is in flight when
-// that span ends runs its own wait out, as the legacy handle's calls take no context.
+// that no stream took it (sentAgainWhileNoStream), while kv's caller's context lasts (Within) and
+// for up to kv's noStreamWait from the first send: RequestTimeout, the JetStream wait every
+// production handle is opened with. No send starts after that span, but the legacy handle's calls
+// take no context, so a send in flight when it ends runs out its own wait: the write costs at most
+// about two RequestTimeouts.
 func writtenOn[T any](kv KeyValue, subjects func() []string, call func() (T, error)) (T, error) {
 	wait := kv.noStreamWait
 	if wait <= 0 {
 		wait = RequestTimeout
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	caller := kv.caller
+	if caller == nil {
+		caller = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(caller, wait)
 	defer cancel()
 	gone := func(ctx context.Context) bool {
 		return kv.streams != nil && streamGone(ctx, func() error {

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -2105,7 +2106,10 @@ func unacknowledged(err error, mayHold bool) error {
 // among the options, so the acknowledgement wait ends with that bound. A send no stream takes
 // (nats.ErrNoStreamResponse) is sent again until ctx ends (sentAgainWhileNoStream), as a stream
 // whose leader was just named answers for a moment, and fails with that answer, which stored
-// nothing.
+// nothing. Each send is one request (nats.RetryAttempts(0)), so every pause between two sends is
+// the bus loop's, which stops before a send once ctx has ended: nats.go's own loop sends again
+// with a ctx that ended in its pause and answers ctx's error (nats.go v1.55.0 js.go:598-618), which
+// would read below as a send that may have stored the message.
 //
 // A failure after a send that may have reached the stream wraps ErrUnacknowledged: ctx was live
 // as the send was made, read just before it, and what came back was no answer (sendUnanswered).
@@ -2113,7 +2117,12 @@ func unacknowledged(err error, mayHold bool) error {
 // that of the reconnect before the resend, since the first send may have stored the message. The
 // resend's acknowledgement is Resent, since its Duplicate may name the copy the first send stored.
 func (c *Client) sendStored(ctx context.Context, subject string, data []byte, options ...nats.PubOpt) (StoredAck, error) {
-	publish := func() (*nats.PubAck, error) { return c.JS().Publish(subject, data, options...) }
+	once := append(slices.Clone(options), nats.RetryAttempts(0))
+	live := false
+	publish := func() (*nats.PubAck, error) {
+		live = ctx.Err() == nil
+		return c.JS().Publish(subject, data, once...)
+	}
 	gone := func(ctx context.Context) bool {
 		return streamGone(ctx, func() error {
 			_, err := c.JS().StreamInfo(Stream)
@@ -2121,7 +2130,6 @@ func (c *Client) sendStored(ctx context.Context, subject string, data []byte, op
 		})
 	}
 	sentAt := time.Now()
-	live := ctx.Err() == nil
 	ack, err := sentAgainWhileNoStream(ctx, publish, gone)
 	mayHold := live && sendUnanswered(err)
 	resent := false
@@ -2131,7 +2139,6 @@ func (c *Client) sendStored(ctx context.Context, subject string, data []byte, op
 		}
 		sentAt = time.Now()
 		resent = true
-		live = ctx.Err() == nil
 		ack, err = sentAgainWhileNoStream(ctx, publish, gone)
 		mayHold = mayHold || live && sendUnanswered(err)
 	}

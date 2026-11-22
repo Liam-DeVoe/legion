@@ -136,9 +136,9 @@ func (s *Store) write(ctx context.Context, identity State, b *batch) error {
 		}
 		_, err = kvCall(ctx, s.logger, s.nextRewatch(), func() (uint64, error) {
 			if rev == 0 {
-				return kv.Create(key, buf)
+				return kv.Within(ctx).Create(key, buf)
 			}
-			return kv.Update(key, buf, rev)
+			return kv.Within(ctx).Update(key, buf, rev)
 		})
 		switch {
 		case err == nil:

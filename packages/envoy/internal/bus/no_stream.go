@@ -3,6 +3,8 @@ package bus
 import (
 	"context"
 	"errors"
+	"math/rand/v2"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -13,41 +15,50 @@ import (
 // nats.ErrNoStreamResponse, the stream is still there (gone answers false) and ctx lasts. Its
 // callers are the bucket handle's writes (writtenOn) and the stored publish path (sendStored).
 //
-// That answer is nats.go's for a publish the server answered "no responders" three times, 250 ms
-// apart (nats.go v1.55.0 js.go:597-623): no subscription in the account took the message, so no
-// stream stored it, and sending it again cannot store it twice. A stream that is there answers so
-// for a moment after it gets a leader: its Raft group names the leader at once (nats-server v2.15.1
-// server/raft.go:6307), which is what a start waits for (awaitStreamLeader), but the member leads
-// only once its first entries are processed (raft.go:1603-1613), its stream subscribes to its
-// subjects after that (stream.go:1479), and every other member learns of the subscription over its
-// route. A start that answered on a slow first election, its create's resend answered while the
-// election ran, handed its caller a stream whose first write drew that answer: "nats: no response
-// from stream". nats.go's own three sends exist for such a blip in a lead and end after half a
-// second; these go on while the stream is there, until ctx, the write's own bound, ends.
+// That answer is nats.go's for a publish the server answered "no responders" (nats.go v1.55.0
+// js.go:597-623): no subscription in the account took the message, so no stream stored it, and
+// sending it again cannot store it twice. A stream that is there answers so for a moment after it
+// gets a leader: its Raft group names the leader at once (nats-server v2.15.1 server/raft.go:6307),
+// which is what a start waits for (awaitStreamLeader), but the member leads only once its first
+// entries are processed (raft.go:1603-1613), its stream subscribes to its subjects after that
+// (stream.go:1479), and every other member learns of the subscription over its route. A start that
+// answered on a slow first election, its create's resend answered while the election ran, handed
+// its caller a stream whose first write drew that answer: "nats: no response from stream".
+// nats.go's own sends again exist for such a blip in a lead and end after half a second; these go
+// on while the stream is there, until ctx, the write's own bound, ends.
 //
 // A stream that is gone answers the same, so after each such answer the stream is read (gone):
 // when the read is answered that the stream is not there, the answer is returned at once, as it
 // was before any send again, and a deleted stream costs a write no more than it did. A read that
 // finds the stream, or draws no answer, says nothing against sending again.
 //
-// Between two sends it waits nats.go's own pause, nats.DefaultPubRetryWait. When ctx ends between
-// sends, the last send's answer is returned, nats.ErrNoStreamResponse itself, so a caller still
-// reads that the stream stored nothing. That is why this loop is the bus's and not nats.go's
-// RetryAttempts(-1): nats.go's loop answers ctx's error when ctx ends between two sends
-// (js.go:598-618), which the stored path must read as a send that may have stored the message
-// (sendUnanswered); the bucket's legacy writes take no publish options at all; and a delete's
-// options (nats.DeleteOpt) cannot be read outside nats.go to build the publish here. Any other
-// answer is returned at once.
+// Between two sends it waits noStreamPause, which grows with each send, so the writes of every
+// client a recovering cluster has made wait do not all come back at once. When ctx ends before a
+// send again, the last send's answer is returned, nats.ErrNoStreamResponse itself, so a caller
+// still reads that the stream stored nothing. That is why this loop is the bus's and not nats.go's
+// RetryAttempts(-1): nats.go's loop sends again with a ctx that ended in its pause and answers
+// ctx's error (js.go:598-618), which the stored path must read as a send that may have stored the
+// message (sendUnanswered); the bucket's legacy writes take no publish options at all; and a
+// delete's options (nats.DeleteOpt) cannot be read outside nats.go to build the publish here. Any
+// other answer is returned at once.
 func sentAgainWhileNoStream[T any](ctx context.Context, send func() (T, error), gone func(context.Context) bool) (T, error) {
-	for {
+	for sent := 1; ; sent++ {
 		value, err := send()
 		if !errors.Is(err, nats.ErrNoStreamResponse) || gone(ctx) {
 			return value, err
 		}
-		if pause(ctx, nats.DefaultPubRetryWait) != nil {
+		if pause(ctx, noStreamPause(sent, rand.Int64N)) != nil || ctx.Err() != nil {
 			return value, err
 		}
 	}
+}
+
+// noStreamPause is the wait after the sent'th send of a write no stream took
+// (sentAgainWhileNoStream): the waits of a prompt redial (promptRedialWait), at once but for up to
+// 50 ms after the first, then drawn between half and all of a bound that starts at 250 ms, nats.go's
+// own pause between its sends, and doubles with each send up to 2 s.
+func noStreamPause(sent int, draw func(n int64) int64) time.Duration {
+	return promptRedialWait(sent, draw)
 }
 
 // streamGone reports whether read, one read of a stream, made within ctx and its run's read limit

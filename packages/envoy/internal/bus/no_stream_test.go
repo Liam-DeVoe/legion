@@ -2,15 +2,17 @@ package bus
 
 // A write no stream takes is sent again while the stream is there and the write's bound lasts
 // (sentAgainWhileNoStream): a stream whose leader was just named answers "no response from
-// stream" until that leader serves. The first two rows write right after a start on a
-// three-server cluster; the issue's verification runs them against a server that holds the
-// stream's new leader between its naming and its lead. The loop's own rows script the answers,
-// with no server; the rest delete a stream on one server under a handle or a client, which no
-// timing decides.
+// stream" until that leader serves. The loop's own rows script the answers, with no server. The
+// rest make "no responders" on one server, with no timing deciding it: the bucket's or the
+// notification stream's stream deleted, or the notification stream moved off the subject a
+// publish is sent on, which is a stream that is there and does not take the write, as one whose
+// leader does not serve yet. A row that ends a context ends it from inside a send, at the send it
+// names.
 
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -23,6 +25,10 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
+// noStreamRowWait is the noStreamWait the rows below give a bucket handle: a hang guard for a row
+// whose writes the server never takes, not a wait any passing row spends.
+const noStreamRowWait = 30 * time.Second
+
 // untilTheRowsEnd is a context that ends 30 s before the test binary's deadline: the bound of a
 // row's wait for something that comes.
 func untilTheRowsEnd(t *testing.T) context.Context {
@@ -30,36 +36,6 @@ func untilTheRowsEnd(t *testing.T) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, 24*time.Hour, 30*time.Second))
 	t.Cleanup(cancel)
 	return ctx
-}
-
-// A put sent the moment a start that created a three-copy bucket answers is stored. The start
-// answers once a read names the bucket's leader, and a member is named leader before its stream
-// takes writes, so the put can draw "no responders" first; it is sent again until the stream takes
-// it, within the handle's own wait.
-func TestAPutRightAfterAStartThatCreatedAThreeCopyBucketIsStored(t *testing.T) {
-	cluster := testnats.StartCluster(t, 3)
-	conn, js := memberJetStream(t, cluster, 0)
-	const bucket = "envoy_first_put_test"
-	kv, err := EnsureKeyValue(untilTheRowsEnd(t), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3})
-	if err != nil {
-		t.Fatalf("ensure a three-copy bucket: %v", err)
-	}
-	if _, err := kv.Put("key", []byte("value")); err != nil {
-		t.Fatalf("the put sent the moment the start answered: %v", err)
-	}
-}
-
-// A publish sent within its caller's context the moment a start that created the notification
-// stream at three copies answers is stored, for the same reason.
-func TestAPublishRightAfterAStartThatCreatedTheStreamIsStored(t *testing.T) {
-	cluster := testnats.StartCluster(t, 3)
-	client := startOnCluster(t, cluster, WithReplicas(3))
-	if err := client.PublishWithin(untilTheRowsEnd(t), contracts.Envelope{
-		EventID: "event-first-publish", Source: "dispatch",
-		Topic: "notifications.agent.ses_first_publish", DedupeKey: "dispatch.event.first_publish",
-	}); err != nil {
-		t.Fatalf("the publish sent the moment the start answered: %v", err)
-	}
 }
 
 // scriptedWrite answers each send of a write as script says, in order, and nil once it is spent:
@@ -124,33 +100,44 @@ func TestAWriteNoStreamTakesReturnsThatAnswerWhenItsContextEnds(t *testing.T) {
 	}
 }
 
-// noStreamLegacy is the legacy handle of a bucket whose stream the row deleted. It counts the
-// writes sent through it, and on the first one the server answers "no response from stream" it
-// makes the stream again (recreate) before it answers, so the stream is there when it is read.
-type noStreamLegacy struct {
-	nats.KeyValue
-	recreate func()
-	once     sync.Once
-	sends    atomic.Int32
-}
-
-func (l *noStreamLegacy) Put(key string, value []byte) (uint64, error) {
-	l.sends.Add(1)
-	revision, err := l.KeyValue.Put(key, value)
-	if errors.Is(err, nats.ErrNoStreamResponse) && l.recreate != nil {
-		l.once.Do(l.recreate)
+// The pause between two sends grows with each send and stops growing at 2 s: drawn at its top, it
+// is 50 ms after the first send, then 250 ms, 500 ms, 1 s, 2 s and 2 s.
+func TestThePauseBetweenSendsGrowsUpToTwoSeconds(t *testing.T) {
+	top := func(n int64) int64 { return n - 1 }
+	var got []time.Duration
+	for sent := 1; sent <= 6; sent++ {
+		got = append(got, noStreamPause(sent, top).Round(time.Millisecond))
 	}
-	return revision, err
+	want := []time.Duration{50 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond, time.Second, 2 * time.Second, 2 * time.Second}
+	if !slices.Equal(got, want) {
+		t.Fatalf("the pauses at their top = %v, want %v", got, want)
+	}
 }
 
-func (l *noStreamLegacy) Update(key string, value []byte, last uint64) (uint64, error) {
+// countedLegacy is the legacy handle of a bucket, counting the writes sent through it. Its Put
+// answers as put says when put is set, and sends through the real handle otherwise.
+type countedLegacy struct {
+	nats.KeyValue
+	put   func(n int32, key string, value []byte) (uint64, error)
+	sends atomic.Int32
+}
+
+func (l *countedLegacy) Put(key string, value []byte) (uint64, error) {
+	n := l.sends.Add(1)
+	if l.put != nil {
+		return l.put(n, key, value)
+	}
+	return l.KeyValue.Put(key, value)
+}
+
+func (l *countedLegacy) Update(key string, value []byte, last uint64) (uint64, error) {
 	l.sends.Add(1)
 	return l.KeyValue.Update(key, value, last)
 }
 
-// noStreamBucket is a bucket on the test's own account, its handle built over a counting legacy
-// handle (noStreamLegacy), and the account's JetStream context.
-func noStreamBucket(t *testing.T, bucket string) (KeyValue, *noStreamLegacy, nats.JetStreamContext, *nats.KeyValueConfig) {
+// countedBucket is a bucket on the test's own server, its handle built over a counting legacy
+// handle (countedLegacy) with noStreamRowWait, and the account's JetStream context.
+func countedBucket(t *testing.T, bucket string) (KeyValue, *countedLegacy, nats.JetStreamContext, *nats.KeyValueConfig) {
 	t.Helper()
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
@@ -171,22 +158,29 @@ func noStreamBucket(t *testing.T, bucket string) (KeyValue, *noStreamLegacy, nat
 	if err != nil {
 		t.Fatalf("open the jetstream handle: %v", err)
 	}
-	counted := &noStreamLegacy{KeyValue: legacy}
-	return NewKeyValue(counted, watch, streams), counted, js, config
+	counted := &countedLegacy{KeyValue: legacy}
+	kv := NewKeyValue(counted, watch, streams)
+	kv.noStreamWait = noStreamRowWait
+	return kv, counted, js, config
 }
 
 // A put the server answers "no response from stream" while the bucket's stream is there is sent
-// again and stored: here the stream is deleted and made again after the first such answer, before
-// the handle reads it.
+// again and stored: here the stream is deleted, and made again inside the first send that draws
+// that answer, before the handle reads it.
 func TestAPutNoStreamTookIsSentAgainOnceTheStreamIsThere(t *testing.T) {
-	kv, legacy, js, config := noStreamBucket(t, "envoy_no_stream_put_test")
+	kv, legacy, js, config := countedBucket(t, "envoy_no_stream_put_test")
 	if err := js.DeleteStream("KV_" + config.Bucket); err != nil {
 		t.Fatalf("delete the bucket's stream: %v", err)
 	}
+	var once sync.Once
 	var recreated error
-	legacy.recreate = func() { _, recreated = js.CreateKeyValue(config) }
-	deadline, _ := untilTheRowsEnd(t).Deadline()
-	kv.noStreamWait = time.Until(deadline)
+	legacy.put = func(_ int32, key string, value []byte) (uint64, error) {
+		revision, err := legacy.KeyValue.Put(key, value)
+		if errors.Is(err, nats.ErrNoStreamResponse) {
+			once.Do(func() { _, recreated = js.CreateKeyValue(config) })
+		}
+		return revision, err
+	}
 	if _, err := kv.Put("key", []byte("value")); err != nil {
 		t.Fatalf("a put no stream took, the stream then made again: %v (sends %d, recreate %v)", err, legacy.sends.Load(), recreated)
 	}
@@ -202,21 +196,39 @@ func TestAPutNoStreamTookIsSentAgainOnceTheStreamIsThere(t *testing.T) {
 // A put to a bucket whose stream is gone fails with nats.ErrNoStreamResponse after one send, as it
 // did before writes were sent again: the read after the answer finds no stream.
 func TestAPutToABucketWhoseStreamIsGoneIsSentOnce(t *testing.T) {
-	kv, legacy, js, config := noStreamBucket(t, "envoy_no_stream_gone_test")
+	kv, legacy, js, config := countedBucket(t, "envoy_no_stream_gone_test")
 	if err := js.DeleteStream("KV_" + config.Bucket); err != nil {
 		t.Fatalf("delete the bucket's stream: %v", err)
 	}
-	deadline, _ := untilTheRowsEnd(t).Deadline()
-	kv.noStreamWait = time.Until(deadline)
 	if _, err := kv.Put("key", []byte("value")); !errors.Is(err, nats.ErrNoStreamResponse) || legacy.sends.Load() != 1 {
 		t.Fatalf("a put to a bucket whose stream is gone = %v after %d sends, want nats.ErrNoStreamResponse after one send", err, legacy.sends.Load())
+	}
+}
+
+// A put through a handle given its caller's context (Within) sends nothing more once that context
+// has ended, though its own noStreamWait lasts: here every send draws "no response from stream"
+// while the bucket's stream is there, and the second send ends the caller's context. A caller
+// that gave up on its write (Bounded) then writes again knowing the write it gave up on is not
+// sent after it.
+func TestAPutWhoseCallerGaveUpSendsNothingMore(t *testing.T) {
+	kv, legacy, _, _ := countedBucket(t, "envoy_no_stream_caller_test")
+	caller, giveUp := context.WithCancel(context.Background())
+	defer giveUp()
+	legacy.put = func(n int32, _ string, _ []byte) (uint64, error) {
+		if n == 2 {
+			giveUp()
+		}
+		return 0, nats.ErrNoStreamResponse
+	}
+	if _, err := kv.Within(caller).Put("key", []byte("value")); !errors.Is(err, nats.ErrNoStreamResponse) || legacy.sends.Load() != 2 {
+		t.Fatalf("a put whose caller gave up at its second send = %v after %d sends, want nats.ErrNoStreamResponse after 2", err, legacy.sends.Load())
 	}
 }
 
 // A write the stream refuses is not sent again: here an update at a revision the key has moved
 // past, which the stream answers with its conflict at once.
 func TestAConflictingUpdateIsSentOnce(t *testing.T) {
-	kv, legacy, _, _ := noStreamBucket(t, "envoy_no_stream_conflict_test")
+	kv, legacy, _, _ := countedBucket(t, "envoy_no_stream_conflict_test")
 	first, err := kv.Put("key", []byte("one"))
 	if err != nil {
 		t.Fatalf("put the key: %v", err)
@@ -230,6 +242,123 @@ func TestAConflictingUpdateIsSentOnce(t *testing.T) {
 	}
 	if sent := legacy.sends.Load() - before; sent != 1 {
 		t.Fatalf("the conflicting update was sent %d times, want once", sent)
+	}
+}
+
+// countedPublisher is a client's JetStream context that counts each publish the stored path sends
+// through it and the messages the connection sent during it, and calls after, when set, with the
+// publish's number and answer before it returns.
+type countedPublisher struct {
+	nats.JetStreamContext
+	conn  *nats.Conn
+	after func(n int, err error)
+	mu    sync.Mutex
+	sent  []uint64
+}
+
+func (p *countedPublisher) Publish(subject string, data []byte, opts ...nats.PubOpt) (*nats.PubAck, error) {
+	before := p.conn.Stats().OutMsgs
+	ack, err := p.JetStreamContext.Publish(subject, data, opts...)
+	p.mu.Lock()
+	p.sent = append(p.sent, p.conn.Stats().OutMsgs-before)
+	n := len(p.sent)
+	p.mu.Unlock()
+	if p.after != nil {
+		p.after(n, err)
+	}
+	return ack, err
+}
+
+func (p *countedPublisher) messages() []uint64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.sent)
+}
+
+// offSubjectClient is a client owning the notification stream on the test's own server, with the
+// stream moved off the subjects of agent notifications, so a stored publish on one draws "no
+// response from stream" while the stream is there. It returns the client, the counting publisher
+// its stored path now sends through, and a func that moves the stream back onto those subjects.
+func offSubjectClient(t *testing.T) (*Client, *countedPublisher, func() error) {
+	t.Helper()
+	client, err := ConnectOwningStream([]string{testnats.URL(t)}, WithKeepInterval(time.Hour))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	js := client.JS()
+	info, err := js.StreamInfo(Stream, nats.Context(untilTheRowsEnd(t)))
+	if err != nil {
+		t.Fatalf("read the stream: %v", err)
+	}
+	original := info.Config
+	off := original
+	off.Subjects = slices.DeleteFunc(slices.Clone(original.Subjects), func(s string) bool { return s == "notifications.agent.>" })
+	if len(off.Subjects) == len(original.Subjects) {
+		t.Fatalf("the stream carries no notifications.agent.> to move off: %v", original.Subjects)
+	}
+	if _, err := js.UpdateStream(&off, nats.Context(untilTheRowsEnd(t))); err != nil {
+		t.Fatalf("move the stream off notifications.agent.>: %v", err)
+	}
+	counted := &countedPublisher{JetStreamContext: js, conn: client.Conn}
+	client.mu.Lock()
+	client.js = counted
+	client.mu.Unlock()
+	restore := func() error {
+		_, err := js.UpdateStream(&original, nats.Context(untilTheRowsEnd(t)))
+		return err
+	}
+	return client, counted, restore
+}
+
+// offSubjectEnvelope is an agent notification, on a subject the stream moved off.
+var offSubjectEnvelope = contracts.Envelope{
+	EventID: "event-off-subject", Source: "dispatch",
+	Topic: "notifications.agent.ses_off_subject", DedupeKey: "dispatch.event.off_subject",
+}
+
+// A stored publish sends one request at each send, so every pause between two sends is the bus
+// loop's, which stops before a send once the publish's context has ended. nats.go's own loop sends
+// again with a context that ended in its pause and answers the context's error, which the stored
+// path reads as a send that may have stored the message. Here the stream is there and does not
+// take the subject, and the second send ends the context: the publish fails with "no response from
+// stream", without ErrUnacknowledged, after two sends of one message each.
+func TestAStoredPublishNoStreamTakesSendsOneRequestEachSendAndStoresNothing(t *testing.T) {
+	client, counted, _ := offSubjectClient(t)
+	ctx, end := context.WithCancel(untilTheRowsEnd(t))
+	defer end()
+	counted.after = func(n int, _ error) {
+		if n == 2 {
+			end()
+		}
+	}
+	_, err := client.PublishStoredAck(ctx, offSubjectEnvelope.Topic, offSubjectEnvelope, "")
+	if !errors.Is(err, nats.ErrNoStreamResponse) || errors.Is(err, ErrUnacknowledged) {
+		t.Fatalf("a publish no stream took, its context ended at the second send = %v, want nats.ErrNoStreamResponse without ErrUnacknowledged", err)
+	}
+	if sent := counted.messages(); !slices.Equal(sent, []uint64{1, 1}) {
+		t.Fatalf("messages the connection sent during each publish = %v, want [1 1]: one request a send, two sends", sent)
+	}
+}
+
+// A stored publish the server answers "no response from stream" while the stream is there is sent
+// again and stored: here the stream is moved back onto the publish's subject inside the first send
+// that draws that answer.
+func TestAStoredPublishNoStreamTookIsSentAgainAndStored(t *testing.T) {
+	client, counted, restore := offSubjectClient(t)
+	var restored error
+	counted.after = func(n int, err error) {
+		if n == 1 && errors.Is(err, nats.ErrNoStreamResponse) {
+			restored = restore()
+		}
+	}
+	ack, err := client.PublishStoredAck(untilTheRowsEnd(t), offSubjectEnvelope.Topic, offSubjectEnvelope, "")
+	sent := counted.messages()
+	if err != nil || restored != nil {
+		t.Fatalf("a publish no stream took, the stream then moved back = %v (move back %v, messages a send %v)", err, restored, sent)
+	}
+	if ack.Sequence == 0 || ack.Duplicate || len(sent) < 2 {
+		t.Fatalf("the publish was acknowledged %+v after %d sends, want a new message stored by a send after the first", ack, len(sent))
 	}
 }
 
