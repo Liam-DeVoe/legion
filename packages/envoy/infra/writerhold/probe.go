@@ -261,14 +261,20 @@ func (k *probeKeys) prove(ctx context.Context, p ProbeCredential, raw string) (P
 // its discovery document as the auth service reads them (oidc.NewKeys), which checks raw's issuer,
 // audience, signature and expiry. The wrappers are not called themselves: they live in the
 // broker's packages, which would link the broker's store and its embedded migrations into
-// envoy-infra. It answers the identity raw proves: the issuer, the subject the verifier answers (a
+// envoy-infra. The discovery read is bounded as the auth service bounds it
+// (oidc.DiscoveryAttemptTimeout), and the key-set read by the key source's own fetch bound
+// (oidc.DefaultKeysFetchTimeout), so an issuer that accepts and never answers ends the check
+// within those bounds, an error naming the issuer's address, whatever the command's context
+// allows. It answers the identity raw proves: the issuer, the subject the verifier answers (a
 // Google token's verified email, which natscallout requires, for Google's issuer), the audiences
 // the verified token names, sorted, and its expiry.
 func (k *probeKeys) verify(ctx context.Context, issuer, audience, raw string) (ProbeCredential, error) {
 	if k.keys == nil || k.issuer != issuer {
-		keys, err := oidc.NewKeys(ctx, issuer)
+		discover, cancel := context.WithTimeout(ctx, oidc.DiscoveryAttemptTimeout)
+		keys, err := oidc.NewKeys(discover, issuer)
+		cancel()
 		if err != nil {
-			return ProbeCredential{}, fmt.Errorf("read the published keys of the issuer %s: %w", issuer, err)
+			return ProbeCredential{}, fmt.Errorf("read the published keys of the issuer %s within %s: %w", issuer, oidc.DiscoveryAttemptTimeout, err)
 		}
 		k.issuer, k.keys = issuer, keys
 	}

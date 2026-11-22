@@ -13,7 +13,7 @@ import (
 // partition or a black-holing proxy accepts the connection and then says nothing. A request that
 // needs the issuer must not wait on it past its own deadline, so a verifier asked under a short
 // deadline answers ErrIssuerUnavailable, naming the issuer, once that deadline ends; the discovery
-// attempt itself runs on under its own bound (discoveryAttemptTimeout).
+// attempt itself runs on under its own bound (DiscoveryAttemptTimeout).
 func TestALazyVerifierAnswersPastAnIssuerThatNeverAnswers(t *testing.T) {
 	silent, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -27,7 +27,7 @@ func TestALazyVerifierAnswersPastAnIssuerThatNeverAnswers(t *testing.T) {
 	// rather than closing it. Reaching it would need a connection accepted in
 	// the instant before Close and still mid-send. The discovery attempt outlives
 	// this test's 300 ms wait, since it runs detached from its caller under
-	// discoveryAttemptTimeout, but it dials once: its one GET is accepted and
+	// DiscoveryAttemptTimeout, but it dials once: its one GET is accepted and
 	// then waits, and net/http does not redial a connection it holds.
 	accepted := make(chan net.Conn, 4)
 	t.Cleanup(func() {

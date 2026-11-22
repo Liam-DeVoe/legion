@@ -23,8 +23,10 @@ var ErrIssuerUnavailable = errors.New("oidc: the issuer cannot be reached")
 var ErrGrantRefused = errors.New("oidc: the issuer refused the refresh token")
 
 const (
-	// discoveryAttemptTimeout bounds one read of an issuer's discovery document.
-	discoveryAttemptTimeout = 10 * time.Second
+	// DiscoveryAttemptTimeout bounds one read of an issuer's discovery document. It is exported so
+	// a reader of discovery outside this package (the writer hold's probe check) bounds its own
+	// read the same way.
+	DiscoveryAttemptTimeout = 10 * time.Second
 	// discoveryRetrySpacing is the least time between two failed discovery attempts: a request
 	// that finds the issuer undiscovered within it fails at once with the last attempt's error,
 	// so a burst of requests during an outage sends the issuer one read, not one each.
@@ -40,7 +42,7 @@ const (
 // discovery reads one issuer's discovery document when it is first needed rather than at
 // construction, so a process starts and serves whatever does not need the issuer while the issuer
 // is down. Once read, the result is kept for the process's life. Concurrent attempts share one
-// read (single flight), each read is bounded by discoveryAttemptTimeout, and after a failed read
+// read (single flight), each read is bounded by DiscoveryAttemptTimeout, and after a failed read
 // no other is made for discoveryRetrySpacing.
 type discovery[T any] struct {
 	issuer string
@@ -83,7 +85,7 @@ func (d *discovery[T]) discover(ctx context.Context) (T, error) {
 		if value, err, settled := d.settled(); settled {
 			return value, err
 		}
-		attemptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discoveryAttemptTimeout)
+		attemptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), DiscoveryAttemptTimeout)
 		defer cancel()
 		value, err := d.read(attemptCtx)
 		d.mu.Lock()
