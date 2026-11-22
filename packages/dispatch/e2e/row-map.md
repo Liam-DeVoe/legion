@@ -248,6 +248,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/editor-paste.e2e.ts` | pastes into the live editor, read back after a reload |
 | `e2e/email-links.e2e.ts` | asserts in the live editor before the past version |
 | `e2e/failed-room.e2e.ts` | a document room that fails and recovers |
+| `e2e/focus-landing.e2e.ts` | each page's controls go by a write the server answers: one made through the API or from a second signed-in context, which the open page draws only from its live socket, and the reader's own press, held offline past the request deadline, none of which a recording replays |
 | `e2e/followers.e2e.ts` | follower and subscriber writes change what the server delivers |
 | `e2e/gated-step-approvals.e2e.ts` | gate state is the server's computation over versions; server-computed gate state; the write answers both steps server-side |
 | `e2e/github-checks.e2e.ts` | the checks pill is the server's evaluation of fake GitHub runs |
