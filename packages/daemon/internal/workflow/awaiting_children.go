@@ -92,18 +92,18 @@ type childrenHold struct {
 //   - tells the role whose phase the move ends, where there is one, that its phase ended
 //     and no task of it follows (record.PhaseEnded into awaiting_children);
 //   - and, where the merge forward it drops had not landed (record.MergeForward.Landed empty),
-//     tells the implementer of it, named with its head and its base, and of what to do with a
-//     merge of it begun or not (R10): in the phase-ended message where the phase the move ends
-//     is the implementer's, and otherwise in one role message on the implementer's role topic
+//     tells the role it was asked of (record.MergeForward.Asked, the implementer for an ask that
+//     names none) of it, named with its head and its base, and of what to do with a merge of it
+//     begun or not (R10): in the phase-ended message where the phase the move ends is that role's,
+//     and otherwise in one role message on that role's topic
 //     (record.DroppedMergeForward.RoleMessageBody), addressed as mergeForward addresses its ask
 //     (addressRoles). The phase-ended message of any other worker carries it too, and tells that
-//     worker to write and push nothing more, since the implementer may be merging in the
+//     worker to write and push nothing more, since the role asked may be merging in the
 //     workspace they share (record.PhaseEnded.Message). A merge forward that landed is dropped
 //     with no word of it.
 //
-// A released implementer gets nothing of that role message, which the outbox ends with no
-// publish and no wake as it ends every role message to a released role (the daemon's
-// outbox.roleMessage).
+// A released role gets nothing of that role message, which the outbox ends with no publish and no
+// wake as it ends every role message to a released role (the daemon's outbox.roleMessage).
 //
 // An issue already in awaiting_children is left as it stands and nothing is sent again. No door
 // passes one — each moves an issue standing in planning through accepting, and the admission
@@ -150,8 +150,9 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 	// Nothing asks again during the wait (awaiting_children is in no phase of
 	// record.MergeForwardPhases), and the return asks for none: a conflict still there fails the
 	// tester's merge with the base, and the implementer merges forward once GitHub reads the pull
-	// request CONFLICTING (R10). The merge forward the clear drops is named to the implementer where
-	// it had not landed.
+	// request CONFLICTING (R10). The merge forward the clear drops is named to the role it was
+	// asked of where it had not landed: the implementer for an ask made before merging, and the
+	// merger for one made in merging that a move back out of merging left in the record.
 	cleared, err := e.clearMergeForward(ctx, tx, issue.Key)
 	if err != nil {
 		return err
@@ -159,14 +160,17 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 	var dropped *record.DroppedMergeForward
 	if cleared != nil && cleared.Landed == "" {
 		dropped = &record.DroppedMergeForward{Head: cleared.Head, Base: cleared.Base}
+		if asked := cleared.Asked(); asked != claim.RoleImplementer {
+			dropped.Role = asked
+		}
 	}
 	e.logOnCommit(ctx, "workflow: a parent waits on its open children", "issue", issue.Key, "tree", issue.Tree,
 		"from", from, "holds", hold.Start, "children", openChildNames(hold.Open))
 	if err := e.notice(ctx, tx, issue.Key, awaitingChildrenNotice(issue.Key, from, hold)); err != nil {
 		return err
 	}
-	if dropped != nil && hold.Ended != claim.RoleImplementer {
-		addressed, err := e.addressRoles(issue.Project, []roleRecipient{{issue: issue.Key, role: claim.RoleImplementer, row: issue.Key}}, nil)
+	if dropped != nil && hold.Ended != dropped.Asked() {
+		addressed, err := e.addressRoles(issue.Project, []roleRecipient{{issue: issue.Key, role: dropped.Asked(), row: issue.Key}}, nil)
 		if err != nil {
 			return err
 		}
@@ -438,7 +442,7 @@ func acceptedEntry(row record.PhaseRow) bool {
 //     then queues the reconcile of the tree's news where the move leaves the holder owed news
 //     (queueMovedNews), as a transition does, so news whose change set no start could carry yet
 //     is sent once the reconcile has recorded it. While the parent waits it is owed nothing
-//     (record.UntoldHeld).
+//     (record.UntoldAwaitingChildren).
 //
 // It counts nothing — no pass, no pair, no round — and does not wait for the design gate, which
 // holds no phase already under way. The start goes through the one writer of a phase worker's

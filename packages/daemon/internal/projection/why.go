@@ -451,15 +451,17 @@ func heldReason(state api.WhyState, cause record.HeldIssue, gates map[string]rec
 }
 
 // basisGateReason is the sentence of the design gate's word for the gate of root, where root holds
-// a gated step that stands open on an ancestor's approval or waits on an ancestor's approval
-// request (dispatch://INFRA-3320, R1 and R2); "" for a root that holds neither, which reads the
-// table's sentence. Each gated step of root is named with its own state, in the order the
-// deployment names the steps: a step open on an ancestor's approval names that approval and no
-// person's approval of the root's document, and a step that waits on an ancestor's request names
-// that request. The sentence keeps the rule of heldSentences: it says what is true now and what
-// does not start the tree, and promises nothing.
+// a step the gate is gated on that stands open on an ancestor's approval or waits on an ancestor's
+// approval request (dispatch://INFRA-3320, R1 and R2); "" for a root that holds neither, which
+// reads the table's sentence. The steps are the ones the gate holds the work under it on
+// (record.TreeGate.Required, over record.TreeSteps): the deployment's, in the order it names them,
+// and a Verification document the root registered beside a deployment that gates the spec alone,
+// which holds that work as the spec does. Each is named with its own state: a step open on an
+// ancestor's approval names that approval and no person's approval of the root's document, and a
+// step that waits on an ancestor's request names that request. The sentence keeps the rule of
+// heldSentences: it says what is true now and what does not start the tree, and promises nothing.
 func basisGateReason(root string, gate record.TreeGate) string {
-	steps := record.RequiredSteps(gate.Steps)
+	steps := gate.Required()
 	if !slices.ContainsFunc(steps, func(step record.DesignStep) bool { return gate.Rows[step].Basis != nil }) {
 		return ""
 	}

@@ -543,7 +543,7 @@ function finishRun(body: string, verdict = "") {
 ${helperGuard}
 . ${JSON.stringify(join(import.meta.dir, "run-verdict.sh"))}
 ${fn("finish")}
-parts=one base_tree='' prompts_tree='' plan_tree='' counted=3 expected=52 part_two_said=''
+parts=one base_tree='' prompts_tree='' plan_tree='' gateway_tree='' gateway_refresher='' counted=3 expected=52 part_two_said=''
 verdict=${JSON.stringify(verdict)} version_news_evidence=/evidence version_news_started=$SECONDS check=driver
 trap finish EXIT
 ${body}`,

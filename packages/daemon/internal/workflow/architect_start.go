@@ -431,15 +431,19 @@ func writeGateAsk(task *strings.Builder, steps []record.DesignStep, again string
 	}
 }
 
-// gateStanding says where a root's design gate stands, one clause per step, in the deployment's
-// order: whether the root has registered the step, at which document version, and what a person
-// has said of that version. It reads record.RequiredSteps rather than the gated list, so a
-// deployment that gates no step still reports the one registration that opens its gate; under
-// that deployment no person approves anything, so no clause of it names one. A changes request
-// below the registered version is an answer to a document the architect has moved past, which
-// leaves the current version unanswered.
+// gateStanding says where a root's design gate stands, one clause per step the tree is gated on
+// (record.TreeSteps: the deployment's steps, in its order, and a Verification document the root
+// registered beside a deployment that gates the spec alone): whether the root has registered the
+// step, at which document version, and what opened that version or what a person has said of it.
+// It reads the steps the gate holds the tree's work on (record.TreeGate.Required) rather than the
+// gated list, so a deployment that gates no step still reports the one registration that opens
+// its gate; under that deployment no person approves anything, so no clause of it names one. A
+// step open on an ancestor's approval (record.DesignGate.OnBasis) names that approval
+// (basisApproval) and that no person approved the root's version, never that a person approved it
+// (dispatch://INFRA-3320, R2). A changes request below the registered version is an answer to a
+// document the architect has moved past, which leaves the current version unanswered.
 func gateStanding(gate record.TreeGate) string {
-	steps := record.RequiredSteps(gate.Steps)
+	steps := gate.Required()
 	said := make([]string, 0, len(steps))
 	for _, step := range steps {
 		row, registered := gate.Rows[step]
@@ -449,6 +453,9 @@ func gateStanding(gate record.TreeGate) string {
 		case len(gate.Steps) == 0:
 			said = append(said, fmt.Sprintf("its %s is registered at version %d, which opened the gate with no approval",
 				step.Document(), row.LatestVersion))
+		case row.OnBasis():
+			said = append(said, fmt.Sprintf("its %s is registered at version %d, which no person has approved, and its %s step stands open "+
+				"on an ancestor's approval, since %s", step.Document(), row.LatestVersion, step, basisApproval(row)))
 		case record.GateOpen(row):
 			said = append(said, fmt.Sprintf("its %s is registered at version %d and a person has approved that version",
 				step.Document(), row.LatestVersion))

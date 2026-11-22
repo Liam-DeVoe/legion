@@ -2344,6 +2344,25 @@ So after the rollback a merger learns of a removal only when it reads the pull r
 The kind check keeps both names after the rollback, and the rollback needs no statement for it: an earlier release never writes either kind, so the check refuses nothing that release writes.
 This release's one-time start of the mergers that the `awaiting_merge` cutover left stopped ([Idle release](#idle-release)) adds no outbox kind and no payload field, and its one `processed_events` row is harmless to a rollback.
 
+#### Rolling back the release that asks the merger to merge the base forward
+
+This release asks the merger, not the implementer, to merge the base forward once the issue stands in `merging`, and asks nothing in `accepting` or `retro` (cybermonklabs/legion#4979).
+It adds no migration: a `merge_forward` row's payload and `pull_requests.merge_forward` are JSON, and the ask names its role there (`role`).
+An earlier release refuses a `merge_forward` ask whose role is the merger when it decodes the row, and reads an ask that names the merger as the implementer's, already made, so it would ask nobody.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+begin;
+-- The merger's asks still queued, and the asks of the merger that have not landed.
+delete from outbox where kind = 'merge_forward' and payload->>'step' = 'ask' and payload->>'role' = 'merger';
+update pull_requests set merge_forward = null
+  where merge_forward->>'role' = 'merger' and coalesce(merge_forward->>'landed', '') = '';
+commit;
+```
+
+The earlier release decides again on the next read of each such head that finds it conflicting, and asks the implementer.
+An ask of the merger that has landed stays: the earlier release reads it as a landed merge forward, as it reads its own.
+
 #### Rolling back the release that merges a conflicting head forward in its phase
 
 This release stops a conflict from sending an issue back to `implementing`.
@@ -2858,8 +2877,8 @@ An earlier daemon reads this much of the release:
   The release before this one puts the kind in no outbox lane (its migration `20261119003157_conflict_reads_and_merge_forward` deleted every such row), so it runs no row of it, and a row left queued would tell a worker at the roll forward that a phase ended long before.
 
 - **A queued `role_message` that names a dropped merge forward.**
-  When a move into `awaiting_children` drops a merge forward that has not landed, this release tells the implementer in a `role_message` unless the move ends the implementer's own phase, where its `phase_ended` row says it.
-  The earlier release runs that row as it runs any role message, and its body tells the implementer to begin no merge of the dropped merge forward, which the earlier release, holding no parent in a wait, may ask for again.
+  When a move into `awaiting_children` drops a merge forward that has not landed, this release tells the role it was asked of, the implementer for an ask made before `merging`, in a `role_message` unless the move ends that role's own phase, where its `phase_ended` row says it.
+  The earlier release runs that row as it runs any role message, and its body tells that role to begin no merge of the dropped merge forward, which the earlier release, holding no parent in a wait, may ask for again.
   Its body opens with the parent's key and the fixed words `: the issue moved into awaiting_children, where it waits on its open Dispatch children.`
 
 - **The columns of `20261114064234_design_gate_basis`** need no statement: an earlier daemon names none of them, reads a step a basis opened as approved at the version the root registered, and reads a pending step as registered and not approved (that migration's comment).

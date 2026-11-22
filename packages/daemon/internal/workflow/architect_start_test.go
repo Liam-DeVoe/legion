@@ -247,6 +247,48 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 	}
 }
 
+// Where the root's gate stands is said of every step the tree is gated on, each by what opened it.
+// A step open on an ancestor's approval names that approval, and that no person approved the
+// root's version, never that a person approved it (dispatch://INFRA-3320, R2). A Verification
+// document the architect registered under a deployment that gates the spec alone gates the tree
+// too (record.TreeSteps), so its clause stands beside the spec's.
+func TestTheArchitectTaskSaysEachStepTheTreeIsGatedOnByWhatOpenedIt(t *testing.T) {
+	basis := record.GateBasis{Issue: "LEGION-90", ArtifactID: "artifact-90", Version: 5, Approver: "user:alice", RegisteredAt: time.Unix(0, 0).UTC()}
+	for _, tc := range []struct {
+		name  string
+		start ArchitectStart
+		want  string
+	}{
+		{
+			name: "a root whose one gated step stands open on an ancestor's approval, so its gate is open",
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: map[record.DesignStep]record.DesignGate{
+				record.DesignStepSpec: record.OpenOnBasis(record.DesignGate{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: "artifact-208",
+					LatestVersion: 2}, basis)}}},
+			want: "LEGION-208 is yours and its design gate is open: " +
+				"its primary document is registered at version 2, which no person has approved, and its spec step stands open on an " +
+				"ancestor's approval, since a person approved version 5 of the primary document of LEGION-90 (dispatch://LEGION-90/spec). " +
+				gateOpenInstructions + gateOpenClosing,
+		},
+		{
+			name: "a root whose spec a person approved beside a Verification document it registered under a deployment that gates the spec alone",
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: map[record.DesignStep]record.DesignGate{
+				record.DesignStepSpec:     {Issue: "LEGION-208", Step: record.DesignStepSpec, LatestVersion: 1, ApprovedVersion: new(1)},
+				record.DesignStepCriteria: {Issue: "LEGION-208", Step: record.DesignStepCriteria, LatestVersion: 1}}}},
+			want: "LEGION-208 is yours and its design gate already stands part way: " +
+				"its primary document is registered at version 1 and a person has approved that version; " +
+				"its Verification document is registered at version 1 and no person has answered it. " +
+				"Take it up in this turn, as your role says: claim it in Dispatch, carry that gate on from where it stands " +
+				"and take the tree up from there." + gateStandingClosing,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ArchitectStartTask(tc.start); got != tc.want {
+				t.Fatalf("the architect's start task =\n%q\nwant\n%q", got, tc.want)
+			}
+		})
+	}
+}
+
 // shapeLabels is the label of each shape of a root architect's start task, one per shape.
 var shapeLabels = []string{ArchitectFreshTreeLabel, ArchitectCarriedPhaseLabel, ArchitectGateRowsLabel, ArchitectGateOpenLabel,
 	ArchitectReadmittedLabel}

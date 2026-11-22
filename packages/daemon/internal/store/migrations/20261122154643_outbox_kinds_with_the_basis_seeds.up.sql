@@ -33,9 +33,9 @@
 -- this file, so no deployment's database records it.
 --
 -- A database a build of this branch migrated earlier recorded this list under an older version:
--- 20261114064235 before 2026-11-17, 20261117110810 from then until 2026-11-19, and a third from
--- then until the forward merge of 2026-11-22 brought in 20261119203047, which stood above it and
--- left both seeds out. None of those versions names a file now, and Migrate
+-- 20261114064235 before 2026-11-17, 20261117110810 from then until 2026-11-19, and
+-- 20261119185013 from then until the forward merge of 2026-11-22 brought in 20261119203047, which
+-- stood above it and left both seeds out. None of those versions names a file now, and Migrate
 -- passes over a recorded version that names none. Its next upgrade applies each list it lacks,
 -- main's 20261119003157 or 20261119203047 among them, before this one, and none of them names
 -- pending_basis_seed or reparent_seed, so a queued row of either stops the upgrade at the first of
