@@ -503,7 +503,7 @@ func TestEachStepIsToldTheStepsAroundItInAnyOrder(t *testing.T) {
 			append(slices.Clone(planRead),
 				"After your approval, a later step of your task can send the work back, and the new head then comes to your review again",
 				"A merge forward of the base that lands once your step ran makes a new head too, and the daemon asks you to approve it.",
-				"Retro commits nothing, so no step of Legion's moves the head after your approval but those two; nothing in Legion holds the head that merges to the one you approved"),
+				"Retro commits nothing. After your approval, only those two or a push by a later step of your task move the head. Nothing in Legion holds the head that merges to the one you approved"),
 			append(slices.Clone(planRetired),
 				"After approval, no implementation or further review change may happen",
 				"the head changes only when a later step of your task sends the work back",
@@ -514,7 +514,7 @@ func TestEachStepIsToldTheStepsAroundItInAnyOrder(t *testing.T) {
 		{
 			"implementer.md",
 			append(slices.Clone(planRead),
-				"so the steps after yours, the tester's among them, run on that head",
+				"The steps after yours then run on that head, the tester's among them where your task has one",
 				"the plan handoff's `requiredSkills` for your role, where a planner step comes before yours"),
 			append(slices.Clone(planRetired), "so the tester runs that head"),
 		},
@@ -619,7 +619,7 @@ func TestNoPartPutsTheAcceptancePastTheReview(t *testing.T) {
 			[]string{
 				"a stop in `accepting`, `retro` or `merging` holds none, and a stop in any other phase keeps the slot it holds",
 				"a parent whose task passed its last step, which is not your `acceptance:owner` step",
-				"moves the issue on to its task's next step with no further notice",
+				"It moves the issue on to its task's next step, `accepting` where your step `acceptance:owner` comes next.",
 			},
 			[]string{"past its review", "Past review", "a stop before `accepting` keeps it", "no `acceptance:owner` step to wait in"},
 		},
@@ -758,7 +758,7 @@ func TestTheSentencesTheLastAcceptanceRoundShowedFalseAgreeWithTheDaemon(t *test
 
 // The daemon does none of the merger's reads for it, though it reads the head, the reviews and the
 // checks for its own record (reviewRound, tellChecks). A phase moves on from the legion tool's
-// handoff_complete and request_backward_move and from GitHub's events: the reviewer's review ends
+// handoff_complete, request_backward_move and sign_off and from GitHub's events: the reviewer's review ends
 // its round with or without its completion (workflow's reviewRound), and the merge ends merging. A
 // completion that comes after the review is recorded on the round the review ended
 // (reportEndedStep). Each part is read alone, by its name. This shows the text is loaded, never
@@ -770,12 +770,12 @@ func TestThePartsSayWhatEndsAPhaseAndWhatTheDaemonReads(t *testing.T) {
 	}{
 		{
 			"merger.md",
-			[]string{"it makes for you none of the reads of the head you merge, its checks and the reviewer's approval"},
+			[]string{"It makes none of your reads of the head you merge: its checks, and the reviewer's approval where your task has a reviewer step."},
 			[]string{"it reads neither the head you merge, nor its checks, nor the reviewer's approval"},
 		},
 		{
 			"worker-common.md",
-			[]string{"moves a phase on only from the `legion` tool's `handoff_complete` and `request_backward_move` and from the GitHub events your role part names, such as the reviewer's review and the merge."},
+			[]string{"It moves a phase on only from the `legion` tool's `handoff_complete`, `request_backward_move` and the architect's `sign_off`. It also moves one on from the GitHub events your role part names, such as the reviewer's review and the merge."},
 			[]string{"`handoff_complete` is the only way to finish a phase"},
 		},
 		{
@@ -986,4 +986,88 @@ func TestThePlannerResolvesACheckFindingInThePlan(t *testing.T) {
 			"A rejection of the goal or of a requirement is never one you proceed past, as above.",
 		},
 		[]string{"a check's other findings never block the plan"})
+}
+
+// Each sentence that held only in the default steps (planner, implementer, tester, reviewer, then
+// the owner's acceptance) holds for every order the plan validator allows (plan.Supported): the
+// planner at any place, the tester, the reviewer and the acceptance in any order after the
+// implementer, and each of them left out. A planner after the implementer plans no code that
+// came before it; a task with no reviewer step costs no review and names no reviewer's approval;
+// a reviewer or an implementer can be the task's last step, which moves the task to retro, not to
+// a next step (workflow's any-order steps); a step after the reviewer can push; only the step
+// right after the planner is told its plan by a `Handoff:` line, the others by a `reported:` line
+// (workflow's task text); and the architect's sign_off moves a phase too. Each part is read alone,
+// by its name, and each old sentence is gone. This shows the text is loaded, never that an agent
+// follows it.
+func TestTheSentencesTrueOnlyInTheDefaultStepsHoldForEveryOrder(t *testing.T) {
+	for _, tc := range []struct {
+		part       string
+		read       func(*testing.T) string
+		want, gone []string
+	}{
+		{
+			"roles/core/planner.md", func(t *testing.T) string { return rolePart(t, "core/planner.md") },
+			[]string{
+				"An implementer step after yours must prove the change on that surface before its phase completes. A tester step after yours must be able to re-run what you named.",
+				"For four kinds of requirement it names these, before any code where an implementer step follows yours.",
+			},
+			[]string{"since the implementer must prove the change on that surface", "it names these before any code, because"},
+		},
+		{
+			"roles/implementer.md", func(t *testing.T) string { return rolePart(t, "implementer.md") },
+			[]string{
+				"A later round costs a CI pass, and another review where your task has a reviewer step.",
+				"The steps after yours then run on that head, the tester's among them where your task has one.",
+			},
+			[]string{"because a later round costs a CI pass and another review", "so the steps after yours, the tester's among them, run on that head"},
+		},
+		{
+			"roles/reviewer.md", func(t *testing.T) string { return rolePart(t, "reviewer.md") },
+			[]string{"After your approval, only those two or a push by a later step of your task move the head."},
+			[]string{"no step of Legion's moves the head after your approval but those two"},
+		},
+		{
+			"roles/architect.md", func(t *testing.T) string { return rolePart(t, "architect.md") },
+			[]string{"Where your issue's task has your `acceptance:owner` step, its sign-off then waits for its last round."},
+			[]string{"Your issue's sign-off then waits for its last round, whose head"},
+		},
+		{
+			"roles/architect-root.md", func(t *testing.T) string { return rolePart(t, "architect-root.md") },
+			[]string{"Before `merging`, from the task's first step through retro, register with `register_gate` each step your addressing line names."},
+			[]string{"Before `merging` (planning through retro)"},
+		},
+		{
+			"go/architect-common.md", func(t *testing.T) string { return goPart(t, "architect-common.md") },
+			[]string{
+				"Where the review is the task's last step, it starts the retro, or holds a parent before it (`retro-held`, above).",
+				"Once it is open, the daemon records it and moves the issue to the task's next step. Where the implementer's step is the task's last, it starts the retro, or holds a parent before it.",
+			},
+			[]string{"moves the issue on to its task's next step with no further notice", "moves the issue to the next step of its task once it is open"},
+		},
+		{
+			"go/implementer.md", func(t *testing.T) string { return goPart(t, "implementer.md") },
+			[]string{
+				"The task's next step, or its retro where yours is the last step, starts only after that round's `handoff_complete`.",
+				"The completion is applied, and the task moves on to its next step, or toward its retro where yours is the last step.",
+			},
+			[]string{"and the task's next step starts only after that round's", "the completion is applied and the issue moves to the task's next step"},
+		},
+		{
+			"go/merger.md", func(t *testing.T) string { return goPart(t, "merger.md") },
+			[]string{"the reviewer's approval where your task has a reviewer step."},
+			[]string{"its checks and the reviewer's approval: the merge is yours"},
+		},
+		{
+			"go/worker-common.md", func(t *testing.T) string { return goPart(t, "worker-common.md") },
+			[]string{
+				"and the architect's `sign_off`.",
+				"So the plan version your task names, in a `Handoff:` or a `reported:` line, is a receipt for the record the daemon accepted, not the plan.",
+			},
+			[]string{"`request_backward_move` and from the GitHub events", "so your task's `Handoff: plan version <n>` line is the receipt"},
+		},
+	} {
+		t.Run(tc.part, func(t *testing.T) {
+			holdsAndRetires(t, tc.part, tc.read(t), tc.want, tc.gone)
+		})
+	}
 }

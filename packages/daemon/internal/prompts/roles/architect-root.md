@@ -147,11 +147,11 @@ no design gate to carry (a root reopened in its linger loses its gate, and its s
 its children over without one). Its workers already run their phases from its carried phase
 records and pull request, so do not start section 2 of your skill: decompose nothing and release
 no wave. Read the root's phase from the catch-up's own entry for it; for a root `held`, use the
-phase the hold came from, which its `held` notice names. Before `merging` (planning through
-retro), register each step your addressing line names with `register_gate`, each on this issue's
-own document for that step: the tree's work waits for those gates, and when a gate's
-`design-approved` arrives, start nothing. In `merging` the work is already through every gate and
-may have merged, so register no document and
+phase the hold came from, which its `held` notice names. Before `merging`, from the task's first
+step through retro, register with `register_gate` each step your addressing line names. Register
+each on this issue's own document for that step. The tree's work waits for those gates, and when
+a gate's `design-approved` arrives, start nothing. In `merging` the work is already through every
+gate and may have merged, so register no document and
 ask no human to approve one: the merge closes the issue, and the production check after the close
 is the tester's, on the pull request, where the project opens one.
 

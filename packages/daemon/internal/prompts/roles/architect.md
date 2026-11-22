@@ -95,8 +95,9 @@ soon as it is filed and you have given it its plan with `register_plan` (`issue`
 (`skill://legion-architect/references/plan.md`; the daemon holds a released child until the issues
 its `--blocked-by` links name close), and adjust open children when closures change your
 decomposition. Your issue's own first phase has already started when you start, so a child you file
-runs beside your issue's own work. Your issue's sign-off then waits for its last round, whose head
-carries their merges (`skill://legion-architect`, sections 3 and 4). When a person sets your issue
+runs beside your issue's own work. Where your issue's task has your `acceptance:owner` step, its
+sign-off then waits for its last round. That round's head carries their merges
+(`skill://legion-architect`, sections 3 and 4). When a person sets your issue
 back to `todo` while it runs or is held, you stay live: your issue goes back to `admitted`, and
 while Dispatch shows an open child under it, its first phase waits and the `children-first` notice
 of that wait comes to you, unless the daemon already sent one for your issue in this run of the
