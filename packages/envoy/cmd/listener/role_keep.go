@@ -232,6 +232,11 @@ const (
 // when the copy could not be kept, beside the answer each gives when nothing was kept.
 const roleKeepFailedLine = "listener kept role message publish failed"
 
+// roleKeepCutLine is logged at INFO in place of roleKeepFailedLine when the keep's caller cut it
+// (keepRoleMessage): the stop cancels a held message's retry, which holds the message and keeps it
+// again under the stop's deadline, so the keep it cut lost nothing.
+const roleKeepCutLine = "listener kept role message publish cut by its caller; the message is held"
+
 // roleKeepLaneCursor is one walk's hold on a role's drain cursor: everything each write of it
 // needs - the role, the holder the walk forwards to (empty for a walk with no live holder), the
 // cursor's subject - and the sequence the next compare-and-swap must name, which every write keeps
@@ -479,21 +484,28 @@ type keptRoleCopy struct {
 type keptRolePublish func(ctx context.Context, subject string, item contracts.Envelope, msgID string) (bus.StoredAck, error)
 
 // keepRoleMessage stores item on role's kept lane, the copy the role's next live holder is handed
-// (drainKeptRole), within roleKeepPublishWindow and ctx, whichever ends first, and returns what the
+// (drainKeptRole), within roleKeepPublishWindow and parent, whichever ends first, and returns what the
 // lane holds for it, or the keep's failure (storeKeptRoleCopy), which a caller answering a sender
 // reads: a keep whose publish went unacknowledged may have stored the copy (bus.ErrUnacknowledged).
-// ctx is the caller's bound on the whole of its own end, the role lane's stop deadline for a
-// message it held (roleForwarder.keepHeld), and context.Background() for every caller with none. A
-// keep that failed is logged here, the one failure line both give-up paths write (the publish
-// route's noHolder and the role lane's keepRoleLaneMessage), so neither carries a copy of it; the
-// error goes back to the caller, which decides from it whether the message is held for another
-// attempt (resolveCoreRoleHolder).
-func keepRoleMessage(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, error) {
-	ctx, cancel := context.WithTimeout(ctx, roleKeepPublishWindow)
+// parent is the caller's bound on the whole of its own end: the role lane's stop deadline for a
+// message it held (roleForwarder.keepHeld), the forwarder's stop context for a held message's
+// retry (roleForwarder.stopCtx), and context.Background() for every caller with none. A keep that
+// failed is logged here, the one failure line both give-up paths write (the publish route's
+// noHolder and the role lane's keepRoleLaneMessage), so neither carries a copy of it; the error
+// goes back to the caller, which decides from it whether the message is held for another attempt
+// (resolveCoreRoleHolder). A keep the caller cut itself - its context cancelled, as the stop
+// cancels a held message's retry - is no failure of the keep's: the caller holds the message and
+// keeps it again, so the line is roleKeepCutLine at INFO rather than roleKeepFailedLine at ERROR.
+func keepRoleMessage(parent context.Context, cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, error) {
+	ctx, cancel := context.WithTimeout(parent, roleKeepPublishWindow)
 	defer cancel()
 	kept, err := storeKeptRoleCopy(ctx, cfg, role, item, cfg.keepPublish)
 	if err != nil {
-		cfg.logger.Error(roleKeepFailedLine,
+		line, level := roleKeepFailedLine, slog.LevelError
+		if errors.Is(parent.Err(), context.Canceled) {
+			line, level = roleKeepCutLine, slog.LevelInfo
+		}
+		cfg.logger.LogEvent(level, line,
 			slog.String("role", role),
 			slog.String("event_id", item.EventID),
 			slog.String("error", err.Error()))

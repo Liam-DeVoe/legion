@@ -644,7 +644,7 @@ whose record is gone has no consumer to read the copy, so the message is resolve
 holder again. At shutdown the lane stops its forwarder, drains its connection, and only then
 keeps every message it holds, those still queued behind a holder's worker among them, so the
 handler's keeps of the messages its subscription still holds go over the main connection first.
-A delivery attempt running at the stop has the NATS step it is in cut there - a pinned holder's
+A held message's retry running at the stop has the NATS step it is in cut there - a pinned holder's
 session read, a resolution's claim and session reads, a resolution's keep - and a forward whose
 outcome comes after the stop makes no read of the stream, so each is held and parks. Each held
 message's end then runs under one deadline inside the drain's 2 s wait for them, so it ends

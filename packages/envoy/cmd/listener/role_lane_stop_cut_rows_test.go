@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -10,13 +12,16 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// These rows name no symbol this change's stop context added, so each builds against the forwarder
-// before it and fails there for the reason it names.
+// TestAForwardWhoseOutcomeComesLateInTheDrainsWaitEndsBeforeIt names no symbol this round added, so
+// it builds against the forwarder before it and fails there for the reason it names.
+// TestAHeldRetryInItsClaimReadAtTheStopEndsBeforeTheDrainsWait reads the claim through the
+// delivery configuration's claim store (claims) and checks the cut keep's line (roleKeepCutLine),
+// both this round's; its control is the head with the retry's steps under context.Background().
 
 // keepThatNeverAnswers is a keep whose publish NATS never answers: it waits for its context to
 // end and fails with the context's error, as a keep over a connection whose replies are lost does.
@@ -86,32 +91,44 @@ func TestAForwardWhoseOutcomeComesLateInTheDrainsWaitEndsBeforeIt(t *testing.T) 
 	}
 }
 
+// claimReadThatStopsAnswering is a claim store (roles.ClaimStore) that answers from claims until
+// stopAnswering is set, and from then on signals entered as a read starts and answers nothing:
+// the read waits for its context to end, as a read over a connection whose replies are lost does.
+type claimReadThatStopsAnswering struct {
+	claims        roles.ClaimStore
+	stopAnswering atomic.Bool
+	entered       chan struct{}
+	enteredOnce   sync.Once
+}
+
+func (c *claimReadThatStopsAnswering) RoleClaim(ctx context.Context, role string) (store.RoleClaim, error) {
+	if !c.stopAnswering.Load() {
+		return c.claims.RoleClaim(ctx, role)
+	}
+	c.enteredOnce.Do(func() { close(c.entered) })
+	<-ctx.Done()
+	return store.RoleClaim{}, ctx.Err()
+}
+
 // A held message whose retry is in its claim read when the listener stops ends with its own line
 // before the drain's wait ends: the stop cuts the read, the message holds and parks, and it ends
-// under the stop's deadline. The claim is read through a proxy whose server replies are frozen
-// after the first forward, which left nothing on the wire, so the retry's read waits for its
-// whole window; the keep after it never answers either. The row stops the listener once the
-// retry's read has gone out. Before, the retry's read and its keep ran under
-// context.Background(), 2 s each, and the message ended after the drain's wait.
+// under the stop's deadline. The first forward leaves nothing on the wire, so the message is held
+// and resolved again; from then on the claim read answers nothing and the keep after it never
+// answers either, and the row stops the listener once the retry is in its read. Before, the
+// retry's read and its keep ran under context.Background(), 2 s each, and the message ended after
+// the drain's wait.
 func TestAHeldRetryInItsClaimReadAtTheStopEndsBeforeTheDrainsWait(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const role = "retry-in-its-claim-read"
 	claimFor(t, harness, role, "ses_retry_claim_read")
-	proxy := testnats.StartProxy(t, harness.client.Conn.ConnectedUrl())
-	slowConn := testnats.Connect(t, proxy.URL())
-	slowRegistry, err := store.Open(t.Context(), slowConn, store.WithReplicas(1))
-	if err != nil {
-		t.Fatalf("open the registry the retry reads the claim through: %v", err)
-	}
-	var sentBeforeTheRetry atomic.Uint64
+	claims := &claimReadThatStopsAnswering{claims: harness.registry, entered: make(chan struct{})}
 	var forwards atomic.Int32
 	cfg := harness.config
-	cfg.registry = slowRegistry
+	cfg.claims = claims
 	cfg.keepPublish = keepThatNeverAnswers
 	cfg.forwardRole = func(string, contracts.Envelope, string, time.Duration) (func() error, error) {
 		if forwards.Add(1) == 1 {
-			proxy.FreezeServerReplies()
-			sentBeforeTheRetry.Store(slowConn.Stats().OutMsgs)
+			claims.stopAnswering.Store(true)
 			return nil, fmt.Errorf("%w: the window was spent before the publish", bus.ErrNotSent)
 		}
 		return func() error { return nil }, nil
@@ -121,8 +138,11 @@ func TestAHeldRetryInItsClaimReadAtTheStopEndsBeforeTheDrainsWait(t *testing.T) 
 	item, msg := laneMessage(t, role, "retry-in-its-claim-read")
 
 	coreNATSDeliveryHandler(cfg)(msg)
-	testwait.WithinPolling(t, 20*time.Second, time.Millisecond, "the retry's claim read to go out",
-		func() bool { return forwards.Load() == 1 && slowConn.Stats().OutMsgs > sentBeforeTheRetry.Load() })
+	select {
+	case <-claims.entered:
+	case <-time.After(20 * time.Second):
+		t.Fatalf("UNKNOWN: the held message's retry made no claim read within 20 s:\n%s", harness.logs.String())
+	}
 	forwarder.stopHolding()
 	waitEnds := forwarder.keepHeldNow()
 	forwarder.settled(t)
@@ -131,6 +151,20 @@ func TestAHeldRetryInItsClaimReadAtTheStopEndsBeforeTheDrainsWait(t *testing.T) 
 	logs := harness.logs.String()
 	if got := forwards.Load(); got != 1 {
 		t.Fatalf("the lane made %d forwards, want only the first: the retry was cut in its claim read:\n%s", got, logs)
+	}
+	// The stop cut the retry's keep after its claim read: that is no failure of the keep's, so it
+	// is the INFO line that says the message is held, and no ERROR says the keep failed on a
+	// cancelled context. An ordered SIGTERM shutdown logs no ERROR
+	// (TestListenerSIGTERMIsAnOrderedShutdown), and a keep the stop cut logged one.
+	cut := linesIn(logs, roleKeepCutLine, map[string]any{"event_id": item.EventID})
+	failed := 0
+	for _, line := range linesIn(logs, roleKeepFailedLine, map[string]any{"event_id": item.EventID}) {
+		if text, _ := line["error"].(string); strings.Contains(text, context.Canceled.Error()) {
+			failed++
+		}
+	}
+	if len(cut) != 1 || failed != 0 {
+		t.Fatalf("%d lines say the stop cut the keep and %d ERROR lines say the keep failed on a cancelled context, want 1 and 0:\n%s", len(cut), failed, logs)
 	}
 	if got := endsOf(logs, item.EventID); got != 1 {
 		t.Fatalf("the message ended %d times, want once: kept, or the line that it was not:\n%s", got, logs)

@@ -95,11 +95,11 @@ const roleHeldUnkeptLine = "listener role message the lane stopped holding was n
 // roleStopWait is how long the role lane's drain waits, once the lane's own client has drained,
 // for every role message handed over to end (roleLane.drain): the forward window, since a forward
 // published before the stop has its outcome within it, and no forward is published after it. A
-// delivery attempt running at the stop has the NATS step it is in cut (roleForwarder.stopCtx), and
-// a forward whose outcome comes after the stop makes no read of the stream (roleForwarder.finish),
-// so each holds and parks; every parked message then ends under one deadline inside the wait
-// (roleForwarder.keepHeldNow), so none outlasts it. It is the second of the two waits
-// stopLaneGrace adds (main.go), so a change here moves every pod's grace.
+// held message's retry running at the stop has the NATS step it is in cut (roleForwarder.stopCtx),
+// and a forward whose outcome comes after the stop makes no read of the stream
+// (roleForwarder.finish), so each holds and parks; every parked message then ends under one
+// deadline inside the wait (roleForwarder.keepHeldNow), so none outlasts it. It is the second of
+// the two waits stopLaneGrace adds (main.go), so a change here moves every pod's grace.
 const roleStopWait = roleForwardTimeout
 
 // roleStopLineReserve is the end of roleStopWait no held message's step at the stop runs into
@@ -187,8 +187,8 @@ type roleForwarder struct {
 	pending sync.WaitGroup
 	// stopCtx is done once the listener stops (stopHolding): no further slot is given out, a
 	// message the lane takes from then on is kept at once, and a held message waiting for its
-	// next attempt parks until keepHeldNow. A delivery attempt that is running then makes its NATS
-	// steps under it - a pinned holder's session read, the claim and session reads of a
+	// next attempt parks until keepHeldNow. A held message's retry that is running then makes its
+	// NATS steps under it - a pinned holder's session read, the claim and session reads of a
 	// resolution, and the resolution's keep (deliverRoleMessage) - so the stop cuts the step,
 	// which holds the message, and the message parks and ends under keepBy like every other.
 	stopCtx    context.Context
@@ -761,8 +761,8 @@ func reforwardShare(ctx context.Context) (context.Context, context.CancelFunc, b
 
 // stopHolding ends the forwarder's further delivery attempts: no slot is given out from now on, a
 // message the lane's handler takes from now on, or is waiting for a slot for, is kept on its
-// role's kept lane at once (keepHeld), a message the lane holds parks until keepHeldNow, and a
-// delivery attempt that is running has the NATS step it is in cut (stopCtx), so it holds and parks
+// role's kept lane at once (keepHeld), a message the lane holds parks until keepHeldNow, and a held
+// message's retry that is running has the NATS step it is in cut (stopCtx), so it holds and parks
 // too. It runs once however often it is called.
 func (f *roleForwarder) stopHolding() {
 	f.cancelStop()
@@ -897,7 +897,7 @@ func startRoleLane(cfg config.Service, edge *edgeGrant, handler nats.MsgHandler,
 // (keepHeldNow): up to roleForwardWaitLimit keeps on the main connection, which the handler's own
 // keeps would otherwise queue behind. Last it waits for the messages handed over, until
 // roleStopWait from that release: a forward published before the stop has its outcome within it;
-// a delivery attempt that was running at the stop had its NATS step cut there
+// a held message's retry that was running at the stop had its NATS step cut there
 // (roleForwarder.stopCtx), and a forward whose outcome came after the stop made no read of the
 // stream (roleForwarder.finish), so each held and parked; and each parked message's end - a pinned
 // message's forward once more and its keep among them - runs under one deadline inside the wait

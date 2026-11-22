@@ -68,8 +68,12 @@ type listenerDeliveryHandlerConfig struct {
 	// path hands its forwards to it, so it is always set: wireRoleForwarder builds it from the
 	// configuration it reports through, once that configuration is otherwise built, and main.go
 	// and every test alike wire it there.
-	roleForwards      *roleForwarder
-	registry          *store.Registry
+	roleForwards *roleForwarder
+	registry     *store.Registry
+	// claims is what the role lane reads a role's claim from (roleClaimStore): nil in the
+	// listener, which reads registry, and a test's own where it stands in for a claim read that
+	// does not answer.
+	claims            roles.ClaimStore
 	sessions          *session.SessionRegistry
 	machineID         string
 	dedupeCache       *dedupe.Cache
@@ -512,6 +516,15 @@ func (c roleLaneClaims) RoleClaim(ctx context.Context, role string) (store.RoleC
 	return c.claims.RoleClaim(readCtx, role)
 }
 
+// roleClaimStore is the store the role lane reads a role's claim from: cfg.claims where a test
+// set one, and the registry otherwise.
+func (cfg listenerDeliveryHandlerConfig) roleClaimStore() roles.ClaimStore {
+	if cfg.claims != nil {
+		return cfg.claims
+	}
+	return cfg.registry
+}
+
 // roleResolution is how the role lane's resolution of a message's holder ended
 // (resolveCoreRoleHolder).
 type roleResolution int
@@ -571,13 +584,14 @@ func keepFailureHolds(err error) bool {
 // and a lapsed holder and a failed claim read are delivery_failed, each under a log line that
 // names which it was. A holder that is not answering keeps its claim through all of them, kept
 // copy or not: the lane takes nothing from it. Role delivery answers no caller, so it resolves
-// under ctx, the forwarder's stop context (roleForwarder.stopCtx): each of its two reads is
-// bounded on its own by roleHolderReadTimeout - the claim read by roleLaneClaims and the holder's
-// session read by roleHolderSessions.Holder - and the keep by roleKeepPublishWindow, and the stop
-// cuts whichever is running. A read or keep the stop cut is one that failed on NATS, so the
+// under ctx - the forwarder's stop context for a held message's retry (roleForwarder.stopCtx), and
+// context.Background() for the lane's first delivery of it: each of its two reads is bounded on
+// its own by roleHolderReadTimeout - the claim read by roleLaneClaims and the holder's session read
+// by roleHolderSessions.Holder - and the keep by roleKeepPublishWindow, and the stop cuts a
+// retry's step that is running. A read or keep the stop cut is one that failed on NATS, so the
 // message is held, and the hold parks it (roleForwarder.hold).
 func resolveCoreRoleHolder(ctx context.Context, cfg listenerDeliveryHandlerConfig, item contracts.Envelope, role string) (string, session.SessionEntry, roleResolution, error) {
-	resolved, err := roles.ResolveHolder(ctx, roleLaneClaims{cfg.registry}, roleHolderSessions{cfg.sessions}, role)
+	resolved, err := roles.ResolveHolder(ctx, roleLaneClaims{cfg.roleClaimStore()}, roleHolderSessions{cfg.sessions}, role)
 	sessionID := resolved.Holder
 	// Every error the resolution returns is a *roles.ReadError naming the read that failed.
 	// One that is not would still be a read that failed, so it is logged as the claim read with
@@ -708,11 +722,13 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 // on its role's kept lane at once, with no resolution and no slot to wait for
 // (roleForwarder.keepHeld), so the lane's drain takes every message its subscription holds within
 // its window; a held message parks, as every held message does at the stop, and is kept once the
-// lane has drained (roleForwarder.keepWhenTheLaneHasDrained). A delivery that is already running
-// when the stop comes makes its NATS steps - the pinned holder's session read, the resolution's
-// reads and its keep - under the forwarder's stop context (roleForwarder.stopCtx), so the stop
-// cuts the step it is in, the message is held, and the hold parks it: it ends under the stop's
-// deadline with its own line, rather than after the drain's wait with none.
+// lane has drained (roleForwarder.keepWhenTheLaneHasDrained). A held message's retry that is
+// already running when the stop comes makes its NATS steps - the pinned holder's session read, the
+// resolution's reads and its keep - under the forwarder's stop context (roleForwarder.stopCtx), so
+// the stop cuts the step it is in, the message is held, and the hold parks it: it ends under the
+// stop's deadline with its own line, rather than after the drain's wait with none. The lane's
+// first delivery of a message runs in its handler, which the lane's own drain waits for, so it
+// makes its steps under context.Background() and is not cut.
 func deliverRoleMessage(cfg listenerDeliveryHandlerConfig, item contracts.Envelope, held roleHeld) {
 	if err := roleLaneProjectError(strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix)); err != nil {
 		applyDeliveryOutcome(cfg, item, deliveryOutcome{
@@ -734,8 +750,12 @@ func deliverRoleMessage(cfg listenerDeliveryHandlerConfig, item contracts.Envelo
 		cfg.roleForwards.keepHeld(item, held, roleKeptAtShutdown, nil, time.Time{})
 		return
 	}
+	ctx := context.Background()
+	if held.attempts > 0 {
+		ctx = cfg.roleForwards.stopCtx
+	}
 	if held.pinned != "" {
-		stands, err := pinnedHolderStands(cfg.roleForwards.stopCtx, cfg, held.pinned)
+		stands, err := pinnedHolderStands(ctx, cfg, held.pinned)
 		if err != nil {
 			cfg.roleForwards.hold(item, held.pinned, held, err)
 			return
@@ -751,7 +771,7 @@ func deliverRoleMessage(cfg listenerDeliveryHandlerConfig, item contracts.Envelo
 	}
 	role, _ := roleOfLaneTopic(item.Topic)
 	resolvedAt := cfg.now()
-	sessionID, holder, resolution, cause := resolveCoreRoleHolder(cfg.roleForwards.stopCtx, cfg, item, role)
+	sessionID, holder, resolution, cause := resolveCoreRoleHolder(ctx, cfg, item, role)
 	switch resolution {
 	case roleMessageHeld:
 		cfg.roleForwards.hold(item, sessionID, held, cause)

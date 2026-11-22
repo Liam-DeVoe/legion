@@ -5,16 +5,16 @@ body: |-
   At shutdown the listener's role lane keeps the messages it holds, and those still queued behind
   a holder's worker, only after its own connection has drained, so the handler's keeps of the
   messages its subscription still holds go first: a listener holding its 4,096-message bound kept
-  those first and lost the buffered ones. A delivery attempt running at the stop has its read or
-  keep cut there, and a forward whose outcome comes after the stop makes no read of the stream, so
-  each is held and parks. Each held message's end at the stop - a pinned message's forward once
-  more, then its keep - runs under one deadline inside the drain's 2 s wait, so it ends with its
-  own line before the process exits; a message the deadline leaves too little time for a forward
-  is kept at once. A role message whose forward's acknowledgement was lost is forwarded again to
-  the same holder under the same id, so the stream stores it once even when the role moves
-  meanwhile; whether that holder's session still stands is read from the session bucket's
-  leader. A held message logs one ERROR, not one line per attempt, and a lane whose 4,096 forward
-  slots are all held logs one ERROR when it fills and one when it has room.
+  those first and lost the buffered ones. A held message's retry running at the stop has its read
+  or keep cut there, and a forward whose outcome comes after the stop makes no read of the
+  stream, so each is held and parks. Each held message's end at the stop - a pinned message's
+  forward once more, then its keep - runs under one deadline inside the drain's 2 s wait, so it
+  ends with its own line before the process exits; a message the deadline leaves too little time
+  for a forward is kept at once. A role message whose forward's acknowledgement was lost is
+  forwarded again to the same holder under the same id, so the stream stores it once even when
+  the role moves meanwhile; whether that holder's session still stands is read from the session
+  bucket's leader. A held message logs one ERROR, not one line per attempt, and a lane whose
+  4,096 forward slots are all held logs one ERROR when it fills and one when it has room.
 
   A send, a publish or a store write the stream refuses for the message itself (a message or
   headers past the stream's maxima, a message too large for the store, or a sealed stream) is
