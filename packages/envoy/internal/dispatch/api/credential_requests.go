@@ -31,6 +31,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
@@ -293,6 +294,16 @@ func (s *server) listCredentialPending(w http.ResponseWriter, r *http.Request) {
 // whatever account it names: a sign-in that commits between this check and the relay records its
 // revocation at a greater generation. A deny mints nothing and names no account.
 //
+// The account and the generation go only to a broker whose settings say it takes them
+// (cipher.Client.TakesApproverFields, a read at most cipher.ApproverFieldsTTL old): a broker from
+// before them refuses an approve carrying any of them 400 INVALID_DECISION, so to such a broker,
+// or when its settings cannot be read, the approve carries the approver and the code alone. The
+// read comes after the re-read, so a refused caller asks the broker nothing, and it and the relay
+// share one deadline, the client's window (cipher.New's five seconds) from the end of the re-read
+// (relayDeadline): so the approve reaches the broker within that window of its check or not at all,
+// the bound the broker's in-flight window counts (machine.ApprovalInFlightWindow), however long the
+// read takes.
+//
 // A restricted member's approve is relayed holding their approval lock (relayMachineLoginApproval).
 func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
@@ -320,19 +331,34 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	if account.subject != "" && s.deps.SignInIssuer != "" {
-		decision.ApproverIssuer, decision.ApproverSubject = s.deps.SignInIssuer, account.subject
-		if account.issuer != "" {
-			decision.ApproverIssuer = account.issuer
+	relay, cancel := relayDeadline(r.Context(), client)
+	defer cancel()
+	if client.TakesApproverFields(relay) {
+		if account.subject != "" && s.deps.SignInIssuer != "" {
+			decision.ApproverIssuer, decision.ApproverSubject = s.deps.SignInIssuer, account.subject
+			if account.issuer != "" {
+				decision.ApproverIssuer = account.issuer
+			}
 		}
+		decision.ApproverSessionGeneration = &generation
 	}
-	decision.ApproverSessionGeneration = &generation
 	if restricted {
-		s.relayMachineLoginApproval(w, r, client, model.CanonicalLogin(actor.ID), decision)
+		s.relayMachineLoginApproval(relay, w, r, client, model.CanonicalLogin(actor.ID), decision)
 		return
 	}
-	body, err := client.Approve(r.Context(), r.PathValue("id"), decision)
+	body, err := client.Approve(relay, r.PathValue("id"), decision)
 	relayBrokerResponse(w, body, err)
+}
+
+// relayDeadline is ctx bounded to the broker client's window from now, the moment an approve's
+// re-read of its caller ended, for the settings read and the relay that follow it, so the two
+// together reach the broker within that window of the check. A client with no window (0) adds no
+// deadline, as it bounds no call.
+func relayDeadline(ctx context.Context, client *cipher.Client) (context.Context, context.CancelFunc) {
+	if window := client.HTTP.Timeout; window > 0 {
+		return context.WithDeadline(ctx, time.Now().Add(window))
+	}
+	return context.WithCancel(ctx)
 }
 
 // relayMachineLoginApproval relays a restricted member's approve of their own machine login while
@@ -344,8 +370,9 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 // database connection across a broker call. While a revocation is owed it relays nothing either:
 // 409 MACHINE_LOGIN_REVOCATION_OWED, for the person to approve again once a pass has revoked their
 // earlier logins and settled it, about a minute after a removal commits (machineLoginSettleAfter).
-// A read that fails is 503.
-func (s *server) relayMachineLoginApproval(w http.ResponseWriter, r *http.Request, client *cipher.Client, person string, decision cipher.Decision) {
+// A read that fails is 503. The relay runs on relay, which bounds it from the caller's check
+// (relayDeadline); the transaction runs on the request's own context.
+func (s *server) relayMachineLoginApproval(relay context.Context, w http.ResponseWriter, r *http.Request, client *cipher.Client, person string, decision cipher.Decision) {
 	ctx := r.Context()
 	tx, err := s.deps.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -368,7 +395,7 @@ func (s *server) relayMachineLoginApproval(w http.ResponseWriter, r *http.Reques
 			"this person's machine logins are being revoked after a removal from an access list; approve again once that is done, in about a minute")
 		return
 	}
-	body, err := client.Approve(ctx, r.PathValue("id"), decision)
+	body, err := client.Approve(relay, r.PathValue("id"), decision)
 	relayBrokerResponse(w, body, err)
 }
 

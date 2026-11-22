@@ -60,6 +60,13 @@ type settingsResponse struct {
 	// field and reads no type tag, so it serves a secret that carries type alone as a stored
 	// secret, and `agent-secrets` writes no typed secret through a broker that does not say this.
 	SecretTypeTag bool `json:"secret_type_tag"`
+	// Always true: this broker takes approver_issuer, approver_subject and
+	// approver_session_generation in a machine login's approve (decideBody), records the account on
+	// the login it mints and refuses an approval they place before a replacement (403
+	// APPROVER_REPLACED). Dispatch sends them only to a broker that says this
+	// (internal/dispatch/cipher's Client.TakesApproverFields): a broker from before them sends no
+	// such field and refuses a decision body carrying any of them 400 INVALID_DECISION.
+	ApproverFields bool `json:"approver_fields"`
 }
 
 // judgeKey is one key in settingsResponse.JudgeKeys.
@@ -78,7 +85,7 @@ type judgeKey struct {
 // the key under the cloud credential alone, with no identity at the broker at all.
 func (s *server) readSettings(w http.ResponseWriter, r *http.Request) {
 	resp := settingsResponse{Store: s.deps.SecretsStore, SecretsPrefix: s.deps.SecretsPrefix,
-		GoogleExchangeAudience: s.deps.GoogleExchangeAudience, SecretTypeTag: true}
+		GoogleExchangeAudience: s.deps.GoogleExchangeAudience, SecretTypeTag: true, ApproverFields: true}
 	switch s.deps.SecretsStore {
 	case secrets.StoreGCP:
 		resp.KMSKeyName = s.deps.SecretsKMSKey

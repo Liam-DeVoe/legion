@@ -56,9 +56,10 @@ const brokerOrigin = "http://dispatch.test"
 // RecordReplacedSubjectTx), that the account no longer holds the address, so it is refused there
 // from then on, and that the holder does, deleting any earlier record of the holder; an approve
 // answers that it minted a machine login, and a deny that it denied one. Each credential holds the
-// access tokens minted under it, and the revoke ends them with it. Every other call - the
+// access tokens minted under it, and the revoke ends them with it. GET /v1/settings answers that it
+// takes an approve's approver fields, as the broker of this build does. Every other call - the
 // per-credential lists and revokes an earlier Dispatch made among them - is answered 404, and
-// every call but an introspection is recorded as "METHOD path body".
+// every call but an introspection and a settings read is recorded as "METHOD path body".
 type fakeBroker struct {
 	stub   *ciphertokentest.StubBroker
 	server *httptest.Server
@@ -192,6 +193,11 @@ func (b *fakeBroker) refuses(person, subject string) bool {
 func (b *fakeBroker) serve(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == ciphertoken.IntrospectPath {
 		b.stub.Server.Config.Handler.ServeHTTP(w, r)
+		return
+	}
+	if r.Method == http.MethodGet && r.URL.Path == "/v1/settings" {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"approver_fields":true}`))
 		return
 	}
 	body, _ := io.ReadAll(r.Body)
