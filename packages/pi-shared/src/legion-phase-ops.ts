@@ -49,7 +49,8 @@ export interface ClaimCapability {
  * A phase worker's operations on the daemon's role-local workflow surface, which every host's
  * `legion` tool serves: pi-legion's (`packages/pi-legion/src/tools.ts`, beside the architect's and
  * the controller's operations) and claude-envoy's MCP tool (`packages/claude-envoy/src/legion-tool.ts`).
- * `review_verdict` is the reviewer's alone, which `executePhaseOp` holds for every host.
+ * `review_verdict` is a review step's agent's alone (`REVIEW_STEP_ROLES`), which `executePhaseOp`
+ * holds for every host.
  */
 export const PHASE_OPS = [
   "read_record",
@@ -66,11 +67,23 @@ export function isPhaseOp(op: string): op is PhaseOp {
   return (PHASE_OPS as readonly string[]).includes(op);
 }
 
+/** The roles whose claim runs a step of the type review, the daemon's `plan.BuiltinRoles`: the
+ * reviewer runs the step `reviewer`, and the architect that owns an issue runs its step
+ * `acceptance:owner` (`workflow/steps.go`, `acceptingAgent`), so the owner's acceptance session is
+ * an architect's. A role a plan defines runs no step in this release (`plan.Supported`).
+ * `review_verdict` is theirs alone on every host. */
+const REVIEW_STEP_ROLES: readonly LegionRole[] = ["reviewer", "architect"];
+
 /** A string field `op` requires: present, and not blank. The value is passed on as it was sent. */
 const requiredString = (op: PhaseOp, field: string) => {
   const message = `${op} requires ${field}`;
   return z.string({ error: message }).refine((value) => value.trim() !== "", { error: message });
 };
+
+/** The issue key `op` may name, as LEGION-208 is: optional, and which issue it may be is the
+ * executor's to hold. */
+const optionalIssue = (op: PhaseOp) =>
+  z.string({ error: `${op}'s issue is an issue key, as LEGION-208 is` }).optional();
 
 /** A string field `op` requires in the RFC 3339 form the route takes, refused here by the op's
  * own name with message rather than as the request schema's parse failure; a blank one is
@@ -183,9 +196,7 @@ export const PhaseOpArguments = z.discriminatedUnion(
     // reads the issue it works far more often than another, and its own key is one the daemon
     // already told it (its claim), so making it say that key again only refused first calls.
     operation("read_record", {
-      issue: z
-        .string({ error: "read_record's issue is an issue key, as LEGION-208 is" })
-        .optional(),
+      issue: optionalIssue("read_record"),
     }),
     operation("read_release_records", {
       since: windowStart,
@@ -195,24 +206,19 @@ export const PhaseOpArguments = z.discriminatedUnion(
       // A completion is always of the caller's own issue, which the claim names, so the call
       // need not name it. One that names it anyway is taken; one that names another issue is
       // refused in executePhaseOp, before any daemon request.
-      issue: z
-        .string({ error: "handoff_complete's issue is an issue key, as LEGION-208 is" })
-        .optional(),
-      // The reviewer's approve or changes on its phase completion, and pass, pending or fail on a
-      // production check's report. No other phase completion carries one: Dispatch's check states
-      // at the tested head decide the testing phase, and executePhaseOp refuses any other role's
-      // verdict once the record says the completion is a phase's, as the daemon does
-      // (VERDICT_NOT_TAKEN). Which word the reviewer sends is the daemon's to hold
-      // (REVIEWER_VERDICT_REQUIRED).
+      issue: optionalIssue("handoff_complete"),
+      // The verdict of a review step's agent on its phase completion, approve or changes, which
+      // the reviewer sends on its completion of reviewing (the owner accepts with sign_off and
+      // completes nothing), and pass, pending or fail on a production check's report. No other
+      // phase completion carries one: Dispatch's check states at the tested head decide the
+      // testing phase, and executePhaseOp refuses any other role's verdict once the record says
+      // the completion is a phase's, as the daemon does (VERDICT_NOT_TAKEN, VERDICT_ROLE_FORBIDDEN).
+      // Which word the reviewer sends is the daemon's to hold (REVIEWER_VERDICT_REQUIRED).
       verdict: z
         .enum(["pass", "pending", "fail", ...LEGION_REVIEWER_VERDICTS], {
           error: "handoff_complete's verdict is pass, pending, fail, approve or changes",
         })
         .optional(),
-      // The reviewer's alone (VERDICT_ROLE_FORBIDDEN from any other role): the commit of the
-      // tester's pass its verdict carries to the head its record names, under the daemon's own
-      // name for it.
-      testedCommit: requiredString("handoff_complete", "testedCommit").optional(),
       wake_at: nextLook.optional(),
       plan_rating: planRating.optional(),
       plan_reason: planReason.optional(),
@@ -239,9 +245,7 @@ export const PhaseOpArguments = z.discriminatedUnion(
       // (its grant serves its whole tree, and the daemon takes the move only on an issue that
       // architect owns); a phase worker's leaves it out, or names its own. Which is the
       // executor's to hold, by the claim's role.
-      issue: z
-        .string({ error: "request_backward_move's issue is an issue key, as LEGION-208 is" })
-        .optional(),
+      issue: optionalIssue("request_backward_move"),
       to: z.enum(LEGION_PHASE_BACKWARD_TARGETS, {
         error: (issue) =>
           typeof issue.input === "string" && issue.input.trim() !== ""
@@ -254,18 +258,18 @@ export const PhaseOpArguments = z.discriminatedUnion(
     // daemon takes the answer for and no other. The claim says who answers, and the plugin
     // resolves the branch head it reports.
     operation("ready_for_update", { round: requiredString("ready_for_update", "round") }),
-    // The reviewer's verdict on a head its pull request moved to past review
-    // (`LegionReviewVerdictRequest`): its two words, the head, the tester's pass the verdict
-    // carries there where it states one, and its summary. Who may send it is the executor's to
-    // hold, by the claim's role.
+    // The verdict of a review step's agent on a head its pull request moved to past review
+    // (`LegionReviewVerdictRequest`): the issue an architect accepted, its two words, the head and
+    // its summary. Who may send it, and which issue it names, is the executor's to hold, by the
+    // claim's role.
     operation("review_verdict", {
+      issue: optionalIssue("review_verdict"),
       verdict: z.enum(LEGION_REVIEWER_VERDICTS, {
         error: `review_verdict requires verdict ${LEGION_REVIEWER_VERDICTS.join(" or ")}`,
       }),
       commit: requiredString("review_verdict", "commit").describe(
         "review_verdict's head: the pull request's current head, the commit your verdict is on"
       ),
-      testedCommit: requiredString("review_verdict", "testedCommit").optional(),
       summary: requiredString("review_verdict", "summary"),
     }),
     // `read_build` takes no field: it reports this process's own build and asks the daemon for
@@ -380,11 +384,12 @@ export const PHASE_OP_SENTENCES = {
     "records each check's result with `dispatch result`, a fail with its evidence for a check it cannot verify, and completes. " +
     "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. ",
   reviewVerdict:
-    "review_verdict is the reviewer's alone: when the head of the pull request moves while its issue stands past its review " +
-    "(accepting, retro or merging), it sends the verdict on the new head, `verdict` approve or changes, `commit` that head, " +
-    "`testedCommit` where the verdict carries the tester's pass to it, and `summary`. It writes no handoff and ends no phase. The " +
-    "daemon takes it only from the reviewer whose completion ended the issue's review round (VERDICT_CALLER_FORBIDDEN), only past " +
-    "review (VERDICT_NOT_PAST_REVIEW) and only on the pull request's current head (VERDICT_HEAD_NOT_CURRENT). ",
+    "review_verdict answers the daemon's request, when the head of the pull request moves while its issue stands past its review " +
+    "(accepting, retro or merging), for a verdict on the new head from the agent of each review step of the issue's task that has " +
+    "passed: the reviewer, and the owning architect on the issue whose acceptance it ran. Send `verdict` approve or changes, `commit` " +
+    "that head, and `summary`; an architect names in `issue` the issue it accepted, and a reviewer leaves `issue` out. It writes no " +
+    "handoff and ends no phase. The daemon takes it only from such an agent (VERDICT_CALLER_FORBIDDEN), only past review " +
+    "(VERDICT_NOT_PAST_REVIEW) and only on the pull request's current head (VERDICT_HEAD_NOT_CURRENT). ",
   readBuild:
     "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
     "It also reports the contract the daemon states on its answer to the health route. " +
@@ -429,12 +434,12 @@ export function legionToolDescription(host: {
     "the daemon accepts a completion only from the role working the issue's current phase, " +
     "or a role's first completion of the phase it left, which it records and which moves nothing, " +
     "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
-    "architect), `verdict` on a phase completion is the reviewer's alone, approve|changes (approve: the head you " +
-    "reviewed may merge; changes: it needs changes), on the head your record names, and `testedCommit`, from the reviewer alone, " +
-    "names the commit of the tester's pass that the reviewer's verdict carries to that head, where no commit since that one changes code " +
-    "that runs. Every other phase completion carries no verdict (the daemon refuses one, VERDICT_NOT_TAKEN): Dispatch's check states " +
-    "at the tested head decide the testing phase. The daemon refuses a testedCommit from any role but the reviewer " +
-    "(VERDICT_ROLE_FORBIDDEN), a reviewer's verdict with no head (VERDICT_COMMIT_REQUIRED), and a reviewer's word that " +
+    "architect), and `verdict` on a phase completion, which is a review step's alone, approve|changes (approve: the head you " +
+    "reviewed may merge; changes: it needs changes), on the head your record names, which the call reports as `commit`. The reviewer sends it on " +
+    "its completion of reviewing. The architect that owns an issue runs its acceptance step and completes no phase: its sign_off is its approve, " +
+    "and its move of the issue back to an earlier phase is its changes. Every other phase completion carries no verdict: Dispatch's check states at the tested head " +
+    "decide the testing phase, and the daemon refuses a verdict from the tester (VERDICT_NOT_TAKEN) and from every other role " +
+    "(VERDICT_ROLE_FORBIDDEN). The daemon refuses a review step's verdict with no head (VERDICT_COMMIT_REQUIRED), and a review step's word that " +
     "is neither approve nor changes (REVIEWER_VERDICT_REQUIRED). `verdict` is pass|pending|fail on a production check report (pending: " +
     "production does not carry the merge yet, or carries it with a requirement only the deploy can show still unobserved and a look " +
     "still to follow; on the check's last look, only for an issue with no such requirement). " +
@@ -560,6 +565,26 @@ async function recordFrom(daemon: LegionDaemonClient, issue: string): Promise<Le
   return record;
 }
 
+/** The issue a call of `op` sends, by the claim's role. An architect's grant serves its whole
+ * tree, so its call names the issue it acts on, which is sent. A phase worker's grant names its own
+ * issue, the only one it acts on, so its call leaves `issue` out or names that one, and none is
+ * sent; one naming another issue is refused here in `otherIssue`'s words, as the daemon would
+ * refuse it (ISSUE_NOT_GRANTS). */
+function issueToSend(
+  op: "request_backward_move" | "review_verdict",
+  claim: ClaimCapability,
+  named: string | undefined,
+  otherIssue: (named: string) => string
+): string | undefined {
+  const issue = named?.trim() ?? "";
+  if (claim.role === "architect") {
+    if (issue === "") throw new Error(`${op} requires issue`);
+    return issue;
+  }
+  if (issue !== "" && issue !== claim.issue) throw new Error(otherIssue(issue));
+  return undefined;
+}
+
 const ROOT_COMPLETION_REFUSAL =
   "handoff_complete is not available to a root architect session, which runs no phase";
 
@@ -626,12 +651,13 @@ export async function readBuild(runtime: {
  * branch-head lookup failed. A refusal throws before any write, minting nothing and posting
  * nothing: each problem `PhaseOpArguments` finds, joined by `; `, a field the operation does not
  * take named first, then an operation this session's claim may not run (a root architect's
- * completion, and a `review_verdict` from any claim but a reviewer's, whichever host runs it),
- * then each problem with the operation's own fields in the order it takes them, and a
- * completion's `plan_rating` or `plan_reason` without the other; then what the record decides
- * (a check report's verdict, its claim's role against the check's own, its `wake_at`, a verdict
- * from any role but the reviewer, a `pending` or a `wake_at` on a phase completion, the issue a
- * completion or a move names, a completion's `return_to` beside a verdict or on a done issue),
+ * completion, and a `review_verdict` from any claim but a review step's agent's, whichever host
+ * runs it), then each problem with the operation's own fields in the order it takes them, and a
+ * completion's `plan_rating` or `plan_reason` without the other; then the issue a completion, a
+ * move or a verdict names against the claim (`issueToSend` for the move and the verdict); then
+ * what the record decides (a check report's verdict, its claim's role against the check's own,
+ * its `wake_at`, a verdict from any role but the reviewer, a `pending` or a `wake_at` on a phase
+ * completion, a completion's `return_to` beside a verdict or on a done issue),
  * then a refused handoff report (`findHandoffReport`). A daemon refusal throws its code and
  * sentence.
  *
@@ -667,8 +693,8 @@ export async function executePhaseOp(
   const unavailable =
     op === "handoff_complete" && claim.role === "architect" && claim.issue === claim.tree
       ? ROOT_COMPLETION_REFUSAL
-      : op === "review_verdict" && claim.role !== "reviewer"
-        ? `review_verdict is the reviewer's alone, and this session is the ${claim.role}'s`
+      : op === "review_verdict" && !REVIEW_STEP_ROLES.includes(claim.role)
+        ? `review_verdict is the verdict of a review step's agent, the reviewer or the architect that owns the issue, and this session is the ${claim.role}'s`
         : undefined;
   if (unavailable !== undefined) {
     throw new Error([...unknownFields.map((issue) => issue.message), unavailable].join("; "));
@@ -714,26 +740,17 @@ export async function executePhaseOp(
       );
     }
     case "request_backward_move": {
-      // An architect's grant serves its whole tree, so its move names the issue it returns from
-      // accepting. A phase worker's grant names its own issue, the only one it may move, so its
-      // request leaves `issue` out; one naming another issue is refused here, as the daemon would
-      // (ISSUE_NOT_GRANTS). The tester's move out of testing is the daemon's to refuse
+      // An architect's move names the issue it returns from accepting, and a phase worker's leaves
+      // it out (`issueToSend`). The tester's move out of testing is the daemon's to refuse
       // (BACKWARD_REFUSED), and the refusal's sentence reaches the agent: a testing step ends by
       // its checks' states alone, so the tester records a fail of each check it cannot verify and
       // completes. The issue's phase is the daemon's record, which this call does not read.
-      let issue: string | undefined;
-      if (claim.role === "architect") {
-        const named = args.issue?.trim() ?? "";
-        if (named === "") {
-          throw new Error("request_backward_move requires issue");
-        }
-        issue = named;
-      } else {
-        const named = args.issue?.trim() ?? "";
-        if (named !== "" && named !== claim.issue) {
-          throw new Error(`a phase worker moves only its own issue ${claim.issue}, not ${named}`);
-        }
-      }
+      const issue = issueToSend(
+        "request_backward_move",
+        claim,
+        args.issue,
+        (named) => `a phase worker moves only its own issue ${claim.issue}, not ${named}`
+      );
       await daemon.phaseBackward({
         grantId: await mintClaimGrant(daemon, claim),
         to: args.to,
@@ -742,20 +759,29 @@ export async function executePhaseOp(
       });
       return {};
     }
-    case "review_verdict":
-      // The reviewer's verdict on a head its pull request moved to past review: no completion and
-      // no handoff, so no record is read and no report looked up, and it ends no phase. Whether
-      // this reviewer ended the round, the issue stands past review and the head is current is the
-      // daemon's to hold (VERDICT_CALLER_FORBIDDEN, VERDICT_NOT_PAST_REVIEW,
-      // VERDICT_HEAD_NOT_CURRENT). Not retried: each request is a verdict of its own.
+    case "review_verdict": {
+      // The verdict of a review step's agent on a head its pull request moved to past review: no
+      // completion and no handoff, so no record is read and no report looked up, and it ends no
+      // phase. The owning architect's names the issue it accepted, and the reviewer's leaves it
+      // out (`issueToSend`). Whether this claim ran a review step of the issue's task that has
+      // passed, the issue stands past review and the head is current is the daemon's to hold
+      // (VERDICT_CALLER_FORBIDDEN, VERDICT_NOT_PAST_REVIEW, VERDICT_HEAD_NOT_CURRENT). Not
+      // retried: each request is a verdict of its own.
+      const issue = issueToSend(
+        "review_verdict",
+        claim,
+        args.issue,
+        (named) => `a reviewer sends its verdict on its own issue ${claim.issue}, not ${named}`
+      );
       await daemon.reviewVerdict({
         grantId: await mintClaimGrant(daemon, claim),
+        ...(issue === undefined ? {} : { issue }),
         verdict: args.verdict,
         commit: args.commit,
         summary: args.summary,
-        ...(args.testedCommit === undefined ? {} : { testedCommit: args.testedCommit }),
       });
       return {};
+    }
     case "ready_for_update": {
       // The claim authenticates the signal, as it does `claims/ready`: no grant is minted. The
       // round is the agent's own word, read from the update message it answers, and the daemon
@@ -976,9 +1002,6 @@ async function completeHandoff(
   // path.
   // The report's own refusals apply while the record shows the check it is of: the record carries
   // that object only while the check is open. A refusal here posts nothing and mints nothing.
-  // testedCommit is sent as given on either: the daemon refuses it from every role but the
-  // reviewer, which reports on no check (VERDICT_ROLE_FORBIDDEN).
-  const tested = args.testedCommit === undefined ? {} : { testedCommit: args.testedCommit };
   const record = await recordFrom(daemon, claim.issue);
   if (record.phase === "done") {
     // A completion on a done issue is a report on its production check or one the daemon refuses
@@ -1031,14 +1054,15 @@ async function completeHandoff(
       grantId: await mintClaimGrant(daemon, claim),
       summary: args.summary,
       verdict: args.verdict ?? "",
-      ...tested,
       ...(args.wake_at === undefined ? {} : { wakeAt: args.wake_at }),
       ...rating,
     });
   }
-  // A phase completion carries no verdict but the reviewer's: Dispatch's check states at the
-  // tested head decide the testing phase, and the daemon refuses any other role's phase completion
-  // that names one (VERDICT_NOT_TAKEN). This says so without the round trip, whatever the verdict.
+  // A phase completion carries no verdict but the reviewer's, the one review step's agent that
+  // completes a phase (the owner accepts with sign_off): Dispatch's check states at the tested head
+  // decide the testing phase, and the daemon refuses any other role's phase completion that names
+  // one (VERDICT_NOT_TAKEN from the tester, VERDICT_ROLE_FORBIDDEN from every other role). This
+  // says so without the round trip, whatever the verdict.
   if (args.verdict !== undefined && claim.role !== "reviewer") {
     throw new Error(
       "handoff_complete carries no verdict on a phase completion but the reviewer's: Dispatch's check states decide the testing phase"
@@ -1074,7 +1098,6 @@ async function completeHandoff(
     grantId: await mintClaimGrant(daemon, claim),
     summary: args.summary,
     verdict: args.verdict ?? "",
-    ...tested,
     ...report,
     ...rating,
     ...(args.return_to === undefined ? {} : { returnTo: args.return_to }),

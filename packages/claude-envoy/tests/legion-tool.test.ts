@@ -200,7 +200,6 @@ test("declares the phase ops, PHASE_OPS, under one op, and names the Envoy publi
       since: { type: "string" },
       summary: { type: "string" },
       verdict: { enum: ["pass", "pending", "fail", "approve", "changes"] },
-      testedCommit: { type: "string" },
       commit: {
         type: "string",
         description:
@@ -215,11 +214,31 @@ test("declares the phase ops, PHASE_OPS, under one op, and names the Envoy publi
     },
     required: ["op"],
   })
+  // The exact fields, in order (toMatchObject above admits extra keys): no completion and no
+  // verdict names the commit of a tester's pass.
+  expect(Object.keys(definition.inputSchema.properties ?? {})).toEqual([
+    "op",
+    "issue",
+    "since",
+    "summary",
+    "verdict",
+    "wake_at",
+    "plan_rating",
+    "plan_reason",
+    "return_to",
+    "to",
+    "reason",
+    "round",
+    "commit",
+  ])
+  expect(definition.description).toContain(
+    "`verdict` on a phase completion, which is a review step's alone, approve|changes",
+  )
   expect(definition.description).toContain(
     `this tool cannot spawn workers. ${PHASE_OP_SENTENCES.readRecord}${PHASE_OP_SENTENCES.readReleaseRecords}handoff_complete`,
   )
   expect(definition.description).toContain(
-    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The daemon refuses the tester's move out of testing (BACKWARD_REFUSED), since a testing step ends by its checks' states: the tester records each check's result with `dispatch result`, a fail with its evidence for a check it cannot verify, and completes. The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. review_verdict is the reviewer's alone: when the head of the pull request moves while its issue stands past its review (accepting, retro or merging), it sends the verdict on the new head, `verdict` approve or changes, `commit` that head, `testedCommit` where the verdict carries the tester's pass to it, and `summary`. It writes no handoff and ends no phase. The daemon takes it only from the reviewer whose completion ended the issue's review round (VERDICT_CALLER_FORBIDDEN), only past review (VERDICT_NOT_PAST_REVIEW) and only on the pull request's current head (VERDICT_HEAD_NOT_CURRENT). read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. It also reports the contract the daemon states on its answer to the health route. That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. The two numbers can differ, and the answer shows both. Report the version this call answers, never the one at the plugin's path on the image. In a pod, an Oh My Pi role relaunched onto the daemon's contract loads the build that relaunch installed under the role's own state home, and a Claude Code role installs no plugin: it loads its pod image's own claude-envoy. read_build reads no project state. What a later phase needs",
+    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The daemon refuses the tester's move out of testing (BACKWARD_REFUSED), since a testing step ends by its checks' states: the tester records each check's result with `dispatch result`, a fail with its evidence for a check it cannot verify, and completes. The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. review_verdict answers the daemon's request, when the head of the pull request moves while its issue stands past its review (accepting, retro or merging), for a verdict on the new head from the agent of each review step of the issue's task that has passed: the reviewer, and the owning architect on the issue whose acceptance it ran. Send `verdict` approve or changes, `commit` that head, and `summary`; an architect names in `issue` the issue it accepted, and a reviewer leaves `issue` out. It writes no handoff and ends no phase. The daemon takes it only from such an agent (VERDICT_CALLER_FORBIDDEN), only past review (VERDICT_NOT_PAST_REVIEW) and only on the pull request's current head (VERDICT_HEAD_NOT_CURRENT). read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. It also reports the contract the daemon states on its answer to the health route. That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. The two numbers can differ, and the answer shows both. Report the version this call answers, never the one at the plugin's path on the image. In a pod, an Oh My Pi role relaunched onto the daemon's contract loads the build that relaunch installed under the role's own state home, and a Claude Code role installs no plugin: it loads its pod image's own claude-envoy. read_build reads no project state. What a later phase needs",
   )
   expect(definition.description).toContain("with mcp__legion__envoy_publish.")
 })
@@ -531,18 +550,19 @@ test("refuses before the claim registered, an operation a phase worker has not, 
   expect(requests).toEqual([])
 })
 
-// A reviewer on Claude Code sends its verdict on a head that moved past review through this
+// The agent of each review step sends its verdict on a head that moved past review through this
 // tool's review_verdict, the shared phase op: a fresh grant with the verdict, the head and the
-// tester's pass the verdict carries there, posted to `POST /legion/v1/review-verdict`. Every other
-// claim, an implementer's among them, is refused it by its role before any request.
-test("review_verdict posts a reviewer's verdict, commit and testedCommit, and is refused to every other session before any request", async () => {
+// summary, posted to `POST /legion/v1/review-verdict`. That agent is the reviewer, which runs on
+// Claude Code where `worker_backends` puts it there, and the architect that owns the issue and runs
+// its acceptance, whose call names the issue it accepted (the daemon runs every architect on Oh My
+// Pi, and this host's executor is the same). Every other claim, the planner's, the implementer's,
+// the tester's and the merger's, is refused it by its role before any request.
+test("review_verdict posts a review step's agent's verdict and commit, and is refused to every other session before any request", async () => {
   const head = "e".repeat(40)
-  const tested = "7".repeat(40)
   const call = {
     op: "review_verdict",
     verdict: "approve",
     commit: head,
-    testedCommit: tested,
     summary: "The retro commit changes no code that runs.",
   }
   const reviewer: ClaimCapability = {
@@ -551,17 +571,22 @@ test("review_verdict posts a reviewer's verdict, commit and testedCommit, and is
     role: "reviewer",
     claimToken: "legion-legion-legion-208-reviewer",
   }
+  const owner: ClaimCapability = {
+    ...implementer,
+    sessionID: "ses_architect",
+    role: "architect",
+    claimToken: "legion-legion-legion-208-architect",
+  }
   const { client, requests } = await daemon()
+  const runtimeOf = (daemon: LegionDaemonClient, claim: ClaimCapability) => ({
+    daemon,
+    claim: () => claim,
+    handoffReport: noHandoffReport,
+    branchHead: noBranchHead,
+  })
+  await expect(executeLegionTool(runtimeOf(client, reviewer), call)).resolves.toEqual({})
   await expect(
-    executeLegionTool(
-      {
-        daemon: client,
-        claim: () => reviewer,
-        handoffReport: noHandoffReport,
-        branchHead: noBranchHead,
-      },
-      call,
-    ),
+    executeLegionTool(runtimeOf(client, owner), { ...call, issue: "LEGION-210" }),
   ).resolves.toEqual({})
   expect(requests).toEqual([
     { ...grantRequest, body: { ...grantRequest.body, sessionId: "ses_reviewer" } },
@@ -572,7 +597,18 @@ test("review_verdict posts a reviewer's verdict, commit and testedCommit, and is
         grantId: "grant-for-one-command",
         verdict: "approve",
         commit: head,
-        testedCommit: tested,
+        summary: "The retro commit changes no code that runs.",
+      },
+    },
+    { ...grantRequest, body: { ...grantRequest.body, sessionId: "ses_architect" } },
+    {
+      method: "POST",
+      path: "/legion/v1/review-verdict",
+      body: {
+        grantId: "grant-for-one-command",
+        issue: "LEGION-210",
+        verdict: "approve",
+        commit: head,
         summary: "The retro commit changes no code that runs.",
       },
     },
@@ -580,19 +616,15 @@ test("review_verdict posts a reviewer's verdict, commit and testedCommit, and is
 
   // Every other claim is refused before any request: the stub records none of them.
   const others = await daemon()
-  for (const role of LEGION_ROLES.filter((each) => each !== "reviewer")) {
+  const roles = LEGION_ROLES.filter((each) => each !== "reviewer" && each !== "architect")
+  expect(roles).toEqual(["planner", "implementer", "tester", "merger"])
+  for (const role of roles) {
     await expect(
-      executeLegionTool(
-        {
-          daemon: others.client,
-          claim: () => ({ ...implementer, role }),
-          handoffReport: noHandoffReport,
-          branchHead: noBranchHead,
-        },
-        call,
-      ),
+      executeLegionTool(runtimeOf(others.client, { ...implementer, role }), call),
     ).rejects.toThrow(
-      new Error(`review_verdict is the reviewer's alone, and this session is the ${role}'s`),
+      new Error(
+        `review_verdict is the verdict of a review step's agent, the reviewer or the architect that owns the issue, and this session is the ${role}'s`,
+      ),
     )
   }
   expect(others.requests).toEqual([])

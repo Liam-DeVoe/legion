@@ -199,12 +199,12 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "the daemon accepts a completion only from the role working the issue's current phase, " +
   "or a role's first completion of the phase it left, which it records and which moves nothing, " +
   "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
-  "architect), `verdict` on a phase completion is the reviewer's alone, approve|changes (approve: the head you " +
-  "reviewed may merge; changes: it needs changes), on the head your record names, and `testedCommit`, from the reviewer alone, " +
-  "names the commit of the tester's pass that the reviewer's verdict carries to that head, where no commit since that one changes code " +
-  "that runs. Every other phase completion carries no verdict (the daemon refuses one, VERDICT_NOT_TAKEN): Dispatch's check states " +
-  "at the tested head decide the testing phase. The daemon refuses a testedCommit from any role but the reviewer " +
-  "(VERDICT_ROLE_FORBIDDEN), a reviewer's verdict with no head (VERDICT_COMMIT_REQUIRED), and a reviewer's word that " +
+  "architect), and `verdict` on a phase completion, which is a review step's alone, approve|changes (approve: the head you " +
+  "reviewed may merge; changes: it needs changes), on the head your record names, which the call reports as `commit`. The reviewer sends it on " +
+  "its completion of reviewing. The architect that owns an issue runs its acceptance step and completes no phase: its sign_off is its approve, " +
+  "and its move of the issue back to an earlier phase is its changes. Every other phase completion carries no verdict: Dispatch's check states at the tested head " +
+  "decide the testing phase, and the daemon refuses a verdict from the tester (VERDICT_NOT_TAKEN) and from every other role " +
+  "(VERDICT_ROLE_FORBIDDEN). The daemon refuses a review step's verdict with no head (VERDICT_COMMIT_REQUIRED), and a review step's word that " +
   "is neither approve nor changes (REVIEWER_VERDICT_REQUIRED). `verdict` is pass|pending|fail on a production check report (pending: " +
   "production does not carry the merge yet, or carries it with a requirement only the deploy can show still unobserved and a look " +
   "still to follow; on the check's last look, only for an issue with no such requirement). " +
@@ -252,11 +252,12 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "records each check's result with `dispatch result`, a fail with its evidence for a check it cannot verify, and completes. " +
   "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move " +
   "counts a review round. " +
-  "review_verdict is the reviewer's alone: when the head of the pull request moves while its issue stands past its review " +
-  "(accepting, retro or merging), it sends the verdict on the new head, `verdict` approve or changes, `commit` that head, " +
-  "`testedCommit` where the verdict carries the tester's pass to it, and `summary`. It writes no handoff and ends no phase. The " +
-  "daemon takes it only from the reviewer whose completion ended the issue's review round (VERDICT_CALLER_FORBIDDEN), only past " +
-  "review (VERDICT_NOT_PAST_REVIEW) and only on the pull request's current head (VERDICT_HEAD_NOT_CURRENT). " +
+  "review_verdict answers the daemon's request, when the head of the pull request moves while its issue stands past its review " +
+  "(accepting, retro or merging), for a verdict on the new head from the agent of each review step of the issue's task that has " +
+  "passed: the reviewer, and the owning architect on the issue whose acceptance it ran. Send `verdict` approve or changes, `commit` " +
+  "that head, and `summary`; an architect names in `issue` the issue it accepted, and a reviewer leaves `issue` out. It writes no " +
+  "handoff and ends no phase. The daemon takes it only from such an agent (VERDICT_CALLER_FORBIDDEN), only past review " +
+  "(VERDICT_NOT_PAST_REVIEW) and only on the pull request's current head (VERDICT_HEAD_NOT_CURRENT). " +
   "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
   "It also reports the contract the daemon states on its answer to the health route. " +
   "That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. " +
@@ -566,7 +567,6 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     decision: { type: "string", enum: ["retry", "escalate"] },
     summary: { type: "string" },
     verdict: { type: "string", enum: ["pass", "pending", "fail", "approve", "changes"] },
-    testedCommit: { type: "string" },
     commit: {
       type: "string",
       description:
@@ -681,7 +681,7 @@ test("a root architect's handoff_complete is refused as unavailable before its a
     content: [
       {
         type: "text",
-        text: 'handoff_complete does not accept field "phase"; it takes summary, issue, verdict, testedCommit, wake_at, plan_rating, plan_reason, return_to; handoff_complete is not available to a root architect session, which runs no phase',
+        text: 'handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason, return_to; handoff_complete is not available to a root architect session, which runs no phase',
       },
     ],
   });
@@ -1092,10 +1092,10 @@ test("read_release_records reads the window with this session's claim, and repor
   });
 });
 
-// Every role reads one description, and the daemon takes the reviewer's two words from the
-// reviewer alone (REVIEWER_VERDICT_REQUIRED) and no verdict on any other phase completion
-// (VERDICT_NOT_TAKEN): it may not leave a role to infer from its own instructions which word is
-// its own, or that its phase completion reports one.
+// Every role reads one description, and the daemon takes the two words of a review step's verdict
+// from that step's agent alone (REVIEWER_VERDICT_REQUIRED) and no verdict on any other phase
+// completion (VERDICT_NOT_TAKEN, VERDICT_ROLE_FORBIDDEN): it may not leave a role to infer from
+// its own instructions which word is its own, or that its phase completion reports one.
 test("the legion tool's description says who sends which verdict word", () => {
   const tool = createLegionTool({
     pi,
@@ -1109,30 +1109,33 @@ test("the legion tool's description says who sends which verdict word", () => {
     session: () => claimSession("tester"),
   });
   expect(tool.description).toContain(
-    "`verdict` on a phase completion is the reviewer's alone, approve|changes"
+    "`verdict` on a phase completion, which is a review step's alone, approve|changes"
   );
+  expect(tool.description).toContain("The reviewer sends it on its completion of reviewing.");
+  expect(tool.description).toContain("its sign_off is its approve");
   expect(tool.description).toContain("`verdict` is pass|pending|fail on a production check report");
   expect(tool.description).toContain("Every other phase completion carries no verdict");
-  expect(tool.description).not.toContain("tester's pass|fail");
+  expect(tool.description).not.toContain("tester's pass");
+  expect(tool.description).not.toContain("the reviewer's alone");
   expect(tool.description).not.toContain("from the tester alone");
   expect(tool.description).not.toContain("when your role's instructions require one");
 });
 
-// The reviewer's verdict on a head that moved past review goes through review_verdict, a phase op
-// this tool serves from its one shared definition (`PHASE_OPS`): a reviewer session's call posts a
-// fresh grant with the verdict, the head and the tester's pass the verdict carries there to
-// `POST /legion/v1/review-verdict`, and closes no phase. Every other claim session, the root
-// architect's, a sub-architect's and the implementer's among them, is refused it by its role before
-// any grant is minted; the controller, which has no phase op, is refused it as every phase op. A
-// word that is no verdict of the reviewer's, or a call naming no head, is refused the same way.
-test("review_verdict is taken from a reviewer session alone, and posts the verdict, the commit and testedCommit", async () => {
+// A head that moved past review gets a verdict from the agent of each review step through
+// review_verdict, a phase op this tool serves from its one shared definition (`PHASE_OPS`): the
+// reviewer's session, and the session of the architect that owns the issue and ran its acceptance,
+// a root architect's or a sub-architect's. Each call posts a fresh grant with the verdict, the head
+// and the summary to `POST /legion/v1/review-verdict`, the architect's naming the issue it
+// accepted, and closes no phase. Every other claim session, the planner's, the implementer's, the
+// tester's and the merger's, is refused it by its role before any grant is minted; the controller,
+// which has no phase op, is refused it as every phase op. A word that is no verdict, a call naming
+// no head, and an architect's call naming no issue are refused the same way.
+test("review_verdict is taken from a review step's agent's session alone, and posts the verdict and the commit", async () => {
   const head = "c0de0000000000000000000000000000000000ff";
-  const tested = "7e57000000000000000000000000000000000aa1";
   const call = {
     op: "review_verdict",
     verdict: "approve",
     commit: head,
-    testedCommit: tested,
     summary: "The merge forward changes no code that runs.",
   };
   const toolOver = (active: LegionToolSession, completed: string[] = []) => {
@@ -1153,38 +1156,60 @@ test("review_verdict is taken from a reviewer session alone, and posts the verdi
     });
     return { posted, tool };
   };
+  const { grantId } = daemonFixture("grant.json");
 
   const completed: string[] = [];
-  const { posted, tool } = toolOver(claimSession("reviewer"), completed);
-  await expect(tool.execute("", call, undefined, undefined, context())).resolves.toEqual({
+  const reviewing = toolOver(claimSession("reviewer"), completed);
+  await expect(reviewing.tool.execute("", call, undefined, undefined, context())).resolves.toEqual({
     content: [{ type: "text", text: "{}" }],
     details: {},
   });
-  const { grantId } = daemonFixture("grant.json");
-  expect(posted).toEqual([
+  expect(reviewing.posted).toEqual([
     [
       "/legion/v1/grants",
       { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
     ],
     [
       "/legion/v1/review-verdict",
-      {
-        grantId,
-        verdict: "approve",
-        commit: head,
-        testedCommit: tested,
-        summary: "The merge forward changes no code that runs.",
-      },
+      { grantId, verdict: "approve", commit: head, summary: call.summary },
     ],
   ]);
+
+  // The owner's acceptance session: the root architect, and a sub-architect, each naming the child
+  // whose acceptance it ran.
+  for (const issue of ["LEGION-208", "LEGION-209"]) {
+    const owning = toolOver(claimSession("architect", issue), completed);
+    await expect(
+      owning.tool.execute("", { ...call, issue: "LEGION-210" }, undefined, undefined, context())
+    ).resolves.toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
+    expect(owning.posted).toEqual([
+      [
+        "/legion/v1/grants",
+        { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue },
+      ],
+      [
+        "/legion/v1/review-verdict",
+        { grantId, issue: "LEGION-210", verdict: "approve", commit: head, summary: call.summary },
+      ],
+    ]);
+  }
   expect(completed).toEqual([]);
 
-  for (const [parameters, refusal] of [
-    [{ ...call, verdict: "pass" }, "review_verdict requires verdict approve or changes"],
-    [{ ...call, commit: " " }, "review_verdict requires commit"],
-    [{ ...call, round: "pod:1" }, 'review_verdict does not accept field "round"'],
+  for (const [active, parameters, refusal] of [
+    [
+      claimSession("reviewer"),
+      { ...call, verdict: "pass" },
+      "review_verdict requires verdict approve or changes",
+    ],
+    [claimSession("reviewer"), { ...call, commit: " " }, "review_verdict requires commit"],
+    [
+      claimSession("reviewer"),
+      { ...call, round: "pod:1" },
+      'review_verdict does not accept field "round"',
+    ],
+    [claimSession("architect"), call, "review_verdict requires issue"],
   ] as const) {
-    const refused = toolOver(claimSession("reviewer"));
+    const refused = toolOver(active);
     await expect(
       refused.tool.execute("", parameters, undefined, undefined, context())
     ).resolves.toMatchObject({
@@ -1195,11 +1220,12 @@ test("review_verdict is taken from a reviewer session alone, and posts the verdi
   }
 
   const others = EVERY_SESSION.filter(
-    (session) => session.kind === "controller" || session.role !== "reviewer"
+    (session) =>
+      session.kind === "controller" || (session.role !== "reviewer" && session.role !== "architect")
   );
   expect(
     others.map((session) => (session.kind === "controller" ? "controller" : session.role))
-  ).toEqual(["architect", "architect", "planner", "implementer", "tester", "merger", "controller"]);
+  ).toEqual(["planner", "implementer", "tester", "merger", "controller"]);
   for (const active of others) {
     const other = toolOver(active);
     await expect(other.tool.execute("", call, undefined, undefined, context())).resolves.toEqual({
@@ -1209,7 +1235,7 @@ test("review_verdict is taken from a reviewer session alone, and posts the verdi
           text:
             active.kind === "controller"
               ? "review_verdict is not available to a controller session"
-              : `review_verdict is the reviewer's alone, and this session is the ${active.role}'s`,
+              : `review_verdict is the verdict of a review step's agent, the reviewer or the architect that owns the issue, and this session is the ${active.role}'s`,
         },
       ],
       details: {},

@@ -60,7 +60,8 @@ export type LegionToolSession = LegionClaimToolSession | LegionControllerToolSes
 /** Each session kind's operations, in the order the tool's `op` enum lists them. The phase ops
  * (`PHASE_OPS` of `@legion/pi-shared/legion-phase-ops`) are an architect's too, as claude-envoy's
  * MCP tool serves them; the shared executor refuses the ones a claim's role may not run (a root
- * architect's completion, and review_verdict from every claim but a reviewer's). `read_build` is
+ * architect's completion, and review_verdict from every claim whose role runs no review step,
+ * `REVIEW_STEP_ROLES` of `@legion/pi-shared/legion-phase-ops`). `read_build` is
  * every session's: the controller holds a claim like any other role and reads its own build the
  * same way. An operation two kinds hold is one `op` value, listed once (`toolSchema`). */
 const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
@@ -379,7 +380,6 @@ function toolSchema(pi: PiApi): unknown {
     decision: z.enum(["retry", "escalate"]).optional(),
     summary: phaseOp.summary,
     verdict: phaseOp.verdict,
-    testedCommit: phaseOp.testedCommit,
     commit: phaseOp.commit,
     wake_at: phaseOp.wake_at,
     plan_rating: phaseOp.plan_rating,
@@ -446,8 +446,8 @@ function assertOperationInput(parameters: Record<string, unknown>, operation: st
  * `handoff_complete` is refused there only for the root architect's session, and finds what it
  * reports in the pane first (`handoffReport`); the daemon refuses an architect's completion
  * (ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first), so it is a phase worker's
- * operation. `review_verdict` is refused there to every session but a reviewer's. The operations
- * of `OPERATIONS.controller` belong to the controller. */
+ * operation. `review_verdict` is refused there to every session whose role runs no review step
+ * (`REVIEW_STEP_ROLES`). The operations of `OPERATIONS.controller` belong to the controller. */
 export function createLegionTool(deps: {
   readonly pi: PiApi;
   readonly daemon: () => LegionDaemonClient;
@@ -682,7 +682,8 @@ export function createLegionTool(deps: {
           // then waits for its process to be replaced rather than working, so the turn it ends
           // after answering earns no reminder (the `update-answered` input of
           // `@legion/pi-shared/phase-stall`). `review_verdict` ends no phase and answers no update
-          // message, so it tells neither: the reviewer's phase ended with its completion.
+          // message, so it tells neither: the review step it reports on ended before it, with the
+          // reviewer's completion or the owning architect's acceptance.
           if (operation === "handoff_complete" || operation === "request_backward_move") {
             onPhaseCompleted(context);
           } else if (operation === "ready_for_update") {

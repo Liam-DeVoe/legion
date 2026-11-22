@@ -157,8 +157,9 @@ export interface LegionDaemonClient {
   readonly handoffComplete: (
     input: z.input<typeof LegionHandoffCompleteRequest>
   ) => Promise<z.output<typeof LegionHandoffCompleteResponse>>;
-  /** The reviewer's verdict on a head that moved past review (`POST /legion/v1/review-verdict`):
-   * no completion and no handoff, and the daemon answers an empty object. */
+  /** A review step's agent's verdict on a head that moved past review (`POST
+   * /legion/v1/review-verdict`): the reviewer's, or the owning architect's, which names the issue
+   * it accepted. No completion and no handoff, and the daemon answers an empty object. */
   readonly reviewVerdict: (
     input: z.input<typeof LegionReviewVerdictRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
