@@ -981,7 +981,9 @@ type Timeouts struct {
 	Take time.Duration
 	// TurnStart is R5's second bound (worker_turn_start_timeout_seconds, waits.go): how long after
 	// an accepted take its turn has to start before the worker is charged and the task taken back
-	// under its number. Zero judges no second wait, as Take's zero judges no first.
+	// under its number, and the bound of the wait for the take's report after its turn ends
+	// (reportwait.go). Zero judges no second wait and no report bound, as Take's zero judges no
+	// first.
 	TurnStart time.Duration
 	// ClaimWrite bounds each claim and delivery write a decision makes while it holds the machine's
 	// lock, so a database that has stopped answering cannot hold that lock for as long as the

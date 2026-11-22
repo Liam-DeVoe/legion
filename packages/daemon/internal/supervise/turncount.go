@@ -266,7 +266,9 @@ const backlogCutLine = "supervise: the shim's hello does not say its backlog is 
 // backlog (StreamHello.BacklogWhole; reconnected, reconnectedMidTurn). A backlog that is not whole
 // dropped its oldest frames while no daemon was connected, or its shim cannot say it dropped none,
 // and a trim of it can drop a whole turn, start and end. What the machine read off the frames it
-// saw then stops standing for the turns that ran:
+// saw then stops standing for the turns that ran. This is the one list of what the supervisor does
+// with such a hello (shimwire.Hello2.BacklogWhole and contract 207 in api's version.go point
+// here):
 //
 //   - the count of the process's turns is lost (turnCount.lose), and the hello marks it as cut
 //     (turnCount.cut). Kept, it would be short by every turn the backlog dropped whole, so the turn
@@ -277,11 +279,12 @@ const backlogCutLine = "supervise: the shim's hello does not say its backlog is 
 //     start may be among the frames dropped, and kept, the mark would take the next start, the
 //     next task's own among them. While the count is not known after such a hello no report
 //     leaves one (startedUnseen), and a start of the reported turn that does come is read as any
-//     other start: given to a take that awaits its turn, or no task's.
-//
-// A take a daemon start restored has its anchor refused by the same word (bindRestoredAnchor), and
-// a stale-plugin relaunch decided behind such a replay takes a restored take whose turn no frame
-// showed back as a turn that may have run (turnAnswered).
+//     other start: given to a take that awaits its turn, or no task's;
+//   - a take a daemon start restored has its anchor refused by the same word
+//     (bindRestoredAnchor), so no producer's word that its text was held gives that take its turn
+//     back;
+//   - a stale-plugin relaunch decided behind such a replay takes a restored take whose turn no
+//     frame showed back as a turn that may have run (turnAnswered).
 func (m *Machine) readBacklog(hello StreamHello) {
 	if hello.BacklogWhole {
 		return

@@ -255,7 +255,8 @@ func takeBoundOver(m *Machine, ctx context.Context, _ Event) error {
 // asked at the revision it holds. A charge that retired the process leaves the value to the
 // relaunched worker, whose registration reads it. Work that waited behind the take after a report
 // put it back — a held suspension, a held stale-plugin relaunch — runs once the take is taken back
-// (afterTurn, reportwait.go): the bound is that wait's end, as R5 says the second wait ends.
+// (settleThenAfterTurn, reportwait.go): the bound is that wait's end, as R5 says the second wait
+// ends.
 func turnStartBoundOver(m *Machine, ctx context.Context, _ Event) error {
 	armedFor := m.secondFor
 	m.secondFor = time.Time{}
@@ -263,23 +264,22 @@ func turnStartBoundOver(m *Machine, ctx context.Context, _ Event) error {
 	if !waiting || !takenAt.Equal(armedFor) {
 		return nil
 	}
-	number, heldWaited := m.claim.Pending.Number, m.heldWaits()
-	m.log.Warn("supervise: no turn started within the second bound after the accepted take; the worker is charged and the task taken back",
-		"task", number, "takenAt", takenAt, "bound", m.deps.Timeouts.TurnStart)
-	if err := m.chargePrompt(ctx, WaitTurnStart, fmt.Sprintf("%s: the take of task %d was accepted and no turn started within %s",
-		WaitTurnStart, number, m.deps.Timeouts.TurnStart)); err != nil {
-		return err
-	}
-	if p := m.claim.Pending; p == nil || p.Number != number || !p.awaitsTurn() {
-		return nil
-	}
-	if err := m.takeBack(ctx, WaitTurnStart); err != nil {
-		return err
-	}
-	// A charge that retired the process leaves a claim no take can reach, which offerPending's
-	// holds refuse (claimHold), so the value is written again only where the process stays; and
-	// work that waited behind the take runs first, a held suspension instead of the offer.
-	return m.afterTurn(ctx, heldWaited)
+	number := m.claim.Pending.Number
+	// A charge that retired the process, or whose held stop landed, leaves a claim that is not
+	// ready or idle, so the value is written again only where the process stays; and work that
+	// waited behind the take runs first, a held suspension instead of the offer.
+	return m.settleThenAfterTurn(ctx, func() error {
+		m.log.Warn("supervise: no turn started within the second bound after the accepted take; the worker is charged and the task taken back",
+			"task", number, "takenAt", takenAt, "bound", m.deps.Timeouts.TurnStart)
+		if err := m.chargePrompt(ctx, WaitTurnStart, fmt.Sprintf("%s: the take of task %d was accepted and no turn started within %s",
+			WaitTurnStart, number, m.deps.Timeouts.TurnStart)); err != nil {
+			return err
+		}
+		if p := m.claim.Pending; p == nil || p.Number != number || !p.awaitsTurn() {
+			return nil
+		}
+		return m.takeBack(ctx, WaitTurnStart)
+	})
 }
 
 // reconnectDeadline is the reconnect deadline of a claim a daemon start restored with its agent

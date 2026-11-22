@@ -297,7 +297,7 @@ func (m *Machine) endState() ClaimState {
 		return m.claim.State
 	case m.heldStopBack != "":
 		return m.heldStopBack
-	case !m.inTurn():
+	case m.compacting != nil && !m.compacting.inTurn:
 		return m.compacting.back
 	case m.compacting == nil && m.lostCompaction != nil && !m.lostCompaction.inTurn:
 		return m.lostCompaction.back

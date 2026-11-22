@@ -160,10 +160,14 @@ const (
 	// gate found it.
 	TimerPause TimerKind = "pause"
 	// TimerReport is the bound of the wait for the report of the pending take's turn, which ended
-	// with that report still to come while work waits for it (reportwait.go, armReportWait): R5's
-	// second bound, Timeouts.TurnStart, armed whole where that wait began. When it passes the task
-	// is taken back with the note of a cut turn, and what waited runs (reportBoundOver). Armed on
-	// the pending task's id.
+	// with that report still to come (reportwait.go, armReportWait): R5's second bound,
+	// Timeouts.TurnStart, with work waiting for that report, or with nothing held where the bound
+	// reaches the take (reportReaches). It is armed whole at the end of the take's turn, or, over a
+	// take the bound reaches only with work held, at that work's arrival, and a decision that
+	// leaves the take waiting keeps it where it was. When it passes the task is taken back with the
+	// note of a cut turn, and what waited runs, or, with nothing held, the task's value is written
+	// again under its number for the worker to take (reportBoundOver). Armed on the pending task's
+	// id.
 	TimerReport TimerKind = "report"
 )
 
@@ -1154,10 +1158,12 @@ func fillTable(t *builder) {
 
 	// The bound of the wait for the report of the take's turn (reportwait.go). It is armed only
 	// over a claim whose agent is ready, idle or working — working for a compaction, since a turn
-	// running disarms it — and goes with the task (the fence on its delivery) and with the process
-	// (letGo). Where it takes the task back, what waited for the report runs: the held suspension's
-	// stop, or the relaunch; a compaction runs it at its end.
-	t.row(onReportTimer, "the wait for the take's report is over: take the task back with the note of a cut turn, then run what waited for the report", reportBoundOver,
+	// running disarms it — with work waiting for that report or with nothing held, and goes with
+	// the task (the fence on its delivery) and with the process (letGo). Where it takes the task
+	// back, what waited for the report runs: the held suspension's stop, or the relaunch; a
+	// compaction runs it at its end. With nothing held, the offer writes the task's value again
+	// under its number, for the worker to take again (offerPending).
+	t.row(onReportTimer, "the wait for the take's report is over: take the task back with the note of a cut turn, then run what waited for the report, or write the task's value again where nothing waited", reportBoundOver,
 		[]ClaimState{StateLaunching, StateSuspended, StateFailed}, StateReady, StateIdle, StateWorking)
 	t.ignore(onReportTimer, "no take's turn awaits its report", unready...)
 	t.ignore(onReportTimer, "no take's turn awaits its report", gone...)
@@ -1917,38 +1923,14 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 		return nil
 	}
 	m.askFirst = false
+	if m.held != nil {
+		// The hold waits behind the wait for the take's report, or its stop runs now; a stop the
+		// runtime refused leaves the claim idle over a task whose turn just ended, with the
+		// end-frame bound armed as at any turn's end (runHeldAtEnd).
+		return m.runHeldAtEnd(ctx, StateIdle, m.armEndFrameBound)
+	}
 	p := m.claim.Pending
 	finishes := p != nil && p.turnStarted()
-	if m.held != nil {
-		if m.reportOwed() {
-			// The take's turn is over, or a report put the take back while this turn ran, and
-			// only the take's report settles it: the hold waits behind the wait for that report
-			// (reportwait.go), whose finish runs it (reportedTask, afterTurn), or behind its bound.
-			// The end asks reportOwed rather than reportHolds, for the reasons reportOwed gives.
-			m.claim.State = StateIdle
-			m.logSuspensionWaits()
-			return m.persist(ctx)
-		}
-		// Where this turn was a task's, the settle that follows the stop finishes the task, by
-		// its end frame or by the report whose finish the store refused (overTurnFinish): the
-		// claim is suspended by then, where no end-frame bound watches a task (settle).
-		if err := m.suspendHeldAtEnd(ctx, StateIdle); err != nil {
-			if m.held == nil {
-				// The stop landed and let the process go; only its write failed, and the claim is
-				// suspended in memory (suspended).
-				return err
-			}
-			m.claim.State = StateIdle
-			if finishes {
-				// The stop was refused and the process kept, so the claim is idle over a task
-				// whose turn just ended: its report finishes it, or the end-frame bound of a
-				// plugin that names no number, as at any turn's end.
-				m.armEndFrameBound(p.ID)
-			}
-			return errors.Join(err, m.persist(ctx))
-		}
-		return nil
-	}
 	m.claim.State = StateIdle
 	if err := m.persist(ctx); err != nil {
 		return err
@@ -1980,7 +1962,7 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 // offer of a refused take runs last, as it does from every other decision.
 //
 // A held suspension that waited for the report this decision settled runs first and instead of
-// the rest (heldWaited, which its caller read before it settled the take: heldWaits): its stop ends
+// the rest (heldWaited, read before the settle: settleThenAfterTurn, heldWaits): its stop ends
 // the process the held relaunch was for, which letGo drops with it, and leaves no take to offer. A
 // stop the runtime refuses keeps it held and tries it again at the probe interval (suspendHeld),
 // the claim idle meanwhile, as a refused stop at a turn's end leaves it; a hold whose stop was

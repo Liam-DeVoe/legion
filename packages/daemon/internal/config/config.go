@@ -121,9 +121,11 @@ type Config struct {
 	// is written again (supervise.Timeouts.Take). WorkerTurnStartTimeout is R5's second bound
 	// (`worker_turn_start_timeout_seconds`, twenty-five minutes by default): how long after an
 	// accepted take its turn has to start before the worker is charged and the task taken back
-	// (supervise.Timeouts.TurnStart). The second's default is twice the compaction timeout and
-	// the longest launch-to-turn the fleet measured, added (2 × (10 min + 150 s), INFRA-2811's
-	// decision 13); it is not a floor, and both are refused only when not a positive integer.
+	// (supervise.Timeouts.TurnStart), and how long the take's report may be late after its turn
+	// ends before the task is taken back as a cut turn (supervise's report wait). The second's
+	// default is twice the compaction timeout and the longest launch-to-turn the fleet measured,
+	// added (2 × (10 min + 150 s), INFRA-2811's decision 13); it is not a floor, and both are
+	// refused only when not a positive integer.
 	WorkerTakeTimeout      time.Duration
 	WorkerTurnStartTimeout time.Duration
 	TreeStopTimeout        time.Duration

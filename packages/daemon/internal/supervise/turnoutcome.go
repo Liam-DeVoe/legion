@@ -33,7 +33,7 @@ import (
 // Task is the number of the task the report named, 0 for none, and ProviderError whether it
 // carried the provider error its turn ended in, with that error's HTTP status
 // (ProviderErrorStatus, 0 for none). ProviderErrorRetries is, for a report whose provider error
-// reached the ladder (reachesLadder), the count of the task's sends the ladder's step makes it
+// reached the ladder (Claim.reportOfTake), the count of the task's sends the ladder's step makes it
 // (Delivery.ProviderErrorRetries), and 0 for every other report. They are what tells a daemon
 // that read the window back what an applied report did to the claim's pending task, where the
 // store holds the report and not what it did (Claim.owedReport): a report is applied with its
@@ -120,7 +120,7 @@ func (m *Machine) turnOutcomeWindow() int { return m.deps.Limits.LaunchFailures 
 // it, so every report of the later generation is held behind it up to that bound too. With a limit
 // of 3, a generation that reports 1, 2, 3 and 5 and then one that reports 1 to 10 leave 11
 // entries, the oldest (1, 5) and the watermark (1, 3). Nothing reads them wrongly: a report of an
-// earlier generation reaches no take of the process the claim runs now (reachesLadder), and the
+// earlier generation reaches no take of the process the claim runs now (Claim.reportOfTake), and the
 // run of refused turns ends with the newest entry (RefusedRun). One whose write failed (Unapplied)
 // stays until it is sent again and applied, however old: dropped, it would fall under the
 // watermark, and the report sent again, which is its first application, would be answered as a
@@ -184,7 +184,7 @@ func gapless(mark TurnOutcomeKey, held []TurnOutcome) bool {
 // follows is whether key is the one right after last: the next sequence of last's generation, or
 // the first of a later generation, since a producer numbers each generation's turns from 1 and a
 // report of an earlier generation is of a process the claim has left, which reaches no take of
-// the process it runs now (reachesLadder). The zero key, no watermark, is followed by the first
+// the process it runs now (Claim.reportOfTake). The zero key, no watermark, is followed by the first
 // report of any generation.
 func follows(last, key TurnOutcomeKey) bool {
 	if key.Generation == last.Generation {
@@ -295,7 +295,7 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes, m.claim.TurnOutcomeMark = n
 //
 // A refused turn that carries a provider error is counted here only when no provider-error
 // ladder takes it. The ladder takes the turn of the task a take of this claim holds: a report
-// that names that task's number (reachesLadder) starts the ladder's wait and keeps the task
+// that names that task's number (Claim.reportOfTake) starts the ladder's wait and keeps the task
 // (reportedTask, providererror.go), and the ladder has no attempt limit (dispatch://INFRA-956 R2)
 // and tells the project's controller at a run of its own (providerErrorRunTold), so counting
 // such a turn here as well would fail the claim out of the launch budget before that run could
@@ -330,7 +330,7 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	if pe := r.ProviderError; pe != nil {
 		o.ProviderError, o.ProviderErrorStatus = true, pe.Status
 	}
-	reaches := m.reachesLadder(r)
+	reaches := m.claim.reportOfTake(r.Generation, r.Task)
 	o.Refused = r.Refused && (r.ProviderError == nil || !reaches)
 	if r.ProviderError != nil && reaches {
 		o.ProviderErrorRetries = m.claim.Pending.ProviderErrorRetries + 1
@@ -361,7 +361,7 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 
 // reportedTask is what a turn-outcome report says of the claim's task. A report of the claim's
 // generation that names the number of the task a take holds is that task's turn reported over
-// (reachesLadder): one that ends in a provider error keeps the task under its number and starts
+// (Claim.reportOfTake): one that ends in a provider error keeps the task under its number and starts
 // the ladder's wait (providerErrored), and any other finishes it (finishTask) and ends the
 // claim's run of provider-error turns. A report that names another number, or none, or that is of
 // an earlier generation, finishes nothing: a late report of a task already finished must not
@@ -385,32 +385,33 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 //
 // A report that beats the end of its turn finishes the task while the claim is still working,
 // and the end then runs what was held for the turn (turnEnded); one that follows the end runs it
-// here (afterTurn).
+// here (settleThenAfterTurn, afterTurn).
 //
 // The report of the turn the daemon gave the take can also make the claim's count of its
 // process's turns known again, where that count is not known (learnTurns): the report names the
 // turn's sequence, and the take's number places it among the turns the machine saw.
 func (m *Machine) reportedTask(ctx context.Context, r RequestTurnOutcome) error {
 	p := m.claim.Pending
-	if !m.reachesLadder(r) {
+	if !m.claim.reportOfTake(r.Generation, r.Task) {
 		if r.Task != 0 {
 			m.log.Info("supervise: a turn's report names a task that no take of this claim holds; it finishes nothing",
 				"task", r.Task, "generation", r.Generation, "pending", pendingNumber(p))
 		}
 		return m.notTheTakesTurn(ctx, r)
 	}
-	heldWaited := m.heldWaits()
-	var started error
-	if p.awaitsTurn() {
-		started = m.startedUnseen(ctx, r)
-	} else {
-		m.learnTurns(ctx, r)
-	}
-	if r.ProviderError != nil {
-		if err := m.providerErrored(ctx, *r.ProviderError); err != nil {
-			return errors.Join(started, err)
+	return m.settleThenAfterTurn(ctx, func() error {
+		var started error
+		if p.awaitsTurn() {
+			started = m.startedUnseen(ctx, r)
+		} else {
+			m.learnTurns(ctx, r)
 		}
-	} else {
+		if r.ProviderError != nil {
+			if err := m.providerErrored(ctx, *r.ProviderError); err != nil {
+				return errors.Join(started, err)
+			}
+			return nil
+		}
 		if m.claim.ProviderErrorRun != 0 {
 			m.log.Info("supervise: a turn of this task ended with no provider error; the run of provider errors is over",
 				"task", p.Number, "providerErrorRun", m.claim.ProviderErrorRun)
@@ -419,26 +420,17 @@ func (m *Machine) reportedTask(ctx context.Context, r RequestTurnOutcome) error 
 		if err := m.finishTask(ctx, finishedByReport); err != nil {
 			return errors.Join(started, err)
 		}
-	}
-	if (m.claim.State != StateReady && m.claim.State != StateIdle) || m.compacting != nil {
 		return nil
-	}
-	return m.afterTurn(ctx, heldWaited)
-}
-
-// reachesLadder is whether a turn-outcome report is of the turn of the task a take of this claim
-// holds (Claim.reportOfTake). A report of that turn is what finishes the task or, carrying a
-// provider error, takes it to the ladder (reportedTask); any other report finishes nothing and
-// reaches no ladder, so its refusal is the launch budget's (turnOutcome). A daemon that reads the
-// window back asks the same rule of each report it holds (Claim.owedReport).
-func (m *Machine) reachesLadder(r RequestTurnOutcome) bool {
-	return m.claim.reportOfTake(r.Generation, r.Task)
+	})
 }
 
 // reportOfTake is whether a report of the given generation naming task is of the turn of the take
-// the claim's pending task holds, the one rule of it (reachesLadder, owedReport): it names that
-// task's number, the take stands accepted, its turn started or not, and the report is of the
-// claim's current generation. A report of an earlier generation is of a turn of a process the
+// the claim's pending task holds, the one rule of it: it names that task's number, the take stands
+// accepted, its turn started or not, and the report is of the claim's current generation. A report
+// of that turn is what finishes the task or, carrying a provider error, takes it to the ladder
+// (reportedTask); any other report finishes nothing and reaches no ladder, so its refusal is the
+// launch budget's (turnOutcome). A daemon that reads the window back asks the same rule of each
+// report it holds (owedReport). A report of an earlier generation is of a turn of a process the
 // claim has left, which held no take of this process: a take stands only within the generation
 // that accepted it, since the process's end settles it (settle, interrupted). A report naming no
 // number is of no take's turn, and a task of no number (Delivery.Number) is named by no report.

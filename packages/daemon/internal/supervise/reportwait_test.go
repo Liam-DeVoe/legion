@@ -716,3 +716,103 @@ func TestAWakeWhileHeldWorkWaitsOnTheTakeIsSpentIntoTheHoldOutsideATurn(t *testi
 		}
 	})
 }
+
+// A suspension that may not be held (RequestSuspend.NeverHold) is refused with the sentence of
+// what the hold would have waited for, and the phase of the wait for the take's report decides it
+// before what is held does (holdSuspension, reportWaitNow): the turn running, the compaction, the
+// take a report put back, the report come and its finish refused by the store, or the report still
+// to come, each with the work that waits behind it. Each refusal records nothing.
+//
+// The negative control is the switch that asks whether a suspension is held before it asks the
+// phase (holdSuspension before review round 4 of #3993): a held suspension behind a put-back take
+// is told it waits for the report, a held suspension behind a refused finish is told it waits for
+// the report that came, and a relaunch behind a refused finish is told the report is still to
+// come.
+func TestASuspensionThatMayNotBeHeldNamesWhatTheHoldWouldWaitFor(t *testing.T) {
+	reportsRefusedFinish := func(h *harness) {
+		h.t.Helper()
+		h.store.fail("RetireDelivery", errBoom)
+		if err := h.reportTurn(h.pending().Number, nil); err == nil {
+			h.t.Fatal("the report whose finish the store refused answered no failure")
+		}
+	}
+	staleOverAReportToCome := func(t *testing.T) *harness {
+		t.Helper()
+		h := newHarnessOf(t, queuedClaim(), withWaits, currentPlugin)
+		h.reach(StateReady)
+		h.takesTurnEndsWithItsReportToCome()
+		staleRelaunchHeld.hold(h)
+		return h
+	}
+	putBack := func(held heldBehindTheTake) func(t *testing.T) *harness {
+		return func(t *testing.T) *harness {
+			t.Helper()
+			h, number, g := runGivenTheTakeUnderHeldWork(t, held)
+			h.reportOf(g, 0)
+			if p := h.pending(); p.Number != number || !p.awaitsTurn() {
+				t.Fatalf("after the report of the run given the take the claim holds %+v, want task %d's take awaiting its turn again", p, number)
+			}
+			return h
+		}
+	}
+	for _, tc := range []struct {
+		name  string
+		reach func(t *testing.T) *harness
+		want  string
+	}{
+		{"the take's turn running", func(t *testing.T) *harness {
+			h := newHarnessOf(t, queuedClaim(), currentPlugin)
+			h.reach(StateReady)
+			h.taskTheAgentTook()
+			h.must(StreamTurnStart{Claim: h.token})
+			return h
+		}, "the claim's agent is in a turn, and this suspension is not one that is held for the turn's end"},
+		{"a compaction with no turn under it", func(t *testing.T) *harness {
+			h, _, _ := reportToComeOfACurrentPlugin(t)
+			release, compacted := h.compactHeld()
+			t.Cleanup(func() { release(); <-compacted })
+			return h
+		}, "the claim's session is being compacted, and this suspension is not one that is held for the compaction's end"},
+		{"nothing held, the report still to come", func(t *testing.T) *harness {
+			h, _, _ := reportToComeOfACurrentPlugin(t)
+			return h
+		}, "the turn of the claim's task ended with its report still to come, and this suspension is not one that is held for that report"},
+		{"a held suspension, the report still to come", func(t *testing.T) *harness {
+			h, _, _ := heldOverATakesTurn(t)
+			return h
+		}, "a held suspension waits for the report of the claim's last turn, and this suspension is not one that is held for it"},
+		{"a held suspension behind a put-back take", putBack(daemonSuspensionHeld),
+			"the claim's take awaits its turn again with a held suspension waiting behind it, and this suspension is not one that is held for that turn"},
+		{"a relaunch behind a put-back take", putBack(staleRelaunchHeld),
+			"the claim's take awaits its turn again with a relaunch waiting behind it, and this suspension is not one that is held for that turn"},
+		{"a held suspension behind a finish the store refused", func(t *testing.T) *harness {
+			h, _, _ := heldOverATakesTurn(t)
+			reportsRefusedFinish(h)
+			return h
+		}, "a held suspension waits for the finish of the report of the claim's last turn, which the store refused, and this suspension is not one that is held for that finish"},
+		{"a relaunch behind a finish the store refused", func(t *testing.T) *harness {
+			h := staleOverAReportToCome(t)
+			reportsRefusedFinish(h)
+			return h
+		}, "a relaunch waits for the finish of the report of the claim's last turn, which the store refused, and this suspension is not one that is held for that finish"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := tc.reach(t)
+			before := h.claim()
+
+			err := h.handle(RequestSuspend{Claim: h.token, Reason: "a fresh session was asked for", By: SuspendedByOperator, NeverHold: true})
+
+			var refused *RefusedError
+			if !errors.As(err, &refused) {
+				t.Fatalf("the suspension that may not be held answered %v, want a *RefusedError", err)
+			}
+			if refused.Reason != tc.want {
+				t.Fatalf("the refusal says %q, want %q", refused.Reason, tc.want)
+			}
+			if after := h.claim(); after.State != before.State || after.SuspensionHeld != before.SuspensionHeld || after.SuspensionHeldBy != before.SuspensionHeldBy {
+				t.Fatalf("the refused suspension left the claim %s holding %v by %q, want it as it was: %s holding %v by %q",
+					after.State, after.SuspensionHeld, after.SuspensionHeldBy, before.State, before.SuspensionHeld, before.SuspensionHeldBy)
+			}
+		})
+	}
+}

@@ -114,6 +114,47 @@ func TestTurnOutcomeFinishTheStoreRefusedIsMadeAgainAcrossAnOutage(t *testing.T)
 	})
 }
 
+// A suspension held over a compaction under which the store refused a report's finish, whose stop
+// the runtime refuses at the compaction's end, leaves the end-frame bound armed over that finish,
+// as the end of a turn leaves it after a refused stop (runHeldAtEnd): the claim is given back idle
+// with the finish owed, and the bound makes the finish once the store answers, by the report, ahead
+// of the held stop's retry at the probe interval; the held stop then runs (afterTurn).
+//
+// The negative control is compactEnded before review round 4 of #3993, which armed no bound after
+// a refused stop: the finish refused under the compaction stays owed with no bound to make it
+// again, and the task stands pending a bound after the compaction's end.
+func TestARefusedHeldStopAtACompactionsEndLeavesTheOwedFinishBounded(t *testing.T) {
+	h, number, _ := reportToComeOfACurrentPlugin(t)
+	release, compacted := h.compactHeld()
+	h.store.fail("RetireDelivery", errBoom)
+	if err := h.reportTurn(number, nil); err == nil {
+		t.Fatal("the report whose finish the store refused answered no failure")
+	}
+	if err := h.handle(daemonSuspension(h)); !errors.Is(err, ErrSuspendHeld) {
+		t.Fatalf("the daemon's suspension during the compaction answered %v, want it held for the compaction's end", err)
+	}
+	h.rt.FailSuspend(errBoom)
+	release()
+	if err := <-compacted; !errors.Is(err, errBoom) {
+		t.Fatalf("the compaction whose held stop the runtime refused answered %v, want that refusal", err)
+	}
+	h.m.Wait()
+	h.wantState(StateIdle)
+	if !h.armed(TimerFinish) {
+		t.Fatal("no end-frame bound is armed after the refused stop, want one over the finish the store refused")
+	}
+	h.store.fail("RetireDelivery", nil)
+	h.rt.FailSuspend(nil)
+
+	h.advance(testRPC)
+
+	if p := h.claim().Pending; p != nil {
+		t.Fatalf("pending %+v a bound after the compaction's end, want task %d finished by its report", p, number)
+	}
+	h.wantFinishedOnce(finishedByReport)
+	h.wantState(StateSuspended)
+}
+
 // A report's finish the store refused is owed still after a daemon restart (decision 8 of
 // dispatch://INFRA-2811). The report is applied to the claim's window before its finish is
 // written, so the worker's report sent again is a repeat that finishes nothing, and the daemon
@@ -124,13 +165,13 @@ func TestTurnOutcomeFinishTheStoreRefusedIsMadeAgainAcrossAnOutage(t *testing.T)
 // report. A report that did nothing to the task leaves nothing owed, live or after a restart:
 // one of an earlier generation, which the process the claim relaunched from sent after its
 // death took the take of that number back and after the next process took it again, finishes
-// nothing in the daemon it reaches (reachesLadder); and one that carried a provider error, whose
-// take-back and ladder step the store took, is not of the take that stands now, the next one.
-// The report of the take's own turn is what finishes the task then.
+// nothing in the daemon it reaches (Claim.reportOfTake); and one that carried a provider error,
+// whose take-back and ladder step the store took, is not of the take that stands now, the next
+// one. The report of the take's own turn is what finishes the task then.
 //
 // The negative controls: the restored machine without the derivation (NewMachine with no
 // owedReport) leaves the task whose finish the store refused pending, its turn over, with nothing
-// to finish it; a report of any generation reaching the take (reachesLadder with no generation)
+// to finish it; a report of any generation reaching the take (reportOfTake with no generation)
 // finishes the next process's take by the earlier one's report; and a provider error's report
 // owed whatever its ladder step (owedReport with no step) takes back the take after the ladder.
 func TestTurnOutcomeFinishTheStoreRefusedIsOwedAgainAfterADaemonRestart(t *testing.T) {

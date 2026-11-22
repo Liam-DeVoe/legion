@@ -821,8 +821,10 @@ What each part is for:
   to ask for it; the second is how long after an accepted take the task's turn has to start, which
   holds the harness's setup, an automatic compaction among it, and its default is twice the
   compaction timeout and the longest measured setup added, not a floor. Past the first the worker
-  is charged; past the second it is charged and the task taken back under its number. A value
-  nobody reported seeing charges nobody, since what failed is the relay: the daemon writes it
+  is charged; past the second it is charged and the task taken back under its number.
+  The second also bounds the wait for a take's report once the take's turn has ended, with work held for that report or none: past it the task is taken back with the note of a cut turn, and what waited for the report runs or, with nothing held, the value is written again.
+  A value below about 20 minutes cuts that wait below four of the producers' report attempts, each bounded at 5 minutes, so a report a daemon restart delays lands after that take-back, and the task runs again.
+  A value nobody reported seeing charges nobody, since what failed is the relay: the daemon writes it
   again once per first bound and `legion state` names the claim ([Observe](#observe)). A turn's
   start or end resets the count and a take does not, so a worker that takes and never starts a
   turn is still retired at the limit. Time the daemon was not serving counts toward neither bound,

@@ -409,7 +409,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "worker_turn_start_timeout_seconds", RequiredBy: "no",
-			Description: "How long after an accepted take its turn has to start before the worker is charged and the task taken back; the default is twice the compaction timeout and the longest launch-to-turn the fleet measured, added (2 × (10 min + 150 s)), and it is not a floor.",
+			Description: "How long after an accepted take its turn has to start before the worker is charged and the task taken back, and how long after the take's turn ends its report has to come, with work held for it or none, before the task is taken back with the note of a cut turn; the default is twice the compaction timeout and the longest launch-to-turn the fleet measured, added (2 × (10 min + 150 s)), and it is not a floor. A value below about 20 minutes cuts the wait for the report below four of the producers' report attempts, each bounded at 5 minutes, so a report a daemon restart delays lands after that take-back and the task runs again.",
 			Positive:    &positiveKey{Value: 1500, Duration: func(c *Config) *time.Duration { return &c.WorkerTurnStartTimeout }},
 		},
 		{

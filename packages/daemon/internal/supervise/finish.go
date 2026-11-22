@@ -59,21 +59,15 @@ func (m *Machine) finishTask(ctx context.Context, by string) error {
 // it — which is what finishes a task a worker whose plugin reports no number took
 // (endFrameFinishes). A bound that makes again a finish a report decided and the store refused
 // finishes by that report, and its line says so (overTurnFinish). What the turn's end held for
-// the task runs now (afterTurn), as the report's finish runs it: a held suspension that waited for
-// that finish among it (heldWaits, reportwait.go).
+// the task runs now, as the report's finish runs it: a held suspension that waited for that finish
+// among it (settleThenAfterTurn, reportwait.go). A claim still working, for a turn or a
+// compaction, runs it at that end instead.
 func finishAtTurnsEnd(m *Machine, ctx context.Context, _ Event) error {
 	by, _ := m.overTurnFinish()
 	if by == "" {
 		by = finishedByReport
 	}
-	heldWaited := m.heldWaits()
-	if err := m.finishTask(ctx, by); err != nil {
-		return err
-	}
-	if m.busy() {
-		return nil
-	}
-	return m.afterTurn(ctx, heldWaited)
+	return m.settleThenAfterTurn(ctx, func() error { return m.finishTask(ctx, by) })
 }
 
 // endFrameFinishes is whether the end of a take's turn finishes the task where no turn-outcome

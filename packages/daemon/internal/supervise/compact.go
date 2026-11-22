@@ -405,7 +405,9 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 // its task gone again (Machine.Compact, api's CompactResponse) — would be false of each. The hold
 // that runs here stops a process in no turn, so what its let-go records reads the claim in the
 // state the compaction gives it back in (compacting.back, suspendHeldAtEnd), and the next process
-// is not told a turn was cut off.
+// is not told a turn was cut off. A stop the runtime refuses gives the claim back over a task whose
+// turn is over, with the end-frame bound armed for it where none stands, as the end below arms it
+// with nothing held (runHeldAtEnd).
 func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 	ended := ev.(CompactEnded)
 	// The fence let this end through, so the claim holds the compaction it names (ownsCompaction).
@@ -429,22 +431,11 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 		return nil
 	}
 	if m.held != nil {
-		if m.reportOwed() {
-			m.claim.State = run.back
-			m.logSuspensionWaits()
-			if err := m.persist(ctx); err != nil {
-				return err
-			}
-			return ErrCompactSuspended
-		}
 		// A suspension that arrived while the compaction ran was held for it, as one that
-		// arrives in a turn is (holdSuspension); it runs now, exactly as the turn's end runs it.
-		if err := m.suspendHeldAtEnd(ctx, run.back); err != nil {
-			if m.held == nil {
-				return err
-			}
-			m.claim.State = run.back
-			return errors.Join(err, m.persist(ctx))
+		// arrives in a turn is (holdSuspension); it runs now, or waits for the take's report,
+		// exactly as the turn's end runs it.
+		if err := m.runHeldAtEnd(ctx, run.back, m.armEndFrameBoundUnlessArmed); err != nil {
+			return err
 		}
 		return ErrCompactSuspended
 	}

@@ -236,14 +236,14 @@ func (m *Machine) letOutHeldLaunch(ctx context.Context) error {
 	if reserve == nil {
 		m.wake = nil
 		waiting.at, waiting.reserved = now, now
-		return m.runWake(ctx, waiting, false, false)
+		return m.runWake(ctx, waiting, false)
 	}
 	at := reserve(now)
 	m.wakeLetOut(at)
 	waiting.at, waiting.reserved = at, now
 	if !at.After(now) {
 		m.wake = nil
-		return m.runWake(ctx, waiting, true, false)
+		return m.runWake(ctx, waiting, true)
 	}
 	return m.parkWake(ctx, waiting, at.Sub(now))
 }

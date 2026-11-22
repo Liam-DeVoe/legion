@@ -3044,7 +3044,7 @@ package api
 // backlog the shim holds for a daemon that is not connected dropped no frame since its last
 // connection took it (shimwire.Hello2.BacklogWhole), and left out when false; a hello without it,
 // from a shim that dropped frames or one built before the member, is read as a backlog that may
-// have dropped them, with every effect shimwire.Hello2's doc lists, and a daemon built before the
+// have dropped them, with every effect supervise's readBacklog lists, and a daemon built before the
 // member ignores it. The three task routes refuse in the coded shape (`{code, error}`), so a
 // worker that sends a take or a seen report again on a 502, 503 or 504 naming no code never reads
 // a refusal of the daemon's own as an outage; and none of them refuses a stale plugin with the

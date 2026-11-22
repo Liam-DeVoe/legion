@@ -78,9 +78,12 @@ worker_wake_burst: 1                   # how many wakes may leave at once before
 # worker_turn_start_timeout_seconds: 1500  # how long after an accepted take the task's turn has to
 #                                      # start before the worker is charged and the task taken back:
 #                                      # it holds the harness's setup, an automatic compaction among
-#                                      # it. 1500 by default, twice the compaction timeout and the
-#                                      # longest measured setup added; the default is no floor, and a
-#                                      # value that is not a positive integer is refused
+#                                      # it. It also bounds how late the take's report may be after
+#                                      # its turn ends; below about 1200 that is shorter than the
+#                                      # producers' retries, and a task can run twice. 1500 by
+#                                      # default, twice the compaction timeout and the longest
+#                                      # measured setup added; the default is no floor, and a value
+#                                      # that is not a positive integer is refused
 
 operator_token_file: ./operator-token  # the operator's bearer, in a file only you can read
 dispatch_url: https://dispatch.example.com

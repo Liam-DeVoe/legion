@@ -262,14 +262,18 @@ func (m *Machine) holdStaleRelaunch(trigger string) {
 
 // relaunchWaitsForReport leaves the stale-plugin relaunch waiting behind the wait for the report
 // of the pending take's turn (reportwait.go; refreshPlugin, runWake): the report's finish runs it,
-// or its provider error's take-back (reportedTask, afterTurn), or the wait's bound — R5's second
-// bound, armed whole where the relaunch began to wait, at which the task is taken back with the
-// note of a cut turn first (reportBoundOver) — and runs it through refreshPlugin as the claim
-// stands then, as the relaunch held for a turn is run. So a report that never comes, lost by a
-// worker that gave up on it, leaves no claim on a stale plugin for ever, and a report that is only
-// slow lands inside the bound. A pass that posts the claim again meanwhile replaces the trigger
-// and moves the bound nothing. Like the relaunch held for a turn, it is memory only: a restart
-// forgets it, and the restarted daemon's own stale-plugin pass asks again.
+// or its provider error's take-back (reportedTask, afterTurn), or the wait's bound, at which the
+// task is taken back with the note of a cut turn first (reportBoundOver). That bound is R5's
+// second bound. Over a take it reaches with nothing held (reportReaches), it was armed whole at
+// the end of the take's turn, and the relaunch that begins to wait keeps it as it was; over a take
+// it reaches only with work held, a restored take it leaves out with nothing held, it is armed
+// whole where the relaunch began to wait. Each of the three runs the relaunch through
+// refreshPlugin as the claim stands then, as the relaunch held for a turn is run. So a report
+// that never comes, lost by a worker that gave up on it, leaves no claim on a stale plugin for
+// ever, and a report that is only slow lands inside the bound. A pass that posts the claim again
+// meanwhile replaces the trigger and moves the bound nothing. Like the relaunch held for a turn,
+// it is memory only: a restart forgets it, and the restarted daemon's own stale-plugin pass asks
+// again.
 func (m *Machine) relaunchWaitsForReport(trigger string) {
 	if m.staleRelaunch == nil {
 		m.log.Info(reportWaitsLine, "task", m.claim.Pending.Number, "held", "relaunch", "trigger", trigger,

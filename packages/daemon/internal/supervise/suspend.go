@@ -150,7 +150,10 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 	// the operator's hold the operator's source, which must not give it the operator's stop timeout
 	// too, nor hold a request whose asker reports a refusal as nothing having happened. The reason
 	// names what the hold would have waited for: the turn running, the compaction, or the phase of
-	// the wait for the take's report that holdForReport met (reportWaitNow).
+	// the wait for the take's report that holdForReport met (reportWaitNow), the phase first, and
+	// then the work that waits in it. Behind a put-back take and behind a refused finish that work
+	// is a held suspension or else the stale-plugin relaunch, since only work already waiting goes
+	// on waiting there (reportHolds).
 	if ev.(RequestSuspend).NeverHold {
 		var reason string
 		switch phase := m.reportWaitNow(); {
@@ -158,10 +161,16 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 			reason = "the claim's agent is in a turn, and this suspension is not one that is held for the turn's end"
 		case m.busy():
 			reason = "the claim's session is being compacted, and this suspension is not one that is held for the compaction's end"
-		case m.held != nil:
-			reason = "a held suspension waits for the report of the claim's last turn, and this suspension is not one that is held for it"
+		case phase == waitTake && m.held != nil:
+			reason = "the claim's take awaits its turn again with a held suspension waiting behind it, and this suspension is not one that is held for that turn"
 		case phase == waitTake:
 			reason = "the claim's take awaits its turn again with a relaunch waiting behind it, and this suspension is not one that is held for that turn"
+		case phase == waitFinish && m.held != nil:
+			reason = "a held suspension waits for the finish of the report of the claim's last turn, which the store refused, and this suspension is not one that is held for that finish"
+		case phase == waitFinish:
+			reason = "a relaunch waits for the finish of the report of the claim's last turn, which the store refused, and this suspension is not one that is held for that finish"
+		case m.held != nil:
+			reason = "a held suspension waits for the report of the claim's last turn, and this suspension is not one that is held for it"
 		default:
 			reason = "the turn of the claim's task ended with its report still to come, and this suspension is not one that is held for that report"
 		}
@@ -534,17 +543,57 @@ func (m *Machine) suspendHeld(ctx context.Context) error {
 }
 
 // suspendHeldAtEnd is suspendHeld at the end of the turn, or of the compaction, the claim is
-// still stored working for (turnEnded, compactEnded): nothing runs any more, so the stop cuts
-// off no turn, and the let-go it makes reads the claim in back, the state that end gives the
-// claim back in, for its record (Machine.heldStopBack, endState, recordEnd). Read as the working it
-// is still stored in, the record would tell the next process that the turn it was in was
-// interrupted, of a turn that had ended or a compaction that ran none. The claim's own state is
-// left alone, as is everything else the stop decides: the end sets it once the hold's outcome is
-// known, and the mark goes when the stop returns, landed or refused.
+// still stored working for (runHeldAtEnd, for turnEnded and compactEnded): nothing runs any more,
+// so the stop cuts off no turn, and the let-go it makes reads the claim in back, the state that
+// end gives the claim back in, for its record (Machine.heldStopBack, endState, recordEnd). Read as
+// the working it is still stored in, the record would tell the next process that the turn it was
+// in was interrupted, of a turn that had ended or a compaction that ran none. The claim's own
+// state is left alone, as is everything else the stop decides: the end sets it once the hold's
+// outcome is known, and the mark goes when the stop returns, landed or refused.
 func (m *Machine) suspendHeldAtEnd(ctx context.Context, back ClaimState) error {
 	m.heldStopBack = back
 	defer func() { m.heldStopBack = "" }()
 	return m.suspendHeld(ctx)
+}
+
+// runHeldAtEnd is the suspension held over the claim at the end of the turn, or of the compaction,
+// the claim is still stored working for (turnEnded, compactEnded); back is the state that end gives
+// the claim back in.
+//
+// Over a take whose report is still to come — its turn over, or the take put back by a report while
+// the turn ran — the hold waits behind the wait for that report (reportwait.go), whose finish runs
+// it (reportedTask, afterTurn), or behind that wait's bound or its own deadline: the claim goes
+// back in back, holding it. The end asks reportOwed rather than reportHolds, for the reasons
+// reportOwed gives.
+//
+// Otherwise the stop runs now (suspendHeldAtEnd). Where the turn was a task's, the settle that
+// follows the stop finishes the task, by its end frame or by the report whose finish the store
+// refused (overTurnFinish): the claim is suspended by then, where no end-frame bound watches a
+// task (settle). A stop that landed let the process go, and only its write can have failed, the
+// claim suspended in memory (suspended). A stop the runtime refused keeps the process and the hold,
+// which is tried again at the probe interval (suspendHeld), and the claim goes back in back over a
+// task whose turn is over: its report finishes it, or the end-frame bound where that bound does — a
+// plugin that names no number, or a report's finish the store refused (armEndFrameBound). armFinish
+// arms that bound as the same end arms it with nothing held: whole at a turn's end (turnEnded
+// passes armEndFrameBound), and at a compaction's only where none stands (compactEnded passes
+// armEndFrameBoundUnlessArmed).
+func (m *Machine) runHeldAtEnd(ctx context.Context, back ClaimState, armFinish func(id string)) error {
+	if m.reportOwed() {
+		m.claim.State = back
+		m.logSuspensionWaits()
+		return m.persist(ctx)
+	}
+	p := m.claim.Pending
+	finishes := p != nil && p.turnStarted()
+	err := m.suspendHeldAtEnd(ctx, back)
+	if err == nil || m.held == nil {
+		return err
+	}
+	m.claim.State = back
+	if finishes {
+		armFinish(p.ID)
+	}
+	return errors.Join(err, m.persist(ctx))
 }
 
 // dropHeld ends the held suspension without running it.
