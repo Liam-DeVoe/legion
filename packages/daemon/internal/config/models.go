@@ -39,3 +39,17 @@ func readModels(value *yaml.Node, key string) ([]string, error) {
 	}
 	return models, nil
 }
+
+// ListedModels are the models a role of an owner's plan may name: `models`, then the model of
+// each role of `roles` that `models` does not name yet, in the file's order. A deployment that set
+// a role's model before it listed models so lists that model, and a plan that names it is taken.
+// nil for a file that lists none and whose roles name none.
+func (c Config) ListedModels() []string {
+	listed := slices.Clone(c.Models)
+	for _, role := range c.Roles {
+		if role.Model != "" && !slices.Contains(listed, role.Model) {
+			listed = append(listed, role.Model)
+		}
+	}
+	return listed
+}

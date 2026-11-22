@@ -52,17 +52,13 @@ const maxRoleWord = 32
 // builtinTypes are Legion's five types of a step, in the order a refusal lists them.
 var builtinTypes = []plan.Type{plan.TypeDesign, plan.TypePlanning, plan.TypeImplementation, plan.TypeTesting, plan.TypeReview}
 
-// legionName is whether name is a name Legion gives a role of its own: a role of a claim, the
-// controller, or a role of a step (plan.BuiltinRoles, acceptance among them). A role of the
-// deployment takes none of them. `owner` is none: it is the key of a task's owner, and the name of
-// no role, claim, token or slot.
+// legionName is whether name is a name Legion gives a role of its own (plan.LegionNames): a role
+// of a claim, the controller, or a role of a step, acceptance among them. A role of the deployment
+// takes none of them, and neither does a role of an owner's plan, which plan.Validate holds to the
+// same list. `owner` is none: it is the key of a task's owner, and the name of no role, claim,
+// token or slot.
 func legionName(name string) bool {
-	role := claim.Role(name)
-	if slices.Contains(claim.Roles, role) || role == claim.RoleController {
-		return true
-	}
-	_, builtin := plan.BuiltinRoles()[name]
-	return builtin
+	return slices.Contains(plan.LegionNames(), name)
 }
 
 // readRoles is `roles`: a mapping of a role's name to its block, read in the file's order. A name
@@ -292,15 +288,25 @@ func typeList(types []plan.Type) string {
 	return strings.Join(words, ", ")
 }
 
-// Deployment is the roles a step of a plan may name: Legion's own (plan.BuiltinRoles) and each
-// role of `roles`, with its type. It names no phase for a role of the deployment: how a step runs
-// is decided by its role.
+// Deployment is what a plan is judged against: the roles a step of a plan may name, Legion's own
+// (plan.BuiltinRoles) and each role of `roles`, each with its type, its model ("" for Legion's
+// own, which start on the default model) and its harness (BackendFor); the models a role may name
+// (ListedModels); and the owner's role, the architect's, on the default model and the architect's
+// harness. It names no phase for a role of the deployment: how a step runs is decided by its role.
 func (c Config) Deployment() plan.Deployment {
 	roles := plan.BuiltinRoles()
-	for _, role := range c.Roles {
-		roles[string(role.Name)] = plan.RoleDef{Name: string(role.Name), Type: role.Type}
+	for name, role := range roles {
+		role.Backend = string(c.BackendFor(claim.Role(name)))
+		roles[name] = role
 	}
-	return plan.Deployment{Roles: roles}
+	for _, role := range c.Roles {
+		roles[string(role.Name)] = plan.RoleDef{Name: string(role.Name), Type: role.Type, Model: role.Model, Backend: string(c.BackendFor(role.Name))}
+	}
+	return plan.Deployment{
+		Roles:  roles,
+		Models: c.ListedModels(),
+		Owner:  plan.RoleDef{Name: string(claim.RoleArchitect), Backend: string(c.BackendFor(claim.RoleArchitect))},
+	}
 }
 
 // RoleOf is the role of the deployment named name, and whether `roles` defines one.
