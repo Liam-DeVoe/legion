@@ -7,30 +7,52 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { rowLimit, runBounded } from "./bounded-subprocess";
 
 // What e2e/harness-postgres.ts's wait for a stack's Postgres (`ready`) does while the server
-// refuses every `select 1`, as one still starting up does. The wait has no bound of its own, so it
-// ends on the caller's abort, with an Interrupted that names the server it waited for, or on the
-// server's end, which the caller hands it (`gone`), with a refusal that says so. Each row runs the
-// wait in a child of its own, with a stand-in `psql` first on its PATH that answers every query
-// as a server starting up does and exits 2. The stand-in sends its parent, the child, SIGUSR2 the
-// first time it runs, so the abort lands while the wait is under way.
+// refuses `select 1`, as one still starting up does. The wait has no bound of its own, so it ends
+// on the server's answer, on the caller's abort, with an Interrupted that names the server it
+// waited for, or on the server's end, which the caller hands it (`gone`), with a refusal that says
+// so. Each row runs the wait in a child of its own, with a stand-in `psql` first on its PATH that
+// answers each query as a server starting up does and exits 2, until it has refused
+// `PSQL_ANSWER_AFTER` of them, where that is set, and then answers `1`. The stand-in sends its
+// parent, the child, SIGUSR2 the first time it runs, so an abort lands while the wait is under way.
 const module = (name: string) => fileURLToPath(new URL(`../${name}`, import.meta.url));
 const stubs = temporaryDirectory("harness-postgres-");
+/** A preload under which every read of `Date.now()` is ten minutes later than the one before, as
+ *  on a machine so loaded that each try of the wait takes that long. */
+const leapingClock = join(stubs, "leaping-clock.ts");
 
 beforeAll(() => {
   writeFileSync(
     join(stubs, "psql"),
     `#!/bin/sh
 [ -e "$PSQL_MARK" ] || { : > "$PSQL_MARK"; kill -USR2 "$PPID"; }
+if [ -n "\${PSQL_ANSWER_AFTER:-}" ]; then
+  echo refused >> "$PSQL_MARK"
+  if [ "$(wc -l < "$PSQL_MARK")" -gt "$PSQL_ANSWER_AFTER" ]; then echo 1; exit 0; fi
+fi
 echo 'psql: error: connection to server at "127.0.0.1", port 9 failed: FATAL:  the database system is starting up' >&2
 exit 2
 `
   );
   chmodSync(join(stubs, "psql"), 0o755);
+  writeFileSync(
+    leapingClock,
+    `const real = Date.now.bind(Date);
+let ahead = 0;
+Date.now = () => real() + (ahead += 600_000);
+`
+  );
 });
 
 /** Runs `ready` against the stand-in in a child, `gone` the body of the function it is handed,
- *  aborting on the stand-in's first call where `abort` is set, and answers what it threw. */
-async function waited(gone: string, abort: boolean, mark: string) {
+ *  aborting on the stand-in's first call where `abort` is set, and answers what it threw or that
+ *  the server answered. `answerAfter` is the stand-in's `PSQL_ANSWER_AFTER`, `preload` a preload
+ *  of the child. */
+async function waited(
+  gone: string,
+  abort: boolean,
+  mark: string,
+  { answerAfter, preload }: { answerAfter?: number; preload?: string } = {}
+) {
   const script =
     `const { ready } = await import(${JSON.stringify(module("harness-postgres.ts"))});` +
     `const { Interrupted } = await import(${JSON.stringify(module("local-instance-support.ts"))});` +
@@ -43,11 +65,12 @@ async function waited(gone: string, abort: boolean, mark: string) {
     "catch (error) { console.log(JSON.stringify({ interrupted: error instanceof Interrupted, " +
     "message: error.message })); }";
   const run = await runBounded({
-    argv: [process.execPath, "--eval", script],
+    argv: [process.execPath, ...(preload ? ["--preload", preload] : []), "--eval", script],
     bound: "short",
     env: {
       PATH: `${stubs}:${process.env.PATH ?? ""}`,
       PSQL_MARK: join(stubs, mark),
+      ...(answerAfter === undefined ? {} : { PSQL_ANSWER_AFTER: String(answerAfter) }),
       TMPDIR: stubs,
     },
     from: import.meta.url,
@@ -80,6 +103,20 @@ test(
       "The Dispatch e2e harness cannot start: the stand-in's Postgres stopped before it answered select 1: "
     );
     expect(read.message).toContain("the database system is starting up");
+  },
+  rowLimit("short")
+);
+
+// The wait keeps no clock: a server refused three tries, each read ten minutes after the last,
+// which a bound of 120 s failed at its second, and the wait still takes its answer.
+test(
+  "a wait under a clock ten minutes later at every read still takes the server's answer",
+  async () => {
+    const { named, read, stderr, stdout } = await waited("false", false, "late", {
+      answerAfter: 3,
+      preload: leapingClock,
+    });
+    expect(read, `${named} printed ${stdout}:\n${stderr}`).toEqual({ answered: true });
   },
   rowLimit("short")
 );

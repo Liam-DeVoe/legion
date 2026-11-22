@@ -41,6 +41,15 @@ cleanup() {
   if [[ -n "$harness" ]]; then
     kill "$harness" 2>/dev/null
     wait "$harness" 2>/dev/null
+    # A harness that stopped before its stack was up wrote why on its stderr: its start's refusal,
+    # or, when a Ctrl-C or this script's caller's limit ended the start, what the start was waiting
+    # for, by name (`interruptedBefore`, e2e/local-instance-support.ts). Its waits have no bound of
+    # their own, so that is the only account of a process that never came up. Once the stack is
+    # up, its stderr is the stack's own output, and nothing of it is printed.
+    if ! grep -q '^export DISPATCH_E2E_REUSE_SERVERS=1$' "$exports"; then
+      printf 'the harness stopped before it was up:\n' >&2
+      cat -- "$errors" >&2
+    fi
   fi
   rm -f -- "$exports" "$errors"
 }
@@ -57,11 +66,10 @@ harness=$!
 # how long a start takes is the machine's (`serving` in that file says why). A deadline here would
 # refuse a harness that is still coming up and hide the harness's own message. The hang guard is
 # this script's caller's: a person's Ctrl-C, or the limit of the job that runs it. So the only
-# thing this reads is whether the harness is still alive.
+# thing this reads is whether the harness is still alive; what it said is printed on the way out,
+# by `cleanup`, whichever way this script ends.
 until grep -q '^export DISPATCH_E2E_REUSE_SERVERS=1$' "$exports"; do
   if ! kill -0 "$harness" 2>/dev/null; then
-    printf 'the harness stopped before it was up:\n' >&2
-    cat -- "$errors" >&2
     exit 1
   fi
   sleep 1

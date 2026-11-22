@@ -103,6 +103,20 @@ interface Watched extends HarnessProcess {
   readonly reported: () => number | undefined;
   /** Its last lines of output. */
   readonly tail: readonly string[];
+  /** What starting it failed with, once that is known (`startFailure`). */
+  readonly failedToStart: () => Error | undefined;
+}
+
+/** What starting `running` failed with, once its `exited` has rejected: a command that could not
+ *  be started at all, such as one that is not on PATH. That rejection is the one sign of it under
+ *  both runtimes: Node marks such a child with an `exitCode` of -2, but Bun leaves `exitCode` and
+ *  `signalCode` null, and a wait that read only those would wait for a report that cannot come. */
+function startFailure(running: PipedRunning): () => Error | undefined {
+  let failure: Error | undefined;
+  running.exited.catch((error: unknown) => {
+    failure = error instanceof Error ? error : new Error(String(error));
+  });
+  return () => failure;
 }
 
 /** Copies the process's output to `logDir` or this process's stderr, and reads each line for the
@@ -140,7 +154,15 @@ function watch(running: PipedRunning, listener: HarnessListener, logDir?: string
   const drained = Promise.allSettled([pump(child.stdout), pump(child.stderr)]).then(
     () => new Promise<void>((resolve) => (file === undefined ? resolve() : file.end(resolve)))
   );
-  return { child, drained, listener, log, reported: () => port, tail };
+  return {
+    child,
+    drained,
+    failedToStart: startFailure(running),
+    listener,
+    log,
+    reported: () => port,
+    tail,
+  };
 }
 
 /** The refusal for a listener that did not come up, quoting its last lines. An explicitly set port
@@ -165,14 +187,19 @@ function refusal(watched: Watched, given: number, what: string): Error {
  *  The wait has no bound of its own. How long a process takes to start and print its line is
  *  the machine's, and a loaded machine can hold a start past any fixed bound: a bun listener's
  *  start held 35 s failed the 30 s each listener was once given, under a test whose own deadline
- *  was 30 minutes away. So the wait ends on the report, the 200, the process's exit, or the
- *  caller's abort (`signal`), and the caller's deadline is the only hang guard: a test's bounded
- *  child (`e2e/__tests__/bounded-subprocess.ts`), a CI job's limit, a person's Ctrl-C. An abort
- *  names the process the start was waiting for (`interruptedBefore`). */
+ *  was 30 minutes away. So the wait ends on the report, the 200, the process's exit or its failure
+ *  to start at all (`failedToStart`), or the caller's abort (`signal`), and the caller's deadline is
+ *  the only hang guard: a test's bounded child (`e2e/__tests__/bounded-subprocess.ts`), a CI job's
+ *  limit, a person's Ctrl-C. An abort names the process the start was waiting for
+ *  (`interruptedBefore`). */
 async function serving(watched: Watched, given: number, supervisor: Supervisor): Promise<number> {
   const { child, listener } = watched;
   const since = Date.now();
   const check = async (fact: string) => {
+    const failed = watched.failedToStart();
+    if (failed !== undefined) {
+      throw refusal(watched, given, `could not be started: ${failed.message}`);
+    }
     if (child.exitCode !== null || child.signalCode !== null) {
       // The last lines are the reason; let the output reach the tail first.
       await Promise.race([watched.drained, sleep(1000)]);
@@ -219,7 +246,8 @@ interface Kept {
 
 /** Starts a `held-port.py keep` in `dir` that holds a port the OS chose for `listener` until the
  *  harness stops, and returns once the keeper has written the port. Like `serving`, it waits with
- *  no bound of its own: until the port file, the keeper's exit, or the caller's abort. */
+ *  no bound of its own: until the port file, the keeper's exit or its failure to start at all, or
+ *  the caller's abort. */
 async function keepPort(
   listener: HarnessListener,
   dir: string,
@@ -229,12 +257,14 @@ async function keepPort(
   const name = `the port keeper for ${listener.name}`;
   const portFile = join(dir, `${listener.id}.port`);
   const socket = join(dir, `${listener.id}.sock`);
-  const { child } = supervisor.startPiped(
+  const running = supervisor.startPiped(
     name,
     ["python3", heldPortScript, "keep", "--port-file", portFile, "--socket", socket],
     dispatchPackage,
     environment
   );
+  const { child } = running;
+  const failedToStart = startFailure(running);
   // Both streams are read to their end, so a full pipe never stops the keeper; its stderr is the
   // reason it failed. They are node streams, so `node:stream/consumers`' `text` collects them
   // rather than `new Response(...)`, which takes no node stream.
@@ -244,6 +274,12 @@ async function keepPort(
   // The keeper writes the file through a rename once it serves its socket, so a file that exists
   // holds the whole port.
   while (!existsSync(portFile)) {
+    const failed = failedToStart();
+    if (failed !== undefined) {
+      throw new Error(
+        `The Dispatch e2e harness cannot start: ${name} could not be started: ${failed.message}`
+      );
+    }
     if (child.exitCode !== null || child.signalCode !== null) {
       throw new Error(
         `The Dispatch e2e harness cannot start: ${name} exited ` +

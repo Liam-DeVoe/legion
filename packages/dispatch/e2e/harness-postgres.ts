@@ -297,33 +297,55 @@ function postmasterGone(data: string): () => boolean {
   };
 }
 
+/** The `-t` every `pg_ctl -w start` here is given, in seconds: a year. pg_ctl has no wait without
+ *  a limit, and its default limit, `PGCTLTIMEOUT` or 60 s, is a wall-clock bound on how long a
+ *  server takes to come up, which is the machine's (`ready` says why the harness keeps none). With
+ *  this limit its clock decides nothing: the wait ends when the server takes connections, or when
+ *  its postmaster has died, both of which pg_ctl reads itself, or on the caller's abort, which
+ *  kills the pg_ctl (`startCluster`). */
+const pgCtlStartWait = String(365 * 24 * 60 * 60);
+
 /** Starts the cluster in `data`, with its log and its unix socket in `dir`, and returns the port
  *  it serves on. Returns or throws with no postmaster of `data` left running. `server` is the
- *  environment pg_ctl, and so the postmaster, runs with. */
+ *  environment pg_ctl, and so the postmaster, runs with. `signal`, the caller's abort, ends the
+ *  start's wait with an Interrupted that names the server it waited for. */
 async function startCluster(
   bin: string,
   data: string,
   dir: string,
   what: string,
   env: NodeJS.ProcessEnv,
-  server: NodeJS.ProcessEnv
+  server: NodeJS.ProcessEnv,
+  signal?: AbortSignal
 ): Promise<number> {
   let last = "";
   const started = await serverSettings(env);
+  const since = Date.now();
   for (let attempt = 1; attempt <= bindAttempts; attempt++) {
     const port = await freePort();
     const options = [`-p ${port}`, "-h 127.0.0.1", `-k ${dir}`, ...started.map((s) => `-c ${s}`)];
     try {
       await execFileAsync(
         join(bin, "pg_ctl"),
-        ["-D", data, "-l", join(dir, "postgres.log"), "-o", options.join(" "), "-w", "start"],
-        { env: server }
+        [
+          "-D",
+          data,
+          "-l",
+          join(dir, "postgres.log"),
+          "-o",
+          options.join(" "),
+          "-t",
+          pgCtlStartWait,
+          "-w",
+          "start",
+        ],
+        { env: server, signal }
       );
       return port;
     } catch (error) {
       last = error instanceof Error ? error.message : String(error);
-      // `pg_ctl -w start` gives up its own wait after `PGCTLTIMEOUT` and exits non-zero, but
-      // the postmaster it started goes on running and holding `postmaster.pid`: the next
+      // A pg_ctl that ended without the server taking connections, or that the caller's abort
+      // killed, can leave the postmaster it started running and holding `postmaster.pid`: the next
       // attempt's start would fail on that lock rather than on its port, and a throw here would
       // leave a server serving a loopback port while the pool removes the data directory under
       // it (`e2e/harness-pool.ts`). A stop that fails is a server that never bound, which is why
@@ -331,6 +353,7 @@ async function startCluster(
       await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "immediate", "-w", "stop"]).catch(
         () => {}
       );
+      if (signal?.aborted === true) throw interruptedBefore(`${what} took connections`, since);
     }
   }
   throw new Error(
@@ -403,7 +426,8 @@ function binariesProvider(
       templateDir,
       "the stacks' Postgres template",
       env,
-      server
+      server,
+      signal
     );
     try {
       const admin = `postgres://postgres@127.0.0.1:${port}/postgres?sslmode=disable`;
@@ -433,7 +457,7 @@ function binariesProvider(
         // `cp -a` keeps the 0700 a data directory's server refuses to start without.
         await execFileAsync("cp", ["-a", await template, data]);
         const what = `stack ${index}'s Postgres`;
-        const port = await startCluster(bin, data, stackDir, what, env, server);
+        const port = await startCluster(bin, data, stackDir, what, env, server, signal);
         const stop = async (): Promise<void> => {
           await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "immediate", "-w", "stop"]);
         };
