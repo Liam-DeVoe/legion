@@ -1,6 +1,7 @@
 package oauth_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -197,12 +198,49 @@ func TestASpentJTIIsRefusedWhileTheKeySetCannotBeRead(t *testing.T) {
 	})
 }
 
+// TestTheReplayReadSpendsNothing: while GitHub's key set cannot be read, a live workflow run's
+// token is presented three times and answered 503 each time, and the replay store then holds no row
+// for its jti: the exchange asked the store whether the jti was spent (TokenExchangeJTISpent) and
+// wrote nothing. Once the key set answers, the same token mints, and it is then held as presented.
+func TestTheReplayReadSpendsNothing(t *testing.T) {
+	f := newExchangeFixture(t, func(*oauth.Config) {})
+	// No spacing between failed reads, so the read after the key set heals is the next request's
+	// and not one 5 seconds later.
+	f.config.GitHub.Keys.(*oidc.Keys).FailureSpacing = 0
+	f.github.FailKeys(http.StatusServiceUnavailable)
+	const run, jti = "4700", "run-4700"
+	token := f.workflowToken(t, run, nil)
+	rows := func() int {
+		t.Helper()
+		var n int
+		if err := f.pool.QueryRow(context.Background(), `select count(*) from oauth_exchange_jtis where jti = $1`, jti).Scan(&n); err != nil {
+			t.Fatalf("count the replay store's rows for %s: %v", jti, err)
+		}
+		return n
+	}
+	for i := range 3 {
+		status, header, body := f.post(t, "/token", exchangeForm(token, oauthwire.SubjectTokenTypeGitHub, "ci-release"), newKey(t))
+		if status != http.StatusServiceUnavailable || body["code"] != oidc.IssuerUnavailableCode || header.Get("Retry-After") != "1" {
+			t.Fatalf("presentation %d while the key set cannot be read: answered %d %v (Retry-After %q), want 503 %s with Retry-After: 1", i+1, status, body, header.Get("Retry-After"), oidc.IssuerUnavailableCode)
+		}
+	}
+	if n := rows(); n != 0 {
+		t.Fatalf("after three presentations answered 503 the replay store holds %d rows for %s, want none: the read spent the jti", n, jti)
+	}
+	f.github.FailKeys(0)
+	f.exchanged(t, exchangeForm(token, oauthwire.SubjectTokenTypeGitHub, "ci-release"), newKey(t))
+	if n := rows(); n != 1 {
+		t.Fatalf("after the mint the replay store holds %d rows for %s, want one", n, jti)
+	}
+}
+
 // TestATokenThatNeverExpiresIsRefusedWhileTheKeySetIsRead: with every key set read, the exchange
-// refuses 400 a token that does not expire within its type's longest lifetime, though the library
-// admits most of them: an exp of null, 0, 0.5 or 9223371974719179008 (which overflows the
-// library's own window check), and an exp missing or past the lifetime, for GitHub's, Google's and
-// a cluster's tokens. The issuers' own tokens still mint: a GitHub workflow token and a Google
-// identity token living an hour, and a pod's projected token living 24 hours.
+// refuses 400 a token that does not expire within its type's window, though the library admits most
+// of them: an exp of null, 0, 0.5, 9223371974719179008, 9223372000000000000 or 9223372036854774784
+// (the last three overflow the library's own window check), and an exp missing or past the window,
+// for GitHub's, Google's and a cluster's tokens. The issuers' own tokens still mint: a GitHub
+// workflow token and a Google identity token living an hour, and a pod's projected token living
+// 24 hours, the broker's window for a cluster's tokens (kubernetesTolerance).
 func TestATokenThatNeverExpiresIsRefusedWhileTheKeySetIsRead(t *testing.T) {
 	// The exchange fixture lists the workflow and the pod's account, the sign-in fixture the
 	// machine.
@@ -242,12 +280,15 @@ func TestATokenThatNeverExpiresIsRefusedWhileTheKeySetIsRead(t *testing.T) {
 		{"a workflow run's token with an exp of null", e, github("4601", exp(nil))},
 		{"a workflow run's token with an exp of 0.5", e, github("4602", exp(json.Number("0.5")))},
 		{"a workflow run's token with an exp of 9223371974719179008", e, github("4603", exp(json.Number("9223371974719179008")))},
+		{"a workflow run's token with an exp of 9223372000000000000", e, github("4606", exp(json.Number("9223372000000000000")))},
+		{"a workflow run's token with an exp of 9223372036854774784", e, github("4607", exp(json.Number("9223372036854774784")))},
 		{"a workflow run's token with no exp", e, github("4604", func(claims map[string]any) { delete(claims, "exp") })},
 		{"a workflow run's token living a minute past an hour", e, github("4605", lives(time.Hour+2*time.Minute))},
 		{"a machine's token with an exp of 0", g.exchangeFixture, machine(exp(0))},
 		{"a machine's token with an exp of 9223371974719179008", g.exchangeFixture, machine(exp(json.Number("9223371974719179008")))},
 		{"a pod's token with an exp of 0", e, pod("pod-uid-exp-zero", exp(0))},
 		{"a pod's token with an exp of 9223371974719179008", e, pod("pod-uid-exp-overflow", exp(json.Number("9223371974719179008")))},
+		{"a pod's token with an exp of 9223372036854774784", e, pod("pod-uid-exp-overflow-high", exp(json.Number("9223372036854774784")))},
 		{"a pod's token living a minute past 24 hours", e, pod("pod-uid-exp-long", lives(24*time.Hour+2*time.Minute))},
 	} {
 		t.Run(row.name+" is refused", func(t *testing.T) { requireRefused(t, row.f, row.form, unparsedToken) })

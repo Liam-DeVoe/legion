@@ -154,6 +154,8 @@ func TestRefusedWithoutKeyMirrorsTheLibrarysChecks(t *testing.T) {
 		{name: "an exp of 0.999", change: setClaim("exp", json.Number("0.999"))},
 		{name: "an exp of 0.5", change: setClaim("exp", json.Number("0.5"))},
 		{name: "an exp of 9223371974719179008", change: setClaim("exp", json.Number("9223371974719179008"))},
+		{name: "an exp of 9223372000000000000", change: setClaim("exp", json.Number("9223372000000000000"))},
+		{name: "an exp of 9223372036854774784", change: setClaim("exp", json.Number("9223372036854774784"))},
 		{name: "an exp of null", change: setClaim("exp", nil)},
 		{name: "an exp of 0", change: setClaim("exp", json.Number("0"))},
 		{name: "an exp of 0.0", change: setClaim("exp", json.Number("0.0"))},
@@ -232,10 +234,18 @@ func TestRefusedWithoutKeyMirrorsTheLibrarysChecks(t *testing.T) {
 
 // TestRefusedForLifetimeRefusesATokenThatNeverExpires: refusedForLifetime refuses a token whose
 // exp the library reads as no exp (missing, null, 0, 0.0, any value under 1) or as further ahead
-// than the type's longest lifetime, the overflowing 9223371974719179008 included. For each of those
-// but the missing exp and the exp past the window, the library's own handler admits the token, so
-// without refusedForLifetime the broker would mint an access token for a token that never expires.
-// A live token, one with a fraction, and one a minute inside the window it admits.
+// than the type's longest lifetime, the values that overflow the library's window check
+// (time.Unix) included. For each of those but the missing exp and the exp past the window, the
+// library's own handler admits the token, so without refusedForLifetime the broker would mint an
+// access token for a token that never expires. A live token, one with a fraction, and one a minute
+// inside the window it admits.
+//
+// Two overflow rows are there to tell refusedForLifetime's whole-second comparison from a
+// time.Unix one. 9223371974719179008 overflows the library's integer reading, but refusedForLifetime
+// reads exp through a float64 (jwt.NumericDate), which rounds it to 9223371974719178752, below the
+// point where time.Unix overflows (MaxInt64 - 62135596800), so a time.Unix comparison refuses it
+// too. 9223372000000000000 and 9223372036854774784 stay above that point after the rounding, so a
+// time.Unix comparison overflows and admits them, as the library does.
 func TestRefusedForLifetimeRefusesATokenThatNeverExpires(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -259,6 +269,8 @@ func TestRefusedForLifetimeRefusesATokenThatNeverExpires(t *testing.T) {
 			{claimsRow{name: "an exp of 0.4", change: setClaim("exp", json.Number("0.4"))}, true, true},
 			{claimsRow{name: "an exp of 0.999", change: setClaim("exp", json.Number("0.999"))}, true, true},
 			{claimsRow{name: "an exp of 9223371974719179008", change: setClaim("exp", json.Number("9223371974719179008"))}, true, true},
+			{claimsRow{name: "an exp of 9223372000000000000", change: setClaim("exp", json.Number("9223372000000000000"))}, true, true},
+			{claimsRow{name: "an exp of 9223372036854774784", change: setClaim("exp", json.Number("9223372036854774784"))}, true, true},
 			{claimsRow{name: "no exp", change: func(claims map[string]any, _ tokenShape, _ time.Time) { delete(claims, "exp") }}, true, false},
 			{claimsRow{name: "an exp a minute past the window", change: func(claims map[string]any, shape tokenShape, now time.Time) {
 				claims["exp"] = now.Add(shape.window + time.Minute).Unix()
