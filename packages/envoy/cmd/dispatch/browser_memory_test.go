@@ -4124,15 +4124,30 @@ var replacedCloseLine = regexp.MustCompile(`time=(\S+) level=INFO msg="dispatch:
 // sent before it, the socket's keystroke waits behind it, so the gate would fold only once the
 // pool's queue had reached the step 2.
 //
-// The window runs from the first of the heavy requests to the last room's close. The drive reads
-// its peak both ways A3 reads one (requireUnderThePod) - what a pod's kernel would charge, under
-// the pod's 4,096 MiB, and what the runtime held of what its Go limit bounds, within
-// podGoMemoryLimitMargin of that limit - and fails where either passes its bound. It fails too
-// unless every keystroke is answered applied within browserAnswerWithin and stored past the
-// replaced history's head, which only the gate's check of that history admits, and reads as
-// typed. It logs the rooms, the history each room's gate folded, how long each fold and each
-// closing compaction waited for the pool and held it, the measured figure for one such fold, the
-// peak, and how far each reading stood under its bound.
+// The window runs from the first of the heavy requests to the last room's close, and on through
+// any keystroke sent again (below). The drive reads its peak both ways A3 reads one
+// (requireUnderThePod) - what a pod's kernel would charge, under the pod's 4,096 MiB, and what the
+// runtime held of what its Go limit bounds, within podGoMemoryLimitMargin of that limit - and
+// fails where either passes its bound. It fails too unless every keystroke is answered applied
+// within browserAnswerWithin and stored past the replaced history's head, which only the gate's
+// check of that history admits, and reads as typed.
+//
+// The answer can lose a race to the room's close, which runs on a goroutine of its own once the
+// keystroke is stored and ends each socket with a bare close of its connection, under ygo's
+// contract that "a reconnecting client sends its updates again" (peer.closeConn,
+// cybermonklabs/ygo v1.55.1-legion.2 provider/websocket/peer.go:1199-1204). So where a keystroke
+// is stored past the replaced history's head and its socket, open as it went, ended 1006 by the
+// time the server logged its room's replaced-history close (logTimeGrain past it, at most), the
+// drive reconnects as a page does: a new socket to the room, loaded again at the head, sends the
+// same keystroke, which must be answered applied within browserAnswerWithin before the stored
+// text is read (endedByTheClose); any other early close fails the drive as before. The socket
+// ends before the close is logged, not after: ygo's close ends the room's sockets
+// (closePeerConns, inject.go:639) before the room's worker runs its closing compaction
+// (inject.go:721), and the close is logged once that has returned.
+//
+// It logs the rooms, the history each room's gate folded, how long each fold and each closing
+// compaction waited for the pool and held it, how each keystroke sent again was answered, the
+// measured figure for one such fold, the peak, and how far each reading stood under its bound.
 //
 // No run is recorded here yet: the pod it was written in cannot run it. Its Job runs
 //
@@ -4278,6 +4293,27 @@ func TestGateFoldsWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 
 	whole := int64(worstCaseLoadSlotBytesForTest)
 	typed := make([]windowOutcome, len(typing))
+	// openAsSent is whether each keystroke's socket was still open once its keystroke's send
+	// began, so a socket that then ended ended after the keystroke went.
+	openAsSent := make([]bool, len(typing))
+	// resend is a keystroke the drive sent again on a new socket, its first socket having ended
+	// by its room's close (endedByTheClose): how long the new socket took to open, its room
+	// loading again at the head, and how the keystroke was answered on it.
+	type resend struct {
+		opening time.Duration
+		windowOutcome
+	}
+	resent := make([]*resend, len(typing))
+	// rowsPast is how many rows room index's document stores past its replaced history's head.
+	rowsPast := func(index int) int64 {
+		var past int64
+		if err := memory.database.Pool.QueryRow(ctx,
+			`select count(*) from doc_updates where artifact_id = $1 and version > $2`, foldRooms[index], replacedHeads[index],
+		).Scan(&past); err != nil {
+			t.Fatalf("read room %d's rows past its replaced history: %v", index, err)
+		}
+		return past
+	}
 	var closes map[string]time.Time
 	mark := len(server.output.String())
 	step = time.Now()
@@ -4296,6 +4332,11 @@ func TestGateFoldsWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 			group.Go(func() {
 				result := &typed[index]
 				result.sent = time.Now()
+				select {
+				case <-typingIn.ended:
+				default:
+					openAsSent[index] = true
+				}
 				result.applied, result.closed, result.err = typingIn.send(typingIn.updateFrame(keystroke))
 				result.answered = time.Now()
 			})
@@ -4327,6 +4368,28 @@ func TestGateFoldsWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 		server.givePoolBack(t)
 		group.Wait()
 		closes = replacedCloses(t, server, mark, foldRooms)
+		// A keystroke stored whose socket its room's close ended is sent again here, inside the
+		// window, once every room's close is logged: its room loads the run's state again at the
+		// head for it, which the peak covers as it covers the rest of the server's work.
+		for index, room := range foldRooms {
+			closedAt, logged := closes[room]
+			if !endedByTheClose(typed[index], openAsSent[index], closedAt, logged) || rowsPast(index) == 0 {
+				continue
+			}
+			again := &resend{}
+			opening := time.Now()
+			again.opened, again.err = server.tryOpenBrowser(room)
+			again.opening = time.Since(opening)
+			if again.err != nil {
+				again.err = fmt.Errorf("open a new socket to the room: %w", again.err)
+			} else {
+				t.Cleanup(again.opened.leave)
+				again.sent = time.Now()
+				again.applied, again.closed, again.err = again.opened.send(again.opened.updateFrame(keystroke))
+				again.answered = time.Now()
+			}
+			resent[index] = again
+		}
 	})
 	took := time.Since(step)
 	window := server.output.String()[mark:]
@@ -4352,16 +4415,22 @@ func TestGateFoldsWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 		result := typed[index]
 		t.Logf("room %d's keystroke: applied %v, closed %v, stored in %s; its gate folded a %d-byte row declaring at least %d structs and the record after it, weighed at %d bytes of the pool",
 			index, result.applied, result.closed, result.answered.Sub(result.sent).Round(time.Millisecond), foldedRows[index], gateFoldRun, copyWeightForTest(int64(foldedRows[index]), gateFoldRun))
-		if result.err != nil || !result.applied || result.closed != nil {
+		if again := resent[index]; again != nil {
+			before := closes[room].Sub(result.answered).Round(time.Millisecond)
+			if again.err != nil || !again.applied || again.closed != nil {
+				t.Errorf("room %d's keystroke was stored and its first socket ended %v, seen %s before the server logged the room's replaced-history close; sent again on a new socket to the room it was applied %v, closed %v, %v; want it applied within %s (browserAnswerWithin), which a room loaded again at the head answers for a keystroke it holds",
+					index, result.closed, before, again.applied, again.closed, again.err, browserAnswerWithin)
+			} else {
+				t.Logf("room %d's keystroke was stored and its first socket ended %v, seen %s before the server logged the room's replaced-history close, which ends the room's sockets before its closing compaction: the answer lost the race to the close; a new socket to the room, loaded again at the head, opened in %s, and the keystroke sent again on it was answered applied in %s",
+					index, result.closed, before, again.opening.Round(time.Millisecond), again.answered.Sub(again.sent).Round(time.Millisecond))
+			}
+		} else if result.err != nil || !result.applied || result.closed != nil {
 			t.Errorf("room %d's keystroke: applied %v, closed %v, %v; want it applied within %s (browserAnswerWithin), which its room answers once it is stored",
 				index, result.applied, result.closed, result.err, browserAnswerWithin)
 		}
-		var past int64
-		if err := memory.database.Pool.QueryRow(ctx,
-			`select count(*) from doc_updates where artifact_id = $1 and version > $2`, room, replacedHeads[index],
-		).Scan(&past); err != nil {
-			t.Fatalf("read room %d's rows past its replaced history: %v", index, err)
-		}
+		// Read once every answer is in, a resend's included: a keystroke sent again leaves the
+		// typed text once, as one answered on its first socket does.
+		past := rowsPast(index)
 		storedHeading := firstXMLText(newBrowserDocument(t, memory.storedState(t, room)).fragment)
 		if past == 0 || storedHeading == nil || storedHeading.ToString() != wantHeading {
 			got := ""
@@ -4496,6 +4565,24 @@ func replacedCloses(t *testing.T, server *memoryServer, from int, rooms []string
 			return closes
 		}
 	}
+}
+
+// endedByTheClose is whether sent, a gate-fold room's keystroke whose socket was open once its
+// send began (open), lost its answer to the room's replaced-history close: nothing went wrong but
+// that its socket ended 1006, a bare close of the connection, and the drive saw that end no later
+// than logTimeGrain past closedAt, the time the server logged the room's close (logged where the
+// server logged one; replacedCloses). The comparison is of sent.answered, when send returned with
+// the end, which is after the moment the socket ended, against closedAt.Add(logTimeGrain), which
+// is past the moment the server wrote the line, since the log truncates that moment to the
+// millisecond: an end that passes it came before the line. That is the order a room's close makes:
+// ygo's close ends the room's sockets (closePeerConns, cybermonklabs/ygo v1.55.1-legion.2
+// provider/websocket/inject.go:639) before it waits for the room's worker to run its closing
+// compaction and exit (persistDone, inject.go:721), and the server logs the close once that has
+// returned (docs' Service.closeRoomOnReplacedHistory). An end seen past the line was not that
+// close's.
+func endedByTheClose(sent windowOutcome, open bool, closedAt time.Time, logged bool) bool {
+	return open && logged && sent.err == nil && !sent.applied && sent.closed != nil &&
+		sent.closed.Code == gws.CloseAbnormalClosure && !sent.answered.After(closedAt.Add(logTimeGrain))
 }
 
 // loadSlotLoggedForTest mirrors docs' loadSlotLogged: a holder that waited less than this for its
