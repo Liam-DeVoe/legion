@@ -84,7 +84,7 @@ from change, (values
   ('requirement', 'supports', 4, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
   ('requirement', 'about', 5, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
   ('requirement', 'base', 6, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
-  ('requirement', 'removes', 7, '{"kind": "bool", "default": false, "since": 7, "creatable_since": 7}'::jsonb),
+  ('requirement', 'removes', 7, '{"kind": "bool", "since": 7, "creatable_since": 7}'::jsonb),
   ('check', 'statement', 7, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
   ('check', 'subject', 8, '{"kind": "enum", "choices": ["code", "production", "graph"], "since": 7, "creatable_since": 7}'::jsonb),
   ('check', 'procedure', 9, '{"kind": "enum", "choices": ["program", "query", "agent"], "since": 7, "creatable_since": 7}'::jsonb),
@@ -93,13 +93,13 @@ from change, (values
   ('check', 'job', 12, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
   ('check', 'time_limit', 13, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
   ('check', 'base', 14, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
-  ('check', 'removes', 15, '{"kind": "bool", "default": false, "since": 7, "creatable_since": 7}'::jsonb),
+  ('check', 'removes', 15, '{"kind": "bool", "since": 7, "creatable_since": 7}'::jsonb),
   ('component', 'name', 0, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
   ('component', 'kind', 1, '{"kind": "enum", "choices": ["interface"], "since": 7, "creatable_since": 7}'::jsonb),
   ('component', 'under', 2, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
   ('component', 'joins', 3, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
   ('component', 'base', 4, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
-  ('component', 'removes', 5, '{"kind": "bool", "default": false, "since": 7, "creatable_since": 7}'::jsonb)
+  ('component', 'removes', 5, '{"kind": "bool", "since": 7, "creatable_since": 7}'::jsonb)
 ) as attribute(type_name, name, position, schema)
 order by attribute.type_name, attribute.name
 on conflict (kind, id) do update set

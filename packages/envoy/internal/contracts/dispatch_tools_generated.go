@@ -465,6 +465,26 @@ var DispatchTools = []DispatchTool{
 		Example: json.RawMessage("{\"project\":\"CORE\",\"repo\":\"acme/infra\"}"),
 	},
 	{
+		Name:        "dispatch_spec_source",
+		Description: "Name, list or remove the spec sources of a project: the repositories whose approved spec it holds. An issue of a spec source holds a change request, and a person's approval of its spec writes the statements, checks, components and interfaces it adds, changes or removes into that repository's approved spec, or is refused. action add names repo a spec source read from branch, or moves it to that branch; list prints each source; remove takes repo off the list, and its approved spec stays. 404 SOURCE_NOT_FOUND when remove names no source of the project.",
+		Arguments: []ToolField{
+			{Name: "action", Kind: ToolFieldEnum, Required: true, Description: "add, list or remove.", Values: []string{"add", "list", "remove"}},
+			{Name: "project", Kind: ToolFieldString, Required: true, Description: "Project key whose spec sources to change or list, such as CORE."},
+			{Name: "repo", Kind: ToolFieldString, Description: "The repository, owner/name, that add names or remove takes off; list takes none."},
+			{Name: "branch", Kind: ToolFieldString, Description: "The branch whose files The Spec of the repository is read from; add needs it."},
+		},
+		Example: json.RawMessage("{\"action\":\"add\",\"project\":\"CORE\",\"repo\":\"acme/app\",\"branch\":\"main\"}"),
+	},
+	{
+		Name:        "dispatch_spec_import_level",
+		Description: "Import the approved level of The Spec that an issue holds into the approved spec of the issue's repository, which must be a spec source of its project (409 SPEC_SOURCE_REQUIRED). The level is the issue's spec at the version of the person's newest approval of it (409 LEVEL_NOT_APPROVED where none); notes names its notes document, read at the version that approval names. Each component and interface, and each statement whose kind, about, supports and parent resolve, is written with that approval as its provenance; each other statement is held with the fields it lacks, and one child issue of the level, assigned to its assignee, lists the holds. A node already approved is left as it stands, so a second run writes only what the first could not. It prints what it wrote, each hold, and the repair issue.",
+		Arguments: []ToolField{
+			{Name: "issue", Kind: ToolFieldString, Required: true, Description: "An issue is a native KEY or external owner/repo#n reference. An external reference addresses an existing Dispatch issue, including one linked to that GitHub pull request; only dispatch issue with --external creates a native issue."},
+			{Name: "notes", Kind: ToolFieldString, Required: true, Description: "The level's notes document, by its name or slug, such as notes.md."},
+		},
+		Example: json.RawMessage("{\"issue\":\"DSP-1\",\"notes\":\"notes.md\"}"),
+	},
+	{
 		Name:        "dispatch_open_asks",
 		Description: "List active unanswered asks, oldest first, with age and whose reply is needed. Omit project to see only this session's own authored asks (call before saying you are waiting for human input); supply project to see every open ask across that project's issues and documents, whoever authored them.",
 		Arguments: []ToolField{

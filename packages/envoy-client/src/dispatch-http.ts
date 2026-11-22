@@ -92,6 +92,8 @@ import type {
   SessionAnswersResponse,
   SpecFormFinding,
   SpecFormRead,
+  SpecLevelImport,
+  SpecSource,
   Suggestions,
   UpdateIssueInput,
   Version,
@@ -136,6 +138,15 @@ export type {
   CredentialSession,
   DispatchServiceErrorShape,
 } from "@legion/contracts";
+
+/** The owner and the name of a repository written `owner/name`, refused in any other form. */
+function ownerAndName(repo: string): [string, string] {
+  const [owner, name, ...rest] = repo.split("/");
+  if (!owner || !name || rest.length > 0) {
+    throw new Error(`repository must be owner/name, got ${JSON.stringify(repo)}`);
+  }
+  return [owner, name];
+}
 
 /** The stored bytes of one version of an uploaded file, and the MIME type Dispatch serves them as. */
 export interface ArtifactFileVersion {
@@ -1474,6 +1485,36 @@ export class DispatchClient {
       name,
       "sync",
     ]);
+  }
+
+  /** `GET /api/v1/projects/{key}/spec-sources`: the repositories whose approved spec the project
+   *  holds, by repository; [] when it names none. */
+  async listSpecSources(project: string): Promise<SpecSource[]> {
+    return this.#json("GET", ["api", "v1", "projects", project, "spec-sources"]);
+  }
+
+  /** `PUT /api/v1/projects/{key}/spec-sources/{owner}/{repo}`: name `repo` (`owner/name`) a spec
+   *  source of the project, read from `branch`, or move it to that branch; its issues hold change
+   *  requests from then on. */
+  async putSpecSource(project: string, repo: string, branch: string, actor: Actor): Promise<SpecSource> {
+    const [owner, name] = ownerAndName(repo);
+    return this.#json("PUT", ["api", "v1", "projects", project, "spec-sources", owner, name], { branch, actor });
+  }
+
+  /** `DELETE /api/v1/projects/{key}/spec-sources/{owner}/{repo}`: remove `repo` from the
+   *  project's spec sources; 404 SOURCE_NOT_FOUND when it is none. */
+  async deleteSpecSource(project: string, repo: string, actor: Actor): Promise<void> {
+    const [owner, name] = ownerAndName(repo);
+    await this.#json("DELETE", ["api", "v1", "projects", project, "spec-sources", owner, name], { actor });
+  }
+
+  /** `POST /api/v1/issues/{key}/spec-import-level`: import the approved level the issue holds,
+   *  with its notes document `notes`, into the approved spec of its repository. */
+  async importSpecLevel(issue: string, notes: string, actor: Actor): Promise<SpecLevelImport> {
+    return this.#json("POST", ["api", "v1", "issues", await this.#resolveIssue(issue), "spec-import-level"], {
+      notes,
+      actor,
+    });
   }
 
   async resolveAsk(id: string, input: ResolveAskInput): Promise<AskWithTrees> {

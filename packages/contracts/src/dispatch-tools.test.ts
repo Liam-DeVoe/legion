@@ -330,6 +330,8 @@ describe("dispatchToolSpecs", () => {
       "dispatch_projects",
       "dispatch_priorities",
       "dispatch_architecture_sync",
+      "dispatch_spec_source",
+      "dispatch_spec_import_level",
       "dispatch_open_asks",
       "dispatch_answers",
       "dispatch_whoami",

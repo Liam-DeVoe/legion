@@ -37,6 +37,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"DELETE /api/v1/priorities/{id}",
 	"DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
 	"DELETE /api/v1/projects/{key}/legion/daemon",
+	"DELETE /api/v1/projects/{key}/spec-sources/{owner}/{repo}",
 	"DELETE /api/v1/settings/repo-projects/{owner}/{repo}",
 	"PATCH /api/v1/artifacts/{id}",
 	"PATCH /api/v1/comments/{id}",
@@ -87,6 +88,10 @@ var goingMutatingRoutesWithNoTool = []string{
 	"POST /api/v1/issues/{key}/nodes/{id}/state",
 	// A result's dry run, which writes nothing: dispatch_result's record row is the write.
 	"POST /api/v1/issues/{key}/results/dry-run",
+	// The import of an approved level writes the approved spec under a person's approval, which
+	// the person gave; the loop that proposes operations on the graph does not write the approved
+	// spec, as it records no approval, so goingToolRoutes gives it no row.
+	"POST /api/v1/issues/{key}/spec-import-level",
 	"POST /api/v1/machine-logins/{id}/revoke",
 	"POST /api/v1/markdown/round-trip",
 	"POST /api/v1/me/agent-tokens",
@@ -115,6 +120,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"PUT /api/v1/projects/{key}/default-assignee",
 	"PUT /api/v1/projects/{key}/gated-steps",
 	"PUT /api/v1/projects/{key}/legion/daemon",
+	"PUT /api/v1/projects/{key}/spec-sources/{owner}/{repo}",
 	"PUT /api/v1/settings/delivery",
 	"PUT /api/v1/settings/repo-projects/{owner}/{repo}",
 }

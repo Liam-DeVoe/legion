@@ -52,6 +52,7 @@ import {
 import { reviewCommand } from "./reviews";
 import { answersCommand, inboxCommand, limitsCommand, whoamiCommand } from "./session";
 import { specFormCommand } from "./spec-form";
+import { specImportLevelCommand, specSourceCommand } from "./spec-source";
 import { stepsCommand } from "./steps";
 
 /** Every command the contract names, so a command added there without a handler here fails to
@@ -95,6 +96,8 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_projects: acting(projectsCommand),
   dispatch_priorities: acting(prioritiesCommand),
   dispatch_architecture_sync: acting(architectureSyncCommand),
+  dispatch_spec_source: acting(specSourceCommand),
+  dispatch_spec_import_level: acting(specImportLevelCommand),
   dispatch_ask: acting(askCommand),
   dispatch_edit_ask: acting(editAskCommand),
   dispatch_resolve_ask: acting(resolveAskCommand),
