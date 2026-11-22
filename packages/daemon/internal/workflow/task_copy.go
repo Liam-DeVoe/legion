@@ -57,19 +57,27 @@ func stepOfStart(issue record.Issue, start record.SuperviseRequest, worker claim
 // the step it starts (stepOfStart, record.PlanTask.BranchOf), and "" where that branch is the
 // issue's own, where the start starts no running step, and where the issue has no plan rows at its
 // generation, so each such start reads as every start did before tasks had branches of their own.
-// rows is the issue's phases rows.
+// rows is the issue's phases rows. A start that names no claim reads the claim of its role's
+// worker only where a task of the plan holds a branch other than the issue's own: a plan whose
+// every task holds the issue's branch names none at any start, so its starts derive no claim.
 func startBranch(ctx context.Context, tx pgx.Tx, store record.Store, issue record.Issue, start record.SuperviseRequest, rows []record.PhaseRow) (string, error) {
 	stored, err := store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil {
 		return "", err
 	}
-	project, err := claim.ProjectToken(issue.Project)
-	if err != nil {
-		return "", err
+	own := claim.IssueBranch(issue.Key)
+	if !slices.ContainsFunc(stored.Tasks, func(row record.PlanTask) bool { return row.BranchOf(issue.Key) != own }) {
+		return "", nil
 	}
-	worker, err := record.WorkerClaim(project, issue.Key, start.Role, rows)
-	if err != nil {
-		return "", err
+	var worker claim.Token
+	if start.Claim == "" {
+		project, err := claim.ProjectToken(issue.Project)
+		if err != nil {
+			return "", err
+		}
+		if worker, err = record.WorkerClaim(project, issue.Key, start.Role, rows); err != nil {
+			return "", err
+		}
 	}
 	step, ok := stepOfStart(issue, start, worker)
 	if !ok {
@@ -79,7 +87,7 @@ func startBranch(ctx context.Context, tx pgx.Tx, store record.Store, issue recor
 	if at < 0 {
 		return "", nil
 	}
-	if branch := stored.Tasks[at].BranchOf(issue.Key); branch != claim.IssueBranch(issue.Key) {
+	if branch := stored.Tasks[at].BranchOf(issue.Key); branch != own {
 		return branch, nil
 	}
 	return "", nil
