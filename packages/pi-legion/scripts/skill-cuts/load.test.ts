@@ -17,6 +17,7 @@ import { skillHeaderPath } from "../skill-scenarios/transcript";
 import {
   armPromptBlocks,
   type CaptureRecord,
+  capturePaths,
   renamedListingBlocks,
   renderReminder,
   rewriteBody,
@@ -1003,6 +1004,20 @@ test("the skill's name is read as Oh My Pi reads its frontmatter: a value that h
   const unnamed = path.join(scratch, "colon", "unnamed");
   writeTree(unnamed, { "SKILL.md": "---\ndescription: Use when: you need a lookup\n---\n" });
   expect(skillName(unnamed)).toBe("unnamed");
+});
+
+// Catches: the load test's own arm taken for the behaviour test's arm of ours, which installs
+// another skill in place of the case's and saves its captures under its own name.
+test("a load arm is unchanged by the ours arm", () => {
+  const out = path.join(scratch, "ours-arm");
+  // The load test's one arm is arms.ts's `old`: the tested skill from its directory, its capture
+  // saved under that arm's name.
+  expect(loadCapturePaths(out, "omp", "need-1")).toEqual(
+    capturePaths(path.join(out, "captures"), "need-1", "old")
+  );
+  expect(loadCapturePaths(out, "omp", "need-1")).not.toEqual(
+    capturePaths(path.join(out, "captures"), "need-1", "ours")
+  );
 });
 
 describe("skill-cuts load refuses or stops on its own rules", () => {

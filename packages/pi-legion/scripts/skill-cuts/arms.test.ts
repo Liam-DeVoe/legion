@@ -357,3 +357,133 @@ test("twin is the old arm again: the old directory, the same messages and profil
   expect(twin.installedDir).toBe(old.installedDir);
   expect(f1Case).toEqual(original);
 });
+
+// The arm of ours (`--ours`): a skill whose name may differ from the case's skill. `alpha-ours`
+// is alpha's directory renamed (its frontmatter name and nothing else changed); `alpha-short`
+// holds a SKILL.md of its own and no references/x.md.
+const OURS_INSTALLED = path.join(path.dirname(INSTALLED), "alpha-ours");
+const SHORT_SKILL =
+  "---\nname: alpha-short\ndescription: Use for the alpha checklist, in one line.\n---\n\n# Alpha, short\n\n2. Write each step's result on one line.\n";
+const renamedDir = path.join(scratch, "alpha-ours");
+const shortDir = path.join(scratch, "alpha-short");
+beforeAll(() => {
+  skillDir("alpha-ours", {
+    "SKILL.md": f1File(2).replace("name: alpha\n", "name: alpha-ours\n"),
+    "references/x.md": f1File(4),
+  });
+  skillDir("alpha-short", { "SKILL.md": SHORT_SKILL });
+});
+
+/** The arm `name` of `c` with `ours` (its directory and its name) as the arm of ours. */
+function withOurs(c: Case, name: ArmName, ours: { dir: string; name: string }): Arm {
+  const dirs = { old: oldDir, new: newDir, ours };
+  return buildArm(c, name, dirs, path.join(scratch, `scratch-ours-${ours.name}`));
+}
+const RENAMED = { dir: renamedDir, name: "alpha-ours" };
+const SHORT = { dir: shortDir, name: "alpha-short" };
+
+test("old holds the profile's skills; ours holds them with ours in place of theirs, a skill of our name replaced, not doubled; none holds them less theirs", () => {
+  const [alpha, beta] = f1Case.profile.skills;
+  expect(withOurs(f1Case, "old", RENAMED).profileSkills).toEqual(f1Case.profile.skills);
+  const ours = withOurs(f1Case, "ours", RENAMED);
+  expect(ours.name).toBe("ours");
+  expect(ours.skill).toBe("alpha-ours");
+  expect(ours.skillDir).toBe(path.resolve(renamedDir));
+  expect(ours.installedDir).toBe(OURS_INSTALLED);
+  expect(ours.profileSkills).toEqual([{ ...alpha, name: "alpha-ours" }, beta]);
+  expect(ours.ours).toEqual({ theirs: "alpha", replacedOwn: false, removedReads: [] });
+  expect(withOurs(f1Case, "none", RENAMED).profileSkills).toEqual([beta]);
+
+  // A profile that holds a skill of our name already: the --ours text replaces that entry, so
+  // the name is installed once, and the arm records that it replaced it.
+  const incumbent = {
+    repo: "acme/dotfiles",
+    commit: "fedcba9876543210",
+    path: "skills/alpha-ours",
+    name: "alpha-ours",
+  };
+  const holding: Case = {
+    ...f1Case,
+    profile: { ...f1Case.profile, skills: [...f1Case.profile.skills, incumbent] },
+  };
+  const bundled = withOurs(holding, "ours", RENAMED);
+  expect(bundled.profileSkills).toEqual([beta, incumbent]);
+  expect(bundled.ours?.replacedOwn).toBe(true);
+  expect(withOurs(holding, "old", RENAMED).profileSkills).toEqual(holding.profile.skills);
+  expect(withOurs(holding, "none", RENAMED).profileSkills).toEqual([beta, incumbent]);
+
+  // Ours under their skill's own name stands in their skill's place, as the cut's text does.
+  const same = withOurs(f1Case, "ours", { dir: renamedDir, name: "alpha" });
+  expect(same.profileSkills).toEqual(f1Case.profile.skills);
+  expect(same.ours?.replacedOwn).toBe(false);
+  expect(f1Case).toEqual(original);
+});
+
+test("each history read mapped by its path inside the skill, or removed when ours lacks the file", () => {
+  const short = withOurs(f1Case, "ours", SHORT);
+  const shortInstalled = path.join(path.dirname(INSTALLED), "alpha-short");
+  const [call] = (messages[1]?.content ?? []).filter((part) => part.type === "toolCall");
+  const read = messages[2];
+  const shown = path.join(shortInstalled, "SKILL.md");
+  const body = SHORT_SKILL.replace(/\n$/, "");
+  expect(short.messages).toEqual([
+    messages[0],
+    {
+      ...messages[1],
+      content: [
+        { type: "text", text: "Step 1." },
+        { ...call, arguments: { ...Object(call?.arguments), path: "skill://alpha-short" } },
+      ],
+    },
+    {
+      ...read,
+      content: [{ type: "text", text: `[Skill file: ${shown}]\n${body}` }],
+      details: {
+        ...detailsOf(read),
+        resolvedPath: shown,
+        totalLines: 8,
+        displayContent: { text: body, startLine: 1, lineNumbers: [1, 2, 3, 4, 5, 6, 7, 8] },
+        meta: { source: { type: "internal", value: "skill://alpha-short" } },
+      },
+    },
+    // references/x.md: ours has no such file, so its read and result go, as none removes them.
+    { ...messages[3], content: [{ type: "text", text: "Step 2." }] },
+    messages[5],
+    messages[6],
+  ]);
+  // A new read, as replay asks one, is answered from our directory at our installed path.
+  expect(skillFile(short, "SKILL.md")).toEqual({
+    text: `[Skill file: ${shown}]\n${body}`,
+    isError: false,
+  });
+  expect(JSON.stringify(short.messages)).not.toContain(scratch);
+});
+
+test("a renamed unchanged copy gives old's texts", () => {
+  const old = withOurs(f1Case, "old", RENAMED);
+  const ours = withOurs(f1Case, "ours", RENAMED);
+  // But for its name (in the read's URL, the installed path and the frontmatter), every text and
+  // record of the history is old's, byte for byte, and so is the profile.
+  expect(JSON.stringify(ours.messages)).not.toBe(JSON.stringify(old.messages));
+  expect(JSON.stringify(ours.messages).replaceAll("alpha-ours", "alpha")).toBe(
+    JSON.stringify(old.messages)
+  );
+  expect(JSON.stringify(ours.profileSkills).replaceAll("alpha-ours", "alpha")).toBe(
+    JSON.stringify(old.profileSkills)
+  );
+  expect(skillFile(ours, "references/x.md").text.replaceAll("alpha-ours", "alpha")).toBe(
+    skillFile(old, "references/x.md").text
+  );
+});
+
+test("the ours arm records each history read it removed for want of our file at that path", () => {
+  expect(withOurs(f1Case, "ours", SHORT).ours?.removedReads).toEqual(["references/x.md"]);
+  expect(withOurs(f1Case, "ours", RENAMED).ours?.removedReads).toEqual([]);
+  // No other arm carries the record.
+  for (const name of ["old", "new", "none", "minus", "twin"] as const) {
+    expect(withOurs(f1Case, name, SHORT).ours).toBeUndefined();
+  }
+  expect(() => buildArm(f1Case, "ours", { old: oldDir }, path.join(scratch, "no-ours"))).toThrow(
+    "case c1: the ours arm needs --ours"
+  );
+});

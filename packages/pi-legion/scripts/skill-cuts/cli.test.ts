@@ -22,7 +22,6 @@ import {
   type CliIo,
   caseResultFile,
   falseLossChance,
-  lossChance,
   main,
   noVerdict,
   ompBinary,
@@ -30,7 +29,7 @@ import {
 } from "./cli";
 import { loadConfig } from "./config";
 import { countSql } from "./countsql";
-import { NOTHING_REPLY } from "./judge";
+import { beforeText, judgeBody, NOTHING_REPLY } from "./judge";
 import { ATTACK_PLANTED_LINE, loadPrompt, READER_TRIES } from "./readers";
 import {
   messageSse,
@@ -43,11 +42,13 @@ import {
 import { sendOrder } from "./replay";
 import {
   FRESH_RUNS,
+  lossChance,
   MAX_EXTRA_RUNS,
   MIN_INFORMATIVE_CASES,
   type RunRecord,
   SCREEN_RUNS,
   scoreSkill,
+  smallestDrop,
 } from "./score";
 
 // The runner's command line, end to end: each command runs as its own `bun cli.ts` process, with
@@ -589,6 +590,8 @@ interface Scenario {
   readonly cases: readonly Case[];
   /** The word each case's recorded bodies carry: FLAKY, BROKEN or none. */
   readonly markers: ReadonlyMap<string, string>;
+  /** The skill of ours (`--ours`): its directory and its name, for the scenarios that have one. */
+  readonly ours?: { readonly dir: string; readonly name: string };
 }
 
 /** Writes a skill directory holding `files` (path inside it to text). */
@@ -645,8 +648,17 @@ function recordCaptures(
 ): void {
   const f2 = readFileSync(F2, "utf8");
   const f8 = readFileSync(F8, "utf8");
-  const dirs = { old: s.old, new: s.new, ...(plantedLine === undefined ? {} : { plantedLine }) };
-  const texts = { old: textDigest(s.old), new: textDigest(s.new) };
+  const dirs = {
+    old: s.old,
+    new: s.new,
+    ...(s.ours === undefined ? {} : { ours: s.ours }),
+    ...(plantedLine === undefined ? {} : { plantedLine }),
+  };
+  const texts = {
+    old: textDigest(s.old),
+    new: textDigest(s.new),
+    ...(s.ours === undefined ? {} : { ours: textDigest(s.ours.dir) }),
+  };
   for (const c of s.cases) {
     const responses = c.model.startsWith("openai/");
     for (const name of arms) {
@@ -1647,6 +1659,461 @@ process.stdout.write(JSON.stringify(answers[route]));
     expect(point).toBeLessThan(0.21);
     expect(() => lossChance({ old: 0, cut: 0, none: 0.1 })).toThrow("no case is informative");
   });
+});
+
+// The arm the old text is compared with: `--new` (the cut's text), `--ours` (a skill of ours,
+// whose name may differ from the case's skill) or neither (no skill).
+
+/** Alpha's SKILL.md as F1 read it, under the name alpha-ours. */
+const OURS_SKILL = () => f1File(2).replace("name: alpha\n", "name: alpha-ours\n");
+
+/** `s` with a skill of ours: the directory `dirName` under its own, holding `skillMd` and F1's
+ *  references/x.md, whose frontmatter names it alpha-ours. */
+function withOurs(s: Scenario, dirName: string, skillMd: string): Scenario {
+  const dir = path.join(s.dir, dirName);
+  writeSkill(dir, { "SKILL.md": skillMd, "references/x.md": f1File(4) });
+  return { ...s, ours: { dir, name: "alpha-ours" } };
+}
+
+/** The arguments of `behaviour <command>` for `s` with the compared arm `compared`: `--ours`, or
+ *  neither `--new` nor `--ours`. */
+function comparedArgs(command: string, s: Scenario, compared: "ours" | "none", ...extra: string[]) {
+  const args = behaviour(command, s, ...extra);
+  const at = args.indexOf("--new");
+  return compared === "none"
+    ? [...args.slice(0, at), ...args.slice(at + 2)]
+    : [...args.slice(0, at), "--ours", s.ours?.dir ?? "", ...args.slice(at + 2)];
+}
+
+/** How a stage's runs were sent, as the runner records it in each stage. */
+const SENDS = "each run its own session id; a round's arms interleaved in one seeded order";
+
+/** Writes case `id`'s results under `out` in the runner's shape, made up: each stage of `stages`
+ *  with each arm's passes of its runs (10 in the screen, 40 in confirm and control), its other
+ *  runs fails. Each stage records `compared` (absent: a stage the cut's runner made before the
+ *  compared arm was recorded), and the screen and confirm stages record the ours arm's `ours`. */
+function writeMadeUpResult(
+  out: string,
+  id: string,
+  stages: Partial<Record<"screen" | "confirm" | "control", Record<string, number>>>,
+  recorded: {
+    compared?: "new" | "ours" | "none";
+    ours?: { name: string; replacedOwn: boolean; removedReads: string[] };
+  } = {}
+): void {
+  const judged = (verdict: "pass" | "fail") => ({ verdict, reason: "made up" });
+  const texts =
+    recorded.compared === "none"
+      ? { old: "0123456789abcdef" }
+      : recorded.compared === "ours"
+        ? { old: "0123456789abcdef", ours: "fedcba9876543210" }
+        : { old: "0123456789abcdef", new: "00112233445566ff" };
+  const result = {
+    caseId: id,
+    skill: "alpha",
+    cut: "acme-skills-1",
+    dropped: null,
+    controls: {
+      realStep: judged("pass"),
+      violating: judged("fail"),
+      nothing: judged("fail"),
+      failed: [],
+      hold: true,
+      usd: 0,
+    },
+    stages: Object.fromEntries(
+      Object.entries(stages).map(([stage, byArm]) => {
+        const total = stage === "screen" ? SCREEN_RUNS : FRESH_RUNS;
+        const runs = Object.entries(byArm).flatMap(([arm, passed]) =>
+          Array.from({ length: total }, (_, n) => ({
+            caseId: id,
+            arm,
+            stage,
+            ...judged(n < passed ? "pass" : "fail"),
+            run: n + 1,
+            round: 1,
+            sendPlace: n,
+            userId: null,
+            id: null,
+            skillRounds: 0,
+            reply: [],
+            replaySpent: [],
+            judgeSpent: [],
+          }))
+        );
+        const state = {
+          state: "counted",
+          sends: SENDS,
+          texts,
+          plantedLine: null,
+          captures: {},
+          seeds: ["made-up-seed"],
+          runs,
+          usd: 0,
+          ...(recorded.compared === undefined ? {} : { compared: recorded.compared }),
+          ...(recorded.ours === undefined || stage === "control" ? {} : { ours: recorded.ours }),
+        };
+        return [stage, state];
+      })
+    ),
+    peakRssBytes: null,
+  };
+  mkdirSync(path.dirname(caseResultFile(out, id)), { recursive: true });
+  writeFileSync(caseResultFile(out, id), JSON.stringify(CaseResult.parse(result)));
+}
+
+describe("behaviour: the compared arm", () => {
+  test("the ours arm's captures go under their own directory", () => {
+    const s = withOurs(
+      scenario("ours-captures", LOSS_SKILL(), [{ id: "c04" }]),
+      "ours",
+      OURS_SKILL()
+    );
+    const c = s.cases[0] ?? makeCase("c04");
+    const dirs = { old: s.old, new: s.new, ...(s.ours === undefined ? {} : { ours: s.ours }) };
+    const texts = {
+      old: textDigest(s.old),
+      new: textDigest(s.new),
+      ours: textDigest(s.ours?.dir ?? ""),
+    };
+    const at = (name: ArmName) =>
+      armCaptureDir(s.out, buildArm(c, name, dirs, path.join(s.dir, "arms")), texts);
+    expect(at("ours")).toBe(path.join(s.out, "captures", `ours-${texts.ours}`));
+    // A renamed copy of old, whose files differ from old's in the name alone, has its own too.
+    expect(texts.ours).not.toBe(texts.old);
+    const names: ArmName[] = ["old", "new", "ours", "none", "minus", "twin"];
+    expect(new Set(names.map(at)).size).toBe(names.length);
+    expect(at("twin")).toBe(path.join(s.out, "captures", `twin-${texts.old}`));
+  });
+
+  test("a stage records its compared arm", async () => {
+    const s = withOurs(scenario("compared", LOSS_SKILL(), [{ id: "c04" }]), "ours", OURS_SKILL());
+    recordCaptures(s, ["old", "new", "ours", "none"]);
+    answer = behaviourStandIn;
+    usage = { input: 10, output: 3 };
+    let from = recorder.requests.length;
+    const both = await cli(behaviour("screen", s, "--ours", s.ours?.dir ?? ""));
+    expect(both.code).toBe(2);
+    expect(both.stderr).toContain("--new and --ours exclude each other");
+    expect(requestsSince(from)).toHaveLength(0);
+
+    // --ours: the screen runs old, ours and none, records ours, and the ours arm's note.
+    from = recorder.requests.length;
+    const ours = await cli(comparedArgs("screen", s, "ours"));
+    expect({ code: ours.code, stderr: ours.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(requestsSince(from)).toHaveLength(3 + 30 + 30);
+    const screened = result(s.out, "c04").stages.screen;
+    expect(screened?.compared).toBe("ours");
+    expect(screened?.ours).toEqual({ name: "alpha-ours", replacedOwn: false, removedReads: [] });
+    expect(passes(result(s.out, "c04"), "screen")).toEqual({ old: 10, ours: 10, none: 0 });
+    const oursDir = path.join(s.out, "captures", `ours-${textDigest(s.ours?.dir ?? "")}`);
+    expect(screened?.captures.ours?.bodyFile).toBe(
+      path.relative(s.out, capturePaths(oursDir, "c04", "ours").body)
+    );
+    // Every judgement, the controls' among them, reads the skill's names as the-skill.
+    const judged = requestsSince(from).filter((request) => isJudgement(JSON.parse(request.body)));
+    expect(judged).toHaveLength(33);
+    for (const request of judged) {
+      const user = JSON.parse(request.body).messages[0].content as { text: string }[];
+      const text = user.map((block) => block.text).join("\n");
+      expect(text).not.toMatch(/(?<![\w-])alpha(-ours)?(?![\w-])/);
+      expect(text).toContain("skill://the-skill");
+    }
+
+    // Neither --new nor --ours: the screen runs old and none, and records none.
+    const none = { ...s, out: path.join(s.dir, "out-none") };
+    recordCaptures(none, ["old", "none"]);
+    from = recorder.requests.length;
+    const alone = await cli(comparedArgs("screen", none, "none"));
+    expect({ code: alone.code, stderr: alone.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(requestsSince(from)).toHaveLength(3 + 20 + 20);
+    expect(result(none.out, "c04").stages.screen?.compared).toBe("none");
+    expect(result(none.out, "c04").stages.screen?.ours).toBeUndefined();
+    expect(passes(result(none.out, "c04"), "screen")).toEqual({ old: 10, none: 0 });
+
+    // --new: the screen records new.
+    const cut = { ...s, out: path.join(s.dir, "out-new") };
+    recordCaptures(cut, ["old", "new", "none"]);
+    expect((await cli(behaviour("screen", cut))).code).toBe(0);
+    expect(result(cut.out, "c04").stages.screen?.compared).toBe("new");
+  }, 120_000);
+
+  // Catches: a run of the cut's test (INFRA-4676's procedure) or of their skill against no skill
+  // whose judge reads `the-skill` where the case's text names the skill.
+  test("a run with --new or with no skill compared sends the judge the case's text unchanged", async () => {
+    const s = withOurs(scenario("unblinded", LOSS_SKILL(), [{ id: "c04" }]), "ours", OURS_SKILL());
+    answer = behaviourStandIn;
+    usage = { input: 10, output: 3 };
+    const c = s.cases[0] ?? makeCase("c04");
+    /** Each judge request since `from` less its own session id, beside the body the judge builds
+     *  for its step from the case's text with no name blinded. */
+    const judged = (from: number) =>
+      requestsSince(from).flatMap((request) => {
+        const { metadata: _metadata, ...sent } = JSON.parse(request.body);
+        if (!isJudgement(sent)) return [];
+        const step = String(sent.messages[0].content[1].text)
+          .replace(/^<step>\n/, "")
+          .replace(/\n<\/step>$/, "");
+        const before = beforeText(c);
+        const body = judgeBody({ criterion: c.criterion, line: c.line.text, before, reply: step });
+        return [{ sent, unchanged: JSON.parse(JSON.stringify(body)) }];
+      });
+    const runs = [
+      ["new", behaviour("screen", { ...s, out: path.join(s.dir, "out-new") }), 33],
+      ["none", comparedArgs("screen", { ...s, out: path.join(s.dir, "out-none") }, "none"), 23],
+    ] as const;
+    for (const [name, args, judgements] of runs) {
+      const out = path.join(s.dir, `out-${name}`);
+      recordCaptures({ ...s, out }, name === "new" ? ["old", "new", "none"] : ["old", "none"]);
+      const from = recorder.requests.length;
+      const ran = await cli(args);
+      expect({ name, code: ran.code, stderr: ran.stderr }).toEqual({ name, code: 0, stderr: "" });
+      const bodies = judged(from);
+      expect(bodies).toHaveLength(judgements);
+      for (const { sent, unchanged } of bodies) expect(sent).toEqual(unchanged);
+      // The case's text names the skill, and the judge reads it so.
+      expect(JSON.stringify(bodies[0]?.sent)).toContain("skill://alpha");
+      expect(JSON.stringify(bodies.map((each) => each.sent))).not.toContain("the-skill");
+    }
+  }, 120_000);
+
+  test("an INFRA-4676 results file with old and new still reports", async () => {
+    const ids = ["c04", "c05", "c06", "c07", "c08", "c09"];
+    const s = scenario(
+      "infra-4676",
+      LOSS_SKILL(),
+      ids.map((id) => ({ id }))
+    );
+    for (const id of ids) {
+      // Made before the compared arm was recorded: no stage records one.
+      writeMadeUpResult(s.out, id, {
+        screen: { old: 10, new: 0, none: 0 },
+        confirm: { old: 40, new: 0 },
+        ...(id === "c04" ? { control: { old: 40, minus: 0, twin: 40 } } : {}),
+      });
+    }
+    expect(
+      JSON.parse(readFileSync(caseResultFile(s.out, "c04"), "utf8")).stages.screen
+    ).not.toHaveProperty("compared");
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = reported.stdout.split("\n");
+    expect(lines).toContain("compared arm: new (the cut's text)");
+    expect(lines).toContain(
+      "case c05: screen: old 10/10, new 0/10, none 0/10: informative, flagged; confirm: old 40/40, new 0/40: a loss"
+    );
+    expect(lines).toContain(
+      "verdict: loss: in c04, c05, c06, c07, c08, c09 the cut's text passes at least 10 fewer of 40 fresh runs than the old text, and the planted-loss control (case c04) is a loss and its false-loss control is no loss"
+    );
+    const percent = (x: number) => `${(100 * x).toFixed(2)}%`;
+    expect(lines).toContain(
+      `  old 0.9: ${[0.8, 0.7, 0.6, 0.5].map((cut) => `new ${cut} ${percent(lossChance({ old: 0.9, cut, none: 0.1 }))}`).join(", ")}`
+    );
+  }, 60_000);
+
+  test("a resume with another compared arm is refused", async () => {
+    const s = withOurs(
+      scenario("resume-compared", LOSS_SKILL(), [{ id: "c04" }]),
+      "ours",
+      OURS_SKILL()
+    );
+    // A stage the cut's runner made: it records no compared arm, so it was made with --new.
+    writeMadeUpResult(s.out, "c04", { screen: { old: 10, new: 0, none: 0 } });
+    const ours = { ...s, out: path.join(s.dir, "out-ours") };
+    writeMadeUpResult(
+      ours.out,
+      "c04",
+      { screen: { old: 10, ours: 0, none: 0 } },
+      { compared: "ours", ours: { name: "alpha-ours", replacedOwn: false, removedReads: [] } }
+    );
+    const from = recorder.requests.length;
+    for (const [args, made, given] of [
+      [comparedArgs("screen", s, "ours"), "new", "ours"],
+      [comparedArgs("confirm", s, "none"), "new", "none"],
+      [behaviour("control", ours), "ours", "new"],
+      [comparedArgs("screen", ours, "none"), "ours", "none"],
+      [[...report(ours), "--new", s.new], "ours", "new"],
+    ] as const) {
+      const ran = await cli(args);
+      expect({ code: ran.code, made, given }).toEqual({ code: 2, made, given });
+      expect(ran.stderr).toContain(`holds runs made with the compared arm ${made}, not ${given}`);
+    }
+    expect(requestsSince(from)).toHaveLength(0);
+    // A report given neither reads the compared arm the results record.
+    const reported = await cli(report(ours));
+    expect(reported.code).toBe(0);
+    expect(reported.stdout).toContain("compared arm: ours (alpha-ours)");
+  }, 60_000);
+
+  test("confirm --case runs 40 fresh runs of old and the compared arm on the named case with no flag gate and no informative gate", async () => {
+    const s = scenario("confirm-case", LOSS_SKILL(), [{ id: "c04" }, { id: "c05" }]);
+    // A planted equivalent: a renamed copy of old without the case's line.
+    const planted = withOurs(s, "planted", OURS_SKILL().replace(`${LINE}\n`, ""));
+    recordCaptures(planted, ["old", "ours"]);
+    answer = behaviourStandIn;
+    usage = { input: 10, output: 3 };
+    let from = recorder.requests.length;
+    const lost = await cli(comparedArgs("confirm", planted, "ours", "--case", "c04"));
+    expect({ code: lost.code, stderr: lost.stderr }).toEqual({ code: 0, stderr: "" });
+    // No judge controls and no screen: 40 replays of each arm and their 80 judgements.
+    expect(requestsSince(from)).toHaveLength(160);
+    const c04 = result(planted.out, "c04");
+    expect(c04.stages.screen).toBeUndefined();
+    expect(c04.stages.confirm?.compared).toBe("ours");
+    expect(passes(c04, "confirm")).toEqual({ old: 40, ours: 0 });
+    expect(lost.stdout).toContain("case c04: confirm: old 40/40, ours 0/40: a loss");
+    expect(existsSync(caseResultFile(planted.out, "c05"))).toBe(false);
+
+    // A renamed copy of old unchanged, into its own --out: no loss.
+    const same = { ...withOurs(s, "same", OURS_SKILL()), out: path.join(s.dir, "out-same") };
+    recordCaptures(same, ["old", "ours"]);
+    from = recorder.requests.length;
+    const kept = await cli(comparedArgs("confirm", same, "ours", "--case", "c04"));
+    expect({ code: kept.code, stderr: kept.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(requestsSince(from)).toHaveLength(160);
+    expect(passes(result(same.out, "c04"), "confirm")).toEqual({ old: 40, ours: 40 });
+    expect(kept.stdout).toContain("case c04: confirm: old 40/40, ours 40/40: no loss");
+  }, 120_000);
+
+  test("confirm --case refuses an id the case file does not hold", async () => {
+    const s = withOurs(
+      scenario("confirm-case-missing", LOSS_SKILL(), [{ id: "c04" }]),
+      "ours",
+      OURS_SKILL()
+    );
+    const from = recorder.requests.length;
+    const missing = await cli(comparedArgs("confirm", s, "ours", "--case", "c99"));
+    expect(missing.code).toBe(2);
+    expect(missing.stderr).toContain(`--case c99: ${s.casesFile} holds no case c99`);
+    const screen = await cli(comparedArgs("screen", s, "ours", "--case", "c04"));
+    expect(screen.code).toBe(2);
+    expect(screen.stderr).toContain("--case is for behaviour confirm only");
+    expect(requestsSince(from)).toHaveLength(0);
+    expect(existsSync(s.out)).toBe(false);
+  }, 60_000);
+
+  test("report prints session and written cases, informative of each kind, passes and runs per arm and stage, the smallest drop with its chance, and the models", async () => {
+    const s = scenario(
+      "report-none",
+      f1File(2),
+      ["c04", "c05", "c06", "c07", "c08", "c09"].map((id) => ({
+        id,
+        ...(id === "c09" ? { model: "openai/gpt-6.1-sol" } : {}),
+      }))
+    );
+    const write = (out: string, confirmNone: number) => {
+      for (const { id } of s.cases) {
+        writeMadeUpResult(
+          out,
+          id,
+          {
+            screen: id === "c09" ? { old: 9, none: 1 } : { old: 10, none: 0 },
+            confirm: { old: 40, none: confirmNone },
+            ...(id === "c04" ? { control: { old: 40, minus: 0, twin: 40 } } : {}),
+          },
+          { compared: "none" }
+        );
+      }
+    };
+    write(s.out, 0);
+    const limits = path.join(s.dir, "limits.md");
+    writeFileSync(limits, "Limits:\n- The profile is the session's reads.\n- No bootstrap.\n");
+    const reported = await cli([...report(s), "--limits", limits]);
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = reported.stdout.split("\n");
+    const percent = (x: number) => `${(100 * x).toFixed(2)}%`;
+    for (const line of [
+      "compared arm: none (no skill): the arm with no skill informs and clears nothing",
+      "cases by kind: 6 session (6 informative), 0 written (0 informative)",
+      "case c04: screen: old 10/10, none 0/10: informative, flagged; confirm: old 40/40, none 0/40: a loss; control: old 40/40, minus 0/40, twin 40/40: the planted-loss control (old against minus) is a loss, the false-loss control (old against twin) is no loss",
+      "case c09: screen: old 9/10, none 1/10: informative, flagged; confirm: old 40/40, none 0/40: a loss",
+      "smallest drop the rule catches with a chance of at least 80%, by screened case (5-point steps below the case's screened pass rate of old; the rule's chance with the compared arm none):",
+      `  c04 old 1.0: 35 points (${percent(smallestDrop({ old: 10, none: 0 }, "none").chance)})`,
+      "  c09 old 0.9: 40 points (87.52%)",
+      "median smallest drop: 35 points over the 6 screened cases; 35 points over the 6 informative cases",
+      "models of the cases: anthropic/claude-sonnet-5-5 5 cases, openai/gpt-6.1-sol 1 case",
+      "verdict: loss: no skill loses against their skill on 6 cases (c04, c05, c06, c07, c08, c09): in each, no skill passes at least 10 fewer of 40 fresh runs than their skill, and the planted-loss control (case c04) is a loss and its false-loss control is no loss",
+    ]) {
+      expect(lines).toContain(line);
+    }
+    expect(reported.stdout).toContain(
+      `limits (--limits ${limits}):\nLimits:\n- The profile is the session's reads.\n- No bootstrap.\n`
+    );
+
+    // No confirmed loss: the verdict's words for no skill.
+    const kept = { ...s, out: path.join(s.dir, "out-keeps") };
+    write(kept.out, 35);
+    const keeps = (await cli(report(kept))).stdout.split("\n");
+    expect(keeps).toContain(
+      "verdict: no loss of no skill detected by the registered rule: no confirmed case is a loss (6 flagged of 6 informative), and the planted-loss control (case c04) is a loss and its false-loss control is no loss"
+    );
+    expect(keeps).toContain("limits: not given (no --limits)");
+  }, 60_000);
+
+  test("report calls the ours arm a bundle when it replaced a profile skill of our name", async () => {
+    const s = scenario("bundle", f1File(2), [{ id: "c04" }]);
+    const note = (replacedOwn: boolean) => ({ name: "alpha-ours", replacedOwn, removedReads: [] });
+    writeMadeUpResult(
+      s.out,
+      "c04",
+      { screen: { old: 10, ours: 10, none: 0 } },
+      {
+        compared: "ours",
+        ours: note(true),
+      }
+    );
+    const bundled = (await cli(report(s))).stdout.split("\n");
+    expect(bundled).toContain(
+      "compared arm: ours (alpha-ours), a bundle: their skill hidden, ours at the given text (it replaced the profile's own alpha-ours)"
+    );
+    const plain = { ...s, out: path.join(s.dir, "out-plain") };
+    writeMadeUpResult(
+      plain.out,
+      "c04",
+      { screen: { old: 10, ours: 10, none: 0 } },
+      {
+        compared: "ours",
+        ours: note(false),
+      }
+    );
+    const kept = await cli(report(plain));
+    expect(kept.stdout.split("\n")).toContain(
+      "compared arm: ours (alpha-ours): their skill hidden, ours in its place under its own name"
+    );
+    expect(kept.stdout).not.toContain("a bundle");
+  }, 60_000);
+
+  test("report gives ours against old over all cases and over the cases with no removed read", async () => {
+    const s = scenario("ours-removed", f1File(2), [{ id: "c04" }, { id: "c05" }, { id: "c06" }]);
+    const recorded = (removedReads: string[]) => ({
+      compared: "ours" as const,
+      ours: { name: "alpha-ours", replacedOwn: false, removedReads },
+    });
+    writeMadeUpResult(
+      s.out,
+      "c04",
+      { screen: { old: 10, ours: 0, none: 0 }, confirm: { old: 40, ours: 0 } },
+      recorded(["references/x.md"])
+    );
+    writeMadeUpResult(s.out, "c05", { screen: { old: 10, ours: 9, none: 0 } }, recorded([]));
+    writeMadeUpResult(
+      s.out,
+      "c06",
+      { screen: { old: 9, ours: 5, none: 1 }, confirm: { old: 36, ours: 30 } },
+      recorded([])
+    );
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = reported.stdout.split("\n");
+    for (const line of [
+      "case c04: screen: old 10/10, ours 0/10, none 0/10: informative, flagged; confirm: old 40/40, ours 0/40: a loss; ours left out the history's reads of references/x.md (our skill has no file at that path)",
+      "case c05: screen: old 10/10, ours 9/10, none 0/10: informative, not flagged",
+      "ours against old (their skill), over all 3 screened cases: screen old 29/30, ours 14/30, none 1/30; confirm on 2 cases: old 76/80, ours 30/80, 1 a loss, 1 no loss",
+      "ours against old (their skill), over the 2 screened cases with no removed read (c05, c06): screen old 19/20, ours 14/20, none 1/20; confirm on 1 case: old 36/40, ours 30/40, 0 a loss, 1 no loss",
+    ]) {
+      expect(lines).toContain(line);
+    }
+  }, 60_000);
 });
 
 describe("refusals before any model call", () => {

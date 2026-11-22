@@ -802,3 +802,83 @@ test("on a Responses body: at most three rounds of skill reads, and a read of a 
     output: `File not found: ${INSTALLED}/references/x.md`,
   });
 });
+
+// Catches: a reply in the arm of ours whose read of their skill's URL is judged as the step, or
+// is answered from our files; or a read of our skill's URL that goes unanswered.
+test("in ours, a reply's read of skill://<ours> is answered from our directory and a read of skill://<theirs> gets the Unknown skill text and is answered, not judged", async () => {
+  const skillDir = path.join(scratch, `ours-${Math.random()}`);
+  const oursSkill = SKILL_MD.replace("name: alpha\n", "name: alpha-ours\n");
+  for (const [file, text] of Object.entries({ "SKILL.md": oursSkill, "references/x.md": X_MD })) {
+    mkdirSync(path.dirname(path.join(skillDir, file)), { recursive: true });
+    writeFileSync(path.join(skillDir, file), text);
+  }
+  const oursInstalled = path.join(path.dirname(INSTALLED), "alpha-ours");
+  const ours: Arm = {
+    name: "ours",
+    skill: "alpha-ours",
+    skillDir,
+    installedDir: oursInstalled,
+    messages: [],
+    profileSkills: PROFILE_SKILLS.map((skill) =>
+      skill.name === "alpha" ? { ...skill, name: "alpha-ours" } : skill
+    ),
+    ours: { theirs: "alpha", replacedOwn: false, removedReads: [] },
+  };
+  /** A reply, not streamed, whose one block is `block`. */
+  const reply = (n: number, block: Record<string, unknown>) =>
+    Response.json({
+      id: `msg_made_up_${n}`,
+      type: "message",
+      role: "assistant",
+      model: "claude-sonnet-5-5",
+      content: [block],
+      stop_reason: block.type === "text" ? "end_turn" : "tool_use",
+      usage: { input_tokens: 10, output_tokens: 5 },
+    });
+  const read = (id: string, target: string) => ({
+    type: "tool_use",
+    id,
+    name: "read",
+    input: { path: target },
+  });
+  const { gateway, bodies } = world((n) =>
+    n === 1
+      ? reply(n, read("toolu_theirs", "skill://alpha/references/x.md"))
+      : n === 2
+        ? reply(n, read("toolu_ours", "skill://alpha-ours/references/x.md"))
+        : reply(n, { type: "text", text: "Step 1 done." })
+  );
+  const replayed = await replayOnce({ ...BODY, stream: false }, ours, gateway);
+  // Both reads were answered, so the step is the third reply.
+  expect(bodies).toHaveLength(3);
+  expect(replayed.rounds).toBe(2);
+  expect(replayed.step.message.content).toEqual([{ type: "text", text: "Step 1 done." }]);
+  expect(bodies[1]?.messages.at(-1)).toEqual({
+    role: "user",
+    content: [
+      {
+        type: "tool_result",
+        tool_use_id: "toolu_theirs",
+        content: [{ type: "text", text: "Unknown skill: alpha\nAvailable: alpha-ours, beta" }],
+        is_error: true,
+      },
+    ],
+  });
+  expect(bodies[2]?.messages.at(-1)).toEqual({
+    role: "user",
+    content: [
+      {
+        type: "tool_result",
+        tool_use_id: "toolu_ours",
+        content: [
+          {
+            type: "text",
+            text: `[Skill file: ${oursInstalled}/references/x.md]\n${X_MD.replace(/\n$/, "")}`,
+          },
+        ],
+        is_error: false,
+      },
+    ],
+  });
+  expect(JSON.stringify(bodies)).not.toContain(skillDir);
+});

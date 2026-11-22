@@ -3,12 +3,14 @@ import {
   type Arm,
   controlCase,
   descriptionFault,
+  dropFigures,
   isControlLoss,
   isFalseLoss,
   isFlagged,
   isInformative,
   isLoss,
   type LoadTask,
+  lossChance,
   poorName,
   RunRecord,
   rankSkills,
@@ -19,6 +21,8 @@ import {
   screeningRefusal,
   servedScreeningRefusal,
   skillVerdict,
+  smallestDrop,
+  stageArms,
   stageOutcome,
   taskFault,
   walk,
@@ -532,5 +536,266 @@ const rows: [string, () => unknown, unknown][] = [
 ];
 
 test.each(rows)("%s", (_name, got, want) => {
+  expect(got()).toEqual(want);
+});
+
+// The arm the old text is compared with (`new`, `ours` or `none`; the rows above compare with
+// `new`), the chance that the rule calls a loss, and each case's smallest drop.
+
+/** A case's 10 screen runs of old and none alone: the screen with no skill compared. */
+const screenNone = (caseId: string, old: number, none: number): RunRecord[] => [
+  ...runs(caseId, "screen", "old", old, 10),
+  ...runs(caseId, "screen", "none", none, 10),
+];
+/** A case's 10 screen runs of old, ours and none: the screen with a skill of ours compared. */
+const screenOurs = (caseId: string, old: number, ours: number, none: number): RunRecord[] => [
+  ...runs(caseId, "screen", "old", old, 10),
+  ...runs(caseId, "screen", "ours", ours, 10),
+  ...runs(caseId, "screen", "none", none, 10),
+];
+/** Six cases informative with no skill compared (old 8, none 5 of 10), so each is flagged too,
+ *  each confirmed on 40 fresh runs of old (30) and none (`confirmNone`), and the control's runs on
+ *  c1: old 30, minus `minus` and twin 30 of 40. */
+const sixNone = (minus: number, confirmNone: number): RunRecord[] => [
+  ...["c1", "c2", "c3", "c4", "c5", "c6"].flatMap((id) => [
+    ...screenNone(id, 8, 5),
+    ...runs(id, "confirm", "old", 30, 40),
+    ...runs(id, "confirm", "none", confirmNone, 40),
+  ]),
+  ...fresh("c1", "control", 30, minus),
+];
+
+/** The chance of each count, 0 to `n`, of `n` runs that each pass with chance `p`. */
+function pmf(n: number, p: number): number[] {
+  const choose = (k: number) => {
+    let ways = 1;
+    for (let i = 1; i <= k; i += 1) ways = (ways * (n - k + i)) / i;
+    return ways;
+  };
+  return Array.from({ length: n + 1 }, (_, k) => choose(k) * p ** k * (1 - p) ** (n - k));
+}
+/** The chance that a count of `n` runs at `a` is at least `gap` more than one of `n` runs at `b`,
+ *  every pair of counts summed. */
+function ahead(n: number, a: number, b: number, gap: number): number {
+  const [x, y] = [pmf(n, a), pmf(n, b)];
+  let sum = 0;
+  for (let i = 0; i <= n; i += 1) {
+    for (let j = 0; j <= i - gap; j += 1) sum += (x[i] ?? 0) * (y[j] ?? 0);
+  }
+  return sum;
+}
+/** Whether `exact` is `counted` but for rounding: a relative difference below 1e-9. */
+const agrees = (exact: number, counted: number) =>
+  counted > 0 && Math.abs(exact - counted) / counted < 1e-9;
+const percent = (x: number) => `${(100 * x).toFixed(2)}%`;
+
+const comparedRows: [string, () => unknown, unknown][] = [
+  // With no skill compared (neither --new nor --ours): old against none.
+  [
+    "with no skill compared, the screen runs old and none, and confirm old and none",
+    () => [
+      stageArms("screen", "none"),
+      stageArms("confirm", "none"),
+      stageArms("control", "none"),
+      stageOutcome(screenNone("c1", 7, 5), "c1", "screen", "none"),
+    ],
+    [
+      ["old", "none"],
+      ["old", "none"],
+      ["old", "minus", "twin"],
+      { state: "counted", passes: { old: 7, none: 5 } },
+    ],
+  ],
+  [
+    "with no skill compared, a case is informative and flagged at 2 more passes of 10 than none",
+    () => [isInformative({ old: 7, none: 5 }), isFlagged({ old: 7, none: 5 }, "none")],
+    [true, true],
+  ],
+  [
+    "with no skill compared, a case is neither informative nor flagged at 1 more pass of 10 than none",
+    () => [isInformative({ old: 6, none: 5 }), isFlagged({ old: 6, none: 5 }, "none")],
+    [false, false],
+  ],
+  [
+    "with no skill compared, a loss at 10 fewer passes of 40 than old",
+    () => isLoss({ old: 30, none: 20 }, "none"),
+    true,
+  ],
+  [
+    "with no skill compared, no loss at 9 fewer passes of 40 than old",
+    () => isLoss({ old: 30, none: 21 }, "none"),
+    false,
+  ],
+  [
+    "with no skill compared, six informative cases and a planted-loss control that is a loss give a verdict",
+    () => {
+      const kept = scoreSkill(sixNone(20, 25), "none");
+      const lost = scoreSkill(sixNone(20, 20), "none");
+      return [
+        kept.informative,
+        kept.cases.filter((each) => each.flagged).length,
+        kept.outcome,
+        lost.cases.filter((each) => each.loss).length,
+        lost.outcome,
+      ];
+    },
+    [6, 6, keeps, 6, loss],
+  ],
+  [
+    "with no skill compared, five informative cases give no verdict",
+    () =>
+      scoreSkill(
+        sixNone(20, 25).filter((run) => run.caseId !== "c6"),
+        "none"
+      ).outcome,
+    tooFew,
+  ],
+  [
+    "with ours, flagged and loss compare old with ours",
+    () => [
+      stageArms("screen", "ours"),
+      stageArms("confirm", "ours"),
+      isFlagged({ old: 7, ours: 5, none: 5 }, "ours"),
+      isFlagged({ old: 7, new: 0, ours: 6, none: 5 }, "ours"),
+      isLoss({ old: 30, ours: 20 }, "ours"),
+      isLoss({ old: 30, new: 0, ours: 21 }, "ours"),
+      stageOutcome(screenOurs("c1", 8, 6, 5), "c1", "screen", "ours"),
+      scoreSkill(
+        [
+          ...screenOurs("c1", 8, 6, 5),
+          ...runs("c1", "confirm", "old", 30, 40),
+          ...runs("c1", "confirm", "ours", 20, 40),
+        ],
+        "ours"
+      ).cases.map(({ caseId, informative, flagged, loss: lost }) => ({
+        caseId,
+        informative,
+        flagged,
+        loss: lost,
+      })),
+    ],
+    [
+      ["old", "ours", "none"],
+      ["old", "ours"],
+      true,
+      false,
+      true,
+      false,
+      { state: "counted", passes: { old: 8, ours: 6, none: 5 } },
+      [{ caseId: "c1", informative: true, flagged: true, loss: true }],
+    ],
+  ],
+
+  // The chance that the rule calls a loss: with no skill compared, the screen's gap is one
+  // condition (informative and flagged are the same), counted once.
+  [
+    "lossChance with the compared arm none counts the screen's gap once",
+    () => {
+      const got = lossChance({ old: 0.9, cut: 0.5, none: 0.5 }, "none");
+      const once = ahead(10, 0.9, 0.5, 2) * ahead(40, 0.9, 0.5, 10);
+      // The gap counted twice: a flag of o − n and an informative o − z, n and z apart.
+      const [o, n, z] = [pmf(10, 0.9), pmf(10, 0.5), pmf(10, 0.5)];
+      let both = 0;
+      for (let a = 0; a <= 10; a += 1) {
+        for (let b = 0; b <= a - 2; b += 1) {
+          for (let c = 0; c <= a - 2; c += 1) both += (o[a] ?? 0) * (n[b] ?? 0) * (z[c] ?? 0);
+        }
+      }
+      const twice = both * ahead(40, 0.9, 0.5, 10);
+      let refused = "";
+      try {
+        lossChance({ old: 0.9, cut: 0.5, none: 0.1 }, "none");
+      } catch (error) {
+        refused = String(error);
+      }
+      return [agrees(got, once), agrees(got, twice), refused.includes("one arm")];
+    },
+    [true, false, true],
+  ],
+
+  // The smallest drop: in 5-point steps below the case's screened pass rate of old, the first the
+  // rule catches with a chance of at least 80%. The report of the cut (INFRA-4676's) printed
+  // 87.52% at old 0.9, new 0.5, none 0.1: the same figure, compared with the cut or with no skill.
+  [
+    "a case at old 0.9, none 0.1 gives 40 points at the 87.5% chance",
+    () => {
+      const none = smallestDrop({ old: 9, none: 1 }, "none");
+      const cut = smallestDrop({ old: 9, none: 1 }, "new");
+      return [
+        none.old,
+        none.points,
+        none.reaches,
+        percent(none.chance),
+        none.chance === lossChance({ old: 0.9, cut: 0.5, none: 0.5 }, "none"),
+        lossChance({ old: 0.9, cut: 0.55, none: 0.55 }, "none") < 0.8,
+        cut.points,
+        cut.reaches,
+        cut.chance === lossChance({ old: 0.9, cut: 0.5, none: 0.1 }),
+        percent(cut.chance),
+      ];
+    },
+    [90, 40, true, "87.52%", true, true, 40, true, true, "87.52%"],
+  ],
+  [
+    "a case at old 0.1: no drop reaches 80%, and the figure gives the chance at the largest drop",
+    () => {
+      const drop = smallestDrop({ old: 1, none: 0 }, "none");
+      return [
+        drop.points,
+        drop.reaches,
+        drop.chance === lossChance({ old: 0.1, cut: 0, none: 0 }, "none"),
+        drop.chance > 0 && drop.chance < 0.8,
+      ];
+    },
+    [10, false, true, true],
+  ],
+  [
+    "a case whose old text passes no screen run has no drop, at no chance",
+    () => smallestDrop({ old: 0, none: 0 }, "none"),
+    { old: 0, points: 0, chance: 0, reaches: false },
+  ],
+  [
+    "a skill with no informative case gets the median of its screened cases' figures",
+    () => {
+      // Old 0.9, 0.7 and 1.0: 40, 40 and 35 points; none of the three is informative.
+      const score = scoreSkill(
+        [...screenNone("c1", 9, 9), ...screenNone("c2", 7, 7), ...screenNone("c3", 10, 10)],
+        "none"
+      );
+      const figures = dropFigures(score, "none");
+      return [
+        figures.cases.map(({ caseId, informative, drop }) => [caseId, informative, drop.points]),
+        figures.screened,
+        figures.informative,
+      ];
+    },
+    [
+      [
+        ["c1", false, 40],
+        ["c2", false, 40],
+        ["c3", false, 35],
+      ],
+      40,
+      undefined,
+    ],
+  ],
+  [
+    "the median falls between two figures, or on a case no drop catches",
+    () => {
+      const two = dropFigures(
+        scoreSkill([...screenNone("c1", 10, 0), ...screenNone("c2", 9, 0)], "none"),
+        "none"
+      );
+      const caught = dropFigures(
+        scoreSkill([...screenNone("c1", 1, 0), ...screenNone("c2", 1, 0)], "none"),
+        "none"
+      );
+      return [two.screened, two.informative, caught.screened];
+    },
+    [37.5, 37.5, Number.POSITIVE_INFINITY],
+  ],
+];
+
+test.each(comparedRows)("%s", (_name, got, want) => {
   expect(got()).toEqual(want);
 });

@@ -8,6 +8,7 @@ import { SessionEntry, type SessionMessage, stripSkillHeader } from "../skill-sc
 import { type Arm, type ArmName, buildArm } from "./arms";
 import {
   armPromptBlocks,
+  armRecordedPrompt,
   type Capture,
   type CaptureOptions,
   captureBody,
@@ -19,6 +20,7 @@ import {
   pluginTools,
   promptDigest,
   refusedTools,
+  renamedListingBlocks,
   renderReminder,
   rewriteBody,
   type SavedHead,
@@ -31,7 +33,13 @@ import {
   userTurnKey,
 } from "./capture";
 import { type Case, type Profile, pathHash } from "./cases";
-import { type ContextRecord, localSource, skillFrontmatter } from "./context";
+import {
+  buildContext,
+  type ContextRecord,
+  cacheKey,
+  localSource,
+  skillFrontmatter,
+} from "./context";
 import { BudgetSpent } from "./gateway";
 import { END_TURN_REPLY, messageSse, sseResponse, startRecorder } from "./recorder";
 import { BLOCK_REASON, MESSAGES_VARIABLE } from "./replay-hook";
@@ -356,6 +364,82 @@ test("an arm's recorded prompt is the recording with only the skill's listing li
   });
 });
 
+/** The arm of ours: alpha's text under the name alpha-ours, with a description of its own. */
+const OURS_DESCRIPTION = "Use when a task asks for our alpha checklist.";
+const OURS_SKILL = OLD_SKILL.replace("name: alpha\n", "name: alpha-ours\n").replace(
+  /^description: .*$/m,
+  `description: ${OURS_DESCRIPTION}`
+);
+
+/** The listing of a prompt's `blocks`: each skill it lists, with the text it lists it under. */
+function listingOf(blocks: readonly string[]): Map<string, string> {
+  return skillListing({ system: blocks.map((text) => ({ type: "text", text })) });
+}
+
+// Catches: the arm of ours listed under their skill's name or description, their skill listed
+// beside it, or a recorded listing that names our skill twice.
+test("the ours arm lists our skill under its own name and description", async () => {
+  // A prompt Oh My Pi builds lists each installed skill under the hint of its name and its
+  // description: the ours arm's context installs ours under its own name, with its own
+  // description, and not their skill.
+  const root = path.join(dir, "ours-listing");
+  writeTree(path.join(root, "repos/acme/skills", COMMIT), {
+    "skills/alpha/SKILL.md": OLD_SKILL,
+    "skills/beta/SKILL.md": BETA_SKILL,
+    "skills/delta/SKILL.md": DELTA_SKILL,
+  });
+  writeTree(path.join(root, "repos/acme/project", COMMIT), {
+    ".claude/CLAUDE.md": "# Made-up user rules\n",
+  });
+  writeTree(path.join(root, "alpha-ours"), { "SKILL.md": OURS_SKILL, "references/x.md": X });
+  const c = f1Case("c-ours");
+  const ours = { dir: path.join(root, "alpha-ours"), name: "alpha-ours" };
+  const arm = buildArm(c, "ours", { old: ours.dir, ours }, path.join(root, "arms"));
+  const context = await buildContext(c, arm, {
+    source: localSource(path.join(root, "repos")),
+    cacheDir: path.join(root, "cache"),
+    root: path.join(root, "scratch"),
+  });
+  expect(
+    context.skills.filter((skill) => !skill.hidden).map((skill) => [skill.name, skill.description])
+  ).toEqual([
+    ["alpha-ours", OURS_DESCRIPTION],
+    ["beta", skillFrontmatter(path.join(context.skillsDir, "beta")).description],
+  ]);
+
+  // A recorded prompt: their skill's listing line names ours, under our hint.
+  const recorded = listingOf(SUBAGENT_PROMPT);
+  const renamed = armRecordedPrompt(SUBAGENT_PROMPT, "alpha", "alpha-ours", "Use for our alpha.");
+  expect(renamed.line).toBe("replaced");
+  expect(listingOf(renamed.blocks)).toEqual(
+    new Map([
+      ["alpha-ours", "Use for our alpha."],
+      ["beta", recorded.get("beta") ?? ""],
+    ])
+  );
+  expect(withoutListingLine(renamed.blocks, "alpha-ours")).toEqual(
+    withoutListingLine(SUBAGENT_PROMPT, "alpha")
+  );
+  // A recording that lists a skill of our name already: their line goes, and ours holds our hint,
+  // once.
+  const twice = renamedListingBlocks(SUBAGENT_PROMPT, "beta", "alpha-ours");
+  expect([...listingOf(twice).keys()]).toEqual(["alpha", "alpha-ours"]);
+  const bundled = armRecordedPrompt(twice, "alpha", "alpha-ours", "Use for our alpha.");
+  expect(bundled.line).toBe("replaced");
+  expect(listingOf(bundled.blocks)).toEqual(new Map([["alpha-ours", "Use for our alpha."]]));
+  expect(bundled.blocks.join("\n").split("\n- alpha-ours: ")).toHaveLength(2);
+  // Our skill hidden (no hint): neither line is listed.
+  const hidden = armRecordedPrompt(SUBAGENT_PROMPT, "alpha", "alpha-ours", undefined);
+  expect(hidden.line).toBe("removed");
+  expect([...listingOf(hidden.blocks).keys()]).toEqual(["beta"]);
+  // Every other arm installs the case's own skill: its prompt is armPromptBlocks', as before.
+  for (const hint of ["Use for the arm's alpha.", undefined]) {
+    expect(armRecordedPrompt(SUBAGENT_PROMPT, "alpha", "alpha", hint)).toEqual(
+      armPromptBlocks(SUBAGENT_PROMPT, "alpha", hint)
+    );
+  }
+});
+
 /** The texts of a body's `system` blocks, in order. */
 function systemBlocks(body: { readonly [field: string]: unknown }): string[] {
   return Array.isArray(body.system)
@@ -497,6 +581,38 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
       expect(calls.filter((call) => JSON.stringify(call).includes("skill://alpha"))).toEqual([]);
       expect(none.capture.record.hintCalls).toEqual([]);
       expect(none.capture.record.runs).toBe(1);
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  test(
+    "the ours arm's body lists our skill under its own name, under the hint written for its name and description, and not their skill",
+    async () => {
+      await captures();
+      const ours = { dir: path.join(dir, "alpha-ours"), name: "alpha-ours" };
+      writeTree(ours.dir, { "SKILL.md": OURS_SKILL, "references/x.md": X });
+      const c = f1Case("c-ours");
+      const arm = buildArm(c, "ours", { old: path.join(dir, "old"), ours }, path.join(dir, "arms"));
+      const asked = hintRequests.length;
+      const made = await captureBody(c, arm, {
+        omp: binary(),
+        outDir: path.join(dir, "out"),
+        scratchDir: path.join(dir, "scratch"),
+        cacheDir: path.join(dir, "cache"),
+        source: localSource(path.join(dir, "repos")),
+        models: path.join(dir, "models.yml"),
+        hints,
+        session: SESSION,
+      });
+      const hint = made.record.hints.find((each) => each.skill === "alpha-ours");
+      expect(hint?.key).toBe(cacheKey(made.record.omp.version, "alpha-ours", OURS_DESCRIPTION));
+      expect(hintRequests.slice(asked)).toEqual(["alpha-ours"]);
+      expect([...skillListing(made.body).keys()].sort()).toEqual(["alpha-ours", "beta"]);
+      expect(skillListing(made.body).get("alpha-ours")).toBe(hint?.hint);
+      // Its history reads our skill at our installed path, never their skill.
+      const calls = toolUses(made.body.messages).map((call) => JSON.stringify(call));
+      expect(calls.filter((call) => call.includes("skill://alpha-ours"))).toHaveLength(2);
+      expect(calls.filter((call) => /skill:\/\/alpha[/"]/.test(call))).toEqual([]);
     },
     ROW_TIMEOUT_MS
   );

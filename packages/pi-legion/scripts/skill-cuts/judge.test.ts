@@ -11,6 +11,7 @@ import {
   stripSkillHeader,
 } from "../skill-scenarios/transcript";
 import { type Arm, type ArmName, buildArm } from "./arms";
+import { blindSkillNames, THE_SKILL } from "./blind";
 import { type Case, pathHash } from "./cases";
 import {
   type ContentBlock,
@@ -744,4 +745,100 @@ test("an OpenAI reply renders as the matching Messages reply does, so the judge'
   }
   const reasoning = f9Content("text").find((item) => item.type === "reasoning");
   expect(sent).not.toContain(String(reasoning?.encrypted_content).slice(0, 40));
+});
+
+// Catches: a judge that can tell the arm of their skill from the arm of ours by the skill's name
+// in the criterion, the line, the history or a step, or a blinding that eats a longer name
+// holding the skill's name.
+test("skill names reach the judge as the-skill", async () => {
+  const names = ["alpha", "alpha-ours"];
+  const prose =
+    "The alpha skill and alpha-ours both list the steps; alphabet and alpha-extra stay.";
+  const history: SessionMessage[] = [
+    { role: "user", content: [{ type: "text", text: `Use the alpha skill. ${prose}` }] },
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "toolu_ls",
+          name: "bash",
+          arguments: { command: "ls /work/.omp/agent/skills/alpha/ /skills/alpha-ours/x" },
+        },
+      ],
+    },
+    {
+      role: "toolResult",
+      toolCallId: "toolu_ls",
+      toolName: "bash",
+      content: [
+        {
+          type: "text",
+          text: "[Skill file: /skills/alpha-ours/SKILL.md]\nFile not found: /work/.omp/agent/skills/alpha/references/y.md",
+        },
+      ],
+    },
+  ];
+  const c: Case = {
+    ...f1Case,
+    criterion: {
+      pass: "The step reads skill://alpha/references/x.md, as the alpha skill says.",
+      fail: "The step skips the alpha-ours reference.",
+    },
+    line: { ...f1Case.line, text: "1. Read the alpha reference before the first step." },
+    messages: history,
+    skillReads: [],
+  };
+  const step: ContentBlock[] = [
+    { type: "text", text: prose },
+    {
+      type: "tool_use",
+      id: "toolu_1",
+      name: "read",
+      input: { path: "skill://alpha-ours/references/x.md" },
+    },
+    { type: "tool_use", id: "toolu_2", name: "read", input: { path: "skill://alpha:1-3" } },
+  ];
+  const { gateway, bodies } = world(() => sse(PASS));
+  await judgeControls(c, gateway, names);
+  await judgeBlind(c, [{ arm: "ours", run: 0, content: step }], gateway, "seed-names", names);
+  expect(bodies).toHaveLength(4);
+  const shared = blocksOf(bodies[0])[0] ?? "";
+  // Every body reads the same blinded case part, the controls' as the runs'.
+  expect(new Set(bodies.map((body) => blocksOf(body)[0])).size).toBe(1);
+  const blindProse =
+    "The the-skill skill and the-skill both list the steps; alphabet and alpha-extra stay.";
+  expect(shared).toContain(`[user]\nUse the the-skill skill. ${blindProse}`);
+  expect(shared).toContain("ls /work/.omp/agent/skills/the-skill/ /skills/the-skill/x");
+  expect(shared).toContain("File not found: /work/.omp/agent/skills/the-skill/references/y.md");
+  // The criterion and the line use the step's words.
+  expect(shared).toContain(
+    [
+      "<criterion>",
+      "Pass: The step reads skill://the-skill/references/x.md, as the the-skill skill says.",
+      "Fail: The step skips the the-skill reference.",
+      "</criterion>",
+      "",
+      "<line>",
+      "1. Read the the-skill reference before the first step.",
+      "</line>",
+    ].join("\n")
+  );
+  expect(stepOf(bodies[3])).toBe(
+    [
+      blindProse,
+      '[tool call: read] {"path":"skill://the-skill/references/x.md"}',
+      '[tool call: read] {"path":"skill://the-skill:1-3"}',
+    ].join("\n")
+  );
+  for (const body of bodies) {
+    const text = blocksOf(body).join("\n");
+    expect(text.match(/(?<![\w-])alpha(?![\w-])/g)).toBeNull();
+    expect(text).not.toContain("alpha-ours");
+    expect(text).toContain("alphabet");
+    expect(text).toContain("alpha-extra");
+  }
+  expect(THE_SKILL).toBe("the-skill");
+  // With no names given, nothing changes: every arm of a run is given the same names.
+  expect(blindSkillNames(prose, [])).toBe(prose);
 });

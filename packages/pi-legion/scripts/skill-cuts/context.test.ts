@@ -349,6 +349,48 @@ test("each skill is its repository's directory at its commit, through the cache,
   expect(again.record.rolePrompt).toBeNull();
 });
 
+// Catches: the arm of ours installed under their skill's name, their skill installed beside it,
+// or a profile that already holds a skill of our name installing that name twice.
+test("installs ours under its own name and never a name twice", async () => {
+  const root = path.join(dir, "ours");
+  const c = aCase("devbox", {});
+  const { options } = setUp(root, c);
+  const OURS = "---\nname: alpha-ours\ndescription: Use for our alpha list.\n---\n\n# Ours\n";
+  writeTree(path.join(root, "alpha-ours"), { "SKILL.md": OURS });
+  const dirs = {
+    old: path.join(root, "old"),
+    ours: { dir: path.join(root, "alpha-ours"), name: "alpha-ours" },
+  };
+  const ours = buildArm(c, "ours", dirs, root);
+  const built = await buildContext(c, ours, options);
+  expect(built.skills.map((skill) => [skill.name, skill.description])).toEqual([
+    ["alpha-ours", "Use for our alpha list."],
+    ["beta", "Use for the beta greeting."],
+  ]);
+  expect(readFileSync(path.join(built.skillsDir, "alpha-ours/SKILL.md"), "utf8")).toBe(OURS);
+  expect(existsSync(path.join(built.skillsDir, "alpha"))).toBe(false);
+  expect(built.record.skills[0]).toEqual({ name: "alpha-ours", from: "arm" });
+
+  // A profile that holds a skill of our name: the --ours text is installed once, in its place.
+  const holding = aCase("devbox", {
+    skills: [
+      ...c.profile.skills,
+      { repo: "acme/skills", commit: COMMIT, path: "skills/beta", name: "alpha-ours" },
+    ],
+  });
+  const bundled = await buildContext(holding, buildArm(holding, "ours", dirs, root), options);
+  expect(bundled.skills.map((skill) => skill.name)).toEqual(["beta", "alpha-ours"]);
+  expect(readFileSync(path.join(bundled.skillsDir, "alpha-ours/SKILL.md"), "utf8")).toBe(OURS);
+  expect(existsSync(path.join(bundled.skillsDir, "alpha"))).toBe(false);
+
+  // The guard stays: an arm whose profile installs one name twice is refused.
+  const [first] = ours.profileSkills;
+  const twice: Arm = { ...ours, profileSkills: [...ours.profileSkills, ...(first ? [first] : [])] };
+  expect(await buildContext(c, twice, options).then(() => "built", String)).toContain(
+    "installs alpha-ours twice"
+  );
+});
+
 test("a devbox profile's user-level .claude/CLAUDE.md (user: true) goes in the Claude Code config directory, and the root CLAUDE.md or AGENTS.md of its session's repository in the working directory; two user-level files are refused", async () => {
   const root = path.join(dir, "devbox-files");
   const c = aCase("devbox", {
