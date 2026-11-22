@@ -14,19 +14,27 @@ body: |-
   read are answered that `503` too, where they were `400 invalid_request` as a token the exchange
   could not parse, which the broker's token clients take as final. A token signed by a key its
   issuer never published is refused as before. While a key set cannot be read, the exchange
-  refuses `400 invalid_request`, with no `Retry-After`, a token it refuses once it can read the
-  key, whatever key signed it: an `exp` that is not a number or is past, an `iat` older than its
-  type's lifetime or not a number, an `nbf` that is not a number, an `iss` that is not its type's
-  issuer, and for a workflow run's token a `jti` that is missing or already presented. That holds
-  for a person's token in a sign-in too, which the library reaches only after the machine's actor
-  token. A token whose only fault is an `iat` or an `nbf` in the future, which a wait can make
-  valid, is answered `503` until the key set can be read.
-  The exchange now refuses `400 invalid_request` a token that does not expire within the longest
-  life its type's tokens have, whether or not the key set can be read: an hour for GitHub's and
-  Google's tokens, 24 hours for a cluster's. That is a token with no `exp`, an `exp` of null, 0 or
-  any value under 1, and an `exp` further ahead than that life, such as 9223371974719179008. The
-  library the exchange uses admits some of these as tokens that never expire, and the broker
-  minted an access token for them. No real issuer's token meets this.
+  refuses `400 invalid_request`, with no `Retry-After`, a token the library refuses whatever key
+  signed it: an `exp` that is not a number or is past, an `iat` older than its type's window or
+  not a number, an `nbf` that is not a number, an `iss` that is not its type's issuer, and for a
+  workflow run's token a `jti` that is missing or one the replay store holds as presented. That
+  holds for a person's token in a sign-in too, which the library reaches only after the machine's
+  actor token. A token whose only fault is an `iat` or an `nbf` in the future, which a wait can
+  make valid, is answered `503` until the key set can be read. The broker's own checks, made once
+  the token verifies (its audience, and whether an entry lists it), are not made meanwhile, so a
+  token that would fail only those is answered `503` too, and so is a workflow run's token while
+  the replay store cannot be read either. During such an outage a forged token can learn from a
+  `400` against a `503` whether a `jti` it names was presented; this is accepted, since only
+  GitHub's `jti`s are stored, they are random, naming one takes the token that carries it, and the
+  read admits and writes nothing.
+  The exchange now refuses `400 invalid_request` a token that does not expire within the broker's
+  window for its type, whether or not the key set can be read: an hour for GitHub's and Google's
+  tokens, and 24 hours for a cluster's, the broker's own window and not a limit Kubernetes sets.
+  That is a token with no `exp`, an `exp` of null, 0 or any value under 1, and an `exp` further
+  ahead than the window, such as 9223372036854774784. The library the exchange uses admits some of
+  these as tokens that never expire, and the broker minted an access token for them. The tokens
+  the issuers mint for this deployment are all well inside the window: the cluster tokens Legion's
+  own pods send to the exchange are projected for 3,600 seconds.
   The broker logs `broker: key set cannot be read` at WARN once when a read of a key set it checks
   callers' tokens against fails, and `broker: key set can be read again` at INFO once when a read
   of it succeeds after that, each naming the issuer and the key set's address, never a token: each

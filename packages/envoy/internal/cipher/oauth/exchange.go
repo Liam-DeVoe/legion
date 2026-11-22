@@ -94,16 +94,22 @@ var subjectTokenAlgorithms = []jose.SignatureAlgorithm{
 
 // The lifetime tolerance each JWT subject token type allows, which the library applies to both
 // ends: a token whose iat is older than the window, and one whose exp is further ahead than it,
-// are refused. Each is also the longest life a token of its type has from now, which the broker
-// holds every token to before it reads any key (refusedForLifetime), so a token that never
-// expires is refused whether or not its issuer's key set can be read.
+// are refused. Each is also the broker's window for the tokens of its type: the longest life from
+// now the broker admits for one, which it holds every token to before it reads any key
+// (refusedForLifetime), so a token that never expires is refused whether or not its issuer's key
+// set can be read.
 const (
-	// kubernetesTolerance admits a projected service-account token's whole life. Kubernetes
-	// bounds one at 24 hours, so a shorter window would refuse a freshly minted token outright
-	// for expiring too far in the future. No setting of the broker's names a cluster's own
-	// bound, so this is the one every cluster's tokens are held to. It is also what a
-	// pod-session registration is kept for past its last write (oauthstore.PodSessionRetention),
-	// since a registration must outlive every token the pod it was written for can still present.
+	// kubernetesTolerance is the broker's own window for a cluster's tokens: the longest life
+	// from now a cluster token presented to the exchange may have, and the oldest iat it may
+	// carry. It is no limit Kubernetes sets: a pod asks for a projected token's lifetime
+	// (expirationSeconds), the kubelet rotates the token once 80 percent of it has passed or it
+	// is 24 hours old (k8s.io/api core/v1 ServiceAccountTokenProjection), and a cluster's own cap
+	// on that lifetime is named by no setting of the broker's. Every cluster token this deployment's
+	// pods send to the exchange is projected for 3,600 seconds (the daemon's
+	// exchangeTokenExpirySeconds, packages/daemon/internal/runtime/sandbox/manifest.go), well
+	// inside it. It is also what a pod-session registration is kept for past its last write
+	// (oauthstore.PodSessionRetention), since a registration must outlive every token the pod
+	// it was written for can still present.
 	kubernetesTolerance = 24 * time.Hour
 	// githubTolerance admits a workflow run's token, which lives at most an hour, while bounding
 	// how stale an iat the exchange accepts.
@@ -461,8 +467,7 @@ func newTokenJudge(typ *rfc8693.JWTType, clusters []IssuerConfig, keys oidc.KeyS
 //   - A token of the cluster type is checked against the keys of the cluster its `iss` names. One
 //     whose `iss` names none of them, or is no string, is errIssuerNotTaken, with the claim's own
 //     fault where it has one, and reads no issuer's keys.
-//   - A token that does not expire within its type's longest lifetime is refused
-//     (refusedForLifetime).
+//   - A token that does not expire within its type's window is refused (refusedForLifetime).
 func (j *tokenJudge) before(token *jwt.Token, now time.Time) (oidc.KeySource, error) {
 	if !slices.Contains(subjectTokenAlgorithms, token.SignatureAlgorithm) {
 		return nil, fmt.Errorf("oauth: a subject token signed with %q is refused: its issuer signs with a published key", token.SignatureAlgorithm)
@@ -538,21 +543,22 @@ func (j *tokenJudge) unkeyed(raw string, now time.Time) (jwt.MapClaims, error) {
 }
 
 // errNeverExpires is the class of refusedForLifetime's answers.
-var errNeverExpires = errors.New("oauth: the subject token does not expire within its issuer's longest lifetime")
+var errNeverExpires = errors.New("oauth: the subject token does not expire within the window the broker admits for its type")
 
-// refusedForLifetime refuses a token that never expires, or not within window, the longest life a
-// token of its type has from now (the type's JWTLifetimeToleranceWindow, an hour where it is zero
-// as the library reads it): an exp that is missing, or that the library reads as 0 (null, 0, any
-// value under 1), and an exp later than window from now. The exp is read as the library reads it
+// refusedForLifetime refuses a token that never expires, or not within window, the broker's window
+// for its type (the type's JWTLifetimeToleranceWindow, an hour where it is zero as the library
+// reads it): an exp that is missing, or that the library reads as 0 (null, 0, any value under 1),
+// and an exp later than window from now. The exp is read as the library reads it
 // (jwt.MapClaims.GetExpirationTime, then NumericDate.Int64), and compared in whole seconds, so no
 // value overflows the comparison. An exp that is no number is left to the library, which refuses
 // it.
 //
-// It is a tightening of what the library admits, and no real issuer's token meets it: the library
-// takes an exp it reads as 0 for no exp at all and admits the token, and an exp near 9.22e18
-// overflows its own window check (time.Unix) and passes it, so the broker would mint an access
-// token for a token that never expires. Every other exp it refuses as the library's window check
-// does.
+// It is a tightening of what the library admits, which no token this deployment's issuers mint for
+// the exchange meets: GitHub's and Google's live an hour, and the cluster tokens this deployment's
+// pods project live 3,600 seconds (kubernetesTolerance). The library takes an exp it reads as 0 for
+// no exp at all and admits the token, and an exp near 9.22e18 overflows its own window check
+// (time.Unix) and passes it, so the broker would mint an access token for a token that never
+// expires. Every other exp it refuses as the library's window check does.
 func refusedForLifetime(claims jwt.Claims, window time.Duration, now time.Time) error {
 	if window == 0 {
 		window = time.Hour

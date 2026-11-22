@@ -808,6 +808,10 @@ func (s *Store) SetTokenExchangeCustomJWT(ctx context.Context, jti string, exp t
 // It writes nothing, so asking about a token nobody has verified spends no jti. The exchange asks
 // it of a subject token whose key it could not read (oauth's unjudgedSubject), to refuse a spent
 // one as the library refuses it once it can read the key.
+//
+// A residual, accepted: during an outage a forged token learns from 400 against 503 whether a jti
+// it names was presented, which tells it little, since only GitHub's jtis are stored, they are
+// random, naming one takes the token that carries it, and the read admits and writes nothing.
 func (s *Store) TokenExchangeJTISpent(ctx context.Context, jti string) (bool, error) {
 	var spent bool
 	err := s.db(ctx).QueryRow(ctx, `select exists (select 1 from oauth_exchange_jtis where jti = $1 and expires_at > now())`, jti).Scan(&spent)
