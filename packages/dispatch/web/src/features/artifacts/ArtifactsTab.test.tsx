@@ -692,13 +692,21 @@ test("an issue only other nodes link to shows Referenced by (1) before the secti
 });
 
 /** A comment of OPS-1 whose body holds a bare issue address, which the issue's own content links
- *  to: the one row of `links` in the two rows below, named by that body. */
+ *  to: the one row of `links` in the rows below, named by that body. The rows that read an ask's
+ *  name and a message's give an ask and a message of OPS-1 (`addressedAsk`, `addressedMessage`)
+ *  the same text. */
 const addressedComment = "ffffffff-0000-4000-8000-000000000005";
+const addressedAsk = "ffffffff-0000-4000-8000-000000000006";
+const addressedMessage = "ffffffff-0000-4000-8000-000000000008";
 const addressedName = "Decided in dispatch://CORE-2 on **Friday**.";
 
-/** An answer whose one row is `addressedComment`'s, carrying `nameTree` as its `name_tree`, or
- *  none, as a Dispatch from before `name_tree` answers. */
-function addressedAnswer(nameTree: DisplayTree | undefined): IssueReferences {
+/** An answer whose one row is OPS-1's `kind` `id`, `addressedComment` unless given, carrying
+ *  `nameTree` as its `name_tree`, or none, as a Dispatch from before `name_tree` answers. */
+function addressedAnswer(
+  nameTree: DisplayTree | undefined,
+  kind: "ask" | "comment" | "message" = "comment",
+  id = addressedComment
+): IssueReferences {
   return {
     links: [
       {
@@ -706,11 +714,11 @@ function addressedAnswer(nameTree: DisplayTree | undefined): IssueReferences {
         name: addressedName,
         name_tree: nameTree,
         node: graphNode({
-          id: addressedComment,
+          id,
           issue_key: "OPS-1",
-          kind: "comment",
+          kind,
           project: "OPS",
-          ref: `dispatch://OPS-1/comment/${addressedComment}`,
+          ref: `dispatch://OPS-1/${kind}/${id}`,
         }),
         via: { id: "comment-1", kind: "comment" },
       },
@@ -771,6 +779,29 @@ test("a references row with no name_tree reads its name's parse, a reference in 
     expect(link).toHaveAttribute("href", `/issues/OPS-1/comments/${addressedComment}`);
     expect(link.textContent).not.toContain("dispatch://");
   });
+});
+
+// An ask's name and a message's are the head of a record's text as a comment's is (`nameSource`),
+// so each is drawn as its plain-text projection too: the bold goes, and the bare issue address
+// reads as CORE-2's key and title.
+test("a references row named by an ask's text reads a reference in it as its target's name", async () => {
+  await withAddressedRow(
+    addressedAnswer(displayTree(addressedName), "ask", addressedAsk),
+    (link) => {
+      expect(link).toHaveAttribute("href", `/issues/OPS-1/asks/${addressedAsk}`);
+      expect(link.textContent).not.toContain("dispatch://");
+    }
+  );
+});
+
+test("a references row named by a message's text reads a reference in it as its target's name", async () => {
+  await withAddressedRow(
+    addressedAnswer(displayTree(addressedName), "message", addressedMessage),
+    (link) => {
+      expect(link).toHaveAttribute("href", `/issues/OPS-1/messages/${addressedMessage}`);
+      expect(link.textContent).not.toContain("dispatch://");
+    }
+  );
 });
 
 // A row whose name is no record's text - a document's name, an issue's title - is drawn as the
