@@ -33,6 +33,7 @@
 package redact
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -74,6 +75,43 @@ func HostShown(host, text string) string {
 	}
 	return strings.ReplaceAll(text, host, URLWithCredentials)
 }
+
+// RequestError is err, the error of a request of route that got no answer (http.Client.Do's, a
+// body read's, or http.NewRequest's), as a line, a refusal or a stored error prints it. route is
+// a URL the daemon was configured with, and it can carry a credential: a user name and a password,
+// one holding an unencoded "@" whose tail url.Parse reads as the host, or a credential holding a
+// "/", "?" or "#" whose head it reads as the host. So the error names route through URL, never as
+// *url.Error quotes it (only a password masked); the error under it through the URL rule
+// (URLCredentials), and, when route holds a user name, a password or an "@" past its host, through
+// HostShown, since a dial's or a resolver's error names the host (`lookup <the password's tail>: no
+// such host`, or its `xn--` form); and a route that does not parse in fixed words naming server,
+// since url.Parse's error quotes what it could not read (`invalid port ":<the password's head>"`).
+// The error unwraps to err, so errors.Is and errors.As (a deadline, a refused certificate, a TLS
+// alert) still read the request's own error.
+func RequestError(server, route string, err error) error {
+	shown := err
+	var transport *url.Error
+	if errors.As(err, &transport) {
+		if transport.Op == "parse" {
+			return &requestError{server + ": its address does not parse as a URL", err}
+		}
+		shown = transport.Err
+	}
+	text := URLCredentials(shown.Error())
+	if u, parseErr := url.Parse(route); parseErr == nil && (u.User != nil || natsurl.UserinfoPastHost(u)) {
+		text = HostShown(u.Hostname(), text)
+	}
+	return &requestError{URL(route) + ": " + text, err}
+}
+
+// requestError is RequestError's error: its text, and the error it stands for.
+type requestError struct {
+	text string
+	err  error
+}
+
+func (e *requestError) Error() string { return e.text }
+func (e *requestError) Unwrap() error { return e.err }
 
 // URL is raw, one value known to be a URL (a setting's, an environment variable's), as a line
 // prints it: read by url.Parse, with its query and fragment removed, and its authority, when it

@@ -1699,7 +1699,7 @@ func get(ctx context.Context, route string) ([]byte, error) {
 			return fmt.Errorf("read %s: no answer in %s, past the %s this command allows one read of a daemon's API",
 				shown, time.Since(began).Round(time.Millisecond), requestTimeout)
 		}
-		return fmt.Errorf("read %w", daemonRequestError(route, err))
+		return fmt.Errorf("read %w", redact.RequestError(daemonServer, route, err))
 	}
 	request, err := http.NewRequestWithContext(timed, http.MethodGet, route, nil)
 	if err != nil {

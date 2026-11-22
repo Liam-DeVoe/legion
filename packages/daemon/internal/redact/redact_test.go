@@ -2,6 +2,7 @@ package redact
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -246,6 +247,33 @@ func TestHostShownPrintsNoHostOfAURLWithCredentials(t *testing.T) {
 	}
 	if got := HostShown("", "dial tcp: connect: connection refused"); got != "dial tcp: connect: connection refused" {
 		t.Errorf("no host = %q, want the text as it is", got)
+	}
+}
+
+// RequestError names a request's route through URL and its error through the URL rule and
+// HostShown, and unwraps to the request's own error, so a deadline and a *url.Error are still read.
+// A route that does not parse is named in fixed words. The credentials are made up.
+func TestRequestErrorNamesNoCredentialAndKeepsTheRequestsError(t *testing.T) {
+	route := "http://legion:madeuphead0123" + "@madeuptail0123.invalid/v1/x"
+	dial := &url.Error{Op: "Get", URL: route, Err: errors.New("dial tcp: lookup madeuptail0123.invalid: no such host")}
+	err := RequestError("the server", route, dial)
+	if want := "http://" + URLWithCredentials + "/v1/x: dial tcp: lookup " + URLWithCredentials + ": no such host"; err.Error() != want {
+		t.Errorf("RequestError = %q, want %q", err, want)
+	}
+	var transport *url.Error
+	if !errors.As(err, &transport) || transport != dial {
+		t.Errorf("RequestError unwraps to %v, want the request's *url.Error", errors.Unwrap(err))
+	}
+	timedOut := &url.Error{Op: "Get", URL: route, Err: context.DeadlineExceeded}
+	if err := RequestError("the server", route, timedOut); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("RequestError(%v) is not a deadline", err)
+	}
+	notParsed := &url.Error{Op: "parse", URL: route, Err: errors.New(`invalid port ":madeuphead0123" after host`)}
+	if err := RequestError("the server", route, notParsed); err.Error() != "the server: its address does not parse as a URL" {
+		t.Errorf("RequestError(a parse error) = %q", err)
+	}
+	if err := RequestError("the server", "http://server.example/v1/x?token=madeUpQueryToken0123", errors.New("dial tcp: connection refused")); err.Error() != "http://server.example/v1/x: dial tcp: connection refused" {
+		t.Errorf("RequestError(no credential) = %q, want the route without its query and the error as it is", err)
 	}
 }
 

@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	neturl "net/url"
 	"os"
 	"strings"
 	"time"
@@ -178,8 +176,8 @@ type operator struct {
 
 // do is one request to the daemon: body as JSON when it is not nil, the bearer as its
 // Authorization when op carries one. It answers the status and the body the daemon served; only a
-// request that got no answer is an error, which names the route through redact.URL
-// (daemonRequestError): op.base is LEGION_DAEMON_URL's when it is set, user name and password and
+// request that got no answer is an error, which names the route and its error through
+// redact.RequestError: op.base is LEGION_DAEMON_URL's when it is set, user name and password and
 // all, and Go's *url.Error quotes the URL with only the password masked.
 func (op operator) do(ctx context.Context, method, path string, body any) (int, []byte, error) {
 	var reader io.Reader
@@ -193,7 +191,7 @@ func (op operator) do(ctx context.Context, method, path string, body any) (int, 
 	route := op.base + path
 	request, err := http.NewRequestWithContext(ctx, method, route, reader)
 	if err != nil {
-		return 0, nil, fmt.Errorf("%s %w", method, daemonRequestError(route, err))
+		return 0, nil, fmt.Errorf("%s %w", method, redact.RequestError(daemonServer, route, err))
 	}
 	if op.bearer != "" {
 		request.Header.Set("Authorization", "Bearer "+op.bearer)
@@ -203,54 +201,19 @@ func (op operator) do(ctx context.Context, method, path string, body any) (int, 
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return 0, nil, fmt.Errorf("%s %w", method, daemonRequestError(route, err))
+		return 0, nil, fmt.Errorf("%s %w", method, redact.RequestError(daemonServer, route, err))
 	}
 	defer response.Body.Close()
 	answer, err := io.ReadAll(response.Body)
 	if err != nil {
-		return 0, nil, fmt.Errorf("read the answer to %s %w", method, daemonRequestError(route, err))
+		return 0, nil, fmt.Errorf("read the answer to %s %w", method, redact.RequestError(daemonServer, route, err))
 	}
 	return response.StatusCode, answer, nil
 }
 
-// daemonRequestError is err, a request of route that got no answer, as a refusal prints it: route
-// through redact.URL; a route that does not parse in fixed words, since url.Parse's error quotes
-// what it could not read (`invalid port ":<the password's head>"` for a password holding a "/");
-// and any other error through the URL rule with *url.Error's own quote of the URL left out and,
-// when route carries userinfo, its host written as the mark (hostShown). Its error unwraps to
-// err, so a deadline is still told from a refusal.
-func daemonRequestError(route string, err error) error {
-	var transport *neturl.Error
-	if errors.As(err, &transport) {
-		if transport.Op == "parse" {
-			return &requestError{"the daemon: its address does not parse as a URL", err}
-		}
-		return &requestError{redact.URL(route) + ": " + hostShown(route, redact.URLCredentials(transport.Err.Error())), err}
-	}
-	return &requestError{redact.URL(route) + ": " + hostShown(route, redact.URLCredentials(err.Error())), err}
-}
-
-// hostShown is text, an error of a request of route, through redact.HostShown when route carries
-// userinfo: the host written as the mark of a URL with credentials, since a password holding an
-// unencoded "@" leaves its tail where the host goes and a dial's or a resolver's error names the
-// host (`lookup <the password's tail>: no such host`); and, for a host that is not ASCII, which the
-// client dials by its ASCII form, the error not printed.
-func hostShown(route, text string) string {
-	u, err := neturl.Parse(route)
-	if err != nil || u.User == nil {
-		return text
-	}
-	return redact.HostShown(u.Hostname(), text)
-}
-
-// requestError is daemonRequestError's error: its text, and the error it stands for.
-type requestError struct {
-	text string
-	err  error
-}
-
-func (e *requestError) Error() string { return e.text }
-func (e *requestError) Unwrap() error { return e.err }
+// daemonServer is how a request's refusal names the daemon when its address does not parse
+// (redact.RequestError).
+const daemonServer = "the daemon"
 
 // daemonAddress is the API root of the daemon a command reaches: the one LEGION_DAEMON_URL names —
 // the daemon names it on every pane, and a pane has no legion.yaml — unless --config or --port
