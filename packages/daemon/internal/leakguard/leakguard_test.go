@@ -901,8 +901,8 @@ func sha256sumLineDigest(t *testing.T, dir string, files []string) string {
 // (C0 or C1) would act on the terminal that shows the refusal, erasing the line that names the
 // file, a line break would start a line the guard did not write, and U+202E would reverse how the
 // rest of the path reads. The report's lines keep the path as it is; Error escapes each such
-// character and a byte that is not UTF-8, and writes a backslash as it is, so the shared check's
-// already escaped lines pass unchanged.
+// character and a byte that is not UTF-8 (termsafe.Escaped), and writes a backslash as it is, so
+// the shared check's already escaped lines pass unchanged.
 func TestARefusalWritesNoControlByteOfAPathRaw(t *testing.T) {
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 	labels := []string{
@@ -927,7 +927,7 @@ func TestARefusalWritesNoControlByteOfAPathRaw(t *testing.T) {
 	written := refused.Error()
 	for _, want := range []string{
 		"\n  a b\\x1b[2Kx.md: ",
-		"\n  c\\x0aLEAK CHECK: clean\\x7f.md: ",
+		"\n  c\\nLEAK CHECK: clean\\x7f.md: ",
 		"\n  c1\\u009b2Kz.md: ",
 		"\n  bidi\\u202edm.x.txt: ",
 		"\n  back\\x1b.md: ",
