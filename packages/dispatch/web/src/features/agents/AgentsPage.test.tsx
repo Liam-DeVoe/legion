@@ -39,12 +39,17 @@ import type {
 import { AuthGate } from "../../app";
 import type { BroadcastRequest } from "./broadcast-plan";
 import { messageDeliveryFields } from "./delivery-fixture";
-// The live view and the broadcast page are lazy routes of the app, and the margin a lazy part of
-// its shell (`MarginColumn.tsx`). No row here reads the margin or a broadcast page, and a load
-// that a row starts and ends before lands in a later row, where React's report of it is outside
-// `act`. So each module is loaded here, with the test file, and no row starts or waits for it.
+// The live view and the broadcast page are lazy routes of the app, the margin a lazy part of its
+// shell (`MarginColumn.tsx`), and the agent registry's poller and the reference preview's host lazy
+// parts the shell mounts on every route (`features/shell/deferred-shell.ts`). No row here reads the
+// margin, a broadcast page or either part, and a load that a row starts and ends before lands in
+// a later row, where React's report of it is outside `act`, or in the row itself when it runs
+// first in the file. So each module is loaded here, with the test file, and no row starts or
+// waits for it.
 import "../agent-view/AgentConversationPage";
 import "../margin/Margin";
+import "../refs/agent-registry";
+import "../refs/RefPreview";
 import "./BroadcastPage";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import type { AgentPart } from "../refs/AgentName";
