@@ -620,7 +620,7 @@ test("a retro learning cites a symbol or quoted text at the committed head, neve
     "Never a line number: the next edit above it moves it. Where the head no longer shows what your sentence says, quote the text and name the commit you read it at."
   );
   expect(learnings).toContain(
-    "Evidence: <file and symbol, or text quoted from it, of this pull request, and what went wrong>."
+    "Evidence: <file and symbol, or text quoted from it, of this pull request or of the task's work, and what went wrong>."
   );
   countedOncePerFile(
     "Drop a point that cites no file, symbol, quoted text or commit of this pull request",
@@ -638,6 +638,18 @@ test("a retro learning cites a symbol or quoted text at the committed head, neve
     retired.filter((phrase) => text.includes(phrase)).map((phrase) => `${file}: ${phrase}`)
   );
   expect(carried).toEqual([]);
+});
+
+// The retro of a task with no step of the type implementation is the owner's, which completes it
+// with complete_step at step 0, and a task with no pull request ends at its retro.
+test("the retro skill names who does the retro and how the owner completes it", () => {
+  expect(
+    lacks("legion-retro/SKILL.md", [
+      /with no pull request, its end closes the issue/,
+      /last step of the type implementation does it[^.]*the owner does it[^.]*`complete_step`, `step: 0`/,
+      /Update the PR body\*\*, where the issue has a pull request/,
+    ])
+  ).toEqual([]);
 });
 
 // The completion that ends the retro rates the plan, and this skill's step that gives the two

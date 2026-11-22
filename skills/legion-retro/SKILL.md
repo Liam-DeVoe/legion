@@ -1,16 +1,19 @@
 ---
 name: legion-retro
-description: "Use when the Legion daemon starts you, the implementer, on `Phase: retro` after the task's last step passed."
+description: "Use when Legion gives you a task's retro, as `Phase: retro` in your task or an `owner-step` notice of the retro, after the task's last step passed."
 ---
 
 # Legion retro
 
-Retro runs after the task's last step, between that step and the merger's merge.
+Retro runs after the task's last step and before the merger's merge; with no pull request, its end closes the issue.
 The architect's acceptance precedes it only where the task names `acceptance:owner`.
 `<issue>` is your `LEGION_ISSUE`.
+The agent of the task's last step of the type implementation does it, as that step's role;
+where there is none, or it is the owner's, the owner does it and completes with `complete_step`, `step: 0`, where this skill says `handoff_complete`.
 Run every step, even on a mechanical change.
 
-Retro commits nothing and pushes nothing: the merger merges the branch's head, and a push would put a commit above the head the last worker step passed.
+Retro commits nothing and pushes nothing:
+where the issue has a pull request, the merger merges the branch's head, and a push would put a commit above the head the last step passed.
 No Legion check compares the head that merges with a review's head, so whether a push after a review needs a new review is the repository's own rule.
 Never rebase the branch or make another branch or bookmark.
 Retro writes no handoff.
@@ -28,14 +31,16 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 
 ## Steps
 
-1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request, and the implementer's handoff.
+1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request where there is one, and the implementer's handoff where it has an implementer step.
    Also read the tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) where it has a tester step, and the review at the version your task's `Handoff:` line names (`--phase review --version <n>`) where it has a reviewer step.
-   A pass must stand at the last worker step's head for every `before_merge` check, and the body's `Checks` block carries each.
+   A pass must stand at the head the last step passed for every `before_merge` check, and, with a pull request, the body's `Checks` block carries each.
 
    - A check carrying `ci_check` is CI's: its derived result is the pass it needs (`skill://legion-worker/references/ci-checks.md`).
      A `ci_check` check has no pass standing at that head when its derived result is a fail, or its run concluded `skipped`, `neutral` or `cancelled`.
-     A run that has not concluded, or one GitHub could not be read for, is neither a pass nor a fail yet: never wait for, watch or poll it, as your role prompt says of CI.
-     Name each run that has not concluded, with the time you read it, in step 5's `Runs still going` line, and go on; when CI settles, the daemon tells the architect and the worker of the phase the issue then stands in.
+     A run that has not concluded, or one GitHub could not be read for, is neither a pass nor a fail yet:
+     never wait for, watch or poll it, as your role prompt says of CI.
+     Name each run that has not concluded, with the time you read it, in step 5's `Runs still going` line, and go on;
+     when CI settles, the daemon tells the architect and the worker of the phase the issue then stands in.
      Send a name that no run answers (`absent`) to the architect as a finding, since the check's words are wrong, and the same for a check whose `run` is a whole test suite.
      Neither that run nor that finding moves the issue back.
 
@@ -48,13 +53,14 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 
 2. **Get a second reading.**
    First list in your session the constraints the issue did not state, choices between two working options, abandoned approaches and reusable code.
-   Then run `task(agent="oracle")` with the issue, the pull request body and the diff, asking for reusable learnings, and `wait` for its answer.
-   Drop a point that cites no file, symbol, quoted text or commit of this pull request.
+   Then run `task(agent="oracle")` with the issue and the pull request body and diff, or, with no pull request, the steps' reports and results, asking for reusable learnings, and `wait` for its answer.
+   Drop a point that cites no file, symbol, quoted text or commit of this pull request, or of the task's work where it has none.
 
 3. **Record the learnings** as one `dispatch comment` on the issue, per `skill://legion-retro/references/learnings.md`.
    When no point qualifies, write no comment and say so in step 5's message.
 
-4. **Update the PR body** per `skill://legion-retro/references/pr-body-content.md`: the lines the repository derives from changed paths, where it derives any.
+4. **Update the PR body**, where the issue has a pull request, per `skill://legion-retro/references/pr-body-content.md`:
+   the lines the repository derives from changed paths, where it derives any.
    With no reviewer step, also record step 1's bot threads in `Threads` at the head you found, and bring `Not proven / risk` up to date from the tester's handoff where the task has one, naming each check whose run has not concluded (`skill://legion-worker/references/pr-body.md`, "The brief for the human").
 
 5. **Post one Dispatch message on the issue**, at most 32,000 characters (never a `gh issue` write):
@@ -68,7 +74,7 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
    **Key takeaways:**
    - <one to three reusable lessons>
 
-   **Results read:** implementer <check and result>, tester <check and result, where the task has a tester step>.
+   **Results read:** <each step that recorded one: its role, the check and the result>.
 
    **Declined threads:** <with no reviewer step, each bot thread step 1 declined, by node id with its reason, or none>
 
@@ -80,7 +86,8 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
    EOF
    ```
 
-   A Dispatch comment or message never carries the `<!-- legion: … -->` footer. Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
+   A Dispatch comment or message never carries the `<!-- legion: … -->` footer.
+   Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
 
 6. **Complete** with the `legion` tool's `handoff_complete`, its summary two sentences for the architect.
    In the same call, rate the plan the issue ran (its steps and the role that worked each, not the planner's `plan.md`):
@@ -94,6 +101,6 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 
 - Each body line you added or changed that says work was done names work this pull request did.
 
-- The comment and the message are posted, and the pull request's head is the head you found.
+- The comment and the message are posted, and the pull request's head, where there is one, is the head you found.
 
 - Your `handoff_complete` carries `plan_rating` and `plan_reason`, or neither where your `legion` tool's `handoff_complete` takes neither.
