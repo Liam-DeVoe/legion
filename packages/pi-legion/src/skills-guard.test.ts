@@ -676,13 +676,19 @@ function lacks(relative: string, duties: RegExp[]) {
 }
 
 test("an implementer and owner task is accepted on the evidence its steps give", () => {
-  const missing = lacks("legion-architect/references/acceptance.md", [
-    /`acceptance:owner` enters `accepting`/,
-    /has a tester step[^.;]*--phase test/,
-    /`dispatch results --issue <issue>`[^.;]*the last step's head/,
-    /has a reviewer step[^.;]*approval/,
-    /no tester step[^.;]*the implementer's evidence/,
-  ]);
+  const missing = [
+    ...lacks("legion-architect/references/acceptance.md", [
+      /`acceptance:owner` enters `accepting`/,
+      /tester step comes before your acceptance[^.;]*--phase test/,
+      /`dispatch results --issue <issue>`[^.;]*the last step's head/,
+      /reviewer step comes before your acceptance[^.;]*approval/,
+      /no tester step before your acceptance[^.;]*the implementer's evidence/,
+      /steps after your acceptance in the task run, then retro/,
+    ]),
+    ...lacks("legion-architect/SKILL.md", [
+      /your acceptance is the task's last step[^.;]*`sign_off` starts retro/,
+    ]),
+  ];
   expect(missing).toEqual([]);
 });
 
@@ -693,7 +699,7 @@ test("an implementer and reviewer task has the implementer prove the surface and
       /implementer with no tester step[^.;]*real surface/,
     ]),
     ...lacks("legion-worker/references/merge-gate.md", [
-      /no tester step[^.;]*the implementer's evidence[^.;]*read/,
+      /no earlier tester step[^.;]*the implementer's evidence[^.;]*read/,
     ]),
   ]).toEqual([]);
 });

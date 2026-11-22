@@ -86,7 +86,7 @@ A parent's own first phase waits while Dispatch shows an open child under it (th
 
 ## 5. Retro
 
-Where the task has `acceptance:owner`, your `sign_off` starts retro; without it, the last step starts retro.
+Where your acceptance is the task's last step, your `sign_off` starts retro; otherwise the pass of the task's last step starts it.
 Never message the implementer to start retro.
 A retro that reports a defect holds its completion until you say whether it moves the issue back, which only retro can do while it holds the phase.
 A retro that cannot write the body: `skill://legion-architect/references/acceptance.md`, "Retro's result".

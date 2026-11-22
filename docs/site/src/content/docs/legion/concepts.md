@@ -151,8 +151,9 @@ workflow, at a head that carries their merges.
 
 ## Phase workers
 
-The daemon starts each phase's worker itself, one phase at a time, in the order below, and runs
-only the phases of the steps the issue's [plan](#the-plan-of-an-issue) names. A role keeps
+The daemon starts each phase's worker itself, one phase at a time, and runs only the phases of the
+steps the issue's [plan](#the-plan-of-an-issue) names, in the order the plan names them; the table
+below lists them in the order of the default steps. A role keeps
 its session between its assignments until its issue leaves the workflow, so its next task reaches
 the same session. Under the Kubernetes runtime the pod is shorter-lived than the session: the
 daemon releases an issue's pod once no role of it has a turn in progress or a turn due for ten
@@ -167,7 +168,7 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
-| `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's approval of the head where the plan has those steps, and accepts the issue (on to retro) or sends it back to the implementer, or to the tester where the plan has one. Issues still running beneath it do not hold the acceptance: a root's close waits for them instead. No worker runs here; the issue's Dispatch status stays `needs_review`. | review App |
+| `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's approval of the head where those steps come before the acceptance, and accepts the issue (on to the task's next step, or to retro where the acceptance is its last step) or sends it back to an earlier step of its task. The daemon refuses the acceptance while an issue beneath it is still in the workflow. No worker runs here; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
 | `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
 
@@ -187,17 +188,19 @@ checks.
 
 The table is the line of the **default steps**. Each architect of a tree, the root's or a
 sub-architect's, is an owner of each issue that stands in that tree now, and can give an issue a
-**plan** that picks which of these steps it runs: one task whose steps are
-some of `planner implementer tester reviewer acceptance:owner`, in that order, with `implementer`
-among them, where `acceptance:owner` is the architect's own acceptance in `accepting`. It writes
+**plan** that picks which of these steps it runs and in what order: one task whose steps are
+some of `planner implementer tester reviewer acceptance:owner`, in the order the owner names them,
+with `implementer` among them and before each `tester`, `reviewer` and `acceptance:owner` step,
+since each of those reads the pull request the implementer opens,
+where `acceptance:owner` is the architect's own acceptance in `accepting`. It writes
 the plan as the issue's `plan.md` document, with one `plan_task` block such as
 `:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver, and
 gives that version to Legion with the `legion` tool's `register_plan` before the issue's work
 starts: for a child, before `release_children` releases it, since a released child can start its
 first step in the same admission pass. Legion holds a plan given for a child it has not recorded
 yet, and the child's first step takes the newest plan its owner gave. Legion runs only those steps,
-in that order, then the retro and the merge, so an issue with that plan runs no planner and no
-tester. Legion refuses any other plan with `PLAN_REFUSED` and one
+in the order the plan names them, then the retro and the merge, so an issue with that plan runs no
+planner and no tester. Legion refuses any other plan with `PLAN_REFUSED` and one
 reason for each cause. An issue whose owner gives it no plan, or a task with no steps, runs the
 project's default steps, `projects.<KEY>.default_steps` in `legion.yaml`, which are the whole table
 unless the project sets others; so does an issue whose work started before its owner gave it a
@@ -509,8 +512,10 @@ Legion uses GitHub's own review mechanisms rather than labels:
   `review_round_cap` does not count: the implementer answers such a round with a forward merge,
   which no reviewer asked for, and the cap's message names both numbers, the rounds counted and
   the conflict rounds left out.
-- Each move back is counted by its kind as well, as the pair `<from>-<to>` —
-  `testing-implementing`, `reviewing-implementing`, `merging-implementing` and the other eighteen —
+- Each move back is counted by its kind as well, as the pair `<from>-<to>` of the phase it leaves
+  and the phase it goes to — `testing-implementing`, `reviewing-implementing`, `merging-implementing`,
+  or any other of the 42 pairs of two different workflow phases, such as `testing-reviewing` on a
+  task whose reviewer step comes before its tester step —
   beside the round count, and a conflict round raises no pair.
   `GET /legion/v1/state` serves the counts as `workers.implementer.backwardMoves`, left out for an
   issue that has had no move back.

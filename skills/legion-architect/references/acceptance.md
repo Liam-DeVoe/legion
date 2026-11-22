@@ -14,13 +14,13 @@ answer it on its role topic from the deployment instructions, or open a `dispatc
 Only a task whose `Steps:` line names `acceptance:owner` enters `accepting`.
 Read, against the goal, every check and every requirement:
 
-1. where the task has a tester step, the tester's handoff: `dispatch handoff-read --issue <issue> --phase test`;
+1. where a tester step comes before your acceptance, the tester's handoff: `dispatch handoff-read --issue <issue> --phase test`;
 
 2. `dispatch results --issue <issue>`: whether a pass stands for each check at the last step's head;
 
-3. where the task has a reviewer step, the reviewer's approval of the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`);
+3. where a reviewer step comes before your acceptance, the reviewer's approval of the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`);
 
-4. where the task has a reviewer step, each claim of the reviewer's prose, against the code at that head;
+4. where a reviewer step comes before your acceptance, each claim of the reviewer's prose, against the code at that head;
 
 5. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head gets no CI (*A conflicting head*, below).
 
@@ -51,9 +51,9 @@ Until those children close, leave the issue in `accepting`; that wait is no reas
 Before you park a child, move its criterion to the parent's own pull request or a released, open child; never downgrade it.
 Then, in one turn:
 
-1. Where the task has a tester step, `envoy_publish` to its tester's role topic:
+1. Where a tester step comes before your acceptance, `envoy_publish` to its tester's role topic:
    "The next round of <KEY> is its last round: a full test round of every check of the issue with no `ci_check`."
-   With no tester step, the implementer's evidence for those checks at the merge head is the full round.
+   With no tester step before your acceptance, the implementer's evidence for those checks at the merge head is the full round.
 
 2. `request_backward_move` to `implementing`, with the reason "Last round:
    merge the default branch your addressing line names into the branch, push, end your forward-merge comment with `parent's last round: full test round`, and complete."
@@ -69,7 +69,7 @@ If the pull request merged before its last round, move nothing back. Once the ch
 
 ## After your sign-off
 
-Retro runs, then the merger merges the last step's head under the repository's own rules; you start none of it.
+The steps after your acceptance in the task run, then retro, then the merger merges the last step's head under the repository's own rules; you start none of it.
 A person's request after your sign-off is a requirement of this issue: the role that holds the phase makes the `request_backward_move`.
 When the merger reports:
 

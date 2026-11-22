@@ -62,8 +62,8 @@ as the review App. In Dispatch, the issue's header links the pull request.
 
 When the reviewer approves, the architect reads the evidence (the tester's handoff, each check of
 the issue with its latest result, the approval of the head) and accepts the change with a comment on the
-issue, which moves it to `retro`; a change that falls short goes back to the implementer or the
-tester instead. Retro runs next.
+issue, which moves it to `retro`, since the acceptance is the last of the default steps; a change
+that falls short goes back to an earlier step of its task instead. Retro runs next.
 
 ## 7. The merge
 
