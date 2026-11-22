@@ -212,11 +212,18 @@ export function specColumn(page: Page): Promise<SpecColumnRow[]> {
   });
 }
 
-/** Whether the link `href` goes to a node `names` holds: a block by its fragment (`#b-<id>`), an
- *  ask by its address (`/asks/<id>`). */
+/** Whether the link `href` goes to a node `names` holds: a block by its fragment (`#b-<id>`), a
+ *  block by its row id, the link's last path segment followed by its fragment (`<slug>#b-<id>`,
+ *  as `/issues/<KEY>/artifacts/<slug>#b-<id>` ends), an ask by its address (`/asks/<id>`). */
 function linksTo(href: string, names: readonly string[]): boolean {
   const url = new URL(href, "http://links.invalid");
-  return names.some((name) => url.hash === `#b-${name}` || url.pathname.endsWith(`/asks/${name}`));
+  // A row id always ends in a block's fragment, so a link with none is no block's row id.
+  const rowId = url.hash.startsWith("#b-")
+    ? `${url.pathname.slice(url.pathname.lastIndexOf("/") + 1)}${url.hash}`
+    : null;
+  return names.some(
+    (name) => url.hash === `#b-${name}` || rowId === name || url.pathname.endsWith(`/asks/${name}`)
+  );
 }
 
 /** The statements of `column` a decision stands beside, by any of its `names` (its row id, its
