@@ -17,7 +17,7 @@ import (
 )
 
 // SessionConsumerNamePrefix begins the physical name of every session consumer the fresh mode
-// creates (consumernames.FreshName): session~<nuid>, the family table's (consumernames.SessionPrefix).
+// creates (consumernames.FreshName): session~<random>, the family table's (consumernames.SessionPrefix).
 // An earlier build's sweep lists only names that begin s-, so it never takes one of these for a
 // session.
 const SessionConsumerNamePrefix = consumernames.SessionPrefix
@@ -102,6 +102,9 @@ func newFreshSessions(s *SessionConsumers) *freshSessions {
 		},
 		Metadata: naming.Metadata,
 		CheckKey: naming.CheckKey,
+		// Each create is a consumer request with no deadline of its own, which request bounds by
+		// storedMessageWait: the bound a create's candidate is kept named for once retired.
+		CreateBound: storedMessageWait,
 		// The candidate as the server answers it, against the whole configuration a session
 		// consumer's create gives (freshConfig, ConsumerAdoptable): one that differs in a setting no
 		// update changes is refused. Its start Names checks, and every setting an update changes is

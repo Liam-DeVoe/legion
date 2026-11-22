@@ -23,7 +23,8 @@ import (
 )
 
 // startingSentinelRig is a fresh-mode listener's main client over a server with the stream and a
-// selection bucket whose sentinel sentinel leaves as it is, and a plain connection.
+// selection bucket whose sentinel sentinel leaves as it is (no bucket at all for a nil sentinel),
+// and a plain connection.
 func startingSentinelRig(t *testing.T, sentinel func(t *testing.T, conn *natsgo.Conn)) (*bus.Client, *natsgo.Conn) {
 	t.Helper()
 	_, uri := testnats.Start(t)
@@ -34,6 +35,9 @@ func startingSentinelRig(t *testing.T, sentinel func(t *testing.T, conn *natsgo.
 	t.Cleanup(client.Close)
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
+	if sentinel == nil {
+		return client, conn
+	}
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatal(err)
@@ -49,9 +53,14 @@ func startingSentinelRig(t *testing.T, sentinel func(t *testing.T, conn *natsgo.
 // written. It puts the sentinel under the key as bytes, as a principal with a write of the bucket
 // can, since the store's own WriteSentinel writes the session family alone.
 func writeSentinel(family string) func(t *testing.T, conn *natsgo.Conn) {
+	return writeSentinelState(family, consumernames.CutoverDone)
+}
+
+// writeSentinelState is writeSentinel with the cutover marker cutover.
+func writeSentinelState(family, cutover string) func(t *testing.T, conn *natsgo.Conn) {
 	return func(t *testing.T, conn *natsgo.Conn) {
 		t.Helper()
-		data, err := json.Marshal(consumernames.StoreState{Key: consumernames.SentinelKey, Family: family, Cutover: consumernames.CutoverDone, Boundary: 1})
+		data, err := json.Marshal(consumernames.StoreState{Key: consumernames.SentinelKey, Family: family, Cutover: cutover, Boundary: 1})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -65,19 +74,26 @@ func writeSentinel(family string) func(t *testing.T, conn *natsgo.Conn) {
 	}
 }
 
-// A fresh listener that starts over a selection bucket whose sentinel refuses every call binds no
-// durable however long it retries, so its /healthz says so while it starts: 503 not_ready naming
-// the bucket, the key envoy.bucket and why (absent, another family, malformed, the independent
-// tester's F2). The control is a sound sentinel, over which the start is only "starting".
-func TestAFreshStartWhoseSentinelRefusesSaysSoOnHealthz(t *testing.T) {
+// A fresh listener that starts over a selection state that refuses every call binds no durable
+// however long it retries, so its /healthz says so while it starts: 503 not_ready naming the
+// bucket, the key envoy.bucket where there is one, and why: the bucket missing, the cutover not
+// run or rolled back, or the sentinel absent, of another family or malformed (the independent
+// tester's F2). The control is a sound sentinel, over which the start is only "starting". Before,
+// a missing bucket and a cutover not done answered 200 "starting", and the process exited at the
+// bind's deadline with "subscribe failed after max attempts", again at every start.
+func TestAFreshStartWhoseSelectionRefusesSaysSoOnHealthz(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		sentinel func(t *testing.T, conn *natsgo.Conn)
 		reason   string
+		key      string
 	}{
-		{name: "malformed", sentinel: storeStreamInfoOverTheSentinel, reason: "malformed"},
-		{name: "absent", sentinel: func(*testing.T, *natsgo.Conn) {}, reason: "absent"},
-		{name: "another family", sentinel: writeSentinel(consumernames.DispatchFamily), reason: "another family"},
+		{name: "no bucket", reason: "missing"},
+		{name: "before the cutover", sentinel: writeSentinelState(consumernames.SessionFamily, ""), reason: "cutover not done", key: consumernames.SentinelKey},
+		{name: "rolled back", sentinel: writeSentinelState(consumernames.SessionFamily, consumernames.CutoverRolledBack), reason: "cutover not done", key: consumernames.SentinelKey},
+		{name: "malformed", sentinel: storeStreamInfoOverTheSentinel, reason: "malformed", key: consumernames.SentinelKey},
+		{name: "absent", sentinel: func(*testing.T, *natsgo.Conn) {}, reason: "absent", key: consumernames.SentinelKey},
+		{name: "another family", sentinel: writeSentinel(consumernames.DispatchFamily), reason: "another family", key: consumernames.SentinelKey},
 		{name: "control: a sound sentinel", sentinel: writeSentinel(consumernames.SessionFamily)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -95,9 +111,10 @@ func TestAFreshStartWhoseSentinelRefusesSaysSoOnHealthz(t *testing.T) {
 				}
 				return
 			}
-			if recorder.Code != http.StatusServiceUnavailable || body["status"] != "not_ready" || body["key"] != consumernames.SentinelKey ||
+			key, _ := body["key"].(string)
+			if recorder.Code != http.StatusServiceUnavailable || body["status"] != "not_ready" || key != tc.key ||
 				body["bucket"] != consumernames.SessionBucket || body["reason"] != tc.reason {
-				t.Fatalf("/healthz = %d %v; want 503 not_ready naming %s of %s, %s", recorder.Code, body, consumernames.SentinelKey, consumernames.SessionBucket, tc.reason)
+				t.Fatalf("/healthz = %d %v; want 503 not_ready naming %q of %s, %s", recorder.Code, body, tc.key, consumernames.SessionBucket, tc.reason)
 			}
 		})
 	}

@@ -9,7 +9,7 @@ import (
 )
 
 // Naming is how a family names the consumers of a logical name: Prefix(logical) begins each of its
-// fresh names (Prefix(logical)~<nuid>), Fixed(logical) is the name the family gave logical before
+// fresh names (Prefix(logical)~<random>), Fixed(logical) is the name the family gave logical before
 // this package, which the cutover's convert replaces, Metadata(logical) is the metadata every
 // consumer of logical carries, which its create writes and the owner check requires, and
 // CheckKey(logical) refuses a key that is none of the family's. Every Naming the table gives sets
@@ -25,7 +25,7 @@ type Naming struct {
 }
 
 const (
-	// SessionPrefix begins every fresh session consumer's name: session~<nuid>, for every session.
+	// SessionPrefix begins every fresh session consumer's name: session~<random>, for every session.
 	SessionPrefix = "session"
 	// SessionFixedPrefix begins every fixed session consumer's name: s-<session id>.
 	SessionFixedPrefix = "s-"
@@ -38,10 +38,14 @@ const (
 	DispatchJobDurable      = "delivery-jobs"
 	// daemonDurablePrefix begins every durable of a Legion daemon: legion-go-<project>-<kind>.
 	daemonDurablePrefix = "legion-go-"
+	// ListenerDurablePrefix begins the name of every listener's own durable,
+	// listener-<machine id> (bus.ListenerDurable): the only durables the session store keeps, under
+	// DurableKey.
+	ListenerDurablePrefix = "listener-"
 )
 
 // SessionNaming is the session family's naming, for a session's key (its id): its fresh names are
-// session~<nuid> (SessionPrefix), its fixed name s-<session id> (SessionFixedPrefix), each of its
+// session~<random> (SessionPrefix), its fixed name s-<session id> (SessionFixedPrefix), each of its
 // consumers carries the session id under LogicalMetadataKey and SessionIDMetadataKey, and its keys
 // are the ones CheckKey passes.
 func SessionNaming() Naming {
@@ -56,9 +60,10 @@ func SessionNaming() Naming {
 }
 
 // DurableNaming is the naming of a durable kept in the session store under DurableKey(durable),
-// the listener's own: its fresh names are <durable>~<nuid>, its fixed name the durable's name, each
+// the listener's own: its fresh names are <durable>~<random>, its fixed name the durable's name, each
 // of its consumers carries the durable's name under LogicalMetadataKey, and its keys are the ones
-// DurableKey makes (CheckDurableKey), so a key it did not make has no durable.
+// DurableKey makes of a listener's durable (checkListenerDurableKey), so a key it did not make has
+// no durable, and a key of a daemon's or Dispatch's durable none of this family's.
 func DurableNaming() Naming {
 	durable := func(key string) string {
 		durable, _ := durableOfKey(key)
@@ -66,11 +71,26 @@ func DurableNaming() Naming {
 	}
 	return Naming{Prefix: durable, Fixed: durable, Metadata: func(key string) map[string]string {
 		return map[string]string{LogicalMetadataKey: durable(key)}
-	}, CheckKey: CheckDurableKey}
+	}, CheckKey: checkListenerDurableKey}
+}
+
+// checkListenerDurableKey refuses, as ErrInvalidKey naming it, a key DurableKey did not make
+// (CheckDurableKey) and one DurableKey made of a durable that is no listener's own
+// (ListenerDurablePrefix and a machine id): the session store keeps the listeners' durables alone,
+// so the key of a daemon's or Dispatch's durable there would name that family's durable as the
+// key's own fixed name, which the fence and the owner check then serve.
+func checkListenerDurableKey(key string) error {
+	if err := CheckDurableKey(key); err != nil {
+		return err
+	}
+	if durable, _ := durableOfKey(key); len(durable) <= len(ListenerDurablePrefix) || !strings.HasPrefix(durable, ListenerDurablePrefix) {
+		return fmt.Errorf("%w: %q is the key of the durable %q, no listener's (%s<machine id>)", ErrInvalidKey, key, durable, ListenerDurablePrefix)
+	}
+	return nil
 }
 
 // LogicalNaming is the naming of a durable whose logical name is its own, Dispatch's and the
-// daemons': its fresh names are <logical>~<nuid>, its fixed name the logical name, each of its
+// daemons': its fresh names are <logical>~<random>, its fixed name the logical name, each of its
 // consumers carries the logical name under LogicalMetadataKey, and its keys are the ones CheckKey
 // passes. FamilyNaming narrows the keys to the family's own: Dispatch's two durables, or a
 // daemon's legion-go-<project>-<kind>.
@@ -110,12 +130,13 @@ func daemonKey(project string) func(logical string) error {
 }
 
 // FamilyNaming is the naming of logical's consumers in the store of family: in the session family's
-// store, DurableNaming for a key with DurableKey's prefix and SessionNaming for any other; in
-// Dispatch's, LogicalNaming over Dispatch's two durables alone; in a daemon's (DaemonFamily),
-// LogicalNaming over legion-go-<project>-<kind> of its own project alone. A family no store keeps
-// is ErrInvalidFamily, and a key the family's CheckKey refuses ErrInvalidKey, each naming it: a key
-// of another family's (the listener's durable, another project's daemon) or no key at all is no
-// key of family's store, however its record reads.
+// store, DurableNaming for a key with DurableKey's prefix, over a listener's durable alone, and
+// SessionNaming for any other; in Dispatch's, LogicalNaming over Dispatch's two durables alone; in a
+// daemon's (DaemonFamily), LogicalNaming over legion-go-<project>-<kind> of its own project alone. A
+// family no store keeps is ErrInvalidFamily, and a key the family's CheckKey refuses ErrInvalidKey,
+// each naming it: a key of another family's (the listener's durable, another project's daemon, the
+// DurableKey of a daemon's or Dispatch's durable) or no key at all is no key of family's store,
+// however its record reads.
 func FamilyNaming(family, logical string) (Naming, error) {
 	if err := checkFamily(family); err != nil {
 		return Naming{}, err

@@ -24,7 +24,7 @@ func TestACreateReservesItsNameAndStartThenPublishesIt(t *testing.T) {
 		t.Fatalf("Ensure = %v, created %t; want a create", err, created)
 	}
 	if !strings.HasPrefix(sel.Record.Current, "session~") {
-		t.Fatalf("current = %q, want a fresh session~<nuid> name", sel.Record.Current)
+		t.Fatalf("current = %q, want a fresh session~<random> name", sel.Record.Current)
 	}
 	if len(written) != 2 {
 		t.Fatalf("%d writes, want the reservation and the publish: %+v", len(written), written)
@@ -689,7 +689,40 @@ func TestTheLogicalNameIsThePhysicalNameCutAtItsLastTilde(t *testing.T) {
 	}
 	name := FreshName("session")
 	if !strings.HasPrefix(name, "session~") || len(name) != len("session~")+22 || FreshName("session") == name {
-		t.Fatalf("FreshName = %q, want session~ and a fresh 22-character nuid", name)
+		t.Fatalf("FreshName = %q, want session~ and a fresh 22-character suffix", name)
+	}
+}
+
+// A fresh name cannot be told from the names one process made before it: each suffix is 22
+// characters of [0-9A-Za-z] drawn from crypto/rand (about 131 bits), so a principal that can create
+// consumers and sees one listener's names or reply inboxes cannot create its next candidate first.
+// Of 2,000 successive names, no two share the first 12 characters of their suffix, which two random
+// suffixes do with a chance near 2e-15; each character of the alphabet appears in some suffix; and
+// every suffix is the 22 characters freshOf takes. Before, the suffix was a NUID: a random 12-
+// character prefix shared by every name of the process and a sequence that advances by a fixed
+// increment, so every pair shared those 12 characters.
+func TestFreshNamesCannotBePredictedFromEachOther(t *testing.T) {
+	const names = 2000
+	seen := map[string]string{}
+	used := map[rune]bool{}
+	for range names {
+		name := FreshName("session")
+		suffix, ok := strings.CutPrefix(name, "session~")
+		if !ok || len(suffix) != 22 || strings.ContainsFunc(suffix, func(r rune) bool {
+			return !('0' <= r && r <= '9' || 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z')
+		}) {
+			t.Fatalf("FreshName = %q, want session~ and 22 characters of [0-9A-Za-z]", name)
+		}
+		if other, ok := seen[suffix[:12]]; ok {
+			t.Fatalf("FreshName gave %q and %q, which share the first 12 characters of their suffix: the next name can be predicted from one before", other, name)
+		}
+		seen[suffix[:12]] = name
+		for _, r := range suffix {
+			used[r] = true
+		}
+	}
+	if len(used) != 62 {
+		t.Fatalf("%d names used %d of the 62 characters of [0-9A-Za-z]; want every one", names, len(used))
 	}
 }
 

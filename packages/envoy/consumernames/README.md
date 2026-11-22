@@ -13,12 +13,14 @@ consumer reads.
 
 | Family | Logical name | Fixed name (the fixed mode) | Physical name of each creation (the fresh mode) |
 | --- | --- | --- | --- |
-| Session consumer | the session id | `s-<session id>` | `session~<nuid>` |
-| The listener's own durable | `listener-<machine id>` | the logical name | `listener-<machine id>~<nuid>` |
-| Dispatch's durables | `delivery-events`, `delivery-jobs` | the logical name | `<logical>~<nuid>` |
-| A Legion daemon's durables | `legion-go-<project>-<kind>` | the logical name | `<logical>~<nuid>` |
+| Session consumer | the session id | `s-<session id>` | `session~<random>` |
+| The listener's own durable | `listener-<machine id>` | the logical name | `listener-<machine id>~<random>` |
+| Dispatch's durables | `delivery-events`, `delivery-jobs` | the logical name | `<logical>~<random>` |
+| A Legion daemon's durables | `legion-go-<project>-<kind>` | the logical name | `<logical>~<random>` |
 
-- `FreshName(prefix)` is `<prefix>~<nuid>`. A `~` is in no fixed name, so no fresh name is a fixed one.
+- `FreshName(prefix)` is `<prefix>~<random>`, where `<random>` is 22 characters of `[0-9A-Za-z]`,
+  each drawn from `crypto/rand` (about 131 bits), so no name says anything of the next. A `~` is
+  in no fixed name, so no fresh name is a fixed one.
 - `Config.Prefix(logical)` is the part before the `~`: `session` for a session consumer, the logical
   name itself for a durable. `LogicalOf` cuts a durable's physical name at its last `~`. It does not
   give a session's logical name, which is the consumer's metadata (below).
@@ -40,15 +42,29 @@ revision:
 | --- | --- |
 | `key` | the key the record is stored under (below); a read refuses a record carrying any other |
 | `current` | the selected physical name, or empty |
-| `op` | the operation in flight: `create`, `replace` or `delete`, with its owner, candidate, old name, reservation time and `floor_recorded` |
+| `op` | the operation in flight: `create`, `replace` or `delete`, with its owner, candidate, old name, reservation time, `floor_recorded`, `create_within` (the bound the reserving process's create of the candidate runs under, `Config.CreateBound`), and `start_pending` for a replace whose start is read from its old name after the reservation (the record's saved start stands until then, and stays if the replace closes without a create) |
 | `start` | the saved start, written before any destructive step |
 | `last_floor` | the current consumer's last ack floor, with the name and the stream identity it was read on |
 | `retired` | names never selected again; only these are ever deleted by a cleanup |
+| `abandoned` | the retired candidates whose create may still have been in flight when Step 0 or a retry retired them, each with the time until which it can still land: the retirement and the operation's `create_within` |
 | `restore` | a rollback in progress |
 
 - **Lifetime.** A record is never deleted and never expires. Publishing a new `current` clears
   `last_floor`. A replaced predecessor whose delete the server confirmed leaves `retired` again;
-  one whose delete failed stays there for the cleanup.
+  one whose delete failed stays there for the cleanup. A cleanup drops a retired name the server
+  does not hold, except an abandoned candidate read absent before its time has passed: its create
+  can still land, and the consumer it makes must stay named, so the next cleanup deletes it. Names
+  ends each create once the family's `Config.CreateBound` has passed since the operation's
+  reservation, its `Config.Reserved` hook's time included, and sends no create past it: the bound
+  its requests run under, the session family's consumer requests' 10 s, the listener's durable
+  calls' 10 s. A retirement comes after the reservation, so its `until` is no earlier than the
+  create's end. A create the server
+  applies later still, past the bound its client waited, is a stated limit: the consumer it leaves
+  is named by no record, and the stream's inactive threshold removes it. A reader that deletes
+  retired names itself (the operator's cleanup) drops each with `Record.DropRetired(name, deleted,
+  now)`, the rule `Cleanup` drops by: it takes the name out of `retired` and `abandoned` together,
+  so the record stays one the stores read, and keeps an abandoned name read absent before its
+  `until`.
 - **Where records live, and their keys.** A store reads and writes only its own family's
   sentinel and records:
   - The session family keeps its records in the KV bucket `envoy_session_consumers`
@@ -91,26 +107,28 @@ revision:
   reader's to answer, as `ErrRecordDeleted`, or `ErrNoSentinel` under `envoy.bucket`, before it
   decodes anything.
 - **The family fence.** A record's current, retired names and candidate must be
-  `<Prefix(logical)>~<nuid>` names of its own key. Its operation's old name may also be the key's
+  `<Prefix(logical)>~<random>` names of its own key. Its operation's old name may also be the key's
   fixed name, which the cutover replaces. Anything else is `ErrMalformedRecord`, naming the field.
   Every creator applies the fence to every record it reads.
 
   The prefix, the fixed name, the metadata and the key rule come from one table in this package
-  (`Naming`, `FamilyNaming`): `SessionNaming()` (`session~<nuid>`, fixed `s-<session id>`, metadata
+  (`Naming`, `FamilyNaming`): `SessionNaming()` (`session~<random>`, fixed `s-<session id>`, metadata
   `envoy.logical` and `envoy.session_id` both the session id, keys `CheckKey` passes),
-  `DurableNaming()` for a key `DurableKey` made (`<durable>~<nuid>`, fixed and `envoy.logical` the
-  durable's name, keys `CheckDurableKey` passes), and `LogicalNaming()` for Dispatch's and a
-  daemon's durables (`<logical>~<nuid>`, fixed and `envoy.logical` the logical name). Every creator
-  builds its `Config.Prefix`, `Config.Fixed`, `Config.Metadata` and `Config.CheckKey` from it.
+  `DurableNaming()` for a key `DurableKey` made (`<durable>~<random>`, fixed and `envoy.logical` the
+  durable's name, keys `DurableKey` made of a listener's durable, `listener-<machine id>`), and
+  `LogicalNaming()` for Dispatch's and a daemon's durables (`<logical>~<random>`, fixed and
+  `envoy.logical` the logical name). Every creator builds its `Config.Prefix`, `Config.Fixed`,
+  `Config.Metadata` and `Config.CheckKey` from it.
   `FamilyNaming(family, logical)` takes only the family's own keys: Dispatch's store only
   `delivery-events` and `delivery-jobs` (`DispatchDeliveryDurable`, `DispatchJobDurable`), a
   daemon's store only `legion-go-<project>-<kind>` of its own project for the kinds `dispatch`,
-  `github`, `wake` and `ready`, and the session store a key `CheckKey` passes or one `DurableKey`
-  made. Any other key is `ErrInvalidKey`, naming it, and the `Naming` it gives carries the
-  family's rule (`Naming.CheckKey`), so a `Names` built from it refuses another family's key
-  before it reads the record. The fence judges a record's names by its key's own prefix, so
-  without the key rule a record of a daemon's store keyed by the listener's durable would name
-  that durable as its own.
+  `github`, `wake` and `ready`, and the session store a key `CheckKey` passes or the `DurableKey` of
+  a listener's durable (`ListenerDurablePrefix`, the prefix `bus.ListenerDurable` names it by). Any
+  other key is `ErrInvalidKey`, naming it, and the `Naming` it gives carries the family's rule
+  (`Naming.CheckKey`), so a `Names` built from it refuses another family's key before it reads the
+  record. The fence judges a record's names by its key's own prefix, so without the key rule a
+  record of a daemon's store keyed by the listener's durable, or a session-store record keyed by
+  `DurableKey` of a daemon's durable, would name that durable as its own.
   `CheckFamily(family, logical, record)` is the fence by that table, the one a reader of the store
   uses (an operator's status, census or cleanup, in a module that cannot import the creators'),
   and it answers what the family's creator answers. Its nil says only that the key is of the
@@ -201,7 +219,7 @@ missing marker cannot tell a store before its cutover from one whose state was l
 
 | State | Error |
 | --- | --- |
-| the bucket or table is missing | `ErrNoStore` (only the server's own "stream not found", 10059; a read no server answers is a failed read) |
+| the bucket or table is missing | `ErrNoStore` (only the server's own "stream not found", 10059; a read or a write no server answers is a failed read or write, wrapping `nats.ErrNoResponders`, as a timeout is, and never a refusal) |
 | the sentinel is absent (no row; in the bucket, no message or a delete or purge marker) | `ErrNoSentinel` |
 | the sentinel key holds anything but the store's own exact sentinel: malformed, another family's, under another key, or with a field this build does not know | `ErrMalformedSentinel` (`ErrSentinelFamily` too for another family's) |
 | the cutover has not run, or was rolled back | `ErrCutoverNotRun` |
@@ -211,6 +229,7 @@ missing marker cannot tell a store before its cutover from one whose state was l
 | an open create's candidate that another principal made first, with the key's own metadata and a setting the family's create never gives and no update changes | `ErrUnexpectedConsumer`, naming the candidate and the setting. A session's registrations are refused for that session alone. The listener's own durable stops the listener at every start (`subscribe refused, shutting down`, as a refused durable does today). A Dispatch durable's intake delivers nothing, every take-over refusing again at ERROR naming the candidate. An accepted residual: it fails closed. The remedy is the operator's `envoy-infra consumer-names replace --listener` for the durable, a replay of the key (`consumer-names replay`) for a session, and for a Dispatch durable a delete of the named candidate from `ENVOY_NOTIFICATIONS`: the next take-over's Step 0 finds it gone, retires it once the operation is `Config.SettleAge` old, and creates a fresh generation at the saved start (`names_step0.go`, `settleOp`) |
 | a convert's replace of a Dispatch durable's fixed name left open | Dispatch's take-over cannot settle it: its connections are granted the fixed names' info and delete, but it sends a consumer call only on a generation's connection (`delivery/fresh_names.go`, `grantedFor`), so `finishFixedDelete` and `abandon` fail at each attempt and the intake refuses every take-over. A stated limit: the convert runs inside the writer hold, and the hold is not released until the conversion is marked complete, so no take-over meets such a replace; running the convert again settles it |
 | in the fixed mode, a cutover marker read answered "stream not found" (10059) by a cluster member that has not yet applied the bucket's create | read as no bucket, so no marker. A stated limit: the session bucket is created, recreated and restored only inside a writer hold, while every creator is held, and the hold's restart round waits for the stream before it releases them, so no fixed-mode reader meets that answer outside a hold |
+| in the fixed mode, the listener beside Dispatch, whose user holds no read of the bucket at this build | its refused read is no marker, so the gate opens, and after the session family's convert deletes its `listener-<machine id>` it creates that name again: a create of the same name. An ordering requirement: the convert runs only once that listener's grant reads the bucket (Dispatch's fresh-names change adds the read), so its read says `done` and it stops. In the fresh mode its start's durable check is refused and it exits |
 
 Two more stated limits. A hub whose JetStream limits set `max_request_batch` has the server fill
 `max_batch` on every pull consumer again after each correction, so the listener would send an

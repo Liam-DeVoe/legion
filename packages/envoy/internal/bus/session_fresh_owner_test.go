@@ -92,7 +92,7 @@ func TestARecordNamingAnotherSessionsConsumerNeverHandsItToItsKey(t *testing.T) 
 }
 
 // A candidate an open create names that someone else made, with the session's owner metadata and
-// start (the deep review's pre-created next NUID), is adopted only as the family creates it, and
+// start (the deep review's pre-created next name), is adopted only as the family creates it, and
 // its filters are corrected to the call's own before Ensure returns. One with a setting the
 // family's create never gives and no update changes (an ack policy of all, a push deliver subject,
 // another replay policy, memory storage, another max waiting) is refused as ErrUnexpectedConsumer

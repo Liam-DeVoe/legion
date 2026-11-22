@@ -58,7 +58,7 @@ type Config struct {
 	Server Server
 	// Prefix is the part of a physical name before its '~' (FreshName): "session" for a session
 	// consumer, the logical name itself for a durable. A record of logical names only consumers of
-	// that form, Prefix(logical)~<nuid>, and Fixed(logical) as an operation's old name alone
+	// that form, Prefix(logical)~<random>, and Fixed(logical) as an operation's old name alone
 	// (check).
 	Prefix func(logical string) string
 	// Fixed is the name the family gave logical before this package, which the cutover's convert
@@ -103,6 +103,13 @@ type Config struct {
 	SettleAge time.Duration
 	// Poll is how often a call waiting on such an operation reads again: 50 ms when 0.
 	Poll time.Duration
+	// CreateBound is the longest one create of the family's CreateFunc can run, the bound its
+	// requests already run under (the creator's own constant). Names ends each create once it has
+	// passed since the operation's reservation, the Reserved hook's time included, and sends none
+	// past it (boundedCreate); it records it in each operation it reserves (Op.CreateWithin), so a
+	// process that retires the candidate without seeing its create end keeps the name in the record
+	// until the create can no longer land (Record.Abandoned, Cleanup). Required.
+	CreateBound time.Duration
 	// CheckKey refuses a logical name before anything is written: CheckKey when nil. A
 	// creator takes it from its family's Naming (FamilyNaming), whose rule is the family's own:
 	// CheckDurableKey for a family keyed by DurableKey, Dispatch's two durables, a daemon's
@@ -168,11 +175,14 @@ type Names struct {
 	cfg Config
 }
 
-// New is Names over cfg. A cfg with no Prefix or no Fixed is a program's error, so New panics on it
-// before any call reads a name.
+// New is Names over cfg. A cfg with no Prefix, no Fixed or no CreateBound is a program's error, so
+// New panics on it before any call reads a name.
 func New(cfg Config) *Names {
 	if cfg.Prefix == nil || cfg.Fixed == nil {
 		panic("consumernames: New needs Config.Prefix and Config.Fixed, its family's Naming")
+	}
+	if cfg.CreateBound <= 0 {
+		panic("consumernames: New needs Config.CreateBound, the bound the family's creates run under")
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -470,7 +480,7 @@ func (n *Names) startFor(ctx context.Context, sel Selection, req CreateRequest) 
 // reserve writes a create of a fresh candidate at start, then creates and publishes it.
 func (n *Names) reserve(ctx context.Context, sel Selection, start Start, create CreateFunc, operation Operation) (Selection, error) {
 	record := sel.Record.clone()
-	record.Op = &Op{Kind: OpCreate, Owner: n.cfg.Owner, Candidate: FreshName(n.cfg.Prefix(sel.Logical)), Native: start.Native, ReservedAt: n.cfg.Now()}
+	record.Op = &Op{Kind: OpCreate, Owner: n.cfg.Owner, Candidate: FreshName(n.cfg.Prefix(sel.Logical)), Native: start.Native, CreateWithin: n.cfg.CreateBound, ReservedAt: n.cfg.Now()}
 	record.Start = start.Seq
 	next, err := n.write(ctx, sel, record)
 	if err != nil {
@@ -485,17 +495,21 @@ func (n *Names) reserve(ctx context.Context, sel Selection, start Start, create 
 
 // Replace replaces sel's current with a fresh consumer at start: it reserves the replace with the
 // start, creates the candidate, publishes it and retires the predecessor, then deletes the
-// predecessor. A start of 0 reserves the replace with no start, and the start is read from the
-// predecessor's floor after the reservation. At the stream's max_consumers it deletes the retired
-// names the server holds and tries again, and then deletes the predecessor, whose start is saved,
-// and creates the candidate: the cap is never updated.
+// predecessor. A start of 0 reserves the replace with its start pending (Op.StartPending), keeping
+// the record's saved start, and the start is read from the predecessor's floor after the
+// reservation: such a replace has destroyed nothing, so a call that closes it without creating
+// leaves the saved start as it was (plan §2, Step 0's replace with no start yet). At the stream's
+// max_consumers it deletes the retired names the server holds and tries again, and then deletes the
+// predecessor, whose start is saved, and creates the candidate: the cap is never updated.
 func (n *Names) Replace(ctx context.Context, sel Selection, start uint64, create CreateFunc) (Selection, error) {
 	if sel.Record.Current == "" {
 		return sel, fmt.Errorf("consumer names: %s has no current to replace: %w", sel.Logical, ErrNotFound)
 	}
 	record := sel.Record.clone()
-	record.Op = &Op{Kind: OpReplace, Owner: n.cfg.Owner, Old: sel.Record.Current, Candidate: FreshName(n.cfg.Prefix(sel.Logical)), ReservedAt: n.cfg.Now()}
-	record.Start = start
+	record.Op = &Op{Kind: OpReplace, Owner: n.cfg.Owner, Old: sel.Record.Current, Candidate: FreshName(n.cfg.Prefix(sel.Logical)), StartPending: start == 0, CreateWithin: n.cfg.CreateBound, ReservedAt: n.cfg.Now()}
+	if start > 0 {
+		record.Start = start
+	}
 	next, err := n.write(ctx, sel, record)
 	if err != nil {
 		n.observeErr(OperationReplace, err)
@@ -526,7 +540,7 @@ func (n *Names) launch(ctx context.Context, sel Selection, create CreateFunc, op
 	for attempt := 0; ; attempt++ {
 		op := sel.Record.Op
 		start := Start{Seq: sel.Record.Start, Native: op.Native}
-		info, err := create(ctx, op.Candidate, start)
+		info, err := n.boundedCreate(ctx, create, *op, start)
 		switch {
 		case err == nil:
 			return n.publish(ctx, sel, info, operation, OutcomeOK)
@@ -580,19 +594,55 @@ func (n *Names) launch(ctx context.Context, sel Selection, create CreateFunc, op
 	}
 }
 
+// boundedCreate runs create of op's candidate at start until op's create bound (Op.CreateWithin,
+// else the family's Config.CreateBound) has passed since op's reservation (Op.ReservedAt), on this
+// process's clock. The time the reserver spends after its reservation (its Config.Reserved hook
+// among it) spends the create's budget, so the create ends no later than the bound after the
+// reservation: a retirement, which comes after the reservation, keeps the candidate until no
+// earlier than that (Record.Abandoned). A budget spent before the create is sent sends nothing and
+// answers context.DeadlineExceeded, on which launch reads the candidate absent and goes on to a
+// fresh one.
+func (n *Names) boundedCreate(ctx context.Context, create CreateFunc, op Op, start Start) (*jetstream.ConsumerInfo, error) {
+	within := op.CreateWithin
+	if within <= 0 {
+		within = n.cfg.CreateBound
+	}
+	left := within - n.cfg.Now().Sub(op.ReservedAt)
+	if left <= 0 {
+		return nil, fmt.Errorf("consumer names: the create of %s was not sent: its bound %s since its reservation at %s has passed: %w",
+			op.Candidate, within, op.ReservedAt.Format(time.RFC3339Nano), context.DeadlineExceeded)
+	}
+	ctx, cancel := context.WithTimeout(ctx, left)
+	defer cancel()
+	return create(ctx, op.Candidate, start)
+}
+
 // rereserve retires sel's open operation's candidate and reserves a fresh one, keeping native as
-// the operation's native policy, then runs Config.Reserved on it.
+// the operation's native policy, then runs Config.Reserved on it. The retired candidate's create
+// may still be in flight, so it is kept named until its bound has passed (abandonCandidate).
 func (n *Names) rereserve(ctx context.Context, sel Selection, native Native) (Selection, error) {
 	op := sel.Record.Op
-	record := sel.Record.clone().retire(op.Candidate)
+	record := n.abandonCandidate(sel.Record.clone(), *op)
 	retry := *op
-	retry.Candidate, retry.Native, retry.ReservedAt, retry.Owner = FreshName(n.cfg.Prefix(sel.Logical)), native, n.cfg.Now(), n.cfg.Owner
+	retry.Candidate, retry.Native, retry.ReservedAt, retry.Owner, retry.CreateWithin = FreshName(n.cfg.Prefix(sel.Logical)), native, n.cfg.Now(), n.cfg.Owner, n.cfg.CreateBound
 	record.Op = &retry
 	next, err := n.write(ctx, sel, record)
 	if err != nil {
 		return next, err
 	}
 	return next, n.reserved(ctx, next)
+}
+
+// abandonCandidate is record with op's candidate retired and kept until the candidate's create can
+// no longer land: now, on this process's clock, and the bound the reserving process's create ran
+// under (op.CreateWithin), or this family's own (Config.CreateBound) for an operation that records
+// none.
+func (n *Names) abandonCandidate(record Record, op Op) Record {
+	within := op.CreateWithin
+	if within <= 0 {
+		within = n.cfg.CreateBound
+	}
+	return record.abandon(op.Candidate, n.cfg.Now().Add(within))
 }
 
 // retryNative is the native policy a fresh candidate retried in place of sel's open operation's
@@ -672,11 +722,7 @@ func (n *Names) publish(ctx context.Context, sel Selection, info *jetstream.Cons
 	if !slices.Contains(next.Record.Retired, old) {
 		return next, nil
 	}
-	kept := next.Record.clone()
-	kept.Retired = slices.DeleteFunc(kept.Retired, func(name string) bool { return name == old })
-	if len(kept.Retired) == 0 {
-		kept.Retired = nil
-	}
+	kept, _ := next.Record.DropRetired(old, true, n.cfg.Now())
 	if dropped, err := n.write(ctx, next, kept); err == nil {
 		dropped.Info, dropped.Created = next.Info, next.Created
 		next = dropped
@@ -757,8 +803,12 @@ func (n *Names) deleteOnce(ctx context.Context, logical string, listed *jetstrea
 
 // RecordLastFloor writes floor, read from consumer name on the stream streamID, as logical's last
 // floor, when name is still the current and no operation is open. A floor of another name changes
-// nothing.
+// nothing. A key the family's rule refuses (checkKey) is refused before anything is read, as at
+// every other entry point.
 func (n *Names) RecordLastFloor(ctx context.Context, logical, name string, floor uint64, streamID string) error {
+	if err := n.checkKey(logical); err != nil {
+		return err
+	}
 	for conflicts := 0; ; {
 		sel, err := n.read(ctx, logical)
 		if err != nil {
@@ -786,20 +836,25 @@ func (n *Names) RecordLastFloor(ctx context.Context, logical, name string, floor
 // Cleanup deletes logical's retired names that the server holds, and drops from the record each
 // retired name the server no longer holds. It answers how many it deleted. Only retired names are
 // deleted, never the current, never by name pattern, and never a consumer of another key (Owns),
-// which refuses the call as a malformed record. A refused write of the record leaves the names for
+// which refuses the call as a malformed record. A retired candidate whose create may still land
+// (Record.Abandoned) is dropped only once it is read absent at or after the time its create can
+// no longer land; until then it stays named, so a create that lands late leaves a consumer the
+// record names, which a later cleanup deletes. A refused write of the record leaves the names for
 // the next cleanup, which finds them gone.
 func (n *Names) Cleanup(ctx context.Context, logical string) (int, error) {
 	sel, err := n.selectRecord(ctx, logical, nil, false)
 	if err != nil || len(sel.Record.Retired) == 0 {
 		return 0, err
 	}
-	deleted := 0
-	gone := map[string]bool{}
+	deleted, dropped := 0, false
+	now := n.cfg.Now()
+	record := sel.Record.clone()
 	for _, name := range sel.Record.Retired {
 		if name == sel.Record.Current {
 			continue
 		}
 		_, err := n.info(ctx, logical, name)
+		var gone bool
 		switch {
 		case err == nil:
 			if err := n.cfg.Server.Delete(ctx, name); err != nil {
@@ -808,21 +863,17 @@ func (n *Names) Cleanup(ctx context.Context, logical string) (int, error) {
 			}
 			deleted++
 			n.observe(OperationCleanup, OutcomeOK)
+			record, gone = record.DropRetired(name, true, now)
 		case errors.Is(err, ErrMalformedRecord):
 			n.observe(OperationCleanup, OutcomeRefused)
 			return deleted, err
-		case !errors.Is(err, ErrNotFound):
-			continue
+		case errors.Is(err, ErrNotFound):
+			record, gone = record.DropRetired(name, false, now)
 		}
-		gone[name] = true
+		dropped = dropped || gone
 	}
-	if len(gone) == 0 {
+	if !dropped {
 		return deleted, nil
-	}
-	record := sel.Record.clone()
-	record.Retired = slices.DeleteFunc(record.Retired, func(name string) bool { return gone[name] })
-	if len(record.Retired) == 0 {
-		record.Retired = nil
 	}
 	if _, err := n.write(ctx, sel, record); err != nil && !errors.Is(err, ErrConflict) {
 		return deleted, err

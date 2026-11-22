@@ -8,14 +8,17 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/consumernames"
+	"github.com/sjawhar/envoy/internal/bus"
 )
 
 // The listener's durable creator names as the family table does: its Config's prefix, fixed name
 // and key rule are the table's for a durable's key (consumernames.DurableNaming), the prefix and
 // fixed name both the durable's own name, so its fence is the one consumernames.CheckFamily applies
-// for that key, which gives the answer each round-6 case pins. The controls, each run with a fault
-// and seen failing: a creator whose prefix is not the table's fails the naming row, and so does a
-// creator whose key rule is the session's (CheckKey), on its own key.
+// for that key, which gives the answer each round-6 case pins. Its key rule takes its own durable's
+// key and refuses the DurableKey of a daemon's or Dispatch's durable, which are no listener's. The
+// controls, each run with a fault and seen failing: a creator whose prefix is not the table's fails
+// the naming row, and so does a creator whose key rule is the session's (CheckKey), on its own key,
+// or any durable's (CheckDurableKey), on another family's durable.
 func TestTheDurableCreatorNamesAsTheFamilyTable(t *testing.T) {
 	r := newDurableRig(t, consumernames.ModeFresh)
 	names, _ := durableNames(r.client, r.durable)
@@ -30,10 +33,19 @@ func TestTheDurableCreatorNamesAsTheFamilyTable(t *testing.T) {
 	if creator.CheckKey == nil {
 		t.Errorf("the durable creator's key rule is nil; want the table's")
 	} else {
-		for _, k := range []string{key, r.durable, "durable.a=zz", "ses-A", ""} {
+		foreign := []string{consumernames.DurableKey("legion-go-q-wake"), consumernames.DurableKey(bus.DispatchDeliveryDurable)}
+		for _, k := range append([]string{key, r.durable, "durable.a=zz", "ses-A", ""}, foreign...) {
 			got, want := creator.CheckKey(k), table.CheckKey(k)
 			if (got == nil) != (want == nil) || errors.Is(got, consumernames.ErrInvalidKey) != errors.Is(want, consumernames.ErrInvalidKey) {
 				t.Errorf("the durable creator's key rule of %q is %v, the table's %v", k, got, want)
+			}
+		}
+		if err := creator.CheckKey(key); err != nil {
+			t.Errorf("the durable creator's key rule refuses its own durable's key %q: %v", key, err)
+		}
+		for _, k := range foreign {
+			if err := creator.CheckKey(k); !errors.Is(err, consumernames.ErrInvalidKey) {
+				t.Errorf("the durable creator's key rule of %q, another family's durable, is %v; want ErrInvalidKey", k, err)
 			}
 		}
 	}

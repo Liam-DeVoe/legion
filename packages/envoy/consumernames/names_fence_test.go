@@ -16,7 +16,7 @@ import (
 var testEpoch = time.Unix(1_700_000_000, 0)
 
 // A record names only its own family's consumers: its current, each retired name and an open
-// operation's candidate are <prefix>~<nuid> names of its key's prefix, and an operation's old name
+// operation's candidate are <prefix>~<random> names of its key's prefix, and an operation's old name
 // one of those or the key's fixed name. Any other name, another family's consumer (a daemon's
 // durable, the listener's durable for a session key, a session's for a durable key), is refused as a
 // malformed record, and the protocol neither reads, creates, deletes nor binds it. The control for
@@ -33,7 +33,7 @@ func TestARecordNamesOnlyItsOwnFamilysConsumers(t *testing.T) {
 		{name: "a current of the daemon's durable", prefix: "session", record: Record{Current: "legion-go-p-dispatch~AAAAAAAAAAAAAAAAAAAAAA", Start: 3}},
 		{name: "a current of the listener's durable", prefix: "session", record: Record{Current: "listener-m~AAAAAAAAAAAAAAAAAAAAAA", Start: 3}},
 		{name: "a current that is the fixed name", prefix: "session", record: Record{Current: "s-ses-1", Start: 3}},
-		{name: "a current of the prefix with no nuid", prefix: "session", record: Record{Current: "session~", Start: 3}},
+		{name: "a current of the prefix with no suffix", prefix: "session", record: Record{Current: "session~", Start: 3}},
 		{name: "a current of the prefix and more", prefix: "session", record: Record{Current: "session-x~AAAA", Start: 3}},
 		{name: "a retired name of the daemon's durable", prefix: "session", record: Record{Current: "session~A", Start: 3, Retired: []string{"legion-go-p-dispatch"}}},
 		{name: "a candidate of another family", prefix: "session", record: Record{Start: 3, Op: &Op{Kind: OpCreate, Candidate: "delivery-jobs~B", ReservedAt: testEpoch}}},

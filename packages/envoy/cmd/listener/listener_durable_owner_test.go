@@ -16,7 +16,7 @@ import (
 )
 
 // The listener's durable record takes a consumer only when that consumer's own metadata names the
-// durable: a record naming a <durable>~<nuid> consumer whose envoy.logical is another's (made by a
+// durable: a record naming a <durable>~<random> consumer whose envoy.logical is another's (made by a
 // principal that can create consumers and write the bucket) is refused as a malformed record by the
 // bind and by every reader of the durable, and the consumer is neither corrected to the listener's
 // policy nor bound. The control is the same record naming a consumer whose metadata names the
@@ -105,7 +105,7 @@ func TestAPrecreatedDurableCandidateIsAdoptedOnlyAsTheListenerCreatesIt(t *testi
 				t.Fatal(err)
 			}
 			name := r.durable + "~PRECREATEDBYAPRINCIPAL"
-			made := listenerDurableConfig(name, bus.StreamSubjects())
+			made := listenerDurableConfig(r.client, name, bus.StreamSubjects())
 			made.DeliverPolicy, made.OptStartSeq = natsgo.DeliverByStartSequencePolicy, 1
 			made.Metadata = map[string]string{consumernames.LogicalMetadataKey: r.durable}
 			tc.made(&made)
@@ -177,7 +177,7 @@ func TestAPrecreatedDurableCandidateThatWouldNotDeliverIsCorrectedOrRefused(t *t
 					t.Fatal(err)
 				}
 				candidate := r.durable + "~PRECREATEDUPDATABLE"
-				made := listenerDurableConfig(candidate, bus.StreamSubjects())
+				made := listenerDurableConfig(r.client, candidate, bus.StreamSubjects())
 				made.DeliverPolicy, made.OptStartSeq = natsgo.DeliverByStartSequencePolicy, 1
 				made.Metadata = map[string]string{consumernames.LogicalMetadataKey: r.durable}
 				createRawConsumer(t, r.conn, made, tc.setting)
@@ -301,7 +301,7 @@ func TestTheListenersStoredDurableNeedsNoCorrection(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			candidate := r.durable + "~STORED" + c.suffix
-			made := durableCreateConfig(candidate, r.durable, bus.StreamSubjects())
+			made := durableCreateConfig(r.client, candidate, r.durable, bus.StreamSubjects())
 			made.DeliverPolicy, made.OptStartSeq = natsgo.DeliverByStartSequencePolicy, 1
 			createRawConsumer(t, r.conn, made, c.setting)
 			info, err := r.client.ConsumerInfo(ctx, candidate)
