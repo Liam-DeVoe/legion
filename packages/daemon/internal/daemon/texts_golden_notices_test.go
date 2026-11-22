@@ -187,6 +187,13 @@ func (b *goldenBuild) notices(r goldenRendering) {
 		b.notice(r, "message-own", arch, refusedQuotedAt(refused, queued),
 			goldenWant("issue", issue.Key, "refused", texts.RefusedMessage, "length", goldenUnits(own), "begins", begins.Text,
 				"words.begins.by", texts.ByDaemon, "words.begins.at", queued, "words.begins.rest", begins.Rest))
+		// A message of the daemon's own whose first line is empty, ended by a carriage return and a
+		// line feed: begins quotes nothing, and the notice says that the first line is empty, as
+		// main's said that such a message begins "".
+		blank := "\r\n" + r.words("refused/blank", 120)
+		refused = messagePostRefused(issue.Key, record.MessagePost{Body: blank}, goldenErr("BODY_TOO_LONG: "+r.words("refused/blank-answer", 40)))
+		b.notice(r, "message-empty-first-line", arch, refusedQuotedAt(refused, queued),
+			goldenWant("issue", issue.Key, "refused", texts.RefusedMessage, "length", goldenUnits(blank), "first_line_empty", true))
 		// A close's reason, the daemon's sentence and then the architect's.
 		status := []string{"done", "icebox"}[r.n-1]
 		reason := r.words("refused/reason", 300)

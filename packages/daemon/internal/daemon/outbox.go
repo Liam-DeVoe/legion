@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
@@ -642,36 +644,90 @@ func messagePostRefused(issue string, payload record.MessagePost, cause error) t
 // since the writer's own stop, which it drops, ends the body) and the close's lead with
 // intake.CloseRootLead, and becomes a field (refused_move: <from>-<to>, refused_close:
 // before_first_phase), so the block holds the first line of the other author's words alone, under
-// that author's name. Every other body, a move's sentence that gave no words among them, is the
-// daemon's own, by texts.ByDaemon, and the block holds its first line whole: every other body the
-// outbox posts is a message the workflow or the supervision writes of its own facts. A line past
-// messageRefusedPreview is cut with nothing added to it. The words object counts the rest of the
-// words the block quotes (rest): every unit of them after the block's head, the lines after the
-// first among them, so a reason of two lines is never read as one the block holds whole. The
-// length and the rest are both in UTF-16 units (texts.Units, texts.Carry), as Dispatch counts a
-// body. The line's time is the refused row's, which refusedNoticeRow gives it.
+// that author's name. Every other body, among them such a sentence whose own line holds no words
+// after it, is the daemon's own, by texts.ByDaemon, and the block holds its first line whole: every
+// other body the outbox posts is a message the workflow or the supervision writes of its own
+// facts. A line ends at a line feed, or at a carriage return and a line feed, neither of which is
+// part of the line (leadLine). A line past messageRefusedPreview is cut with nothing added to it.
+// A body whose first line is empty quotes nothing and says so (first_line_empty), as main's
+// notice said such a body begins "". The words object counts the rest of the words the block
+// quotes (rest): every unit of them after the block's head, the lines after the first among them,
+// so a reason of two lines is never read as one the block holds whole. The length and the rest are
+// both in UTF-16 units (texts.Units, texts.Bound), as Dispatch counts a body. The line's time is
+// the refused row's, which refusedNoticeRow gives it.
 func quoteRefused(refused *texts.MessageRefusedRecord, body string) {
 	refused.Length = texts.Units(body)
 	quoted, by := body, texts.ByDaemon
-	if move, asked := workflow.BackwardMoveOf(body); asked && move.Words != "" {
+	if move, asked := workflow.BackwardMoveOf(body); asked && leadLine(move.Words) != "" {
 		refused.RefusedMove, quoted, by = phase.Pair(move.From, move.To), move.Words, string(move.Asker)
-	} else if words, closed := strings.CutPrefix(body, intake.CloseRootLead); closed && words != "" && !strings.HasPrefix(words, "\n") {
+	} else if words, closed := strings.CutPrefix(body, intake.CloseRootLead); closed && leadLine(words) != "" {
 		refused.RefusedClose, quoted, by = texts.BeforeFirstPhase, words, string(claim.RoleArchitect)
 	}
 	begins := refusedPreview(quoted)
-	if refused.Begins = begins.Text; begins.Text != "" {
-		refused.Words = map[string]texts.WordsMeta{"begins": {By: by, Rest: begins.Rest}}
+	if begins.Text == "" {
+		refused.FirstLineEmpty = true
+		return
+	}
+	refused.Begins = begins.Text
+	refused.Words = map[string]texts.WordsMeta{"begins": {By: by, Rest: begins.Rest}}
+}
+
+// refusedPreview is the first line of words a notice quotes (leadLine), as the notice carries it:
+// bounded to messageRefusedPreview by texts.Bound, which adds nothing to the head it keeps, and
+// backed off where the bound would part a letter from its combining marks (wholeLetters), with the
+// count of the rest of the words: every unit after that head, the lines after the first among
+// them, up to the line endings the words end with. A line feed that ends the words, with the
+// carriage return before it and any empty lines before those, is no words left out. The head is
+// empty only where the first line is.
+func refusedPreview(words string) texts.Words {
+	line := leadLine(words)
+	head, _ := texts.Bound(line, messageRefusedPreview)
+	head = wholeLetters(line, head)
+	return texts.Words{Text: head, Rest: texts.Units(withoutFinalLineEnds(words)) - texts.Units(head)}
+}
+
+// leadLine is the first line of text: what comes before its first line feed, less a carriage
+// return just before that line feed, since a line ends at a line feed or at a carriage return and
+// a line feed, and neither is part of it. A carriage return no line feed follows is part of the
+// line, and text with no line feed is one line.
+func leadLine(text string) string {
+	line, _, ended := strings.Cut(text, "\n")
+	if ended {
+		line = strings.TrimSuffix(line, "\r")
+	}
+	return line
+}
+
+// withoutFinalLineEnds is text less the line endings it ends with (leadLine's: a line feed, with
+// the carriage return before it), each one in a row, so a text that ends with empty lines ends
+// with the last line that holds a character.
+func withoutFinalLineEnds(text string) string {
+	for {
+		before, ended := strings.CutSuffix(text, "\n")
+		if !ended {
+			return text
+		}
+		text = strings.TrimSuffix(before, "\r")
 	}
 }
 
-// refusedPreview is the first line of words a notice quotes, as the notice carries it: bounded to
-// messageRefusedPreview by texts.Carry, which adds nothing to the head it keeps, with the count of
-// the rest of the words, every unit after that head, the lines after the first among them.
-func refusedPreview(words string) texts.Words {
-	first, _, _ := strings.Cut(words, "\n")
-	preview := texts.Carry(first, messageRefusedPreview, false)
-	preview.Rest = texts.Units(words) - texts.Units(preview.Text)
-	return preview
+// wholeLetters is head, a head of line that a bound cut, backed off to the start of the letter
+// that the cut would part from the combining marks after it (unicode.IsMark): where line goes on
+// past head with a combining mark, the head leaves out the marks it ends with and the character
+// they follow, so a quote never holds a letter without the marks its writer put on it. Where that
+// letter opens head, or head holds marks alone, one letter's marks run past the bound and backing
+// off would quote nothing of a line that holds something, so the head stays as the bound cut it.
+func wholeLetters(line, head string) string {
+	next, _ := utf8.DecodeRuneInString(line[len(head):])
+	if len(head) == len(line) || !unicode.IsMark(next) {
+		return head
+	}
+	base := strings.TrimRightFunc(head, unicode.IsMark)
+	_, size := utf8.DecodeLastRuneInString(base)
+	if cut := base[:len(base)-size]; cut != "" {
+		return cut
+	}
+	return head
 }
 
 // refusedNoticeRow is the outbox row of a message-refused notice (messagePostRefused,

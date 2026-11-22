@@ -69,8 +69,8 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"summary"}},
 	{kind: texts.CheckLook, variants: []string{"bound-last"}, from: "workflow/check.go:checkTask (This is the last look)",
 		keys: []string{"last"}},
-	{kind: texts.CheckLook, variants: []string{"hours"}, from: "workflow/check.go:checkTask, boundText at d46ec4e0 (a bound that is not whole days, named in hours or less)",
-		keys: []string{"bound_hours", "last_look"}},
+	{kind: texts.CheckLook, variants: []string{"hours"}, from: "workflow/check.go:checkTask, boundText at d46ec4e0 (a bound that is not whole days, as Go writes the duration)",
+		keys: []string{"bound_duration", "last_look"}},
 	{kind: texts.ArchitectStart, from: "workflow/architect_start.go:ArchitectStartTask (the root)",
 		keys: []string{"issue"}},
 	{kind: texts.ArchitectStart, variants: []string{"fresh-tree", "earlier-generation"}, from: "workflow/architect_start.go:writeFreshTree, writeEarlierGeneration (the generation)",
@@ -176,9 +176,13 @@ var goldenMainFacts = []goldenFactsOf{
 	{kind: texts.MessageRefused, variants: []string{"status"}, from: "daemon/outbox.go:statusWriteRefused at a86c31c9 " +
 		"(the first line it quoted, whose daemon's sentence says that the architect closed the issue before its first phase: intake.CloseRootLead)",
 		keys: []string{"refused_close", "words.begins.by"}},
-	{kind: texts.MessageRefused, from: "daemon/outbox.go:refusedPreview at b4a566cb (the cut of the quoted first line at 200, which main marked with an ellipsis of its own; " +
+	{kind: texts.MessageRefused, variants: []string{"message", "message-own", "status", "status-move"}, from: "daemon/outbox.go:refusedPreview at b4a566cb " +
+		"(the cut of the quoted first line at 200, which main marked with an ellipsis of its own; " +
 		"the words object's rest counts what the cut left out, as for every carried words)",
 		keys: []string{"words.begins.rest"}},
+	{kind: texts.MessageRefused, variants: []string{"message-empty-first-line"}, from: "daemon/outbox.go:messagePostRefused, refusedPreview at d46ec4e0 " +
+		"(its length, and a first line that is empty, quoted as begins \"\")",
+		keys: []string{"length", "first_line_empty"}},
 	{kind: texts.DesignApproved, from: "workflow/gate.go:gateRegistered, applyArtifact (version, actor, ref)",
 		keys: []string{"issue", "version", "actor"}, links: []string{"ref"}},
 	{kind: texts.DesignChangesRequested, from: "workflow/gate.go:tellChanges (version, reason, actor, ref)",

@@ -563,13 +563,14 @@ type Notice struct {
 	// What Dispatch refused, and its answer (message-refused): its length, the daemon's sentence
 	// its first line opens with where that line goes on with another author's words (the backward
 	// move it states, or that it is the architect's close before the first phase), and that
-	// author's words, or the daemon's whole line. Status is also the status of a child-status, a
-	// status-reasserted and an unslotted notice.
+	// author's words, or the daemon's whole line, or that the first line is empty. Status is also
+	// the status of a child-status, a status-reasserted and an unslotted notice.
 	Refused        string `json:"refused,omitempty"`
 	DispatchAnswer string `json:"dispatch_answer,omitempty"`
 	Length         int    `json:"length,omitempty"`
 	RefusedMove    string `json:"refused_move,omitempty"`
 	RefusedClose   string `json:"refused_close,omitempty"`
+	FirstLineEmpty bool   `json:"first_line_empty,omitempty"`
 	Begins         string `json:"begins,omitempty"`
 	Status         string `json:"status,omitempty"`
 	StatusSet      *bool  `json:"status_set,omitempty"`

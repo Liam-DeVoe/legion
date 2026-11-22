@@ -586,12 +586,12 @@ func (b *goldenBuild) checkLooks(r goldenRendering) {
 	delete(last, "merge_commit")
 	b.task(r, "bound-last", check.Role, issue.Key, workflow.CheckLook(issue, unmerged, "bound", "", true), last)
 	// A bound that is not whole days, as production_check_hours takes one: 37 hours, then an hour
-	// and a half.
+	// and a half, each named as Go writes the duration.
 	hours := check
 	hours.BoundAt = check.OpenedAt.Add([]time.Duration{37 * time.Hour, 90 * time.Minute}[r.n-1])
 	inHours := want(texts.WokenByMerge)
 	delete(inHours, "bound_days")
-	inHours["bound_hours"], inHours["last_look"] = []string{"37", "1.5"}[r.n-1], hours.BoundAt.UTC().Format(time.RFC3339Nano)
+	inHours["bound_duration"], inHours["last_look"] = []string{"37h0m0s", "1h30m0s"}[r.n-1], hours.BoundAt.UTC().Format(time.RFC3339Nano)
 	b.task(r, "hours", check.Role, issue.Key, workflow.CheckLook(issue, hours, "merge", "", false), inHours)
 }
 

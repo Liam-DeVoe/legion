@@ -78,7 +78,7 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 			child: record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &root, Project: "LEGION", Title: "child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"},
 			role:  claim.RolePlanner, wantPhase: phase.Implementing,
 			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Issue: "LEGION-209", Role: claim.RolePlanner, Phase: phase.Implementing,
-				Working: phase.Implementing}},
+				Working: phase.Implementing, NothingHeld: true}},
 		},
 		{
 			name:  "the tester while the issue is merging",
@@ -86,7 +86,7 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 			child: record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &root, Project: "LEGION", Title: "child", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "V"},
 			role:  claim.RoleTester, wantPhase: phase.Merging,
 			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Issue: "LEGION-209", Role: claim.RoleTester, Phase: phase.Merging,
-				Working: phase.Merging}},
+				Working: phase.Merging, NothingHeld: true}},
 		},
 		{
 			name: "the tester while the implementer's phase is held",
@@ -95,7 +95,7 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 				Generation: 1, Status: "in_progress", Rank: "V"},
 			role: claim.RoleTester, wantPhase: phase.Held,
 			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Issue: "LEGION-209", Role: claim.RoleTester, Phase: phase.Held,
-				Working: phase.Implementing}},
+				Working: phase.Implementing, NothingHeld: true}},
 		},
 		{
 			name:  "the planner of a lingering tree",
@@ -239,7 +239,7 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 			t.Fatalf("ApplyFact the finished planner's failed claim: %v", err)
 		}
 		died := record.Notice{Kind: "worker-died", Issue: child.Key, Role: claim.RolePlanner, Phase: phase.Implementing, Failure: named,
-			Working: phase.Implementing}
+			Working: phase.Implementing, NothingHeld: true}
 		if got, want := noticeRows(t, pool), []record.OutboxPayload{died}; !sameNotices(got, want) {
 			t.Fatalf("notice rows = %+v, want %+v: the phase the issue works, and the failure beside it", got, want)
 		}

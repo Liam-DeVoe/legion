@@ -201,10 +201,11 @@ const (
 // time it comes due (LastLook, the check's bound_at). The last look starts at that time, or, while
 // a look is still open then, a look's bound later each time (workflow's checkBound), so LastLook
 // is when the bound comes due rather than when the last look starts. The bound is in whole days
-// (BoundDays) where it is whole days, and otherwise in hours (BoundHours), a decimal as
-// production_check_hours takes one, since a bound of another length cut to whole days is no bound
-// the check has. The pending summary that named the wake goes in the summary block, by the
-// checking role.
+// (BoundDays) where it is whole days, and otherwise as Go writes the duration (BoundDuration,
+// such as 36h0m0s, 1h30m0s or 0s), exact to the nanosecond, as main named such a bound (its
+// boundText): cut to whole days it would be no bound the check has, and a decimal number of hours
+// names most bounds under an hour only nearly. The pending summary that named the wake goes in
+// the summary block, by the checking role.
 type CheckLookRecord struct {
 	Issue                 string    `json:"-"`
 	Title                 string    `json:"-"`
@@ -220,7 +221,7 @@ type CheckLookRecord struct {
 	PullRequest           string    `json:"pull_request"`
 	MergeCommit           string    `json:"merge_commit,omitempty"`
 	BoundDays             int       `json:"bound_days,omitempty"`
-	BoundHours            string    `json:"bound_hours,omitempty"`
+	BoundDuration         string    `json:"bound_duration,omitempty"`
 	LastLook              time.Time `json:"last_look,omitzero"`
 	Summary               *Words    `json:"summary"`
 }

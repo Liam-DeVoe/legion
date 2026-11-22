@@ -72,7 +72,7 @@ func TestANamedLooksSummaryBlockNamesWhenThePendingReportWasRecorded(t *testing.
 		t.Fatalf("the check_wake row of look 2 nobody reported = %+v, want look 2's retry", retry)
 	}
 	rig.clock.now = ended.Add(CheckLookBound)
-	rig.apply("look-2-retry", intake.CheckWakeDue{Issue: issue, Look: retry.Look, OpenedAt: retry.OpenedAt, Reason: retry.Reason})
+	rig.apply("look-2-retry", intake.CheckWakeDue{Issue: issue, Look: retry.Look, OpenedAt: retry.OpenedAt, Reason: retry.Reason, Retry: retry.Retry})
 	starts := superviseRowsOf(t, rig.pool, issue, "start")
 	if read := readTaskOf(t, starts[len(starts)-1].Task); read.fields["woken_by"] != "retry" || len(read.blocks) != 0 {
 		t.Fatalf("look 3's task is woken_by %q with the blocks %+v, want the retry and no summary block", read.fields["woken_by"], read.blocks)

@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -62,7 +61,10 @@ func (e *Engine) checkRole() claim.Role { return e.cfg.ProductionCheckRole }
 // move a leave — opens nothing, since the check it has, open or recorded, is that merge's. The
 // check's OpenedAt is its identity (record.ProductionCheck.ID), so it is the clock truncated to the
 // microsecond, Postgres's timestamptz precision: the value the rows and facts of this transaction
-// carry equals the one every later read of the record returns.
+// carry equals the one every later read of the record returns. Its BoundAt is truncated the same
+// way, so the first look's task names the bound every later look reads (CheckLook): a bound that
+// is no whole count of microseconds would otherwise read one way at the merge's look and another
+// after the record is read back, and one under a microsecond would read as none.
 func (e *Engine) openCheck(ctx context.Context, tx pgx.Tx, issue record.Issue, pr record.PullRequest, wake bool) error {
 	role := e.checkRole()
 	if role == "" {
@@ -86,7 +88,7 @@ func (e *Engine) openCheck(ctx context.Context, tx pgx.Tx, issue record.Issue, p
 	now := e.now().Truncate(time.Microsecond)
 	check := record.ProductionCheck{
 		Issue: issue.Key, Project: issue.Project, Tree: issue.Tree, Repo: pr.Repo, Number: pr.Number, MergeSHA: pr.MergeSHA,
-		OpenedAt: now, BoundAt: now.Add(e.cfg.ProductionCheckBound), Role: role,
+		OpenedAt: now, BoundAt: now.Add(e.cfg.ProductionCheckBound).Truncate(time.Microsecond), Role: role,
 	}
 	if err := e.enqueueAt(ctx, tx, issue.Key, record.CheckBound{}, check.BoundAt); err != nil {
 		return err
@@ -146,14 +148,18 @@ const retryOfLook = "the retry of a look nobody reported: "
 // names it and a resumed session tells the check from its last phase task by it. Then the facts of
 // the look: the look, what woke it, whether it is the last, the pull request, the merge commit
 // (left out where the record holds none, which the reader then reads from GitHub), and the
-// check's bound with the time of the look at that bound, the last. The bound is in whole days
-// where it is whole days, and otherwise in hours, as main's boundText named it in hours or less:
-// cut to whole days it would name no bound the check has, or none at all. Every look states the
-// rule of its verdict as dispatch://INFRA-4533's R1 has it state dispatch://INFRA-904's R7, as
-// main's task said it on every look ("a requirement observed as not met, or still unobserved when
-// no look follows this one, whether or not production carries the merge, is a defect"): a
-// requirement only the deploy can show that the look observes as not met is a fail
-// (not_met_requirement), and one still unobserved at the last look is a fail
+// check's bound with the time of the look at that bound, the last. The bound is BoundAt less
+// OpenedAt, both whole microseconds as Postgres keeps them (openCheck), so every look names the
+// same bound. It is in whole days where it is whole days, and otherwise as Go writes the
+// duration, main's form of such a bound (boundText), exact to the nanosecond: cut to whole days
+// it would name no bound the check has, or none at all, and a decimal number of hours names most
+// short bounds only nearly. A bound of 0s, a check bound at its own open, is named as such.
+//
+// Every look states the rule of its verdict as dispatch://INFRA-4533's R1 has it state
+// dispatch://INFRA-904's R7, as main's task said it on every look ("a requirement observed as not
+// met, or still unobserved when no look follows this one, whether or not production carries the
+// merge, is a defect"): a requirement only the deploy can show that the look observes as not met
+// is a fail (not_met_requirement), and one still unobserved at the last look is a fail
 // (unobserved_requirement), which INFRA-4533's R3 holds for the task of each look before the last
 // too. The last look also states, in two fields beside them and last, that its pending is only for
 // an issue with no such requirement (pending), and that a last look nobody reported closes the
@@ -180,12 +186,12 @@ func CheckLook(issue record.Issue, check record.ProductionCheck, cause, detail s
 	if last {
 		look.Pending, look.Unreported = texts.LastLookPending, texts.LastLookUnreported
 	}
-	if bound := check.BoundAt.Sub(check.OpenedAt); bound > 0 {
+	if bound := check.BoundAt.Sub(check.OpenedAt); !check.BoundAt.IsZero() && bound >= 0 {
 		look.LastLook = check.BoundAt.UTC()
-		if day := 24 * time.Hour; bound%day == 0 {
+		if day := 24 * time.Hour; bound > 0 && bound%day == 0 {
 			look.BoundDays = int(bound / day)
 		} else {
-			look.BoundHours = strconv.FormatFloat(bound.Hours(), 'f', -1, 64)
+			look.BoundDuration = bound.String()
 		}
 	}
 	switch cause {
