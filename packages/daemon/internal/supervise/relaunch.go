@@ -224,7 +224,7 @@ func HoldsTask(pending *Delivery) bool { return pending != nil && !pending.Relau
 // The delivery is a numbered task like any other, of origin notice (OriginNotice): queue gives it
 // the claim's next number and writes the claim's value, the worker takes it, and the report that
 // names its number finishes it, or the end of its turn for a plugin below TaskTakeContract
-// (finishTask, endFrameFinishes). So it is queued only where the
+// (finishTask, TakesNoTask). So it is queued only where the
 // record shows the let-go ended work that was running — a turn, the task's turn, or background
 // work a report named (EndedWork.ranWork) — and never for a record that says only that the
 // daemon holds no report of the process (dispatch://INFRA-2811, departure D2): a value written

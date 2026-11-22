@@ -25,8 +25,8 @@ package supervise
 // that report says whether the turn finished its task or a provider refused it, and a stop made
 // first would leave a refused task taken and the role owed nothing at the resume (check k1 of
 // dispatch://INFRA-3759: a role whose turn a provider refuses keeps its task). The report's
-// finish, or its provider error's take-back, runs the hold (afterTurn), and the stop then reads
-// the task the report left (holdsTask).
+// finish, or its provider error's take-back, runs the hold (settleThenAfterTurn), and the stop
+// then reads the task the report left (holdsTask).
 
 import (
 	"context"

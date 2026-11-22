@@ -207,10 +207,11 @@ const legionPacedWake = {
  * enum below is strict: a cause this list does not name refuses the whole state body at every
  * plugin that reads it.
  *
- * `never_reconnected` is the eighth word, which contract 207 added: the shim of a claim a daemon
- * start restored never said hello again, and the relaunches that followed ran out. The `held`
- * and `worker-died` notices carry it raw, as the claim holds it, whatever plugin reads them
- * (the workflow's `noticeFailure`); only the state body narrows it (below). Beside
+ * `never_reconnected` is the eighth word, which contract 207 added: the shim of a live process
+ * never said hello again within the reconnect deadline, after a daemon start restored its claim
+ * or after its connection closed over a pending task, and the relaunches that followed ran out.
+ * The `held` and `worker-died` notices carry it raw, as the claim holds it, whatever plugin reads
+ * them (the workflow's `noticeFailure`); only the state body narrows it (below). Beside
  * `never_registered`, it is a cause the relaunch a release makes does not meet again: the
  * relaunched process is a new one, whose shim says hello to the daemon that launched it. */
 export const LEGION_FAILURE_CAUSES = [

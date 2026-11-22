@@ -104,7 +104,7 @@ func TestAnOldPluginsRetroCompletesWithNoRatingAcrossTheDeploy(t *testing.T) {
 	}
 	// The old plugin is below supervise.TaskTakeContract too, so no report of it names the task's
 	// number: its turn ends with the agent_end alone, which finishes the task (supervise's
-	// endFrameFinishes).
+	// TakesNoTask).
 	implementer.endTurnUnreported()
 	r.waitPhase(phase.Merging)
 	// The stale claim's relaunch, which the boot held for the turn's end.

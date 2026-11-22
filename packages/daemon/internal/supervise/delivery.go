@@ -47,7 +47,7 @@ type CheckLook struct {
 // TurnStarted (turn_started = confirmed_at is not null) before any other fill.
 // A task lives until it is finished — by the turn-outcome report that names its number, or, for a
 // plugin below TaskTakeContract or a finish the store refused, by the end of its turn with no
-// report after it (finishTask, endFrameFinishes) — or until the record drops it.
+// report after it (finishTask, TakesNoTask) — or until the record drops it.
 //
 // The id is the daemon's and never changes: an outbox delivery id, an operator's minted one, or
 // the round an update round's ask is of (updateTaskPrefix, updateRoundOf), which is what names
@@ -925,12 +925,13 @@ func (m *Machine) putClaimAndPendingOwed(ctx context.Context) error {
 
 // streaming asks the agent whether a turn is in flight, and answers what it said with the id of
 // the ask (runtime.ConnState); answered is false when the agent could not say (the ask failed or
-// timed out). Its callers are the questions a restart leaves: over a claim stored working
-// (askTurnOver), and over one stored ready or idle whose stale-plugin relaunch waits for the
-// answer (askRestoredTurn), which acts on the answer only as the worker stream delivers it again
-// behind the frames read before it (StreamTurnAnswered); and the count of the process's turns a
-// take's report placed, which the delivery of the answer to its ask checks (learnTurns,
-// checkPlacedCount).
+// timed out, Timeouts.RPC bounding it). Its callers are the asks over a connection whose frames the
+// machine cannot vouch for: every reconnect hello of a claim holding a pending task (askView) and a
+// daemon start's ask over a claim stored ready or idle whose stale-plugin relaunch waits for the
+// answer (askRestoredTurn), both of which act on the answer only as the worker stream delivers it
+// again behind the frames read before it (StreamTurnAnswered); a daemon start's ask over a claim
+// stored working (askTurnOver); and the count of the process's turns a take's report placed,
+// which the delivery of the answer to its ask checks (learnTurns, checkPlacedCount).
 func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (state runtime.ConnState, answered bool) {
 	asking, cancel := context.WithTimeout(ctx, m.deps.Timeouts.RPC)
 	defer cancel()
@@ -1027,7 +1028,7 @@ func (m *Machine) adopt(ctx context.Context, a adoption) error {
 // at a turn's end and at the worker's first act after a ready or idle restore only (turnEnded,
 // armFinishAtAct). Such a task is settled here by its claim's contract, as interrupted settles a
 // take whose turn is over: finished by its end frame where the end frame finishes a task
-// (endFrameFinishes), as the bound would have finished it, or by the report whose finish the
+// (TakesNoTask), as the bound would have finished it, or by the report whose finish the
 // store refused (finishOwed, overTurnFinish), and taken back with the note a cut turn gets where
 // only a report naming its number finishes it and none has. Left, it would stand started for
 // good, and the take of it the next process makes would be answered again the text of a turn
@@ -1197,7 +1198,7 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // runs: the report decides (takePhase, waitFinish), and a finish the store refuses again is
 // retried as this let-go's own refusals are. A take whose turn has otherwise ended is settled by
 // its claim's contract. Where the end frame finishes a task — a plugin below TaskTakeContract,
-// whose reports name no number (endFrameFinishes) — it is not taken back but finished: its turn
+// whose reports name no number (TakesNoTask) — it is not taken back but finished: its turn
 // ran whole, and only the report of it is lost with the process (finishTask, by the end frame).
 // Where only a report naming the number finishes it, and none has, the end of a run says nothing
 // of whose run it was, so it is taken back with the note a cut turn gets, as though its turn were
@@ -1223,10 +1224,11 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // What the accepted take told stays told where the take's turn started: that turn ran the take's
 // text, so the agent read the sentence it carried, and the let-go that cuts the turn off takes no
 // telling back. The take's mark of what it told (Delivery.TakeTold) goes with the take, so no
-// later take of the task gives that telling back. A take whose turn had not started never ran its
-// text, so what it told is given back with it, and the claim's handshake gives back its
-// confirmation of the take's entry (giveBackTake): the next accepted take carries the sentence
-// again, and the state gives no `entryConfirmedAt` for an entry the worker never ran
+// later take of the task gives that telling back. A take whose turn had not started ran its text
+// in no turn the daemon saw, so what it told is given back with it, and the claim's handshake
+// gives back its confirmation of the take's entry (giveBackTake), a take whose turn may have run
+// unseen (turnMayHaveRunUnseen) as well: the next accepted take carries the sentence again, and
+// the state gives no `entryConfirmedAt` for an entry no turn the daemon saw ran
 // (dispatch://INFRA-2614 R6). The untelling stands in memory whether or not the write lands,
 // since untold is the safe way round, and the claim's next write carries it; the handshake moves
 // only with the take-back's write, which carries the claim with the delivery where either moved,
@@ -1242,7 +1244,7 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 		return m.finishTask(ctx, finishedByReport)
 	}
 	if p.turnStarted() && !inTurn {
-		if m.endFrameFinishes() {
+		if TakesNoTask(m.claim.PluginContract) {
 			return m.finishTask(ctx, finishedByEndFrame)
 		}
 		inTurn = true
@@ -1345,12 +1347,15 @@ func (m *Machine) untell(p *Delivery) bool {
 	return moved
 }
 
-// untellUnstarted is recordEnd's give-back of an accepted take that awaits its turn: the worker
-// never ran that take's text, so what it told goes back to untold (untell) before the let-go
-// records its end, and the record of this let-go joins the record the take had marked told
-// (joined). A take whose turn ran keeps what it told, since that turn ran the text: one whose turn
-// started, and one whose report came with its finish owed (takeAwaitsTurn, takesTurnRan). It writes
-// nothing: the let-go's own write carries the claim.
+// untellUnstarted is recordEnd's give-back of an accepted take that awaits its turn, which the
+// let-go takes back (takeBackUnstarted, interrupted): no turn the daemon saw ran that take's text,
+// so what it told goes back to untold (untell) before the let-go records its end, and the record
+// of this let-go joins the record the take had marked told (joined). A take whose turn may have
+// run unseen (turnMayHaveRunUnseen) is untold too: it goes back as a cut turn, and its next take
+// tells again what this one told, since untold is the safe way round. A take whose turn ran keeps
+// what it told, since that turn ran the text: one whose turn started, and one whose report came
+// with its finish owed (takeAwaitsTurn, takesTurnRan). It writes nothing: the let-go's own write
+// carries the claim.
 func (m *Machine) untellUnstarted() {
 	if m.takeAwaitsTurn() {
 		m.untell(m.claim.Pending)
@@ -1360,14 +1365,15 @@ func (m *Machine) untellUnstarted() {
 // takeBackUnstarted takes back the accepted take of the pending task whose turn has not started,
 // for a let-go that stops the claim's process and keeps the task pending: a retirement (retire)
 // and a suspension (suspended), a held suspension's deadline among them. The process that took it
-// is the one the claim no longer runs, so that turn never starts and the worker ran nothing of the
-// take's text. What the take told and the handshake's confirmation of its entry go back with it
-// (giveBackTake), and the next process's take of the number is decided afresh, its text composed
-// again (Delivery.message) behind the records that tell then, this let-go's own among them; a
-// take answered from the record instead (answerAgain) would hand the next process the text the
-// stopped one was given, which carries none of what this let-go recorded and marks nothing told.
-// The task keeps its number, as every take-back does. It writes nothing and reports whether it
-// took a take back, so the caller's own write carries the delivery with the claim
+// is the one the claim no longer runs, so no turn of it starts from here, and where the claim's
+// connection showed every frame of its turns none started before either: the worker ran nothing
+// of the take's text. What the take told and the handshake's confirmation of its entry go back
+// with it (giveBackTake), and the next process's take of the number is decided afresh, its text
+// composed again (Delivery.message) behind the records that tell then, this let-go's own among
+// them; a take answered from the record instead (answerAgain) would hand the next process the text
+// the stopped one was given, which carries none of what this let-go recorded and marks nothing
+// told. The task keeps its number, as every take-back does. It writes nothing and reports whether
+// it took a take back, so the caller's own write carries the delivery with the claim
 // (putClaimAndPendingOwed). cause is the take-back's line's (takenBackLine).
 //
 // A take whose turn may have run with no frame of it reaching the machine goes back as a turn cut

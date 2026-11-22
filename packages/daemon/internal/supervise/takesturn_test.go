@@ -422,7 +422,7 @@ func TestTakeRepeatedAfterItsTurnStartedIsAnsweredTheSameAndRecordsNothing(t *te
 
 // A report the worker sends again to a daemon that restarted between the take's turn's end and
 // the report reaches its task. For a claim whose plugin names no number — the one claim an
-// end-frame bound watches (endFrameFinishes) — the bound a restored ready or idle claim waits on
+// end-frame bound watches (TakesNoTask) — the bound a restored ready or idle claim waits on
 // for that turn runs from the worker's first act after the start, not from the start, so the time
 // no daemon served the worker is no time its report had. A report of a provider error then takes
 // the task to the ladder, rather than finding it finished by a bound that ran first; and a worker

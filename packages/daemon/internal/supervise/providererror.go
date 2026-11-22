@@ -64,11 +64,16 @@ func promptRetryDelay(attempt int) time.Duration {
 //
 // The cause is named once (takeToLadder) and handed to whoever writes it down, since one failed
 // turn has one cause and the words are the same in the claim's failure, in the note the next take
-// carries and in the controller's notice.
+// carries and in the controller's notice. With no pending task it does nothing: there is no take
+// for the turn to have run on (reportOfTake).
 func (m *Machine) providerErrored(ctx context.Context, pe ProviderError) error {
+	p := m.claim.Pending
+	if p == nil {
+		return nil
+	}
 	m.claim.ProviderErrorRun++
 	m.log.Warn("supervise: the turn of this task ended in a provider error; the task is kept and given again",
-		"task", m.claim.Pending.Number, "retryable", pe.Retryable, "httpStatus", pe.Status,
+		"task", p.Number, "retryable", pe.Retryable, "httpStatus", pe.Status,
 		"provider", pe.Provider, "model", pe.Model, "providerErrorRun", m.claim.ProviderErrorRun)
 	m.tellControllerOfProviderErrors(pe.Model, providerErrorCause(pe.Status))
 	return m.takeToLadder(ctx, pe.Status)

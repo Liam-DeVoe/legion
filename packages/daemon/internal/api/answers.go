@@ -505,10 +505,11 @@ var workflowPhases = valuesFrom(recordFieldsContract,
 // share. Both arrived at recordFieldsContract with seven words, which are recorded there. It
 // names each constant rather than reading supervise.FailureCauses, because a cause added there
 // later arrives at its own contract and not at this one, and the list grew once:
-// `never_reconnected`, a claim a daemon start restored ready, idle or working whose shim never
-// said hello again, arrived at supervise.TaskTakeContract (version.go's 207). So it is written
-// out value by value, sorted by value, as waitAnswers is, and a caller below 207 is served the
-// word as `never_registered` (shaping.go's withoutNeverReconnected).
+// `never_reconnected`, a claim whose shim never said hello again within the reconnect deadline,
+// after a daemon start restored it or after its connection closed over a pending task, arrived at
+// supervise.TaskTakeContract (version.go's 207). So it is written out value by value, sorted by
+// value, as waitAnswers is, and a caller below 207 is served the word as `never_registered`
+// (shaping.go's withoutNeverReconnected).
 var failureCauses = []EnumeratedValue{
 	{Value: string(supervise.CauseDied), Since: recordFieldsContract},
 	{Value: string(supervise.CauseLaunchRefused), Since: recordFieldsContract},

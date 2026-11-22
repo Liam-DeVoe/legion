@@ -44,8 +44,12 @@ type EndedWork struct {
 	// turn was running and it was the turn of the task's accepted take (Delivery.turnStarted). So
 	// TaskTurn can stand without Turn, where the let-go reads the claim after the turn that
 	// decision took the task back from has ended: a relaunch the pacing parked lets the process go
-	// at a wake's turn (launchNow). A take that awaits its turn is in no turn cut off: the worker
-	// ran nothing of it, and it goes back with no note of an interruption. A take whose turn
+	// at a wake's turn (launchNow). A take that awaits its turn is in no turn cut off where the
+	// claim's connection showed every frame of its turns: the worker ran nothing of it, and it goes
+	// back with no note of an interruption. Where it did not, that turn may have run unseen, so
+	// TaskTurn says it was cut off and the take goes back as a cut turn (turnMayHaveRunUnseen,
+	// Machine.turnUnseen); and one whose report came with its finish refused by the store goes back
+	// at no let-go, which finishes it by that report (takePhase, waitFinish). A take whose turn
 	// ended with its report still to come, a compaction running after it or not, is settled by
 	// its claim's contract (interrupted). For a plugin below TaskTakeContract it is in no turn
 	// cut off: a let-go finishes it by its end frame rather than take it back (finishTask), as
@@ -230,9 +234,9 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 // take-back of the let-go — made after this, by a death or a displacement (died, displaced), and
 // after letGo has made the view whole for the next process, by a retirement or a suspension
 // (takeBackUnstarted) — takes it back as a turn cut off, as the record here says it was. Then it
-// gives back what an accepted take that awaits its turn told (untellUnstarted): the worker never
-// ran that take's text, so the record that take had marked told is untold again and the record
-// written here joins it.
+// gives back what an accepted take that awaits its turn told (untellUnstarted): no turn the
+// daemon saw ran that take's text, and the let-go takes it back, so the record that take had
+// marked told is untold again and the record written here joins it.
 //
 // It writes nothing itself: the record is a field of the claim, and the let-go's own write — the
 // launch's, the suspension's, the failure's, the retirement's, or the death's charge — carries

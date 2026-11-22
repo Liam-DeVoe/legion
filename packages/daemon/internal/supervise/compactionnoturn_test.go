@@ -116,7 +116,7 @@ func TestTheControllersStaleRelaunchDuringACompactionWaitsForTheReport(t *testin
 }
 
 // A stale-plugin relaunch held for the turn of a migrated worker's take — a plugin below
-// TaskTakeContract, whose end frame finishes its task (endFrameFinishes) — waits past that turn's
+// TaskTakeContract, whose end frame finishes its task (TakesNoTask) — waits past that turn's
 // end for the end-frame finish, and a compaction begun after that end and ended before the finish
 // does not run it: the end of the compaction decides what was held as the end of a turn does
 // (endNothingHeld). The task is finished once by its end frame, and the relaunch runs at that

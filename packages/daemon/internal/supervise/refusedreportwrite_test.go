@@ -118,7 +118,7 @@ func TestTurnOutcomeFinishTheStoreRefusedIsMadeAgainAcrossAnOutage(t *testing.T)
 // the runtime refuses at the compaction's end, leaves the end-frame bound armed over that finish,
 // as the end of a turn leaves it after a refused stop (runHeldAtEnd): the claim is given back idle
 // with the finish owed, and the bound makes the finish once the store answers, by the report, ahead
-// of the held stop's retry at the probe interval; the held stop then runs (afterTurn).
+// of the held stop's retry at the probe interval; the held stop then runs (settleThenAfterTurn).
 //
 // The negative control is compactEnded before review round 4 of #3993, which armed no bound after
 // a refused stop: the finish refused under the compaction stays owed with no bound to make it

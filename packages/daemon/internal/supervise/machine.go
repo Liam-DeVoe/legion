@@ -955,11 +955,25 @@ type Timeouts struct {
 	Boot time.Duration
 	// RegistrationIntervals is how many boot intervals a live process gets to register, and again
 	// from its registration to say it is ready, before it is retired
-	// (worker_boot_registration_deadline_intervals).
+	// (worker_boot_registration_deadline_intervals). Boot × RegistrationIntervals is the reconnect
+	// deadline as well (reconnectBound, connview.go): of a claim a daemon start restored with a
+	// process whose shim has not said hello since, of a claim whose connection closed while it
+	// held a pending task or which was given one over a connection closed since its last hello,
+	// and of a reconnect hello over a pending task whose agent has not said whether it is in a
+	// turn. A live process whose shim never says hello by then is retired and relaunched, charged
+	// a launch failure (CauseNeverReconnected); one whose agent never answers is relaunched,
+	// uncharged.
 	RegistrationIntervals int
-	// RPC bounds the get_state a claim restored working is asked, and the wait after a task's
-	// turn ends for the turn-outcome report that names it, past which the end of the turn
-	// finishes it (worker_rpc_timeout_seconds, finishTask).
+	// RPC (worker_rpc_timeout_seconds) bounds each ask of the agent whether it is in a turn
+	// (streaming): the get_state a claim restored working is asked (askTurnOver), the ask a daemon
+	// start makes of a restored take on a stale plugin (askRestoredTurn), the ask a reconnect hello
+	// makes over a pending task (askView), and the one that checks a count a take's report placed
+	// (learnTurns); and the calls a decision makes for the agent's secrets and its role's holder
+	// (secrets.go, sessionhold.go). It is the end-frame bound too (TimerFinish, finishTask): the
+	// wait after a task's turn ends for the turn-outcome report that names it, past which the end
+	// of the turn finishes the task, for a plugin below TaskTakeContract alone (TakesNoTask); and
+	// the wait before a finish the store refused is made again, whatever the plugin, each refusal
+	// waiting it once more.
 	RPC time.Duration
 	// Probe is how soon an uncertain process is probed again (probe_interval_seconds).
 	Probe time.Duration
@@ -1401,7 +1415,7 @@ type Machine struct {
 	valueUndeleted valueDelete
 	// finishAtAct is a claim a daemon start restored ready or idle over a take whose turn started
 	// under the daemon before it, which nothing finished, on a plugin whose end frame finishes its
-	// task (NewMachine, endFrameFinishes): its end-frame bound (TimerFinish) is armed at the
+	// task (NewMachine, TakesNoTask): its end-frame bound (TimerFinish) is armed at the
 	// worker's first act after the start, not at the start itself (armFinishAtAct), so a report
 	// the worker is still sending again to the restarting daemon is not beaten by a bound that
 	// ran while no daemon served it.
@@ -1431,11 +1445,15 @@ type Machine struct {
 	// memory only, as the listing it dates is: a value nobody reported seeing is written again a
 	// first bound after the daemon's start, which dates it then (waits.go).
 	valueWrittenAt time.Time
-	// awaitsAct is a machine whose two waits wait for the worker's next act before they are
-	// armed: every machine NewMachine builds, since a daemon start serves nothing before it and
-	// the time the daemon was not serving counts toward neither bound (dispatch://INFRA-2811).
-	// The shim's hello, a registration, a ready, a seen report, a take, a turn frame and a turn's
-	// report are acts (actOf); the first of them clears it, and the waits are armed from there.
+	// awaitsAct is a machine whose waits wait for the worker's next act before they are armed:
+	// every machine NewMachine builds, since a daemon start serves nothing before it and the time
+	// the daemon was not serving counts toward no bound (dispatch://INFRA-2811). The shim's hello,
+	// a registration, a ready, a seen report, a take, a turn frame and a turn's report are acts
+	// (actOf); the first of them clears it. R5's first wait over a value nobody reported seeing is
+	// armed from there. The bounds that judge the worker by its frames — the first wait over a
+	// value it saw, the second wait and the bound of the wait for a take's report — wait as well
+	// for its connection's view to be whole (connSeen, connview.go), which a daemon start leaves
+	// waiting for the shim's first hello and the agent's answer or a turn frame behind it.
 	awaitsAct bool
 	// firstFor is what the armed first bound (TimerTake) waits on, the zero value while none is
 	// armed, and secondFor the accepted take the armed second bound (TimerTurnStart) waits on
@@ -1921,13 +1939,13 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		m.connSeen = viewNoHello
 		// A task whose take's turn started and ended under an earlier daemon, which nothing has
 		// finished: its report may still come, and for a plugin that names no number (whose end
-		// frame finishes its task, endFrameFinishes) where none does the end of that turn
+		// frame finishes its task, TakesNoTask) where none does the end of that turn
 		// finishes it, as it would have had this daemon never restarted. The bound starts at the
-		// worker's first act, as R5's waits do: the report is the worker's to send again to this
-		// daemon, and the time no daemon served it is no time it had to do so
+		// worker's first act, which R5's waits wait for too: the report is the worker's to send
+		// again to this daemon, and the time no daemon served it is no time it had to do so
 		// (dispatch://INFRA-2811). A plugin that names its task's number has its task finished
 		// by that report alone.
-		if p := c.Pending; p != nil && p.turnStarted() && m.endFrameFinishes() {
+		if p := c.Pending; p != nil && p.turnStarted() && TakesNoTask(m.claim.PluginContract) {
 			m.finishAtAct = true
 		}
 		// A claim holding a take that the stale-plugin lane will relaunch waits for its agent's
@@ -4060,12 +4078,14 @@ func (m *Machine) endProcess(ctx context.Context, cause string) error {
 // crash or a failed write between them would leave exactly that behind.
 //
 // A take of the claim's task whose turn has not started is taken back in that same write
-// (takeBackUnstarted): the process that took it is the one the claim stops running, so that turn
-// never starts, and the next launch's worker — an operator's retry, a reopened issue's start —
-// takes the number afresh, its text composed again (Delivery.message), where a take answered from
-// the record would hand a fresh session the text the stopped one was given, without the sentence
-// naming the session it replaced (abandonedTask). What that take told and the handshake's
-// confirmation of its entry go back with it, since no turn ran its text (giveBackTake).
+// (takeBackUnstarted): the process that took it is the one the claim stops running, so no turn of
+// it starts from here, and the next launch's worker — an operator's retry, a reopened issue's
+// start — takes the number afresh, its text composed again (Delivery.message), where a take
+// answered from the record would hand a fresh session the text the stopped one was given, without
+// the sentence naming the session it replaced (abandonedTask). A take whose turn may have run with
+// no frame of it reaching the machine goes back as a cut turn (turnMayHaveRunUnseen). What that
+// take told and the handshake's confirmation of its entry go back with it, since no turn the
+// daemon saw ran its text (giveBackTake).
 //
 // A retirement records what the process it lets go ended under cause (letGo), and its one write
 // above carries the record (persist, or retirePending's transaction), as every let-go's own write

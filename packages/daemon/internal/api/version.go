@@ -3061,10 +3061,11 @@ package api
 // sends nothing, a shim's prompt answer is no frame of the stream, and a plugin before this
 // contract, which waits on a prompt, can take no task (supervise.TaskTakeContract). The operator
 // claim view's delivery loses `deliveredAt`, since no prompt is acknowledged; the failure causes
-// gain `never_reconnected`, a claim a daemon restart restored ready, idle or working whose shim
-// never said hello within the registration deadline while its process lived; and
-// `GET /legion/v1/state` carries `unseenTaskValues`, every running claim whose value nobody
-// reported seeing for a whole first bound (`{claim, issue, role, task, writtenAt}`). Its settings
+// gain `never_reconnected`, a claim whose shim never said hello within the reconnect deadline (the
+// registration deadline's bound) while its process lived, after a daemon restart restored it or
+// after its connection closed over a pending task; and `GET /legion/v1/state` carries
+// `unseenTaskValues`, every running claim whose value nobody reported seeing for a whole first
+// bound (`{claim, issue, role, task, writtenAt}`). Its settings
 // carry `worker_take_timeout_seconds` and `worker_turn_start_timeout_seconds`, keys of legion.yaml
 // that no reader types, which move no contract of their own (answers.go's typedSettings).
 // This daemon serves each of these down through the shaping 193 brought, to a caller whose header

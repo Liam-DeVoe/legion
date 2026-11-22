@@ -5,7 +5,13 @@ body: |-
   worker's session, and the worker takes the task once it is idle. A worker is charged only when it
   saw a task and did not take it within `worker_take_timeout_seconds` (300 by default), took it and
   started no turn within `worker_turn_start_timeout_seconds` (1500 by default), or asked to take it
-  and the shim refused to adopt the working copy, a refusal charged at the shim's answer. A daemon that
+  and the shim refused to adopt the working copy, a refusal charged at the shim's answer.
+  `worker_turn_start_timeout_seconds` also bounds the wait for the report of a take's turn once
+  that turn has ended: past it the task is taken back as a cut turn and its value written again,
+  and nobody is charged. These bounds run only while the worker's connection shows the daemon
+  every frame of its turns: time with the connection cut counts toward none of them, and each
+  starts again whole once the agent answers the daemon's ask after its shim's reconnect hello, or
+  a turn starts or ends. A daemon that
   cannot open or create the bucket refuses to boot and names the missing grant, and so does one that
   connects as the agents' shared NATS user; `legion probe-boot` makes the same check, and
   `legion config check` prints the refusal of a daemon that would connect as that user.

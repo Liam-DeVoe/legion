@@ -1418,8 +1418,9 @@ func withoutWaitingOnIssue(issue Issue, restore int) (Issue, bool) {
 // that reader names for the same event (olderCause). It follows the declared table (answers.go's
 // failureCauses) and takes any word the table holds back from restore (fieldArrivals.heldBack
 // says which words and why): today the `never_reconnected` of supervise.TaskTakeContract, a claim
-// a daemon start restored ready, idle or working whose shim never said hello again, and tomorrow
-// any word the table gives a later arrival. It is named for the one word it takes today.
+// whose shim never said hello again within the reconnect deadline, after a daemon start restored
+// it or after its connection closed over a pending task, and tomorrow any word the table gives a
+// later arrival. It is named for the one word it takes today.
 //
 // The word is rewritten where every other strip drops what it takes. A plugin from
 // recordFieldsContract up to the word's arrival reads both fields through a strict enum

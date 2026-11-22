@@ -264,7 +264,7 @@ func (m *Machine) unappliedTurnOutcome(o TurnOutcome) {
 // step, for one that carried a provider error (providerErrored). That daemon kept what it owed in
 // memory alone, and nothing else makes it: the worker's report sent again is a repeat, which
 // applies nothing (recordTurnOutcome), and a plugin that names its task's number is given no
-// end-frame bound (endFrameFinishes).
+// end-frame bound (TakesNoTask).
 //
 // A report that carried no provider error is read before any later one that did: its finish,
 // refused, was owed from then on (Machine.finishOwed), and a later report naming the number with
@@ -383,8 +383,8 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	}
 	reaches := m.claim.reportOfTake(r.Generation, r.Task)
 	o.Refused = r.Refused && (r.ProviderError == nil || !reaches)
-	if r.ProviderError != nil && reaches {
-		o.ProviderErrorRetries = m.claim.Pending.ProviderErrorRetries + 1
+	if p := m.claim.Pending; r.ProviderError != nil && reaches && p != nil {
+		o.ProviderErrorRetries = p.ProviderErrorRetries + 1
 	}
 	if first, applied := m.appliedTurnOutcome(r); applied && r.ProviderError != nil {
 		o.Refused, o.ProviderErrorRetries = first.Refused, first.ProviderErrorRetries
@@ -418,7 +418,7 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 // an earlier generation, finishes nothing: a late report of a task already finished must not
 // touch the one that replaced it, a report of a process the claim has left is of no take this
 // process holds, and a worker whose plugin names no number has its task finished by the end of
-// the turn instead (finishAtTurnsEnd, endFrameFinishes). Where the take's turn had started, a
+// the turn instead (finishAtTurnsEnd, TakesNoTask). Where the take's turn had started, a
 // report of the claim's generation from a plugin that names its task's number, naming none or
 // another, says that turn was not the take's (notTheTakesTurn).
 //
@@ -512,7 +512,7 @@ const takesTurnMovedLine = "supervise: a turn's report names no task of the take
 // with the number), the take goes back to awaiting its turn: the delivery's turn start is undone
 // (TurnStarted) with the text it was answered kept, and the next turn that starts is the take's
 // turn. No end-frame bound stands over such a claim's task to finish it meanwhile
-// (endFrameFinishes): its report is what finishes it. R5's second wait is on the take again
+// (TakesNoTask): its report is what finishes it. R5's second wait is on the take again
 // from this decision (secondWaitNow, armWaits), and the claim counts as in a turn for another
 // role's adoption until that turn ends (Claim.InTurn). Work held for the report of the turn given
 // the take goes on waiting, now for the take's own turn or for that second wait's bound
@@ -561,7 +561,7 @@ func (m *Machine) notTheTakesTurn(ctx context.Context, r RequestTurnOutcome) err
 	if p == nil || !p.taken() || p.TakenText == "" || r.Generation != m.claim.Generation {
 		return nil
 	}
-	// waitNone over a take is a plugin below TaskTakeContract (endFrameFinishes).
+	// waitNone over a take is a plugin below TaskTakeContract (TakesNoTask).
 	if m.takePhase() == waitNone {
 		return nil
 	}

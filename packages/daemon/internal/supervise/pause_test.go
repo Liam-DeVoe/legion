@@ -900,7 +900,7 @@ func TestAFailedPauseStopIsWrittenAgainWithThePausesRecords(t *testing.T) {
 		stops.failNext(1, brokenConnection())
 
 		// The worker's plugin is the harness's, below TaskTakeContract, so the end of its take's
-		// turn finishes the task (endFrameFinishes) and no report is waited for: the pause's held
+		// turn finishes the task (TakesNoTask) and no report is waited for: the pause's held
 		// stop runs at that end (turnEnded), and the settle after it finishes the task (settle).
 		// The stop's transaction fails, and the retirement writes it first, with the task, before
 		// it retires the task (retireTask). A worker whose report names its number has its claim

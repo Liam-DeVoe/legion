@@ -121,16 +121,17 @@ const (
 	// TimerRegistration is the registration deadline, which runs until the agent is ready: a live
 	// process whose agent never registered, or registered and never said it was ready, is retired.
 	// Once the agent is ready it is the reconnect deadline (connview.go, reconnectDeadline): of a
-	// claim a daemon start restored ready, idle or working (NewMachine), or whose connection closed
-	// while it held a pending task (closeView), a live process whose shim never says hello by then
-	// is retired, and the hello ends it (reconnected, reconnectedMidTurn); and of a reconnect hello
-	// over a pending task (askView), a process whose agent says nothing of its turn by then, and
-	// sends no turn frame, is relaunched uncharged.
+	// claim a daemon start restored with a process whose shim has not said hello since (NewMachine,
+	// readyView), or whose connection closed while it held a pending task, or which was given a
+	// task over a connection closed since its last hello (closeView, armReconnectForTask), a live
+	// process whose shim never says hello by then is retired, and the hello ends it (reconnected,
+	// reconnectedMidTurn); and of a reconnect hello over a pending task (askView), a process whose
+	// agent says nothing of its turn by then, and sends no turn frame, is relaunched uncharged.
 	TimerRegistration TimerKind = "registration"
 	// TimerFinish is the end-frame bound: a task's turn ended, and the turn-outcome report that
 	// names its number has that long to come (Timeouts.RPC) before the end of the turn finishes
 	// the task (finishTask). Only a claim whose plugin names no number is given it
-	// (endFrameFinishes), and any claim whose report's finish the store refused (finishTask).
+	// (TakesNoTask), and any claim whose report's finish the store refused (finishTask).
 	TimerFinish TimerKind = "finish"
 	// TimerProbe is the re-probe of an uncertain process.
 	TimerProbe TimerKind = "probe"
@@ -1886,15 +1887,16 @@ func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
 // The end of a task's turn does not finish the task by itself. Oh My Pi's agent_end names no
 // task, and with background work on, a role's own background result starts turns no take
 // started: what finishes the task is the turn-outcome report that names its number, whose finish
-// runs what was held for the turn (afterTurn). Only for a claim whose plugin names no number in
-// its reports, one below TaskTakeContract, does the end of its turn finish it where no report
-// came within the RPC timeout (endFrameFinishes, TimerFinish, finishAtTurnsEnd). A suspension
+// runs what was held for the turn (settleThenAfterTurn). Only for a claim whose plugin names no
+// number in its reports, one below TaskTakeContract, does the end of its turn finish it where no
+// report came within the RPC timeout (TakesNoTask, TimerFinish, finishAtTurnsEnd). A suspension
 // held for the turn of such a claim's task runs at this end, and the settle after its stop
 // finishes the task by this end. A suspension held for the turn of a task whose plugin names its
 // number waits for the report instead, behind the wait for the take's report (reportwait.go,
 // takePhase): the claim goes idle holding it, and the report's finish runs it (reportedTask,
-// afterTurn); that wait's bound (TimerReport) and the hold's own deadline (TimerSuspend) bound it,
-// whichever is first, and either takes the task back as a cut turn before the stop (reportMissed).
+// settleThenAfterTurn); that wait's bound (TimerReport) and the hold's own deadline (TimerSuspend)
+// bound it, whichever is first, and either takes the task back as a cut turn before the stop
+// (reportMissed).
 // Run at this end, its stop would come before the report, which the suspended claim ignores, and
 // settle would take back a task whose turn ran whole, to run again on resume. So does a hold over
 // a take a report put back while this turn ran (putBack): it waits for the take's own turn, or for
@@ -2024,11 +2026,11 @@ func (m *Machine) endNothingHeld(ctx context.Context, back ClaimState, armFinish
 	if owed := m.takePhase().reportToCome(); finishes || owed {
 		if held := m.staleRelaunch; held != nil && owed && m.staleForEnd {
 			m.staleForEnd = false
-			m.log.Info(reportWaitsLine, "task", p.Number, "held", "relaunch", "trigger", *held)
+			m.log.Info(reportWaitsLine, "task", pendingNumber(p), "held", "relaunch", "trigger", *held)
 		}
 		return nil
 	}
-	return m.afterTurn(ctx, false)
+	return m.afterTurn(ctx)
 }
 
 // afterTurn runs what the machine held for the agent's turn, once that turn is over for the task
@@ -2037,14 +2039,10 @@ func (m *Machine) endNothingHeld(ctx context.Context, back ClaimState, armFinish
 // over a take a report put back (reportwait.go). What it holds reads the worker's hands — the
 // stale-plugin relaunch would take an unfinished task back from the process it replaces
 // (refreshPlugin) — so it may not run while the task whose turn just ended is still unsettled. The
-// offer of a refused take runs last, as it does from every other decision.
-//
-// A held suspension that waited for the report this decision settled runs first and instead of
-// the rest (heldWaited, read before the settle: settleThenAfterTurn, heldWaits): its stop ends
-// the process the held relaunch was for, which letGo drops with it, and leaves no take to offer. A
-// stop the runtime refuses keeps it held and tries it again at the probe interval (suspendHeld),
-// the claim idle meanwhile, as a refused stop at a turn's end leaves it; a hold whose stop was
-// refused before is left to that retry here.
+// offer of a refused take runs last, as it does from every other decision. A held suspension that
+// waited for the settle of the take runs instead of all of it (settleThenAfterTurn); one whose stop
+// the runtime refused before, which waited for no take, is left to its retry at the probe interval
+// (suspendHeld), the claim idle meanwhile.
 //
 // The held relaunch is the refresh gate's second asker (RefreshGate, dispatch://INFRA-2712 R1):
 // the claim took no credit while its turn ran, or while the relaunch waited for the report of
@@ -2057,10 +2055,7 @@ func (m *Machine) endNothingHeld(ctx context.Context, back ClaimState, armFinish
 // lane is held to, against the hours a lane with no gate costs every other wake of the daemon.
 // The mark is not re-armed for that: it waits for a turn or a report, and both are over. The
 // offer does not wait on the answer either: it runs whichever way the gate answered.
-func (m *Machine) afterTurn(ctx context.Context, heldWaited bool) error {
-	if heldWaited && m.held != nil {
-		return m.suspendHeld(ctx)
-	}
+func (m *Machine) afterTurn(ctx context.Context) error {
 	if held := m.staleRelaunch; held != nil {
 		m.staleRelaunch = nil
 		if err := m.refreshPlugin(ctx, *held, false); err != nil {
@@ -2383,11 +2378,12 @@ func finishReady(m *Machine, ctx context.Context) error {
 // that turn, which is what the hold exists to keep whole. And one that waits for the report of its
 // take's turn (reportwait.go, heldWaits): run here, its stop would come before that report, and
 // settle would take back as a cut turn a task whose turn ran whole, or, over a take a report put
-// back, cut off a turn whose start may be on its way; that report's finish runs it (afterTurn), or
-// the bound of its wait (reportBoundOver, turnStartBoundOver), or its own deadline
-// (suspendAtTimeout). The ready is answered as any other is meanwhile, the take a hold refuses
-// refused still (claimHold). pi-legion sends its ready again from its capability schedule while it
-// reads its session idle, and a turn can start before that ready reaches the daemon.
+// back, cut off a turn whose start may be on its way; that report's finish runs it
+// (settleThenAfterTurn), or the bound of its wait (reportBoundOver, turnStartBoundOver), or its
+// own deadline (suspendAtTimeout). The ready is answered as any other is meanwhile, the take a
+// hold refuses refused still (claimHold). pi-legion sends its ready again from its capability
+// schedule while it reads its session idle, and a turn can start before that ready reaches the
+// daemon.
 func reready(m *Machine, ctx context.Context, _ Event) error {
 	if m.heldRunsNow() {
 		return m.suspendHeld(ctx)

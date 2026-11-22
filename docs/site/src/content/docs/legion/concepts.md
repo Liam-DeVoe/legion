@@ -610,8 +610,8 @@ start.
 
 The daemon says why the claim failed rather than leaving that in its log alone. It keeps one word
 for it — the runtime refused the launch, the process died, the agent never registered, its shim
-never reconnected after a daemon restart, its plugin was stale, its prompt retirements ran out, or
-a provider error ended its turn — with the sentence
+never reconnected after a daemon restart or a closed connection, its plugin was stale, its prompt
+retirements ran out, or a provider error ended its turn — with the sentence
 written beside that word, the moment, and the four counts against the limits above. The
 architect that owns the issue reads it on the claim, the controller reads it with the limits
 beside it, and the notice of the hold carries it as well, so the first reader of a hold already

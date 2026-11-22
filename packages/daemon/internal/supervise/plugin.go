@@ -304,7 +304,7 @@ func (m *Machine) holdStaleRelaunch(trigger string) {
 // (Machine.staleForEnd).
 func (m *Machine) relaunchWaitsForReport(trigger string) {
 	if m.staleRelaunch == nil {
-		m.log.Info(reportWaitsLine, "task", m.claim.Pending.Number, "held", "relaunch", "trigger", trigger,
+		m.log.Info(reportWaitsLine, "task", pendingNumber(m.claim.Pending), "held", "relaunch", "trigger", trigger,
 			"pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract)
 		m.staleForEnd = false
 	}

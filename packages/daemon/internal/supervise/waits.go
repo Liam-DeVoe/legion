@@ -27,10 +27,12 @@ import (
 // takes after every charge and never starts a turn is still retired at the third. A hold that
 // stands charges nobody: a hold that arises while a wait is armed disarms it, and its end arms
 // it again from there (armWaits). The timers are memory only, as every timer is: a machine a
-// daemon start built arms them again from the record at the worker's first act after that start
-// (Machine.awaitsAct), so the time the daemon was not serving counts toward neither bound. And a
-// seen report such a machine read from the store, which no worker made to it, charges nobody at
-// the first bound: the value is written again instead (Machine.seenFromStore, takeBoundOver).
+// daemon start built arms them again from the record no earlier than the worker's first act after
+// that start (Machine.awaitsAct), and the waits that read the worker's frames no earlier than its
+// connection's view is whole again (below), so the time the daemon was not serving counts toward
+// neither bound. And a seen report such a machine read from the store, which no worker made to
+// it, charges nobody at the first bound: the value is written again instead
+// (Machine.seenFromStore, takeBoundOver).
 //
 // The first wait over a value the worker reported seeing and the second wait judge the worker by
 // the frames its connection carries, so each runs only while that connection shows the machine
@@ -82,9 +84,14 @@ type UnseenTaskValue struct {
 
 // actOf is whether ev is an act of the claim's worker: what a daemon start's waits wait for
 // before they are armed (Machine.awaitsAct), and the end-frame bound such a start left to the
-// worker (Machine.finishAtAct). The shim's hello is one, the reconnect hello included, so a worker
-// that does nothing else after a daemon start is still charged one bound after its reconnect; so
-// are its registration, its ready, a seen report, a take, a turn frame and a turn's report.
+// worker (Machine.finishAtAct). The shim's hello is one, the reconnect hello included; so are its
+// registration, its ready, a seen report, a take, a turn frame and a turn's report. An act alone
+// arms that end-frame bound and the first wait over a value nobody reported seeing. The waits that
+// charge — the first over a value the worker saw, and the second — wait as well for the
+// connection's view to be whole (connview.go), which after a daemon start is the agent's answer
+// to the ask the shim's hello makes over a pending task, or a turn frame: so no wait that charges
+// runs before that answer, and a process whose agent never answers is relaunched, uncharged, at
+// the reconnect deadline (reconnectDeadline).
 func actOf(ev Event) bool {
 	switch ev.(type) {
 	case StreamHello, StreamTurnStart, StreamTurnEnd, RequestRegister, RequestReady, RequestTaskSeen, RequestTake,
@@ -110,14 +117,18 @@ func (m *Machine) resetPromptBudgets() bool {
 // it is not in: it runs at the end of every decision (unlock), so a wait is armed from the
 // decision that began it — the seen report, the turn's end that left the worker idle, the hold's
 // end, the accepted take, the take's put-back (notTheTakesTurn), the worker's first act after a
-// daemon start — and a decision that leaves the claim waiting on the same thing leaves the bound
-// where it was. A bound is always armed whole (Timeouts.Take, Timeouts.TurnStart), so the moment
-// its clock started is the moment it was armed, which the armed timer records (Machine.timers,
-// its due less the bound). The claim is listed as unseen only while its first wait is still on a
-// value nobody reported seeing. The bound of the wait for a take's report is kept the same way
-// (armReportWait, reportwait.go).
+// daemon start, the agent's answer or a turn frame that makes the connection's view whole again
+// after a close or a daemon start (connview.go) — and a decision that leaves the claim waiting on
+// the same thing leaves the bound where it was. A bound is always armed whole (Timeouts.Take,
+// Timeouts.TurnStart), so the moment its clock started is the moment it was armed, which the armed
+// timer records (Machine.timers, its due less the bound). The claim is listed as unseen only while
+// its first wait is still on a value nobody reported seeing. The bound of the wait for a take's
+// report is kept the same way (armReportWait, reportwait.go). With no pending task neither wait
+// stands, and both are disarmed.
 func (m *Machine) armWaits() {
+	p := m.claim.Pending
 	first, waiting := m.firstWaitNow()
+	waiting = waiting && p != nil
 	if !waiting || !first.unseen {
 		m.unseenListed = false
 	}
@@ -126,15 +137,16 @@ func (m *Machine) armWaits() {
 		m.firstFor = firstWait{}
 	} else if !armed || m.firstFor != first {
 		m.firstFor = first
-		m.arm(TimerTake, m.deps.Timeouts.Take, m.claim.Pending.ID)
+		m.arm(TimerTake, m.deps.Timeouts.Take, p.ID)
 	}
 	takenAt, waiting := m.secondWaitNow()
+	waiting = waiting && p != nil
 	if _, armed := m.timers[TimerTurnStart]; !waiting {
 		m.disarm(TimerTurnStart)
 		m.secondFor = time.Time{}
 	} else if !armed || !m.secondFor.Equal(takenAt) {
 		m.secondFor = takenAt
-		m.arm(TimerTurnStart, m.deps.Timeouts.TurnStart, m.claim.Pending.ID)
+		m.arm(TimerTurnStart, m.deps.Timeouts.TurnStart, p.ID)
 	}
 	m.armReportWait()
 }
@@ -185,9 +197,9 @@ func (m *Machine) firstWaitNow() (firstWait, bool) {
 // the take's acceptance, its put-back (notTheTakesTurn: a report naming no task gives the take
 // back the turn the daemon gave a run that was not its own), the end of the last hold that stood
 // over it (for the in-turn hold, the end of that turn), the worker's first act after a daemon
-// start (awaitsAct), and the point the connection's view is whole again after a cut
-// (connview.go); no time inside a hold, inside a run the daemon gave the take, or while the daemon
-// could not see the worker's frames is charged (dispatch://INFRA-2811, R5 and decision 8's
+// start (awaitsAct), and the point the connection's view is whole again after a cut or a daemon
+// start (connview.go); no time inside a hold, inside a run the daemon gave the take, or while the
+// daemon could not see the worker's frames is charged (dispatch://INFRA-2811, R5 and decision 8's
 // put-back and connection rule). The moment is recorded where the bound is armed, as the first
 // wait's restart is (Machine.timers, TimerTurnStart).
 //
@@ -239,10 +251,10 @@ func takeBoundOver(m *Machine, ctx context.Context, _ Event) error {
 	armedFor := m.firstFor
 	m.firstFor = firstWait{}
 	now, waiting := m.firstWaitNow()
-	if !waiting || now != armedFor {
+	p := m.claim.Pending
+	if !waiting || now != armedFor || p == nil {
 		return nil
 	}
-	p := m.claim.Pending
 	if now.unseen {
 		m.unseenListed = true
 		m.log.Info("supervise: nobody reported seeing the claim's latest value within the first bound; it is written again under its number, and nobody is charged",
@@ -279,10 +291,11 @@ func turnStartBoundOver(m *Machine, ctx context.Context, _ Event) error {
 	armedFor := m.secondFor
 	m.secondFor = time.Time{}
 	takenAt, waiting := m.secondWaitNow()
-	if !waiting || !takenAt.Equal(armedFor) {
+	p := m.claim.Pending
+	if !waiting || !takenAt.Equal(armedFor) || p == nil {
 		return nil
 	}
-	number := m.claim.Pending.Number
+	number := p.Number
 	// A charge that retired the process, or whose held stop landed, leaves a claim that is not
 	// ready or idle, so the value is written again only where the process stays; and work that
 	// waited behind the take runs first, a held suspension instead of the offer.
@@ -303,9 +316,10 @@ func turnStartBoundOver(m *Machine, ctx context.Context, _ Event) error {
 // reconnectDeadline is the reconnect deadline (connview.go): of a claim a daemon start restored
 // with its agent ready, idle or working (NewMachine), or whose connection closed while it held a
 // pending task (closeView), or whose agent said it is ready over a connection whose view was not
-// whole (readyView), its shim not having said hello since; or of a reconnect hello of a claim
-// holding a pending task whose agent has not answered whether it is in a turn, nor sent a turn
-// frame, since (askView).
+// whole (readyView), or which was given a pending task over a connection closed since its last
+// hello (armReconnectForTask), its shim not having said hello since; or of a reconnect hello of a
+// claim holding a pending task whose agent has not answered whether it is in a turn, nor sent a
+// turn frame, since (askView).
 //
 // With no hello, it probes and retires as the registration deadline does (registrationDeadline,
 // retireNeverReady). A process found gone takes the death path (judge, died). A process found

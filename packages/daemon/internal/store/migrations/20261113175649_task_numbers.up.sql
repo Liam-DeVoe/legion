@@ -168,10 +168,11 @@
 -- The sixth and seventh write never_registered over never_reconnected in the claim's two cause
 -- columns, failure_cause and pending_cause (20261111212544_claim_failure_cause). never_reconnected
 -- is the cause this release adds (supervise's CauseNeverReconnected): it is the pending cause of
--- the relaunch the daemon makes when a claim a daemon start restored ready, idle or working never
--- hears from its shim again while its process lives, and the failure cause once those relaunches
--- run the launch budget out (reconnectDeadline), so the restart that installs this release is
--- what writes it. The release before it reads both columns unchecked and serves them verbatim, in
+-- the relaunch the daemon makes when a live process's shim says no hello within the reconnect
+-- deadline, after a daemon start restored its claim or after its connection closed over a pending
+-- task, and the failure cause once those relaunches run the launch budget out
+-- (reconnectDeadline), so only this release, from the restart that installs it on, writes it.
+-- The release before it reads both columns unchecked and serves them verbatim, in
 -- a claim view's failure.cause and pendingCause, and its plugins read the state through a strict
 -- enum of the causes they were built with (legion-api.ts's LEGION_FAILURE_CAUSES), which names no
 -- such word: one claim left carrying it refuses the whole state body at every plugin that reads

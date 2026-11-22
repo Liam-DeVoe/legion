@@ -1055,7 +1055,7 @@ The claim is up and the state shows the tree at work.
 The daemon finds such a worker by itself and writes one `worker-silent` notice to the architect that owns the issue.
 The project's controller reads the same issue in the `silent` list of its periodic tick.
 
-The rule is this: the claim's process is up and between turns, it holds no task, and its agent's last recorded step is older than `worker_silence_minutes`.
+The rule is this: the claim's process is up and between turns, it holds no task it will still work (a task whose turn has already run counts as none), and its agent's last recorded step is older than `worker_silence_minutes`.
 That bound is 30 minutes by default, and the configuration refuses a value under 16 minutes when it loads.
 
 The daemon gives the worker its work again, a task the worker takes, chosen by the phase entry the issue's phase row names for the role: the work of that entry where the worker's claim was never given it, and the phase's task again where the claim is on that entry already.

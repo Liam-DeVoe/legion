@@ -111,7 +111,12 @@ type Config struct {
 	WorkerBootTimeout time.Duration
 	// WorkerBootRegistrationDeadlineIntervals × WorkerBootTimeout is the registration deadline: a
 	// pane whose process is alive but whose agent has not registered by then, or has not said it is
-	// ready that long after its registration, is retired and counted as a launch failure.
+	// ready that long after its registration, is retired and counted as a launch failure. It is the
+	// reconnect deadline too (supervise's reconnectBound): a ready agent's live process whose shim
+	// says no hello by then, after a daemon start or after its connection closed while its claim
+	// held a task, is retired and counted as a launch failure (never_reconnected), and one whose
+	// agent does not say by then whether it is in a turn, after its shim's reconnect hello, is
+	// relaunched, charged nothing.
 	WorkerBootRegistrationDeadlineIntervals int
 	WorkerRPCTimeout                        time.Duration
 	WorkerStopTimeout                       time.Duration
@@ -122,10 +127,14 @@ type Config struct {
 	// (`worker_turn_start_timeout_seconds`, twenty-five minutes by default): how long after an
 	// accepted take its turn has to start before the worker is charged and the task taken back
 	// (supervise.Timeouts.TurnStart), and how long the take's report may be late after its turn
-	// ends before the task is taken back as a cut turn (supervise's report wait). The second's
-	// default is twice the compaction timeout and the longest launch-to-turn the fleet measured,
-	// added (2 × (10 min + 150 s), INFRA-2811's decision 13); it is not a floor, and both are
-	// refused only when not a positive integer.
+	// ends before the task is taken back as a cut turn (supervise's report wait). Both of the
+	// second's waits, and the first over a value the worker reported seeing, run only while the
+	// worker's connection shows the daemon every frame of its turns: time with the connection cut
+	// counts toward none, and each starts again whole once the agent answers the daemon's ask
+	// after its shim's reconnect hello, or a turn starts or ends. The second's default is twice the
+	// compaction timeout and the longest launch-to-turn the fleet measured, added (2 × (10 min +
+	// 150 s), INFRA-2811's decision 13); it is not a floor, and both are refused only when not a
+	// positive integer.
 	WorkerTakeTimeout      time.Duration
 	WorkerTurnStartTimeout time.Duration
 	TreeStopTimeout        time.Duration

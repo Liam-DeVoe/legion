@@ -67,7 +67,7 @@ func (h *harness) relaunchedTakes() {
 //     the new process runs it a second time.
 //   - A relaunch held for the old turn's end: the stale-plugin lane waits out the take's turn,
 //     the end frame finishes the task, and the relaunch that follows hands the new process
-//     nothing. Negative control: the end frame finishing no task (endFrameFinishes false) — the
+//     nothing. Negative control: the end frame finishing no task (TakesNoTask false) — the
 //     task then stands unfinished and the relaunch never runs.
 //   - A sweep's relaunch inside the end-frame bound: the take's turn ended and its bound runs when
 //     the relaunch lets the process go; the task is finished, not taken back. Negative control:

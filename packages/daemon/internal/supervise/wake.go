@@ -410,7 +410,7 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 			// it: the stale-plugin pass, or the runtime's next report of the process. A hold over
 			// a turn that runs is no such hold: the wake ends it (endHeld), as it ends every hold
 			// over a running turn.
-			m.log.Info(reportWaitsLine, "task", m.claim.Pending.Number, "held", "wake", "kind", waiting.kind, "by", m.held.By)
+			m.log.Info(reportWaitsLine, "task", pendingNumber(m.claim.Pending), "held", "wake", "kind", waiting.kind, "by", m.held.By)
 			m.heldLaunch = true
 			return nil
 		}
@@ -747,7 +747,7 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // a task and queues the newer one in its place (its last case), so the claim takes an operator's
 // task over it, and the launch runs for it. The retirement is made here, before that launch, as
 // queue makes it, under a line of its own, so the row's queue finds no delivery. Left to the row
-// it could not be: where only a report finishes the task (endFrameFinishes), the launch would take
+// it could not be: where only a report finishes the task (TakesNoTask false), the launch would take
 // it back as a cut turn (settle, interrupted), and queue, reading the claim the launch leaves,
 // would refuse the operator's task behind the task taken back, which the next process would then
 // run again.
@@ -784,7 +784,7 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // nothing but the controller launches while the project is paused (pauseGate), so the task is
 // queued and kept, and goes where every task held for a launch goes once the claim runs again.
 func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
-	if !operatorDelivery(ev) || !m.launchWaits() || m.wake.pause != 0 || m.claim.Locator == nil || m.held != nil {
+	if !operatorDelivery(ev) || m.wake == nil || !m.launchWaits() || m.wake.pause != 0 || m.claim.Locator == nil || m.held != nil {
 		return nil
 	}
 	if r, ok := table[key{m.claim.State, kindOf(ev)}]; !ok || r.act == nil {

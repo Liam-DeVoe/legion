@@ -827,8 +827,9 @@ What each part is for:
   A value nobody reported seeing charges nobody, since what failed is the relay: the daemon writes it
   again once per first bound and `legion state` names the claim ([Observe](#observe)). A turn's
   start or end resets the count and a take does not, so a worker that takes and never starts a
-  turn is still retired at the limit. Time the daemon was not serving counts toward neither bound,
-  and a seen report a started daemon read from its database charges nobody at the first bound: the
+  turn is still retired at the limit. Time the daemon was not serving counts toward neither bound.
+  The first bound over a value the worker reported seeing, the second bound and the wait for a take's report run only while the worker's connection shows the daemon every frame of its turns: time with the connection cut counts toward none of them, and each starts again whole once the agent answers the daemon's ask after its shim's reconnect hello, or a turn starts or ends.
+  A seen report a started daemon read from its database charges nobody at the first bound: the
   daemon writes the value again, and charges the worker one bound after it reports the new
   revision seen. Each is a positive whole number of seconds, at most 2147483 (the largest whose
   milliseconds fit a signed 32-bit timer); any other value is refused by name.

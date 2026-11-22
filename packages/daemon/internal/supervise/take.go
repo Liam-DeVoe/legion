@@ -20,7 +20,7 @@ import (
 // in that answer, and the task's turn is the first turn that starts after it (turnStarted). The
 // task is finished by the turn-outcome report that names its number, or, for a worker whose
 // plugin names no number, by the end of that turn when no report comes (finishTask,
-// endFrameFinishes).
+// TakesNoTask).
 
 // TaskTakeContract is the plugin contract at which a worker takes its task rather than being
 // sent it (dispatch://INFRA-2811): the contract whose entry in internal/api's version.go brings
@@ -50,8 +50,13 @@ const TaskTakeContract = 207
 // release takes the pod of such a claim whose plugin no relaunch moves, a Claude Code role in a
 // pod, past the holds that would keep it (workflow's IdleRelease), since its pod's image is the
 // one thing that can bring it a plugin that takes. The third is the end-frame finish
-// (endFrameFinishes): such a worker's report names no task's number, so the end of its take's
-// turn is what finishes the task.
+// (overTurnFinish, takePhase, interrupted, NewMachine's finishAtAct): such a worker's report names
+// no task's number, so its report can finish nothing, and the end of its take's turn is what
+// finishes the task where no report named the number within the RPC timeout. A claim whose plugin
+// names its task's number has its task finished by the report that names it and by nothing else:
+// the end of a run says nothing of whose run it was, since the daemon gives a take the first run
+// that starts after it and the worker may run its text in the run after that (decision 8 of
+// dispatch://INFRA-2811; notTheTakesTurn).
 func TakesNoTask(contract int) bool { return contract < TaskTakeContract }
 
 // The origins of a task: the source that queued it (Delivery.Origin). A request names its own
@@ -352,13 +357,15 @@ func (m *Machine) answerTake(ctx context.Context, t *taking) error {
 	return err
 }
 
-// answer records a take's answer on the take (taking) and logs it. Every take row ends here or in
-// answerAgain, so every answer is logged once.
+// answer is the answer this decision made to a take: an acceptance it applied, a refusal or a
+// drop. Its line says it is no repeat (repeat false), so a reading of the log counts an accepted
+// one as a take of its number (ReadTaskCost). Every take row ends here or in answerAgain, so
+// every answer is logged once.
 func (m *Machine) answer(take RequestTake, answer TakeAnswer) {
 	m.answerAs(take, answer, false)
 }
 
-// answerAgain is answer for a take of a number the record holds accepted and unfinished, before
+// answerAgain is the answer to a take of a number the record holds accepted and unfinished, before
 // its turn starts or after: a take sent again after its answer was lost, answered the text the
 // record kept and applying nothing (answeredFromRecord). Its line says it repeats (repeat), so a
 // reading of the log counts the number taken once for the take that applied it (ReadTaskCost).
@@ -366,6 +373,8 @@ func (m *Machine) answerAgain(take RequestTake, answer TakeAnswer) {
 	m.answerAs(take, answer, true)
 }
 
+// answerAs is answer and answerAgain's one body: it records the answer on the take (taking) and
+// writes the take's line (takeAnsweredLine), repeat saying which of the two it is.
 func (m *Machine) answerAs(take RequestTake, answer TakeAnswer, repeat bool) {
 	take.t.answer = answer
 	m.log.Info(takeAnsweredLine, "task", take.Number, "revision", take.Revision.Revision, "outcome", string(answer.Outcome),

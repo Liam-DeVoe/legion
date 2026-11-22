@@ -36,7 +36,7 @@ func (m *Machine) startTakesTurn(ctx context.Context) error {
 // finish owed (Machine.finishOwed), so the bound that makes it again finishes by the report,
 // whatever the claim's plugin, and each refusal of the bound's own write arms it again, until one
 // lands (decision 8 of dispatch://INFRA-2811). A plugin that names its task's number is given no
-// other bound than this one (endFrameFinishes).
+// other bound than this one (TakesNoTask).
 func (m *Machine) finishTask(ctx context.Context, by string) error {
 	p := m.claim.Pending
 	number, id := p.Number, p.ID
@@ -57,7 +57,7 @@ func (m *Machine) finishTask(ctx context.Context, by string) error {
 // finishAtTurnsEnd is the end-frame bound over: the task's turn ended, and no turn-outcome
 // report named its number within the RPC timeout (Timeouts.RPC), so the end of the turn finishes
 // it — which is what finishes a task a worker whose plugin reports no number took
-// (endFrameFinishes). A bound that makes again a finish a report decided and the store refused
+// (TakesNoTask). A bound that makes again a finish a report decided and the store refused
 // finishes by that report, and its line says so (overTurnFinish). What the turn's end held for
 // the task runs now, as the report's finish runs it: a held suspension that waited for that finish
 // among it (settleThenAfterTurn, reportwait.go). A claim still working, for a turn or a
@@ -70,25 +70,15 @@ func finishAtTurnsEnd(m *Machine, ctx context.Context, _ Event) error {
 	return m.settleThenAfterTurn(ctx, func() error { return m.finishTask(ctx, by) })
 }
 
-// endFrameFinishes is whether the end of a take's turn finishes the task where no turn-outcome
-// report named its number within the RPC timeout: only for a claim whose plugin is below
-// TaskTakeContract (TakesNoTask), which names no number in any report, so its report can finish
-// nothing and the end of the turn is what finishes the task a migrated old worker took. A claim
-// whose plugin names its task's number has its task finished by the report that names it and by
-// nothing else: the end of a run says nothing of whose run it was, since the daemon gives a take
-// the first run that starts after it and the worker may run its text in the run after that
-// (decision 8 of dispatch://INFRA-2811; notTheTakesTurn).
-func (m *Machine) endFrameFinishes() bool { return TakesNoTask(m.claim.PluginContract) }
-
 // overTurnFinish is how a take's turn that is over settles its task where no write of the store
 // has finished it yet: by the report whose finish the store refused (finishOwed), else by its end
-// frame for a plugin that names no number (endFrameFinishes); false for neither, a task of a
+// frame for a plugin that names no number (TakesNoTask); false for neither, a task of a
 // plugin that names its number which no report has finished, which only that report finishes.
 func (m *Machine) overTurnFinish() (by string, finishes bool) {
 	switch {
 	case m.finishOwed:
 		return finishedByReport, true
-	case m.endFrameFinishes():
+	case TakesNoTask(m.claim.PluginContract):
 		return finishedByEndFrame, true
 	}
 	return "", false
@@ -113,7 +103,7 @@ func (m *Machine) armEndFrameBoundUnlessArmed(id string) {
 
 // armFinishAtAct arms the end-frame bound a daemon start left to the worker's first act
 // (finishAtAct, NewMachine), at the end of the decision that act made (unlock): the claim, one
-// whose end frame finishes its task (endFrameFinishes), was restored ready or idle over a take
+// whose end frame finishes its task (TakesNoTask), was restored ready or idle over a take
 // whose turn had started and ended under the daemon before this one, so the report that would
 // finish it is the worker's to send again to this daemon, and a bound that ran from the start
 // would run over the time no daemon served the worker (dispatch://INFRA-2811, whose departure 7

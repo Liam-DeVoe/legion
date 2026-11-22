@@ -314,7 +314,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "worker_silence_minutes", Default: "`30`", RequiredBy: "no",
-			Description: "How many minutes a phase worker that is up, between turns and holding no task may go with no recorded step before the daemon sends it its phase's task again; decimals allowed, and a value under 16 is refused, since a healthy worker that says it is waiting stays quiet for 15 minutes before its own reminder comes again.",
+			Description: "How many minutes a phase worker that is up, between turns and holding no task it will still work — a task whose turn has already run counts as none — may go with no recorded step before the daemon sends it its phase's task again; decimals allowed, and a value under 16 is refused, since a healthy worker that says it is waiting stays quiet for 15 minutes before its own reminder comes again.",
 			Read:        reads(readMinutes, func(f *fileConfig, v *time.Duration) { f.WorkerSilence = v }),
 		},
 		{
@@ -384,12 +384,12 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "worker_boot_timeout_seconds", RequiredBy: "no",
-			Description: "How long a launch waits for a role's launcher to connect — the image pull's bound, and how long a pod may stay `Pending` and unschedulable before the boot watchdog reads it dead; a GKE deployment, where a pod waits for a node of its own and pulls cold, needs a larger one.",
+			Description: "How long a launch waits for a role's launcher to connect — the image pull's bound, and how long a pod may stay `Pending` and unschedulable before the boot watchdog reads it dead; a GKE deployment, where a pod waits for a node of its own and pulls cold, needs a larger one. Times `worker_boot_registration_deadline_intervals`, it is the registration deadline and the reconnect deadline as well.",
 			Positive:    &positiveKey{Value: 120, Duration: func(c *Config) *time.Duration { return &c.WorkerBootTimeout }},
 		},
 		{
 			Name: "worker_boot_registration_deadline_intervals", RequiredBy: "no",
-			Description: "How many `worker_boot_timeout_seconds` the registration deadline is: an agent whose process is alive but which has not registered, or not said it is ready, within the product is retired and counted as a launch failure.",
+			Description: "How many `worker_boot_timeout_seconds` the registration deadline is: an agent whose process is alive but which has not registered, or not said it is ready, within the product is retired and counted as a launch failure. The same product is the reconnect deadline: a ready agent's live process whose shim says no hello within it, after a daemon start or after its connection closed while its claim held a task, is retired and counted as a launch failure (`never_reconnected`), and one whose agent does not say whether it is in a turn within it after its shim's reconnect hello is relaunched, charged nothing.",
 			Positive:    &positiveKey{Value: 3, Count: func(c *Config) *int { return &c.WorkerBootRegistrationDeadlineIntervals }},
 		},
 		{
@@ -409,7 +409,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "worker_turn_start_timeout_seconds", RequiredBy: "no",
-			Description: "How long after an accepted take its turn has to start before the worker is charged and the task taken back, and how long after the take's turn ends its report has to come, with work held for it or none, before the task is taken back with the note of a cut turn; the default is twice the compaction timeout and the longest launch-to-turn the fleet measured, added (2 × (10 min + 150 s)), and it is not a floor. A value below about 20 minutes cuts the wait for the report below four of the producers' report attempts, each bounded at 5 minutes, so a report a daemon restart delays lands after that take-back and the task runs again.",
+			Description: "How long after an accepted take its turn has to start before the worker is charged and the task taken back, and how long after the take's turn ends its report has to come, with work held for it or none, before the task is taken back with the note of a cut turn; both run only while the worker's connection shows the daemon every frame of its turns, so time with the connection cut counts toward neither, and each starts again whole once the agent answers the daemon's ask after its shim's reconnect hello or a turn starts or ends. The default is twice the compaction timeout and the longest launch-to-turn the fleet measured, added (2 × (10 min + 150 s)), and it is not a floor. A value below about 20 minutes cuts the wait for the report below four of the producers' report attempts, each bounded at 5 minutes, so a report a daemon restart delays lands after that take-back and the task runs again.",
 			Positive:    &positiveKey{Value: 1500, Duration: func(c *Config) *time.Duration { return &c.WorkerTurnStartTimeout }},
 		},
 		{
