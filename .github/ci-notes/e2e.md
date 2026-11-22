@@ -7,7 +7,7 @@ in the workflow file, or, for a value the proof job's matrix carries, in the com
 
 ## The proof step's own limit
 
-`Run the proof` runs `bash "scripts/e2e/$SCRIPT"`, and ten of the fourteen hosted scripts source
+`Run the proof` runs `bash "scripts/e2e/$SCRIPT"`, and eleven of the fifteen hosted scripts source
 `scripts/e2e/lib/live-daemon-proof.sh`, whose `live_daemon_proof` installs nats-server with
 `go install` through `.github/scripts/ci-retry.sh` at the 180 s module bound,
 5 x 180 + 150 = 1050 s; `scripts/e2e/dispatch-session-settings.sh` retries the same install the
@@ -27,9 +27,9 @@ nats-callout-sessions.sh, and 20 for phase-entry-converge.sh, stage1-skeleton.sh
 verification-results.sh.
 
 - Sourcing `lib/live-daemon-proof.sh`, and calling `live_daemon_proof` once: behind-entry-fence.sh,
-  child-adoption.sh, conflict-no-takeover.sh, handoff-records.sh, merge-wait-readable.sh,
-  plan-ratings.sh, review-range.sh, step-records.sh and sub-architect.sh at 25 minutes,
-  1500 + 1050 = 2550 s -> 43 min, and phase-entry-converge.sh at 20 minutes,
+  child-adoption.sh, conflict-merger.sh, conflict-no-takeover.sh, handoff-records.sh,
+  merge-wait-readable.sh, plan-ratings.sh, review-range.sh, step-records.sh and sub-architect.sh
+  at 25 minutes, 1500 + 1050 = 2550 s -> 43 min, and phase-entry-converge.sh at 20 minutes,
   1200 + 1050 = 2250 s -> 38 min.
 - Sourcing neither file, directly or through `lib/rig.sh`, `lib/codex-host.sh`,
   `lib/model-endpoint.sh` or the libraries those source: dispatch-claimant-delivery.sh,

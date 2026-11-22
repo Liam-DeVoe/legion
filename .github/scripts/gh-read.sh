@@ -69,6 +69,12 @@
 #     ahead of release-push.sh's leak guard, or a raw page). Every other command, gh's own or a
 #     wrapper around it (retry_fetch among them), runs as it is, leaves no headers to read, and
 #     its secondary limit takes the one-minute minimum.
+#   A STATED LIMIT: _gh_read_refusal decides a rate limit from the text of gh's stderr, which gh
+#   prints from the answer's body, and in the composed form no headers are traced, so a 5xx whose
+#   body names a rate limit is taken for one: it gets one more ladder, after the wait where it
+#   names a secondary limit, and fails by name as a rate limit, exit 75. It never passes wrongly.
+#   A read of the answer's status and headers in place of its text is the INFRA-3862 lane's
+#   (dispatch://INFRA-5224).
 #
 # Where the limit comes from. GitHub enforces a job's timeout-minutes from the job's start, and
 # a step's from the step's, and the runner exposes neither the limit nor the start to a step.

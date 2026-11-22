@@ -160,11 +160,13 @@ fi
 # escaped by jq's @tsv). Those lines are the callers' own, outside
 # this function: the boundary of the INFRA-3862 lane (dispatch://INFRA-5224). Third, the callers'
 # rule: the runner keeps one stop state for the whole step and reads standard output and standard
-# error on two threads, so a workflow command a caller writes on STANDARD OUTPUT just after a call
-# of this function can be read while the call's last block is still open, and dropped: 32 of 50
-# runs, measured by the INFRA-3862 flakes peer with the runner's own ProcessInvoker and
-# ActionCommandManager. So every workflow command a caller prints after a call of this function
-# goes to standard error, where it stays in order with the block, as this function's own lines do.
+# error on two threads, so a workflow command a caller writes on STANDARD OUTPUT beside a call of
+# this function, just before it or just after it, can be read while one of the call's blocks is
+# open, and dropped: 32 of 50 just after a call, measured by the INFRA-3862 flakes peer with the
+# runner's own ProcessInvoker and ActionCommandManager, and 15 of 30 just before one, on GitHub's
+# own runner (the tester's run 45074154101 of dispatch://INFRA-1545). So every workflow command a
+# caller prints in the same process as a call of this function, before it or after it, goes to
+# standard error, where it stays in order with the blocks, as this function's own lines do.
 #
 retry_fetch() {
   local what bound attempts attempt status left noun refusal buffer withheld unit token
