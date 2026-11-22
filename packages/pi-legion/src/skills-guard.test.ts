@@ -720,6 +720,25 @@ test("the architect's references say when a later request binds and who runs the
   ]).toEqual([]);
 });
 
+// A parent whose task has no acceptance step is held before its retro while issues beneath it are
+// in the workflow, as the architect's prompt parts say; no worker holds `accepting`, though a merge
+// forward asks workers for work there; and an issue with no `before_merge` check is accepted on
+// what the owner's comment says proves each item, as the root prompt says. Each sentence a reader
+// of the newest head showed false is gone. This shows the text ships, never that a role follows it.
+test("the architect's skill says what holds a parent before retro, who holds accepting and how a gap is accepted", () => {
+  expect([
+    ...lacks("legion-architect/SKILL.md", [
+      /otherwise the pass of the task's last step starts it, or holds a parent before it/,
+      /In `accepting`, which only a task naming `acceptance:owner` enters, no worker holds the phase/,
+      /every requirement has a check \(with no `before_merge` check, your comment says how each is proven\)/,
+      /^(?![\s\S]*enters, no worker runs)/,
+    ]),
+    ...lacks("legion-architect/references/plan.md", [
+      /Without it the last step's pass starts the retro, or holds a parent before it while issues beneath it are in the workflow/,
+    ]),
+  ]).toEqual([]);
+});
+
 test("an implementer and reviewer task has the implementer prove the surface and the reviewer read it", () => {
   expect([
     ...lacks("legion-worker/SKILL.md", [/no tester step[^.;]*the implementer's evidence serves/]),
