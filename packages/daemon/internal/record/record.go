@@ -3037,23 +3037,23 @@ func (i Issue) Standing() pods.Standing {
 func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase != phase.Done }
 
 // HoldsQueued says whether work of role queued for phase queuedFor — a start, an owed start, or the
-// task a start delivers — is the work of the place the issue stands at now: the issue stands in
-// queuedFor and, at the phase step, a running step of role stands there (RunningAt). Every role a
+// task a start delivers — is the work of a place the issue stands at now: a running step of role,
+// not held, stands at queuedFor (RunningAt). The tasks of a plan run at one time, each at its own
+// phase, and the issue's phase is the least finished of them (workflow's issuePhase), so it is the
+// running step that answers, never the issue's phase: an issue of one task, and one with no plan
+// rows (RunningOf), has its one running step at the phase it stands in, and a held issue's or a
+// held task's step is held, so either reads as the issue's phase read before. Every role a
 // deployment defines runs as step, so a start or a task queued for the step of one role names a
 // phase that still reads the same while the task stands at the step of another; the role is what
-// tells the two apart. At step the role names the step: a role runs at most one step of a task,
-// since a plan, an owner's or a project's default steps, that names a role at two steps is refused
-// (plan.Supported), as the phases row of a role assumes too (PhaseRow.StepPlace). Away from step
-// the phase alone is compared: one role works several phases (the implementer implementing and
-// retro), and a phase names its one role. It is the one definition of that question, which the
-// four judges of queued work ask, each on its own read: the outbox before it runs a start
-// (daemon's supervise), the admission pass before it lets an owed start take a slot (admit's
+// tells the two apart. One role works several phases (the implementer implementing and retro), and
+// a phase names its one role but step. It is the one definition of that question, which the four
+// judges of queued work ask, each on its own read: the outbox before it runs a start (daemon's
+// supervise), the admission pass before it lets an owed start take a slot (admit's
 // finishFencedStarts), the supervisor before it sends a queued task (PhaseHolds), and the
 // supervisor again before it brings a claim back for a start (supervise.StartWork, through
 // PhaseHolds).
 func (i Issue) HoldsQueued(role claim.Role, queuedFor phase.Phase) bool {
-	return i.Phase == queuedFor && (queuedFor != phase.Step ||
-		slices.ContainsFunc(i.RunningAt(phase.Step), func(step RunningStep) bool { return step.Role == role }))
+	return slices.ContainsFunc(i.RunningAt(queuedFor), func(step RunningStep) bool { return step.Role == role && !step.Held })
 }
 
 // PhaseHolds says whether a task queued for role at phase queuedFor on run generation is still
