@@ -262,7 +262,7 @@ func TestHoldBypassUnlistedMachine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := recreate(context.Background(), nc, &bytes.Buffer{}, []string{bus.SessionBucket}, 3); err != nil {
+	if _, _, err := recreate(context.Background(), nc, &bytes.Buffer{}, []string{bus.SessionBucket}, 3, 0); err != nil {
 		t.Fatalf("control: the change with nothing held: %v", err)
 	}
 	testwait.Eventually(t, "the listener's writes acknowledged by the new bucket", func() bool { return w.acked.Load() > before+3 })
@@ -531,7 +531,7 @@ func TestHoldBackupAndRestoreThroughJsm(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer nc.Close()
-		_, _, err = restoreAll(context.Background(), nc, &bytes.Buffer{}, dir, m, []string{bus.InterestBucket})
+		_, _, err = restoreAll(context.Background(), nc, &bytes.Buffer{}, dir, m, []string{bus.InterestBucket}, 0)
 		return err
 	}
 	held := natsgrant.Operator(natsgrant.OperatorPhaseHeld).Publish

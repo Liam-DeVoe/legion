@@ -188,6 +188,18 @@ decides, not the journal.
   or 409 `below_floor` (a log or journal it judges by does not verify) stores nothing, and the
   command is UNKNOWN, naming the code. Neither is a reason to send `held`.
 
+## Creates after a restart
+
+For a while after a hold's restart, JetStream's meta leader can still hold a restarted peer
+offline, and it refuses to place a three-copy stream then (error code 10005, "no suitable peers
+for placement"). The operator holds no `$SYS` user, so nothing it can read says every peer is back:
+the create's own refusal is the only signal. `buckets create`, `recreate` and `restore` make each
+create again while JetStream answers that code (`RetryPlacement`), every 250 ms and up to the
+restart's limit, printing each retry; past the limit the command is UNKNOWN, naming the create.
+Any other error returns at once. `streams update`'s creates are not retried: #4687's
+`streams.Update` reports a create's error as text, so the code cannot be read until its `Finding`
+keeps the error.
+
 ## Stated residuals
 
 - The command bounds no restore gen of its own. `holdrecord.RestoreRow` and `Bootstrap` restore at

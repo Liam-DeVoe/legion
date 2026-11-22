@@ -44,6 +44,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/nats-io/nats.go"
@@ -353,7 +354,7 @@ func run(ctx context.Context, o options, stdout io.Writer, deps writerhold.Deps)
 		}
 		c.Workflow, c.Command = holdrecord.WorkflowBucketsCreate, CommandCreate
 		c.Change = func(ctx context.Context, nc *nats.Conn, _ string) (map[string]writerhold.Change, map[string]string, error) {
-			return createMissing(ctx, nc, stdout, o.buckets, o.replicas)
+			return createMissing(ctx, nc, stdout, o.buckets, o.replicas, op.RestartLimit)
 		}
 	case "recreate":
 		c.Workflow, c.Command = holdrecord.WorkflowBucketsRecreate, CommandRecreate
@@ -366,7 +367,7 @@ func run(ctx context.Context, o options, stdout io.Writer, deps writerhold.Deps)
 			if err := backupCovers(d, o.buckets); err != nil {
 				return nil, nil, err
 			}
-			return recreate(ctx, nc, stdout, o.buckets, o.replicas)
+			return recreate(ctx, nc, stdout, o.buckets, o.replicas, op.RestartLimit)
 		}
 	case "restore":
 		c.Workflow, c.Command = holdrecord.WorkflowBucketsRestore, CommandRestore
@@ -374,7 +375,7 @@ func run(ctx context.Context, o options, stdout io.Writer, deps writerhold.Deps)
 			c.Inputs["sha256."+bucket] = manifest.Buckets[bucket].SHA256
 		}
 		c.Change = func(ctx context.Context, nc *nats.Conn, _ string) (map[string]writerhold.Change, map[string]string, error) {
-			return restoreAll(ctx, nc, stdout, o.from, manifest, o.buckets)
+			return restoreAll(ctx, nc, stdout, o.from, manifest, o.buckets, op.RestartLimit)
 		}
 	case "backup":
 		// The backup is the first command of the buckets-recreate and buckets-restore workflows: a
@@ -431,10 +432,11 @@ func missingBuckets(ctx context.Context, op *writerhold.Operator, buckets []stri
 }
 
 // createMissing creates each of buckets the server reports missing, with its copied-bucket
-// configuration at replicas copies, and leaves each present one as it is. A failure is a
-// *writerhold.Left naming each bucket created before it and the failing one, possibly created, or
-// a plain error when it created nothing.
-func createMissing(ctx context.Context, nc *nats.Conn, stdout io.Writer, buckets []string, replicas int) (map[string]writerhold.Change, map[string]string, error) {
+// configuration at replicas copies, and leaves each present one as it is. A create JetStream
+// cannot place yet, a peer still offline after the hold's restart, is made again within bound
+// (writerhold.RetryPlacement). A failure is a *writerhold.Left naming each bucket created before it
+// and the failing one, possibly created, or a plain error when it created nothing.
+func createMissing(ctx context.Context, nc *nats.Conn, stdout io.Writer, buckets []string, replicas int, bound time.Duration) (map[string]writerhold.Change, map[string]string, error) {
 	js, err := nc.JetStream(nats.Context(ctx))
 	if err != nil {
 		return nil, nil, err
@@ -457,7 +459,10 @@ func createMissing(ctx context.Context, nc *nats.Conn, stdout io.Writer, buckets
 			outputs["bucket."+bucket] = "exists"
 			continue
 		}
-		if _, err := bus.CreateCopiedBucket(ctx, nc, js, bucket, replicas); err != nil {
+		if err := writerhold.RetryPlacement(ctx, bound, "create KV_"+bucket, stdout, func() error {
+			_, err := bus.CreateCopiedBucket(ctx, nc, js, bucket, replicas)
+			return err
+		}); err != nil {
 			left = append(left, "KV_"+bucket+" possibly created")
 			return failed(fmt.Errorf("create %s: %w", bucket, err))
 		}
@@ -469,10 +474,11 @@ func createMissing(ctx context.Context, nc *nats.Conn, stdout io.Writer, buckets
 	return changes, outputs, nil
 }
 
-// recreate deletes each of buckets and creates it again. A rerun after a delete finds the bucket
+// recreate deletes each of buckets and creates it again, the create made again within bound while
+// JetStream cannot place it (writerhold.RetryPlacement). A rerun after a delete finds the bucket
 // missing and creates it. A failure is a *writerhold.Left naming what the command left: each
 // bucket recreated before it, and the failing one deleted or possibly deleted.
-func recreate(ctx context.Context, nc *nats.Conn, stdout io.Writer, buckets []string, replicas int) (map[string]writerhold.Change, map[string]string, error) {
+func recreate(ctx context.Context, nc *nats.Conn, stdout io.Writer, buckets []string, replicas int, bound time.Duration) (map[string]writerhold.Change, map[string]string, error) {
 	js, err := nc.JetStream(nats.Context(ctx))
 	if err != nil {
 		return nil, nil, err
@@ -487,7 +493,10 @@ func recreate(ctx context.Context, nc *nats.Conn, stdout io.Writer, buckets []st
 			return failed("KV_"+bucket+" possibly deleted", fmt.Errorf("delete %s: %w", bucket, err))
 		}
 		fmt.Fprintf(stdout, "deleted %s\n", bucket)
-		if _, err := bus.CreateCopiedBucket(ctx, nc, js, bucket, replicas); err != nil {
+		if err := writerhold.RetryPlacement(ctx, bound, "create KV_"+bucket+" again", stdout, func() error {
+			_, err := bus.CreateCopiedBucket(ctx, nc, js, bucket, replicas)
+			return err
+		}); err != nil {
 			return failed("KV_"+bucket+" deleted and possibly not created again", fmt.Errorf("create %s again: %w", bucket, err))
 		}
 		fmt.Fprintf(stdout, "created %s (%d copies)\n", bucket, replicas)

@@ -263,15 +263,16 @@ var restoreStart = 60 * time.Second
 // restoreRuns is how many times a restore of one bucket is run before it stops: 2, its one rerun.
 const restoreRuns = 2
 
-// restoreAll restores each of buckets from dir/<bucket> on nc, each with restoreOne. A restore that
-// stops is a *writerhold.Left naming what the command left: each bucket restored before it, and the
-// stopped one's stream deleted.
-func restoreAll(ctx context.Context, nc *nats.Conn, stdout io.Writer, dir string, m *Manifest, buckets []string) (map[string]writerhold.Change, map[string]string, error) {
+// restoreAll restores each of buckets from dir/<bucket> on nc, each with restoreOne, a restore
+// JetStream cannot place yet made again within bound. A restore that stops is a *writerhold.Left
+// naming what the command left: each bucket restored before it, and the stopped one's stream
+// deleted.
+func restoreAll(ctx context.Context, nc *nats.Conn, stdout io.Writer, dir string, m *Manifest, buckets []string, bound time.Duration) (map[string]writerhold.Change, map[string]string, error) {
 	changes, outputs := map[string]writerhold.Change{}, map[string]string{}
 	var left []string
 	for _, bucket := range buckets {
 		archive := m.Buckets[bucket]
-		if err := restoreOne(ctx, nc, stdout, bucket, filepath.Join(dir, bucket), archive); err != nil {
+		if err := restoreOne(ctx, nc, stdout, bucket, filepath.Join(dir, bucket), archive, bound); err != nil {
 			left = append(left, "KV_"+bucket+" deleted, its restore stopped")
 			return nil, nil, &writerhold.Left{What: strings.Join(left, ", "), Err: err}
 		}
@@ -288,9 +289,10 @@ func restoreAll(ctx context.Context, nc *nats.Conn, stdout io.Writer, dir string
 // (its connection closed, an answer that does not come) is run again from its first chunk,
 // restoreRuns times in all, each after the cut's leftover is gone; a cut on the last run stops the
 // command, naming the bucket and each run's error, with the leftover deleted, so no partial stream
-// stays.
+// stays. A start JetStream refuses to place (a peer still offline after the hold's restart) stores
+// nothing and is sent again within bound (writerhold.RetryPlacement), within the same run.
 // A restored stream whose state is not the archive's stops it too.
-func restoreOne(ctx context.Context, nc *nats.Conn, stdout io.Writer, bucket, bucketDir string, archive Archive) error {
+func restoreOne(ctx context.Context, nc *nats.Conn, stdout io.Writer, bucket, bucketDir string, archive Archive, bound time.Duration) error {
 	stream := "KV_" + bucket
 	js, err := nc.JetStream(nats.Context(ctx))
 	if err != nil {
@@ -301,7 +303,12 @@ func restoreOne(ctx context.Context, nc *nats.Conn, stdout io.Writer, bucket, bu
 	}
 	var errs []error
 	for run := 1; run <= restoreRuns; run++ {
-		state, err := startRestore(ctx, nc, stdout, stream, bucketDir)
+		var state streamState
+		err := writerhold.RetryPlacement(ctx, bound, "restore "+stream, stdout, func() error {
+			var err error
+			state, err = startRestore(ctx, nc, stdout, stream, bucketDir)
+			return err
+		})
 		if err == nil {
 			if state.LastSeq != archive.LastSeq || state.Msgs != archive.Messages {
 				errs = append(errs, fmt.Errorf("run %d restored %d messages to seq %d, and the archive holds %d to seq %d", run, state.Msgs, state.LastSeq, archive.Messages, archive.LastSeq))
