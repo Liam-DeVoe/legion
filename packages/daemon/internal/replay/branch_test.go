@@ -410,7 +410,7 @@ func TestTheNeverStartedKnobGivesAnUnstartedIssueItsScenario(t *testing.T) {
 	}
 }
 
-// conflictWindow is a window recorded under infra-w1, whose conflicting head moves back to
+// conflictWindow is a window recorded under legion-v20.42.5, whose conflicting head moves back to
 // implementing, with one conflict loop, and the merges of its base branch. ACME-1, a root, works
 // 15 minutes in each phase from 09:00 to merging at 10:45; main took a merge at 10:30, inside its
 // first stretch (09:45 to 11:00), which ends in a conflict at 11:00; the loop's implementing runs
@@ -419,7 +419,7 @@ func TestTheNeverStartedKnobGivesAnUnstartedIssueItsScenario(t *testing.T) {
 // M = 0 is 0.
 func conflictWindow(t *testing.T) Window {
 	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
-	b.window.Parts[0].Rule = "infra-w1"
+	b.window.Parts[0].Rule = "legion-v20.42.5"
 	b.capped(2)
 	b.boot(clock(9, 0))
 	b.file(clock(9, 0), "ACME-1", filing{Title: "Export the widget list", Status: "todo", Rank: "a0", Labels: handedToLegion})

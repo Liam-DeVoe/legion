@@ -1,8 +1,8 @@
 {
   "rules": {
-    "infra-w1": {
+    "legion-v20.42.5": {
       "source": "replay",
-      "rule": "infra-w1",
+      "rule": "legion-v20.42.5",
       "branch": "main",
       "seed": 1,
       "slowdown": 1,

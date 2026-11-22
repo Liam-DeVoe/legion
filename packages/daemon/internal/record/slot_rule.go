@@ -202,10 +202,10 @@ func (r SlotRule) ChildrenFirstCandidates(issues []Issue, gates map[string]TreeG
 }
 
 // SlotRules is every named rule the repository keeps, the daemon's own first, and then the rules
-// the replay's comparison runs beside it: the rules two recorded windows ran under (infra-w1,
-// infra-w2) and the four candidates of the comparison (keep-past-review, blockers-first,
-// returned-by-rank, cover). `legion replay rules` prints them. Each answer is built afresh, so a
-// caller that changes a rule it was handed changes no other caller's.
+// the replay's comparison runs beside it: the rules two recorded windows ran under
+// (legion-v20.42.5, legion-v19.57.3) and the four candidates of the comparison (keep-past-review,
+// blockers-first, returned-by-rank, cover). `legion replay rules` prints them. Each answer is built
+// afresh, so a caller that changes a rule it was handed changes no other caller's.
 func SlotRules() []SlotRule {
 	daemon := MainRule
 	daemon.KeepsSlotIn = slices.Clone(MainRule.KeepsSlotIn)
@@ -240,26 +240,26 @@ func everyWorkflowPhase() []phase.Phase {
 		phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging, phase.Held}
 }
 
-// windowOneRule is the rule named infra-w1, which releases 20.25.1 and 20.42.5 ran: the daemon's
-// own slot choices — no slot past the review (#3573) and none during a wait on another issue
-// (#3715) — and a head that conflicts with its base moving back to implementing by workflow's
+// windowOneRule is the rule named legion-v20.42.5, which releases 20.25.1 and 20.42.5 ran: the
+// daemon's own slot choices — no slot past the review (#3573) and none during a wait on another
+// issue (#3715) — and a head that conflicts with its base moving back to implementing by workflow's
 // TriggerConflict, the rows of that release's transition table the daemon's own table no longer
 // carries (workflow.TableFor), where main keeps the phase and merges the base forward (#4464).
 func windowOneRule() SlotRule {
-	return mainRuleWith("infra-w1", func(rule *SlotRule) {
+	return mainRuleWith("legion-v20.42.5", func(rule *SlotRule) {
 		rule.Commit = conflictMovesBackCommit
 		rule.Conflict = ConflictMovesBack
 	})
 }
 
-// windowTwoRule is the rule named infra-w2, which release 19.57.3 ran (#2751 and #3206): a started
-// issue keeps its slot in every phase of the workflow until the merger's ready mark inside
+// windowTwoRule is the rule named legion-v19.57.3, which release 19.57.3 ran (#2751 and #3206): a
+// started issue keeps its slot in every phase of the workflow until the merger's ready mark inside
 // merging, which that release's awaiting_merge was and a replay reads as a mark (ReleaseAtReady,
 // LineFacts.Ready); no wait on another issue gives the slot back; and red checks, that release's
 // one path of a conflicting head, move the issue back to implementing by workflow's
 // TriggerChecksRed.
 func windowTwoRule() SlotRule {
-	return mainRuleWith("infra-w2", func(rule *SlotRule) {
+	return mainRuleWith("legion-v19.57.3", func(rule *SlotRule) {
 		rule.Commit = awaitingMergeCommit
 		rule.KeepsSlotIn = everyWorkflowPhase()
 		rule.LinkWaitGivesBack, rule.ChildrenWaitGivesBack = false, false

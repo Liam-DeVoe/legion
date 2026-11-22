@@ -212,26 +212,26 @@ func TestAStretchCountsNoMergeOfItsOwn(t *testing.T) {
 // implementing by the rule's trigger through the daemon's own path, and the loop's work is drawn
 // from the window's recorded loops (spec R2; the fixture windows' README, "Conflicts"). The test
 // replays the fixture window conflict-from-fitted-rate under that rule and fails for each measure
-// that differs from the scorecard its expect.json works out by hand for infra-w1: ACME-1's first
-// stretch draws a conflict at 11:00, moves back to implementing, runs the window's one recorded
-// loop, its own, and merges at 12:45, its second stretch drawing none.
+// that differs from the scorecard its expect.json works out by hand for legion-v20.42.5: ACME-1's
+// first stretch draws a conflict at 11:00, moves back to implementing, runs the window's one
+// recorded loop, its own, and merges at 12:45, its second stretch drawing none.
 func TestADrawnConflictMovesTheIssueBackUnderAMovesBackRule(t *testing.T) {
 	dsn := replayDSN(t)
 	expect, err := readFixtureExpect(filepath.Join(fixtureWindowsDir, "conflict-from-fitted-rate"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, ok := expect.Rules["infra-w1"]
+	want, ok := expect.Rules["legion-v20.42.5"]
 	if !ok {
-		t.Fatal("the window's expect.json holds no scorecard under infra-w1")
+		t.Fatal("the window's expect.json holds no scorecard under legion-v20.42.5")
 	}
-	result, err := Run(context.Background(), RunConfig{Window: fixtureWindow(t, "conflict-from-fitted-rate"), Rule: replayedRule(t, "infra-w1"),
+	result, err := Run(context.Background(), RunConfig{Window: fixtureWindow(t, "conflict-from-fitted-rate"), Rule: replayedRule(t, "legion-v20.42.5"),
 		Branch: MainBranch, Seed: want.Seed, Slowdown: 1, PGDSN: dsn, Out: t.TempDir()})
 	if err != nil {
-		t.Fatalf("replay the window under infra-w1: %v", err)
+		t.Fatalf("replay the window under legion-v20.42.5: %v", err)
 	}
 	for _, diff := range scorecardDiffs(result.Scorecard, want) {
-		t.Errorf("under infra-w1: %s", diff)
+		t.Errorf("under legion-v20.42.5: %s", diff)
 	}
 	if refused := result.Divergence.Refused; len(refused) > 0 {
 		t.Errorf("the replay refused %+v", refused)

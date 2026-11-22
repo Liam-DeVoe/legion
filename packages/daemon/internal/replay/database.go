@@ -23,7 +23,7 @@ const replayDatabasePrefix = "legion_replay_"
 // replayTables is the tables a rule replays read that no daemon migration makes, created by the
 // replay in its own database after the daemon's migrations, and in no daemon's database, since the
 // daemon runs none of these rules: the merger's ready mark inside merging of the release at
-// 9542c6fb (ReadyMark, assumption 20), which the rule infra-w2 reads, kept for the issue's
+// 9542c6fb (ReadyMark, assumption 20), which the rule legion-v19.57.3 reads, kept for the issue's
 // generation and the merger's phase entry it was made in, so a later visit to merging reads none
 // of it; the sign-offs the workflow held behind an issue beneath, which the rule cover reads as a
 // wait (HeldSignOff), kept the same way for the architect's entry into accepting; and the covers

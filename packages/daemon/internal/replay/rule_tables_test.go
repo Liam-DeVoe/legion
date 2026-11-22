@@ -21,8 +21,8 @@ var errRolledBack = errors.New("the test's transaction is rolled back")
 // under the rule that reads it alone, and only for the visit to merging it fell in; and the covers
 // a pass keeps read back as it kept them (ruleTables, design 10.10). Under each rule the repository
 // keeps, in a replay's own database, an issue stands in merging at generation 1 holding the
-// merger's phase entry 3, and a ReadyMark goes through the replay's handler: under infra-w2 the
-// pass's facts carry the mark (record.LineFacts.Ready) and the issue keeps no slot in merging
+// merger's phase entry 3, and a ReadyMark goes through the replay's handler: under legion-v19.57.3
+// the pass's facts carry the mark (record.LineFacts.Ready) and the issue keeps no slot in merging
 // (record.LineFacts.KeepsSlot), and once the merger's entry moves on, as the next visit to merging
 // moves it, the mark reads nothing; under every other rule the handler writes no mark. Under cover
 // the covers kept are the covers read, and a second keep replaces the first; under every other rule
@@ -71,7 +71,7 @@ func TestTheReadyMarkAndTheCoversReadThroughTheFacts(t *testing.T) {
 				if err := tx.QueryRow(ctx, `select count(*) from replay_ready_marks`).Scan(&marks); err != nil {
 					t.Fatalf("count the ready marks: %v", err)
 				}
-				reads, want := rule.Name == "infra-w2", 0
+				reads, want := rule.Name == "legion-v19.57.3", 0
 				if reads {
 					want = 1
 				}

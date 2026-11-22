@@ -373,7 +373,7 @@ func TestForecastGroupsTheRedefinedCauses(t *testing.T) {
 		t.Errorf("a forecast four times the review rounds of the window after passes them")
 	}
 	var out bytes.Buffer
-	result := ForecastResult{Before: "window-two", After: "window-one", Rule: "infra-w1", Branch: MainBranchAt, Seeds: []int64{1}, Checks: checks,
+	result := ForecastResult{Before: "window-two", After: "window-one", Rule: "legion-v20.42.5", Branch: MainBranchAt, Seeds: []int64{1}, Checks: checks,
 		FromCommit: "1111111111111111111111111111111111111111", ToCommit: "2222222222222222222222222222222222222222"}
 	if err := result.Write(&out, 1); err != nil {
 		t.Fatal(err)
@@ -534,9 +534,9 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 		return windowRecord{Name: name, Order: order, Project: "ACME", From: compareFrom, To: to, Rule: rule, Scorecard: sampleCard(compareHours),
 			Parts: []Part{{From: compareFrom, To: to, Release: "fixture", Commit: commit, Rule: rule}}}
 	}
-	before := recorded("window-two", 0, "infra-w2", "1111111111111111111111111111111111111111")
+	before := recorded("window-two", 0, "legion-v19.57.3", "1111111111111111111111111111111111111111")
 	before.Stretches = 4
-	after := recorded("window-one", 1, "infra-w1", "2222222222222222222222222222222222222222")
+	after := recorded("window-one", 1, "legion-v20.42.5", "2222222222222222222222222222222222222222")
 	after.Stretches, after.Conflicted = 10, 3
 	plan := fullPlan()
 	var cards []Scorecard
@@ -591,7 +591,7 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 		want = append(want, "### "+w.Name+"\n", "### "+w.Name+" under `"+w.Rule+"`")
 	}
 	want = append(want, "## The rule named best (R7)", "## The scorecard of each window, read from its record", "## The validation of each window (R5)",
-		"## The forecast across the change (R5)", "replayed under the rule after it, `infra-w1`",
+		"## The forecast across the change (R5)", "replayed under the rule after it, `legion-v20.42.5`",
 		"The forecast also carries the workflow commits between `1111111111111111111111111111111111111111` and `2222222222222222222222222222222222222222`",
 		"window-two does not measure how a rule changes conflicts", "window-one measures how a rule changes conflicts",
 		"## The gap between the snapshot and the line timelines", "## The break-even slowdown factor of each rule against main",
@@ -653,7 +653,7 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 		}
 		var parts []string
 		for _, window := range []string{"review-and-test-kept", "conflict-from-fitted-rate"} {
-			for _, rule := range []string{"main", "infra-w1"} {
+			for _, rule := range []string{"main", "legion-v20.42.5"} {
 				part := config
 				part.Runs, part.OnlyWindow, part.OnlyRule = t.TempDir(), window, rule
 				if err := RunCompare(context.Background(), part); err != nil {
@@ -686,7 +686,7 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 			}
 		}
 		for _, line := range []string{"## The rule named best (R7)", "### review-and-test-kept, `main@1`", "### conflict-from-fitted-rate, `main@1`",
-			"- `infra-w1`, `main@1.1`"} {
+			"- `legion-v20.42.5`, `main@1.1`"} {
 			if !strings.Contains(wholeDocument, line) {
 				t.Errorf("the document of the fixture windows holds no %q:\n%s", line, wholeDocument)
 			}

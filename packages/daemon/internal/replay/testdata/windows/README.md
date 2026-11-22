@@ -18,7 +18,7 @@ files.
 | `link-added-and-removed` | a link added and taken off inside the window, each at its time | `main` |
 | `child-moved-out` | a child moved out from under its parent ends the parent's wait | `main` |
 | `child-filed-after-parent-start` | a child's filing moves with its parent's start | `keep-past-review`, `main` |
-| `conflict-from-fitted-rate` | a conflict drawn from the window's fitted rate, on each conflict path | `infra-w1`, `main` |
+| `conflict-from-fitted-rate` | a conflict drawn from the window's fitted rate, on each conflict path | `legion-v20.42.5`, `main` |
 | `review-and-test-kept` | a review that asks for changes and a failed test keep their count and length | `main` |
 | `reopen-works-again` | an issue that reopens keeps its later work | `main` |
 | `send-back-at-full-cap` | a send-back from accepting at a full cap waits for a slot, or keeps one | `main`, `keep-past-review`, `cover` |
@@ -69,8 +69,8 @@ reconstruction error the tool reports; these windows hold the exact one.
   (not released, which Dispatch still counts as an open child). An issue Legion does not work has
   no label. Ranks are short strings compared as bytes (`a0` < `a1` < `b01`).
 - The record follows the daemon's own code under the rule it ran: `window.json`'s `parts` name that
-  rule (`main`, `keep-past-review` or `infra-w1`), its `commit` is the fork point the windows were
-  written against and its `release` is `fixture`. The log holds each line kind of the code the
+  rule (`main`, `keep-past-review` or `legion-v20.42.5`), its `commit` is the fork point the windows
+  were written against and its `release` is `fixture`. The log holds each line kind of the code the
   window's facts make, with the code's msgs and attribute keys (`window_builder_test.go` writes the
   same shapes): the admission pass's slot lines (`admission: slot taken|released`, the in-transaction
   `admission gives a slot back to …` and `admission: an issue waits for the Dispatch children under
@@ -178,9 +178,9 @@ reconstruction error the tool reports; these windows hold the exact one.
 - In a replay each stretch draws once, at the moment its recorded end falls by its segments, with M
   counted over the replayed stretch: a draw u from the run's seeded source makes a conflict where
   u < the chance. A recorded `conflict` move is never injected: the draw makes it.
-- Under `infra-w1` (`ConflictMovesBack`) a drawn conflict moves the issue back to implementing by
-  `conflict`, and the loop's work is drawn from the window's recorded conflict loops: the segments
-  from a recorded conflict move to the issue's return to the phase it left.
+- Under `legion-v20.42.5` (`ConflictMovesBack`) a drawn conflict moves the issue back to
+  implementing by `conflict`, and the loop's work is drawn from the window's recorded conflict
+  loops: the segments from a recorded conflict move to the issue's return to the phase it left.
 - Under `main` (`ConflictMergeForward`) a drawn conflict keeps the phase: a merge-forward segment
   follows, its length drawn from the recorded conflict loops' implementing rounds (assumption 23)
   and its implementer in a turn, and then the issue goes on with the work the record shows after the

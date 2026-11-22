@@ -22,7 +22,7 @@ import (
 // TriggerReady is the merger's ready move of the release at 9542c6fb, which took an issue from
 // merging into PhaseAwaitingMerge once the merger had readied its pull request. Today's workflow
 // has no such move: a window of that release holds it, and the trace reads it as a mark inside
-// merging (MoveSources, assumption 20), where the rule infra-w2 gives the slot back.
+// merging (MoveSources, assumption 20), where the rule legion-v19.57.3 gives the slot back.
 const TriggerReady workflow.TriggerKind = "ready"
 
 // PhaseAwaitingMerge is the phase of the release at 9542c6fb in which an issue waited for its

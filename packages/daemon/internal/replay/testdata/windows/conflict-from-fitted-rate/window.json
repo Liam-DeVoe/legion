@@ -16,7 +16,7 @@
       "to": "2001-03-05T13:00:00Z",
       "release": "fixture",
       "commit": "0d3786da536722f2eb26a793ab1b9827b6e90f47",
-      "rule": "infra-w1"
+      "rule": "legion-v20.42.5"
     }
   ],
   "tickInterval": "1h0m0s",

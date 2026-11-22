@@ -548,8 +548,8 @@ The daemon runs `main`, and a replay runs the rule that you name through the sam
 | Rule | What it is | Commit |
 | --- | --- | --- |
 | `main` | The daemon's own rule, with no slot past the review, the slot given back on a link wait and a children wait, returned issues first, and a conflicting head that keeps its phase. | `0d3786da` |
-| `infra-w1` | The rule of releases 20.25.1 and 20.42.5, with the slot choices of `main` and a conflicting head that moves back to implementing. | `958173da` |
-| `infra-w2` | The rule of release 19.57.3, with a slot kept in every phase until the merger's ready mark in merging, no slot given back on a wait, and red checks that move back to implementing. | `9542c6fb` |
+| `legion-v20.42.5` | The rule of releases 20.25.1 and 20.42.5, with the slot choices of `main` and a conflicting head that moves back to implementing. | `958173da` |
+| `legion-v19.57.3` | The rule of release 19.57.3, with a slot kept in every phase until the merger's ready mark in merging, no slot given back on a wait, and red checks that move back to implementing. | `9542c6fb` |
 | `keep-past-review` | `main` with the slot kept in accepting, retro and merging, so that a send-back past the review finds its issue with its slot. | `0d3786da` |
 | `blockers-first` | `main` with each issue that a started issue waits on placed first among the issues that have not started. | `0d3786da` |
 | `returned-by-rank` | `main` with a returned issue placed in the line by its board rank, not by the time at which it gave its slot back. | `0d3786da` |
@@ -570,7 +570,7 @@ main (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
 
-infra-w1 (commit 958173da0ea4cd03290a1964edf9eb92e6685200)
+legion-v20.42.5 (commit 958173da0ea4cd03290a1964edf9eb92e6685200)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
   a link wait gives the slot back: true
   a children wait gives the slot back: true
@@ -580,7 +580,7 @@ infra-w1 (commit 958173da0ea4cd03290a1964edf9eb92e6685200)
   a conflicting head: moves_back_conflict
   the slot goes back at the ready mark: false
 
-infra-w2 (commit 9542c6fbbecd184ccee73523ab3defa39d6cf23a)
+legion-v19.57.3 (commit 9542c6fbbecd184ccee73523ab3defa39d6cf23a)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, accepting, retro, merging, held
   a link wait gives the slot back: false
   a children wait gives the slot back: false
@@ -1054,7 +1054,7 @@ If a link or a child lasts longer in the replay than it would, the replay moves 
 If it lasts less long, each measure moves the other way.
 
 - Issues finished: Down for every rule, because each waiting issue finishes later.
-  It moves down most for a rule that keeps the slot through a wait, such as `cover` and `infra-w2`.
+  It moves down most for a rule that keeps the slot through a wait, such as `cover` and `legion-v19.57.3`.
 
 - Started work that waits for a slot: Up for reading (b) under a rule under which a wait gives its slot back, because the waiting issue counts there for the whole wait.
 
@@ -1311,7 +1311,7 @@ Compare its `loops[conflict]` with a replay of the earlier window under `main`.
 
 ### Assumption 19: Under the release at 9542c6fb, whose workflow has the phase awaiting_merge, the time in awaiting_merge is folded into merging
 
-This assumption and the three after it apply only to a window recorded under the release at 9542c6fb, release 19.57.3, from which the rule `infra-w2` comes.
+This assumption and the three after it apply only to a window recorded under the release at 9542c6fb, release 19.57.3, from which the rule `legion-v19.57.3` comes.
 A slot held in awaiting_merge counts as held in merging.
 So a rule that keeps a slot in merging is charged that time, and a rule that keeps none is not.
 
@@ -1338,16 +1338,16 @@ It does so for a rule that keeps a slot in merging and does not give it back at 
 In a window of that release, read the turns of each issue's roles in `awaiting_merge`.
 A visit with a merger in a turn is work of merging, and a visit with no turn is a wait for the merge.
 
-### Assumption 20: Under the release at 9542c6fb, the merger's ready move is a mark inside merging, where the rule infra-w2 gives the slot back
+### Assumption 20: Under the release at 9542c6fb, the merger's ready move is a mark inside merging, where the rule legion-v19.57.3 gives the slot back
 
-If that release gave the slot back at another moment of merging, the slot-hours past the review under `infra-w2` move by the time between the two moments.
+If that release gave the slot back at another moment of merging, the slot-hours past the review under `legion-v19.57.3` move by the time between the two moments.
 
 **Evidence in a recorded window.** _The ready move and the slot line._
 That release's phase lines give the merger's `ready` move into `awaiting_merge`, and its slot lines give the slot given back.
-The trace reads the move as a mark inside merging, and `infra-w2` gives the slot back at that mark.
+The trace reads the move as a mark inside merging, and `legion-v19.57.3` gives the slot back at that mark.
 
 **If it is wrong.**
-If that release gave the slot back later than the mark, the replay of `infra-w2` moves the measures so.
+If that release gave the slot back later than the mark, the replay of `legion-v19.57.3` moves the measures so.
 If it gave the slot back earlier, each measure moves the other way.
 
 - Issues finished: Up, because the replay frees the slot sooner, and another issue starts sooner.
@@ -1386,7 +1386,7 @@ If a `checks_red` move did not send the work back, the replay moves the measures
 - Other delays: Up, because the replay counts a round of `red_checks_or_conflict`, with its hours, that never ran.
 
 - Slots: Up for a rule that keeps no slot in the phase that the move left, because the issue holds a slot in implementing that it would not hold.
-  None under `infra-w2`, which keeps a slot in every phase of the workflow.
+  None under `legion-v19.57.3`, which keeps a slot in every phase of the workflow.
 
 **The reading that would test it.** _The work after each checks_red move._
 In a window of that release, read the next turn of the issue after each `checks_red` move.
@@ -1428,7 +1428,7 @@ A merge forward shorter than a conflict's implementing round makes the conflict 
 A window of a release whose conflicting head moves back holds each conflict loop: the move back by `conflict`, and the implementing round after it.
 Under `main`, a drawn conflict keeps its phase, and the replay adds a merge-forward segment, with the implementer in a turn.
 The replay draws the length of that segment from the implementing rounds of the recorded conflict loops.
-The fixture window `conflict-from-fitted-rate` replays one under `main` and `infra-w1`.
+The fixture window `conflict-from-fitted-rate` replays one under `main` and `legion-v20.42.5`.
 
 **If it is wrong.**
 If a merge forward is shorter than the implementing round of a conflict loop, the replay moves the measures so for `main` and each rule built on it.

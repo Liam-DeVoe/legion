@@ -17,8 +17,8 @@ import (
 )
 
 // The commits of the two recorded releases whose rows today's table lacks: the conflict rows of
-// the release the rule infra-w1 comes from, and the awaiting_merge, ready and checks_red of the
-// release the rule infra-w2 comes from.
+// the release the rule legion-v20.42.5 comes from, and the awaiting_merge, ready and checks_red of
+// the release the rule legion-v19.57.3 comes from.
 const (
 	conflictRelease      = "958173da0ea4cd03290a1964edf9eb92e6685200"
 	awaitingMergeRelease = "9542c6fbbecd184ccee73523ab3defa39d6cf23a"
@@ -83,7 +83,8 @@ func fold(p phase.Phase) phase.Phase {
 }
 
 // recordedRows is every move a window this tool replays can record: each row of the table of
-// main, of infra-w1 and of infra-w2 (workflow.TableFor), and each row of releaseRows, once each.
+// main, of legion-v20.42.5 and of legion-v19.57.3 (workflow.TableFor), and each row of releaseRows,
+// once each.
 func recordedRows(t *testing.T) []recordedRow {
 	t.Helper()
 	var rows []recordedRow
@@ -95,7 +96,7 @@ func recordedRows(t *testing.T) []recordedRow {
 			rows = append(rows, row)
 		}
 	}
-	for _, name := range []string{record.MainRule.Name, "infra-w1", "infra-w2"} {
+	for _, name := range []string{record.MainRule.Name, "legion-v20.42.5", "legion-v19.57.3"} {
 		for _, row := range workflow.TableFor(replayedRule(t, name)) {
 			add(recordedRow{From: row.From, Trigger: row.Trigger, To: row.To, Source: "the table of " + name})
 		}
@@ -146,13 +147,13 @@ var wantMoves = map[workflow.TriggerKind]wantMove{
 // A replay makes every move a recorded window can hold, and the trace builder's map from a
 // recorded move to the move a replay makes (MoveSources) says how for each trigger: every row of
 // the tables a replay runs (workflow.Table and the rows workflow.TableFor adds for the rules
-// infra-w1 and infra-w2, read as data, so a row added there fails here until it has a source), and
-// the rows of the two recorded releases that today's table lacks, held as data (releaseRows). The
-// test fails for a row whose trigger has no entry, for an entry that differs from the way the
-// design decides for its trigger (wantMoves) or that names no row, and for a mapping of the release
-// at 9542c6fb that does not land on today's phases: awaiting_merge read as merging, so its merge is
-// merging's and its ready move a mark that moves nothing. The rules infra-w1 and infra-w2 are the
-// ones the repository keeps (record.SlotRuleNamed).
+// legion-v20.42.5 and legion-v19.57.3, read as data, so a row added there fails here until it has a
+// source), and the rows of the two recorded releases that today's table lacks, held as data
+// (releaseRows). The test fails for a row whose trigger has no entry, for an entry that differs
+// from the way the design decides for its trigger (wantMoves) or that names no row, and for a
+// mapping of the release at 9542c6fb that does not land on today's phases: awaiting_merge read as
+// merging, so its merge is merging's and its ready move a mark that moves nothing. The rules
+// legion-v20.42.5 and legion-v19.57.3 are the ones the repository keeps (record.SlotRuleNamed).
 func TestEveryRowOfTheTableHasASourceInTheRecord(t *testing.T) {
 	facts := intakeFactTypes(t)
 	rows := recordedRows(t)

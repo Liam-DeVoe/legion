@@ -19,7 +19,7 @@ const (
 	// accepting, retro or merging that no drop from the merge queue came before.
 	CauseSendBack Cause = "send_back"
 	// CauseConflict is a head that conflicts with its base, moved back to implementing by the
-	// conflict trigger (the rule infra-w1, and the releases at 52b3cf5c and 958173da it comes
+	// conflict trigger (the rule legion-v20.42.5, and the releases at 52b3cf5c and 958173da it comes
 	// from).
 	CauseConflict Cause = "conflict"
 	// CauseRedChecksOrConflict is red checks or a conflict, which the release at 9542c6fb did

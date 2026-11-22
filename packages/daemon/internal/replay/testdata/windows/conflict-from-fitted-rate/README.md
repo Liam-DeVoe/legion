@@ -2,12 +2,12 @@
 
 A recorded window of project ACME, written by hand by the conventions of `../README.md`: four hours,
 from 2001-03-05T09:00Z to 13:00Z, an admission cap of 2, two issues, recorded under the rule
-`infra-w1` (a conflicting head moves back to implementing by `conflict`, as window one's release
-did). It holds one fact of check k1: a conflict comes from the rate fitted on the window, not from
-the recorded move (spec R2). `merges/acme__widgets.jsonl` holds the base branch's two first-parent
-commits, the two merges of the window. `expect.json` holds the scorecards of a replay under each of
-the two conflict paths, `infra-w1` and `main`, on the main branch, worked by hand below. The draw is
-certain at the precision `../README.md` states, so every seed gives them.
+`legion-v20.42.5` (a conflicting head moves back to implementing by `conflict`, as window one's
+release did). It holds one fact of check k1: a conflict comes from the rate fitted on the window,
+not from the recorded move (spec R2). `merges/acme__widgets.jsonl` holds the base branch's two
+first-parent commits, the two merges of the window. `expect.json` holds the scorecards of a replay
+under each of the two conflict paths, `legion-v20.42.5` and `main`, on the main branch, worked by
+hand below. The draw is certain at the precision `../README.md` states, so every seed gives them.
 
 ## The issues
 
@@ -16,7 +16,7 @@ certain at the precision `../README.md` states, so every seed gives them.
 | ACME-1 | a root whose head conflicts with its base once ACME-2 merges | `a0` |
 | ACME-2 | a root that merges first, at 10:45 | `a1` |
 
-## What happens (the record, under `infra-w1`)
+## What happens (the record, under `legion-v20.42.5`)
 
 | time (UTC) | ACME-1 | ACME-2 |
 | --- | --- | --- |
@@ -64,7 +64,7 @@ The window's one recorded conflict loop runs from the 11:00 move back to ACME-1'
 at 12:30: implementing 30, testing 15, reviewing 15, accepting 15 and retro 15 minutes. Its
 implementing round is 30 minutes.
 
-## The replay under `infra-w1`
+## The replay under `legion-v20.42.5`
 
 The recorded conflict move is not injected. ACME-1's first stretch runs as recorded (its segments
 start at their recorded worker starts with n = m), and at its recorded end, 11:00, it draws with
@@ -84,7 +84,7 @@ record shows after its loop came back to merging, its last merging segment of 15
 merger in a turn from 11:30 to 11:45; and it merges at 11:45. The stretch is not drawn again. ACME-1
 holds no slot after 10:15 (merging keeps none under `main`). ACME-2 is as recorded.
 
-## The scorecard under `infra-w1`, worked by hand
+## The scorecard under `legion-v20.42.5`, worked by hand
 
 The span is 4 hours.
 

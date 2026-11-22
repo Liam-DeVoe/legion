@@ -16,9 +16,9 @@ import (
 
 // ruleTables is where the replay's admission pass reads and keeps what a rule the daemon does not
 // run records beyond the daemon's own tables (admit.RuleTables), over the tables the replay makes
-// in its own database (replayTables): the merger's ready marks the rule infra-w2 gives the slot
-// back at, which the replay's handler writes (ReadyMark), and the covers that stand under the rule
-// cover, which the pass itself keeps. A rule that reads neither reads nothing here.
+// in its own database (replayTables): the merger's ready marks the rule legion-v19.57.3 gives the
+// slot back at, which the replay's handler writes (ReadyMark), and the covers that stand under the
+// rule cover, which the pass itself keeps. A rule that reads neither reads nothing here.
 type ruleTables struct{}
 
 var _ admit.RuleTables = ruleTables{}
