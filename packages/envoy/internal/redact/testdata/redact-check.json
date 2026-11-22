@@ -3973,6 +3973,13 @@
       "production": "redact.OAuth2's answer, redact.requestTokens"
     },
     {
+      "id": "redact-pagination-names-public",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAPageNumberPrintsAndAnUndeclaredQueryValueDoesNot",
+      "production": "redact.requestTokens with the public-name table: GitHub's page and per_page print as they came, and a value under an undeclared query name is still redacted"
+    },
+    {
       "id": "library-error-needs-its-record",
       "requirement": "r4-unchanged",
       "package": "./internal/redact",
@@ -8844,6 +8851,11 @@
       "site": "main's visibility check: projectaccess Access and the request machine printed Dispatch's visibility word as it came",
       "source": "the class scans at the merge of main",
       "guard": "projectaccess-visibility-words"
+    },
+    {
+      "site": "GitHub's page and per_page redacted as credentials from GitHub's words, which broke the rate-limit message main's CI test reads (installation ID [redacted])",
+      "source": "the merge of main into the pull request",
+      "guard": "redact-pagination-names-public"
     }
   ]
 }

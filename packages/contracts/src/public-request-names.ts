@@ -153,6 +153,18 @@ export const PUBLIC_REQUEST_NAMES: readonly PublicRequestName[] = [
     name: "lifetime",
     source: "IAM Service Account Credentials API, generateAccessToken: the token's lifetime",
   },
+  {
+    place: "field",
+    name: "page",
+    source:
+      "GitHub REST API, Using pagination in the REST API (docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api): the number of the page a list request reads",
+  },
+  {
+    place: "field",
+    name: "per_page",
+    source:
+      "GitHub REST API, Using pagination in the REST API (docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api): the number of results a page holds",
+  },
 ];
 
 /** Whether the value under `name`, carried at `place`, is public by its contract: a header's name

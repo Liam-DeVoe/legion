@@ -39,4 +39,6 @@ var publicRequestNames = []publicRequestName{
 	{Place: "field", Name: "role", Source: "POST /legion/v1/operator/claims/* (the Legion daemon's operator claim routes): the role a claim is spawned or read for"},
 	{Place: "field", Name: "delegates", Source: "IAM Service Account Credentials API, generateAccessToken: the service accounts of the chain"},
 	{Place: "field", Name: "lifetime", Source: "IAM Service Account Credentials API, generateAccessToken: the token's lifetime"},
+	{Place: "field", Name: "page", Source: "GitHub REST API, Using pagination in the REST API (docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api): the number of the page a list request reads"},
+	{Place: "field", Name: "per_page", Source: "GitHub REST API, Using pagination in the REST API (docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api): the number of results a page holds"},
 }
