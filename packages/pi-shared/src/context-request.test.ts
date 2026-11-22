@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { SESSION_ANSWERS_MARKER } from "@legion/envoy-client/session-answers";
 import {
+  ADDED_MESSAGE_TIMESTAMP,
   type HostAgentRegistry,
   isHandoffPrompt,
   isSideTurn,
@@ -66,11 +67,11 @@ const handoffPrompt = {
 };
 
 // pi-envoy's people's-answers message as its handler adds it after a request's last message: a
-// user message stamped 0 whose first block is the list.
+// user message stamped `ADDED_MESSAGE_TIMESTAMP` whose first block is the list.
 const answers = {
   role: "user",
   content: [{ type: "text", text: `${SESSION_ANSWERS_MARKER}\n\n- ACME-2694: approved.` }],
-  timestamp: 0,
+  timestamp: ADDED_MESSAGE_TIMESTAMP,
 };
 
 test("a side turn ends with the host's prompt after the host's notice", () => {

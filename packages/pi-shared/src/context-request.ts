@@ -26,6 +26,12 @@ export function timestampOf(message: unknown): number | undefined {
     : undefined;
 }
 
+/** The timestamp a plugin puts on each message it adds to a request, as pi-envoy's
+ *  `userTextMessage` does. A message a person sends carries the time it was sent, so the stamp
+ *  tells an added message from a person's own. Every pi-envoy release so far stamps 0: with a
+ *  different value, a reader of this stamp takes an older copy's message for a person's own. */
+export const ADDED_MESSAGE_TIMESTAMP = 0;
+
 /** The text of `message`'s first content block when `message` has `role` and that block has text:
  *  where a handler looks for a message of its own, and how it reads the host's own prompts. */
 export function leadingText(message: unknown, role: string): string | undefined {
@@ -49,6 +55,15 @@ export function leadingText(message: unknown, role: string): string | undefined 
     return first.text;
   }
   return undefined;
+}
+
+/** Whether `message` is a user message whose first text block is pi-envoy's people's-answers list
+ *  or the line saying the list could not be read (`isSessionAnswersText`). It does not read the
+ *  stamp, so a person's own message that quotes the marker matches too. A caller that must tell
+ *  the two apart also reads `ADDED_MESSAGE_TIMESTAMP`. */
+export function isSessionAnswersMessage(message: unknown): boolean {
+  const text = leadingText(message, "user");
+  return text !== undefined && isSessionAnswersText(text);
 }
 
 /** The text of `message` when the host wrote it (`attribution: "agent"`) with `role`. */
@@ -191,22 +206,25 @@ export function branchPosition(
   return { at: "absent" };
 }
 
-/** Whether `message` is a people's-answers message pi-envoy added to the request: a user message
- *  stamped 0, as pi-envoy stamps every message it adds, whose first text block is a list of what
- *  people wrote or the line saying it could not be read (`isSessionAnswersText`). A person's own
- *  message that quotes the marker carries the time it was sent. */
-function isAnswersMessage(message: unknown): boolean {
-  if (timestampOf(message) !== 0) return false;
-  const text = leadingText(message, "user");
-  return text !== undefined && isSessionAnswersText(text);
+/** `messages` cut before its trailing run of messages that `matches`: `head`, every message up to
+ *  the last one that does not match, and `tail`, the messages after it, in order. A request that
+ *  does not end with a match is all `head`, the same array. */
+export function splitTrailing(
+  messages: readonly unknown[],
+  matches: (message: unknown) => boolean
+): { readonly head: readonly unknown[]; readonly tail: readonly unknown[] } {
+  let end = messages.length;
+  while (end > 0 && matches(messages[end - 1])) end -= 1;
+  return end === messages.length
+    ? { head: messages, tail: [] }
+    : { head: messages.slice(0, end), tail: messages.slice(end) };
 }
 
-/** `messages` cut before its trailing run of pi-envoy's answers messages (`isAnswersMessage`): the
- *  same array when it does not end with one. */
-function withoutTrailingAnswers(messages: readonly unknown[]): readonly unknown[] {
-  let end = messages.length;
-  while (end > 0 && isAnswersMessage(messages[end - 1])) end -= 1;
-  return end === messages.length ? messages : messages.slice(0, end);
+/** Whether `message` is a people's-answers message pi-envoy added to the request: an answers
+ *  message (`isSessionAnswersMessage`) stamped `ADDED_MESSAGE_TIMESTAMP`, as pi-envoy stamps every
+ *  message it adds. A person's own message that quotes the marker carries the time it was sent. */
+function isAnswersMessage(message: unknown): boolean {
+  return timestampOf(message) === ADDED_MESSAGE_TIMESTAMP && isSessionAnswersMessage(message);
 }
 
 /** A session's last conversion, as each plugin keeps it in a store of its own: a remote
@@ -235,7 +253,7 @@ export type ConversionKind = "cut" | "afterCut" | "repeat" | "new";
  * there. Each keeps its own store of conversions.
  *
  * The position and the key are read without the request's trailing run of pi-envoy's answers
- * messages (`withoutTrailingAnswers`), messages built for that request alone that the branch never
+ * messages (`isAnswersMessage`), messages built for that request alone that the branch never
  * holds, so both plugins read one request alike whichever plugin's `context` handler runs first.
  * pi-envoy, run first while the session compacts, adds one to a compaction's first conversion and
  * none to its repeat; read with it, pi-legion would find the first ending at no message of the
@@ -247,7 +265,7 @@ export function nextConversion(
   messages: readonly unknown[],
   entries: readonly unknown[]
 ): { readonly conversion: Conversion; readonly kind: ConversionKind } {
-  const conversation = withoutTrailingAnswers(messages);
+  const conversation = splitTrailing(messages, isAnswersMessage).head;
   const position = branchPosition(conversation, entries);
   if (position.at === "before") return { conversion: "cut", kind: "cut" };
   const key =

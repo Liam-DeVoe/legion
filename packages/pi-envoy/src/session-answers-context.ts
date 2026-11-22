@@ -6,12 +6,15 @@ import {
 } from "@legion/envoy-client/session-answers";
 import { splitTrailingApproval } from "@legion/pi-shared/approval-message";
 import {
+  ADDED_MESSAGE_TIMESTAMP,
   type Conversion,
   isHandoffPrompt,
+  isSessionAnswersMessage,
   isSideTurn,
   leadingText,
   messageKey,
   nextConversion,
+  timestampOf,
 } from "@legion/pi-shared/context-request";
 import { customEntries } from "@legion/pi-shared/custom-entry";
 import { userTextMessage } from "./context-message";
@@ -29,14 +32,15 @@ processGlobal[DECIDED_KEY] = decided;
 /**
  * Whether the request's last message is the list of people's answers as an older copy of this
  * extension appends it, after the last message on every request: a user message whose first text
- * block starts with the list's marker or the failure line's. Only that one position is checked,
- * as `withDispatchFirst` checks only its own: a tool result, delivered message or reply quoting
- * the marker earlier in the conversation is conversation, which must not switch the list off. A
- * copy of this version records the array it returns in `decided` instead, wherever its list sits.
+ * block starts with the list's marker or the failure line's (`isSessionAnswersMessage`). It does
+ * not read the stamp: `placedLegacy` reads it, and leaves a person's own message that quotes the
+ * marker as it is. Only that one position is checked, as `withDispatchFirst` checks only its own:
+ * a tool result, delivered message or reply quoting the marker earlier in the conversation is
+ * conversation, which must not switch the list off. A copy of this version records the array it
+ * returns in `decided` instead, wherever its list sits.
  */
 function endsWithSessionAnswers(messages: readonly unknown[]): boolean {
-  const text = leadingText(messages.at(-1), "user");
-  return text !== undefined && isSessionAnswersText(text);
+  return isSessionAnswersMessage(messages.at(-1));
 }
 
 /** Each session's last decided conversion (`nextConversion`), by the session's `sessionManager`.
@@ -647,11 +651,9 @@ function placedLegacy(
 ): unknown[] | undefined {
   const last = messages.at(-1);
   const text = leadingText(last, "user");
-  // The list a copy adds is stamped 0 (`userTextMessage`); a person's own message quoting the
-  // marker is theirs, never moved.
-  const added =
-    typeof last === "object" && last !== null && "timestamp" in last && last.timestamp === 0;
-  if (text === undefined || !added) return undefined;
+  // The list a copy adds carries `ADDED_MESSAGE_TIMESTAMP` (`userTextMessage`). A person's own
+  // message that quotes the marker is theirs, never moved.
+  if (text === undefined || timestampOf(last) !== ADDED_MESSAGE_TIMESTAMP) return undefined;
   const recorded = conversions.get(request.session);
   const compacting = (typeof recorded === "object" && recorded.afterCut) || request.compacting();
   const reason = readLineFailure(text);

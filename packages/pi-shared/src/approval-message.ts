@@ -1,3 +1,5 @@
+import { splitTrailing } from "./context-request";
+
 /**
  * Which message of a model request is the approval message, as both plugins' `context` handlers
  * read it: pi-legion places it, and pi-envoy puts its people's-answers message before it. Neither
@@ -26,17 +28,14 @@ export function isApprovalMessage(message: unknown): boolean {
 }
 
 /**
- * `messages` cut before its trailing run of approval messages (`isApprovalMessage`): `head`, every
- * message up to the last one that is not an approval message, and `tail`, the approval messages
- * after it, in order. A request that does not end with one is all `head`, the same array.
+ * `messages` cut before its trailing run of approval messages (`isApprovalMessage`), as
+ * `splitTrailing` cuts it: `head`, every message up to the last one that is not an approval
+ * message, and `tail`, the approval messages after it, in order. A request that does not end with
+ * one is all `head`, the same array.
  */
 export function splitTrailingApproval(messages: readonly unknown[]): {
   readonly head: readonly unknown[];
   readonly tail: readonly unknown[];
 } {
-  let end = messages.length;
-  while (end > 0 && isApprovalMessage(messages[end - 1])) end -= 1;
-  return end === messages.length
-    ? { head: messages, tail: [] }
-    : { head: messages.slice(0, end), tail: messages.slice(end) };
+  return splitTrailing(messages, isApprovalMessage);
 }
