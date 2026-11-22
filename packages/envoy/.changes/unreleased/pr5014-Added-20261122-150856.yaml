@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  Dispatch serves `PUT /api/v1/issues/{key}/steps/{id}/experiment`, which writes the experiment
+  and the variant of one step record. Only the session of the Legion daemon of the issue's
+  project writes it; any other writer is refused `403 STEP_WRITER`. The body states both names
+  or is refused `400 STEP_INPUT`, each name must match `^[a-z0-9-]{1,32}$`, and each field is set
+  once, so a later write changes nothing. The read of an issue's steps answers `experiment` and
+  `variant` on each record, and the read of a project's finished issues answers them on each
+  issue, from the records of its newest run; each is null where the records name none.
+time: 2026-11-22T15:08:56Z
+custom:
+    Issue: pr5014
