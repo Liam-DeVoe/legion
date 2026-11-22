@@ -31,6 +31,13 @@ import (
 // strict schema refuses and reads no state at all.
 const PodUpdateContract = 46
 
+// relaunchWaitsForViewLine is the line of a stale-plugin relaunch of a claim holding a take of its
+// pending task whose connection does not show the machine every frame of its turns (refreshPlugin,
+// connview.go), at Info, with the task, the claim's state and the pass that asked: the relaunch
+// waits for the agent's answer or a turn frame on a new connection, and the reconnect deadline
+// bounds the wait.
+const relaunchWaitsForViewLine = "supervise: the process speaks another plugin contract; its relaunch waits until the worker's connection shows its turns whole again"
+
 // refreshPlugin is the claim's process found to speak a plugin contract this daemon does not: at
 // boot, re-adopting a claim whose recorded contract is an earlier daemon's, or none at all (the
 // first boot on this release); or, uncharged, a registration that still differs from the daemon's
@@ -134,8 +141,8 @@ const PodUpdateContract = 46
 // claim's waiting, which is where every credit of this lane goes back (refreshCredit,
 // endRefreshLane). Every return below that raises no relaunch is such an end, because the lane
 // gave up nothing by it and the next sweep will decide this claim again: the contract already
-// current, a wake already held, no process to replace, and the turn this relaunch waits out,
-// whose own end runs the relaunch back through here.
+// current, a wake already held, no process to replace, a take over a view that is not whole, and
+// the turn this relaunch waits out, whose own end runs the relaunch back through here.
 //
 // A post that arrives carrying a credit over a machine that already holds one gives the new
 // credit straight back to the gate, keeping the flag for the wake the held one was taken for.
@@ -188,6 +195,20 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 		m.log.Info("supervise: the agent of this claim the daemon's start restored has not said whether it is in a turn; its stale-plugin relaunch waits for that answer",
 			"state", m.claim.State, "pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract,
 			"trigger", trigger, "askedAt", m.askedAt)
+		return nil
+	}
+	// A claim holding a take of its pending task is relaunched only over a whole view of its turns
+	// (connview.go), in every order and not only behind its start's ask: the take may have had its
+	// turn start unseen, its start frame lost as the connection broke, and a relaunch now would
+	// take it back over a turn running, the task run twice behind row 26's note. The first post
+	// after the agent's answer or a turn frame decides it, and the reconnect deadline bounds the
+	// wait: that deadline's own relaunch is the bound, and passes (atReconnectDeadline). A claim
+	// holding no take is relaunched as before, an untaken pending task with it: only a take the
+	// daemon accepted can have a turn running unseen, and R10 asks for a relaunch onto the current
+	// plugin wherever one can be made.
+	if p := m.claim.Pending; p != nil && p.taken() && m.connSeen != viewWhole && !m.atReconnectDeadline {
+		m.log.Info(relaunchWaitsForViewLine, "task", p.Number, "state", m.claim.State, "trigger", trigger,
+			"pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract)
 		return nil
 	}
 	controller := claim.IsController(m.claim.Role, m.claim.Issue, m.claim.Tree)

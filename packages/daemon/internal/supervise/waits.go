@@ -346,8 +346,21 @@ func turnStartBoundOver(m *Machine, ctx context.Context, _ Event) error {
 // shim's backlog is whole, a take still awaiting its turn may have had that turn run unseen, its
 // frames dropped from the replay, so the relaunch takes it back as a cut turn rather than
 // unstarted, as at the agent's answer of no turn (markRestoredTurnUnseen, turnAnswered).
+//
+// Such a claim read in a turn whose end its connection cannot show is no case of the lane's: a
+// replayed start made it working, its connection broke with that turn's end frame in it, and
+// neither an answer nor a turn frame came on the next hello's connection, or no hello came at all
+// (connSeen not viewWhole). The lane would hold the relaunch for a turn's end that may never come
+// (refreshPlugin, holdStaleRelaunch), and leave the claim working until the stall backstop. So it
+// is decided below, as any claim whose view is not whole at this deadline: relaunched, uncharged,
+// after a hello no answer followed, or retired as a shim that never reconnected with no hello since
+// its close, a held suspension stopping the process in either place, and the task taken back as a
+// cut turn (interrupted).
 func reconnectDeadline(m *Machine, ctx context.Context, _ Event) error {
 	askedTurn := m.askTurn && !m.askedAt.IsZero()
+	if askedTurn && m.inTurn() && m.connSeen != viewWhole {
+		m.askTurn, m.unansweredAsks, askedTurn = false, 0, false
+	}
 	helloed := askedTurn || m.connSeen == viewAsked
 	if (m.held != nil && !helloed) || m.heldRunsNow() {
 		return m.suspendHeld(ctx)
@@ -357,6 +370,10 @@ func reconnectDeadline(m *Machine, ctx context.Context, _ Event) error {
 		m.log.Warn("supervise: the agent of a claim the daemon's start restored did not say whether it is in a turn within the reconnect deadline of its hello; the stale-plugin lane relaunches it, uncharged",
 			"askedAt", m.askedAt)
 		m.markRestoredTurnUnseen()
+		// This deadline is the bound of the wait for a whole view, so its relaunch does not wait
+		// for one (refreshPlugin), and row 26 takes its take back as a cut turn (interrupted).
+		m.atReconnectDeadline = true
+		defer func() { m.atReconnectDeadline = false }()
 		return m.refreshPlugin(ctx, m.askTrigger, false)
 	}
 	if p := m.claim.Pending; p != nil && p.awaitsTurn() {

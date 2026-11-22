@@ -328,8 +328,8 @@ func TestBootRelaunchOfAStaleClaimWaitsForTheTurnOverAnswer(t *testing.T) {
 		if unanswered := h.logs.lines("supervise: the agent could not say whether it is in a turn"); len(unanswered) != 1 {
 			t.Fatalf("the asks the agent left unanswered are %q, want the first connection's alone", unanswered)
 		}
-		if answered := h.logs.lines("supervise: the agent of a claim the daemon's start restored said whether it is in a turn"); len(answered) != 1 {
-			t.Fatalf("the asks the agent answered are %q, want the next connection's", answered)
+		if ask := h.conn.LastAsk(); ask != "ask-1" {
+			t.Fatalf("the next connection was asked up to %q, want its one ask", ask)
 		}
 		h.wantCalls("Resume", 0)
 		// The replay: the first connection's answer of no turn is no event of the next

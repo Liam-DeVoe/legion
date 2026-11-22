@@ -125,12 +125,16 @@ func (m *Machine) turnOutcomeWindow() int { return m.deps.Limits.LaunchFailures 
 // stays until it is sent again and applied, however old: dropped, it would fall under the
 // watermark, and the report sent again, which is its first application, would be answered as a
 // repeat. So does the report that named the pending take's number with no provider error while
-// the finish it decided is owed (Machine.finishOwed, keptForOwedFinish): a daemon start reads it to
-// make that finish (owedReport), and dropped, the start would read a later provider error's report
-// naming that number, which takes the task to the ladder, or none, which leaves it unfinished. It
-// is held beside the bound rather than in it, so the run of refused turns still reads the newest
-// reports the bound keeps: in the bound, it would cut a run of refusals one short of the limit
-// for as long as the finish stayed owed.
+// the finish it decided is owed (Machine.finishOwed): a daemon start reads it to make that finish
+// (owedReport), and dropped, the start would read a later provider error's report naming that
+// number, which takes the task to the ladder, or none, which leaves it unfinished. Both are held
+// beside the bound rather than in it (keptPastBound), so the run of refused turns still reads the
+// newest reports the bound keeps: in the bound, either would cut a run of refusals one short of the
+// limit for as long as it stayed. A report never applied of a generation earlier than the claim's
+// is dropped as an applied one is, since no process sends it again and it reaches no take
+// (reportOfTake), so a producer that died before its report was sent again leaves no entry for
+// good; except while it is in the trailing run of refused turns, which counts across generations
+// (RefusedRun) and would be cut one short without it.
 func (m *Machine) recordTurnOutcome(o TurnOutcome) (repeat bool) {
 	window, mark := m.claim.TurnOutcomes, m.claim.TurnOutcomeMark
 	at, found := slices.BinarySearchFunc(window, o, compareTurnOutcomes)
@@ -143,17 +147,21 @@ func (m *Machine) recordTurnOutcome(o TurnOutcome) (repeat bool) {
 	} else {
 		window = slices.Insert(window, at, o)
 	}
-	bound := m.turnOutcomeWindow()
-	for _, kept := range window {
-		if m.keptForOwedFinish(kept) {
-			bound++
+	for {
+		runFrom := len(window) - refusedRun(window)
+		bound, oldest := m.turnOutcomeWindow(), -1
+		for i, held := range window {
+			switch {
+			case m.keptPastBound(held, i >= runFrom):
+				bound++
+			case oldest < 0:
+				oldest = i
+			}
 		}
-	}
-	for len(window) > bound {
-		oldest := slices.IndexFunc(window, func(o TurnOutcome) bool { return !o.Unapplied && !m.keptForOwedFinish(o) })
-		if oldest < 0 {
+		if len(window) <= bound {
 			break
 		}
+		// Past the bound, the entries not kept outnumber the window's limit, so oldest is one.
 		if dropped := window[oldest].key(); compareKeys(dropped, mark) > 0 {
 			if !gapless(mark, window[:oldest+1]) && len(window) <= turnOutcomeGapBound {
 				break
@@ -166,12 +174,17 @@ func (m *Machine) recordTurnOutcome(o TurnOutcome) (repeat bool) {
 	return repeat
 }
 
-// keptForOwedFinish is whether o is the report whose finish the store refused and is owed
-// (Machine.finishOwed): applied, of the pending take's turn (reportOfTake), with no provider error.
-// The window keeps it past its bound while that finish is owed (recordTurnOutcome), for a daemon
-// start to read (owedReport).
-func (m *Machine) keptForOwedFinish(o TurnOutcome) bool {
-	return m.finishOwed && !o.Unapplied && !o.ProviderError && m.claim.reportOfTake(o.Generation, o.Task)
+// keptPastBound is whether the window keeps o whatever reports land after it, held beside its
+// bound rather than in it (recordTurnOutcome): a report whose write failed (Unapplied), until it is
+// sent again and applied, where it is of the claim's generation or in the trailing run of refused
+// turns (inRefusedRun); and, while the finish it decided is owed (Machine.finishOwed), the applied
+// report of the pending take's turn (reportOfTake) that carried no provider error, which a daemon
+// start reads to make that finish (owedReport).
+func (m *Machine) keptPastBound(o TurnOutcome, inRefusedRun bool) bool {
+	if o.Unapplied {
+		return o.Generation >= m.claim.Generation || inRefusedRun
+	}
+	return m.finishOwed && !o.ProviderError && m.claim.reportOfTake(o.Generation, o.Task)
 }
 
 // turnOutcomeGapBound is how many reports the window holds while a report of their generation
@@ -294,9 +307,13 @@ func (c Claim) owedReport() (TurnOutcome, bool) {
 // session the provider refused is refused again when it is resumed, which is why the retry of a
 // claim this failed starts a new session (freshSession), and a new session starts a fresh run
 // (freshRun).
-func (c Claim) RefusedRun() int {
+func (c Claim) RefusedRun() int { return refusedRun(c.TurnOutcomes) }
+
+// refusedRun is the run of refused turns window ends with (Claim.RefusedRun), for the trim that
+// keeps that run whole (recordTurnOutcome).
+func refusedRun(window []TurnOutcome) int {
 	run := 0
-	for i := len(c.TurnOutcomes) - 1; i >= 0 && c.TurnOutcomes[i].Refused; i-- {
+	for i := len(window) - 1; i >= 0 && window[i].Refused; i-- {
 		run++
 	}
 	return run

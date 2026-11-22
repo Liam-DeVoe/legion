@@ -1535,13 +1535,18 @@ type Machine struct {
 	// relaunch made at the boot's pass, or at the hello itself, would read a take whose turn the
 	// replay was still to show running as one no turn ran, and take it back with no note
 	// (dispatch://INFRA-2811, T3's rule three). A claim holding no take has no task the order can
-	// run twice, and the boot's pass relaunches it as before. askedAt is when the hello asked, the
-	// zero time before it, and askTrigger the pass whose relaunch the answer waits for ("boot",
-	// "sweep"), for the line the relaunch logs. letGo clears all three with the process; they are
-	// memory only, as askFirst is.
+	// run twice, and the boot's pass relaunches it as before. askedAt is when the first hello
+	// asked, the zero time before it, and askTrigger the pass whose relaunch the answer waits for
+	// ("boot", "sweep"), for the line the relaunch logs. letGo clears all three with the process;
+	// they are memory only, as askFirst is.
 	askTurn    bool
 	askedAt    time.Time
 	askTrigger string
+	// atReconnectDeadline is whether the decision running is the reconnect deadline's own
+	// stale-plugin relaunch (reconnectDeadline): that deadline is the bound of the wait for a whole
+	// view, so the relaunch it decides passes refreshPlugin's guard of the view. It is set for that
+	// one call and cleared when it returns.
+	atReconnectDeadline bool
 	// unansweredAsks counts the asks in a row the agent left unanswered while askFirst or askTurn
 	// stayed armed (askTurnOver, askRestoredTurn); from unansweredAsksWarn on, each one is logged
 	// at Warn.

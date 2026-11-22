@@ -127,7 +127,8 @@ func TestTakeBackOverAnOwedFinishFinishesOnEveryPath(t *testing.T) {
 		{name: "the reconnect deadline of a close", refusing: true, run: func(t *testing.T, h *harness, number uint64) {
 			h.reconnectLater()
 			refusedUntil(t, h, number, func(h *harness) { h.advance(deadline) }, testProbe)
-			h.wantCalls("Resume", 1)
+			// The end-frame bound's finish takes the deadline's retry with the task (row 29c).
+			h.wantCalls("Resume", 0)
 		}},
 		{name: "the reconnect deadline of a hello no answer followed", refusing: true, run: func(t *testing.T, h *harness, number uint64) {
 			h.reconnectLater()

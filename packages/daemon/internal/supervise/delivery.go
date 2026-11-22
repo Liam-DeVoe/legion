@@ -616,6 +616,9 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	}
 	m.claim, m.unsaved = stored, false
 	m.claim.Pending = &d
+	// A task pending over a view that is not whole is bounded by the reconnect deadline, which a
+	// close made while the claim held no task left unarmed (connview.go).
+	m.armReconnectForTask()
 	return nil
 }
 
@@ -880,10 +883,12 @@ func (m *Machine) retireTask(ctx context.Context, finished bool) error {
 	}
 	// The ladder's wait and the end-frame bound are this task's, so they end with it — once it has
 	// ended: a retirement the store refused leaves the task pending, and the end-frame bound is
-	// what finishes it later.
+	// what finishes it later. So does a reconnect deadline armed for it over a closed view
+	// (dropReconnectWithTask).
 	m.disarm(TimerPromptRetry)
 	m.disarm(TimerFinish)
 	m.claim, m.unsaved, m.finishOwed = retired, false, false
+	m.dropReconnectWithTask()
 	if err != nil {
 		m.log.Warn("supervise: the store holds no such delivery; the refusal is of a retirement it has already made",
 			"delivery", p.ID, "error", err)

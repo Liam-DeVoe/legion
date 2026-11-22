@@ -897,7 +897,7 @@ whole of the refusal.
 Nothing the daemon keeps says that of one claim: the state carries no per-claim record of a
 refresh that is not finishing, and the `update-stalled` notice the project's controller gets is of
 a pod update round, never of a refresh.
-What is left is the count and three log lines.
+What is left is the count and four log lines.
 `claimsToRefresh` is the count for the class: it stands at what the lane has left to do, is 0 when
 it has nothing left, and names no claim.
 The lines name a claim, and each says less than the whole:
@@ -905,6 +905,10 @@ The lines name a claim, and each says less than the whole:
 - **`supervise: the process speaks another plugin contract; relaunching it onto the current
   plugin`** at Warn, with `claim=`, is written once for each relaunch the lane starts, so a claim
   whose relaunch is refused has no such line at all.
+
+- **`supervise: the process speaks another plugin contract; its relaunch waits until the worker's connection shows its turns whole again`** at Info, with `claim=`, `task=` and the pass under `trigger=`, is a claim holding a task its worker took, whose connection closed since its agent last said whether it is in a turn.
+  The turn of that task may be running unseen, so the relaunch waits for the agent's answer or a turn frame on the next connection, and the first sweep after either decides it; a claim holding no taken task is relaunched at once.
+  With neither by the reconnect deadline, the deadline relaunches the process or retires it as one that never reconnected, and the task goes back as a cut turn.
 
 - **`api: refused a call from a process on another plugin contract`** at Warn, with `claim=` and
   `route=`, is what the stale process's own `legion` calls are answered with, so a process that is
@@ -1402,10 +1406,13 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   Nothing to do.
 - **`supervise: the agent of this claim the daemon's start restored has not said whether it is in a turn; its stale-plugin relaunch waits for that answer`** at Info is a claim a daemon start restored ready or idle, holding an accepted take, whose plugin is too old for this daemon.
   The daemon relaunches it onto the current plugin only once its agent has said whether it is in a turn, behind every frame its shim replayed from the time no daemon was attached, so a relaunch does not take back as unrun a take whose turn the replay shows running.
-  The shim's hello asks, and the answer is logged as `supervise: the agent of a claim the daemon's start restored said whether it is in a turn; its stale-plugin relaunch is decided behind the frames its shim replayed`, or, for an agent in a turn the replay did not show begin, as `… is in a turn its shim's replay did not show begin; the claim is working`.
-  An ask with no answer is logged `… did not say whether it is in a turn; its stale-plugin relaunch waits, and the next sweep asks again`, at Info and at Warn from the third in a row (`unanswered=`), and is asked again at every sweep.
-  At the reconnect deadline counted from the hello, **`supervise: the agent of a claim the daemon's start restored did not say whether it is in a turn within the reconnect deadline of its hello; the stale-plugin lane relaunches it, uncharged`** at Warn relaunches it without the answer.
+  The shim's first hello after the daemon start asks, and the answer is logged as `supervise: the agent of a claim the daemon's start restored said whether it is in a turn; its stale-plugin relaunch is decided behind the frames its shim replayed`, or, for an agent in a turn the replay did not show begin, as `… is in a turn its shim's replay did not show begin; the claim is working`.
+  A later hello, on a new connection, asks again, as every reconnect hello over a pending task does, and its answer decides the relaunch the same way.
+  An ask with no answer is logged `… did not say whether it is in a turn; its stale-plugin relaunch waits, and the next sweep asks again`, at Info and at Warn from the third in a row (`unanswered=`), and is asked again at every sweep while the claim is in no turn.
+  At the reconnect deadline, counted from the first hello and armed again whole at each later one, **`supervise: the agent of a claim the daemon's start restored did not say whether it is in a turn within the reconnect deadline of its hello; the stale-plugin lane relaunches it, uncharged`** at Warn relaunches it without the answer.
   A suspension held over the claim's turn, or behind the report of its take's turn, is not stopped at that deadline: it waits for that turn's end and that report, and the relaunch waits with it.
+  A claim that a replayed start made working, whose connection then broke, may have lost that turn's end with the connection, so the next hello's ask decides it: an answer of no turn ends that turn, and the relaunch follows as it does after any turn of the take.
+  With no answer and no turn frame on that connection by the deadline, or no hello at all, the deadline does not wait for that turn's end: the process is relaunched uncharged, or retired as a shim that never reconnected, a held suspension stopping it instead, and the task is taken back as a cut turn.
   Where the hello did not say that the shim's backlog is whole, the replay may have lost a whole turn of the take, so the relaunch of an agent that answers it is in no turn takes back a take whose turn no frame showed with the note of a cut turn: the next process runs the task again, told that its turn on it may have run.
   The relaunch of an agent that answers nothing by that deadline takes such a take back the same way, whatever the hello said, since no answer and no turn frame came to show that its turn did not run.
 - **`supervise: the report of the take's turn is still to come; what is held for that turn waits for it`** at Info, with the `task` and what is `held`, is work held over a claim whose take's turn ended before the worker's report of it: a suspension (`held=suspension`, with its `by` and `deadline`), a stale-plugin relaunch (`held=relaunch`, with its `trigger`), or a wake whose turn came meanwhile, spent into the held suspension (`held=wake`, with its `kind`).

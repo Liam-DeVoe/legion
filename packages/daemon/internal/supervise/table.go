@@ -1449,14 +1449,15 @@ func enrolledOnly(m *Machine, ctx context.Context, _ Event) error {
 // transport is one this ends, so a value whose take was refused is written again
 // (offerPending). A claim a daemon start restored is waiting on exactly this hello (its reconnect
 // deadline, NewMachine), and the hello ends that wait. A restored claim whose stale-plugin
-// relaunch waits for its agent's word on whether it is in a turn (askTurn) is asked here
-// (askRestoredTurn): the hello carries no turn, and the shim replays what it held only once this
-// hello is answered. The first hello after a daemon start gives a restored take's anchor its
-// connection, where the hello says its shim's backlog is whole (bindRestoredAnchor), before
-// anything else of the hello can fail; a hello that does not say so loses the count of the
-// process's turns and the mark of a start still to come (readBacklog). A claim holding a pending
-// task asks its agent whether it is in a turn, once, and its bounds wait for that answer or a turn
-// frame (askView, connview.go); a restored stale claim's own ask serves for it.
+// relaunch waits for its agent's word on whether it is in a turn (askTurn) is asked at its first
+// hello since the daemon start (askRestoredTurn): the hello carries no turn, and the shim replays
+// what it held only once this hello is answered. That ask serves that hello alone; a later hello
+// asks on its own connection (askView). The first hello after a daemon start gives a restored
+// take's anchor its connection, where the hello says its shim's backlog is whole
+// (bindRestoredAnchor), before anything else of the hello can fail; a hello that does not say so
+// loses the count of the process's turns and the mark of a start still to come (readBacklog). A
+// claim holding a pending task asks its agent whether it is in a turn, once, and its bounds wait
+// for that answer or a turn frame (askView, connview.go).
 func reconnected(m *Machine, ctx context.Context, ev Event) error {
 	m.disarm(TimerRegistration)
 	if err := m.readHello(ctx, ev.(StreamHello)); err != nil {
@@ -1465,10 +1466,8 @@ func reconnected(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.ensureEnrolled(ctx); err != nil {
 		return err
 	}
-	if m.askTurn {
-		if m.askedAt.IsZero() {
-			m.askedAt = m.deps.Clock.Now()
-		}
+	if m.askTurn && m.startAskServes() {
+		m.askedAt = m.deps.Clock.Now()
 		m.askRestoredTurn(ctx)
 	}
 	m.askView(ctx)
@@ -1491,11 +1490,14 @@ func (m *Machine) readHello(ctx context.Context, hello StreamHello) error {
 // acted on here: the shim replays the frames it held while no daemon was attached after its hello
 // and before that answer, and the answer reaches the machine behind them as an event of its own
 // (StreamTurnAnswered), where the relaunch is decided with every replayed turn applied
-// (turnAnswered). An ask the agent does not answer is asked again at the next sweep (observe),
-// and is bounded: a claim whose agent has not answered by the reconnect deadline counted from its
-// hello (askedAt) is relaunched there, uncharged (reconnectDeadline). The bound is armed by the
-// first unanswered ask and kept by the ones after it; a second hello, which disarms the reconnect
-// deadline as every hello does, arms it again for what is left of it.
+// (turnAnswered). An ask the agent does not answer is asked again at the next sweep of a claim not
+// busy (observe), and is bounded: a claim whose agent has not answered by the reconnect deadline
+// counted from its first hello (askedAt) is relaunched there, uncharged (reconnectDeadline). The
+// bound is armed by the first unanswered ask and kept by the ones after it. The ask serves only
+// the hello that made it, since the stream reads an answer only on the connection that asked: a
+// later hello over a pending task asks once on its own connection and arms the reconnect deadline
+// whole from itself (askView), and its answer decides the relaunch as this one's would
+// (turnAnswered).
 //
 // A claim with no connection to ask on is held by the same bound. The stream queues a hello and
 // then the close of its connection, and the close can come before the decision that reads the
@@ -1525,7 +1527,9 @@ func (m *Machine) askRestoredTurn(ctx context.Context) {
 
 // turnAnswered is the agent's answer to whether it is in a turn, reaching the machine behind every
 // frame its shim sent before it (StreamTurnAnswered). For a claim a daemon start restored ready or
-// idle whose stale-plugin relaunch waits for it (askTurn), this is that relaunch's decision:
+// idle whose stale-plugin relaunch waits for it (askTurn), this is that relaunch's decision,
+// whichever hello's ask it answers — the daemon start's own, at the first hello (askRestoredTurn),
+// or a later hello's (askView):
 //
 //   - an agent in a turn is working: a replay that held the turn's agent_start has made the claim
 //     working already, and one whose backlog dropped it is made working here, which also marks
@@ -1539,11 +1543,11 @@ func (m *Machine) askRestoredTurn(ctx context.Context) {
 //     that names its number by the report of that turn, which the relaunch waits for
 //     (refreshPlugin, relaunchWaitsForReport); one no turn ran is given back with no note.
 //
-// Either answer is applied to the claim by the one rule of every answer (applyTurnAnswer), so an
-// answer of no turn over a claim still read in a turn would end that turn first. No order reaches
-// that here: the stream reads an answer only on the connection that asked, behind every frame
-// that connection carried, so a start the replay showed is followed there by its end or by an
-// answer of a turn, and a hello over a working claim asks nothing for this relaunch.
+// Either answer is read in one decision by the rule of every answer (applyTurnAnswer): the view is
+// made whole, an answer of no turn ends a turn the claim still reads as running, and the relaunch
+// is then decided with that turn applied. That order is live: a replayed start made the claim
+// working, its connection broke with that turn's end frame in it, and the next hello's ask on its
+// own connection is the only word of that end that will come.
 //
 // The reconnect deadline the unanswered ask armed goes with the answer, and the connection's view
 // is whole again (connview.go). Over a view a reconnect hello left waiting for an answer, any
@@ -1600,8 +1604,11 @@ func (m *Machine) markRestoredTurnUnseen() {
 // a restored take's anchor its connection as that does (bindRestoredAnchor), and reads what the
 // hello says of the shim's backlog as that does (readBacklog). A claim holding a pending task asks
 // its agent whether it is in a turn, as reconnected does (askView): an end frame lost when the
-// connection broke ends the turn at an answer of no turn. A restored claim's own ask serves for it
-// (askTurnOver).
+// connection broke ends the turn at an answer of no turn. A daemon start's own ask of a claim
+// restored working (askFirst) serves its first hello since that start instead, made here
+// (askTurnOver); a later hello's ask is the view's, so the connection is asked once. That covers a
+// claim restored ready or idle on a stale plugin (askTurn) that a replayed start made working,
+// whose next hello lands here: its answer, or the reconnect deadline, decides the relaunch.
 func reconnectedMidTurn(m *Machine, ctx context.Context, ev Event) error {
 	m.disarm(TimerRegistration)
 	if err := m.readHello(ctx, ev.(StreamHello)); err != nil {
@@ -1610,7 +1617,9 @@ func reconnectedMidTurn(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.ensureEnrolled(ctx); err != nil {
 		return err
 	}
-	m.askView(ctx)
+	if m.askView(ctx) {
+		return nil
+	}
 	return m.askTurnOver(ctx, ev)
 }
 
