@@ -1,8 +1,9 @@
 import type { DisplayTree } from "../../../api/types";
+import { storeAddressReference } from "../../refs/store-address";
 import { wordsOf } from "../../refs/tree-fragment";
 import { chipWords } from "../node-row-chip";
 import { NODE_TYPE_NAMES, sentenceCase } from "../page-words";
-import { blank, type Draft, plainWords } from "../tree-drafts";
+import { blank, type Draft, plainWords, storeKindOf } from "../tree-drafts";
 import type { TreeDraftContext } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 
@@ -361,6 +362,13 @@ export function storeAddressOf(type: LensType, readId: string, lens = ""): strin
   if (type !== "finding") return `dispatch://${type}/${storeId(readId, type)}`;
   const block = readId.slice(readId.lastIndexOf("#") + 1);
   return `dispatch://lens/${storeId(lens, "lens")}#b-${block}`;
+}
+
+/** The store address `value` names, as `storeAddressReference` writes it, where that address is
+ *  a lens's, a risk's, a constraint's or a finding's (`storeKindOf`); undefined otherwise. */
+export function lensStoreAddress(value: string): string | undefined {
+  const address = storeAddressReference(value);
+  return address === undefined || storeKindOf(address) === undefined ? undefined : address;
 }
 
 /** `id` without the kind its store address starts with (`lens/`), where it carries one. */

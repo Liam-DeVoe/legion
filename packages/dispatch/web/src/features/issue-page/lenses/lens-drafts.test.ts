@@ -1012,24 +1012,17 @@ test("a constraint's words link a risk they cite to its row", () => {
       [tuple("has_kind", FIRST, PRE_MORTEM.id)]
     )
   );
-  const link = { attrs: { href: cited, title: rowPath(risk) }, type: "link" };
+  const link = { href: cited, title: rowPath(risk) };
 
   expect([rowOf(root, standard).text, rowOf(root, measurement).text]).toEqual([
     "Answer as Failover takes minutes allows.",
     "p99 latency: under the failover risk",
   ]);
-  expect(linksIn(rowOf(root, standard).tree)).toEqual([["Failover takes minutes", link.attrs]]);
-  expect(rowOf(root, measurement).tree?.content).toEqual([
-    {
-      content: [
-        { text: "p99 latency", type: "text" },
-        { text: ": ", type: "text" },
-        { text: "under ", type: "text" },
-        { marks: [link], text: "the failover risk", type: "text" },
-      ],
-      type: "paragraph",
-    },
-  ]);
+  expect(linksIn(rowOf(root, standard).tree)).toEqual([["Failover takes minutes", link]]);
+  expect(linksIn(rowOf(root, measurement).tree)).toEqual([["the failover risk", link]]);
+  expect(
+    (rowOf(root, measurement).tree?.content as DisplayTree[] | undefined)?.map(({ type }) => type)
+  ).toEqual(["paragraph"]);
 });
 
 // A store address inside a link's words reads as its node's name, or as its kind's word where
@@ -1062,6 +1055,106 @@ test("a store address inside a link's words reads as its node's name in that one
     { text: ".", type: "text" },
   ]);
   expect(STORE_ADDRESS.test(nodeWords(statement))).toBe(false);
+});
+
+// An author's link whose words are a code span, ``[`RFC 9110`](dispatch://constraint/<uuid>)``,
+// keeps its words as written and links the node's row, as an author's other words do: a verdict
+// draws it as one link in its one line.
+test("a verdict's author's link whose words are code links the constraint's row", () => {
+  const constraint = "e5000000-0000-4000-8000-000000000005";
+  const held = `dispatch://constraint/${constraint}`;
+  const { root } = drawn(
+    answer(
+      [
+        block("r1", "requirement", KEY, SPEC, 0),
+        lens(FIRST, "r1", "2026-11-05T09:00:00Z", {
+          attributes: { verdict: `Held to [\`RFC 9110\`](${held}).` },
+        }),
+        bare(constraint, "constraint", KEY, { attributes: { standard: "HTTP semantics" } }),
+        PRE_MORTEM,
+      ],
+      [tuple("has_kind", FIRST, PRE_MORTEM.id)]
+    )
+  );
+  const verdict = rowOf(root, FIRST);
+
+  expect(verdict.text).toBe("Held to RFC 9110.");
+  expect(linksIn(verdict.tree)).toEqual([["RFC 9110", { href: held, title: rowPath(constraint) }]]);
+});
+
+// A server's reading of an author's link whose words are code keeps the run's code mark and its
+// words as written, and links the node's row as a name's link does, in place of the author's
+// link to the store address, which opens nothing.
+test("a server's reading links an author's code words to the constraint's row", () => {
+  const constraint = "e5000000-0000-4000-8000-000000000005";
+  const held = `dispatch://constraint/${constraint}`;
+  const tree: DisplayTree = {
+    content: [
+      {
+        content: [
+          { text: "Held to ", type: "text" },
+          {
+            marks: [{ type: "inlineCode" }, { attrs: { href: held }, type: "link" }],
+            text: "RFC 9110",
+            type: "text",
+          },
+          { text: ".", type: "text" },
+        ],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
+  const { root } = drawn(
+    answer([
+      block("r1", "requirement", KEY, SPEC, 0, { text: "Held to RFC 9110.", text_tree: tree }),
+      bare(constraint, "constraint", KEY, { attributes: { standard: "HTTP semantics" } }),
+    ])
+  );
+  const statement = rowOf(root, blockNodeId("spec", "r1"));
+
+  expect((statement.tree?.content as DisplayTree[] | undefined)?.[0]?.content).toEqual([
+    { text: "Held to ", type: "text" },
+    {
+      marks: [
+        { type: "inlineCode" },
+        { attrs: { href: held, title: rowPath(constraint) }, type: "link" },
+      ],
+      text: "RFC 9110",
+      type: "text",
+    },
+    { text: ".", type: "text" },
+  ]);
+});
+
+// An author's link whose words carry a mark, `[the **HTTP** rule](dispatch://constraint/<uuid>)`,
+// is one link: an early warning's parts hold one chip of the constraint, of all its words.
+test("an early warning's author's link whose words carry a mark is one chip", () => {
+  const constraint = "e5000000-0000-4000-8000-000000000005";
+  const held = `dispatch://constraint/${constraint}`;
+  const { root } = drawn(
+    answer(
+      [
+        block("r1", "requirement", KEY, SPEC, 0),
+        lens(FIRST, "r1"),
+        bare("risk-1", "risk", FIRST, {
+          attributes: {
+            early_warning: `A reply breaks [the **HTTP** rule](${held}) first.`,
+            heading: "It breaks.",
+          },
+        }),
+        bare(constraint, "constraint", KEY, { attributes: { standard: "RFC 9110" } }),
+        PRE_MORTEM,
+      ],
+      [tuple("has_kind", FIRST, PRE_MORTEM.id)]
+    )
+  );
+
+  expect(factsOf(rowOf(root, "risk-1")).factParts?.earlyWarning).toEqual([
+    "A reply breaks ",
+    { address: held, id: constraint, words: "the HTTP rule" },
+    " first.",
+  ]);
 });
 
 // A lens's row carries a chip for each lens its `triggered_by` names and for each lens whose

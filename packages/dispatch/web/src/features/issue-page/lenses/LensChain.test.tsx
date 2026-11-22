@@ -850,3 +850,50 @@ test("a risk row draws its early warning's address of a constraint as a link to 
     view.unmount();
   }
 });
+
+// A risk's early warning whose author's link to a constraint the tree read holds has words that
+// carry a mark, `[the **HTTP** rule](dispatch://constraint/<uuid>)`, draws those words as one link
+// that opens the constraint's row (`?node=`), not one link for each run of them.
+test("a risk row draws its early warning's author's link of marked words as one link", async () => {
+  await warmMarkdownRenderer();
+  const lens = "c3000000-0000-4000-8000-000000000003";
+  const risk = "d4000000-0000-4000-8000-000000000004";
+  const constraint = "e5000000-0000-4000-8000-000000000005";
+  const root = buildIssueTree({
+    issue: issueDetails(),
+    tree: treeAnswer(
+      [
+        treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }),
+        treeNode(lens, "lens", KEY),
+        treeNode(risk, "risk", lens, {
+          attributes: {
+            early_warning: `A reply breaks [the **HTTP** rule](dispatch://constraint/${constraint}) first.`,
+            heading: "Replies break the HTTP rule",
+          },
+        }),
+        treeNode(constraint, "constraint", KEY, { attributes: { standard: "RFC 9110" } }),
+      ],
+      [],
+      { converted: true, tree: "artifact-tree" }
+    ),
+  });
+  const drawn = root.children
+    .find((row) => row.id === lens)
+    ?.children.find((row) => row.id === risk);
+  if (drawn === undefined) throw new Error("the tree draws no row of the risk");
+  const view = renderOnIssue(<LensRow drawn={drawn} />);
+  try {
+    await waitFor(() => {
+      const line = view.container.querySelector('[data-lens-line="early_warning"]');
+      expect(line?.querySelector("[data-author-text]")?.textContent).toBe(
+        "A reply breaks the HTTP rule first."
+      );
+      const links = [...(line?.querySelectorAll("a") ?? [])];
+      expect(links.map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
+        ["the HTTP rule", `/issues/${KEY}?node=${constraint}`],
+      ]);
+    });
+  } finally {
+    view.unmount();
+  }
+});

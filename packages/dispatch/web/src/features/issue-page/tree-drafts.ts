@@ -498,13 +498,6 @@ export function storeKindOf(address: string): LensType | undefined {
   return kind === "constraint" || kind === "lens" || kind === "risk" ? kind : undefined;
 }
 
-/** The store address `value` names, as `storeAddressReference` writes it, where that address is
- *  a lens's, a risk's, a constraint's or a finding's (`storeKindOf`); undefined otherwise. */
-export function lensStoreAddress(value: string): string | undefined {
-  const address = storeAddressReference(value);
-  return address === undefined || storeKindOf(address) === undefined ? undefined : address;
-}
-
 /** The page's word for the kind of node the store address `address` names (`storeKindOf`): what
  *  a place reads such an address by where it knows no name for the node: `lens`, `risk`,
  *  `constraint`, and `finding` for a block of a lens. Undefined for an interaction's and a lens
