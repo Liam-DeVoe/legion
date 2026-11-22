@@ -55,13 +55,14 @@ import { afterOnFakeClock, onFakeClock } from "./fake-clock";
  * architect's ruling: the comment block directly above the statement that holds the wait, with no
  * blank line between, holds the words "stays on the real clock" and after them, anywhere in that
  * block, a reason of at least `REASON_WORDS` words of letters. The statement is the first one, the
- * declaration or the class member that starts after the block, as the parser gives it: the wait's
- * own statement, or a helper whose doc comment holds the marker and whose body holds the wait
- * (`/** … stays on the real clock … *\/ function nextFrame() {…}`). One marker covers one wait: a
- * statement that holds two waits or more passes none of them under its marker, so each carries a
- * marker of its own, and a comment that only mentions the real clock passes nothing. The file is
- * read by the TypeScript parser, so a call is found however it is spelled or wrapped (inside
- * `act(...)`, across lines), and a comment or a string that spells one is none. A zero-delay
+ * declaration or the class member that starts after the block, as the parser gives it, and the
+ * waits it covers are those it holds, however deep: the wait's own statement, a `test(...)` call
+ * whose body holds the wait, or a helper whose doc comment holds the marker and whose body holds
+ * the wait (`/** … stays on the real clock … *\/ function nextFrame() {…}`). One marker covers
+ * one wait: a statement that holds two waits or more passes none of them under its marker, so each
+ * carries a marker of its own, and a comment that only mentions the real clock passes nothing. The
+ * file is read by the TypeScript parser, so a call is found however it is spelled or wrapped
+ * (inside `act(...)`, across lines), and a comment or a string that spells one is none. A zero-delay
  * timer is a wait of real time too: what has run by its turn - a timer of the product's, a render,
  * a promise of the library's - depends on how loaded the machine is, so a row waits for the
  * condition its step stands for, or moves the fake clock over the product's own zero-delay timer
