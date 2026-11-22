@@ -555,10 +555,12 @@ func (w *w5Rig) markOf(token claim.Token, from time.Time) *loggedRecord {
 	return nil
 }
 
-// guardLineOf is the daemon's line that its relaunch guard holds its relaunch of token, written at
-// or after from, nil for none.
+// guardLineOf is the daemon's line that its relaunch guard refused its relaunch of token, written
+// at or after from, nil for none.
 func (w *w5Rig) guardLineOf(token claim.Token, from time.Time) *loggedRecord {
-	for _, rec := range w.logs(func(rec loggedRecord) bool { return rec.Message == w5GuardLine && rec.Attrs["claim"] == string(token) }) {
+	for _, rec := range w.logs(func(rec loggedRecord) bool {
+		return rec.Message == w5RefusedLine && rec.Attrs["claim"] == string(token) && strings.HasPrefix(fmt.Sprint(rec.Attrs["reason"]), w5GuardReason)
+	}) {
 		if !rec.at.Before(from) {
 			found := rec
 			return &found
@@ -1930,7 +1932,8 @@ func (r *w5Run) covers(snap w5Snapshot) bool {
 // project: one for the list with no live session, one for the 25 minutes of failed reads, the
 // ninth's after 60 minutes of the guard's hold, the sixth's for the pod of two and the tenth's
 // second-time line, since the daemon relaunched it in its own flow, one for each of the sixth's
-// three runs, and the implementer's, out of reach a second time within 6 hours.
+// three runs, and the implementer's, out of reach a second time within 6 hours. Last, the control
+// of every read of the controller's topic (checkControllerNoticesAreRead).
 func (r *w5Run) totals() {
 	for _, n := range r.controllerNoticesW5() {
 		r.record("controller notice %s", n)
@@ -1979,6 +1982,30 @@ func (r *w5Run) totals() {
 	}
 	sort.Strings(other)
 	r.check("r6-no-other-line", len(other) == 0, "lines of no expected case and claim: %v (all: %v)", other, described)
+	r.checkControllerNoticesAreRead()
+}
+
+// checkControllerNoticesAreRead is the control of every check that no notice to the controller
+// names a claim of the run (checkNoControllerNotice, failed-read-sends-nothing,
+// after-restart-no-new-notice-for-a-claim-marked-before, controller-told-nothing-of-the-empty-list):
+// the rig queues a controller notice of its own whose reason names the implementer's claim, and the
+// same read of the controller's topic must find it, by the same rule checkNoControllerNotice names
+// a claim by. It runs after every such check, so its notice is in none of them.
+func (r *w5Run) checkControllerNoticesAreRead() {
+	impl := r.c("implementer")
+	canary := "W5-CONTROLLER-CANARY-" + r.suffix
+	row := r.enqueueRow(impl.key, record.ControllerNotice{Kind: record.TreeStalledNotice,
+		Reason: canary + ": a controller notice the rig queues, naming " + string(impl.token) + ", so that the read of the controller's topic is seen to read one."})
+	seen := waitFor(5*time.Minute, func() bool {
+		for _, n := range r.controllerNoticesW5() {
+			if strings.Contains(n.reason, canary) && strings.Contains(n.reason, string(impl.token)) {
+				return true
+			}
+		}
+		return false
+	})
+	r.check("the-controllers-notices-are-read", seen,
+		"the rig's controller notice (row %d) naming %s was read on the controller's topic within 5 minutes: %t", row, impl.token, seen)
 }
 
 // ---- the fresh runs ------------------------------------------------------------------------------

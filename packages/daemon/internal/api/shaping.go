@@ -862,7 +862,7 @@ const quietTimeContract = 111
 const shapedAnswersContract = 193
 
 // unreachableContract is the daemon contract that added `unreachable` to every claim view and to
-// the controller's locator (version.go's 208, R5): a plugin before it reads both with a schema that
+// the controller's locator (version.go's 222, R5): a plugin before it reads both with a schema that
 // knows no such key, so a caller from a pod below it is served the state without the mark
 // (withoutUnreachableLocator, withoutUnreachableClaims). It is the last number of answers.go's
 // SupportedContracts.

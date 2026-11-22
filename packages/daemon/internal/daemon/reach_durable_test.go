@@ -239,9 +239,10 @@ func (d *durableReach) relaunchedOnce(worker supervise.Claim, put func(context.C
 }
 
 // refusedAfterRestart boots a second daemon onto the database 3 hours after the first booted and
-// checks that its sweep does not relaunch worker a second time. worker's relaunched process is
-// working, its session registered after the relaunch, which ended that episode, and it is out of
-// reach again, with no relaunch in its reach record: the 6 hours are read from the claim's own row
+// checks that its sweeps, through the 20 minutes counted from its own boot and the minute that
+// marks worker, do not relaunch worker a second time. worker's relaunched process is working, its
+// session registered after the relaunch, which ended that episode, and it is out of reach again,
+// with no relaunch in its reach record: the 6 hours are read from the claim's own row
 // (supervise.Claim.LastRelaunch), which the relaunch's launch wrote, and R6's line says it is out
 // of reach a second time within them.
 func (d *durableReach) refusedAfterRestart(worker supervise.Claim) {
@@ -256,10 +257,14 @@ func (d *durableReach) refusedAfterRestart(worker supervise.Claim) {
 	d.at(3 * time.Hour)
 	logged := &testlog.Buffer{}
 	o := d.options(false, d.st.PutClaimReach)
+	o.boot = d.clock()
 	o.alerts = fleetalert.New(slog.New(slog.NewTextHandler(logged, nil)), "LEGION")
 	k := d.relaunching(o, d.claim(worker.Token))
-	k.sweep(context.Background(), d.stored())
+	d.sweepEach(180, 201, k)
 	k.wait()
+	if !d.claim(worker.Token).Reach.Unreachable() {
+		d.t.Fatalf("the next daemon's sweeps 21 minutes after its boot left the worker reading %+v, want it marked", d.claim(worker.Token).Reach)
+	}
 	if got := d.claim(worker.Token).Generation; got != restarted.Generation {
 		d.t.Fatalf("the next daemon's sweep 3 hours after the first relaunch left the worker at generation %d, want %d: no second relaunch within 6 hours",
 			got, restarted.Generation)
@@ -379,12 +384,15 @@ func (d *durableReach) bootedAs(logged *testlog.Buffer, daemonController, readsL
 // A line the store holds open is closed by the first sweep of a daemon that boots onto it when its
 // case does not hold now: a case this configuration does not judge (the controller's under an
 // operator's controller, the list's and the controller's where no list is read, whatever record
-// the controller's claim carries), and a case it judges and finds ended
-// (the controller back in reach). So a switch of the controller's mode and back, or a rollback to
-// a release that closed its cases in memory alone and a roll forward, leaves no line open that
-// would silence the next line of its case (R6). A case that still holds keeps its line.
+// the controller's claim carries), and a case it judges and finds ended (a claim back in reach, or
+// gone from the claims). So a switch of the controller's mode and back, or a rollback to a release
+// that closed its cases in memory alone and a roll forward, leaves no line open that would silence
+// the next line of its case (R6). A case that still holds keeps its line.
 func TestAStoredLineWhoseCaseNoLongerHoldsIsClosedByTheFirstSweep(t *testing.T) {
 	controller := storedController().Token
+	worker := waitingQuietly(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"))
+	workerLines := []fleetalert.Line{{Word: fleetalert.ClaimUnreachable.Word, Claim: string(worker.Token)},
+		{Word: fleetalert.ClaimRelaunchRefused.Word, Claim: string(worker.Token)}}
 	for _, tc := range []struct {
 		name             string
 		stored           []fleetalert.Line
@@ -392,6 +400,7 @@ func TestAStoredLineWhoseCaseNoLongerHoldsIsClosedByTheFirstSweep(t *testing.T) 
 		readsList        bool
 		claims           []supervise.Claim
 		markedReach      bool
+		markedWorker     bool
 		open             bool
 	}{
 		{name: "the controller's line under an operator's controller", daemonController: false, readsList: true,
@@ -410,11 +419,19 @@ func TestAStoredLineWhoseCaseNoLongerHoldsIsClosedByTheFirstSweep(t *testing.T) 
 		{name: "the controller's line of a controller still out of reach", daemonController: true, readsList: true,
 			stored:      []fleetalert.Line{{Word: fleetalert.ControllerUnreachable.Word, Claim: string(controller)}},
 			markedReach: true, open: true},
+		{name: "a workflow claim's lines of a claim back in reach", readsList: true, stored: workerLines,
+			claims: []supervise.Claim{worker}},
+		{name: "a workflow claim's lines of a claim gone from the claims", readsList: true, stored: workerLines},
+		{name: "a workflow claim's lines of a claim still out of reach", readsList: true, stored: workerLines,
+			markedWorker: true, open: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := newDurableReach(t)
 			if tc.markedReach {
 				d.markController()
+			}
+			if tc.markedWorker {
+				d.markRelaunched(worker)
 			}
 			for _, c := range tc.claims {
 				d.put(c)
@@ -459,20 +476,25 @@ func storedController() supervise.Claim {
 		Locator: pluginTestLocator(controller), ActivityAt: reachBoot}
 }
 
-// markController stores storedController relaunched by the daemon before this one 25 minutes
-// before the boot, past notBackAfter, at the generation it runs, and its reach record marked out
-// of reach since 30 minutes before the boot with that relaunch taken in, as that daemon left them,
-// and returns the claim. So a sweep that reads its case as holding opens its line, which an open
-// line keeps it from writing again.
+// markController is markRelaunched of storedController.
 func (d *durableReach) markController() supervise.Claim {
 	d.t.Helper()
-	c := storedController()
+	return d.markRelaunched(storedController())
+}
+
+// markRelaunched stores c relaunched by the daemon before this one 25 minutes before the boot,
+// past notBackAfter, at the generation it runs, and its reach record marked out of reach since 30
+// minutes before the boot with that relaunch taken in, as that daemon left them, and returns the
+// claim. So a sweep that reads its case as holding opens its line, which an open line keeps it
+// from writing again.
+func (d *durableReach) markRelaunched(c supervise.Claim) supervise.Claim {
+	d.t.Helper()
 	c.LastRelaunch, c.LastRelaunchGeneration = reachBoot.Add(-25*time.Minute), c.Generation
 	d.put(c)
 	marked := supervise.Reach{Session: c.Session, FirstReady: c.LastReady, Since: reachBoot.Add(-30 * time.Minute),
 		Relaunched: true, RelaunchedAt: c.LastRelaunch}
 	if known, err := d.st.PutClaimReach(context.Background(), c.Token, marked); err != nil || !known {
-		d.t.Fatalf("mark the controller out of reach = %t, %v", known, err)
+		d.t.Fatalf("mark %s out of reach = %t, %v", c.Token, known, err)
 	}
 	return c
 }
@@ -517,8 +539,8 @@ func TestAFailedListReadAfterABootKeepsTheControllersStoredLine(t *testing.T) {
 
 // R6's line is written once until its case ends, and a restart ends no case (R6): a run of lists
 // with no live session that holds through a restart writes its line once, a lock-out line the last
-// daemon wrote is ended by the next one, whose worker stream holds no such lock-out
-// (closeEndedLockOuts), and a case that ended and came back writes its line again.
+// daemon wrote is ended by the next one's worker stream as it starts (stream.Listen), and a case
+// that ended and came back writes its line again.
 func TestALineIsWrittenOnceUntilItsCaseEndsAcrossARestart(t *testing.T) {
 	d := newDurableReach(t)
 	logged := &testlog.Buffer{}
@@ -533,8 +555,12 @@ func TestALineIsWrittenOnceUntilItsCaseEndsAcrossARestart(t *testing.T) {
 	}
 
 	next := d.booted(logged)
-	// The next daemon's minute sweep closes the lines of the lock-outs its stream holds none of.
-	next.closeEndedLockOuts(func(claim.Token) (stream.LockOut, bool) { return stream.LockOut{}, false })
+	listening, stopListening := context.WithCancel(context.Background())
+	t.Cleanup(stopListening)
+	refuse := func(string) (claim.Token, uint64, bool, bool, error) { return "", 0, false, false, nil }
+	if _, err := stream.Listen(listening, "tcp://127.0.0.1:0", refuse, stream.Options{RPCTimeout: time.Second, Log: quietLogger(), Alerts: next.alerts}); err != nil {
+		t.Fatalf("the next daemon's worker stream: %v", err)
+	}
 	d.sweepEach(26, 50, next)
 	next.wait()
 	if got := lines(fleetalert.NoLiveSession.Word); got != 1 {

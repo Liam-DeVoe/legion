@@ -36,7 +36,7 @@ func TestTheReachRecordSurvivesARestartAndNoClaimWriteCarriesIt(t *testing.T) {
 	at := time.Date(2026, 11, 12, 15, 51, 1, 0, time.UTC)
 	want := supervise.Reach{
 		Session: "ses_implementer", FirstReady: at.Add(-time.Hour), Since: at, LastSeen: at,
-		GuardRefusedAt: at.Add(5 * time.Minute), RelaunchedAt: at.Add(25 * time.Minute), Relaunched: true,
+		RefusedAt: at.Add(5 * time.Minute), RelaunchedAt: at.Add(25 * time.Minute), Relaunched: true,
 	}
 	if known, err := st.PutClaimReach(ctx, c.Token, want); err != nil || !known {
 		t.Fatalf("PutClaimReach = %t, %v", known, err)

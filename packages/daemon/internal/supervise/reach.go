@@ -51,15 +51,14 @@ type Reach struct {
 	// LastSeen is the last registration of Session the daemon had read from Envoy's list when it
 	// marked the claim, and the zero time where it had read none since its boot.
 	LastSeen time.Time `json:"lastSeen,omitzero"`
-	// GuardRefusedAt is when the relaunch guard first refused the daemon's relaunch of the claim in
-	// this episode (RelaunchGuard), which R6's line for a guard held 60 minutes counts from.
-	GuardRefusedAt time.Time `json:"guardRefusedAt,omitzero"`
-	// HeldAt is when anything but the guard first refused that relaunch in this episode — the
-	// claim's machine for a cause it owns (its tree lifecycle, a wake waiting its turn, a
-	// compaction in flight) or any other error of the relaunch — which R6's line for a relaunch
-	// held 60 minutes counts from, as it counts from GuardRefusedAt.
-	HeldAt time.Time `json:"heldAt,omitzero"`
-	// SuspensionHeldAt is when an operator's suspension held over the claim first refused that
+	// RefusedAt is when the daemon's relaunch of the claim was first refused in this episode, by the
+	// guard (RelaunchGuard) or by anything else of the relaunch — the claim's machine for a cause it
+	// owns (its tree lifecycle, a wake waiting its turn, a compaction in flight) or any other error
+	// — which R6's line for a relaunch refused 60 minutes counts from. One span for every refusal: a
+	// time the project is paused or an operator's suspension holds the claim ends it, since neither
+	// counts as refusal time.
+	RefusedAt time.Time `json:"refusedAt,omitzero"`
+	// SuspensionHeldAt is when an operator's suspension held over the claim first held that
 	// relaunch in this episode (ErrOperatorSuspensionHeld): a person's own act, which is logged
 	// once and writes no line.
 	SuspensionHeldAt time.Time `json:"suspensionHeldAt,omitzero"`
@@ -92,24 +91,16 @@ const RelaunchAgainAfter = 6 * time.Hour
 // process still runs the turn (RelaunchGuard).
 const relaunchWaitTool = "wait"
 
-// The refusals of a relaunch the daemon gives before the machine is asked (internal/daemon's reach
-// keeper) and the machine's own (RelaunchGuard, the tree lifecycle's recheck). The three a runtime
-// answers are runtime's (ErrLauncherNotConnected, ErrRelaunchReplacesPod, ErrProcessOutlivedStop).
+// The machine's refusals of a relaunch (RelaunchGuard, the tree lifecycle's recheck, an operator's
+// suspension). The daemon's own refusals before it asks the machine are its reach keeper's, and the
+// three a runtime answers are runtime's (ErrLauncherNotConnected, ErrRelaunchReplacesPod,
+// ErrProcessOutlivedStop).
 var (
-	// ErrClaimReachable: the claim is not marked out of reach, so Envoy can still reach its
-	// session, or has registered it within the 20 minutes.
-	ErrClaimReachable = errors.New("the claim is not out of reach")
 	// ErrRelaunchGuard: a step of the claim's worker stream in the last 20 minutes, an activity
 	// report in the last 20 minutes of the turn the claim is in, an open call other than a wait,
 	// or an activity report since its launch that shows background work or a subagent running, or
 	// no report at all.
 	ErrRelaunchGuard = errors.New("the relaunch guard refuses the claim")
-	// ErrRelaunchedRecently: a relaunch reached the claim less than 6 hours ago
-	// (RelaunchAgainAfter).
-	ErrRelaunchedRecently = errors.New("the claim was relaunched less than " + timewords.Words(RelaunchAgainAfter) + " ago")
-	// ErrPodUnreachable: every claim of the pod the claim runs in, two or more, is out of reach,
-	// so a relaunch into it would recover none of them.
-	ErrPodUnreachable = errors.New("every claim of the claim's pod is out of reach")
 	// ErrTreeRefusesLaunch: the tree lifecycle's recheck, which every launch makes first
 	// (checkLaunch), refuses the claim's launch with an answer of the tree's own
 	// (treelifecycle.Refuses) — its cleanup is reserved or confirmed, its lifecycle is absent, or
@@ -121,8 +112,8 @@ var (
 	ErrOperatorSuspensionHeld = errors.New("an operator's suspension is held over the claim")
 	// ErrTreeCheckFailed: the tree lifecycle's recheck before the stop got no answer of the tree's
 	// — the store did not answer it, or the request's time ran out waiting on it — so the relaunch
-	// stopped nothing and may be asked for again.
-	ErrTreeCheckFailed = errors.New("the daemon could not check the claim's tree lifecycle, so nothing was stopped; relaunch it again")
+	// stopped nothing, and the daemon asks again at its next sweep.
+	ErrTreeCheckFailed = errors.New("the daemon could not read the claim's tree lifecycle from its store, so nothing was stopped; read the daemon's store errors for that claim's tree, and the daemon asks again at its next sweep")
 )
 
 // RelaunchGuard is why a relaunch must not cut c's process now, and "" when it may (R5): the worker

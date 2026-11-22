@@ -85,9 +85,11 @@ const (
 	w5CaseControllerRefused = "controller_relaunch_refused"
 	w5CaseClaimGone         = "claim_unreachable"
 	w5CaseClaimRefused      = "claim_relaunch_refused"
-	// w5GuardLine is the daemon's line at the first refusal of an episode by its relaunch guard,
-	// which names the guard's reason (reachKeeper.guardRefuses).
-	w5GuardLine = "reach: the relaunch guard holds the daemon's relaunch of a claim Envoy cannot reach; it asks again at each sweep"
+	// w5RefusedLine is the daemon's line at the first refusal of an episode's relaunch, which
+	// names the refusal's reason (reachKeeper.refused); w5GuardReason begins the reason of a
+	// refusal by the relaunch guard.
+	w5RefusedLine = "reach: the daemon's relaunch of a claim Envoy cannot reach was refused; it asks again at each sweep"
+	w5GuardReason = "the relaunch guard refuses it: "
 )
 
 // w5Claim is one claim the check seeds: its issue, where that issue stands in its tree, the role

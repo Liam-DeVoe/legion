@@ -12,12 +12,12 @@
 -- Rolling the image back needs no statement: the release before this one names no such table and
 -- writes no fleet alert line at all, so it reads no row and leaves every row as it stands. A row
 -- whose case ended while that release ran is still read back as open by a daemon rolled forward
--- again, and that daemon's first sweep closes every line whose case does not hold then: a case
--- its configuration does not judge, and a case it judges and finds ended (internal/daemon's reach
--- keeper: the list's lines where no list is read, and at each sweep's end the controller's lines
--- whose case does not hold, closeEndedControllerLines, and the worker stream's lock-out lines it
--- no longer holds, closeEndedLockOuts). A case that still holds keeps its line, and writes no
--- second one.
+-- again, and that daemon closes every line whose case does not hold then: a case its
+-- configuration does not judge, and a case it judges and finds ended (internal/daemon's reach
+-- keeper at its first sweep: the list's lines where no list is read, and the claims' lines whose
+-- case does not hold, closeEndedClaimLines; the worker stream at its start, every lock-out line,
+-- since each names a connection of the daemon before it). A case that still holds keeps its line,
+-- and writes no second one.
 --
 -- There is no down file: migrations here are forward-only.
 create table fleet_alert_lines (

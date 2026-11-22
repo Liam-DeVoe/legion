@@ -144,6 +144,7 @@ w11() {
   clause new-line-envoy-skill "$(holds "$envoy" "What becomes of a Legion claim it holds past that is in" "skill://envoy/references/legion.md")" "$envoy"
   clause new-line-roles "$(holds "$roles" "What becomes of a Legion claim past that is in" "skill://envoy/references/legion.md")" "$roles"
   clause new-line-legion "$(holds "$legion" "more than 20 minutes is unreachable" "the daemon relaunches it on that same session")" "$legion"
+  clause controller-keeps-20-minutes "$(holds "$controller" "Start no replacement for an \`unresponsive\` session whose \`last_seen\` is 20 minutes old or less")" "$controller"
   clause envoy-skill-keeps-20-minutes "$(holds "$envoy" "Start no replacement for it" "20 minutes old or less")" "$envoy"
   clause roles-keeps-20-minutes "$(holds "$roles" "Start no replacement for that session" "20 minutes old or less")" "$roles"
   clause legion-relaunch-replaces-no-session "$(holds "$legion" "A relaunch replaces no session")" "$legion"

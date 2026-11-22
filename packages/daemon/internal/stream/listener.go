@@ -92,7 +92,8 @@ type Options struct {
 	Clock Clock
 	// Alerts writes R6's line for a lock-out that has lasted LockOutReportAfter
 	// (fleetalert.NewerProcessRefused), opened once and closed when the lock-out ends; nil
-	// writes none.
+	// writes none. Listen closes every such line the writer loaded open first: each names a
+	// connection of the daemon before this one, which ended with it.
 	Alerts *fleetalert.Writer
 }
 
@@ -187,6 +188,9 @@ func Listen(ctx context.Context, addr string, resolve HelloResolver, opts Option
 		lockOuts:          map[claim.Token]*lockOut{},
 		clock:             clock,
 		alerts:            opts.Alerts,
+	}
+	if opts.Alerts != nil {
+		opts.Alerts.CloseEnded(fleetalert.NewerProcessRefused, func(string) bool { return false })
 	}
 	l.wg.Add(1)
 	go l.accept()

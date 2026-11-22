@@ -30,8 +30,9 @@ func TestTheStreamsCloseCarriesItsGenerationToTheMachine(t *testing.T) {
 
 // relaunchRig is the daemon's relaunch of a claim it has marked out of reach (relaunchByDaemon)
 // over a bare supervisor on the fake runtime and the reach rig's keeper, as openSupervision wires
-// it: the keeper's relaunch posts RequestRelaunch to the claim's machine, and its read of an
-// operator's suspension asks that machine (operatorHolds).
+// it: the keeper's relaunch posts RequestRelaunch to the claim's machine, its read of an
+// operator's suspension asks that machine (operatorHolds), and its read of the pause asks the
+// supervisor (projectPaused).
 func relaunchRig(t *testing.T) (*reachRig, *supervisor) {
 	t.Helper()
 	sup, _ := newPluginSupervisor(t, api.DaemonAPIVersion, true)
@@ -50,6 +51,7 @@ func relaunchRig(t *testing.T) (*reachRig, *supervisor) {
 	s := &supervision{log: quietLogger(), supervisor: sup, reach: r.k}
 	r.k.relaunch = s.relaunchByDaemon
 	r.k.operatorHolds = s.operatorHolds
+	r.k.paused = s.projectPaused
 	return r, sup
 }
 
@@ -104,8 +106,8 @@ func TestTheDaemonsRelaunchReachesTheClaimsMachineOnce(t *testing.T) {
 }
 
 // A relaunch the machine's own guard refuses, reading a later activity report than the sweep
-// read, is recorded as the guard's refusal, relaunches nothing and writes no line before the
-// guard has held the claim for 60 minutes.
+// read, is recorded as a refusal, relaunches nothing and writes no line before the refusals have
+// lasted 60 minutes.
 func TestTheDaemonsRelaunchRefusedByTheMachinesGuardIsRecorded(t *testing.T) {
 	r, sup := relaunchRig(t)
 	worker := waitingQuietly(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"))
@@ -120,7 +122,7 @@ func TestTheDaemonsRelaunchRefusedByTheMachinesGuardIsRecorded(t *testing.T) {
 	r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
 	r.sweep(worker)
 
-	if got := r.reach(worker.Token); got.GuardRefusedAt.IsZero() || got.Relaunched {
+	if got := r.reach(worker.Token); got.RefusedAt.IsZero() || got.Relaunched {
 		t.Fatalf("the keeper's record after the machine's refusal = %+v, want the refusal recorded and no relaunch", got)
 	}
 	if got := m.Claim().Generation; got != generation {
@@ -190,14 +192,14 @@ func TestTheDaemonsRelaunchOfAClaimAnOperatorSuspendsIsRefusedWithNoLine(t *test
 	if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word) + r.lines(fleetalert.ClaimUnreachable.Word); lines != 0 {
 		t.Fatalf("R6 wrote %d lines for the claim an operator suspends, want none", lines)
 	}
-	if got := r.reach(worker.Token); got.SuspensionHeldAt.IsZero() || !got.HeldAt.IsZero() || !got.GuardRefusedAt.IsZero() {
+	if got := r.reach(worker.Token); got.SuspensionHeldAt.IsZero() || !got.RefusedAt.IsZero() {
 		t.Fatalf("the keeper's record = %+v, want the operator's suspension recorded and no other refusal", got)
 	}
 }
 
 // An operator's suspension held over a claim whose relaunch the keeper's own guard would refuse,
 // background work running in it, writes no line however long it holds: the keeper reads the
-// suspension from the claim's machine before the guard, so the guard's 60 minutes never start.
+// suspension from the claim's machine before the guard, so no refusal is counted.
 // The sweep reads the claim as the store holds it, which never carries a suspension held for a
 // turn, so only the machine can say it.
 func TestAnOperatorsSuspensionHeldOverABusyClaimWritesNoGuardLine(t *testing.T) {
@@ -233,7 +235,7 @@ func TestAnOperatorsSuspensionHeldOverABusyClaimWritesNoGuardLine(t *testing.T) 
 
 // While the project is paused the daemon makes no relaunch of a workflow claim, since a paused
 // project starts no turn of a role but the controller's: the claim's generation does not move, no
-// line is written and no guard refusal is recorded. The sweep after the resume relaunches it.
+// line is written and no refusal is recorded. The sweep after the resume relaunches it.
 func TestTheDaemonsRelaunchOfAWorkflowClaimWaitsWhileTheProjectIsPaused(t *testing.T) {
 	r, sup := relaunchRig(t)
 	worker := waitingQuietly(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"))
@@ -253,8 +255,8 @@ func TestTheDaemonsRelaunchOfAWorkflowClaimWaitsWhileTheProjectIsPaused(t *testi
 		r.sweep(r.with(m.Claim()))
 	}
 	got := r.reach(worker.Token)
-	if m.Claim().Generation != generation || !got.Unreachable() || got.Relaunched || !got.GuardRefusedAt.IsZero() {
-		t.Fatalf("while paused the claim is at generation %d with the record %+v, want generation %d, marked, not relaunched and no guard refusal",
+	if m.Claim().Generation != generation || !got.Unreachable() || got.Relaunched || !got.RefusedAt.IsZero() {
+		t.Fatalf("while paused the claim is at generation %d with the record %+v, want generation %d, marked, not relaunched and no refusal",
 			m.Claim().Generation, got, generation)
 	}
 	if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word) + r.lines(fleetalert.ClaimUnreachable.Word); lines != 0 {
@@ -265,4 +267,40 @@ func TestTheDaemonsRelaunchOfAWorkflowClaimWaitsWhileTheProjectIsPaused(t *testi
 	r.listing(map[string]time.Duration{"ses_other": 26 * time.Minute})
 	r.sweep(r.with(m.Claim()))
 	testwait.Eventually(t, "the relaunch after the resume to move the claim's generation", func() bool { return m.Claim().Generation > generation })
+}
+
+// The time a project is paused is no refusal time: a busy claim the guard would refuse writes no
+// line over 80 minutes of a pause, since its relaunch is not asked for until the resume, and its
+// 60 minutes count from the first refusal after the resume.
+func TestTheTimeAProjectIsPausedIsNoRefusalTime(t *testing.T) {
+	r, sup := relaunchRig(t)
+	worker := waitingQuietly(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"))
+	worker.ActivityBackground, worker.ActivityKinds = true, []string{"async-job"}
+	if _, err := sup.restore(context.Background(), []supervise.Claim{worker}); err != nil {
+		t.Fatal(err)
+	}
+	paused := &atomic.Bool{}
+	paused.Store(true)
+	sup.deps.Paused = func() (int64, bool) { return 7, paused.Load() }
+	m, _ := sup.Machine(worker.Token)
+	sweepTo := func(from, last int) {
+		for minute := from; minute <= last; minute++ {
+			r.at(time.Duration(minute) * time.Minute)
+			r.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute})
+			r.sweep(r.with(m.Claim()))
+		}
+	}
+	sweepTo(21, 100)
+	if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 0 {
+		t.Fatalf("R6 wrote %d refused lines over 80 minutes of a pause, want none", lines)
+	}
+	paused.Store(false)
+	sweepTo(101, 160)
+	if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 0 {
+		t.Fatalf("R6 wrote %d refused lines inside 60 minutes of the first refusal after the resume, want none", lines)
+	}
+	sweepTo(161, 161)
+	if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 1 {
+		t.Fatalf("R6 wrote %d refused lines 60 minutes after the resume, want one", lines)
+	}
 }

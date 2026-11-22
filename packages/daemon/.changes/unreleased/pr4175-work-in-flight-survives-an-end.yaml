@@ -43,7 +43,9 @@ body: |-
     bring back within 20 minutes, or out of reach again within 6 hours of its relaunch),
     `claim_relaunch_refused` (a claim the daemon cannot relaunch: its launcher is not connected, the
     launch would replace its pod, its process outlived the stop, Envoy lists no other claim of its
-    pod as live, or the guard or anything else has refused its relaunch for 60 minutes),
+    pod as live, or the guard or anything else has refused its relaunch for 60 minutes, counted on
+    one clock from the first refusal, with no time the project is paused or an operator's suspension
+    holds the claim counted),
     `controller_unreachable`, `controller_relaunch_refused`, `envoy_no_live_session`,
     `envoy_session_list_unreadable` or
     `newer_process_refused`. It writes one line for each case and claim until that case ends, for a

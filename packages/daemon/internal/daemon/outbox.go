@@ -1989,7 +1989,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // anyone claims the role, and every recipient reads the pull request on GitHub for itself, so
 // waiting would retry forever for a message that is stale when it lands. The one exception is a
 // claim that still keeps the session it recorded (heldForItsSession): Envoy cannot reach that
-// session, and the controller may relaunch it onto the same session, which reads the message with
+// session, and the daemon relaunches the claim onto the same session, which reads the message with
 // its time, so the row waits for it until its role is held again, the claim ends or its phase moves
 // on (R5), whichever comes first: a row a try held asks first whether the claim ended or the phase
 // moved on since, and publishes only once neither has (holdEnded). A holder that refuses
@@ -2301,8 +2301,8 @@ func (r *outbox) heldDelivery(ctx context.Context, row record.OutboxRow, token c
 
 // heldForItsSession is the wait that holds a role message or a hook prompt whose role Envoy has
 // no holder for, while the claim of that role still keeps the session it recorded
-// (keepsItsSession). The daemon still runs that claim, and the controller may relaunch it onto the
-// same session (R5), which reads the message with its time, so it is held until a session holds the
+// (keepsItsSession). The daemon still runs that claim, and relaunches it onto the same session
+// (R5), which reads the message with its time, so it is held until a session holds the
 // role again, the claim ends, or its phase moves on — moved, asked of the issue as its record
 // stands now. nil is a message to finish undelivered as before: no such claim, a claim that ended,
 // or a phase moved on. An issue the record cannot read is an error, and the row keeps its retry.

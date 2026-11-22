@@ -7,10 +7,8 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/fleetalert"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -33,30 +31,23 @@ func (s *supervision) operatorHolds(token claim.Token) bool {
 	return ok && m.View().Claim.RuleHolds()
 }
 
-// closeEndedLockOuts closes R6's line of each lock-out the worker stream's lockedOut no longer
-// holds (R3): a line the last daemon opened names a connection that ended with it, and this
-// daemon's stream tells that older process to stop at its hello rather than binding it. The stream
-// closes the line of a lock-out it saw end itself.
-func (k *reachKeeper) closeEndedLockOuts(lockedOut func(claim.Token) (stream.LockOut, bool)) {
-	k.alerts.CloseEnded(fleetalert.NewerProcessRefused, func(token string) bool {
-		_, locked := lockedOut(claim.Token(token))
-		return locked
-	})
+// projectPaused is whether the project is paused, as the supervisor reads it (its deps.Paused):
+// the keeper's paused, which holds back a workflow claim's relaunch until the resume.
+func (s *supervision) projectPaused() bool {
+	if s.supervisor.deps.Paused == nil {
+		return false
+	}
+	_, paused := s.supervisor.deps.Paused()
+	return paused
 }
 
 // relaunchByDaemon is the daemon's relaunch of a marked claim at at (reachKeeper's relaunch):
 // RequestRelaunch to the claim's machine, with the step the store holds as the guard's freshest
 // durable reading. The controller's relaunch may replace its pod, since no other role runs there;
-// a workflow claim's may not, and waits while the project is paused, which starts no turn of a
-// role but the controller's (errRelaunchWaitsForResume). It answers the claim as the relaunch left
-// it, which records the relaunch (supervise.Claim.LastRelaunch).
+// a workflow claim's may not. It answers the claim as the relaunch left it, which records the
+// relaunch (supervise.Claim.LastRelaunch).
 func (s *supervision) relaunchByDaemon(ctx context.Context, c supervise.Claim, at time.Time) (supervise.Claim, error) {
 	controller := c.Role == claim.RoleController
-	if !controller && s.supervisor.deps.Paused != nil {
-		if _, paused := s.supervisor.deps.Paused(); paused {
-			return c, errRelaunchWaitsForResume
-		}
-	}
 	m, ok := s.supervisor.Machine(c.Token)
 	if !ok {
 		return supervise.Claim{}, fmt.Errorf("the claim %s is not supervised", c.Token)

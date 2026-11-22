@@ -2,77 +2,119 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
 
 const removedReachNoticesVersion = 20261116082001
 
-// A database an earlier build of the release that reports claims out of reach ran against can hold
-// outbox rows of the two notice kinds that release dropped, and the table of its project's notice
-// marks. The cleanup deletes those rows and that table and nothing else, so a later migration that
-// writes outbox_kind_check without those kinds is not refused over a pending row of one. The
-// negative control is the database before the cleanup, which holds both rows and the table.
-func TestTheCleanupDropsTheRemovedReachNoticesAndNothingElse(t *testing.T) {
+// removedControllerNotices is every controller notice an earlier build of the release that
+// reports claims out of reach queued and this release no longer has.
+var removedControllerNotices = []string{"unreachable-claims", "relaunch-ready", "relaunch-guard-held",
+	"relaunch-not-back", "unreachable-exit", "envoy-no-live-session", "worker-locked-out", "claim-out-of-reach"}
+
+// earlierBuildsDatabase is a database an earlier build of the release that reports claims out of
+// reach ran against, migrated through every version below the cleanup: its kind check admitted the
+// two reach kinds, it held the table of the project's notice marks, and its outbox holds a row of
+// each reach kind, a notice row and a controller_notice row of each removed notice, and one notice
+// row and one controller_notice row of a notice this release still sends.
+func earlierBuildsDatabase(t *testing.T) (*Store, []migrations.Migration) {
+	t.Helper()
 	ctx := context.Background()
 	store := emptyStore(t)
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	var before []migrations.Migration
+	var below []migrations.Migration
 	for _, migration := range all {
-		if migration.Version != removedReachNoticesVersion {
-			before = append(before, migration)
+		if migration.Version < removedReachNoticesVersion {
+			below = append(below, migration)
 		}
 	}
-	if len(before) == len(all) {
-		t.Fatalf("migration %d is not embedded", removedReachNoticesVersion)
+	if _, err := store.migrate(ctx, below); err != nil {
+		t.Fatalf("migrate the versions below the cleanup: %v", err)
 	}
-	if _, err := store.migrate(ctx, before); err != nil {
-		t.Fatalf("migrate every other version: %v", err)
-	}
-	// The earlier build's database: its kind check admitted the two kinds, and it held the table.
 	if _, err := store.pool.Exec(ctx, `alter table outbox drop constraint outbox_kind_check;
 		create table reach_project_notices (project text primary key)`); err != nil {
 		t.Fatalf("shape the earlier build's database: %v", err)
 	}
-	for _, kind := range []string{"reach_notice", "reach_controller_notice", "notice"} {
+	queue := func(kind, notice string) {
 		if _, err := store.pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
-			values ($1, 'LEGION-208', '{}', 0, now(), '')`, kind); err != nil {
-			t.Fatalf("queue a %s row: %v", kind, err)
+			values ($1, 'LEGION-208', jsonb_build_object('kind', $2::text), 0, now(), '')`, kind, notice); err != nil {
+			t.Fatalf("queue a %s row of %q: %v", kind, notice, err)
 		}
 	}
-	count := func(kinds ...string) int {
-		var n int
-		if err := store.pool.QueryRow(ctx, `select count(*) from outbox where kind = any($1)`, kinds).Scan(&n); err != nil {
-			t.Fatalf("count the rows of %v: %v", kinds, err)
-		}
-		return n
+	queue("reach_notice", "claim-out-of-reach")
+	queue("reach_controller_notice", "unreachable-claims")
+	queue("notice", "claim-out-of-reach")
+	for _, notice := range removedControllerNotices {
+		queue("controller_notice", notice)
 	}
-	table := func() bool {
-		var exists bool
-		if err := store.pool.QueryRow(ctx, `select to_regclass('reach_project_notices') is not null`).Scan(&exists); err != nil {
-			t.Fatalf("look for reach_project_notices: %v", err)
+	queue("notice", "phase-finished")
+	queue("controller_notice", "project-paused")
+	return store, all
+}
+
+// A database an earlier build ran against migrates through the cleanup and every later version,
+// the later lists of outbox_kind_check among them, and keeps only the rows of notices this release
+// sends. The control is the same database migrated through every later version but the cleanup:
+// the first later kind list is refused over the reach rows (SQLSTATE 23514), which is the boot the
+// cleanup keeps from failing.
+func TestTheCleanupLetsTheLaterKindChecksRunAndKeepsOnlyLiveNotices(t *testing.T) {
+	ctx := context.Background()
+
+	control, all := earlierBuildsDatabase(t)
+	var withoutCleanup []migrations.Migration
+	for _, migration := range all {
+		if migration.Version != removedReachNoticesVersion {
+			withoutCleanup = append(withoutCleanup, migration)
 		}
-		return exists
 	}
-	if got := count("reach_notice", "reach_controller_notice"); got != 2 || !table() {
-		t.Fatalf("before the cleanup the database holds %d removed notice rows and the table %t, want 2 and the table", got, table())
+	var refused *pgconn.PgError
+	if _, err := control.migrate(ctx, withoutCleanup); !errors.As(err, &refused) || refused.Code != "23514" {
+		t.Fatalf("the later versions without the cleanup = %v, want a later kind list refused over the reach rows (23514)", err)
 	}
 
+	store, all := earlierBuildsDatabase(t)
 	applied, err := store.Migrate(ctx)
 	if err != nil {
-		t.Fatalf("migrate through the cleanup: %v", err)
+		t.Fatalf("migrate through the cleanup and every later version: %v", err)
 	}
-	if applied != 1 {
-		t.Fatalf("the upgrade applied %d migrations, want the cleanup alone", applied)
+	later := 0
+	for _, migration := range all {
+		if migration.Version >= removedReachNoticesVersion {
+			later++
+		}
 	}
-	if got := count("reach_notice", "reach_controller_notice"); got != 0 || table() {
-		t.Fatalf("after the cleanup the database holds %d removed notice rows and the table %t, want neither", got, table())
+	if applied != later {
+		t.Fatalf("the upgrade applied %d migrations, want the cleanup and every later version, %d", applied, later)
 	}
-	if got := count("notice"); got != 1 {
-		t.Fatalf("after the cleanup the database holds %d notice rows, want the one it held", got)
+	rows, err := store.pool.Query(ctx, `select kind, payload->>'kind' from outbox order by id`)
+	if err != nil {
+		t.Fatalf("read the outbox: %v", err)
+	}
+	defer rows.Close()
+	var kept [][2]string
+	for rows.Next() {
+		var row [2]string
+		if err := rows.Scan(&row[0], &row[1]); err != nil {
+			t.Fatalf("read an outbox row: %v", err)
+		}
+		kept = append(kept, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the outbox: %v", err)
+	}
+	if want := [][2]string{{"notice", "phase-finished"}, {"controller_notice", "project-paused"}}; len(kept) != 2 || kept[0] != want[0] || kept[1] != want[1] {
+		t.Fatalf("after the upgrade the outbox holds %v, want only %v", kept, want)
+	}
+	var table bool
+	if err := store.pool.QueryRow(ctx, `select to_regclass('reach_project_notices') is not null`).Scan(&table); err != nil || table {
+		t.Fatalf("after the upgrade reach_project_notices exists %t (%v), want it dropped", table, err)
 	}
 }

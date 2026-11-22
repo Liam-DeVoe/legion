@@ -19,14 +19,24 @@ import (
 )
 
 // The bounds of R5 and R6 the keeper counts beside the 20 minutes a session may go unregistered
-// (supervise.UnreachableAfter): the guard's refusal of a workflow claim's relaunch that becomes a
-// case for a person, the wait after a relaunch before one that did not bring the claim back is,
-// and the 20 minutes of failed reads or of a list with no live session that write R6's line
+// (supervise.UnreachableAfter): a refusal of a workflow claim's relaunch that becomes a case for a
+// person, the wait after a relaunch before one that did not bring the claim back is, and the 20
+// minutes of failed reads or of a list with no live session that write R6's line
 // (fleetalert.ListSilentFor, which that line's sentence names).
 const (
-	guardHeldAfter = 60 * time.Minute
-	notBackAfter   = 20 * time.Minute
-	silentListFor  = fleetalert.ListSilentFor
+	refusedAfter  = 60 * time.Minute
+	notBackAfter  = 20 * time.Minute
+	silentListFor = fleetalert.ListSilentFor
+)
+
+// The daemon's refusals of a relaunch before it asks the claim's machine (refusalOf).
+var (
+	// errRelaunchedRecently: a relaunch reached the claim less than 6 hours ago
+	// (supervise.RelaunchAgainAfter).
+	errRelaunchedRecently = errors.New("the claim was relaunched less than " + timewords.Words(supervise.RelaunchAgainAfter) + " ago")
+	// errPodUnreachable: every claim of the pod the claim runs in, two or more, is out of reach,
+	// so a relaunch into it would recover none of them.
+	errPodUnreachable = errors.New("every claim of the claim's pod is out of reach")
 )
 
 // relaunchedByDaemon is the cause the daemon's relaunch records on the claim
@@ -97,10 +107,13 @@ type reachKeeperOptions struct {
 	put              func(context.Context, claim.Token, supervise.Reach) (bool, error)
 	// operatorHolds is whether an operator's suspension holds the claim (supervise.Claim.RuleHolds,
 	// as its machine last published it), which the store's copy of a claim never says; nil holds
-	// none. It is read before anything else of a relaunch, so such a claim gets no line on any
-	// path (relaunchMarked).
+	// none. It is read before a relaunch and again on its refusal, so such a claim gets no line on
+	// any path (relaunchMarked, relaunchClaim).
 	operatorHolds func(claim.Token) bool
-	alerts        *fleetalert.Writer
+	// paused is whether the project is paused, which starts no turn of a role but the
+	// controller's, so the keeper asks for no workflow claim's relaunch then; nil is never paused.
+	paused func() bool
+	alerts *fleetalert.Writer
 	// relaunch is the daemon's own relaunch of a marked claim on its same session at a moment of
 	// the keeper's clock, which may replace the pod of the controller's claim alone, answering the
 	// claim as the relaunch left it; nil relaunches nothing.
@@ -180,7 +193,7 @@ func relaunchTakenIn(c supervise.Claim, rec supervise.Reach) supervise.Reach {
 	rec.RelaunchedAt = c.LastRelaunch
 	if rec.Unreachable() {
 		rec.Relaunched = true
-		rec.GuardRefusedAt, rec.HeldAt, rec.SuspensionHeldAt = time.Time{}, time.Time{}, time.Time{}
+		rec.RefusedAt, rec.SuspensionHeldAt = time.Time{}, time.Time{}
 	}
 	return rec
 }
@@ -521,11 +534,11 @@ func (k *reachKeeper) episodeGoesOn(c supervise.Claim, rec supervise.Reach, verd
 //     because the role's launcher is not connected or because the launch would replace the pod;
 //     the process outlived the relaunch's stop; or the guard, or anything else of the relaunch,
 //     refuses it, at once for the controller, which nobody else can relaunch, and for 60 minutes
-//     for a workflow claim, whose process may still run a turn that ends (the second of linesOf).
+//     for a workflow claim, whose process may still run a turn that ends (refused).
 //
-// An operator's suspension held over c is read first, before all of these: it is a person's own
-// act on the claim, so c gets no line on any path while it holds, and it is logged once an episode
-// (operatorHolds, supervise.Reach.SuspensionHeldAt).
+// An operator's suspension held over c is read first: it is a person's own act on the claim, so c
+// gets no line on any path while it holds (suspensionHolds). A workflow claim of a paused project
+// is not relaunched until the resume. Neither time counts as refusal time.
 //
 // A refused relaunch uses no part of the 6 hours, and the daemon asks again at each sweep, so a
 // claim the guard lets through later, or whose launcher is connected again, is relaunched then.
@@ -534,12 +547,7 @@ func (k *reachKeeper) episodeGoesOn(c supervise.Claim, rec supervise.Reach, verd
 // the record does not relaunch c a second time within the 6 hours. The caller holds mu.
 func (k *reachKeeper) relaunchMarked(ctx context.Context, c supervise.Claim, rec supervise.Reach, siblings []supervise.Claim, reaches func(supervise.Claim) bool, now time.Time) supervise.Reach {
 	if k.operatorHolds != nil && k.operatorHolds(c.Token) {
-		if rec.SuspensionHeldAt.IsZero() {
-			rec.SuspensionHeldAt = now
-			k.log.Info("reach: an operator's suspension holds the daemon's relaunch of a claim Envoy cannot reach; no line is written for a person's own act",
-				"claim", c.Token)
-		}
-		return rec
+		return k.suspensionHolds(c, rec, now)
 	}
 	lines, token := linesOf(c), string(c.Token)
 	if rec.Relaunched {
@@ -550,16 +558,17 @@ func (k *reachKeeper) relaunchMarked(ctx context.Context, c supervise.Claim, rec
 	}
 	err := refusalOf(c, rec, siblings, reaches, now)
 	switch {
-	case errors.Is(err, supervise.ErrRelaunchedRecently):
+	case errors.Is(err, errRelaunchedRecently):
 		k.alerts.Open(lines[0], token, "relaunchedAt", rec.RelaunchedAt, "reason", fmt.Sprintf(
 			"it is out of reach a second time within %[1]s of its last relaunch, and a claim is relaunched once in %[1]s", timewords.Words(supervise.RelaunchAgainAfter)))
-	case errors.Is(err, supervise.ErrClaimReachable):
 	case err != nil:
 		k.alerts.Open(lines[1], token, "reason", err.Error())
 	case k.relaunching[c.Token] || k.relaunch == nil:
+	case c.Role != claim.RoleController && k.paused != nil && k.paused():
+		rec.RefusedAt = time.Time{}
 	default:
 		if why := supervise.RelaunchGuard(c, time.Time{}, now); why != "" {
-			return k.guardRefuses(c, rec, "the relaunch guard refuses it: "+why, now)
+			return k.refused(c, rec, "the relaunch guard refuses it: "+why, now)
 		}
 		k.relaunching[c.Token] = true
 		k.wg.Add(1)
@@ -590,37 +599,32 @@ func notBack(c supervise.Claim) string {
 		timewords.Words(notBackAfter) + " since, so the cause is in its pod or its connection, not in its process"
 }
 
-// guardRefuses is rec once the guard has refused c's relaunch at at, for why: the episode's first
-// refusal is kept, and logged with its reason, since the daemon asks again at each sweep and says
-// nothing more until R6's line; that line is written once the guard has refused c for long enough
-// (refusedFor). The caller holds mu.
-func (k *reachKeeper) guardRefuses(c supervise.Claim, rec supervise.Reach, why string, at time.Time) supervise.Reach {
-	if rec.GuardRefusedAt.IsZero() {
-		rec.GuardRefusedAt = at
-		k.log.Info("reach: the relaunch guard holds the daemon's relaunch of a claim Envoy cannot reach; it asks again at each sweep",
+// refused is rec once c's relaunch was refused at at, for why, by the guard or anything else: the
+// episode's first refusal is kept and logged, since the daemon asks again at each sweep and says
+// nothing more until R6's line, which is written once the refusals have lasted refusedFor(c) from
+// that first one. The caller holds mu.
+func (k *reachKeeper) refused(c supervise.Claim, rec supervise.Reach, why string, at time.Time) supervise.Reach {
+	if rec.RefusedAt.IsZero() {
+		rec.RefusedAt = at
+		k.log.Info("reach: the daemon's relaunch of a claim Envoy cannot reach was refused; it asks again at each sweep",
 			"claim", c.Token, "reason", why)
 	}
-	if at.Sub(rec.GuardRefusedAt) >= refusedFor(c) {
-		k.alerts.Open(linesOf(c)[1], string(c.Token), "since", rec.GuardRefusedAt, "reason", why)
+	if at.Sub(rec.RefusedAt) >= refusedFor(c) {
+		k.alerts.Open(linesOf(c)[1], string(c.Token), "since", rec.RefusedAt, "reason", why)
 	}
 	return rec
 }
 
-// machineHolds is rec once anything but the guard has refused c's relaunch at at, for why: c's own
-// machine for a cause it owns — its tree lifecycle, a wake waiting its turn, a compaction in
-// flight, no process recorded — or any other error of the relaunch. The daemon asks again at each
-// sweep. As with the guard (guardRefuses), the episode's first such refusal is kept and logged,
-// and R6's line is written once c has been held so for long enough (refusedFor), since a refusal that
-// lasts that long is one no agent will end. The caller holds mu.
-func (k *reachKeeper) machineHolds(c supervise.Claim, rec supervise.Reach, why string, at time.Time) supervise.Reach {
-	if rec.HeldAt.IsZero() {
-		rec.HeldAt = at
-		k.log.Warn("reach: the daemon's relaunch of a claim Envoy cannot reach was refused; it asks again at each sweep",
-			"claim", c.Token, "reason", why)
+// suspensionHolds is rec once an operator's suspension held over c has held its relaunch at at:
+// logged once an episode, with no line, and the refusals counted so far end, since the hold's
+// time is no refusal time. The caller holds mu.
+func (k *reachKeeper) suspensionHolds(c supervise.Claim, rec supervise.Reach, at time.Time) supervise.Reach {
+	if rec.SuspensionHeldAt.IsZero() {
+		rec.SuspensionHeldAt = at
+		k.log.Info("reach: an operator's suspension holds the daemon's relaunch of a claim Envoy cannot reach; no line is written for a person's own act",
+			"claim", c.Token)
 	}
-	if at.Sub(rec.HeldAt) >= refusedFor(c) {
-		k.alerts.Open(linesOf(c)[1], string(c.Token), "since", rec.HeldAt, "reason", why)
-	}
+	rec.RefusedAt = time.Time{}
 	return rec
 }
 
@@ -630,20 +634,17 @@ func refusedFor(c supervise.Claim) time.Duration {
 	if c.Role == claim.RoleController {
 		return 0
 	}
-	return guardHeldAfter
+	return refusedAfter
 }
-
-// errRelaunchWaitsForResume is the daemon's relaunch of a workflow claim while the project is
-// paused, which starts no turn of a role but the controller's: the sweep after the resume asks
-// again.
-var errRelaunchWaitsForResume = errors.New("the project is paused, and a paused project starts no turn of a role but the controller's")
 
 // relaunchClaim runs the daemon's relaunch of c off the sweep, since a Sandbox relaunch waits
 // minutes on its pods, and records what it did. The relaunch's launch has written the relaunch
 // onto c's claim, so a write of the record the store refuses here is written again at the next
 // sweep and costs no part of the 6 hours. since is the mark of the episode that asked for it: a
 // refusal that answers after a sweep ended that episode, the claim's session having registered
-// again, records nothing and writes no line.
+// again, records nothing and writes no line. So does one of a claim an operator's suspension holds
+// by then, or whose process was let go while the relaunch waited (suspended, failed or retired),
+// which the next sweep judges as it then stands.
 func (k *reachKeeper) relaunchClaim(ctx context.Context, c supervise.Claim, since, at time.Time) {
 	defer k.wg.Done()
 	relaunched, err := k.relaunch(ctx, c, at)
@@ -652,35 +653,23 @@ func (k *reachKeeper) relaunchClaim(ctx context.Context, c supervise.Claim, sinc
 	delete(k.relaunching, c.Token)
 	refused := linesOf(c)[1]
 	rec := k.recordOf(c)
-	asked := rec.Unreachable() && rec.Since.Equal(since)
+	var machine *supervise.RefusedError
 	switch {
 	case err == nil:
 		k.log.Warn("reach: the daemon relaunched a claim Envoy could not reach, on its same session", "claim", c.Token, "generation", relaunched.Generation)
 		k.alerts.Close(refused, string(c.Token))
 		k.storeEach(ctx, c.Token, relaunchTakenIn(relaunched, rec))
-	case errors.Is(err, supervise.ErrRelaunchGuard):
-		if asked {
-			k.storeEach(ctx, c.Token, k.guardRefuses(c, rec, err.Error(), at))
-		}
+	case !rec.Unreachable() || !rec.Since.Equal(since) || ctx.Err() != nil:
+	case errors.Is(err, supervise.ErrOperatorSuspensionHeld), k.operatorHolds != nil && k.operatorHolds(c.Token):
+		k.storeEach(ctx, c.Token, k.suspensionHolds(c, rec, at))
+	case errors.As(err, &machine) && machine.Err == nil && supervise.IsGone(machine.State):
+		k.log.Info("reach: the claim's process was let go while the daemon's relaunch of it waited; the next sweep judges it as it stands",
+			"claim", c.Token, "state", machine.State)
 	case errors.Is(err, runtime.ErrLauncherNotConnected), errors.Is(err, runtime.ErrRelaunchReplacesPod),
 		errors.Is(err, runtime.ErrProcessOutlivedStop):
-		if asked {
-			k.alerts.Open(refused, string(c.Token), "reason", err.Error())
-		}
-	case errors.Is(err, errRelaunchWaitsForResume):
-	case errors.Is(err, supervise.ErrOperatorSuspensionHeld):
-		// An operator's suspension is a person's own act on the claim, so it writes no line: it
-		// is logged once an episode, and the relaunch is asked for again at each sweep.
-		if asked && rec.SuspensionHeldAt.IsZero() {
-			rec.SuspensionHeldAt = at
-			k.log.Info("reach: an operator's suspension holds the daemon's relaunch of a claim Envoy cannot reach; no line is written for a person's own act",
-				"claim", c.Token, "reason", err.Error())
-			k.storeEach(ctx, c.Token, rec)
-		}
+		k.alerts.Open(refused, string(c.Token), "reason", err.Error())
 	default:
-		if asked && ctx.Err() == nil {
-			k.storeEach(ctx, c.Token, k.machineHolds(c, rec, err.Error(), at))
-		}
+		k.storeEach(ctx, c.Token, k.refused(c, rec, err.Error(), at))
 	}
 }
 
@@ -706,19 +695,17 @@ func (k *reachKeeper) carriesItsEpisode(c supervise.Claim, rec supervise.Reach) 
 		(holdsEpisode(c.State) || c.State == supervise.StateFailed)
 }
 
-// refusalOf is why a relaunch of c, whose reach record is rec, is refused before c's machine
-// is asked, and nil where it goes on. c must be marked out of reach; its last relaunch — the later
-// of the one rec has taken in and the one c's own row records, which the relaunch's launch wrote —
-// must be at least 6 hours old; and of siblings, the live claims of c's pod with c among them, two
-// or more, Envoy must reach one besides c (reaches), since a relaunch into a pod that reaches
-// Envoy for none of them fails each worker at its deaths limit and recovers none.
+// refusalOf is why a relaunch of c, marked out of reach with the reach record rec, is refused
+// before c's machine is asked, and nil where it goes on. Its last relaunch — the later of the one
+// rec has taken in and the one c's own row records, which the relaunch's launch wrote — must be at
+// least 6 hours old; and of siblings, the live claims of c's pod with c among them, two or more,
+// Envoy must reach one besides c (reaches), since a relaunch into a pod that reaches Envoy for none
+// of them fails each worker at its deaths limit and recovers none.
 func refusalOf(c supervise.Claim, rec supervise.Reach, siblings []supervise.Claim, reaches func(supervise.Claim) bool, now time.Time) error {
 	last := rec.RelaunchedAt
 	switch {
-	case !rec.Unreachable():
-		return supervise.ErrClaimReachable
 	case !last.IsZero() && now.Sub(last) < supervise.RelaunchAgainAfter:
-		return fmt.Errorf("%w: at %s", supervise.ErrRelaunchedRecently, stamp(last))
+		return fmt.Errorf("%w: at %s", errRelaunchedRecently, stamp(last))
 	case len(siblings) < 2:
 		return nil
 	}
@@ -730,7 +717,7 @@ func refusalOf(c supervise.Claim, rec supervise.Reach, siblings []supervise.Clai
 		tokens = append(tokens, other.Token)
 	}
 	slices.Sort(tokens)
-	return fmt.Errorf("%w: pod %s holds %d live claims, and Envoy reaches none of them: %v", supervise.ErrPodUnreachable, c.Locator.Sandbox.PodUID, len(tokens), tokens)
+	return fmt.Errorf("%w: pod %s holds %d live claims, and Envoy reaches none of them: %v", errPodUnreachable, c.Locator.Sandbox.PodUID, len(tokens), tokens)
 }
 
 // podClaims is the live claims of each pod, by its UID (podsOf).

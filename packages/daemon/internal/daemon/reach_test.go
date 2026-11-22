@@ -3,10 +3,10 @@ package daemon
 // The daemon's half of R5 and R6: once a minute it reads Envoy's session list, marks a claim whose
 // session's last registration is more than 20 minutes old — counted from the latest of that
 // registration, its boot, the session's first ready, the end of its last failed read and its last
-// read that found no live session — tells the tree's architect, relaunches the claim, and writes
-// R6's line for what no agent can act on. The keeper is driven directly over fakes of the list,
-// the store's write, the outbox, the relaunch and the clock, because what it decides is decided
-// from the claims it is handed and what it read.
+// read that found no live session — relaunches the claim, and writes R6's line for what no agent
+// can act on. The keeper is driven directly over fakes of the list, the store's write, the
+// relaunch and the clock, because what it decides is decided from the claims it is handed and
+// what it read.
 
 import (
 	"bytes"
@@ -525,8 +525,8 @@ func TestAnOperatorsSuspensionWritesNoLineOnAnyPath(t *testing.T) {
 	if logged := strings.Count(r.logged.String(), "an operator's suspension holds the daemon's relaunch"); logged != 1 {
 		t.Fatalf("the operator's suspension was logged %d times over 80 sweeps, want once", logged)
 	}
-	if got := r.reach(worker.Token); got.SuspensionHeldAt.IsZero() || !got.GuardRefusedAt.IsZero() {
-		t.Fatalf("the record = %+v, want the operator's suspension recorded and no guard refusal", got)
+	if got := r.reach(worker.Token); got.SuspensionHeldAt.IsZero() || !got.RefusedAt.IsZero() {
+		t.Fatalf("the record = %+v, want the operator's suspension recorded and no refusal", got)
 	}
 }
 
@@ -539,7 +539,7 @@ func settledWorker(t *testing.T) supervise.Claim {
 }
 
 // The daemon relaunches a workflow role's claim it has marked out of reach, on its same session,
-// once: no agent is asked to, and the controller is told nothing.
+// once, and no agent is asked to.
 func TestTheDaemonRelaunchesAWorkerClaimItCannotReach(t *testing.T) {
 	r := newReachRig(t, false)
 	worker := settledWorker(t)
@@ -566,7 +566,7 @@ func TestTheDaemonRelaunchesAWorkerClaimItCannotReach(t *testing.T) {
 }
 
 // Each case the daemon's relaunch of a workflow claim cannot get past writes R6's line for that
-// claim once, and the controller is told nothing of any of them.
+// claim once.
 func TestACaseForAPersonWritesTheClaimsLineOnce(t *testing.T) {
 	t.Run("the guard refuses it for 60 minutes", func(t *testing.T) {
 		r := newReachRig(t, false)
@@ -685,9 +685,9 @@ func TestAnOperatorsSuspensionHoldsTheRelaunchWithNoLine(t *testing.T) {
 }
 
 // A pod that holds two or more live claims, every one out of reach, is a case for a person: the
-// daemon relaunches none of them, since a relaunch into that pod reaches Envoy for none, writes
-// each claim's line once and tells the controller nothing. Once one of them registers again, the
-// daemon relaunches the other.
+// daemon relaunches none of them, since a relaunch into that pod reaches Envoy for none, and
+// writes each claim's line once. Once one of them registers again, the daemon relaunches the
+// other.
 func TestAPodWhoseEveryClaimIsOutOfReachIsACaseForAPerson(t *testing.T) {
 	r := newReachRig(t, false)
 	pod := func(c supervise.Claim) supervise.Claim {
@@ -777,5 +777,109 @@ func TestALateRefusalOfAnEndedEpisodeWritesNoLine(t *testing.T) {
 	r.k.wait()
 	if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 0 {
 		t.Fatalf("R6 wrote %d refused lines for a claim back in reach before its relaunch was refused, want none", lines)
+	}
+}
+
+// sweepMinutes sweeps claims once a minute from from to last, the list holding only another
+// session registered that minute, so every claim of claims stays out of reach. Each sweep reads
+// each claim of claims() as the store holds it then.
+func (r *reachRig) sweepMinutes(from, last int, claims func() []supervise.Claim) {
+	r.t.Helper()
+	for minute := from; minute <= last; minute++ {
+		r.at(time.Duration(minute) * time.Minute)
+		r.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute})
+		r.sweep(claims()...)
+	}
+}
+
+// R6's 60 minutes count every refusal of a workflow claim's relaunch on one clock, from the
+// first: 30 minutes of the guard's refusals and then the claim's machine's write the line 60
+// minutes after the guard's first, not 60 after the machine's.
+func TestEveryRefusalOfARelaunchCountsOnOneClock(t *testing.T) {
+	r := newReachRig(t, false)
+	quiet := settledWorker(t)
+	busy := quiet
+	busy.ActivityBackground, busy.ActivityKinds = true, []string{"async-job"}
+	r.sweepMinutes(21, 50, func() []supervise.Claim { return []supervise.Claim{r.with(busy)} })
+	r.mu.Lock()
+	r.relaunch = &supervise.RefusedError{State: supervise.StateIdle, Request: "relaunch",
+		Reason: "a resume of the claim waits its turn in the wake pacing", Err: errors.New("a resume of the claim waits its turn in the wake pacing")}
+	r.mu.Unlock()
+	r.sweepMinutes(51, 80, func() []supervise.Claim { return []supervise.Claim{r.with(quiet)} })
+	if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 0 {
+		t.Fatalf("R6 wrote %d refused lines inside 60 minutes of the first refusal, want none", lines)
+	}
+	r.sweepMinutes(81, 81, func() []supervise.Claim { return []supervise.Claim{r.with(quiet)} })
+	if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 1 {
+		t.Fatalf("R6 wrote %d refused lines 60 minutes after the guard's first refusal, the machine's refusals since, want one", lines)
+	}
+}
+
+// An operator's suspension is no refusal time: the guard's refusals before the operator held the
+// claim end with the hold, so after its release the 60 minutes count again from the next refusal,
+// and the hold's own 50 minutes write no line.
+func TestAnOperatorsHoldEndsTheRefusalsCountedBeforeIt(t *testing.T) {
+	r := newReachRig(t, false)
+	busy := settledWorker(t)
+	busy.ActivityBackground, busy.ActivityKinds = true, []string{"async-job"}
+	claims := func() []supervise.Claim { return []supervise.Claim{r.with(busy)} }
+	r.sweepMinutes(21, 50, claims)
+	r.mu.Lock()
+	r.held[busy.Token] = true
+	r.mu.Unlock()
+	r.sweepMinutes(51, 100, claims)
+	r.mu.Lock()
+	r.held[busy.Token] = false
+	r.mu.Unlock()
+	r.sweepMinutes(101, 160, claims)
+	if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 0 {
+		t.Fatalf("R6 wrote %d refused lines inside 60 minutes of the first refusal after the operator's release, want none", lines)
+	}
+	r.sweepMinutes(161, 161, claims)
+	if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 1 {
+		t.Fatalf("R6 wrote %d refused lines 60 minutes after the release, want one", lines)
+	}
+}
+
+// A relaunch in flight that the claim's machine refuses because the claim's process was let go
+// meanwhile writes no line, even for the controller, whose refusals write it at once: an
+// operator's suspension or retirement of the claim is a person's own act, and a claim let go has
+// no process to relaunch. The refusal names the state the claim moved to and no sentinel, as the
+// machine's table refuses a relaunch of a claim in a state it ignores the request in.
+func TestARefusalOfAClaimLetGoWhileItsRelaunchWaitedWritesNoLine(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		state    supervise.ClaimState
+		operator bool
+	}{
+		{"an operator suspended it", supervise.StateSuspended, true},
+		{"it was retired", supervise.StateRetired, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newReachRig(t, true)
+			project, _ := claim.ProjectToken("legion")
+			controller := supervise.Claim{Token: claim.ControllerToken(project), Project: project, Role: claim.RoleController,
+				Generation: 1, State: supervise.StateIdle, Session: "ses_controller", LastReady: reachBoot.Add(-time.Hour),
+				Locator: pluginTestLocator(claim.ControllerToken(project)), ActivityAt: reachBoot}
+			release := make(chan struct{})
+			asked := make(chan struct{}, 1)
+			r.k.relaunch = func(context.Context, supervise.Claim, time.Time) (supervise.Claim, error) {
+				asked <- struct{}{}
+				<-release
+				return supervise.Claim{}, &supervise.RefusedError{State: tc.state, Request: "relaunch", Reason: "no process of this claim is running"}
+			}
+			r.at(21 * time.Minute)
+			r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
+			r.k.sweep(context.Background(), []supervise.Claim{controller})
+			<-asked
+			r.mu.Lock()
+			r.held[controller.Token] = tc.operator
+			r.mu.Unlock()
+			close(release)
+			r.k.wait()
+			if lines := r.lines(fleetalert.ControllerRelaunchRefused.Word); lines != 0 {
+				t.Fatalf("R6 wrote %d refused lines for a controller whose relaunch was refused because %s meanwhile, want none", lines, tc.name)
+			}
+		})
 	}
 }

@@ -1873,6 +1873,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		list:             listSessions(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),
 		put:              st.PutClaimReach,
 		operatorHolds:    supervisionOf.operatorHolds,
+		paused:           supervisionOf.projectPaused,
 		alerts:           alerts,
 		relaunch:         supervisionOf.relaunchByDaemon,
 		step:             st.ClaimStep,
@@ -2693,11 +2694,7 @@ func (s *supervision) reconcileOrphans(ctx context.Context) {
 		s.reconcilePodUpdates(ctx, claims)
 		s.backstopStalledTurns(ctx, claims)
 		s.tellSilentPhaseWorkers(ctx, claims)
-		// Once a minute, as the requirement asks, over the claims this tick already read (R5), and
-		// R6's line of each lock-out the worker stream no longer holds ends (R3).
-		if s.stream != nil {
-			s.reach.closeEndedLockOuts(s.stream.LockedOut)
-		}
+		// Once a minute, as the requirement asks, over the claims this tick already read (R5).
 		s.reach.sweep(ctx, claims)
 	}
 }
