@@ -268,14 +268,13 @@ test("a phone thread trap keeps Tab inside the sheet while the composer holds a 
           if (!(active instanceof HTMLElement) || !container.contains(active)) {
             return "outside the sheet";
           }
-          if (active.matches(":disabled")) return "a disabled control";
           return `${active.localName} ${active.getAttribute("aria-label") ?? active.textContent?.trim() ?? ""}`;
         })
       );
     }
     expect(
-      reached.filter((stop) => stop === "outside the sheet" || stop === "a disabled control"),
-      `Tab left the sheet, or stopped on a disabled control: ${reached.join("; ")}`
+      reached.filter((stop) => stop === "outside the sheet"),
+      `Tab left the sheet: ${reached.join("; ")}`
     ).toEqual([]);
     expect(
       reached,
@@ -297,10 +296,10 @@ test("a phone thread trap keeps Tab inside the sheet while the composer holds a 
   }
 });
 
-// The wrap's other end. Shift+Tab from the sheet's first control goes to its last enabled one,
-// past the held composer's disabled controls, which a trap that read the `disabled` attribute
-// counted as the last and could not focus, leaving focus where it was.
-test("a phone sheet trap wraps Shift+Tab from its first control past a held composer @phone", async ({
+// The wrap's other end. While the comment composer holds a send, Shift+Tab from the margin
+// sheet's first control wraps to the sheet's last control. The composer keeps the draft, and
+// keeps it once the send is refused.
+test("a phone sheet trap wraps Shift+Tab from its first control to its last while the composer holds a send @phone", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

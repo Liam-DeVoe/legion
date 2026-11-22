@@ -22,16 +22,18 @@ import { ROW_SELECTOR } from "./row-marker";
  * component's hand-off walks back the same way inside its own container, and then tries the
  * fallback the component names, else the region's own stop. A component's hand-off answers only
  * for its own controls: a focus in a dialog, a panel or a selection bar drawn inside its container
- * is that region's, and the page's rescue answers its loss inside that region. Each walk back
- * passes over every control that takes typed text (`takesText`) and every control the reader
- * cannot see now (`inSightNow`). It lands a control with `land`, which scrolls a control partly
- * in sight to its nearest edge and one wholly in sight not at all. A region's own stop takes the
- * focus with no scroll (`focusOwnStop`). A loss the reader did not cause leaves the focus on the
- * body, as the page did before it had a rescue, and scrolls nothing, save the exceptions
- * `leaveUncaused` names. A loss of a control the reader had scrolled out of their sight scrolls
- * nothing and focuses no control (`outOfSight`): the focus stays on the body, except in a dialog
- * or a panel, which takes it itself, for a loss the reader caused, and in an open modal dialog,
- * whose own stop takes it, for one they did not (`leaveUnseen`).
+ * is that region's. A loss the reader caused there is answered inside a dialog or a panel by the
+ * page's rescue, and in a selection bar by the bar's own hand-off (`SelectionBar`). The page's
+ * rescue leaves a loss there that the reader did not cause as `leaveUncaused` says. Each walk
+ * back passes over every control that takes typed text (`takesText`) and every control the
+ * reader cannot see now (`inSightNow`). It lands a control with `land`, which scrolls a control
+ * partly in sight to its nearest edge and one wholly in sight not at all. A region's own stop
+ * takes the focus with no scroll (`focusOwnStop`). A loss the reader did not cause leaves the
+ * focus on the body, as the page did before it had a rescue, and scrolls nothing, save the
+ * exceptions `leaveUncaused` names. A loss of a control the reader had scrolled out of their
+ * sight scrolls nothing and focuses no control (`outOfSight`): the focus stays on the body,
+ * except in a dialog or a panel, which takes it itself, for a loss the reader caused, and in an
+ * open modal dialog, whose own stop takes it, for one they did not (`leaveUnseen`).
  */
 
 /** The form controls: the focus reaches one only while it is not `disabled` (`FOCUSABLE`), and a
@@ -138,12 +140,14 @@ interface Place {
  * the container a focused element is counted in, or null for one outside every container, whose
  * going moves nothing. A focus in a dialog, a panel or a selection bar drawn inside the container
  * (`inRegionWithin`) is no focus on a control of the component either, so its going moves nothing
- * here: the page's rescue answers it inside that region, by a walk back among the region's own
- * controls in sight, else on the region's own stop with no scroll (`handOn`), and never by a walk
- * out of the region to the component's controls. An element React bubbled up from a portal is no
- * control of the container, so it is counted at the place of the one counted before it there, and
- * not at all without one: a nested panel's input is counted where the trigger that opened that
- * panel is.
+ * here. In a dialog or a panel, the page's rescue answers a loss the reader caused inside that
+ * region, by a walk back among the region's own controls in sight, else on the region's own stop
+ * with no scroll (`handOn`), and never by a walk out of the region to the component's controls.
+ * In a selection bar, the bar's own hand-off (`SelectionBar`) answers a loss the reader caused.
+ * The page's rescue leaves a loss there that the reader did not cause as `leaveUncaused` says. An
+ * element React bubbled up from a portal is no control of the container, so it is counted at the
+ * place of the one counted before it there, and not at all without one: a nested panel's input
+ * is counted where the trigger that opened that panel is.
  *
  * The check runs after every commit of the component, so after the one that took the element
  * away, and moves the focus only when the element has left the page and the focus is on the

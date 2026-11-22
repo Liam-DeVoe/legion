@@ -6,14 +6,15 @@
  *  The rule each case holds:
  *
  *  - A loss the reader caused - their press, online or offline - lands in the region the control
- *    was lost from: the nearest dialog, panel or selection bar around it, else the page's main
- *    content. It lands on what the press drew in the control's place, else on the same control in
- *    the row now at its place, else on the nearest control before that place that the reader can
- *    see, that is in the Tab order and that takes no typed text, else on the region's own stop. It
- *    never lands on the body, and never behind an open modal dialog. Each case names its landing
- *    by role and accessible name and asserts that name. It scrolls nothing, save the least scroll
- *    that shows a landing control that was partly out of sight: no box moves by more than that
- *    control's height, or its width sideways.
+ *    was lost from while that region stands: the nearest dialog, panel or selection bar around
+ *    it, else the page's main content. A selection bar that goes hands the focus to the row
+ *    marked last. Inside the region, the focus lands on what the press drew in the control's
+ *    place, else on the same control in the row now at its place, else on the nearest control
+ *    before that place that the reader can see, that is in the Tab order and that takes no typed
+ *    text, else on the region's own stop. It never lands on the body, and never behind an open
+ *    modal dialog. Each case names its landing by role and accessible name and asserts that name.
+ *    It scrolls nothing, save the least scroll that shows a landing control that was partly out
+ *    of sight: no box moves by more than that control's height, or its width sideways.
  *  - A loss the reader did not cause - a live update, or their other device - leaves the focus on
  *    the body, as the page did before it had a focus rescue, or on an open modal dialog's own stop
  *    where the loss was inside one. Nothing scrolls, and the focus never lands behind an open
@@ -32,8 +33,9 @@
  *  phone project runs none of them.
  */
 
-import type { Browser, Locator } from "@playwright/test";
+import type { Browser, ElementHandle, Locator } from "@playwright/test";
 
+import { REQUEST_DEADLINE_MS } from "../web/src/api/client";
 import { CONTROL } from "../web/src/components/control-names";
 import { ROW_SELECTOR } from "../web/src/components/row-marker";
 import { plannerSession, seedAgents } from "./agents";
@@ -43,19 +45,18 @@ import {
   createIssue,
   createIssueArtifact,
   dashboardOrigin,
-  listIssueArtifacts,
+  deleteAsReader,
   markInboxRead,
   patchIssue,
   putAgentState,
-  userHeaders,
 } from "./api";
 import { seedSessionGroupsFixture } from "./delivery-seed";
 import { control, controlRow, openFilterPanel } from "./filters";
 import { nextFrames } from "./frames";
 import { seedAgentThread, seedCommentThread } from "./inbox-threads";
-import { settledState } from "./settled";
 import {
   closeControlPanel,
+  createSessionGroup,
   openSurface,
   REAL_STACK_SURFACES,
   STUBBABLE_SURFACES,
@@ -64,9 +65,10 @@ import {
   type SurfaceName,
   type SurfaceScene,
   seedSurfaces,
+  setBoardLanes,
 } from "./table-controls";
 import { expect, type Page, test } from "./test";
-import { withAlice } from "./users";
+import { asUser, withAlice } from "./users";
 
 /** The two sizes each case runs at: a desktop window wide enough for the Inbox's reading column,
  *  and a phone's. */
@@ -80,14 +82,10 @@ const SIZES = [
 const CAUSES = ["press", "live", "device", "offline"] as const;
 type Cause = (typeof CAUSES)[number];
 
-/** How long the page lets Dispatch go silent on a request before it gives the request up
- *  (`REQUEST_DEADLINE_MS`, web/src/api/client.ts). A write goes late at the same mark
- *  (`SEND_DEADLINE_MS`, web/src/features/writes/keyed-write.ts), and a hold through the read
- *  after a write ends at it (`readWithinBound`, web/src/api/read-bound.ts). */
-const REQUEST_DEADLINE_MS = 30_000;
-
-/** How far past the request deadline an offline case reads the focus: room for the timers that
- *  fire at the deadline and for the commits they make. */
+/** How far past the request deadline (`REQUEST_DEADLINE_MS`) an offline case reads the focus:
+ *  room for the timers that fire at the deadline and for the commits they make. A write goes late
+ *  at the same mark (`SEND_DEADLINE_MS`, web/src/features/writes/keyed-write.ts), and a hold
+ *  through the read after a write ends at it (`readWithinBound`, web/src/api/read-bound.ts). */
 const PAST_THE_DEADLINE_MS = 2_000;
 
 /** A day, for the brush window the Delivery page's press case opens on. */
@@ -148,7 +146,8 @@ async function writeFromOtherDevice(
   path: string,
   data?: object
 ): Promise<void> {
-  await withAlice(browser, async (other) => {
+  const other = await asUser(browser, "alice");
+  try {
     const response = await other.request.fetch(new URL(path, baseUrl).toString(), {
       data,
       headers: { Origin: dashboardOrigin },
@@ -157,7 +156,9 @@ async function writeFromOtherDevice(
     expect(response.ok(), `${method} ${path} from the other device: ${response.status()}`).toBe(
       true
     );
-  });
+  } finally {
+    await other.close();
+  }
 }
 
 /** An open issue of CORE with a row or a card of its own, so a case's control is its own. */
@@ -252,6 +253,31 @@ async function listRow(
   return { box, key };
 }
 
+/** The live and the device cases of a page that draws a control for one fresh issue: `open`
+ *  makes the issue, opens the page and puts the focus on that control. Closing the issue takes
+ *  the control away: through the API in the live case, and on the other device in the device
+ *  case. */
+function closedIssueCases(
+  open: (context: CaseContext) => Promise<{ control: Locator; key: string }>
+): Record<"device" | "live", Arrange> {
+  const closedBy =
+    (close: (context: CaseContext, key: string) => Promise<unknown>): Arrange =>
+    async (context) => {
+      const opened = await open(context);
+      return {
+        answered: () => expect(opened.control).toHaveCount(0),
+        cause: () => close(context, opened.key),
+        control: opened.control,
+      };
+    };
+  return {
+    live: closedBy((_context, key) => patchIssue(key, { status: "done" })),
+    device: closedBy(({ browser }, key) =>
+      writeFromOtherDevice(browser, "PATCH", `/api/v1/issues/${key}`, { status: "done" })
+    ),
+  };
+}
+
 const LIST_CASES: Scene["cases"] = {
   press: async (context) => {
     const { box, key } = await listRow(context, true);
@@ -265,25 +291,10 @@ const LIST_CASES: Scene["cases"] = {
       landing: { at: box, name: `checkbox "Select ${key}"` },
     };
   },
-  live: async (context) => {
+  ...closedIssueCases(async (context) => {
     const { box, key } = await listRow(context, false);
-    return {
-      answered: () => expect(box).toHaveCount(0),
-      cause: () => patchIssue(key, { status: "done" }),
-      control: box,
-    };
-  },
-  device: async (context) => {
-    const { box, key } = await listRow(context, false);
-    return {
-      answered: () => expect(box).toHaveCount(0),
-      cause: () =>
-        writeFromOtherDevice(context.browser, "PATCH", `/api/v1/issues/${key}`, {
-          status: "done",
-        }),
-      control: box,
-    };
-  },
+    return { control: box, key };
+  }),
   // Take out of epic holds the bar busy, by `aria-disabled`, while its writes are out, so it
   // keeps the focus: offline its writes stay out past the deadline, and nothing takes it away.
   offline: async (context) => {
@@ -330,14 +341,7 @@ async function boardCard({ n, page, scene }: CaseContext): Promise<{
 }> {
   const key = await freshIssue(`Board card ${n}`);
   const { root } = await openSurface(page, "project Board", scene);
-  const showLanes = page.getByRole("button", { name: "Show lanes" });
-  const hideLanes = page.getByRole("button", { name: "Hide lanes" });
-  const lanes = await settledState("the Board's lanes switch", [
-    ["shown", hideLanes],
-    ["hidden", showLanes],
-  ]);
-  if (lanes === "shown") await hideLanes.click();
-  await expect(showLanes).toBeVisible();
+  await setBoardLanes(page, "hidden");
   const priority = root.getByRole("combobox", { exact: true, name: `Priority of ${key}` });
   await priority.focus();
   return { key, priority };
@@ -352,25 +356,10 @@ const BOARD_CASES: Scene["cases"] = {
     return chipCase(page, row);
   },
   // A done issue's card is drawn in the Done column, which the Board draws folded.
-  live: async (context) => {
+  ...closedIssueCases(async (context) => {
     const { key, priority } = await boardCard(context);
-    return {
-      answered: () => expect(priority).toHaveCount(0),
-      cause: () => patchIssue(key, { status: "done" }),
-      control: priority,
-    };
-  },
-  device: async (context) => {
-    const { key, priority } = await boardCard(context);
-    return {
-      answered: () => expect(priority).toHaveCount(0),
-      cause: () =>
-        writeFromOtherDevice(context.browser, "PATCH", `/api/v1/issues/${key}`, {
-          status: "done",
-        }),
-      control: priority,
-    };
-  },
+    return { control: priority, key };
+  }),
   // A pick draws the new priority at once and the select stays enabled while its write is out,
   // so with no lanes the card stays where it is and the select keeps the focus.
   offline: async (context) => {
@@ -463,38 +452,13 @@ async function groupCard({ n, page, scene }: CaseContext): Promise<{
   rename: Locator;
 }> {
   await openSurface(page, "Delivery page", scene);
-  await expect(page.getByText("3 PRs in current filter/window")).toBeVisible();
-  await openFilterPanel(page);
-  await page.getByRole("button", { name: "Edit groups" }).click();
-  const editor = page.getByRole("dialog", { name: "Session groups" });
-  await editor.getByRole("checkbox", { exact: true, name: "Planner, first run" }).check();
   const name = `Crew ${n}`;
-  await editor.getByLabel("New group name").fill(name);
-  const created = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      response.url().endsWith("/api/v1/delivery/session-groups")
-  );
-  await editor.getByRole("button", { name: "Create group" }).click();
-  const group = (await (await created).json()) as { id: string };
-  const card = editor.getByRole("group", { name });
-  // Every button of a card is held while a write of the editor is out, and Delete group by
-  // nothing else, so its coming back is the create's end.
-  await expect(card.getByRole("button", { name: "Delete group" })).toBeEnabled();
+  const { card, editor, id } = await createSessionGroup(page, name);
   await card.getByLabel("Name", { exact: true }).fill(`${name}, renamed`);
   // The dialog holds this one card, so its Rename is found there whatever name the card wears.
   const rename = editor.getByRole("button", { exact: true, name: "Rename" });
   await rename.focus();
-  return { path: `/api/v1/delivery/session-groups/${group.id}`, rename };
-}
-
-/** Deletes a session group as the reader, through the API. */
-async function deleteGroup(path: string): Promise<void> {
-  const removed = await fetch(new URL(path, baseUrl), {
-    headers: await userHeaders("alice"),
-    method: "DELETE",
-  });
-  expect(removed.status, `DELETE ${path}`).toBe(204);
+  return { path: `/api/v1/delivery/session-groups/${id}`, rename };
 }
 
 const DELIVERY_CASES: Scene["cases"] = {
@@ -527,7 +491,7 @@ const DELIVERY_CASES: Scene["cases"] = {
     const { path, rename } = await groupCard(context);
     return {
       answered: () => expect(rename).toHaveCount(0),
-      cause: () => deleteGroup(path),
+      cause: () => deleteAsReader(path, "the session group"),
       control: rename,
     };
   },
@@ -544,7 +508,7 @@ const DELIVERY_CASES: Scene["cases"] = {
   offline: async (context) => {
     const { path, rename } = await groupCard(context);
     return {
-      after: () => deleteGroup(path),
+      after: () => deleteAsReader(path, "the session group"),
       answered: () => expect(rename).toHaveAttribute("aria-disabled", "true"),
       cause: pressEnter(context.page),
       control: rename,
@@ -564,8 +528,7 @@ async function searchChips({ page }: CaseContext): Promise<Arranged> {
   await expect(bar).toBeVisible();
   const row = controlRow(bar);
   await control(row, CONTROL.searchBox).fill(SURFACE_SEARCH_TERM);
-  await control(row, CONTROL.panelTrigger).click();
-  const filters = page.getByRole("dialog", { name: "Filter" });
+  const filters = await openFilterPanel(page, bar);
   for (const [menu, option] of [
     ["Project", "CORE"],
     ["Status", "Todo"],
@@ -599,12 +562,16 @@ async function documentRows({ n, page, scene }: CaseContext): Promise<{
   remove: Locator;
   root: Locator;
   target: string;
+  /** The id of `target`'s document, as its create answered. */
+  targetId: string | undefined;
 }> {
   const issue = await createIssue({ project: "CORE", title: `Documents ${n}` });
   // A document made with a name alone holds nothing, which Dispatch removes; one that holds
-  // writing it refuses.
+  // writing it refuses. Each row's test id names its document's slug.
+  const ids = new Map<string, string>();
   for (const word of ["alpha", "bravo", "charlie"]) {
-    await createIssueArtifact(issue.key, { name: `Landing ${word} ${n}` });
+    const { artifact } = await createIssueArtifact(issue.key, { name: `Landing ${word} ${n}` });
+    ids.set(`artifact-${artifact.slug}`, artifact.id);
   }
   const { root } = await openSurface(page, "Artifacts tab", { ...scene, issue: issue.key });
   const removable = root
@@ -617,7 +584,14 @@ async function documentRows({ n, page, scene }: CaseContext): Promise<{
   const target = rows[0] ?? "";
   const remove = root.getByTestId(target).getByRole("button", { exact: true, name: "Remove" });
   await remove.focus();
-  return { issue: issue.key, next: rows[1] ?? "", remove, root, target };
+  return {
+    issue: issue.key,
+    next: rows[1] ?? "",
+    remove,
+    root,
+    target,
+    targetId: ids.get(target),
+  };
 }
 
 const ARTIFACTS_CASES: Scene["cases"] = {
@@ -636,18 +610,10 @@ const ARTIFACTS_CASES: Scene["cases"] = {
     };
   },
   live: async (context) => {
-    const { issue, remove, root, target } = await documentRows(context);
+    const { remove, root, target, targetId } = await documentRows(context);
     return {
       answered: () => expect(root.getByTestId(target)).toHaveCount(0),
-      cause: async () => {
-        const slug = target.slice("artifact-".length);
-        const id = (await listIssueArtifacts(issue)).find((item) => item.slug === slug)?.id;
-        const removed = await fetch(new URL(`/api/v1/artifacts/${id}`, baseUrl), {
-          headers: await userHeaders("alice"),
-          method: "DELETE",
-        });
-        expect(removed.status, `DELETE the document ${slug}`).toBe(204);
-      },
+      cause: () => deleteAsReader(`/api/v1/artifacts/${targetId}`, `the document ${target}`),
       control: remove,
     };
   },
@@ -773,11 +739,20 @@ const SCENES: Readonly<Record<SurfaceName, Scene>> = {
   "Artifacts tab": { cases: ARTIFACTS_CASES, seed: seedSurfaces },
 };
 
+/** The regions of their own a lost control is answered in: a dialog, a panel, or the selection
+ *  bar. */
+const REGION_SELECTOR = `[role="dialog"], [data-anchored-panel], [data-control="${CONTROL.selectionBar}"]`;
+
+/** An open modal dialog: a `<dialog>` shown modally, or an element named a dialog that says it
+ *  is modal. */
+const MODAL_SELECTOR = 'dialog:modal, [role="dialog"][aria-modal="true"]';
+
 /** What holds the focus just before the cause: the focused control, the region it is in - the
  *  nearest dialog, panel or selection bar around it, else the page's main content - and the open
- *  modal dialog that holds it, if one does. The region, that dialog, the window and every box
- *  around the control that scrolls are marked in the page with where each stands, so the reading
- *  after the cause finds the same elements.
+ *  modal dialog that holds it, if one does. The region, that dialog, the window, every box around
+ *  the control that scrolls and every box that scrolls around one of `landings`, the elements the
+ *  case's landing matches now, are marked in the page with where each stands, so the reading
+ *  after the cause finds the same elements. A box around both is marked once.
  *
  *  In each of those boxes, the window included, up to twelve elements in view are marked too,
  *  with where each stands on screen: the rows (`ROW_SELECTOR`) nearest the focused control, else
@@ -785,114 +760,134 @@ const SCENES: Readonly<Record<SurfaceName, Scene>> = {
  *  left out, since it stays where it is however the box scrolls. `readAfter` reads these marks to
  *  tell a box that moved to keep its view from a box that the focus scrolled. */
 function readBefore(
-  page: Page
+  page: Page,
+  landings: readonly ElementHandle[]
 ): Promise<{ control: string; modal: string | null; region: string }> {
-  return page.evaluate((rowSelector) => {
-    const nameOf = (element: Element): string => {
-      if (element === document.body) return "the body";
-      const role = element.getAttribute("role") ?? element.tagName.toLowerCase();
-      const labelledBy = element.getAttribute("aria-labelledby");
-      const label =
-        element.getAttribute("aria-label") ||
-        (labelledBy === null ? "" : (document.getElementById(labelledBy)?.textContent ?? "")) ||
-        ((element as HTMLInputElement).labels?.[0]?.textContent ?? "") ||
-        (element.textContent ?? "");
-      return `${role} "${label.replace(/\s+/g, " ").trim().slice(0, 48)}"`;
-    };
-    for (const attribute of [
-      "data-landing-anchor",
-      "data-landing-anchor-at",
-      "data-landing-box",
-      "data-landing-box-id",
-      "data-landing-modal",
-      "data-landing-region",
-    ]) {
-      for (const marked of document.querySelectorAll(`[${attribute}]`)) {
-        marked.removeAttribute(attribute);
-      }
-    }
-    const active = document.activeElement ?? document.body;
-    const main = document.querySelector('[data-testid="main-content"]');
-    const region =
-      active.closest('[role="dialog"], [data-anchored-panel], [data-control="selection-bar"]') ??
-      (main?.contains(active) ? main : document.body);
-    region.setAttribute("data-landing-region", "");
-    const modal =
-      [...document.querySelectorAll('dialog:modal, [role="dialog"][aria-modal="true"]')]
-        .filter((open) => open.getClientRects().length > 0 && open.contains(active))
-        .at(-1) ?? null;
-    modal?.setAttribute("data-landing-modal", "");
-    document.documentElement.setAttribute(
-      "data-landing-window",
-      `${window.scrollX},${window.scrollY}`
-    );
-    const view = { bottom: window.innerHeight, left: 0, right: window.innerWidth, top: 0 };
-    const boxes = [{ clip: view, id: "window", root: document.documentElement as Element }];
-    for (
-      let box = active.parentElement;
-      box !== null && box !== document.body;
-      box = box.parentElement
-    ) {
-      const style = getComputedStyle(box);
-      const clips = style.overflowX !== "visible" || style.overflowY !== "visible";
-      if (clips && (box.scrollHeight > box.clientHeight || box.scrollWidth > box.clientWidth)) {
-        const id = `box-${boxes.length}`;
-        box.setAttribute("data-landing-box", `${box.scrollLeft},${box.scrollTop}`);
-        box.setAttribute("data-landing-box-id", id);
-        const own = box.getBoundingClientRect();
-        const clip = {
-          bottom: Math.min(view.bottom, own.bottom),
-          left: Math.max(view.left, own.left),
-          right: Math.min(view.right, own.right),
-          top: Math.max(view.top, own.top),
-        };
-        boxes.push({ clip, id, root: box });
-      }
-    }
-    const activeTop = active.getBoundingClientRect().top;
-    for (const { clip, id, root } of boxes) {
-      const pinned = (element: Element): boolean => {
-        for (
-          let node: Element | null = element;
-          node !== null && node !== root;
-          node = node.parentElement
-        ) {
-          const { position } = getComputedStyle(node);
-          if (node.tagName === "THEAD" || position === "sticky" || position === "fixed")
-            return true;
-        }
-        return false;
+  return page.evaluate(
+    ({ landings, modalSelector, regionSelector, rowSelector }) => {
+      const nameOf = (element: Element): string => {
+        if (element === document.body) return "the body";
+        const role = element.getAttribute("role") ?? element.tagName.toLowerCase();
+        const labelledBy = element.getAttribute("aria-labelledby");
+        const label =
+          element.getAttribute("aria-label") ||
+          (labelledBy === null ? "" : (document.getElementById(labelledBy)?.textContent ?? "")) ||
+          ((element as HTMLInputElement).labels?.[0]?.textContent ?? "") ||
+          (element.textContent ?? "");
+        return `${role} "${label.replace(/\s+/g, " ").trim().slice(0, 48)}"`;
       };
-      const shown = (selector: string) =>
-        [...root.querySelectorAll(selector)].filter((element) => {
-          const own = element.getBoundingClientRect();
-          const inView =
-            own.height > 0 &&
-            own.top >= clip.top - 0.5 &&
-            own.bottom <= clip.bottom + 0.5 &&
-            own.right > clip.left &&
-            own.left < clip.right;
-          return inView && !pinned(element);
-        });
-      const rows = shown(rowSelector);
-      const distance = (element: Element) =>
-        Math.abs(element.getBoundingClientRect().top - activeTop);
-      const anchors = (rows.length > 0 ? rows : shown("*"))
-        .sort((one, other) => distance(one) - distance(other))
-        .slice(0, 12);
-      for (const anchor of anchors) {
-        const at = anchor.getBoundingClientRect();
-        const already = anchor.getAttribute("data-landing-anchor");
-        anchor.setAttribute("data-landing-anchor", already === null ? id : `${already} ${id}`);
-        anchor.setAttribute("data-landing-anchor-at", `${at.left},${at.top}`);
+      for (const attribute of [
+        "data-landing-anchor",
+        "data-landing-anchor-at",
+        "data-landing-box",
+        "data-landing-box-id",
+        "data-landing-modal",
+        "data-landing-region",
+      ]) {
+        for (const marked of document.querySelectorAll(`[${attribute}]`)) {
+          marked.removeAttribute(attribute);
+        }
       }
+      const active = document.activeElement ?? document.body;
+      const main = document.querySelector('[data-testid="main-content"]');
+      const region =
+        active.closest(regionSelector) ?? (main?.contains(active) ? main : document.body);
+      region.setAttribute("data-landing-region", "");
+      const modal =
+        [...document.querySelectorAll(modalSelector)]
+          .filter((open) => open.getClientRects().length > 0 && open.contains(active))
+          .at(-1) ?? null;
+      modal?.setAttribute("data-landing-modal", "");
+      document.documentElement.setAttribute(
+        "data-landing-window",
+        `${window.scrollX},${window.scrollY}`
+      );
+      const view = { bottom: window.innerHeight, left: 0, right: window.innerWidth, top: 0 };
+      const boxes = [{ clip: view, id: "window", root: document.documentElement as Element }];
+      for (const start of [active, ...landings]) {
+        for (
+          let box = start.parentElement;
+          box !== null && box !== document.body;
+          box = box.parentElement
+        ) {
+          if (box.hasAttribute("data-landing-box")) continue;
+          const style = getComputedStyle(box);
+          const clips = style.overflowX !== "visible" || style.overflowY !== "visible";
+          if (clips && (box.scrollHeight > box.clientHeight || box.scrollWidth > box.clientWidth)) {
+            const id = `box-${boxes.length}`;
+            box.setAttribute("data-landing-box", `${box.scrollLeft},${box.scrollTop}`);
+            box.setAttribute("data-landing-box-id", id);
+            const own = box.getBoundingClientRect();
+            const clip = {
+              bottom: Math.min(view.bottom, own.bottom),
+              left: Math.max(view.left, own.left),
+              right: Math.min(view.right, own.right),
+              top: Math.max(view.top, own.top),
+            };
+            boxes.push({ clip, id, root: box });
+          }
+        }
+      }
+      const activeTop = active.getBoundingClientRect().top;
+      // Whether each element read so far stays where it is however a box scrolls - a table's
+      // head, or a sticky or fixed element - read once for every box.
+      const pinning = new Map<Element, boolean>();
+      for (const { clip, id, root } of boxes) {
+        const pinned = (element: Element): boolean => {
+          for (
+            let node: Element | null = element;
+            node !== null && node !== root;
+            node = node.parentElement
+          ) {
+            let pins = pinning.get(node);
+            if (pins === undefined) {
+              const { position } = getComputedStyle(node);
+              pins = node.tagName === "THEAD" || position === "sticky" || position === "fixed";
+              pinning.set(node, pins);
+            }
+            if (pins) return true;
+          }
+          return false;
+        };
+        const shown = (selector: string) =>
+          [...root.querySelectorAll(selector)].filter((element) => {
+            const own = element.getBoundingClientRect();
+            const inView =
+              own.height > 0 &&
+              own.top >= clip.top - 0.5 &&
+              own.bottom <= clip.bottom + 0.5 &&
+              own.right > clip.left &&
+              own.left < clip.right;
+            return inView && !pinned(element);
+          });
+        const rows = shown(rowSelector);
+        const anchors = (rows.length > 0 ? rows : shown("*"))
+          .map((element) => ({
+            distance: Math.abs(element.getBoundingClientRect().top - activeTop),
+            element,
+          }))
+          .sort((one, other) => one.distance - other.distance)
+          .slice(0, 12);
+        for (const { element: anchor } of anchors) {
+          const at = anchor.getBoundingClientRect();
+          const already = anchor.getAttribute("data-landing-anchor");
+          anchor.setAttribute("data-landing-anchor", already === null ? id : `${already} ${id}`);
+          anchor.setAttribute("data-landing-anchor-at", `${at.left},${at.top}`);
+        }
+      }
+      return {
+        control: nameOf(active),
+        modal: modal === null ? null : nameOf(modal),
+        region: region === main ? "the main content" : nameOf(region),
+      };
+    },
+    {
+      landings,
+      modalSelector: MODAL_SELECTOR,
+      regionSelector: REGION_SELECTOR,
+      rowSelector: ROW_SELECTOR,
     }
-    return {
-      control: nameOf(active),
-      modal: modal === null ? null : nameOf(modal),
-      region: region === main ? "the main content" : nameOf(region),
-    };
-  }, ROW_SELECTOR);
+  );
 }
 
 /** Why a box that moved is no scroll the focus made: the page clamped it, it kept its view, it
@@ -930,7 +925,7 @@ function readAfter(page: Page): Promise<{
   onModal: boolean;
   width: number;
 }> {
-  return page.evaluate(() => {
+  return page.evaluate((modalSelector) => {
     const nameOf = (element: Element): string => {
       if (element === document.body) return "the body";
       const role = element.getAttribute("role") ?? element.tagName.toLowerCase();
@@ -966,18 +961,12 @@ function readAfter(page: Page): Promise<{
           return own.height > 0 && axes.every((axis) => Math.abs(stands[axis] - stood[axis]) <= 1);
         }
       );
-      const reason: "clamped" | "view kept" | null = clamped
-        ? "clamped"
-        : kept
-          ? "view kept"
-          : null;
+      const reason: MoveReason | null = clamped ? "clamped" : kept ? "view kept" : null;
       return { axes, move: { box, reason, x: shift[0], y: shift[1] } };
     };
     const active = document.activeElement ?? document.body;
     const onBody = active === document.body;
-    const topmost = [
-      ...document.querySelectorAll('dialog:modal, [role="dialog"][aria-modal="true"]'),
-    ]
+    const topmost = [...document.querySelectorAll(modalSelector)]
       .filter((open) => open.getClientRects().length > 0)
       .at(-1);
     const region = document.querySelector("[data-landing-region]");
@@ -1015,7 +1004,7 @@ function readAfter(page: Page): Promise<{
       onModal: active === document.querySelector("[data-landing-modal]"),
       width: own.width,
     };
-  });
+  }, MODAL_SELECTOR);
 }
 
 /** Whether `control` is partly out of the reader's sight: some of its box is inside the window
@@ -1066,12 +1055,33 @@ function scrolledText(moved: readonly Move[]): string {
         .join("; ");
 }
 
-/** One case of a row: what it runs on, and how it is named. */
-interface Run extends CaseContext {
+/** What names one case: its page, its cause, its window and its engine. */
+interface CaseName {
   readonly browserName: string;
   readonly cause: Cause;
   readonly size: { readonly height: number; readonly width: number };
   readonly surface: SurfaceName;
+}
+
+/** One case of a row: what it runs on, and how it is named. */
+type Run = CaseContext & CaseName;
+
+/** A case as a failure names it: its page, its cause and its window. */
+function where({ cause, size, surface }: CaseName): string {
+  return `${surface}, ${cause}, ${size.width}x${size.height}`;
+}
+
+/** Prints a case's one line, `LANDING <page> <cause> <width> <engine> expected=<...> got=<...>
+ *  scrolled=<...>`. */
+function print(
+  { browserName, cause, size, surface }: CaseName,
+  expected: string,
+  got: string,
+  scrolled: string
+): void {
+  console.log(
+    `LANDING "${surface}" ${cause} ${size.width} ${browserName} expected=${expected} got=${got} scrolled=${scrolled}`
+  );
 }
 
 /**
@@ -1079,117 +1089,110 @@ interface Run extends CaseContext {
  * the page and puts the focus on the control; reads the page; makes the cause - offline, with the
  * browser offline from just before the press - and waits for the page to answer it, and offline
  * for the request deadline to pass since the press; then reads where the focus rests, and prints
- * the case's line.
+ * the case's line. Whatever stops the case, it leaves the seed as the next case needs it
+ * (`Arranged.after`).
  */
 async function runCase(run: Run, arrange: Arrange, wrong: string[]): Promise<void> {
-  const { browserName, cause, page, size, surface } = run;
-  const where = `${surface}, ${cause}, ${size.width}x${size.height}`;
-  const print = (expected: string, got: string, scrolled: string) =>
-    console.log(
-      `LANDING "${surface}" ${cause} ${size.width} ${browserName} expected=${expected} got=${got} scrolled=${scrolled}`
+  const { cause, page } = run;
+  const caseName = where(run);
+  const passes = (check: Promise<unknown>): Promise<boolean> =>
+    check.then(
+      () => true,
+      () => false
     );
   const arranged = await arrange(run);
-  const holds = await expect(arranged.control)
-    .toBeFocused()
-    .then(
-      () => true,
-      () => false
-    );
-  if (!holds) {
-    wrong.push(`${where}: the control the cause takes away never held the focus`);
-    print("(not run)", "(the control never held the focus)", "(not run)");
-    return;
-  }
-  // One read just before the cause is the record: the focus was waited for above, and nothing
-  // moves it or scrolls the page until the cause.
-  const before = await readBefore(page);
-  const { landing } = arranged;
-  // Read before the cause as well: a landing control partly out of sight is the one case where
-  // the landing may scroll, by no more than that control's own size. A landing not drawn yet -
-  // a held control under the name it takes once held - is not waited for, and allows no scroll.
-  const partly = landing === undefined ? false : await partlyOutOfSight(landing.at);
-  const offline = cause === "offline";
-  const browserContext = page.context();
   try {
-    if (offline) {
-      await browserContext.setOffline(true);
-      await page.waitForFunction(() => !navigator.onLine);
+    const holds = await passes(expect(arranged.control).toBeFocused());
+    if (!holds) {
+      wrong.push(`${caseName}: the control the cause takes away never held the focus`);
+      print(run, "(not run)", "(the control never held the focus)", "(not run)");
+      return;
     }
-    const pressed = Date.now();
-    await arranged.cause();
-    const answered = await arranged.answered().then(
-      () => true,
-      () => false
-    );
-    if (!answered) wrong.push(`${where}: the page never showed what the cause does`);
-    const left = REQUEST_DEADLINE_MS + PAST_THE_DEADLINE_MS - (Date.now() - pressed);
-    // The offline case's claim is a span of time: the focus is read once the request deadline has
-    // passed since the press, whatever the page does at that deadline.
-    if (offline && left > 0) await page.waitForTimeout(left);
-    // The page's rescue runs a frame and a task after a loss, and a component's hand-off in the
-    // commit that took the control away, so both are done after these frames.
-    await nextFrames(page);
-    await nextFrames(page);
-    const landed =
-      landing === undefined ||
-      (await expect(landing.at)
-        .toBeFocused()
-        .then(
-          () => true,
-          () => false
-        ));
-    // One read once the focus has rested: after a loss the reader caused, the wait above ran
-    // until the focus was on the landing or the expect timeout ended; after one they did not,
-    // every hand-off ran in the frames above. Nothing else moves the focus or scrolls the page.
-    const after = await readAfter(page);
-    const expected = landing?.name ?? before.modal ?? "the body";
-    // A move the page made - clamped, or keeping its view - is no scroll of the focus. Of the
-    // rest, only the landing of a loss the reader caused may scroll, and only to show a control
-    // that was partly out of sight: by no more than its own height, or its width sideways. A move
-    // under a pixel is the rounding of a box's place.
-    const allowX = partly ? after.width + 1 : 1;
-    const allowY = partly ? after.height + 1 : 1;
-    const moves = after.moved.map((move) => {
-      const allowed = Math.abs(move.x) <= allowX && Math.abs(move.y) <= allowY;
-      const own: MoveReason | null = allowed ? (partly ? "nearest edge" : "under 1 px") : null;
-      return { ...move, reason: move.reason ?? own };
-    });
-    print(expected, after.got, scrolledText(moves));
-    const right =
-      landing !== undefined ? landed : before.modal === null ? after.onBody : after.onModal;
-    if (!right) {
-      wrong.push(
-        `${where}: after ${before.control} went, the focus is on ${after.got}, not ${expected}`
-      );
-    }
-    if (landing !== undefined && after.onBody) {
-      wrong.push(`${where}: a loss the reader caused left the focus on the body`);
-    }
-    if (landing !== undefined && after.inRegion === false) {
-      wrong.push(`${where}: the focus is on ${after.got}, outside ${before.region}`);
-    }
-    if (after.behindModal) {
-      wrong.push(`${where}: the focus is on ${after.got}, behind an open modal dialog`);
-    }
-    for (const move of moves) {
-      if (move.reason === null) {
-        wrong.push(`${where}: ${move.box} scrolled by ${move.x},${move.y} px`);
+    const { landing } = arranged;
+    // The landing's elements as the page draws them now, waiting for none: the read below marks
+    // the boxes around them too, so a hand-off that scrolls one the lost control is not in is read.
+    const landingElements = landing === undefined ? [] : await landing.at.elementHandles();
+    // One read just before the cause is the record: the focus was waited for above, and nothing
+    // moves it or scrolls the page until the cause.
+    const before = await readBefore(page, landingElements);
+    // Read before the cause as well: a landing control partly out of sight is the one case where
+    // the landing may scroll, by no more than that control's own size. A landing not drawn yet -
+    // a held control under the name it takes once held - is not waited for, and allows no scroll.
+    const partly = landing === undefined ? false : await partlyOutOfSight(landing.at);
+    const offline = cause === "offline";
+    const browserContext = page.context();
+    try {
+      if (offline) {
+        await browserContext.setOffline(true);
+        await page.waitForFunction(() => !navigator.onLine);
+      }
+      const pressed = Date.now();
+      await arranged.cause();
+      const answered = await passes(arranged.answered());
+      if (!answered) wrong.push(`${caseName}: the page never showed what the cause does`);
+      const left = REQUEST_DEADLINE_MS + PAST_THE_DEADLINE_MS - (Date.now() - pressed);
+      // The offline case's claim is a span of time: the focus is read once the request deadline
+      // has passed since the press, whatever the page does at that deadline.
+      if (offline && left > 0) await page.waitForTimeout(left);
+      // The page's rescue runs a frame and a task after a loss, and a component's hand-off in the
+      // commit that took the control away, so both are done after these frames.
+      await nextFrames(page);
+      await nextFrames(page);
+      const landed = landing === undefined || (await passes(expect(landing.at).toBeFocused()));
+      // One read once the focus has rested: after a loss the reader caused, the wait above ran
+      // until the focus was on the landing or the expect timeout ended; after one they did not,
+      // every hand-off ran in the frames above. Nothing else moves the focus or scrolls the page.
+      const after = await readAfter(page);
+      const expected = landing?.name ?? before.modal ?? "the body";
+      // A move the page made - clamped, or keeping its view - is no scroll of the focus. Of the
+      // rest, only the landing of a loss the reader caused may scroll, and only to show a control
+      // that was partly out of sight: by no more than its own height, or its width sideways. A
+      // move under a pixel is the rounding of a box's place.
+      const allowX = partly ? after.width + 1 : 1;
+      const allowY = partly ? after.height + 1 : 1;
+      const moves = after.moved.map((move) => {
+        const allowed = Math.abs(move.x) <= allowX && Math.abs(move.y) <= allowY;
+        const own: MoveReason | null = allowed ? (partly ? "nearest edge" : "under 1 px") : null;
+        return { ...move, reason: move.reason ?? own };
+      });
+      print(run, expected, after.got, scrolledText(moves));
+      const right =
+        landing !== undefined ? landed : before.modal === null ? after.onBody : after.onModal;
+      if (!right) {
+        wrong.push(
+          `${caseName}: after ${before.control} went, the focus is on ${after.got}, not ${expected}`
+        );
+      }
+      if (landing !== undefined && after.onBody) {
+        wrong.push(`${caseName}: a loss the reader caused left the focus on the body`);
+      }
+      if (landing !== undefined && after.inRegion === false) {
+        wrong.push(`${caseName}: the focus is on ${after.got}, outside ${before.region}`);
+      }
+      if (after.behindModal) {
+        wrong.push(`${caseName}: the focus is on ${after.got}, behind an open modal dialog`);
+      }
+      for (const move of moves) {
+        if (move.reason === null) {
+          wrong.push(`${caseName}: ${move.box} scrolled by ${move.x},${move.y} px`);
+        }
+      }
+    } finally {
+      if (offline) {
+        await browserContext.setOffline(false);
+        // The write the press left out lands once the browser is online again, so the next case
+        // starts with nothing pending: a write landing under it would be a live update of its own.
+        await expect(page.getByTestId("pending-writes")).toHaveCount(0, { timeout: 60_000 });
       }
     }
   } finally {
-    if (offline) {
-      await browserContext.setOffline(false);
-      // The write the press left out lands once the browser is online again, so the next case
-      // starts with nothing pending: a write landing under it would be a live update of its own.
-      await expect(page.getByTestId("pending-writes")).toHaveCount(0, { timeout: 60_000 });
-    }
+    await arranged.after?.();
   }
-  await arranged.after?.();
 }
 
 for (const surface of [...STUBBABLE_SURFACES, ...REAL_STACK_SURFACES]) {
-  // SLOW(>=2s): one page seeded and opened eight times, two of its cases waiting out the request
-  // deadline offline, and two opening a second signed-in context.
+  // SLOW(>=2s): one page seeded and opened up to eight times, two of its cases waiting out the
+  // request deadline offline, and up to two opening a second signed-in context.
   // `@firefox` and `@webkit`: a focused control taken away fires no `focusout` in these engines,
   // so the page's focus rescue sees that loss only by watching the page (`playwright.config.ts`).
   // The body is the landing of a loss the reader did not cause, the live and the device cases
@@ -1199,8 +1202,8 @@ for (const surface of [...STUBBABLE_SURFACES, ...REAL_STACK_SURFACES]) {
     browserName,
     page,
   }) => {
-    // Eight cases, two of them waiting 32 s offline and then for their write to land, at most
-    // 60 s each; the rest each open the page once, and the device cases a second context too.
+    // Up to eight cases, two of them waiting 32 s offline and then for their write to land, at
+    // most 60 s each; the rest each open the page once, and each device case a second context too.
     test.setTimeout(360_000);
     const scene = SCENES[surface];
     const seeded = await scene.seed();
@@ -1210,26 +1213,21 @@ for (const surface of [...STUBBABLE_SURFACES, ...REAL_STACK_SURFACES]) {
       await page.setViewportSize(size);
       for (const cause of CAUSES) {
         n += 1;
+        const named: CaseName = { browserName, cause, size, surface };
         const arrange = scene.cases[cause];
         if ("none" in arrange) {
-          console.log(
-            `LANDING "${surface}" ${cause} ${size.width} ${browserName} expected=(no case: ${arrange.none}) got=(not run) scrolled=(not run)`
-          );
+          print(named, `(no case: ${arrange.none})`, "(not run)", "(not run)");
           continue;
         }
         // A case that cannot be arranged or caused is named, and the row goes on to the next
         // case, which opens its page afresh: each case's line is what the run is read by.
-        await runCase(
-          { browser, browserName, cause, n, page, scene: seeded, size, surface },
-          arrange,
-          wrong
-        ).catch((error: unknown) => {
-          const first = String(error instanceof Error ? error.message : error).split("\n")[0];
-          wrong.push(`${surface}, ${cause}, ${size.width}x${size.height}: could not run: ${first}`);
-          console.log(
-            `LANDING "${surface}" ${cause} ${size.width} ${browserName} expected=(not read) got=(could not run: ${first}) scrolled=(not read)`
-          );
-        });
+        await runCase({ ...named, browser, n, page, scene: seeded }, arrange, wrong).catch(
+          (error: unknown) => {
+            const first = String(error instanceof Error ? error.message : error).split("\n")[0];
+            wrong.push(`${where(named)}: could not run: ${first}`);
+            print(named, "(not read)", `(could not run: ${first})`, "(not read)");
+          }
+        );
       }
     }
     expect(wrong, wrong.join("; ")).toEqual([]);
