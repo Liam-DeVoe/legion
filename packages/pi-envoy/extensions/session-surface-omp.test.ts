@@ -426,6 +426,10 @@ async function startSession(
       // subject after it registers, so until it does the server reports no responder and the
       // frame goes again, as the one frame it is; the word it answers is what says it took it.
       streamSeq += 1;
+      // The sends end at the row's deadline, as every other wait of the row does, rather than a
+      // fixed span after they start (the harness's own default). `timeLeft()` reads a fraction of
+      // a millisecond, and the harness's refusal names the bound it kept, so it is floored.
+      const within = Math.floor(timeLeft());
       try {
         await sendRelayFrame({
           connection,
@@ -434,11 +438,14 @@ async function startSession(
           subject,
           payload: codec.encode(envelope),
           seq: streamSeq,
-          withinMs: timeLeft(),
+          withinMs: within,
           stopped: closed,
         });
       } catch (error) {
-        throw new Error(`${label} was taken by no session: ${String(error)}`);
+        throw new Error(
+          `${label} was taken by no session (its sends were bounded by the row's deadline, ` +
+            `${within} ms after they began): ${String(error)}`
+        );
       }
       const sent = { eventID, messageID };
       if (accepted) {
@@ -1377,12 +1384,16 @@ async function endCommand(pidFile: string, release: string): Promise<void> {
 
 // A `!command` runs on its own promise, never inside the queued delivery task (D11): a command
 // that runs for minutes must not hold the session's other Dispatch messages behind it. This
-// session's limit is the default two minutes, and the command ends when the case says so, so the
-// second message is answered with the first command demonstrably still running. The command
-// writes its pid as its first act, so the row's end, pass or fail, ends it (`endCommand`) before
-// the file's `afterAll` tears the session down.
+// session's limit on a `!command` is the time the row has left as the session starts, so from the
+// command's own start it runs past the row's deadline: the session never stops the command while
+// the row waits on it, and a row that runs long fails at the wait it ran out on. The command ends
+// when the case says so, so the second message is answered with the first command demonstrably
+// still running. The command writes its pid as its first act, so the row's end, pass or fail,
+// ends it (`endCommand`) before the file's `afterAll` tears the session down.
 test.skipIf(skip)("a `!sleep` holds none of the session's other Dispatch messages", async () => {
-  const session = await startSession();
+  const session = await startSession({
+    env: { ENVOY_SHELL_COMMAND_LIMIT_MS: String(Math.ceil(timeLeft())) },
+  });
   const release = path.join(session.workspace, "release");
   const pidFile = path.join(session.workspace, "pid");
   onTestFinished(() => endCommand(pidFile, release));
