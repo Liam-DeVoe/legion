@@ -66,10 +66,12 @@ func TestRefusalNamesTheSettingOfEachSpilledShape(t *testing.T) {
 
 // Refusal keeps a DSN whose only "@" ends its userinfo, one whose "@" and "/" are percent-encoded,
 // one whose password holds a "?" or a "#" (which pgx reads as the password), IPv6 and unix-socket
-// hosts, keyword DSNs (a database whose name begins with "postgres", a password holding
-// "postgres", a Cloud SQL IAM user holding an "@" among them), the empty DSN, which takes PG*
-// from the environment, and the shapes the deployments write (the broker's, the daemon's and
-// Dispatch's URL with its query, and the session database's, whose password holds a %40).
+// hosts, keyword DSNs (a database whose name begins with "postgres", a password holding or
+// beginning with "postgres:", a Cloud SQL IAM user holding an "@", a Cloud SQL socket for a
+// project whose ID ends in "postgres", a custom setting whose name holds "$" among them), the
+// empty DSN, which takes PG* from the environment, and the shapes the deployments write (the
+// broker's, the daemon's and Dispatch's URL with its query, and the session database's, whose
+// password holds a %40).
 func TestRefusalKeepsADSNWithNoAtPastItsUserPart(t *testing.T) {
 	at := "@"
 	for _, dsn := range []string{
@@ -91,6 +93,13 @@ func TestRefusalKeepsADSNWithNoAtPastItsUserPart(t *testing.T) {
 		"host=/var/run/postgresql dbname=legion",
 		"host=db.invalid user=x password=postgresABC dbname=x",
 		"host=/cloudsql/p:r:i user=sa" + at + "project.iam dbname=legion",
+		"host=/cloudsql/acme-postgres:us-central1:db dbname=legion user=sa" + at + "acme-postgres.iam",
+		"host=db.invalid user=legion password=Postgres:Admin1 dbname=legion",
+		"host=db.invalid user=legion password='" + "Postgres:Admin1' dbname=legion",
+		"host=db.invalid user=legion password=pgpostgresql:x dbname=legion",
+		"host=db.invalid user=legion password=pg://x dbname=legion",
+		"host=db.invalid dbname=legion myext.set$ting=1",
+		"host=db.invalid dbname=legion options='-c search_path=app'",
 		"host = db.invalid  port = 5432 dbname = legion password = 'with space'",
 		"",
 	} {
@@ -106,40 +115,66 @@ func TestRefusalKeepsADSNWithNoAtPastItsUserPart(t *testing.T) {
 // parameter name has (a misspelt scheme, a SQLAlchemy or JDBC URL, a BOM before the scheme, a key
 // holding a space), pgx reads up to its first "=" as one keyword, sends that name to the server as
 // a parameter's, and a server that admits the client answers `invalid configuration parameter name
-// "<the URL>"`. A keyword DSN with the postgres scheme in a value, `//` or not, pgx names in its
-// connect error as the database or the user; one whose host holds an "@" it names as the host.
-// Each DSN that names host=127.0.0.1 port=1 is pointed at the echo server by its port.
+// "<the URL>"`. A keyword DSN with a value that begins with a URL scheme, `//` or not, quoted or
+// not, or with a user holding a ":", pgx names in its connect error as the database or the user;
+// one whose host holds an "@" or an "=" it names as the host. Each DSN that names host=127.0.0.1
+// port=1 is pointed at the echo server by its port.
 var printedShapes = map[string]struct{ dsn, want string }{
-	"an upper-case scheme":     {"POSTGRES://legion:madeuphead0123" + "@" + "db.invalid:5432/legion?sslmode=require", "it names the postgres scheme"},
-	"a mixed-case scheme":      {"Postgresql://legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=require", "it names the postgres scheme"},
-	"a space before it":        {" postgres://legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=require", "it names the postgres scheme"},
-	"a tab before it":          {"\tpostgresql://legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=require", "it names the postgres scheme"},
-	"no // after it":           {"postgres:legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=require", "it names the postgres scheme"},
-	"postgresql+psycopg2://":   {"postgresql+psycopg2://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
-	"postgresql+asyncpg://":    {"postgresql+asyncpg://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
-	"postgress://":             {"postgress://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
-	"postgre://":               {"postgre://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
-	"pgsql://":                 {"pgsql://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
-	"pg://":                    {"pg://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
-	"postgres//":               {"postgres//app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
-	"postgres;//":              {"postgres;//app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
-	"jdbc:postgresql://":       {"jdbc:postgresql://db.invalid/app?user=app&password=madeuphead0123&sslmode=disable", keyMalformedWords},
-	"a BOM before postgres:":   {"\ufeffpostgres:legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=disable", keyMalformedWords},
-	"a BOM before postgres://": {"\ufeffpostgres://legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=disable", keyMalformedWords},
-	"a misspelt second key":    {"host=127.0.0.1 port=1 postgress://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
-	"a password of two words":  {"host=127.0.0.1 port=1 user=legion password=madeuphead0123 zqtailtwo dbname=legion", keyMalformedWords},
-	"a URL as dbname":          {"host=127.0.0.1 port=1 dbname=postgres://u:madeuphead0123" + "@" + "db.invalid/x", urlInKeywordWords},
-	"a URL as user":            {"host=127.0.0.1 port=1 user=Postgresql://u:madeuphead0123" + "@" + "db.invalid/x dbname=x", urlInKeywordWords},
-	"postgres:/ as dbname":     {"host=127.0.0.1 port=1 dbname=postgres:/app:madeuphead0123" + "@" + "db/app", urlInKeywordWords},
-	"postgres: as dbname":      {"host=127.0.0.1 port=1 dbname=postgres:u:madeuphead0123" + "@" + "db.invalid", urlInKeywordWords},
-	"a user and password host": {"host=app:madeuphead0123" + "@" + "127.0.0.1 port=1 dbname=app", "it is a keyword DSN whose host holds an \"@\""},
-	"a hostaddr holding @":     {"hostaddr=app:madeuphead0123" + "@" + "127.0.0.1 port=1 dbname=app", "it is a keyword DSN whose host holds an \"@\""},
+	"an upper-case scheme":            {"POSTGRES://legion:madeuphead0123" + "@" + "db.invalid:5432/legion?sslmode=require", "it names the postgres scheme"},
+	"a mixed-case scheme":             {"Postgresql://legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=require", "it names the postgres scheme"},
+	"a space before it":               {" postgres://legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=require", "it names the postgres scheme"},
+	"a tab before it":                 {"\tpostgresql://legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=require", "it names the postgres scheme"},
+	"no // after it":                  {"postgres:legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=require", "it names the postgres scheme"},
+	"postgresql+psycopg2://":          {"postgresql+psycopg2://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
+	"postgresql+asyncpg://":           {"postgresql+asyncpg://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
+	"postgress://":                    {"postgress://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
+	"postgre://":                      {"postgre://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
+	"pgsql://":                        {"pgsql://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
+	"pg://":                           {"pg://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
+	"postgres//":                      {"postgres//app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
+	"postgres;//":                     {"postgres;//app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
+	"jdbc:postgresql://":              {"jdbc:postgresql://db.invalid/app?user=app&password=madeuphead0123&sslmode=disable", keyMalformedWords},
+	"a BOM before postgres:":          {"\ufeffpostgres:legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=disable", keyMalformedWords},
+	"a BOM before postgres://":        {"\ufeffpostgres://legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=disable", keyMalformedWords},
+	"a misspelt second key":           {"host=127.0.0.1 port=1 postgress://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
+	"a password of two words":         {"host=127.0.0.1 port=1 user=legion password=madeuphead0123 zqtailtwo dbname=legion", keyMalformedWords},
+	"a URL as dbname":                 {"host=127.0.0.1 port=1 dbname=postgres://u:madeuphead0123" + "@" + "db.invalid/x", valueSchemedWords},
+	"a URL as user":                   {"host=127.0.0.1 port=1 user=Postgresql://u:madeuphead0123" + "@" + "db.invalid/x dbname=x", valueSchemedWords},
+	"postgres:/ as dbname":            {"host=127.0.0.1 port=1 dbname=postgres:/app:madeuphead0123" + "@" + "db/app", valueSchemedWords},
+	"postgres: as dbname":             {"host=127.0.0.1 port=1 dbname=postgres:u:madeuphead0123" + "@" + "db.invalid", valueSchemedWords},
+	"postgress:// as dbname":          {"host=127.0.0.1 port=1 dbname=postgress://u:madeuphead0123" + "@" + "db.invalid/x", valueSchemedWords},
+	"pg:// as dbname":                 {"host=127.0.0.1 port=1 dbname=pg://u:madeuphead0123" + "@" + "db.invalid/x", valueSchemedWords},
+	"postgresql+asyncpg:// as dbname": {"host=127.0.0.1 port=1 dbname=postgresql+asyncpg://u:madeuphead0123" + "@" + "db.invalid/x", valueSchemedWords},
+	"a quoted pgsql:// user":          {"host=127.0.0.1 port=1 user='pgsql://u:madeuphead0123" + "@" + "h' dbname=x", valueSchemedWords},
+	"a postgres: user":                {"host=127.0.0.1 port=1 user=postgres:madeuphead0123 dbname=x", valueSchemedWords},
+	"a user holding :":                {"host=127.0.0.1 port=1 user=app:madeuphead0123 dbname=app", userHoldsColonWords},
+	"a user holding : and @":          {"host=127.0.0.1 port=1 user=app:madeuphead0123" + "@" + "db.invalid dbname=app", userHoldsColonWords},
+	"a user and password host":        {"host=app:madeuphead0123" + "@" + "127.0.0.1 port=1 dbname=app", hostWords},
+	"a hostaddr holding @":            {"hostaddr=app:madeuphead0123" + "@" + "127.0.0.1 port=1 dbname=app", hostWords},
+	"a host missing a space":          {"host=127.0.0.1password=madeuphead0123 port=1 dbname=x", hostWords},
+	"a named host missing a space":    {"host=db.invalidpassword=madeuphead0123 dbname=x", hostWords},
+	"a hostaddr missing a space":      {"hostaddr=127.0.0.1password=madeuphead0123 port=1 dbname=x", hostWords},
 }
 
 const (
-	keyMalformedWords = "it is no postgres:// or postgresql:// URL, and a key of it holds a character"
-	urlInKeywordWords = "it is a keyword DSN, and a value of it holds the postgres scheme"
+	keyMalformedWords   = "it is no postgres:// or postgresql:// URL, and a key of it holds a character"
+	valueSchemedWords   = "it is a keyword DSN, and a value of it other than the password begins with a URL scheme"
+	userHoldsColonWords = "it is a keyword DSN whose user holds a \":\""
+	hostWords           = "it is a keyword DSN whose host holds an \"@\" or an \"=\""
 )
+
+// maskedShapes are keyword DSNs Refusal keeps, since every key and value is a keyword DSN's, whose
+// password ConnectError masks wherever pgx or the server prints it: a user missing the space
+// before password= (pgx reads it as the user, so the password it parsed is empty), with the
+// password quoted, or holding a quote or a backtick.
+var maskedShapes = map[string]string{
+	"a missing space before password=": "host=127.0.0.1 port=1 user=apppassword=madeuphead0123 dbname=app",
+	"a quoted password after a user":   "host=127.0.0.1 port=1 user=apppassword='" + "madeuphead0123' dbname=app",
+	"a quote inside a password":        "host=127.0.0.1 port=1 user=apppassword=zq'madeuphead0123 dbname=app",
+	"a backtick inside a password":     "host=127.0.0.1 port=1 user=apppassword=zq`madeuphead0123 dbname=app",
+	"a database missing a space":       "host=127.0.0.1 port=1 dbname=xpassword=madeuphead0123",
+	"a quoted password with an escape": `host=127.0.0.1 port=1 user=apppassword='made\'uphead0123' dbname=app`,
+}
 
 // Each shape Postgres or pgx would print is refused by the setting alone, and ConnectError of it
 // names "the configured Postgres", with none of the driver's text.
@@ -167,8 +202,9 @@ func TestRefusalRefusesEachShapePostgresWouldPrint(t *testing.T) {
 // echoUser is the one role the echo server knows.
 const echoUser = "legion"
 
-// serverParameterName is the shape of a parameter name a Postgres server knows.
-var serverParameterName = regexp.MustCompile(`^[a-z_][a-z0-9_.]*$`)
+// serverParameterName is the shape of a parameter name a Postgres server knows: a custom setting's
+// takes "$" after its first character.
+var serverParameterName = regexp.MustCompile(`^[a-z_][a-z0-9_.$]*$`)
 
 // echoServer is a Postgres server for these rows, on a port of this machine: it admits every
 // client without a password, as a trust-auth server does, and answers each startup with the FATAL
@@ -234,13 +270,25 @@ func echoOf(parameters map[string]string) *pgproto3.ErrorResponse {
 	return fatal("3D000", "database \""+parameters["database"]+"\" does not exist")
 }
 
+// leaked reports whether text holds part of a made-up password of these rows.
+func leaked(text string) bool {
+	return strings.Contains(text, "uphead0123") || strings.Contains(text, "zqtailtwo")
+}
+
+// noServerWord is true for the shapes no server sees: a host or hostaddr pgx cannot use, and a
+// password of two words pgx refuses to parse; pgx never sends hostaddr, so no server prints it
+// either. The JDBC URL's password stands in the value of its misspelt key, which no server
+// echoes, so it is refused for the key alone.
+func noServerWord(name, want string) bool {
+	return want == hostWords || name == "a password of two words" || name == "jdbc:postgresql://"
+}
+
 // Against a server that admits the client without a password, pgx's own connect error of each
 // shape it sends to the server prints the made-up password, in the parameter name, the user or
 // the database the server echoes (the row's control: a shape whose echo holds none of it is
-// named, since the row would test nothing for it); ConnectError of each holds none of it. The
-// shapes pgx refuses to parse, or cannot connect with, are the next row's; the JDBC URL's password
-// stands in the value of its misspelt key, which no server echoes, so it is refused for the key
-// alone.
+// named, since the row would test nothing for it); ConnectError of each holds none of it, the
+// refused shapes named "the configured Postgres" and the kept ones masked. The shapes pgx refuses
+// to parse, or cannot connect with, are the next row's.
 func TestConnectErrorOfAShapeAServerEchoesPrintsNoneOfIt(t *testing.T) {
 	port := echoServer(t)
 	t.Setenv("PGHOST", "127.0.0.1")
@@ -248,20 +296,26 @@ func TestConnectErrorOfAShapeAServerEchoesPrintsNoneOfIt(t *testing.T) {
 	t.Setenv("PGUSER", echoUser)
 	t.Setenv("PGSSLMODE", "disable")
 	t.Setenv("PGCONNECT_TIMEOUT", "5")
+	shapes := map[string]string{}
 	for name, row := range printedShapes {
-		if row.want == "it is a keyword DSN whose host holds an \"@\"" || name == "a password of two words" || name == "jdbc:postgresql://" {
-			continue
+		if !noServerWord(name, row.want) {
+			shapes[name] = row.dsn
 		}
+	}
+	for name, dsn := range maskedShapes {
+		shapes[name] = dsn
+	}
+	for name, dsn := range shapes {
 		t.Run(name, func(t *testing.T) {
-			dsn := strings.Replace(row.dsn, "port=1 ", "port="+port+" ", 1)
+			dsn := strings.Replace(dsn, "port=1 ", "port="+port+" ", 1)
 			_, err := pgconn.Connect(t.Context(), dsn)
 			if err == nil {
 				t.Fatal("pgconn.Connect to the echo server connected")
 			}
-			if !strings.Contains(err.Error(), "madeuphead0123") {
+			if !leaked(err.Error()) {
 				t.Fatalf("pgx's own error %q holds none of the password, so this row tests nothing for it", err)
 			}
-			if shown := ConnectError("postgres_dsn", dsn, err); strings.Contains(shown.Error(), "madeuphead") {
+			if shown := ConnectError("postgres_dsn", dsn, err); leaked(shown.Error()) {
 				t.Errorf("ConnectError = %q, which holds part of the password", shown)
 			}
 		})
@@ -269,20 +323,24 @@ func TestConnectErrorOfAShapeAServerEchoesPrintsNoneOfIt(t *testing.T) {
 }
 
 // With nothing listening (port 1 on this machine refuses at once), pgx's own error of a keyword
-// DSN still prints a password the DSN puts where pgx names a value: the database or user that is a
-// URL, a host holding the user name and password, a password of two words, whose second word pgx
-// refuses as a keyword, and a user missing the space before password= (`user=apppassword=…`, which
-// pgx reads as the user, so the password it parsed is empty). Each is the row's control: one whose
-// pgx error holds none of the password is named. ConnectError of each holds none of it: the first
-// four are refused, and the last is kept, with every password= masked whatever pgx read as the
-// password (redactPassword).
+// DSN still prints a password the DSN puts where pgx names a value: a database or user that
+// begins with a URL scheme, a user holding a ":", a host holding the user name and password or a
+// password= missing the space before it, a password of two words, whose second word pgx refuses
+// as a keyword, and each kept shape of maskedShapes. Each is the row's control: one whose pgx
+// error holds none of the password is named. ConnectError of each holds none of it: the refused
+// shapes are named "the configured Postgres", and the kept ones keep pgx's detail with every
+// password= masked (redactPassword).
 func TestConnectErrorOfAShapePgxPrintsWithNoServerPrintsNoneOfIt(t *testing.T) {
 	t.Setenv("PGCONNECT_TIMEOUT", "5")
-	shapes := map[string]string{
-		"a missing space before password=": "host=127.0.0.1 port=1 user=apppassword=madeuphead0123 dbname=app",
-	}
-	for _, name := range []string{"a URL as dbname", "a URL as user", "postgres:/ as dbname", "postgres: as dbname", "a user and password host", "a password of two words"} {
+	shapes := map[string]string{}
+	for _, name := range []string{"a URL as dbname", "a URL as user", "postgres:/ as dbname", "postgres: as dbname",
+		"postgress:// as dbname", "pg:// as dbname", "a quoted pgsql:// user", "a postgres: user", "a user holding :",
+		"a user holding : and @", "a user and password host", "a host missing a space", "a named host missing a space",
+		"a password of two words"} {
 		shapes[name] = printedShapes[name].dsn
+	}
+	for name, dsn := range maskedShapes {
+		shapes[name] = dsn
 	}
 	for name, dsn := range shapes {
 		t.Run(name, func(t *testing.T) {
@@ -290,17 +348,53 @@ func TestConnectErrorOfAShapePgxPrintsWithNoServerPrintsNoneOfIt(t *testing.T) {
 			if err == nil {
 				t.Fatal("pgconn.Connect to port 1 connected")
 			}
-			if !strings.Contains(err.Error(), "madeuphead0123") && !strings.Contains(err.Error(), "zqtailtwo") {
+			if !leaked(err.Error()) {
 				t.Fatalf("pgx's own error %q holds none of the password, so this row tests nothing for it", err)
 			}
-			shown := ConnectError("postgres_dsn", dsn, err)
-			if strings.Contains(shown.Error(), "madeuphead") || strings.Contains(shown.Error(), "zqtail") {
+			if shown := ConnectError("postgres_dsn", dsn, err); leaked(shown.Error()) {
 				t.Errorf("ConnectError = %q, which holds part of the password", shown)
 			}
 		})
 	}
-	if err := Refusal("postgres_dsn", shapes["a missing space before password="]); err != nil {
-		t.Errorf("Refusal of a user missing a space = %v, want it kept: its key and values are a keyword DSN's", err)
+	for name, dsn := range maskedShapes {
+		if err := Refusal("postgres_dsn", dsn); err != nil {
+			t.Errorf("Refusal of %s = %v, want it kept: its keys and values are a keyword DSN's", name, err)
+		}
+	}
+}
+
+// Three keyword DSNs round 10 refused, which connected before it, are kept and reach the server:
+// a password beginning with "Postgres:" and a custom setting whose name holds "$" each reach the
+// echo server's answer to an admitted client (`database "legion" does not exist`), and a Cloud SQL
+// socket for a project whose ID ends in "postgres" reaches the dial of its socket, not a refusal
+// or a parse failure.
+func TestAKeywordDSNRound10RefusedReachesTheServer(t *testing.T) {
+	port := echoServer(t)
+	t.Setenv("PGSSLMODE", "disable")
+	t.Setenv("PGCONNECT_TIMEOUT", "5")
+	for name, dsn := range map[string]string{
+		"a password beginning with Postgres:": "host=127.0.0.1 port=" + port + " user=legion password=Postgres:Admin1 dbname=legion",
+		"a custom setting holding $":          "host=127.0.0.1 port=" + port + " user=legion dbname=legion myext.set$ting=1",
+	} {
+		if err := Refusal("postgres_dsn", dsn); err != nil {
+			t.Errorf("Refusal of %s = %v, want it kept", name, err)
+			continue
+		}
+		if _, err := pgconn.Connect(t.Context(), dsn); err == nil || !strings.Contains(err.Error(), `database "legion" does not exist`) {
+			t.Errorf("pgconn.Connect with %s = %v, want the server's answer to an admitted client", name, err)
+		}
+	}
+	socket := "host=/cloudsql/acme-postgres:us-central1:db dbname=legion user=sa" + "@" + "acme-postgres.iam"
+	if err := Refusal("postgres_dsn", socket); err != nil {
+		t.Fatalf("Refusal of the Cloud SQL socket = %v, want it kept", err)
+	}
+	config, err := pgconn.ParseConfig(socket)
+	if err != nil || config.Host != "/cloudsql/acme-postgres:us-central1:db" {
+		t.Fatalf("ParseConfig of the Cloud SQL socket = %+v, %v; want its socket directory as the host", config, err)
+	}
+	var unparsed *pgconn.ParseConfigError
+	if _, err := pgconn.Connect(t.Context(), socket); err == nil || errors.As(err, &unparsed) || !strings.Contains(err.Error(), "/cloudsql/acme-postgres:us-central1:db") {
+		t.Errorf("pgconn.Connect with the Cloud SQL socket = %v, want the dial of its socket", err)
 	}
 }
 
