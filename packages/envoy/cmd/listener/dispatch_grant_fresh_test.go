@@ -198,7 +198,11 @@ func startDispatchGrantHub(t *testing.T) *dispatchGrantHub {
 		t.Fatalf("connect the admin: %v", err)
 	}
 	t.Cleanup(admin.Close)
-	records, err := consumernames.CreateSessionBucket(t.Context(), admin, 1, consumernames.StoreState{Cutover: consumernames.CutoverDone})
+	// The create's bound is the hub's own, not nats.go's 5 s default for a context with no deadline
+	// (jetstream's DefaultTimeout), which one server's stream create overran at a box load of 2,500.
+	create, cancelCreate := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancelCreate()
+	records, err := consumernames.CreateSessionBucket(create, admin, 1, consumernames.StoreState{Cutover: consumernames.CutoverDone})
 	if err != nil {
 		t.Fatalf("create the selection bucket: %v", err)
 	}
