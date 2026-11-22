@@ -11,7 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// The census of dispatch://INFRA-1152 (R6, R9): every projection the one inbox read uses, held
+// The census of the one inbox (R6, R9): every projection the one inbox read uses, held
 // to the store the way the kinds of census.go are, with the store on the expected side. Each kind
 // is held triple by triple (projection.tuples) but the two attempt tables, whose node carries
 // values as well as relations and is held digest against digest. Each reports a row no tuple
@@ -963,7 +963,7 @@ func (table readStateKind) rowOf(more string) string {
 // of the write that deletes its row: the person's log holds an event of the type that release's
 // deleting route appends, appended after the event that stated the mark, under which the store
 // holds no tuple from the person at all, so no writer of this release appended it. This is the
-// evidence the census reads, as dispatch://INFRA-1149's backfill tells a document an older build
+// evidence the census reads, as the node store's backfill tells a document an older build
 // re-indexed by two versions and by no row (markStaleDocuments): a mark with no row and no such
 // event stays a difference, a tuple no row projects. No writer can clear such a mark - a writer
 // that read the store's mark to retract it would be a reconcile, which R9 rules out - so it is a

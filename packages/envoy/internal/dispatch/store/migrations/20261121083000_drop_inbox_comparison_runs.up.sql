@@ -1,13 +1,13 @@
 -- 20261121083000_drop_inbox_comparison_runs.up.sql
 --
--- dispatch://INFRA-1152: 20261117132340_inbox_comparison_runs created inbox_comparison_runs as the
+-- The one inbox's 20261117132340_inbox_comparison_runs created inbox_comparison_runs as the
 -- record of `envoy-dispatch inbox-compare`, the comparison of the one read (GET /api/v1/me/inbox)
 -- with the three reads it replaces, which gated the Inbox's move onto the one read. The Inbox now
 -- draws from the one read by default and every caller has moved off the three reads, so this
 -- commit deletes the comparison: its command, its package, its route
 -- (GET /api/v1/inbox/comparison), its page (/inbox/comparison) and this table.
 --
--- The comparison ran in the INFRA-1152 branch alone and never against a deployment (it signed in
+-- The comparison ran in the one inbox's branch alone and never against a deployment (it signed in
 -- through dev sign-in only), and no build of a release reads or writes this table: the branch
 -- that created it drops it before it merges. So no running build loses a table it reads, and a
 -- rollback to any released build finds nothing missing. The two migration files of 20261117132340

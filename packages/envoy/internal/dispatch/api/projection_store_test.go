@@ -36,7 +36,7 @@ import (
 
 // projectedTables are the tables whose every row names the node it is the projection of, written
 // by the same transaction, before the row: the three of migration 20261109022248, and the nine of
-// dispatch://INFRA-1152, whose node column pair its migrations add (20261116102800, 20261116114515
+// this child, whose node column pair its migrations add (20261116102800, 20261116114515
 // and 20261116140000). A row of one of them names a node the store holds, and the foreign key on
 // that pair is what refuses a row whose node was never written. The tables
 // censustest.ProjectedColumns lists are among them, and the columns of each the store states are
@@ -165,7 +165,7 @@ var projectedColumns = func() map[string]map[string]string {
 }()
 
 // inboxProjectedColumns are the columns the store states of the projected tables of
-// dispatch://INFRA-1152: every one names the node it is the projection of by its node pair, and a
+// the one inbox: every one names the node it is the projection of by its node pair, and a
 // block link's source_seq is the event that stamped it, which its tuple takes as its
 // legacy_source_seq (graphstore.UncausedTuple's LegacyFromCause), as a block_refs row's is.
 var inboxProjectedColumns = func() map[string]map[string]string {
@@ -1278,7 +1278,7 @@ func catalogueProjectionWrites(t *testing.T, ctx context.Context, run *projectio
 }
 
 // readStateWrite matches a statement that writes a projection the one Go writer of a thread keeps
-// (inboxwrite.Record, dispatch://INFRA-1152 D3): a user_threads row or a user_agent_thread_dismissed
+// (inboxwrite.Record, this child's D3): a user_threads row or a user_agent_thread_dismissed
 // row, made, moved or unmade. A row of either names no node, so an update of any column of it is a
 // write of the projection as much as its insert is.
 var readStateWrite = regexp.MustCompile(`(?is)\b(?:insert\s+into|update|delete\s+from)\s+(user_threads|user_agent_thread_dismissed)\b`)

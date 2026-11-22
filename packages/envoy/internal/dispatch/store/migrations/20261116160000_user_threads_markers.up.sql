@@ -1,6 +1,6 @@
 -- 20261116160000_user_threads_markers.up.sql
 --
--- user_threads learns since when the node and tuple store holds what its row says (INFRA-1152's D4
+-- user_threads learns since when the node and tuple store holds what its row says (this child's D4
 -- and R6):
 --   marked_version   the row's version at the moment it was marked: 0 for a row this release's
 --                    writer begins (inboxwrite.Record, a person's first write in a thread), the

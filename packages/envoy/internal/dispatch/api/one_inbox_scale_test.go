@@ -21,7 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// dispatch://INFRA-1152's two measurements, taken before its first line of product code (spec
+// This child's two measurements, taken before its first line of product code (spec
 // R11, plan T1), over the corpus one_inbox_scale_seed_test.go seeds:
 //
 //   - the participant set (TestOneInboxParticipantSetOfTheCorpus): R11's three statements over the

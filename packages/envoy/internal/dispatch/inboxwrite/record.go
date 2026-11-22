@@ -1,5 +1,5 @@
 // Package inboxwrite is the one writer of the threads a person takes part in and of what reaches
-// them there (dispatch://INFRA-1152 D3, R2, R4 and R9). Every write path that stores a comment, a
+// them there (this child's D3, R2, R4 and R9). Every write path that stores a comment, a
 // message, an ask or an answer records it after its event, in that write's own transaction, and
 // the record appends the participation and delivery tuples of the write through graphstore and
 // writes the user_threads projection of them. The triggers of migrations 0095-0097, which wrote
@@ -301,7 +301,7 @@ func (w Write) keptLogin() (string, bool) {
 //     marked_seq at the log position of this moment (migration 20261116160000); then, where the
 //     upsert moved the mark, A's read_through to T at the moment that row's read mark stands at
 //     once the upsert ran, stated by the same statement (queueKeepRow, graphstore.MarkArm), as
-//     every writer of a read mark states it (dispatch://INFRA-1152 R6).
+//     every writer of a read mark states it (the spec's R6).
 //
 // A session's reply to a message takes, between steps 1 and 2, its thread root's Agent
 // dismissals: the root `for key share`, then the retraction of the dismissed tuple of each person

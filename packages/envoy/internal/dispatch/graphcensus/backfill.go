@@ -198,7 +198,7 @@ func backfillAt(ctx context.Context, database *store.Store, out io.Writer, rule 
 			return report, errors.Join(moved, err)
 		}
 	}
-	// Every kind dispatch://INFRA-1152 moves but the mention tuples, after every pass above has
+	// Every kind the one inbox moves but the mention tuples, after every pass above has
 	// written the nodes and the authors its facts hang from (backfillInbox): the messages, the
 	// comment pointers, the body blocks of a comment, a message and an ask with their links and the
 	// item's citations, the delivery attempts, what an ask an older build created or answered and a

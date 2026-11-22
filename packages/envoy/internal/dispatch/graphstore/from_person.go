@@ -16,7 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The read state of a person (dispatch://INFRA-1152 R6): what they have read, cleared, dismissed
+// The read state of a person (the spec's R6): what they have read, cleared, dismissed
 // or snoozed is a tuple from their node and never a node, its far end is what the mark is about,
 // and the tuple's own moment is the mark it stands for. TupleReadThrough runs to the root of a
 // thread, or to a session, the person has read through that moment; TupleDismissed to the root of

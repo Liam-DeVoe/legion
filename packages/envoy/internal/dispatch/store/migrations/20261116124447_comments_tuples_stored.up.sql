@@ -10,7 +10,7 @@
 -- It is the row's marker for those relations, and graph_edges reads it (migration
 -- 20261116124448): the store's arms answer the pointers of a row that holds true, and the five old
 -- arms over comments the pointers of a row that holds false. comments.node_kind cannot be that
--- marker. INFRA-1149 already names the node on rows whose pointers are no tuples - every comment
+-- marker. The node store's build names the node on rows whose pointers are no tuples - every comment
 -- that build and its backfill write - so a test on node_kind would answer an older reply from
 -- neither arm. Every writer of this release sets the column in the insert that writes the row,
 -- which is where the trigger on that insert (user_threads_comment, migration 0095) sees it. A row

@@ -645,7 +645,7 @@ func threeBadRequests(t *testing.T) {
 	// undeclared query parameter, and the base build answered each of the others as it answers
 	// the plain read, so the walked read must answer exactly that: a refusal is an answer
 	// production never gave, and fails as any other. One of the two is a route whose shape declares
-	// RefusesUndeclared, GET /api/v1/me/inbox: dispatch://INFRA-1152's plan, decision 7, has it
+	// RefusesUndeclared, GET /api/v1/me/inbox: the plan's decision 7 has it
 	// refuse every key it does not declare with 400 INVALID_QUERY naming the key (c-routes-gone
 	// requires that refusal), so its walked read is held to exactly that answer
 	// (requireTheUndeclaredKeyRefused), which reads no row and so adds no reach and changes no
@@ -741,7 +741,7 @@ func threeBadRequests(t *testing.T) {
 }
 
 // requireTheUndeclaredKeyRefused fails unless walked, the read of a route that refuses every key
-// it does not declare (RefusesUndeclared, plan decision 7 of dispatch://INFRA-1152), answers 400
+// it does not declare (RefusesUndeclared, the plan's decision 7), answers 400
 // INVALID_QUERY naming the first of walk's keys it does not declare, the one its handler reads
 // first (me_inbox.go and agents_known.go each read the keys sorted), and nothing else. A route
 // routesRefusingUndeclared lists refuses the same way, the `session` every route takes aside.
@@ -929,7 +929,7 @@ func requireTheBareReadRefused(t *testing.T, name, parameter, target string, bar
 // routeProbeQueries are the queries the reads that require one are sent, each naming the
 // objects seedTwoProjects wrote, so the read answers a row rather than refusing the request
 // that names nothing or answering it no row. The open-asks read needs no query to answer a row,
-// and is sent the key dispatch://INFRA-1152 adds to it, the person the project's asks wait on,
+// and is sent the key this child adds to it, the person the project's asks wait on,
 // so the read that key narrows is the one walked.
 func routeProbeQueries(owned crossProject) map[string]string {
 	spec := "dispatch://" + owned.issue + "/spec"

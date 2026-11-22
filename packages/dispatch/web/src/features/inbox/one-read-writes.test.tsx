@@ -1,5 +1,5 @@
 /**
- * The optimistic writes over the one read (dispatch://INFRA-1152, `one-read-cache.ts`): each
+ * The optimistic writes over the one read (`one-read-cache.ts`): each
  * write that moves one of the reader's own rows on the press moves it in the one read's cache
  * too, puts it back where the server refuses the write, and reads the one read again once the
  * server has decided. A hand-on and an assignee that make an ask wait on the reader add it to the

@@ -186,7 +186,7 @@ var inboxDismissCheckAgentRoots = myAgentMarks + `
 // holds the row as the lock taken before it left it (writeInboxThreadMarks): no other writer moves
 // a row this transaction holds. A timestamp as a value is sound, and a filtered dismissal is
 // matched by one: it writes the rows whose replied_at is at or before dismiss_through, the as_of
-// rule the mark-all takes too (INFRA-450's spec, v32). What decides a named dismissal's rows is
+// rule the mark-all takes too. What decides a named dismissal's rows is
 // the version.
 //
 // That version is user_threads.version ($4, one per thread beside the ids in $3), which the list

@@ -19,7 +19,7 @@ import (
 // (migration 20261116140001), the one the trigger user_threads_ask and the answer writers read:
 // an ask an older build created, whose marker is null, and an ask holding an answer an older build
 // wrote, whose moment the marker does not hold; each of an ask whose node the store holds
-// (dispatch://INFRA-1150's passes, which run first).
+// (the ask passes, which run first).
 var asksOwed = `
 	from asks k
 	where (k.tuples_stored_at is null

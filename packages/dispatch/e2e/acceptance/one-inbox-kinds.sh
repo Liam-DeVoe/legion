@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Drives dispatch://INFRA-1152's move of its kinds into the node and tuple store end to end against
+# Drives this child's move of its kinds into the node and tuple store end to end against
 # a running server (c-kinds-moved): the message kind, the comment pointers and the body blocks of a
 # comment, a message and an ask, with the thirteen arms of graph_edges that read them and the item
 # rows of its refs arm.
@@ -38,17 +38,17 @@
 #   older_rows    one row per arm, and one citation of each item sort, written through psql as the
 #                 release before this one writes them, with no marker of this child's: each is
 #                 answered once, by its old arm, the store holding no tuple of it. A comment row
-#                 carries its node, as dispatch://INFRA-1149's writer gives it one. The rows are
+#                 carries its node, as the node store's writer gives it one. The rows are
 #                 removed once read.
 #   backfill      one row per arm, and one citation of each item sort, written through psql as a
 #                 build before this child writes them, each comment and the message and the ask
 #                 naming no node yet: each is answered once, by its old arm, before
 #                 `envoy-dispatch backfill-graph-store` runs over the server's database, and once,
 #                 by the tuple arm, after it, which reports every kind complete=true, each comment
-#                 carrying the node dispatch://INFRA-1149's backfill gave it. The rows are removed
+#                 carrying the node the node store's backfill gave it. The rows are removed
 #                 once read.
 #   artifact_citation
-#                 a document's citation, which dispatch://INFRA-1253 moves and not this child, is
+#                 a document's citation, which another child moves and not this child, is
 #                 still answered by the refs arm.
 #   kinds         the delivery_attempt, person and role supertags are in the store, each kind has a
 #                 label in NODE_LABELS in the web build the server serves, and every supertag the
@@ -62,11 +62,11 @@
 # and count a delivery_attempt, a person and a role. No address of those kinds exists at this
 # build (text.ParseRef reads none) and no route counts one's backlinks, so they come with the
 # addresses and the mention arm into a person, a session and a role
-# (dispatch://INFRA-1152/artifact/plan-md#b-t13).
+# (the plan's T13).
 #
 # Which clause is read which way, and why: what the store holds - a node, a tuple, a row's marker,
 # the transaction that wrote a row (its xmin) - is served by no route, so it is read through psql on
-# ISSUE_DATABASE_URL, the database the server serves, as dispatch://INFRA-1149's graph-store.sh
+# ISSUE_DATABASE_URL, the database the server serves, as the node store's graph-store.sh
 # reads it. A retraction and a row of the release before are written there too: no route of this
 # build ends one tuple while its row stands, and no route writes as an older build does.
 #
@@ -955,7 +955,7 @@ older_rows_section() {
   local ask_comment_text="On the question, by the release before."
   local message_text="Written by the release before, $citation."
   local ask_text="Asked by the release before, $citation?"
-  # The two comments as dispatch://INFRA-1149's writer writes one: its node first, then the row
+  # The two comments as the node store's writer writes one: its node first, then the row
   # naming it, with no tuples_stored, which is this child's and which that writer never sets, and
   # its author's authored_by. The message and the ask as the release before writes them: a node of
   # the store (graphstore.MessageNode, graphstore.AskNode) that the row names nowhere, since that
@@ -1087,8 +1087,8 @@ backfill_section() {
   local message_text="Written before this child, $citation."
   local ask_text="Asked before this child, $citation?"
   # Each row as a build before this child writes it: a comment with no node, which
-  # dispatch://INFRA-1149's backfill gives it, and a message and an ask with no node either, which
-  # dispatch://INFRA-3862's gives them; none holds a marker of this child's, and their triggers
+  # the node store's backfill gives it, and a message and an ask with no node either, which
+  # the object-node backfill gives them; none holds a marker of this child's, and their triggers
   # project them into user_threads as that build's do.
   query backfill "write two comments, a message and an ask as a build before this child writes them" "
     begin;
@@ -1141,7 +1141,7 @@ backfill_section() {
     fail backfill "envoy-dispatch backfill-graph-store reports every kind complete" "$(grep 'complete=false' "$work/backfill")"
   fi
   pass backfill "envoy-dispatch backfill-graph-store over the server's database reports $(grep -c 'complete=true' "$work/backfill") kinds complete=true"
-  want_value backfill "the comments carry their node from dispatch://INFRA-1149's backfill, and the message and the ask theirs" \
+  want_value backfill "the comments carry their node from the node store's backfill, and the message and the ask theirs" \
     "comment|comment|message|ask" "
     select (select string_agg(coalesce(c.node_kind, '(none)'), '|' order by c.body) from comments c
             where c.id in ('$before_comment', '$before_ask_comment'))
@@ -1190,7 +1190,7 @@ artifact_citation_section() {
                  and to_kind = 'issue' and to_id = '$cited')"
 }
 
-# The root's closed list of supertags (dispatch://INFRA-1098/spec#b-r-derived, R21: "This tree
+# The root's closed list of supertags (the root spec's R21: "This tree
 # creates thirty supertags, and the list is closed"), as a person wrote it there and no code of
 # this build produces it, in the spelling the store keys a supertag node by.
 readonly closed_supertags=(
@@ -1358,7 +1358,7 @@ run_section artifact_citation
 run_section kinds
 # The section that addresses, lists and counts a delivery_attempt, a person and a role runs here
 # once the addresses of those kinds and the mention arm into a person, a session and a role exist
-# (dispatch://INFRA-1152/artifact/plan-md#b-t13).
+# (the plan's T13).
 run_section editor
 
 if [[ "${#failed_sections[@]}" -gt 0 ]]; then

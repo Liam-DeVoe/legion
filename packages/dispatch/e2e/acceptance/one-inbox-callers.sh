@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Drives dispatch://INFRA-1152's c-callers-moved at this branch's head: every caller of the three
+# Drives the check c-callers-moved at this branch's head: every caller of the three
 # reads the one read replaced moved, the comparison and the opt-in are gone, and a page of the
 # release before still works, because the three reads answer this head as they answer that
 # release.

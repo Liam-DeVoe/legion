@@ -14,7 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The three relations that tie a thing to a person by what reached them (dispatch://INFRA-1152 R2
+// The three relations that tie a thing to a person by what reached them (the spec's R2
 // and R4). TupleDeliveredTo (people.go) points from a write at each person it reached;
 // TupleMentions points from a thing at the person a mention of it names, as it points at a
 // document or an issue the thing cites; TupleParticipatesIn points from a person, or a session,

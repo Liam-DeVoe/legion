@@ -62,12 +62,12 @@ const censusSigningKey = "store-census-signing-key"
 // own, so a kind the census stops checking is read by a person before this test agrees with it.
 var censusKinds = []string{"comment", "block", "block_ref", "person", "session", "role", "page"}
 
-// inboxCensusKinds are the kinds of dispatch://INFRA-1152, which `census --store` prints a line
+// inboxCensusKinds are the kinds of the one inbox, which `census --store` prints a line
 // for beside the kinds above: the nine projections the one inbox read uses, the messages node, the
 // comment pointers and the item block and link tables (graphcensus's inboxProjections). This run's
-// corpus is dispatch://INFRA-1149's, so it writes rows of some of them and none of others; what
+// corpus is the node store's, so it writes rows of some of them and none of others; what
 // holds each of them to a population of both releases is c-census, whose corpus seeds every arm.
-// Here a difference in either direction fails, as it does for the kinds of dispatch://INFRA-1150.
+// Here a difference in either direction fails, as it does for the decision kinds.
 var inboxCensusKinds = []string{
 	"messages", "message", "comment_pointers",
 	"comment_block", "message_block", "ask_block",
@@ -1408,7 +1408,7 @@ func requireEveryKindCarriesAPopulation(t *testing.T, report []kindCensus) {
 		switch {
 		case slices.Contains(censusKinds, kind.kind):
 		case slices.Contains(inboxCensusKinds, kind.kind):
-			// dispatch://INFRA-1152's kinds: this run's corpus holds rows of some and none of
+			// The one inbox's kinds: this run's corpus holds rows of some and none of
 			// others, and c-census is what holds each to a population; a difference fails here.
 			if kind.rowsWithoutANode != 0 || kind.nodesWithoutARow != 0 {
 				t.Errorf("kind %s reads %d row(s) without a tuple and %d tuple(s) without a row",

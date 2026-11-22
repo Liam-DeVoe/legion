@@ -38,7 +38,7 @@ import (
 // The runner applies each migration once (schema_migrations), so a type migration written after
 // the backfill writes literal rows under the census's bounded-write rule and is not run a second
 // time: 20261116102759 is one, and is left out of both lists. The second run holds for
-// INFRA-1149's own type migrations only.
+// the node store's own type migrations only.
 var typeMigrations = []string{
 	"../../internal/dispatch/store/migrations/20261109051232_graph_supertags.up.sql",
 	"../../internal/dispatch/store/migrations/20261113230000_graph_supertags_check_ci_check.up.sql",
@@ -74,7 +74,7 @@ var closedSupertags = []string{
 // differ. The block schema the store builds passes over them (requireTheStoreBuildsTheFilesSchema).
 var storeTypeAttributes = []storeType{{
 	name:     "delivery_attempt",
-	document: "dispatch://INFRA-1152/spec R5",
+	document: "the one inbox's spec, R5",
 	attributes: []pmdoc.BlockAttribute{
 		{Name: "attempt", BlockAttributeSchema: pmdoc.BlockAttributeSchema{Kind: pmdoc.BlockAttributeString, Server: true}},
 		{Name: "state", BlockAttributeSchema: pmdoc.BlockAttributeSchema{
@@ -93,7 +93,7 @@ var storeTypeAttributes = []storeType{{
 	},
 }, {
 	name:     "comment",
-	document: "dispatch://INFRA-1152/spec R5",
+	document: "the one inbox's spec, R5",
 	attributes: []pmdoc.BlockAttribute{
 		{Name: "delivery", BlockAttributeSchema: pmdoc.BlockAttributeSchema{
 			Kind: pmdoc.BlockAttributeEnum, Choices: []string{"btw", "aside", "steer"},

@@ -162,7 +162,7 @@ func requireTheBlockRefBatchLockOrder(t *testing.T) {
 // among its node rows they leave to the batch: a batch that appended its comments' tuples before
 // it wrote its authors' nodes, as the comment path appends its comment's tuples before its
 // author's node (graphstore.QueueAuthored), passes as well. The run followed is the comment pass
-// alone: the pass over the comment pointers that runs after it (dispatch://INFRA-1152's
+// alone: the pass over the comment pointers that runs after it (the one inbox's
 // commentPointersPass) takes the issue's owner row first, as every writer of a comment does, and
 // following the whole run would read that pass's lock as this batch's.
 func requireTheCommentBatchLockOrder(t *testing.T) {

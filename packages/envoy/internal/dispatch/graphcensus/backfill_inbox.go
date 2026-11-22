@@ -19,12 +19,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The backfill of every kind dispatch://INFRA-1152 moves into the store but the mention tuples,
-// by dispatch://INFRA-1149's contract (R9's view end): each pass walks only the rows its marker
+// The backfill of every kind the one inbox moves into the store but the mention tuples,
+// by the node store's contract (R9's view end): each pass walks only the rows its marker
 // test passes, which are the rows a build of the release before this one wrote during a roll or
 // before it; it dates each tuple by the row's own created_at, or by the moment of the mark the row
 // stands for where the row holds none; it writes each tuple under the older write's own event,
-// found in the log as INFRA-1149's passes find a row's event (readCommentRows), and under the
+// found in the log as the node store's passes find a row's event (readCommentRows), and under the
 // store's sentinel where the log holds none; and it sets the row's marker in the transaction that
 // states its tuples, so a second run reads no row a first one marked. It reads no column of a
 // marked row, so it is no reconcile.
@@ -43,8 +43,8 @@ import (
 // deliveries to them - so a live write of this release and a batch over one thread take turns.
 //
 // The order of the passes is the order their facts hang on each other: every item's node and
-// author before its pointers (the passes of dispatch://INFRA-1149, dispatch://INFRA-3862 and
-// dispatch://INFRA-1150 run first), the pointers before the deliveries that walk them, each
+// author before its pointers (the comment, object-node and ask passes run
+// first), the pointers before the deliveries that walk them, each
 // write's deliveries before the user_threads row they reach is marked, so each lands at or below
 // that row's marked_seq and R6's equation for version holds on it.
 
@@ -517,7 +517,7 @@ func writeMessages(ctx context.Context, tx pgx.Tx, ids []string) (inboxWrote, er
 // --- the comment pointers ---------------------------------------------------------------------
 
 // commentPointersOwed is the comments rows the pointer pass owes: each whose tuples_stored is false
-// (migration 20261116124447), whose node the store holds (dispatch://INFRA-1149's pass, which runs
+// (migration 20261116124447), whose node the store holds (the comment pass, which runs
 // first), and whose replies_to_block the store can key (graphstore.CommentPointerFacts leaves a
 // row past the bound whole to its old arms, as its writer does).
 var commentPointersOwed = `

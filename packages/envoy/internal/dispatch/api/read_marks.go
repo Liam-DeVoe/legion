@@ -8,7 +8,7 @@ import (
 )
 
 // What a person has read, cleared, dismissed or snoozed is a tuple from their person node
-// (dispatch://INFRA-1152 R6, graphstore.FromPerson), and the six read-state tables are its
+// (the spec's R6, graphstore.FromPerson), and the six read-state tables are its
 // projections. Every route that writes one of them states the mark as that tuple in its own
 // transaction:
 //

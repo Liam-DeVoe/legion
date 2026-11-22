@@ -315,8 +315,8 @@ func backfillBlockIDs(ctx context.Context, databaseURL string, out io.Writer) in
 // tuples of every comment, document block and block reference written before the node and
 // tuple store existed, the node of every issue, document, ask and message written before its
 // kind's writer wrote one, the project of every comment and block node written before a node
-// named its project, the asks and followers written before dispatch://INFRA-1150, and every kind
-// dispatch://INFRA-1152 moves but the mention tuples for the rows a build before it wrote - the
+// named its project, the asks and followers written before the store held them, and every kind
+// the one inbox moves but the mention tuples for the rows a build before it wrote - the
 // messages, the comment pointers, an item's blocks, links and citations, the delivery attempts,
 // what an ask, an answer and a decline owe, and the six read-state tables - in batches, one
 // transaction each (graphcensus.Backfill). It appends no event of its own: a fact whose row's own

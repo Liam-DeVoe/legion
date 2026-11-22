@@ -116,7 +116,7 @@ type projection struct {
 	emptyAgrees bool
 	// populations, where it is set, is a select of two counts over the kind's marked rows, read
 	// with the kind's args: the rows a build of the release before this one wrote, which the
-	// backfill marked, and the rows this release's writers wrote (dispatch://INFRA-1152 R9, "it
+	// backfill marked, and the rows this release's writers wrote (the spec's R9, "it
 	// reports the two populations separately"). Each kind of census_inbox.go says how it tells
 	// the two apart. The census prints both, and refuses an empty one only where its caller says
 	// the corpus holds both (StoreReport.RequireBothReleases).
@@ -1184,7 +1184,7 @@ var ProvedSessionComments = `
 // where a statement reads it itself), and so does the owner the server proved of each such writer
 // that is a session (storedOwners).
 //
-// A row of the one inbox names people too (dispatch://INFRA-1152): this release's writers state
+// A row of the one inbox names people too: this release's writers state
 // what each such row says as a tuple to or from the person's node, and make that node in the same
 // statement, so the person a row marked by them names is a node the store must hold. They are the
 // login of each user_threads row the one writer of a thread marked (marked_version set,

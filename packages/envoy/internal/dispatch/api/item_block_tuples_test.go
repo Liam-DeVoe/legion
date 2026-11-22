@@ -49,7 +49,7 @@ var (
 // graph_edges answers each relation once: a marked row from the tuples, under the item's block
 // address form for a block's edge; an older build's comment, its blocks and its refs row named by
 // no node, from the old arms alone; and a document's refs row from the refs arm, which this child
-// leaves to INFRA-1253.
+// leaves to the work that moves a document's citations.
 func TestItemBodyBlocksAreBlockNodesWithTheirLinksAndCitations(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	ctx := context.Background()

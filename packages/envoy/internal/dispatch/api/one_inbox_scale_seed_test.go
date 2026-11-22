@@ -18,7 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The corpus dispatch://INFRA-1152's c-p99 names, seeded the way inbox_dismissed_scale_seed_test.go
+// The corpus the check c-p99 names, seeded the way inbox_dismissed_scale_seed_test.go
 // seeds a14's: the piles in bulk SQL through the database's own pool, inside transactions, with
 // every trigger firing as it does for any insert, and what only a server writes whole (a project,
 // an issue, an ask, a message and its delivery) through that server's API. One seed serves every

@@ -1,7 +1,7 @@
 /**
  * The reader's own asks are the one read's (`useInboxAsks`), so while that read has not answered
  * the page draws its loading state, and where it failed its error, rather than a list without
- * the reader's own asks (dispatch://INFRA-1152).
+ * the reader's own asks.
  */
 
 import { afterEach, expect, spyOn, test } from "bun:test";

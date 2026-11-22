@@ -18,7 +18,7 @@ import (
 )
 
 // A comment, a message and an ask are each the root of their own thread, and the rows of the six
-// read-state tables that name one of them mirror tuples from a person to it (dispatch://INFRA-1152
+// read-state tables that name one of them mirror tuples from a person to it (the spec's
 // R6): the user_threads row of each participant of the comment, the issue message and the ask, and
 // the ask's snoozes. An Agent dismissal and a reply read by its id name a direct conversation, the
 // only kind of thread either release's routes write those two rows for: erin's issue-less message

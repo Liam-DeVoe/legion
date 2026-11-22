@@ -21,7 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// TestTheAssigneeArmFollowsWhoAnAskWaitsOn holds the assignee arm (dispatch://INFRA-1152 R2 and
+// TestTheAssigneeArmFollowsWhoAnAskWaitsOn holds the assignee arm (the spec's R2 and
 // R4, decisions 10 and 11) to what each of its writers appends, every expected tuple written out
 // by hand with the event that caused it: an ask's create reaches the person the ask waits on, who
 // takes part in it; and patchIssue's assignee, putAskAskedOf, putProjectDefaultAssignee and the
@@ -477,7 +477,7 @@ func issueEventCount(t *testing.T, database *store.Store, key, eventType string)
 // TestAMoveOfTheDefaultTakesTurnsWithEveryWriteThatDecidesWhoAnAskWaitsOn races a move of a
 // project's default assignee against the two writes that read or move who an ask that falls
 // through to it waits on, and holds each pair to ending with one standing delivered_to, to the
-// person asks.AskedOfPersonExpression names once both committed (dispatch://INFRA-1152 R2: the
+// person asks.AskedOfPersonExpression names once both committed (the spec's R2: the
 // list follows the assignment).
 //
 // The interleaving is forced rather than hoped for, as
@@ -610,7 +610,7 @@ func TestAMoveOfTheDefaultTakesTurnsWithEveryWriteThatDecidesWhoAnAskWaitsOn(t *
 }
 
 // TestASettlementsRestoreMovesTheAskToWhoItWaitsOnNow holds a settlement's restore of an ask it
-// retracted to R2's move (docs' moveRestored, dispatch://INFRA-1152): while the retraction stood
+// retracted to R2's move (docs' moveRestored): while the retraction stood
 // the ask was not open, so a change of its issue's assignee moved nothing of it; once its block
 // comes back the ask is open again and its delivery moves to the person it waits on now, under
 // the ask.opened that records the restore, and is retracted for the person it stood to, with
@@ -663,7 +663,7 @@ func TestASettlementsRestoreMovesTheAskToWhoItWaitsOnNow(t *testing.T) {
 }
 
 // TestEveryAskCreateReachesWhoItWaitsOn holds the two creates of an ask besides createAskFor to
-// the assignee arm of their create (inboxwrite.Record, dispatch://INFRA-1152 R2): a settlement's
+// the assignee arm of their create (inboxwrite.Record, the spec's R2): a settlement's
 // block ask (docs' createAskBlock), whose person Record reads itself (waitingOn), and an approval
 // request (openApprovalAsk), whose person its insert read (Write.WaitingOn). Each reaches the
 // issue's assignee, who takes part in its thread, under its ask.opened, and its asker takes part.

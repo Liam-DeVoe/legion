@@ -16,7 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// inboxCensus is a database the census of dispatch://INFRA-1152 is read over: the project CENS
+// inboxCensus is a database the census of the one inbox is read over: the project CENS
 // and its issue CENS-1, whose events each test appends through the broker as a write appends
 // them, and whose nodes, tuples and projection rows each test states directly, as the writers
 // would leave them, so each rule of the census is read over exactly the state it is about.

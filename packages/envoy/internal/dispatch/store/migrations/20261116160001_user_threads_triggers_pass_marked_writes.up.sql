@@ -1,6 +1,6 @@
 -- 20261116160001_user_threads_triggers_pass_marked_writes.up.sql
 --
--- INFRA-1152's D3: one Go writer, inboxwrite.Record, appends the participation and delivery
+-- This child's D3: one Go writer, inboxwrite.Record, appends the participation and delivery
 -- tuples of every comment, message, ask and answer this release writes, and writes the user_threads
 -- projection of them, in the write's own transaction after its event, through graphstore. The four
 -- trigger functions that wrote those projections before it stay for a write a build of the release

@@ -25,7 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// c-read-state-tuples (dispatch://INFRA-1152 R6) over marks the release before this branch wrote:
+// c-read-state-tuples (the spec's R6) over marks the release before this branch wrote:
 // the build of BASELINE_SHA, checked out at $TMPDIR/base-read-state and booted over
 // $ISSUE_READ_STATE_DATABASE_URL, which it migrates, as the Verification preamble states (T1's
 // harness, one_inbox_basebuild_test.go). It boots a server of an earlier commit because what it

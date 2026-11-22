@@ -612,7 +612,7 @@ func writesTheNode(nodeKind, kind, toKind string) bool {
 }
 
 // reachedPerson answers the person a tuple of an erased comment, message or ask ties to it as one
-// of its thread's participants or readers (dispatch://INFRA-1152 R2 and R6): the far end of its
+// of its thread's participants or readers (the spec's R2 and R6): the far end of its
 // delivered_to into a person, and the near end of a participates_in, read_through, dismissed,
 // snoozed or reply_read from a person into it. Each such person's node was made by the write that
 // stated the tuple, and once the tuple and the item's user_threads and read-state rows are gone

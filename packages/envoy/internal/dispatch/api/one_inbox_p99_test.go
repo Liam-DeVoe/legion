@@ -29,7 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// c-p99 (dispatch://INFRA-1152 spec R11, plan T16): neither the one read nor a write gets slower
+// c-p99 (the spec's R11, the plan's T16): neither the one read nor a write gets slower
 // beyond R11's bounds, every figure taken in this one run on two builds over one corpus.
 //
 // It times two processes the same way: the build of the commit BASELINE_SHA names (buildBaseline),
@@ -79,7 +79,7 @@ import (
 
 const (
 	// oneInboxReadBound is R11's bound on the one read: its p50 at most twice the p50 of the
-	// reads it replaces, taken in the same run (dispatch://INFRA-1098's R22).
+	// reads it replaces, taken in the same run (the root spec's R22).
 	oneInboxReadBound = 2.0
 	// oneInboxWriteBound is R11's bound on each write path: its p50 at most 1.25 times the base
 	// build's p50 of the same path in the same run.
