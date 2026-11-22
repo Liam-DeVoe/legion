@@ -10,7 +10,6 @@ import {
   DAEMON_SETS_PHASE,
   dropPlace,
   keyRefusal,
-  laneFromKey,
   laneKey,
   laneLabel,
   type MoveRules,
@@ -279,7 +278,6 @@ test("under the Place sort a move within a column writes the rank and names wher
     kind: "move",
     key: "CORE-1",
     change: { input: { rank: { after: "CORE-2", before: "CORE-3" } }, rank: rankAfter("b") },
-    to: { column: "todo", lane: undefined, index: 1 },
     position: { at: 2, of: 3 },
   });
   // A move that leaves the card where it is changes nothing.
@@ -461,11 +459,9 @@ test("the rank a moved card shows sorts just after the card above it, or first",
   expect(rankAfter(undefined) < "0").toBe(true);
 });
 
-test("laneLabel, laneKey and laneFromKey round-trip every priority lane", () => {
+test("laneLabel and laneKey name every priority lane", () => {
   expect(priorityLanes.map(laneLabel)).toEqual(["P0", "P1", "P2", "P3", "No priority"]);
-  for (const lane of priorityLanes) expect(laneFromKey(laneKey(lane))).toBe(lane);
-  expect(laneFromKey("")).toBeUndefined();
-  expect(laneFromKey("4")).toBeUndefined();
+  expect(priorityLanes.map(laneKey)).toEqual(["0", "1", "2", "3", "none"]);
   expect(cellId("todo", 0)).toBe("lane:0|column:todo");
   expect(cellId("todo", null)).toBe("lane:none|column:todo");
 });

@@ -98,7 +98,7 @@ test("the project listing keeps the object of every issue a read did not change"
     .mockResolvedValueOnce(firstRead())
     .mockResolvedValueOnce(movedRead())
     .mockResolvedValueOnce(movedRead());
-  const { read, stop } = reads(new QueryObserver(client(), projectIssuesQuery("CORE", [], true)));
+  const { read, stop } = reads(new QueryObserver(client(), projectIssuesQuery("CORE", true)));
   try {
     await expectSharedByKey(read);
   } finally {

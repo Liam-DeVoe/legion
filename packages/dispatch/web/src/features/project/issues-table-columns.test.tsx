@@ -247,7 +247,7 @@ function Columns({
     noMark,
     layoutColumns,
     undefined,
-    tab ?? undefined
+    tab?.hasLegion
   );
   const [openFilter, setOpenFilter] = useState<string>();
   const model = useDataTable<Item>({

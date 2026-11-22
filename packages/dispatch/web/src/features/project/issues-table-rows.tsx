@@ -11,7 +11,8 @@ import {
   surfaceMutedBg,
   textMutedOnSurfaceMuted,
 } from "../../theme/classes";
-import { issueStatuses, statusLabel } from "./board-model";
+import { statusLabel } from "./board-model";
+import { countStatuses, statusSegments } from "./issues-table-bar";
 import { columnFilterSpec, type Item } from "./issues-table-model";
 
 /** One issue's row: its cells, and the Start next the reader reaches by hovering it, which is
@@ -101,16 +102,11 @@ export function GroupRow({
     here === leaves.length
       ? `${leaves.length} ${leaves.length === 1 ? "issue" : "issues"}`
       : `${here} of ${leaves.length} issues`;
-  const leafCounts = new Map<string, number>();
   let next = Number.POSITIVE_INFINITY;
-  for (const leaf of leaves) {
-    const { issue, queue } = leaf.original;
-    leafCounts.set(issue.status, (leafCounts.get(issue.status) ?? 0) + 1);
-    if (queue !== undefined && queue < next) next = queue;
+  for (const { original } of leaves) {
+    if (original.queue !== undefined && original.queue < next) next = original.queue;
   }
-  const byStatus = issueStatuses
-    .map((status) => [status, leafCounts.get(status) ?? 0] as const)
-    .filter(([, count]) => count > 0);
+  const byStatus = statusSegments(countStatuses(leaves.map((leaf) => leaf.original.issue.status)));
   return (
     <DataTableGroupRow
       columns={columns}
@@ -137,13 +133,13 @@ export function GroupRow({
             aria-hidden
             className={`flex h-2 w-32 overflow-hidden rounded-full ${surfaceMutedBg}`}
           >
-            {byStatus.map(([status, count]) => (
+            {byStatus.map(({ count, status }) => (
               <span className={issueStatusScale[status]} key={status} style={{ flex: count }} />
             ))}
           </span>
           <span className={`text-xs ${textMutedOnSurfaceMuted}`}>
             {byStatus
-              .map(([status, count]) => `${count} ${statusLabel(status).toLowerCase()}`)
+              .map(({ count, status }) => `${count} ${statusLabel(status).toLowerCase()}`)
               .join(" · ")}
           </span>
         </span>

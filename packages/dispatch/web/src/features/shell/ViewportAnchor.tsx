@@ -130,8 +130,8 @@ function firstRowOnScreen(
     for (const x of xs) {
       if (x < left || x > right) continue;
       for (let y = top + 1; y < bottom; y += topProbeStepPx) {
-        const found = document.elementFromPoint(x, y)?.closest<HTMLElement>(selector) ?? null;
-        if (found !== null && root.contains(found)) return found;
+        const found = rowWithin(root, selector, document.elementFromPoint(x, y));
+        if (found !== null) return found;
       }
     }
   }
@@ -373,8 +373,10 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  host holds a reader at the top: once the frame that shows it is painted - a task queued
    *  from the frame's callbacks runs after its paint - records the first row on screen there
    *  (`paintedTop`), or none while the reader is scrolled. A commit or such a scroll after that
-   *  frame waits for the next one. Hit tests only, a few per record, and none while the reader
-   *  is scrolled. */
+   *  frame waits for the next one. A record makes hit tests only, and none while the reader is
+   *  scrolled (`firstRowOnScreen`). Where the middle of the visible box holds a row, the first
+   *  few find it. Where it holds none, the record tries up to 39 lines, the middle and 19 steps to
+   *  each side, with one hit test per 24 px of the visible height on each line. */
   private awaitPaint(): void {
     this.draws += 1;
     if (this.props.holdAtTop !== true || this.paintWait !== null) return;

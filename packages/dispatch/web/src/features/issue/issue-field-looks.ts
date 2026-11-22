@@ -146,7 +146,7 @@ function lookOf(
  *  listing (`IssueSummary[]`), or a page of one (`{ issues, total, limit, offset }`, which Done
  *  reads), whose rows are its `issues`. Undefined for any other value: Open's count, a number,
  *  holds no row. */
-function listRows(data: unknown): readonly IssueSummary[] | undefined {
+export function listRows(data: unknown): readonly IssueSummary[] | undefined {
   if (Array.isArray(data)) return data as IssueSummary[];
   if (typeof data !== "object" || data === null || !("issues" in data)) return undefined;
   return Array.isArray(data.issues) ? (data.issues as IssueSummary[]) : undefined;

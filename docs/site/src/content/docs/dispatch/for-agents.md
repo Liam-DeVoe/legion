@@ -90,7 +90,16 @@ tells the agent who Dispatch takes it for.
 
 The dashboard's Issues tab is a live table over a project's issues, not a separate search index.
 Open reads the open listing (`open=true`) once.
-Done reads `status=done`: one page at a time, newest close first (`sort=-closed_at`), while it keeps its own sort and has no narrowing but a Closed window, and every done issue of that window otherwise.
+Done reads `status=done`.
+It reads one page at a time, newest close first (`sort=-closed_at`), while all of these hold:
+
+- The view is drawn as a table, not as a Board.
+- It keeps its own sort, newest close first, and has no grouping.
+- Its page size is not **All**.
+- Its only narrowing is a Closed window: no other filter, no search, no flag, and no narrowing from a link.
+
+Otherwise Done reads every done issue its Closed window holds, or every done issue where it has no window.
+
 In a project with a Legion daemon the tab joins the live Legion board (`GET /api/v1/projects/{key}/legion/board`) to those rows, and a closed issue the board does not show takes its facts from the items of the `legion-work-time` eval.
 Its Queue column shows the place the board gives each card (`waiting_place`), and in a project with no Legion daemon it numbers the Todo issues labelled `legion` in rank order.
 **Start next** moves the selected Todo issues labelled `legion` ahead of the others with ordinary rank writes using `before` keys, as `dispatch issue-update --before <KEY>` does.

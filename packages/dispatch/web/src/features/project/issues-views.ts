@@ -8,14 +8,21 @@ import {
   repeatedParam,
   type TableAddressGrammar,
   type TableAddressView,
+  textParam,
   useAddressFields,
-  useAddressParams,
-  useAddressUpdate,
+  useAddressParam,
 } from "../../lib/page-address";
+import { DAY_MS } from "../delivery/lib/window";
 import { isViewer } from "../refs/actor";
 import { useUserPreference } from "../shell/userPreference";
 import { type IssueStatus, openIssueStatuses } from "./board-model";
-import { type ClosedWindow, LEGION_PHASES, type LegionFacts } from "./issues-legion";
+import {
+  type ClosedWindow,
+  HOUR_MS,
+  LEGION_PHASES,
+  type LegionFacts,
+  sinceMs,
+} from "./issues-legion";
 import type { ColumnId } from "./issues-table-model";
 
 /**
@@ -48,14 +55,10 @@ export const BOARD_FED_COLUMNS = [
   "legion",
   "phase_hours",
 ] as const;
-export type BoardFedColumnId = (typeof BOARD_FED_COLUMNS)[number];
 
 /** Whether a column's source is the board route. */
 export const isBoardFedColumn = (id: string): boolean =>
   (BOARD_FED_COLUMNS as readonly string[]).includes(id);
-
-/** A column a view shows: one of the table's, a board-fed one, or Closed. */
-export type ViewColumnId = ColumnId | BoardFedColumnId | "closed";
 
 export interface BuiltInView {
   readonly id: BuiltInViewId;
@@ -66,7 +69,7 @@ export interface BuiltInView {
   /** The view's sort, which an address's `sort` replaces (`sort=` sorts by nothing). */
   readonly sort: string;
   /** The columns the view opens with after Select, in the order they draw (`viewColumns`). */
-  readonly cols: readonly ViewColumnId[];
+  readonly cols: readonly ColumnId[];
   /** It draws the bar of its rows by status under the tabs. */
   readonly bar: boolean;
 }
@@ -136,7 +139,7 @@ export function builtInAddress(id: BuiltInViewId): URLSearchParams {
 /** The columns a view opens with: Select, which every view shows so the bulk actions stay, then
  *  the view's own. In a project with no Legion daemon Queue and every board-fed column are left
  *  out; Queue stays in the Columns menu. */
-export function viewColumns(view: BuiltInView, hasLegion: boolean): readonly ViewColumnId[] {
+export function viewColumns(view: BuiltInView, hasLegion: boolean): readonly ColumnId[] {
   return [
     "select",
     ...view.cols.filter((id) => hasLegion || (id !== "queue" && !isBoardFedColumn(id))),
@@ -198,6 +201,11 @@ export function currentAddress(params: URLSearchParams): URLSearchParams | undef
   return next;
 }
 
+/** Whether `a` and `b` hold as many values, each value of `a` one of `b`'s: the same set of
+ *  picks, in any order. */
+export const sameSet = (a: readonly string[], b: readonly string[]): boolean =>
+  a.length === b.length && a.every((value) => b.includes(value));
+
 /** The parameters a view has a value of, which `expandView` and `compressView` write. */
 const VIEW_OWN_KEYS: readonly string[] = ["view", "status", "nofilter", "sort"];
 
@@ -247,8 +255,7 @@ export function compressView(full: URLSearchParams): URLSearchParams {
   const statuses = spelledStatuses(full, OPEN.statuses);
   const own: readonly string[] = view.statuses;
   if (statuses === null) next.set("nofilter", "1");
-  else if (statuses.length !== own.length || statuses.some((status) => !own.includes(status)))
-    for (const status of statuses) next.append("status", status);
+  else if (!sameSet(statuses, own)) for (const status of statuses) next.append("status", status);
   const sort = full.get("sort") ?? OPEN.sort;
   if (sort !== view.sort) next.set("sort", sort);
   for (const [key, value] of full) if (!VIEW_OWN_KEYS.includes(key)) next.append(key, value);
@@ -325,7 +332,7 @@ export function clearNarrowings(params: URLSearchParams, own: URLSearchParams): 
 export type ViewLayout = "table" | "board";
 
 /** A stored or written layout, or undefined for anything else. */
-export function readViewLayout(value: unknown): ViewLayout | undefined {
+function readViewLayout(value: unknown): ViewLayout | undefined {
   return value === "table" || value === "board" ? value : undefined;
 }
 
@@ -349,6 +356,10 @@ export function legacyOpenLayout(stored: string | null): ViewLayout {
 
 const legacyWrite = (layout: ViewLayout): string => (layout === "board" ? "board" : "list");
 
+/** The address's `layout=`, which holds a view's layout for one load. A module-level constant,
+ *  for the reason `useAddressParam` gives. */
+const LAYOUT_PARAM = textParam();
+
 /**
  * The layout the view draws in, and the one way to change it. The address's `layout=` holds for
  * this load: a change writes the address and nothing is kept. Else a built-in view takes the
@@ -360,8 +371,7 @@ export function useViewLayout(
   tableKey: string,
   active: ActiveView
 ): readonly [ViewLayout, (next: ViewLayout) => void] {
-  const params = useAddressParams();
-  const update = useAddressUpdate();
+  const [addressLayout, writeAddressLayout] = useAddressParam("layout", LAYOUT_PARAM);
   const key = active.kind === "built-in" ? viewLayoutKey(tableKey, active.id) : undefined;
   const isOpen = active.kind === "built-in" && active.id === OPEN.id;
   const [legacy] = useUserPreference("project.issue-view", legacyOpenLayout, legacyWrite);
@@ -370,29 +380,23 @@ export function useViewLayout(
     [key]
   );
   const [kept, setKept] = useState<Readonly<Record<string, ViewLayout>>>({});
-  const fromAddress = readViewLayout(params.get("layout"));
+  const fromAddress = readViewLayout(addressLayout);
   const layout =
     fromAddress ??
     (key === undefined ? "table" : (kept[key] ?? stored ?? (isOpen ? legacy : "table")));
   const setLayout = useCallback(
     (next: ViewLayout) => {
       if (key === undefined || fromAddress !== undefined) {
-        update((current) => {
-          current.set("layout", next);
-          return current;
-        });
+        writeAddressLayout(next);
         return;
       }
       writeStore(key, { layout: next });
       setKept((current) => ({ ...current, [key]: next }));
     },
-    [fromAddress, key, update]
+    [fromAddress, key, writeAddressLayout]
   );
   return [layout, setLayout] as const;
 }
-
-const DAY_MS = 86_400_000;
-const HOUR_MS = 3_600_000;
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const UTC_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
@@ -453,9 +457,8 @@ export function inWindow(
   window: ClosedWindow | undefined
 ): boolean {
   if (window === undefined) return true;
-  if (closedAt === null || closedAt === undefined) return false;
-  const at = Date.parse(closedAt);
-  if (Number.isNaN(at)) return false;
+  const at = sinceMs(closedAt);
+  if (at === undefined) return false;
   return (window.from === null || at >= window.from) && (window.to === null || at < window.to);
 }
 
@@ -518,9 +521,8 @@ export function durationPick(ms: number | undefined): DurationPick {
 /** The pick of the time from `since` to `nowMs` (Time waiting, Time in Legion phase), None
  *  where there is no time to start from. */
 export function sinceDurationPick(since: string | null | undefined, nowMs: number): DurationPick {
-  if (since === null || since === undefined) return NONE_PICK;
-  const at = Date.parse(since);
-  return Number.isNaN(at) ? NONE_PICK : durationPick(nowMs - at);
+  const at = sinceMs(since);
+  return at === undefined ? NONE_PICK : durationPick(nowMs - at);
 }
 
 /** Review rounds' picks (`f.review_rounds`), in their order. */
@@ -641,7 +643,7 @@ export function createdByReader(author: Actor | null, reader: string | undefined
 
 /** The narrowing of the Evals tab's links that leaves out the rows of a tree: repeatable, one
  *  root key each. */
-export const EXCLUDE_TREE = "exclude_tree";
+const EXCLUDE_TREE = "exclude_tree";
 
 const EXCLUDED_TREES = { [EXCLUDE_TREE]: repeatedParam() };
 
@@ -717,7 +719,7 @@ export function checkViewName(name: string, saved: readonly SavedView[]): ViewNa
 }
 
 /** One project's saved views out of the store. */
-export function savedViewsOf(stored: StoredViews, project: string): readonly SavedView[] {
+function savedViewsOf(stored: StoredViews, project: string): readonly SavedView[] {
   return Object.hasOwn(stored.projects, project)
     ? (stored.projects[project] ?? NO_VIEWS)
     : NO_VIEWS;

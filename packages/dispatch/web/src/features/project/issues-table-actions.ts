@@ -5,24 +5,17 @@ import { mergeIssue } from "../../api/issue-cache";
 import { advancesIssuesParams } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
-import { settledWithLimit } from "../../lib/settled";
 import { plainWrite, useWrites } from "../writes/write-store";
 import { type IssueListing, listingName } from "./issues-table-data";
-import {
-  buildItems,
-  type Item,
-  queuedInOrder,
-  startNextWrites,
-  WRITES_IN_FLIGHT,
-} from "./issues-table-model";
+import { buildItems, type Item, queuedInOrder, startNextWrites } from "./issues-table-model";
 import { type TableAction, useTableRecovery } from "./issues-table-recovery";
 
+/** One step of an action: the issue it writes, its change, and the write key it was given. */
 interface Patch {
   key: string;
   input: UpdateIssueInput;
+  write: string;
 }
-/** The write key each step of an action was given, by the issue the step writes. */
-type Keys = Readonly<Record<string, string>>;
 interface Notice {
   kind: "success" | "error";
   text: string;
@@ -66,11 +59,12 @@ export function useIssueTableActions({
   const recovery = useTableRecovery(recoveryKey, (text) =>
     setNotice({ kind: text.startsWith("Changes not saved") ? "error" : "success", text })
   );
-  /** Every issue of this table's listing, read afresh: what an action checks itself against. */
-  const listAll = () =>
+  /** The open issues of this table's listing, read afresh: what Finish resumes Start next
+   *  against. Start next moves only Todo issues, so no closed issue takes part in its writes. */
+  const listOpen = () =>
     "project" in listing
-      ? api.listIssues({ project: listing.project })
-      : api.listIssues(advancesIssuesParams(listing));
+      ? api.listIssues({ project: listing.project, open: true })
+      : api.listIssues(advancesIssuesParams(listing, true));
 
   const request = <T>(value: WriteRequest<T>, label: string, issue: string, key: string) => {
     const answer = writes.run({
@@ -86,38 +80,24 @@ export function useIssueTableActions({
     recovery.watch(key, issue);
     return answer;
   };
-  /** Sends each patch under the key its step was given: the action recorded every key in one
-   *  storage write before the first send, rather than one write per issue. */
-  const apply = async (operations: readonly Patch[], minted: Keys) => {
-    const sends = operations.map((operation) => ({
-      ...operation,
-      write: minted[operation.key] ?? newSendKey(),
-    }));
-    const results = await settledWithLimit(
-      sends,
-      WRITES_IN_FLIGHT,
-      async ({ key, input, write }) => {
-        const answer = await request(
-          issuePatchRequest(key, input),
-          `Update ${key} from the issues table`,
-          key,
-          write
-        );
-        if (answer !== null) mergeIssue(client, answer);
-        setMoved((current) => new Set([...current, key]));
-        return key;
-      }
-    );
-    const failed = results.flatMap((result, index) =>
-      result.status === "rejected"
-        ? [{ key: operations[index]?.key ?? "Unknown issue", error: result.reason }]
-        : []
-    );
-    if (failed.length)
-      throw new Error(
-        `${operations.length - failed.length} of ${operations.length} changes saved. Changes not saved: ${failed.map(({ key }) => key).join(", ")}. ${String(failed[0]?.error)} Retry each failed change in Pending changes.`
+  /** Sends one step's patch under the write key the step was given: the action recorded every
+   *  key in one storage write before the first send, rather than one write per issue. A refusal
+   *  throws the text that names the change not saved. */
+  const apply = async ({ key, input, write }: Patch) => {
+    try {
+      const answer = await request(
+        issuePatchRequest(key, input),
+        `Update ${key} from the issues table`,
+        key,
+        write
       );
-    return operations.map(({ key }) => key);
+      if (answer !== null) mergeIssue(client, answer);
+      setMoved((current) => new Set([...current, key]));
+    } catch (error) {
+      throw new Error(
+        `0 of 1 changes saved. Changes not saved: ${key}. ${String(error)} Retry each failed change in Pending changes.`
+      );
+    }
   };
   const perform = async (said: string, action: () => Promise<readonly string[] | undefined>) => {
     setBusy(true);
@@ -180,19 +160,21 @@ export function useIssueTableActions({
     failure: (remaining: readonly string[], error: unknown) => string = (_remaining, error) =>
       error instanceof Error ? error.message : String(error)
   ) => {
-    const operations = startNextWrites(current, record.keys);
     // Every step's key, minted and stored in one write before the first send: 250 issues move
     // up under one storage write rather than 250 read-modify-write cycles of the whole store.
-    const minted: Keys = Object.fromEntries(operations.map(({ key }) => [key, newSendKey()]));
-    recovery.record(minted, record.id);
-    for (const [index, operation] of operations.entries()) {
+    const steps = startNextWrites(current, record.keys).map((operation) => ({
+      ...operation,
+      write: newSendKey(),
+    }));
+    recovery.record(Object.fromEntries(steps.map(({ key, write }) => [key, write])), record.id);
+    for (const [index, step] of steps.entries()) {
       if (!recovery.active(record.id)) return false;
       try {
-        await apply([operation], minted);
+        await apply(step);
       } catch (error) {
         throw new Error(
           failure(
-            operations.slice(index).map(({ key }) => key),
+            steps.slice(index).map(({ key }) => key),
             error
           )
         );
@@ -286,7 +268,7 @@ export function useIssueTableActions({
       if (!recovery.active(interrupted.id)) return undefined;
       const record = recovery.current.current;
       if (!record) return undefined;
-      const current = await listAll();
+      const current = await listOpen();
       if (!recovery.active(record.id)) return undefined;
       await kinds[record.kind].resume(record, current);
       if (!recovery.active(record.id)) return undefined;

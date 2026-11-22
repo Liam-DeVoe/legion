@@ -324,7 +324,7 @@ test("the items read spans the closes of the listed rows the board's map does no
   expect(itemsWindows(rows.slice(3), answered)).toEqual([]);
 });
 
-test("the items read pages 200 rows at a time until the total, window by window", async () => {
+test("the items read pages 200 rows at a time until the total, every window at once", async () => {
   const windows = closedDaysWindows(
     Date.parse("2026-01-01T00:00:00Z"),
     Date.parse("2026-04-01T00:00:00Z")
@@ -374,12 +374,20 @@ test("the items read pages 200 rows at a time until the total, window by window"
     limit: String(ITEMS_PAGE_SIZE),
     offset: String(offset),
   });
-  expect(asked).toEqual([
+  // Each window is read page by page, in order, and the windows are read at once: the second
+  // window's page is asked for before the first window's last.
+  const askedOf = (window: (typeof windows)[number] | undefined) =>
+    asked.filter((query) => query.from === window?.from);
+  expect(askedOf(windows[0])).toEqual([
     page(windows[0], 0),
     page(windows[0], 200),
     page(windows[0], 400),
-    page(windows[1], 0),
   ]);
+  expect(askedOf(windows[1])).toEqual([page(windows[1], 0)]);
+  expect(asked).toHaveLength(4);
+  expect(asked.indexOf(askedOf(windows[1])[0] ?? {})).toBeLessThan(
+    asked.indexOf(askedOf(windows[0])[2] ?? {})
+  );
   expect(Object.keys(facts)).toHaveLength(451);
   expect(facts["ACME-450"]?.work_hours).toBe(3.75);
   expect(facts["ACME-999"]?.root_key).toBe("ACME-5");

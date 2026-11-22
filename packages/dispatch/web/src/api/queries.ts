@@ -12,6 +12,7 @@ import { beginInboxFetch, finishInboxFetch } from "../features/inbox/ask-thread-
 import { projectIssuesQueryKey } from "../features/project/issue-filters";
 import {
   type ClosedWindow,
+  HOUR_MS,
   type ItemsWindow,
   LEGION_WORK_TIME,
   readLegionItems,
@@ -412,56 +413,52 @@ function sharePageByKey(cached: unknown, next: unknown): unknown {
 }
 
 /**
- * A project's issue list - plain, open only (`open`), or server-filtered by labels - which the
- * Issues tab reads open only, for its table and its Board alike, and the issue header's label
- * picker reads plain. Every observer sets the query's function,
- * so each one takes it from here. A fetch that starts while a board move on the project is
- * unanswered waits for the answer: until then the server may not have applied the move, and its
- * list would put the card back where it came from.
+ * A project's issue list, plain or open only (`open`): the Issues tab reads it open only, for its
+ * table and its Board alike, and the issue header's label picker reads it plain. Every observer
+ * sets the query's function, so each one takes it from here. A fetch that starts while a board
+ * move on the project is unanswered waits for the answer: until then the server may not have
+ * applied the move, and its list would put the card back where it came from.
  */
-export const projectIssuesQuery = (project: string, labels: readonly string[], open = false) =>
+export const projectIssuesQuery = (project: string, open = false) =>
   queryOptions({
     structuralSharing: shareIssuesByKey,
-    queryKey: [...projectIssuesQueryKey(project, labels), ...(open ? ["open"] : [])],
+    queryKey: [...projectIssuesQueryKey(project), ...(open ? ["open"] : [])],
     queryFn: async (context) => {
       await boardMovesSettled(context, project);
-      return api.listIssues({
-        project,
-        ...(labels.length ? { label: [...labels] } : {}),
-        ...(open ? { open: true } : {}),
-      });
+      return api.listIssues({ project, ...(open ? { open: true } : {}) });
     },
   });
 
-const HOUR_MS = 3_600_000;
-
 /** What `GET /api/v1/issues` is asked for a Closed window: `closed_since` at its first moment and
- *  `closed_before` at its end, each where the window has it, and nothing for no window. `hourly`
- *  starts a rolling window at the start of the hour its first moment falls in, so the read and
- *  its key hold for an hour; the rows it reads before the window's own first moment are the
- *  browser's to leave out. */
-function closedRange(window: ClosedWindow | undefined, hourly: boolean) {
+ *  `closed_before` at its end, each where the window has it, and nothing for no window. */
+function closedRange(window: ClosedWindow | undefined) {
   const from = window?.from ?? null;
   const to = window?.to ?? null;
-  const since =
-    from !== null && hourly && window?.rolling ? Math.floor(from / HOUR_MS) * HOUR_MS : from;
   return {
-    ...(since === null ? {} : { closed_since: new Date(since).toISOString() }),
+    ...(from === null ? {} : { closed_since: new Date(from).toISOString() }),
     ...(to === null ? {} : { closed_before: new Date(to).toISOString() }),
   };
+}
+
+/** `window` with a rolling window's first moment moved back to the start of its hour, so a read
+ *  of it and its key hold for an hour. The browser leaves out the rows it reads before the
+ *  window's own first moment. A window of fixed ends, and no window, stay as they are. */
+function hourStart(window: ClosedWindow | undefined): ClosedWindow | undefined {
+  if (window === undefined || window.from === null || !window.rolling) return window;
+  return { ...window, from: Math.floor(window.from / HOUR_MS) * HOUR_MS };
 }
 
 /** Every done issue of a project that a Closed window holds, or every done issue where the view
  *  names no window: what a view that lists done rows reads when the browser sorts, narrows and
  *  pages them. A rolling window is read from the start of the hour of its first moment
- *  (`closedRange`). Under the project listing's prefix, so the events that read the listing
+ *  (`hourStart`). Under the project listing's prefix, so the events that read the listing
  *  again read this again too, and a board move waits as it does there. */
 export const projectDoneIssuesQuery = (project: string, window: ClosedWindow | undefined) => {
-  const range = closedRange(window, true);
+  const range = closedRange(hourStart(window));
   return queryOptions({
     structuralSharing: shareIssuesByKey,
     queryKey: [
-      ...projectIssuesQueryKey(project, []),
+      ...projectIssuesQueryKey(project),
       "done",
       range.closed_since ?? "",
       range.closed_before ?? "",
@@ -483,11 +480,11 @@ export const projectDonePageQuery = (
   project: string,
   page: { readonly offset: number; readonly size: number; readonly window?: ClosedWindow }
 ) => {
-  const range = closedRange(page.window, false);
+  const range = closedRange(page.window);
   return queryOptions({
     structuralSharing: sharePageByKey,
     queryKey: [
-      ...projectIssuesQueryKey(project, []),
+      ...projectIssuesQueryKey(project),
       "done-page",
       range.closed_since ?? "",
       range.closed_before ?? "",
@@ -513,7 +510,7 @@ export const projectDonePageQuery = (
  *  prefix, so a live event on an issue reads it again. */
 export const projectOpenCountQuery = (project: string) =>
   queryOptions({
-    queryKey: [...projectIssuesQueryKey(project, []), "open-count"],
+    queryKey: [...projectIssuesQueryKey(project), "open-count"],
     queryFn: async (context) => {
       await boardMovesSettled(context, project);
       return (await api.listIssuePage({ project, open: true, limit: 1 })).total;
@@ -613,12 +610,14 @@ export const priorityHistoryQuery = (id: string) =>
     queryFn: () => api.getPriorityHistory(id),
   });
 
-/** What every live-owned delivery query shares (LEGION-690): its first load subscribes its view
- *  over the page's one live socket (`api/live-socket.ts`), which writes the snapshot and every
- *  later change into the cache, so nothing here reads again. `meta.live` keeps the event feed's
- *  refresh paths away from it (`api/query-refresh.ts`); `gcTime` 0 drops the subscription with the
- *  last observer; the page keeps the previous answer on screen while a new view's snapshot is out,
- *  as a filter change in the prototype it ports never blanks it. */
+/** What every live-owned query shares (LEGION-690): the delivery timeline, measures and pipeline
+ *  (`deliveryTimelineQuery`, `deliveryMeasuresQuery`, `deliveryPipelineQuery`) and the Legion
+ *  board (`legionBoardQuery`). Its first load subscribes its view over the page's one live socket
+ *  (`api/live-socket.ts`), which writes the snapshot and every later change into the cache, so
+ *  nothing here reads again. `meta.live` keeps the event feed's refresh paths away from it
+ *  (`api/query-refresh.ts`); `gcTime` 0 drops the subscription with the last observer. The
+ *  timeline and the measures keep the previous answer on screen while a new view's snapshot is
+ *  out (`keepPreviousData`), as a filter change in the prototype they port never blanks it. */
 const LIVE = {
   gcTime: 0,
   meta: { live: true },

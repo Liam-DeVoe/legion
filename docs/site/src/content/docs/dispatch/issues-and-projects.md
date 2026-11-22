@@ -69,7 +69,8 @@ Legion, when it works an issue, moves that issue's status itself.
 ## Views, the table and the Board
 
 The Issues tab lists the project's issues in views.
-Each view is a tab above the list, and each tab shows how many issues its view lists:
+Each view is a tab above the list.
+A tab shows how many issues its view lists where the page can count them:
 
 - **Open** lists the open issues in the order of the **Queue** column.
   An address that names no view opens Open.
@@ -86,7 +87,7 @@ Change a view's filters, search, sort or grouping, and its tab shows a dot.
 **Save view** then saves the view under a name of at most 14 characters, as a tab of its own.
 A saved view keeps its filters, sort, grouping, columns and layout, in your browser, for your sign-in.
 A name that a saved view of the project already has asks you to replace that view, and the name of a built-in view is refused.
-The open saved view's tab has a ✕ that deletes it.
+While a saved view is open, a ✕ after the tabs deletes it.
 A link to a view's address opens the same view for any reader, and **Me** and **Unread** mean the reader who opens it.
 **Clear filters** gives the view its own filters back and keeps its sort and grouping.
 
@@ -185,7 +186,7 @@ you were moving this card - refreshed, try again." The Board shows the fresh ord
 
 ### Lanes
 
-**Lanes**, beside **Show Icebox**, splits the Board into horizontal bands, one per
+**Lanes** splits the Board into horizontal bands, one per
 priority: P0 down to P3, then a band for issues with no priority. Cards keep the view's sort
 within each band. The choice persists per signed-in user, not in the page address, so it survives
 a reload. So does **Show Icebox**.

@@ -72,12 +72,12 @@ export function useTooltip({ paused = false }: { paused?: boolean } = {}): Toolt
 /**
  * The one tooltip, after the WAI-ARIA tooltip pattern: a short text or table that hangs off its
  * control while the reader hovers it or the keyboard focuses it, placed by `AnchoredPanel`'s
- * rules for a tooltip (`flip`: under the control, 8 px inside each edge of the window, above it
- * where there is no room under it). It takes no focus, so the control keeps it, and the control
+ * rules as every panel is (`tooltip`). It takes no focus, so the control keeps it, and the control
  * names it (`aria-describedby`) while it is open. It closes as the pointer or the focus leaves,
  * on a press outside it, and on Escape wherever the focus is: a tooltip a hover opened hangs off
  * a control the focus may not be on. Every sortable header of a `DataTable`, Time per phase's
- * cell, a Queue cell's number and a claim chip draw it.
+ * cell, a Queue cell's number, a claim chip, and a Board card's Legion measures (`Fact`) and its
+ * open asks (`OpenAsks`) draw it.
  */
 export function Tooltip({
   anchorRef,
@@ -116,7 +116,7 @@ function OpenTooltip({
     return () => document.removeEventListener("keydown", onEscape);
   }, [hide]);
   return (
-    <AnchoredPanel anchorRef={anchorRef} className={TOOLTIP_CLASS} flip onDismiss={hide}>
+    <AnchoredPanel anchorRef={anchorRef} className={TOOLTIP_CLASS} onDismiss={hide} tooltip>
       <div id={trigger.id} role="tooltip">
         {children}
       </div>

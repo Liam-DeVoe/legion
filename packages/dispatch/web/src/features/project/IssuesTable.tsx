@@ -20,6 +20,7 @@ import { ColumnsMenu } from "../../components/ColumnsMenu";
 import {
   DataTable,
   type DataTableNames,
+  functionalUpdate,
   type RowNoun,
   useDataTable,
 } from "../../components/DataTable";
@@ -60,7 +61,7 @@ import { setSelectedIssues } from "../search/bar-scope";
 import { useKeymap } from "../shell/keymap";
 import { COMPACT_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { useUserPreference } from "../shell/userPreference";
-import { type BoardBy, rankRefusal } from "./board-model";
+import { type BoardBy, boardColumns, rankRefusal } from "./board-model";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { BoardControlRow, IssueBoard } from "./IssueBoard";
 import {
@@ -90,6 +91,7 @@ import {
   ALL_ROWS,
   clearPicked,
   compareGroups,
+  FACTS_COLUMNS,
   facetCounts,
   fitViewWidths,
   groupValue,
@@ -128,6 +130,7 @@ import {
   readWindow,
   type SavedView,
   type SavedViews,
+  sameSet,
   savedViewQuery,
   shownColumns,
   useExcludedTrees,
@@ -159,6 +162,23 @@ const ROW_CHECKBOX = 'input[type="checkbox"]';
 
 /** What an answer the server gave no words for is called in an alert. */
 const NO_ANSWER = "Dispatch did not answer.";
+
+/** A read that can fail and be made again: what `readFailure` reads off a query. */
+interface Rereadable {
+  readonly error: unknown;
+  readonly isFetching: boolean;
+  readonly refetch: () => Promise<unknown>;
+}
+
+/** A failed read as the alert line under the tabs names it: its error, its Retry, and whether
+ *  that Retry is out. */
+function readFailure(query: Rereadable): ReadFailure {
+  return {
+    message: apiErrorMessage(query.error, NO_ANSWER),
+    retry: () => void query.refetch(),
+    retrying: query.isFetching,
+  };
+}
 
 /** The List's own words, which the table core reads and never invents: the attributes its rows
  *  and groups carry, the link opening a row follows, and the keys that walk it, under the ids
@@ -213,10 +233,6 @@ const PROJECT_GRAMMAR = viewsGrammar<View>({
   write: (params, view) => writeUrl(params, view),
 });
 
-/** The columns whose cells read the Legion facts (`LegionFacts`): a filter, a sort or a grouping
- *  of one of them waits for the read of those facts. */
-const FACTS_COLUMNS: readonly string[] = ["work_hours", "phase_hours", "review_rounds", "legion"];
-
 /** What Open's own address asks of its rows, which Open's tab counts by on another view. */
 const OPEN_ADDRESS = builtInAddress("open");
 
@@ -259,9 +275,6 @@ function picksOf(filters: View["filters"], id: string): readonly string[] {
   const value = filters.find((filter) => filter.id === id)?.value;
   return Array.isArray(value) ? value.map(String) : NO_PICKS;
 }
-
-const sameSet = (a: readonly string[], b: readonly string[]) =>
-  a.length === b.length && a.every((value) => b.includes(value));
 
 /**
  * The chips of the Board's control row: each narrowing of the view that differs from `own`, the
@@ -531,14 +544,8 @@ function IssuesTab({ label, project }: { label: string | undefined; project: str
   );
   if (daemon.isPending) return <LoadingSkeleton label="Loading issues" />;
   const hasLegion = daemon.data !== undefined && daemon.data !== null;
-  const daemonFailure: ReadFailure | undefined =
-    daemon.isError && daemon.data === undefined
-      ? {
-          message: apiErrorMessage(daemon.error, NO_ANSWER),
-          retry: () => void daemon.refetch(),
-          retrying: daemon.isFetching,
-        }
-      : undefined;
+  const daemonFailure =
+    daemon.isError && daemon.data === undefined ? readFailure(daemon) : undefined;
   const tab: IssuesTabPlace = {
     project,
     hasLegion,
@@ -600,7 +607,8 @@ function IssuesTabTable({ name, tab }: { name: string; tab: IssuesTabPlace }): R
   // Below 1280 px every button is a 44 px touch target, and each column's minimum holds its
   // header with that filter button, and its sort mark too while the view is sorted by it.
   const touch = useMediaQuery(COMPACT_VIEWPORT_QUERY);
-  const cols = readCols(params);
+  // `cols=` for this load, read again only when the address moves.
+  const cols = useMemo(() => readCols(params), [params]);
   const rules = viewLayoutColumns(shownColumns(params, base, hasLegion), touch);
   // What the stored layout keeps hidden until the reader shows it, whatever the address and the
   // daemon setting say now: the view's own columns in a project with a daemon. So a load with
@@ -616,19 +624,21 @@ function IssuesTabTable({ name, tab }: { name: string; tab: IssuesTabPlace }): R
     storedRules,
     address.view.sorting
   );
-  const shown = cols === undefined ? undefined : new Set(["select", ...cols]);
   // No board-fed column shows in a project with no daemon, whatever a reader stored while one
-  // ran, and Queue only once the reader shows it.
-  const unfed: VisibilityState = hasLegion
-    ? {}
-    : {
-        queue: shown?.has("queue") ?? stored.visibility.queue ?? false,
-        ...Object.fromEntries(rules.ids.filter(isBoardFedColumn).map((id) => [id, false])),
-      };
-  const visibility: VisibilityState =
-    shown === undefined
+  // ran, and Queue only once the reader shows it. Held while what it reads stays, so the table's
+  // cells are not drawn again for a new object of the same visibility.
+  const visibility = useMemo<VisibilityState>(() => {
+    const shown = cols === undefined ? undefined : new Set(["select", ...cols]);
+    const unfed: VisibilityState = hasLegion
+      ? {}
+      : {
+          queue: shown?.has("queue") ?? stored.visibility.queue ?? false,
+          ...Object.fromEntries(rules.ids.filter(isBoardFedColumn).map((id) => [id, false])),
+        };
+    return shown === undefined
       ? { ...stored.visibility, ...unfed }
       : { ...Object.fromEntries(rules.ids.map((id) => [id, shown.has(id)])), ...unfed };
+  }, [cols, hasLegion, rules.ids, stored.visibility]);
   const drawn = stored.order.length > 0 ? stored.order : rules.ids;
   const phone = stored.boxWidth < 640;
   const order = phone ? phoneOrder(drawn) : stored.order;
@@ -638,22 +648,21 @@ function IssuesTabTable({ name, tab }: { name: string; tab: IssuesTabPlace }): R
   // Key, and one dropped onto another header moves among the columns after Title. Title itself
   // is not dragged there (`fixedColumns`).
   const setPhoneOrder: TableLayoutModel["setOrder"] = (next) =>
-    stored.setOrder(phoneOrder(typeof next === "function" ? next(order) : next));
+    stored.setOrder(phoneOrder(functionalUpdate(next, order)));
   const writeCols: TableLayoutModel["setVisibility"] = (next) => {
-    const resolved = typeof next === "function" ? next(visibility) : next;
+    const resolved = functionalUpdate(next, visibility);
     const ids = rules.ids.filter((id) => id !== "select" && resolved[id] !== false);
     update((current) => {
       current.set("cols", ids.join(","));
       return current;
     });
   };
-  const layout: TableLayoutModel = {
-    ...stored,
-    order,
-    setOrder: phone ? setPhoneOrder : stored.setOrder,
-    fixedColumns: phone ? PHONE_FIXED : undefined,
-    responsive:
-      Object.keys(stored.sizing).length > 0 || phone
+  // The reader's own widths, or a phone's, are drawn as they are; else the columns are fitted to
+  // the box, again only when what the fit reads changes.
+  const ownWidths = Object.keys(stored.sizing).length > 0 || phone;
+  const responsive = useMemo(
+    () =>
+      ownWidths
         ? stored.responsive
         : {
             ...stored.responsive,
@@ -665,8 +674,16 @@ function IssuesTabTable({ name, tab }: { name: string; tab: IssuesTabPlace }): R
               ACTION_WIDTH
             ),
           },
+    [ownWidths, drawn, visibility, stored.responsive, stored.minimums, stored.boxWidth]
+  );
+  const layout: TableLayoutModel = {
+    ...stored,
+    order,
+    setOrder: phone ? setPhoneOrder : stored.setOrder,
+    fixedColumns: phone ? PHONE_FIXED : undefined,
+    responsive,
     visibility,
-    ...(shown === undefined ? {} : { setVisibility: writeCols }),
+    ...(cols === undefined ? {} : { setVisibility: writeCols }),
   };
   return (
     <IssueTableBody
@@ -822,7 +839,7 @@ function IssueTableBody({
   const reading = [...filters.map(({ id }) => id), ...sorting.map(({ id }) => id), ...grouping];
   const boardWaits =
     hasLegion &&
-    (filters.some(({ id }) => isBoardFedColumn(id) || id === "queue") ||
+    (filters.some(({ id }) => id === "queue") ||
       reading.some(isBoardFedColumn) ||
       excluded.length > 0);
   const factsWait =
@@ -910,7 +927,7 @@ function IssueTableBody({
     recordMark,
     columnsLayout,
     priorityTitles,
-    tab === undefined ? undefined : { hasLegion }
+    tab === undefined ? undefined : hasLegion
   );
   // The view the reader picked, and whether its first draw is whole. In a project with a Legion
   // daemon the board's first snapshot is part of it: Open sorts by Queue and draws its rows before
@@ -1096,9 +1113,20 @@ function IssueTableBody({
   });
   const openIn = readsOpen && issues.data !== undefined;
   const savedViews = tab?.saved.views;
+  // The open view's own count is the rows the table lists now (`listedCount`, below), so the
+  // counts of the other views are all this works out.
+  const openActive = active?.kind === "built-in" && active.id === "open";
+  const savedActive = active?.kind === "saved" ? active.name : undefined;
   const counts = useMemo(() => {
     const built = new Map<string, number | undefined>([
-      ["open", openIn ? countOf(allItems, OPEN_ADDRESS, userState.data) : openCount.data],
+      [
+        "open",
+        openActive
+          ? undefined
+          : openIn
+            ? countOf(allItems, OPEN_ADDRESS, userState.data)
+            : openCount.data,
+      ],
       ["done", doneCount.data?.total],
     ]);
     const savedCounts = new Map<string, number | undefined>(
@@ -1106,12 +1134,23 @@ function IssueTableBody({
         const query = copyAddress(saved.query);
         return [
           saved.name,
-          openIn && !listsClosed(query) ? countOf(allItems, query, userState.data) : undefined,
+          saved.name !== savedActive && openIn && !listsClosed(query)
+            ? countOf(allItems, query, userState.data)
+            : undefined,
         ];
       })
     );
     return { built, savedCounts };
-  }, [allItems, doneCount.data, openCount.data, openIn, savedViews, userState.data]);
+  }, [
+    allItems,
+    doneCount.data,
+    openActive,
+    openCount.data,
+    openIn,
+    savedActive,
+    savedViews,
+    userState.data,
+  ]);
   const listedCount = counted ? (doneTotal ?? listedRows.length) : undefined;
 
   const header = board.data?.header;
@@ -1119,15 +1158,7 @@ function IssueTableBody({
     tab === undefined ? null : (
       <IssueViewTabs
         active={tab.active}
-        boardFailure={
-          hasLegion && board.isError
-            ? {
-                message: apiErrorMessage(board.error, NO_ANSWER),
-                retry: () => void board.refetch(),
-                retrying: board.isFetching,
-              }
-            : undefined
-        }
+        boardFailure={hasLegion && board.isError ? readFailure(board) : undefined}
         changed={tab.changed}
         counts={
           active?.kind === "built-in"
@@ -1140,15 +1171,7 @@ function IssueTableBody({
             ? (header.read_error ?? "")
             : undefined
         }
-        factsFailure={
-          hasLegion && factsRead.isError
-            ? {
-                message: apiErrorMessage(factsRead.error, NO_ANSWER),
-                retry: () => void factsRead.refetch(),
-                retrying: factsRead.isFetching,
-              }
-            : undefined
-        }
+        factsFailure={hasLegion && factsRead.isError ? readFailure(factsRead) : undefined}
         onDelete={(saved) => {
           tab.saved.remove(saved);
           tab.choose(undefined);
@@ -1315,9 +1338,15 @@ function IssueTableBody({
         {loaded ? (
           <IssueBoard
             by={by}
+            columns={boardColumns({
+              by,
+              listsDone,
+              phaseFilterPicks: picksOf(filters, "legion_phase"),
+              rows: boardRows,
+              showIcebox: tab.showIcebox,
+              statusPicks,
+            })}
             lanes={tab.lanes}
-            listsDone={listsDone}
-            phaseFilterPicks={picksOf(filters, "legion_phase")}
             project={tab.project}
             rankRefusal={rankRefusal(
               firstSort,
@@ -1328,8 +1357,6 @@ function IssueTableBody({
               )
             )}
             rows={boardRows}
-            showIcebox={tab.showIcebox}
-            statusPicks={statusPicks}
             userState={userState.data}
             // Its lanes and its Icebox are the reader's own picks too.
             viewKey={`${viewKey}\n${tab.lanes}\n${tab.showIcebox}`}
@@ -1337,6 +1364,38 @@ function IssueTableBody({
         ) : null}
       </section>
     );
+  }
+
+  // The strip of the rows by status over the table, once the rows are in.
+  let statusStrip: ReactNode = null;
+  if (loaded) {
+    if (tab === undefined) {
+      // A priority page's table: its strip of every status the table holds, a press showing only
+      // that status and a second press every status.
+      statusStrip = <IssueTableStatus table={table} items={allItems} />;
+    } else if (tab.base.bar && counted) {
+      // The rows the table lists by status; a server's page of done rows counts its total, which
+      // is every row it lists.
+      statusStrip = (
+        <IssueStatusBar
+          counts={
+            doneTotal === undefined
+              ? countStatuses(listedRows.map((row) => row.original.issue.status))
+              : new Map([["done", doneTotal]])
+          }
+          narrowTo={(status) => {
+            const column = table.getColumn("status");
+            if (status !== undefined) {
+              column?.setFilterValue([status]);
+              return;
+            }
+            const own = expandView(tab.ownAddress);
+            column?.setFilterValue(own.get("nofilter") === "1" ? undefined : own.getAll("status"));
+          }}
+          picked={statusPicks}
+        />
+      );
+    }
   }
 
   // The toolbar is drawn in every branch, at the one place in the tree, as the Board draws its
@@ -1357,33 +1416,7 @@ function IssueTableBody({
       <div className="space-y-3" ref={attachAbove}>
         {tabs}
         {listingNotices}
-        {!loaded ? null : tab === undefined ? (
-          // A priority page's table: its strip of every status the table holds, a press showing
-          // only that status and a second press every status.
-          <IssueTableStatus table={table} items={allItems} />
-        ) : tab.base.bar && counted ? (
-          // The rows the table lists by status; a server's page of done rows counts its total,
-          // which is every row it lists.
-          <IssueStatusBar
-            counts={
-              doneTotal === undefined
-                ? countStatuses(listedRows.map((row) => row.original.issue.status))
-                : new Map([["done", doneTotal]])
-            }
-            narrowTo={(status) => {
-              const column = table.getColumn("status");
-              if (status !== undefined) {
-                column?.setFilterValue([status]);
-                return;
-              }
-              const own = expandView(tab.ownAddress);
-              column?.setFilterValue(
-                own.get("nofilter") === "1" ? undefined : own.getAll("status")
-              );
-            }}
-            picked={statusPicks}
-          />
-        ) : null}
+        {statusStrip}
 
         <IssueTableToolbar
           clear={

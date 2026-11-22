@@ -50,21 +50,12 @@ export function laneKey(lane: PriorityLane): string {
   return lane === null ? "none" : String(lane);
 }
 
-/** The inverse of `laneKey`; `undefined` for anything else, including an empty string (`Number`
- *  reads `""` as `0`, which would otherwise be mistaken for P0). */
-export function laneFromKey(value: string): PriorityLane | undefined {
-  if (value === "none") {
-    return null;
-  }
-  return /^[0-3]$/.test(value) ? (Number(value) as IssuePriority) : undefined;
-}
-
 /** What the Board's columns are: the issues' statuses, or their Legion phases (Group by). */
 export type BoardBy = "status" | "legion_phase";
 
 /** The rail of the rows the daemon holds no card for, on a Board by Legion phase: the id the
  *  Legion phase filter gives its None pick (`NONE_PICK` in `issues-views.ts`). */
-export const NONE_COLUMN = "none";
+const NONE_COLUMN = "none";
 
 /** The one column of a Board by Legion phase whose cards a reader may put in order. */
 const QUEUE_COLUMN = "queue";
@@ -130,7 +121,7 @@ export function boardColumns({
 
 /** The column a row stands in on a Board of `by`: its status, or the board column its card is
  *  in, None with no card. */
-export function columnOf(item: Item, by: BoardBy): string {
+function columnOf(item: Item, by: BoardBy): string {
   return by === "status" ? item.issue.status : (item.card?.column ?? NONE_COLUMN);
 }
 
@@ -160,9 +151,25 @@ export function cellId(column: string, lane: PriorityLane | undefined): string {
   return lane === undefined ? `column:${column}` : `lane:${laneKey(lane)}|column:${column}`;
 }
 
+/** The prefix of a card's drop id. */
+const CARD_DROP_PREFIX = "card:";
+
 /** A card's drop id. Its drag id is its key, as dnd-kit keeps drags and drops apart. */
 export function cardDropId(key: string): string {
-  return `card:${key}`;
+  return `${CARD_DROP_PREFIX}${key}`;
+}
+
+/** The cell of `cells` that holds the card of `key`, and the card's place in it, or undefined
+ *  where no cell holds it. */
+export function cardIn(
+  cells: readonly BoardCell[],
+  key: string
+): { readonly cell: BoardCell; readonly index: number } | undefined {
+  for (const cell of cells) {
+    const index = cell.items.findIndex((item) => item.issue.key === key);
+    if (index !== -1) return { cell, index };
+  }
+  return undefined;
 }
 
 /**
@@ -217,13 +224,11 @@ export function dropPlace(
 ): BoardPlace | undefined {
   const cells = lines.flatMap((line) => line.cells);
   if (overId === cardDropId(activeKey)) return undefined;
-  if (overId.startsWith("card:")) {
-    const key = overId.slice("card:".length);
-    for (const cell of cells) {
-      const index = cell.items.findIndex((item) => item.issue.key === key);
-      if (index !== -1) return { column: cell.column.id, lane: cell.lane, index };
-    }
-    return undefined;
+  if (overId.startsWith(CARD_DROP_PREFIX)) {
+    const found = cardIn(cells, overId.slice(CARD_DROP_PREFIX.length));
+    return found === undefined
+      ? undefined
+      : { column: found.cell.column.id, lane: found.cell.lane, index: found.index };
   }
   const cell = cells.find((candidate) => cellId(candidate.column.id, candidate.lane) === overId);
   return cell === undefined
@@ -259,7 +264,6 @@ export type MovePlan =
       readonly kind: "move";
       readonly key: string;
       readonly change: BoardChange;
-      readonly to: BoardPlace;
       readonly position?: { readonly at: number; readonly of: number };
     };
 
@@ -322,15 +326,16 @@ export function planMove(
   to: BoardPlace
 ): MovePlan | undefined {
   const cells = lines.flatMap((line) => line.cells);
-  const from = cells.find((cell) => cell.items.some((item) => item.issue.key === key));
+  const found = cardIn(cells, key);
   const target = cells.find((cell) => cell.column.id === to.column && cell.lane === to.lane);
-  if (from === undefined || target === undefined) return undefined;
-  const item = from.items.find((candidate) => candidate.issue.key === key);
+  if (found === undefined || target === undefined) return undefined;
+  const from = found.cell;
+  const item = from.items[found.index];
   if (item === undefined) return undefined;
   const within = from === target;
   const others = target.items.filter((candidate) => candidate.issue.key !== key);
   const index = Math.min(Math.max(to.index, 0), others.length);
-  if (within && index === from.items.indexOf(item)) return undefined;
+  if (within && index === found.index) return undefined;
   if (rules.by === "legion_phase" && !(within && to.column === QUEUE_COLUMN))
     return { kind: "refused", text: DAEMON_SETS_PHASE };
   const above = others[index - 1];
@@ -370,7 +375,6 @@ export function planMove(
       input,
       ...(rank === undefined ? {} : { rank: rankAfter(above?.issue.rank) }),
     },
-    to: { column: to.column, lane: to.lane, index },
     ...(ranked ? { position: { at: index + 1, of: others.length + 1 } } : {}),
   };
 }

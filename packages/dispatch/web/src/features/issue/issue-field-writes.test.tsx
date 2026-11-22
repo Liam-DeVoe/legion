@@ -2792,7 +2792,7 @@ function storedPriority(patchIssue: { mock: { calls: unknown[][] } }): IssuePrio
  *  it recorded there with the card's priority. */
 function BoardCard({ commits }: { commits?: Commits<IssuePriority | null> }): ReactNode {
   const board = useQuery({
-    ...projectIssuesQuery(issue.project, []),
+    ...projectIssuesQuery(issue.project),
     staleTime: Number.POSITIVE_INFINITY,
   });
   const card = board.data?.find((row) => row.key === issue.key);
@@ -3879,13 +3879,13 @@ test("a refused pick puts back the priority a read's retry answered, not the old
 });
 
 /** The key of CORE's open issues, as the issues table reads them. */
-const openKey = projectIssuesQuery(issue.project, [], true).queryKey;
+const openKey = projectIssuesQuery(issue.project, true).queryKey;
 
 /** CORE's open issues as the issues table reads them (`projectIssuesQuery` with `open`, whose
  *  read waits until every board move on the project is answered), showing CORE-1's priority. */
 function OpenIssues(): ReactNode {
   const open = useQuery({
-    ...projectIssuesQuery(issue.project, [], true),
+    ...projectIssuesQuery(issue.project, true),
     staleTime: Number.POSITIVE_INFINITY,
   });
   return (

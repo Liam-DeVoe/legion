@@ -74,10 +74,11 @@ import {
 import {
   type BoardBy,
   type BoardCell,
+  type BoardColumn,
   type BoardLine,
-  boardColumns,
   boardLines,
   cardDropId,
+  cardIn,
   cellId,
   columnTitle,
   dropPlace,
@@ -91,8 +92,8 @@ import {
 import { useBoardMoves } from "./board-moves";
 import { IssueFlagChips, NarrowingList, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
-import { formatPhaseTime, formatWorkTime } from "./issues-legion";
-import { type Item, MEASURE_METHODS, sinceMs, workerName, workHoursOf } from "./issues-table-model";
+import { formatPhaseTime, formatWorkTime, sinceMs } from "./issues-legion";
+import { type Item, MEASURE_METHODS, workerName, workHoursOf } from "./issues-table-model";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 const boardCollisionDetection: CollisionDetection = (args) => {
@@ -530,8 +531,6 @@ function BoardLineView({
   );
 }
 
-const NO_NARROWINGS: readonly FilterChip[] = [];
-
 /**
  * The control row above the Board: the view's search, the Filters panel with the Labels picker
  * (which writes `label=`, as the table's Labels column filter does) and the three flags, a chip
@@ -554,7 +553,7 @@ export function BoardControlRow({
   controls,
   groupBy,
   labelOptions,
-  narrowings = NO_NARROWINGS,
+  narrowings,
   onClear,
   onSearch,
   search,
@@ -572,7 +571,7 @@ export function BoardControlRow({
   labelOptions: readonly string[];
   /** The narrowings among `chips` that are no column and no flag (`exclude_tree`), which the
    *  Filters panel lists too, each with its remove. */
-  narrowings?: readonly FilterChip[];
+  narrowings: readonly FilterChip[];
   onClear: (() => void) | undefined;
   onSearch: (search: string) => void;
   /** The view's search. */
@@ -716,7 +715,7 @@ interface MoveFollow {
  *
  * A live change to one issue draws that issue's card alone: the cards are memoised on what they
  * draw (`sameCard`), the sensors' options are made once, and a card compares the Time in Legion
- * phase text it draws, while the Board reads the clock on each render.
+ * phase text it draws, which counts to its row's clock (`Item.at`).
  *
  * The reader keeps their place, as in a table (R11): the card the reader's hand is on (focus,
  * then the pointer), else, once they have scrolled, the card at the middle of the Board, and at
@@ -729,34 +728,25 @@ interface MoveFollow {
  */
 export function IssueBoard({
   by,
+  columns,
   lanes,
-  listsDone,
-  phaseFilterPicks,
   project,
   rankRefusal,
   rows,
-  showIcebox,
-  statusPicks,
   userState,
   viewKey,
 }: {
   by: BoardBy;
+  /** The Board's columns, in its order (`boardColumns`). */
+  columns: readonly BoardColumn[];
   /** Group the Board into swimlanes by priority, one band per priority and one for none. */
   lanes: boolean;
-  /** The view lists done issues: the Done rail opens into a column with their cards. */
-  listsDone: boolean;
-  /** The picks of the view's Legion phase filter, none for no filter. */
-  phaseFilterPicks: readonly string[];
   project: string;
   /** Why the view's sort lets no rank decide where a card lands within a column (`rankRefusal` in
    *  `board-model.ts`); undefined while the view sorts by Place, first to last. */
   rankRefusal: string | undefined;
   /** The view's rows, in the view's sort. */
   rows: readonly Item[];
-  /** Icebox is a column, and not a rail. */
-  showIcebox: boolean;
-  /** The picks of the view's Status filter, none for no filter. */
-  statusPicks: readonly string[];
   userState: UserState | undefined;
   /** Names the view the reader picked: its address, its lanes and its Icebox, and whether its
    *  first draw is whole (`IssueTableBody`). A change of it is the reader's own move, which the
@@ -768,12 +758,7 @@ export function IssueBoard({
     useSensor(MouseSensor, MOUSE_OPTIONS),
     useSensor(TouchSensor, TOUCH_OPTIONS)
   );
-  const lines = boardLines(
-    rows,
-    boardColumns({ by, listsDone, phaseFilterPicks, rows, showIcebox, statusPicks }),
-    by,
-    lanes
-  );
+  const lines = boardLines(rows, columns, by, lanes);
   const rules: MoveRules = { by, lanes, rankRefusal };
   // While a card is in flight the scroller must not snap (`BoardLineView`), so snapping is
   // switched off from lift to drop.
@@ -831,8 +816,11 @@ export function IssueBoard({
   }, []);
   // A refused move's text, over the Board, until the next move.
   const [refusal, setRefusal] = useState<string>();
-  // One `aria-live` sentence per key move and per refusal.
-  const [announcement, setAnnouncement] = useState("");
+  // One `aria-live` sentence per key move and per refusal. Each set takes a new count, which keys
+  // the region's text anew, so the same sentence twice in a row is read out twice.
+  const [announcement, setAnnouncementState] = useState({ count: 0, text: "" });
+  const setAnnouncement = (text: string) =>
+    setAnnouncementState((current) => ({ count: current.count + 1, text }));
   // The title link is both the hover-card trigger and part of the whole-card drag activator, and
   // the click that would dismiss an open card after the drop is the one swallowed above - so a
   // lift closes the card (open or still pending) itself. The lift marks the gesture's click as
@@ -896,9 +884,11 @@ export function IssueBoard({
   useEffect(() => {
     const pending = afterMove.current;
     if (pending === null) return;
-    const cell = lines
-      .flatMap((line) => line.cells)
-      .find((candidate) => candidate.items.some((item) => item.issue.key === pending.key));
+    const found = cardIn(
+      lines.flatMap((line) => line.cells),
+      pending.key
+    );
+    const cell = found?.cell;
     // Not drawn yet: the card still stands in the column it left.
     if (cell !== undefined && cell.column.id !== pending.column) {
       if (pending.settled) afterMove.current = null;
@@ -906,7 +896,7 @@ export function IssueBoard({
     }
     if (pending.announce) {
       pending.announce = false;
-      const index = cell?.items.findIndex((item) => item.issue.key === pending.key) ?? -1;
+      const index = found?.index ?? -1;
       setAnnouncement(
         announceMove(
           pending.key,
@@ -987,10 +977,9 @@ export function IssueBoard({
     if (key === undefined) return;
     const laneId = currentLaneId();
     const line = lineOf(laneId);
-    const cell = line?.cells.find((candidate) =>
-      candidate.items.some((item) => item.issue.key === key)
-    );
-    if (line === undefined || cell === undefined) return;
+    const found = line === undefined ? undefined : cardIn(line.cells, key);
+    if (line === undefined || found === undefined) return;
+    const { cell, index } = found;
     // The refusal first, then the Board's edge: a key the rules refuse says so at the column's
     // end too.
     const refused = keyRefusal(
@@ -1002,7 +991,6 @@ export function IssueBoard({
       take({ kind: "refused", text: refused });
       return;
     }
-    const index = cell.items.findIndex((item) => item.issue.key === key);
     const target = keyboardMove(keyColumns(line), { column: cell.column.id, index }, direction);
     if (target === undefined) return;
     const plan = planMove(lines, rules, key, {
@@ -1180,7 +1168,7 @@ export function IssueBoard({
         </p>
       )}
       <p aria-label="Board announcements" aria-live="polite" className="sr-only" role="status">
-        {announcement}
+        <span key={announcement.count}>{announcement.text}</span>
       </p>
       <DndContext
         accessibility={BOARD_ACCESSIBILITY}

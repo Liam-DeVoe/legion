@@ -706,6 +706,24 @@ test("under another sort a move within a column is refused with the sort named, 
   );
 });
 
+// A live region reads out a change of its content. The same refusal twice in a row is a new
+// node each time, so a screen reader reads the second press's refusal too.
+test("the same refusal twice is two writes of the live region", async () => {
+  const user = userEvent.setup();
+  const patch = patchInFlight();
+  board(keyboardIssues(), "?layout=board&sort=-created");
+  const region = await boardRegion();
+  const refusal = "The view sorts by Created. Sort by Queue to move cards in a column.";
+  act(() => within(region).getByRole("article", { name: "CORE-1 Alpha" }).focus());
+  await user.keyboard("{Shift>}J{/Shift}");
+  expect(liveRegion().textContent).toBe(refusal);
+  const first = liveRegion().firstChild;
+  await user.keyboard("{Shift>}J{/Shift}");
+  expect(liveRegion().textContent).toBe(refusal);
+  expect(liveRegion().firstChild).not.toBe(first);
+  expect(patch).not.toHaveBeenCalled();
+});
+
 // Under the Place sort a card with a place in the Legion queue (here Start next's, the Todo
 // issues labelled `legion`, with no daemon) sorts before every card with none, so the rank
 // decides a move only among cards that all have a place or all have none.

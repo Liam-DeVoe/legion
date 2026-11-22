@@ -47,10 +47,11 @@ import { Tooltip, useTooltip } from "./Tooltip";
 import { type FocusRow, type RowKeymap, useRowKeymap } from "./table-keys";
 import { reorder, type TableLayoutModel } from "./table-layout";
 
-/** TanStack's own renderer for a header or a cell, re-exported: the core is the one place the
- *  table library is imported as a value, and a page that draws its own rows needs this to turn
- *  a column's definition into what the row shows. */
-export { flexRender };
+/** TanStack's own renderer for a header or a cell, and its reading of a state change that is a
+ *  value or a function of the state, re-exported: the core is the one place the table library is
+ *  imported as a value, and a page that draws its own rows needs the renderer to turn a column's
+ *  definition into what the row shows. */
+export { flexRender, functionalUpdate };
 
 const EMPTY_COUNTS: ReadonlyMap<string, number> = new Map();
 const NO_SELECTION: RowSelectionState = {};
@@ -367,15 +368,16 @@ export function useDataTable<Row>({
   });
   const onlyScrolled = () => {
     const last = drawn.current;
-    const sameRows =
+    const scrolled =
+      last.scroll.offset !== scroll.offset || last.scroll.scrolling !== scroll.scrolling;
+    return (
+      scrolled &&
       last.rows.length === pageRows.length &&
       pageRows.every(
         (row, index) =>
           row.id === last.rows[index]?.id && row.original === last.rows[index]?.original
-      );
-    const scrolled =
-      last.scroll.offset !== scroll.offset || last.scroll.scrolling !== scroll.scrolling;
-    return sameRows && scrolled;
+      )
+    );
   };
 
   return {

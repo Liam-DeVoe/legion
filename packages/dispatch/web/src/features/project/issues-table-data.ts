@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   advancesIssuesQuery,
   legionBoardQuery,
@@ -127,6 +127,10 @@ export function useIssueTableItems(
   const text = useAgentText();
   const project = "project" in listing ? listing.project : undefined;
   const done = reads.done;
+  // A project's view that reads its done rows a page at a time.
+  const paged = project !== undefined && done?.kind === "page";
+  // A project with a Legion daemon: its board is read, and the items of its done rows.
+  const legion = project !== undefined && reads.legion;
   // Scoped, the listing is the priority's own, which names no project: a priority belongs to
   // none, so the work under it is every project's. A listing its open read answers whole never
   // asks for this one (`answeredWhole`, which `IssuesTable` reads).
@@ -144,30 +148,28 @@ export function useIssueTableItems(
     }),
     // A step of the pager keeps the page on screen until the next one answers.
     placeholderData: keepPreviousData,
-    enabled: project !== undefined && done?.kind === "page",
+    enabled: paged,
   });
-  const doneRead = project !== undefined && done?.kind === "page" ? donePage : everyIssue;
+  const doneRead = paged ? donePage : everyIssue;
   const doneLoaded = done !== undefined && doneRead.data !== undefined;
   const scopedWhole = project === undefined && doneLoaded;
   const openIssues = useQuery({
     ...("project" in listing
-      ? projectIssuesQuery(listing.project, [], true)
+      ? projectIssuesQuery(listing.project, true)
       : advancesIssuesQuery(listing, true)),
     enabled: project === undefined ? !scopedWhole : reads.open,
   });
   const board = useQuery({
     ...legionBoardQuery(project ?? ""),
-    enabled: project !== undefined && reads.legion,
+    enabled: legion,
   });
-  const legion = project !== undefined && reads.legion;
 
   const openRows = project === undefined || reads.open ? openIssues.data : NO_ISSUES;
-  const readRows =
-    project !== undefined && done?.kind === "page"
-      ? donePage.data === undefined
-        ? undefined
-        : (donePage.data.issues ?? NO_ISSUES)
-      : everyIssue.data;
+  const readRows = paged
+    ? donePage.data === undefined
+      ? undefined
+      : (donePage.data.issues ?? NO_ISSUES)
+    : everyIssue.data;
   const doneRows = useMemo(
     () =>
       project === undefined || done === undefined || readRows === undefined
@@ -208,15 +210,12 @@ export function useIssueTableItems(
   }, [items.data, doneRows]);
   // A read the view does not make is answered: only a read that is out, or failed, holds a done
   // row's facts back. A later failed read keeps the facts it had.
-  const itemsStatus: ReadStatus = !itemsRead
-    ? board.data === undefined && legion && done !== undefined
-      ? board.status === "error"
-        ? "error"
-        : "pending"
-      : "success"
-    : items.data === undefined
-      ? items.status
-      : "success";
+  let itemsStatus: ReadStatus = "success";
+  if (itemsRead) {
+    if (items.data === undefined) itemsStatus = items.status;
+  } else if (board.data === undefined && legion && done !== undefined) {
+    itemsStatus = board.status === "error" ? "error" : "pending";
+  }
   const legionReads = useMemo<LegionReads | undefined>(
     () =>
       legion
@@ -245,7 +244,8 @@ export function useIssueTableItems(
       ),
     [all, text, registry, legionReads, viewer]
   );
-  const issues = project === undefined ? (scopedWhole ? everyIssue : openIssues) : openIssues;
+  // Scoped, the whole listing once it has answered; else the open read.
+  const issues = scopedWhole ? everyIssue : openIssues;
   const listingError =
     done !== undefined && doneRead.isError
       ? doneRead
@@ -259,7 +259,7 @@ export function useIssueTableItems(
     doneLoaded,
     doneRead,
     /** Every done issue the paged read's window holds, where the view reads a page. */
-    doneTotal: project !== undefined && done?.kind === "page" ? donePage.data?.total : undefined,
+    doneTotal: paged ? donePage.data?.total : undefined,
     issues,
     items,
     itemsStatus,
@@ -305,13 +305,15 @@ function useDoneFactsCurrent({
     undefined
   );
   const closing = useRef<{ keys: readonly string[]; itemsAt: number } | undefined>(undefined);
-  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
-  useEffect(() => {
-    const started = timers.current;
-    return () => {
-      for (const timer of started) clearTimeout(timer);
-    };
-  }, []);
+  // The timers of the second rule that have not fired yet, cleared as the view goes.
+  const [timers] = useState(() => new Set<ReturnType<typeof setTimeout>>());
+  useEffect(
+    () => () => {
+      for (const timer of timers) clearTimeout(timer);
+      timers.clear();
+    },
+    [timers]
+  );
 
   // The first rule, and the close the second waits on: the same done read answered again.
   useEffect(() => {
@@ -335,8 +337,12 @@ function useDoneFactsCurrent({
     if (wait === undefined || answered === undefined || itemsAt === wait.itemsAt) return;
     closing.current = undefined;
     if (wait.keys.every((key) => Object.hasOwn(answered, key))) return;
-    timers.current.push(setTimeout(readAgain, CLOSE_ITEMS_AGAIN_MS));
-  }, [itemsAt, readAgain]);
+    const timer = setTimeout(() => {
+      timers.delete(timer);
+      readAgain();
+    }, CLOSE_ITEMS_AGAIN_MS);
+    timers.add(timer);
+  }, [itemsAt, readAgain, timers]);
 
   // The third rule: a board push that changes or removes a listed done row's key in its map.
   const boardIssues = board?.issues;

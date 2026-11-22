@@ -31,7 +31,7 @@ export interface BoardMoveVariables {
 /**
  * The one path every Board move takes - pointer, touch and keyboard drops alike. `move` places
  * the card on the page at once, in every listing the views read that holds it (the open listing
- * and the reads of done issues, under `projectIssuesQueryKey(project, [])`), sends the PATCH the
+ * and the reads of done issues, under `projectIssuesQueryKey(project)`), sends the PATCH the
  * Board's rules planned (`planMove`), and reads the listings again once the server has answered.
  * Moves on one Board are serialised through a single mutation scope, so a second drop is planned
  * from the first one's placement and never overtakes it on the wire. A listing the server
@@ -61,7 +61,7 @@ export function useBoardMoves(project: string): {
   const { mutateAsync } = patch;
   const move = useCallback(
     async (key: string, change: BoardChange) => {
-      const listings = projectIssuesQueryKey(project, []);
+      const listings = projectIssuesQueryKey(project);
       // A listing query holds the issues `listIssues` answers; the page reads and the counts
       // under the same prefix hold no such list, and no card.
       const held = queryClient

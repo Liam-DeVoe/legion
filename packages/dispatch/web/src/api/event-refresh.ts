@@ -1,4 +1,5 @@
 import { askProject } from "../features/inbox/list-row";
+import { listRows } from "../features/issue/issue-field-looks";
 import { buildDispatchReference } from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
 import {
@@ -812,16 +813,8 @@ function priorityWriteTargets(
     row !== null &&
     ((row as Pick<IssueSummary, "advances">).advances ?? []).some((entry) => entry.id === id);
   const when: RefreshCheck = (data) => {
-    if (Array.isArray(data)) return data.some(advancesIt);
-    if (
-      typeof data === "object" &&
-      data !== null &&
-      "issues" in data &&
-      Array.isArray(data.issues)
-    ) {
-      return data.issues.some(advancesIt);
-    }
-    return advancesIt(data);
+    const rows = listRows(data);
+    return rows === undefined ? advancesIt(data) : rows.some(advancesIt);
   };
   targets.push(
     { queryKey: ["issues", "advances", id] },

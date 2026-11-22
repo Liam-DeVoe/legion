@@ -103,16 +103,23 @@ export const ownerOf = (item: PriorityItem): string =>
  * cell's padding, 64 px over the label. Measured in Chromium (builds Job
  * infra-3221-t16c-measure-rp2nn): Order's label is 43 px in a 44 px button, Triage, Todo's 86,
  * Closed, 7 days' 102 and Newest event's 97. While the table is sorted by a column, the layout
- * adds the sort mark (`SORT_MARK_WIDTH`), except where `markInMin` says the minimum holds it.
+ * adds the sort mark (`SORT_MARK_WIDTH`) where `markOutsideMin` says the minimum leaves it out.
  */
 export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
-  { id: "order", header: "Order", size: 108, min: 108, pinned: true, text: (item) => item.order },
+  {
+    id: "order",
+    header: "Order",
+    size: 108,
+    min: 108,
+    markOutsideMin: true,
+    pinned: true,
+    text: (item) => item.order,
+  },
   {
     id: "title",
     header: "Priority",
     size: 420,
     min: 180,
-    markInMin: true,
     pinned: true,
     text: (item) => `${item.priority.title} ${item.priority.description}`,
   },
@@ -121,7 +128,6 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
     header: "Owner",
     size: 200,
     min: 160,
-    markInMin: true,
     values: (item) => [ownerOf(item)],
     group: ownerOf,
   },
@@ -130,7 +136,6 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
     header: "Active",
     size: 132,
     min: 132,
-    markInMin: true,
     values: (i) => [String(i.inFlight)],
   },
   {
@@ -138,6 +143,7 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
     header: "Triage, Todo",
     size: 152,
     min: 152,
+    markOutsideMin: true,
     values: (i) => [String(i.waiting)],
   },
   {
@@ -145,6 +151,7 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
     header: "Backlog, icebox",
     size: 180,
     min: 180,
+    markOutsideMin: true,
     values: (item) => [String(item.parked)],
   },
   {
@@ -152,6 +159,7 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
     header: "Closed, 7 days",
     size: 168,
     min: 168,
+    markOutsideMin: true,
     values: (i) => [String(i.closed)],
   },
   {
@@ -159,6 +167,7 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
     header: "Newest event",
     size: 164,
     min: 164,
+    markOutsideMin: true,
     values: (item) => [newestBucket(item.newest)],
     group: (item) => newestBucket(item.newest),
     order: AGES,

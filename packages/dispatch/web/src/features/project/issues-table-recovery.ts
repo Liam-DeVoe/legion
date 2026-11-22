@@ -191,8 +191,11 @@ export function useTableRecovery(project: string, report: (text: string) => void
     const storageKey = tableStorageKey(project);
     const fromAnotherTab = (event: StorageEvent) => {
       if (event.key !== null && event.key !== storageKey) return;
-      current.current = readTableAction(project);
-      setAction(current.current);
+      // A write of the layout under the same key leaves the record as it was: nothing to draw.
+      const next = readTableAction(project);
+      if (JSON.stringify(next) === JSON.stringify(current.current)) return;
+      current.current = next;
+      setAction(next);
     };
     window.addEventListener("storage", fromAnotherTab);
     return () => {
@@ -268,9 +271,9 @@ export function useTableRecovery(project: string, report: (text: string) => void
         });
         return promise;
       };
-      // A write still in flight is only waited on; a refused one is sent again, and no more of
-      // those run at once than a bulk action sends, so Finish after a 250-row refusal is the
-      // same bounded stream the action itself was.
+      // A write still in flight is only waited on. A refused one is sent again, at most
+      // `WRITES_IN_FLIGHT` at once, so Finish sends a bounded stream however many writes were
+      // refused.
       const waiting = rows.filter((row) => row.status !== "refused").map(outcome);
       const retried = settledWithLimit(
         rows.filter((row) => row.status === "refused"),

@@ -367,7 +367,7 @@ test("the open table read waits behind an unanswered Board move", async () => {
     .execute(undefined);
   await started.promise;
   const calls = listing.mock.calls.length;
-  const reading = client.fetchQuery(projectIssuesQuery("CORE", [], true));
+  const reading = client.fetchQuery(projectIssuesQuery("CORE", true));
   await Promise.resolve();
   expect(listing.mock.calls.length).toBe(calls);
   gate.resolve();

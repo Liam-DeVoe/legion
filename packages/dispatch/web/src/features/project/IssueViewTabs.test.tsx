@@ -103,6 +103,15 @@ test("only the open saved tab has a delete button, which deletes that view", asy
   const remove = screen.getByRole("button", { name: "Delete saved view Mine" });
   expect(remove).toHaveAttribute("title", "Delete this saved view");
   expect(screen.queryByRole("button", { name: "Delete saved view Closed lately" })).toBeNull();
+  // The tablist holds tabs alone: the delete button follows it in the row.
+  const tablist = screen.getByRole("tablist", { name: "Views" });
+  expect(tablist.contains(remove)).toBe(false);
+  expect([...tablist.children].map((child) => child.getAttribute("role"))).toEqual([
+    "tab",
+    "tab",
+    "tab",
+    "tab",
+  ]);
   await user.click(remove);
   expect(onDelete).toHaveBeenCalledWith("Mine");
 });

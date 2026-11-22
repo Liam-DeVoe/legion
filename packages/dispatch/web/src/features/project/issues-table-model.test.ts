@@ -287,6 +287,28 @@ test("an unknown status keeps its own text and its place in the picks", () => {
   ]);
 });
 
+// A pick named like a member of `Object.prototype` is a value this build does not know, so it
+// keeps its own text: `?f.waited=constructor` draws "constructor", never a function's source,
+// which the filter's list could not fold.
+test("a pick named like an Object member keeps its own text", () => {
+  for (const id of [
+    "queue",
+    "asks",
+    "activity",
+    "waited",
+    "waiting_reason",
+    "review_rounds",
+    "legion",
+  ]) {
+    for (const value of ["constructor", "toString", "__proto__"])
+      expect(showOf(id)(value)).toBe(value);
+  }
+  expect(readUrl(new URLSearchParams("f.waited=constructor")).filters).toContainEqual({
+    id: "waited",
+    value: ["constructor"],
+  });
+});
+
 // O1: the view the table opens with says nothing in a link, and comes back when read.
 test("a shared link leaves out the default status set and reads it back", () => {
   const params = writeUrl(new URLSearchParams(), { ...defaultView, search: "rank" });

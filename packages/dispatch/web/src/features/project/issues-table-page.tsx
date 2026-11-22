@@ -16,18 +16,19 @@ import { SelectionBar } from "../../components/SelectionBar";
 import { StepButton } from "../../components/StepButton";
 import { useAddressUpdate } from "../../lib/page-address";
 import { borderDefault, issueStatusScale, surfaceMutedBg } from "../../theme/classes";
-import { issueStatuses, statusLabel } from "./board-model";
+import { openIssueStatuses, statusLabel } from "./board-model";
 import { IssueFlagChips, NarrowingList, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
+import { countStatuses, statusSegments } from "./issues-table-bar";
 import {
   COLUMNS,
   defaultView,
   type Item,
-  isDefaultStatus,
   readUrl,
   UNCLAIMED_FACET,
   writeUrl,
 } from "./issues-table-model";
+import { sameSet } from "./issues-views";
 
 /**
  * A priority page's status strip: every status of the rows the table holds, each as wide as its
@@ -43,18 +44,14 @@ export function IssueTableStatus({
 }): ReactNode {
   const statusColumn = table.getColumn("status");
   const statusPicks = (statusColumn?.getFilterValue() as string[] | undefined) ?? [];
-  const statusCounts = new Map<string, number>();
-  for (const item of items)
-    statusCounts.set(item.issue.status, (statusCounts.get(item.issue.status) ?? 0) + 1);
+  const segments = statusSegments(countStatuses(items.map((item) => item.issue.status)));
   return (
     <div className={`rounded-xl border p-3 ${borderDefault}`}>
       <fieldset
         aria-label="Issues by status"
         className={`flex min-h-11 min-w-0 overflow-x-auto rounded-md border-0 p-0 md:min-h-7 ${surfaceMutedBg}`}
       >
-        {issueStatuses.map((status) => {
-          const count = statusCounts.get(status) ?? 0;
-          if (count === 0) return null;
+        {segments.map(({ count, status }) => {
           const on = statusPicks.length === 0 || statusPicks.includes(status);
           return (
             <button
@@ -84,8 +81,6 @@ export function IssueTableStatus({
  *  row of them: the filter panel behind the trigger, or the display menu at the right end. */
 type ToolbarPanel = "flags" | "view";
 
-const NO_NARROWINGS: readonly FilterChip[] = [];
-
 /**
  * The one row the List's controls sit in: the search box, the trigger over the three flags that
  * narrow no column of the table, the chips of every narrowing that is on - the issues a link
@@ -98,7 +93,7 @@ const NO_NARROWINGS: readonly FilterChip[] = [];
 export function IssueTableToolbar({
   clear,
   controls,
-  narrowings = NO_NARROWINGS,
+  narrowings,
   ownStatuses,
   searchRef,
   selection,
@@ -114,7 +109,7 @@ export function IssueTableToolbar({
   controls?: ReactNode;
   /** The narrowings an address carries that are no column and no flag (`exclude_tree`): each a
    *  chip of the row and a line of the Filters panel, with its remove. */
-  narrowings?: readonly FilterChip[];
+  narrowings: readonly FilterChip[];
   /** The statuses the view lists by itself, which draw no chip and which taking the Status
    *  chip off goes back to: the open statuses where unset. */
   ownStatuses?: readonly string[];
@@ -168,15 +163,11 @@ export function IssueTableToolbar({
   const columned = table.getAllLeafColumns().flatMap((column) => {
     const picks = columnFilterPicks(column.getFilterValue());
     if (column.id === "status") {
-      const own = ownStatuses === undefined ? defaultView.filters[0]?.value : [...ownStatuses];
-      const isOwn =
-        ownStatuses === undefined
-          ? isDefaultStatus(picks)
-          : picks.length === ownStatuses.length &&
-            ownStatuses.every((status) => picks.includes(status));
+      const own: readonly string[] = ownStatuses ?? openIssueStatuses;
+      const isOwn = sameSet(own, picks);
       return picks.length === 0 || isOwn
         ? []
-        : [columnFilterChip(column, picks, () => column.setFilterValue(own))];
+        : [columnFilterChip(column, picks, () => column.setFilterValue([...own]))];
     }
     if (column.id === "claim") {
       const named = picks.filter((value) => value !== UNCLAIMED_FACET);

@@ -122,7 +122,6 @@ const READS = {
     data: { edges: [], node: { id: "CORE-1", kind: "issue" } },
     key: ["references", "to", "dispatch://CORE-1"],
   },
-  labelledProjectList: { key: projectIssuesQuery("CORE", ["ui"]).queryKey },
   log: { key: ["events", "CORE-1"] },
   message: { key: messageQuery("CORE-1", "message-1").queryKey },
   messageBlock: {
@@ -146,7 +145,7 @@ const READS = {
   otherHandoffs: { key: ["handoffs", "CORE-9"] },
   otherIssueMessage: { key: messageQuery("CORE-9", "message-9").queryKey },
   otherProjectAsks: { key: ["asks", "OTHER-1"] },
-  otherProjectList: { key: projectIssuesQuery("OTHER", []).queryKey },
+  otherProjectList: { key: projectIssuesQuery("OTHER").queryKey },
   // Another block of CORE-1's spec, which a link elsewhere on the page names.
   otherSpecBlock: {
     data: { edges: [], node: { id: "CORE-1/spec#outro", kind: "block" } },
@@ -173,7 +172,7 @@ const READS = {
   prioritySummary: { key: prioritySummaryQuery().queryKey },
   projectDefaultAssignees: { key: projectDefaultAssigneesQuery().queryKey },
   projectInbox: { key: ["inbox", "CORE"] },
-  projectList: { key: projectIssuesQuery("CORE", []).queryKey },
+  projectList: { key: projectIssuesQuery("CORE").queryKey },
   projects: { key: projectsQuery().queryKey },
   referencePicker: { key: ["issues", "CORE"] },
   referencesTab: { key: ["issue", "CORE-1", "references"] },
@@ -405,7 +404,6 @@ const rules: Record<string, Rule> = {
         "detail",
         "log",
         "projectList",
-        "labelledProjectList",
         "summary",
         "referencePicker",
         "agentsPicker",

@@ -13,6 +13,18 @@ import type {
   LegionBoardFacts,
   LegionBoardResponse,
 } from "../../api/types";
+import { DAY_MS, MAX_WINDOW_DAYS } from "../delivery/lib/window";
+
+/** An hour in milliseconds. */
+export const HOUR_MS = 3_600_000;
+
+/** The moment an RFC 3339 time names, in milliseconds since the epoch, or undefined for no time
+ *  or one that does not parse: where a card's time runs from, or when a row closed. */
+export function sinceMs(since: string | null | undefined): number | undefined {
+  if (since === null || since === undefined) return undefined;
+  const at = Date.parse(since);
+  return Number.isNaN(at) ? undefined : at;
+}
 
 /**
  * The Legion phases, in the board's order (`legionBoardColumnOrder` in
@@ -54,10 +66,8 @@ export function legionPhaseTitle(phase: string): string {
  *  there: minutes under an hour, hours and minutes under a day, then days and hours. An issue
  *  whose phase entry no read has recorded shows an em dash rather than a time nobody measured. */
 export function formatPhaseTime(since: string | null, nowMs: number): string {
-  if (since === null) return "—";
-  const sinceMs = Date.parse(since);
-  if (Number.isNaN(sinceMs)) return "—";
-  return formatSpan(Math.floor(Math.max(0, nowMs - sinceMs) / 60_000));
+  const at = sinceMs(since);
+  return at === undefined ? "—" : formatSpan(Math.floor(Math.max(0, nowMs - at) / 60_000));
 }
 
 /** The work time of the issue's facts, in the same words as the time in its phase. The hours are
@@ -90,8 +100,6 @@ export type LegionFacts = Pick<
   | "work_first_at"
   | "work_hours"
 >;
-
-const HOUR_MS = 3_600_000;
 
 /**
  * A board entry's facts closed at `nowMs`, as the board route closes a stored row at its read
@@ -172,11 +180,10 @@ export function itemFacts(row: EvalItemRow): LegionFacts | undefined {
     return undefined;
   }
   const hoursByPhase: Record<string, number> = {};
-  for (const [name, value] of Object.entries(cols)) {
+  for (const name of Object.keys(cols)) {
     if (!name.startsWith(HOURS_COLUMN_PREFIX)) continue;
-    if (typeof value === "number" && Number.isFinite(value)) {
-      hoursByPhase[name.slice(HOURS_COLUMN_PREFIX.length)] = value;
-    }
+    const hours = numberIn(cols, name);
+    if (hours !== undefined) hoursByPhase[name.slice(HOURS_COLUMN_PREFIX.length)] = hours;
   }
   return {
     closed_at: typeof closedAt === "string" ? closedAt : null,
@@ -209,12 +216,6 @@ const ISSUE_ROW_KIND = "issue";
 /** The most rows one items read answers (`evalPageMax` in `api/evals.go`). */
 export const ITEMS_PAGE_SIZE = 200;
 
-/** The most days one items read spans (`maxDeliveryWindow` in `api/delivery.go`, which
- *  `parseDeliveryWindow` holds the raw `from`..`to` to). */
-const ITEMS_WINDOW_DAYS = 84;
-
-const DAY_MS = 86_400_000;
-
 /** One items read's window, as the route takes it: `from` included and `to` left out, each a
  *  UTC midnight. */
 export interface ItemsWindow {
@@ -226,20 +227,21 @@ const midnight = (ms: number): string => `${new Date(ms).toISOString().slice(0, 
 
 /**
  * The windows that cover the UTC days from the day of `firstMs` to the day of `lastMs`, both
- * included, oldest first. Each starts and ends at a UTC midnight and spans at most 84 days. The
- * route refuses a raw `from`..`to` over 84 days before it widens the window to whole days, so a
- * window that started off midnight would cover an 85th day, or be refused. `to` is left out, as
- * the route leaves it out (`parseDeliveryWindow`, then `evalDaysOf` in `api/evals.go`), so each
- * window ends at the midnight after its last day.
+ * included, oldest first. Each starts and ends at a UTC midnight and spans at most 84 days
+ * (`MAX_WINDOW_DAYS`, `maxDeliveryWindow` in `api/delivery.go`). The route refuses a raw
+ * `from`..`to` over 84 days before it widens the window to whole days, so a window that started
+ * off midnight would cover an 85th day, or be refused. `to` is left out, as the route leaves it
+ * out (`parseDeliveryWindow`, then `evalDaysOf` in `api/evals.go`), so each window ends at the
+ * midnight after its last day.
  */
 export function closedDaysWindows(firstMs: number, lastMs: number): readonly ItemsWindow[] {
   const start = Math.floor(firstMs / DAY_MS) * DAY_MS;
   const end = (Math.floor(lastMs / DAY_MS) + 1) * DAY_MS;
   const windows: ItemsWindow[] = [];
-  for (let from = start; from < end; from += ITEMS_WINDOW_DAYS * DAY_MS) {
+  for (let from = start; from < end; from += MAX_WINDOW_DAYS * DAY_MS) {
     windows.push({
       from: midnight(from),
-      to: midnight(Math.min(from + ITEMS_WINDOW_DAYS * DAY_MS, end)),
+      to: midnight(Math.min(from + MAX_WINDOW_DAYS * DAY_MS, end)),
     });
   }
   return windows;
@@ -259,9 +261,9 @@ export function itemsWindows(
   let first = Number.POSITIVE_INFINITY;
   let last = Number.NEGATIVE_INFINITY;
   for (const row of rows) {
-    if (typeof row.closed_at !== "string" || (held && Object.hasOwn(held, row.key))) continue;
-    const closed = Date.parse(row.closed_at);
-    if (Number.isNaN(closed)) continue;
+    if (held && Object.hasOwn(held, row.key)) continue;
+    const closed = sinceMs(row.closed_at);
+    if (closed === undefined) continue;
     first = Math.min(first, closed);
     last = Math.max(last, closed);
   }
@@ -270,11 +272,12 @@ export function itemsWindows(
 }
 
 /**
- * Every issue row of `legion-work-time` closed in `windows`, as facts by issue key. Each window
- * is read page by page, `row_kind=issue` with `limit` 200 and `offset`, until `offset` and the
- * page's rows reach the answer's `total`. `list` reads one page (`api.listEvalItems` for the
- * project). A refusal it throws fails the whole read, `404 EVAL_NOT_FOUND` among them: a failed
- * read is never the empty facts of an issue with no Legion work.
+ * Every issue row of `legion-work-time` closed in `windows`, as facts by issue key. The windows
+ * are read at once, each page by page, `row_kind=issue` with `limit` 200 and `offset`, until
+ * `offset` and the page's rows reach the answer's `total`. A key two windows hold takes the later
+ * window's facts. `list` reads one page (`api.listEvalItems` for the project). A refusal it
+ * throws fails the whole read, `404 EVAL_NOT_FOUND` among them: a failed read is never the empty
+ * facts of an issue with no Legion work.
  */
 export async function readLegionItems(
   windows: readonly ItemsWindow[],
@@ -286,8 +289,8 @@ export async function readLegionItems(
     }
   ) => Promise<Pick<EvalItemsResponse, "items" | "total">>
 ): Promise<Readonly<Record<string, LegionFacts>>> {
-  const facts: Record<string, LegionFacts> = {};
-  for (const window of windows) {
+  const readWindow = async (window: ItemsWindow): Promise<Record<string, LegionFacts>> => {
+    const facts: Record<string, LegionFacts> = {};
     let offset = 0;
     let total = 0;
     do {
@@ -308,8 +311,9 @@ export async function readLegionItems(
       offset += rows.length;
       total = page.total;
     } while (offset < total);
-  }
-  return facts;
+    return facts;
+  };
+  return Object.assign({}, ...(await Promise.all(windows.map(readWindow))));
 }
 
 const NO_ROWS: readonly never[] = [];

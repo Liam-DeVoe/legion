@@ -18,12 +18,11 @@ export interface TableColumn<Row> {
   readonly header: string;
   readonly size: number;
   /** The narrowest the column is drawn at: its header whole with its filter button, or what its
-   *  cell holds. While the table is sorted by the column it is drawn wider by the sort mark
-   *  (`SORT_MARK_WIDTH`), unless `markInMin` says the minimum holds the mark already. */
+   *  cell holds, with the sort mark too unless `markOutsideMin` leaves it out. */
   readonly min: number;
-  /** Its minimum holds its header with the sort mark as well, so the column is drawn no wider
-   *  while the table is sorted by it. */
-  readonly markInMin?: true;
+  /** Its minimum holds its header without the sort mark, so the column is drawn wider by the
+   *  mark (`SORT_MARK_WIDTH`) only while the table is sorted by it. */
+  readonly markOutsideMin?: true;
   /** Kept at the left edge while the table scrolls sideways. */
   readonly pinned?: boolean;
   readonly sortable?: boolean;
@@ -140,7 +139,7 @@ export function tableLayout<Row>(
     sizes: Object.fromEntries(columns.map((column) => [column.id, column.size])),
     minimums,
     sortedMinimums: Object.fromEntries(
-      columns.flatMap((column) => (column.markInMin ? [[column.id, column.min]] : []))
+      columns.flatMap((column) => (column.markOutsideMin ? [] : [[column.id, column.min]]))
     ),
     pins: {
       wide: { columns: pinned, share: 0.6 },

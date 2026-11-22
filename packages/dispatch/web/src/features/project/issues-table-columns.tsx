@@ -1,6 +1,7 @@
 import type {
   ColumnDef,
   FilterFn,
+  FilterFnOption,
   RowData,
   RowModel,
   SortingFn,
@@ -39,7 +40,13 @@ import { referenceTriggerProps } from "../refs/RefPreview";
 import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type IssueStatus, issueStatuses, statusLabel } from "./board-model";
-import { formatPhaseTime, formatWorkTime, type LegionFacts } from "./issues-legion";
+import {
+  type ClosedWindow,
+  formatPhaseTime,
+  formatWorkTime,
+  type LegionFacts,
+  sinceMs,
+} from "./issues-legion";
 import {
   PhaseHoursCell,
   type PhaseHoursMode,
@@ -48,9 +55,10 @@ import {
 } from "./issues-phase-hours";
 import type { IssueListing } from "./issues-table-data";
 import {
-  COLUMNS,
+  type ColumnFilterSpec,
   type ColumnId,
-  type ColumnSpec,
+  columnFilterSpec,
+  columnSpec,
   createdAt,
   createdBy,
   embeddedPhoneMin,
@@ -60,16 +68,17 @@ import {
   matchesFilters,
   phaseHoursTotal,
   phoneMin,
-  sinceMs,
   waitingReasonWords,
   workerName,
   workerStateWords,
   workHoursOf,
 } from "./issues-table-model";
 import {
+  inWindow,
   isBoardFedColumn,
   LEGION_PHASE_PICKS,
   ROLE_PICKS,
+  readWindow,
   WAITING_REASON_PICKS,
   WORKER_STATE_PICKS,
 } from "./issues-views";
@@ -100,6 +109,29 @@ declare module "@tanstack/react-table" {
 }
 const inPicks: FilterFn<Item> = (row, id, value: string[] | string) =>
   matchesFilters(row.original, [{ id, value }]);
+
+/** A window column's filter (Closed): the window its value names, read once for each pass of the
+ *  filter against one clock (`resolveFilterValue`), and each row's moment tested against it. The
+ *  window travels in an object, since TanStack hands the filter the raw value where the resolved
+ *  one is undefined, and undefined is no window. */
+const inRange: FilterFn<Item> = (
+  row,
+  id,
+  resolved: { readonly window: ClosedWindow | undefined }
+) => {
+  const filter = columnFilterSpec(id);
+  return filter?.kind === "range" && inWindow(filter.value(row.original), resolved.window);
+};
+inRange.resolveFilterValue = (value: unknown) => ({
+  window: readWindow(String(value ?? ""), Date.now()),
+});
+
+/** The filter of each kind of column filter. */
+const FILTER_FNS = {
+  text: "includesString",
+  picks: inPicks,
+  range: inRange,
+} as const satisfies Record<ColumnFilterSpec["kind"], FilterFnOption<Item>>;
 
 /** Where `value` stands in `order`, a value this build does not know after the known ones, or
  *  undefined with no value: a column of named states sorts in their order, its empty cells last
@@ -802,25 +834,14 @@ export function issueTableLayout(
   return layout;
 }
 
-/** The Issues tab's own table, as against an issue table another page draws (the priority
- *  pages'), which keeps today's cells: whether the project has a Legion daemon. With none, the
- *  columns the board route feeds are neither in the Columns menu nor in Group by. */
-export interface IssueTabColumns {
-  readonly hasLegion: boolean;
-}
-
-const REGISTRY: ReadonlyMap<string, ColumnSpec> = new Map(
-  COLUMNS.map((column) => [column.id, column])
-);
-
 /**
  * The columns of `layout`, in its order: the registry's (`viewLayoutColumns` on the Issues tab,
  * `issueTableLayout` elsewhere), and a scoped table's listing columns after Title. `onMark` is
  * told the row a row's own checkbox marks; it is a dependency of the columns, so a caller hands a
  * stable one, as it does `layout` and `priorityTitles`. A column starts at the layout's width and
- * goes no narrower than its minimum there (`compact`: a phone's). `tab` marks the Issues tab's
- * own table; a table without it draws today's cells. Time per phase's mode is the reader's
- * (`usePhaseHoursMode`), and a switch of it draws the columns anew.
+ * goes no narrower than its minimum there (`compact`: a phone's). `hasLegion` is set on the
+ * Issues tab's own table, and a table without it draws today's cells. Time per phase's mode is
+ * the reader's (`usePhaseHoursMode`), and a switch of it draws the columns anew.
  */
 export function useIssueTableColumns(
   userState: UserState | undefined,
@@ -831,16 +852,18 @@ export function useIssueTableColumns(
   /** Each priority's title by its id, which the Advances column names a priority by; one this
    *  map does not hold, a priority deleted since it was read, is named by its id. */
   priorityTitles?: ReadonlyMap<string, string>,
-  tab?: IssueTabColumns
+  /** Whether the project has a Legion daemon, on the Issues tab's own table: with none, the
+   *  columns the board route feeds are neither in the Columns menu nor in Group by. Unset on a
+   *  table another page draws, which keeps today's cells. */
+  hasLegion?: boolean
 ): ColumnDef<Item>[] {
-  const hasLegion = tab?.hasLegion;
   const [phaseMode, setPhaseMode] = usePhaseHoursMode();
   return useMemo<ColumnDef<Item>[]>(() => {
     const rendering = renderings(userState, onMark, phaseMode, setPhaseMode);
     const titleOf = (id: string) => priorityTitles?.get(id) ?? id;
     const embedded = hasLegion === undefined;
     const registered = layout.ids.flatMap((id): ColumnDef<Item>[] => {
-      const column = REGISTRY.get(id);
+      const column = columnSpec.get(id);
       if (column === undefined) return [];
       const filter = column.filter;
       const picks = filter?.kind === "picks" ? filter : undefined;
@@ -872,9 +895,7 @@ export function useIssueTableColumns(
           enableGrouping: picks?.group !== undefined && !unfed,
           ...(unfed ? { enableHiding: false } : {}),
           ...(picks?.group === undefined ? {} : { getGroupingValue: picks.group }),
-          ...(filter === undefined
-            ? {}
-            : { filterFn: filter.kind === "text" ? "includesString" : inPicks }),
+          ...(filter === undefined ? {} : { filterFn: FILTER_FNS[filter.kind] }),
           meta: {
             ...drawn.meta,
             ...(filter?.kind === "text" ? { text: true } : {}),

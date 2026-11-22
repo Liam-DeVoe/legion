@@ -13,7 +13,13 @@ import type { LayoutColumns } from "../../components/table-layout";
 import { copyAddress, type TableAddressView } from "../../lib/page-address";
 import { compareTimestamps } from "../../lib/timestamps";
 import { type IssueStatus, issueStatuses, openIssueStatuses, statusText } from "./board-model";
-import { LEGION_PHASES, type LegionFacts, legionFactsOf, legionPhaseTitle } from "./issues-legion";
+import {
+  HOUR_MS,
+  LEGION_PHASES,
+  type LegionFacts,
+  legionFactsOf,
+  legionPhaseTitle,
+} from "./issues-legion";
 import {
   ASKS_PICKS,
   activityPick,
@@ -36,6 +42,7 @@ import {
   readAsksPick,
   readWindow,
   reviewRoundsPick,
+  sameSet,
   sinceDurationPick,
   WAITING_REASON_PICKS,
   WORKER_STATE_PICKS,
@@ -137,10 +144,11 @@ export const runningIssueStatuses: readonly IssueStatus[] = [
  *  the server would hand over (`claimIsTakeable`). The `?unclaimed=1` link sets it. */
 export const UNCLAIMED_FACET = "Nobody or lapsed";
 
-/** How many of one action's writes are in flight at once, whether it is sending them for the
- *  first time or Finish is retrying what a refusal left behind. A selection is as large as the
- *  project, and "Select all N matching" is two clicks away, so the table sends a bounded
- *  stream rather than every request at once; each write is still independent in the store. */
+/** How many of Finish's retries are in flight at once: the refused writes of an interrupted
+ *  action, sent again (`useTableRecovery`'s `settle`). A selection is as large as the project, and
+ *  "Select all N matching" is two clicks away, so Finish sends a bounded stream rather than every
+ *  retry at once. Each write is still independent in the store. Start next itself sends one
+ *  write at a time. */
 export const WRITES_IN_FLIGHT = 8;
 
 /** How a column filters, and everything a filter of its kind needs: a column that filters by
@@ -226,6 +234,9 @@ export interface ColumnSpec {
   readonly compactMin?: number;
   /** Stays in view while the table scrolls sideways. */
   readonly pinned?: boolean;
+  /** Its cells read the row's Legion facts (`LegionFacts`): a filter, a sort or a grouping of it
+   *  waits for the read of those facts (`FACTS_COLUMNS`). */
+  readonly facts?: true;
   /** Headers sort unless this says otherwise. */
   readonly sortable?: boolean;
   readonly filter?: ColumnFilterSpec;
@@ -273,11 +284,11 @@ export const MEASURE_METHODS: Readonly<Partial<Record<ColumnId, string>>> = {
 };
 
 /** A value's words from `words`, or the value as it is where `words` has none: a value this
- *  build does not know keeps its own text. */
+ *  build does not know keeps its own text, a name of an `Object` member (`constructor`) too. */
 const wordsOf =
   (words: Readonly<Record<string, string>>) =>
   (value: string): string =>
-    words[value] ?? value;
+    Object.hasOwn(words, value) ? words[value] : value;
 
 const NONE_WORD = "None";
 
@@ -313,7 +324,7 @@ export const workerName = (role: string): string =>
   role === NONE_PICK ? NONE_WORD : `${role.slice(0, 1).toUpperCase()}${role.slice(1)}`;
 
 /** The part of `hours_by_phase` that no phase took (`breakdownOther` on #3578). */
-export const OTHER_PHASE = "other";
+const OTHER_PHASE = "other";
 
 /** Time per phase's phases, in the board's order and Other last: the Legion phases from Design
  *  to Held, since Queue never has hours. */
@@ -342,15 +353,6 @@ export function workHoursOf(item: Pick<Item, "facts">): number | undefined {
   const facts = item.facts;
   if (facts === undefined) return undefined;
   return facts.work_first_at === null && !(facts.work_hours > 0) ? undefined : facts.work_hours;
-}
-
-const HOUR_MS = 3_600_000;
-
-/** The moment a card's time runs from, in milliseconds, or undefined where it has none. */
-export function sinceMs(since: string | null | undefined): number | undefined {
-  if (since === null || since === undefined) return undefined;
-  const at = Date.parse(since);
-  return Number.isNaN(at) ? undefined : at;
 }
 
 /** The filter of a column that holds a length of time: every duration pick, in its order. */
@@ -623,6 +625,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     id: "work_hours",
     size: 148,
     min: 148,
+    facts: true,
     filter: duration(
       factsPicks((item) => {
         const hours = workHoursOf(item);
@@ -634,6 +637,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     id: "review_rounds",
     size: 180,
     min: 180,
+    facts: true,
     filter: {
       kind: "picks",
       values: factsPicks((item) => [reviewRoundsPick(item.facts?.review_rounds)]),
@@ -648,6 +652,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     id: "legion",
     size: 156,
     min: 156,
+    facts: true,
     filter: {
       kind: "picks",
       values: factsPicks((item) => [legionPick(item.facts)]),
@@ -661,6 +666,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     id: "phase_hours",
     size: 284,
     min: 284,
+    facts: true,
     // Its minimum holds, on one line, its label with its sort mark (118 px drawn), the Share and
     // Hours control and the filter button, with 44 px buttons and the cell's padding; from 1280
     // px, with 32 px filter buttons, 12 px less. A phone, whose buttons are 44 px, draws it at
@@ -673,7 +679,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     },
   },
 ];
-const columnSpec: ReadonlyMap<string, ColumnSpec> = new Map(
+export const columnSpec: ReadonlyMap<string, ColumnSpec> = new Map(
   COLUMNS.map((column) => [column.id, column])
 );
 export const columnFilterSpec = (id: string): ColumnFilterSpec | undefined =>
@@ -682,6 +688,10 @@ export const columnFilterSpec = (id: string): ColumnFilterSpec | undefined =>
 export const columnIds: readonly string[] = COLUMNS.filter(
   (column) => column.sortable !== false || column.filter !== undefined
 ).map((column) => column.id);
+/** The columns whose cells read the Legion facts (`ColumnSpec`'s `facts`). */
+export const FACTS_COLUMNS: readonly string[] = COLUMNS.filter((column) => column.facts).map(
+  (column) => column.id
+);
 const groupable: readonly string[] = COLUMNS.filter(
   (column) => column.filter?.kind === "picks" && column.filter.group !== undefined
 ).map((column) => column.id);
@@ -929,7 +939,7 @@ export const isQueued = (issue: Pick<IssueSummary, "status" | "labels">) =>
 
 /** Every card of the board by its issue, with the column it is in. A card whose issue is not in
  *  the listing names no row. */
-export function cardsByKey(board: LegionBoardResponse | undefined): Map<string, BoardCardRow> {
+function cardsByKey(board: LegionBoardResponse | undefined): Map<string, BoardCardRow> {
   const cards = new Map<string, BoardCardRow>();
   for (const column of board?.columns ?? [])
     for (const card of column.cards ?? [])
@@ -1268,7 +1278,7 @@ export function readUrl(params: URLSearchParams, stateKey?: string): View {
 export function isDefaultStatus(value: unknown): boolean {
   const picked = Array.isArray(value) ? value.map(String) : [];
   const fallback = (defaultView.filters[0]?.value ?? []) as string[];
-  return picked.length === fallback.length && fallback.every((status) => picked.includes(status));
+  return sameSet(fallback, picked);
 }
 export function writeUrl(params: URLSearchParams, state: View, stateKey?: string): URLSearchParams {
   const key = (name: string) => viewKey(name, stateKey);

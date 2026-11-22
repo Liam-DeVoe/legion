@@ -130,11 +130,11 @@ function Alert({
 
 /**
  * The row of view tabs: Open and Done, then each saved view, each with its count where the page
- * can count it, the dot of the view the reader changed, and the open saved view's delete
- * button. A press on a tab opens its view as it was saved, so a press on the changed tab gives
- * its view back. Under the row, the alert line: a failed read of the daemon setting, the
- * daemon's last read failed, or a failed read of the board or of the closed rows' facts, each
- * on a line of its own with its whole error.
+ * can count it and the dot of the view the reader changed, then the open saved view's delete
+ * button after the tabs, since the tablist holds tabs alone. A press on a tab opens its view as
+ * it was saved, so a press on the changed tab gives its view back. Under the row, the alert
+ * line: a failed read of the daemon setting, the daemon's last read failed, or a failed read of
+ * the board or of the closed rows' facts, each on a line of its own with its whole error.
  */
 export function IssueViewTabs({
   active,
@@ -178,51 +178,57 @@ export function IssueViewTabs({
     daemonReadError !== undefined ||
     boardFailure !== undefined ||
     factsFailure !== undefined;
+  // The open saved view, whose delete button follows the tabs: a tablist holds tabs alone.
+  const openSaved =
+    active.kind === "saved" ? saved.find((view) => view.name === active.name) : undefined;
   return (
     <div className="flex flex-col gap-1">
       <div
-        aria-label="Views"
         className={`flex flex-wrap items-center border-b md:flex-nowrap md:overflow-x-auto ${borderDefault}`}
-        role="tablist"
       >
-        {views.map((view) => {
-          const on = active.kind === "built-in" && active.id === view.id;
-          return (
-            <ViewTab
-              active={on}
-              changed={on && changed}
-              count={counts.get(view.id)}
-              key={view.id}
-              name={view.name}
-              onSelect={() => onSelect(view.id)}
-            />
-          );
-        })}
-        {saved.map((view) => {
-          const on = active.kind === "saved" && active.name === view.name;
-          return (
-            <span className="inline-flex shrink-0 items-center" key={view.name}>
+        <div
+          aria-label="Views"
+          className="flex flex-wrap items-center md:flex-nowrap"
+          role="tablist"
+        >
+          {views.map((view) => {
+            const on = active.kind === "built-in" && active.id === view.id;
+            return (
+              <ViewTab
+                active={on}
+                changed={on && changed}
+                count={counts.get(view.id)}
+                key={view.id}
+                name={view.name}
+                onSelect={() => onSelect(view.id)}
+              />
+            );
+          })}
+          {saved.map((view) => {
+            const on = active.kind === "saved" && active.name === view.name;
+            return (
               <ViewTab
                 active={on}
                 changed={on && changed}
                 count={savedCounts.get(view.name)}
+                key={view.name}
                 name={view.name}
                 onSelect={() => onSelectSaved(view.name)}
               />
-              {on ? (
-                <button
-                  aria-label={`Delete saved view ${view.name}`}
-                  className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded text-xs md:min-h-8 md:min-w-8 ${textMutedOnCanvas} ${surfaceMutedHoverBg} ${focusVisibleRing}`}
-                  onClick={() => onDelete(view.name)}
-                  title="Delete this saved view"
-                  type="button"
-                >
-                  <span aria-hidden>✕</span>
-                </button>
-              ) : null}
-            </span>
-          );
-        })}
+            );
+          })}
+        </div>
+        {openSaved === undefined ? null : (
+          <button
+            aria-label={`Delete saved view ${openSaved.name}`}
+            className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded text-xs md:min-h-8 md:min-w-8 ${textMutedOnCanvas} ${surfaceMutedHoverBg} ${focusVisibleRing}`}
+            onClick={() => onDelete(openSaved.name)}
+            title="Delete this saved view"
+            type="button"
+          >
+            <span aria-hidden>✕</span>
+          </button>
+        )}
       </div>
       {alerts ? (
         <div className={`flex flex-col gap-0.5 text-xs ${dangerText}`}>

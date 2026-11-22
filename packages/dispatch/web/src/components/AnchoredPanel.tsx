@@ -90,11 +90,9 @@ export type PanelDismissal = "escape" | "gone" | "press" | "tab";
  * it fires only the page's bindings that fire in a text field (`inEditable`): a radio or a
  * checkbox here stands where a select used to, and `j` on it must not walk the table behind.
  *
- * A tooltip hangs off its control by the same rules (`flip`, which `Tooltip` sets): under its
- * anchor, held 8 px inside each edge of the window, and flipped above the anchor where the room
- * under it is too small, never over the anchor it describes. It takes no part in the focus: the
- * focus stays on the control the reader is on, so the panel draws no Tab stop of its own, takes
- * no focus as it opens and none from a press on it.
+ * A tooltip's panel (`tooltip`, which `Tooltip` sets) is placed by the same rules as every panel.
+ * It takes no part in the focus: the focus stays on the control the reader is on, so the panel
+ * draws no Tab stop of its own, takes no focus as it opens and none from a press on it.
  *
  * The host owns whether it is open: it renders the panel or it does not. Every popover in
  * Dispatch is built on this, so a dismissal fix is made once (`MultiSelect`, the issues table's
@@ -105,21 +103,17 @@ export function AnchoredPanel({
   anchorRef,
   children,
   className,
-  flip = false,
   focusOnOpen = true,
   id,
   label,
   onDismiss,
   role,
+  tooltip = false,
 }: {
   align?: "left" | "right";
   anchorRef: RefObject<HTMLElement | null>;
   children: ReactNode;
   className: string;
-  /** The panel is a tooltip's: placed as every panel is, under its anchor or flipped above it,
-   *  and outside the focus, with no Tab stop of its own and no focus taken as it opens or from
-   *  a press on it. Read once, as the panel opens. */
-  flip?: boolean;
   /** Whether opening moves the focus into the panel. Read once, as the panel opens. */
   focusOnOpen?: boolean;
   /** The panel element's id, for an anchor that names what it opened (`aria-controls`). */
@@ -128,6 +122,10 @@ export function AnchoredPanel({
   label?: string;
   onDismiss: (how: PanelDismissal) => void;
   role?: "dialog";
+  /** The panel is a tooltip's: placed as every panel is, and outside the focus, with no Tab stop
+   *  of its own and no focus taken as it opens or from a press on it. Read once, as the panel
+   *  opens. */
+  tooltip?: boolean;
 }): ReactNode {
   const panelRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<{ left: number; maxHeight?: number; top: number }>({
@@ -136,8 +134,8 @@ export function AnchoredPanel({
   });
   const dismiss = useRef(onDismiss);
   dismiss.current = onDismiss;
-  const [tooltip] = useState(flip);
-  const takesFocus = useRef(focusOnOpen && !tooltip);
+  const [asTooltip] = useState(tooltip);
+  const takesFocus = useRef(focusOnOpen && !asTooltip);
   // Whether the focus was last on the panel or one of its own controls: what tells an edge the
   // reader reached by Tab out of the panel from one they reached by Tab into it.
   const inside = useRef(false);
@@ -286,7 +284,7 @@ export function AnchoredPanel({
         // body and Escape with no owner. The panel takes it, so the reader stays in the panel;
         // a tooltip's leaves the focus where it is.
         if (
-          !tooltip &&
+          !asTooltip &&
           (!(document.activeElement instanceof HTMLElement) ||
             !panelRef.current.contains(document.activeElement))
         )
@@ -315,7 +313,7 @@ export function AnchoredPanel({
       event.preventDefault();
       event.stopPropagation();
       // A tooltip's focus never left the anchor, or a link inside it, so it stays there.
-      if (!tooltip) anchorRef.current?.focus();
+      if (!asTooltip) anchorRef.current?.focus();
       dismiss.current("escape");
     };
     document.addEventListener("focusin", followFocus, true);
@@ -326,12 +324,12 @@ export function AnchoredPanel({
       document.removeEventListener("pointerdown", outside, true);
       document.removeEventListener("keydown", dismissOnEscape, true);
     };
-  }, [anchorRef, inner, tooltip]);
+  }, [anchorRef, inner, asTooltip]);
 
   const named = role === undefined ? {} : { role, "aria-label": label };
   return createPortal(
     <>
-      {tooltip ? null : (
+      {asTooltip ? null : (
         // biome-ignore lint/a11y/noNoninteractiveTabindex: the panel's own Tab stop before it, which no reader rests on: its focus is answered at once (`followFocus`).
         <span ref={startEdge} style={EDGE} tabIndex={0} />
       )}
@@ -340,13 +338,13 @@ export function AnchoredPanel({
         id={id}
         ref={panelRef}
         style={{ position: "fixed", zIndex: PANEL_LAYER, ...position }}
-        tabIndex={tooltip ? undefined : -1}
+        tabIndex={asTooltip ? undefined : -1}
         {...named}
         {...PANEL_MARK}
       >
         <EnclosingPanel.Provider value={hold}>{children}</EnclosingPanel.Provider>
       </div>
-      {tooltip ? null : (
+      {asTooltip ? null : (
         // biome-ignore lint/a11y/noNoninteractiveTabindex: the panel's own Tab stop after it, which no reader rests on: its focus is answered at once (`followFocus`).
         <span ref={endEdge} style={EDGE} tabIndex={0} />
       )}

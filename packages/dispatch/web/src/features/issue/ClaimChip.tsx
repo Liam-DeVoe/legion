@@ -311,21 +311,27 @@ export function ClaimChip({
   // Where a tooltip is drawn the chip is a Tab stop, and the tooltip opens on its hover and its
   // keyboard focus. Inside `NoTooltips` the chip draws what the tooltip says and takes no focus.
   const focusRing = tooltips ? ` outline-none focus-visible:ring-2 ${focusVisibleRing}` : "";
-  const help = tooltips ? (
-    <Tooltip anchorRef={chipRef} trigger={tooltip}>
-      {claimHelp()}
-    </Tooltip>
-  ) : null;
+  // The tooltip's content is built only while it is open: it is drawn nowhere else.
+  const help =
+    tooltips && tooltip.open ? (
+      <Tooltip anchorRef={chipRef} trigger={tooltip}>
+        {claimHelp()}
+      </Tooltip>
+    ) : null;
+  // What the chip's root carries in both of its forms. The Tab stop opens the tooltip that says
+  // who holds the claim and what a claim is.
+  const root = {
+    ...(tooltips ? tooltip.props : {}),
+    "data-testid": "issue-claim",
+    ref: chipRef,
+    tabIndex: tooltips ? 0 : undefined,
+  };
   if (stacked)
     return (
       <span
-        {...(tooltips ? tooltip.props : {})}
+        {...root}
         className={`flex w-full min-w-0 flex-col items-start gap-0.5 rounded-lg px-2 py-1 text-xs font-medium${focusRing} ${pillToneClassName(tone)}`}
         data-claim-stacked
-        data-testid="issue-claim"
-        ref={chipRef}
-        // The Tab stop opens the tooltip that says who holds the claim and what a claim is.
-        tabIndex={tooltips ? 0 : undefined}
       >
         <span className="block w-full min-w-0 [overflow-wrap:anywhere]">
           Claimed by <AgentName actor={claim.actor} inline />
@@ -336,7 +342,7 @@ export function ClaimChip({
     );
   return (
     <span
-      {...(tooltips ? tooltip.props : {})}
+      {...root}
       className={
         inDetails
           ? // A block of text, not a flex box, so a part that does not fit breaks across lines as
@@ -351,11 +357,7 @@ export function ClaimChip({
             // `onPage`).
             `${pillClassName(tone, page !== null)} min-w-0 max-w-full gap-1${focusRing}`
       }
-      data-testid="issue-claim"
-      ref={chipRef}
       style={{ flexShrink: 1 }}
-      // The Tab stop opens the tooltip that says who holds the claim and what a claim is.
-      tabIndex={tooltips ? 0 : undefined}
     >
       {inDetails ? null : (
         <span className="shrink-0" {...page?.pageChrome}>

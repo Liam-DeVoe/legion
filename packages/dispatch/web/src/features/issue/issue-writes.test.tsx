@@ -1121,7 +1121,7 @@ test("a board move then a header status change land in press order after an outa
   });
   const { artifacts: _artifacts, children: _children, open_asks: _asks, ...fields } = issue;
   const summary: IssueSummary = { ...fields, open_asks: 0 };
-  queryClient.setQueryData(projectIssuesQueryKey("CORE", []), [summary]);
+  queryClient.setQueryData(projectIssuesQueryKey("CORE"), [summary]);
   let move: ((key: string, change: BoardChange) => Promise<void>) | undefined;
   function Board(): null {
     move = useBoardMoves("CORE").move;
