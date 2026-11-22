@@ -365,12 +365,10 @@ test("a path opens the line of each overtaken node it runs through, and none for
   const opened: ReadonlySet<string> = new Set(["elsewhere"]);
 
   expect(overtakenLineOf(pathTo(root, "comment-2"))).toBe("spec");
-  expect([...(withLine(opened, pathTo(root, "comment-2")) ?? [])]).toEqual([
-    "elsewhere",
-    "spec",
-    "spec#b-r8",
-  ]);
-  expect([...(withLine(undefined, pathTo(root, "spec#b-r8")) ?? [])]).toEqual(["spec"]);
+  expect(withLine(opened, pathTo(root, "comment-2"))).toEqual(
+    new Set(["elsewhere", "spec", "spec#b-r8"])
+  );
+  expect(withLine(undefined, pathTo(root, "spec#b-r8"))).toEqual(new Set(["spec"]));
   // The set the reader's own lines are held in is a new one, never the one they had.
   expect(opened).toEqual(new Set(["elsewhere"]));
 
