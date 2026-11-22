@@ -33,7 +33,7 @@ import {
   webDistOf,
 } from "./harness-processes";
 import { withIssuePage } from "./issue-page-option";
-import { RUN_WORD, runAs, runReadServed } from "./issue-page-z";
+import { RUN_WORD, runAs } from "./issue-page-z";
 import { sql } from "./psql";
 import { type Browser, expect, type Locator, type Page, type Request, test } from "./test";
 import { type LazyPiece, lazyPieces, type WalkRoutePath, walkRoutes } from "./two-builds-routes";
@@ -204,8 +204,6 @@ interface Seeded {
   readonly issueArtifact: string;
   readonly priority: string;
   readonly run: string;
-  /** Whether the server answers the run's own read, which decides what its page draws. */
-  readonly runServed: boolean;
 }
 
 /** What every route needs to show its own content rather than an empty or missing state: a
@@ -297,7 +295,6 @@ async function seedEveryRoute(): Promise<Seeded> {
   const agentArtifact = await uploadAgentPicture(session.session_id);
   // A command bar run's own page draws only a run its reader asked.
   const run = (await runAs("alice", runQuestion, "CORE")).id;
-  const runServed = await runReadServed(run);
   await seedDeliveryFixture();
   return {
     agentArtifact,
@@ -307,7 +304,6 @@ async function seedEveryRoute(): Promise<Seeded> {
     issueArtifact: issueArtifact.artifact.slug,
     priority: priority.id,
     run,
-    runServed,
   };
 }
 
@@ -582,17 +578,12 @@ function visits(seed: Seeded): readonly Visit[] {
     },
     {
       // A run's own page is drawn only for a reader with the new issue page turned on, so this
-      // visit is last for the same reason as the one before it. Until the server's run node
-      // reaches this stack the server answers no run's read, and the run's address draws the page
-      // of an unknown address; that page still loads `RunRoute`'s and `RunPage`'s chunks for the
-      // walk.
+      // visit is last for the same reason as the one before it.
       route: "/runs/:id",
       shows: (page) => [
-        seed.runServed
-          ? page
-              .locator("[data-issue-page]")
-              .getByRole("heading", { exact: true, level: 1, name: RUN_WORD })
-          : heading(page, "Page not found"),
+        page
+          .locator("[data-issue-page]")
+          .getByRole("heading", { exact: true, level: 1, name: RUN_WORD }),
       ],
       url: buildRunPath(seed.run),
     },

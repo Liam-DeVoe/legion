@@ -21,12 +21,10 @@ import {
   referenceReads,
   referencesControl,
   retryBeside,
-  runReadServed,
   runReference,
   runRowsOf,
   seedRunIssue,
   treeReadFailure,
-  treeRunServed,
 } from "./issue-page-z";
 import { expect, test } from "./test";
 import { watchApiRequests } from "./traffic";
@@ -37,15 +35,12 @@ import { asUser } from "./users";
  * the run's own page at `/runs/<id>` is its asker's alone.
  *
  * Both rows seed the run through the server (`seedRunIssue`, `e2e/issue-page-z.ts`) and read it
- * on the real stack: the run's writes carry its header, the outline's tree read answers the run
- * to its asker alone, and the run's page reads it at its own address. The stack this branch
- * builds serves none of the three yet - the run header on a write, the issue's tree read
- * (`GET /api/v1/issues/{key}/tree`) and the run's read by its address
- * (`GET /api/v1/references?to=dispatch://interaction/<id>&kind=changed_by_run`) reach it with
- * the server's branches that add them. So each row asks the server, once the seed is written,
- * for the reads it needs, and while one is not served the row is skipped with an annotation that
- * says what it owes: a skip, never a pass, and no tag, so the row runs once the server serves
- * those reads.
+ * on the real stack. The run's writes carry its header (`GOING_RUN_HEADER`), which links the
+ * issue to the run. The outline's tree read (`GET /api/v1/issues/{key}/tree`) answers the run to
+ * its asker alone, and Details draws it from that read as a row of the asker's Referenced by. The
+ * run's page reads the run by its address
+ * (`GET /api/v1/references?to=dispatch://interaction/<id>&kind=changed_by_run`), which the server
+ * answers to the asker alone.
  */
 
 // SLOW(>=2s): three issues, a run and its three writes seeded, then three loads of the issue:
@@ -62,10 +57,6 @@ test("a command bar run that changed the issue is a reference for the person who
   browser,
 }) => {
   await phase(browser, seedRunIssue, async (page, seeded) => {
-    test.skip(
-      !(await treeRunServed(seeded.key)),
-      "owed: the run's row in Details' Referenced by needs the server's issue tree read to answer the reader's command bar runs, and an issue update made for a run to link the issue to it"
-    );
     const traffic = watchApiRequests(page);
     await gotoIssue(page, seeded.path);
     await openDetails(page);
@@ -168,6 +159,7 @@ test("a command bar run that changed the issue is a reference for the person who
       // His list's own rows are drawn together from its one read, which has answered once the
       // citing issue's row stands, so this count reads them settled (`listedEdgesOf`).
       const bobsOwn = await listedEdgesOf(his).count();
+      expect(bobsOwn, `bob's list's own rows are not the ${own} alice's list drew`).toBe(own);
       await expect(
         referencesControl(his, bobsOwn),
         "bob's Referenced by counts a row beside the list's own rows"
@@ -176,6 +168,10 @@ test("a command bar run that changed the issue is a reference for the person who
         marginSection(his, "references").locator("[data-extra-references]"),
         "bob's Details draws a run he did not ask"
       ).toHaveCount(0);
+      await expect(
+        marginSection(his, "references"),
+        "bob's Details reads the question of a run he did not ask"
+      ).not.toContainText(RUN_QUESTION);
     } finally {
       await bob.close();
     }
@@ -190,12 +186,6 @@ test("a command bar run that changed the issue is a reference for the person who
 // today's page, the run's address is the page an unknown address draws.
 test("the run's page is its asker's alone", async ({ browser }) => {
   await phase(browser, seedRunIssue, async (page, seeded) => {
-    // The row reads the run's page by its own read, then opens it from the issue's run row,
-    // which the tree read draws: it needs both served.
-    test.skip(
-      !((await runReadServed(seeded.run)) && (await treeRunServed(seeded.key))),
-      "owed: the run's own page and the run row that opens it need the server to answer a run's own read with its whole question, and the issue tree read to answer the reader's runs"
-    );
     const traffic = watchApiRequests(page);
     const address = buildRunPath(seeded.run);
     await page.goto(address);
