@@ -104,26 +104,20 @@ func RunHeld(ctx context.Context, records *holdrecord.Client, op *Operator, c He
 		printReport(stdout, id, reading)
 	}
 
-	nc, err := op.Connect(ctx)
-	if err != nil {
-		return id, unknownf(StepPostcheck, err, "connect to the hub as the operator under the held grant")
-	}
-	defer nc.Close()
-	prior := priorLeft(d, c.Command)
-	if _, err := records.Admit(ctx, id, holdrecord.Request{Command: c.Command}, c.Inputs); err != nil {
-		return id, err
-	}
 	// A Stoppable command's failure after its intent writes a stop entry recording what it left
 	// (holdrecord.AppendStopLeft): every change its runs made and did not undo, LeftUnchanged only
 	// when neither this run nor an earlier one changed anything outside the journal. After an
 	// UNKNOWN the record is `unknown: read <what this run read since its intent>; unread <what it
 	// could not read>; <what the runs changed>` (unknownLeft), never LeftUnchanged: a reading that
 	// is not whole cannot say what it left, so release stays refused and abort is the way out. A
-	// command that is not Stoppable leaves its intent pending, and the table admits its rerun
-	// (holdrecord.Stoppable).
+	// rerun of a command killed after its intent writes that stop at its exits before its own
+	// admission too, so every exit after an intent writes its stop and none leaves one pending that
+	// refuses `hold abort` busy.
+	prior := priorLeft(d, c.Command)
+	pending := latestIs(d, c.Command, holdrecord.StateIntent)
 	var reads []string
 	stop := func(cause error, left string) error {
-		if !holdrecord.Stoppable(d.Workflow, c.Command) {
+		if !pending || !holdrecord.Stoppable(d.Workflow, c.Command) {
 			return cause
 		}
 		if prior != "" {
@@ -144,6 +138,15 @@ func RunHeld(ctx context.Context, records *holdrecord.Client, op *Operator, c He
 		}
 		return cause
 	}
+	nc, err := op.Connect(ctx)
+	if err != nil {
+		return id, stop(unknownf(StepPostcheck, err, "connect to the hub as the operator under the held grant"), holdrecord.LeftUnchanged)
+	}
+	defer nc.Close()
+	if _, err := records.Admit(ctx, id, holdrecord.Request{Command: c.Command}, c.Inputs); err != nil {
+		return id, stop(err, holdrecord.LeftUnchanged)
+	}
+	pending = true
 	before, err := ReadProtectedStreams(ctx, nc, c.Absent)
 	if err != nil {
 		return id, stop(err, holdrecord.LeftUnchanged)
@@ -162,7 +165,7 @@ func RunHeld(ctx context.Context, records *holdrecord.Client, op *Operator, c He
 		return id, stop(err, describeChanges(changes))
 	}
 	if err := records.AppendDone(ctx, id, c.Command, outputs); err != nil {
-		return id, err
+		return id, stop(err, describeChanges(changes))
 	}
 	fmt.Fprintf(stdout, "%s done in hold %s: release it with envoy-infra hold release --hold %s\n", c.Command, id, id)
 	return id, nil

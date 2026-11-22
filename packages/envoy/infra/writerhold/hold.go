@@ -223,17 +223,21 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, stores
 	if _, err := records.Admit(ctx, o.holdID, holdrecord.Request{Command: holdrecord.CommandAbort}, nil); err != nil {
 		return err
 	}
-	after, _, err := records.Journal(ctx, o.holdID)
-	if err != nil {
-		return err
-	}
-	printStopRecords(stdout, after)
+	// Every exit after the intent writes abort's stop but the two after the row move: there the
+	// intent stays pending on purpose, since abort's own rerun is admitted on it and, reading the
+	// row released, writes the done entry the move left, and a stop would leave a released row
+	// whose journal no command ends (only an abort of a journal in prepare is admitted on it).
 	stop := func(cause error) error {
 		if err := records.AppendStop(ctx, o.holdID, holdrecord.CommandAbort, cause.Error()); err != nil {
 			return errors.Join(cause, err)
 		}
 		return cause
 	}
+	after, _, err := records.Journal(ctx, o.holdID)
+	if err != nil {
+		return stop(err)
+	}
+	printStopRecords(stdout, after)
 	hub := d.Workflow == holdrecord.WorkflowHubRestore
 	var outputs map[string]string
 	if hub {
@@ -267,11 +271,19 @@ func abortReleasedPrepare(ctx context.Context, records *holdrecord.Client, row h
 	if _, err := records.Admit(ctx, o.holdID, holdrecord.Request{Command: holdrecord.CommandAbort}, nil); err != nil {
 		return err
 	}
+	// Every exit after the intent writes abort's stop: its rerun is admitted again on the released
+	// row while the journal shows prepare, and the cohort delete answers nil once the record is gone.
+	stop := func(cause error) error {
+		if err := records.AppendStop(ctx, o.holdID, holdrecord.CommandAbort, cause.Error()); err != nil {
+			return errors.Join(cause, err)
+		}
+		return cause
+	}
 	if err := records.DeleteCohort(ctx, o.holdID); err != nil {
-		return err
+		return stop(err)
 	}
 	if err := records.AppendDone(ctx, o.holdID, holdrecord.CommandAbort, nil); err != nil {
-		return err
+		return stop(err)
 	}
 	fmt.Fprintf(stdout, "aborted hold %s, whose row reads released (gen %d) and whose journal shows prepare: its cohort record is deleted and the hold has ended\n", o.holdID, row.Gen)
 	return nil
@@ -518,16 +530,22 @@ func release(ctx context.Context, records *holdrecord.Client, op *Operator, o op
 	if err != nil {
 		return err
 	}
+	// Every exit after the intent and before the row move writes release's stop. After the move the
+	// intent stays pending on purpose: release's own rerun is admitted on it and, reading the row
+	// released, writes the done entry the move left.
+	stop := func(cause error) error {
+		if err := records.AppendStop(ctx, o.holdID, holdrecord.CommandRelease, cause.Error()); err != nil {
+			return errors.Join(cause, err)
+		}
+		return cause
+	}
 	d, _, err := records.Journal(ctx, o.holdID)
 	if err != nil {
-		return err
+		return stop(err)
 	}
 	if w == holdrecord.WorkflowHubRestore {
 		if err := onExpectedDisks(ctx, op, d); err != nil {
-			if stopErr := records.AppendStop(ctx, o.holdID, holdrecord.CommandRelease, err.Error()); stopErr != nil {
-				return errors.Join(err, stopErr)
-			}
-			return err
+			return stop(err)
 		}
 	}
 	moved, err := records.MoveRow(ctx, row.Gen, natsgrant.OperatorPhaseReleased, o.holdID, o.reason)
@@ -773,7 +791,7 @@ func Set(ctx context.Context, records *holdrecord.Client, op *Operator, holdID, 
 		outputs["exit."+r.Pod] = r.Exit.String()
 	}
 	if err := records.AppendDone(ctx, holdID, holdrecord.CommandSet, outputs); err != nil {
-		return nil, err
+		return nil, stop(err)
 	}
 	return reading, nil
 }
@@ -1091,7 +1109,7 @@ func prove(ctx context.Context, records *holdrecord.Client, op *Operator, o opti
 		outputs["disk_id."+t] = read[t]
 	}
 	if err := records.AppendDone(ctx, o.holdID, holdrecord.CommandProve, outputs); err != nil {
-		return err
+		return stop(err)
 	}
 	printReport(stdout, o.holdID, reading)
 	return nil
