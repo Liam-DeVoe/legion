@@ -1056,7 +1056,13 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 		PrepareRepository: w.prepareRepository, PrepareArtifact: w.prepareArtifact,
 		Names: cfg.ConsumerNames,
 		Connect: func(_ context.Context, name string) (*nats.Conn, error) {
-			return w.dial(cfg, nc, name)
+			generation, err := w.dial(cfg, nc, name)
+			if err == nil {
+				// The generation's connection is closed by the consumers, never by the runtime, so
+				// its watch ends when the connection does rather than with a context.
+				go w.reconnectWatchdogWith(context.Background(), generation, name)
+			}
+			return generation, err
 		},
 	})
 	if err != nil {
@@ -2182,24 +2188,28 @@ const defaultReconnectWarnEvery = 3 * time.Minute
 // reports disconnected, with a LastError, on demand.
 type connStatus interface {
 	IsConnected() bool
+	IsClosed() bool
 	LastError() error
 }
 
 // reconnectWatchdog logs a warn once the downtime since conn last connected reaches
 // reconnectWarnEvery, and every reconnectWarnEvery after that while conn stays disconnected —
 // never on the first poll that merely finds it down, which would log a downtime near zero and
-// make this almost as noisy as nats.go's own reconnect wait. Each warn names the downtime so far
-// and conn's own LastError, usually empty during a plain refused dial (nats.go clears its own
-// last-seen error on every failed attempt) and naming the failure's own cause while a handshake
-// keeps failing (nats.go leaves that one in place across attempts), so an operator reading the
-// log sees that NATS has been down, for how long, and why when nats.go has anything to say,
-// instead of just the one disconnect line a reconnect that keeps failing never reaches a
-// reconnected or a closed line to follow.
+// make this almost as noisy as nats.go's own reconnect wait. Each warn names the connection, the
+// downtime so far and conn's own LastError, usually empty during a plain refused dial (nats.go
+// clears its own last-seen error on every failed attempt) and naming the failure's own cause while
+// a handshake keeps failing (nats.go leaves that one in place across attempts), so an operator
+// reading the log sees that NATS has been down, for how long, and why when nats.go has anything to
+// say, instead of just the one disconnect line a reconnect that keeps failing never reaches a
+// reconnected or a closed line to follow. It watches the daemon's own connection beside Run; each
+// fresh generation's connection is watched from its dial until it closes (connect).
 func (w *workflowRuntime) reconnectWatchdog(ctx context.Context) {
-	w.reconnectWatchdogWith(ctx, w.conn.Load())
+	if conn := w.conn.Load(); conn != nil {
+		w.reconnectWatchdogWith(ctx, conn, conn.Opts.Name)
+	}
 }
 
-func (w *workflowRuntime) reconnectWatchdogWith(ctx context.Context, conn connStatus) {
+func (w *workflowRuntime) reconnectWatchdogWith(ctx context.Context, conn connStatus, name string) {
 	interval := w.reconnectPollInterval
 	if interval <= 0 {
 		interval = defaultReconnectPollInterval
@@ -2217,6 +2227,9 @@ func (w *workflowRuntime) reconnectWatchdogWith(ctx context.Context, conn connSt
 			return
 		case <-ticker.C:
 		}
+		if conn.IsClosed() {
+			return
+		}
 		if conn.IsConnected() {
 			disconnectedSince, warnedAt = time.Time{}, time.Time{}
 			continue
@@ -2228,7 +2241,7 @@ func (w *workflowRuntime) reconnectWatchdogWith(ctx context.Context, conn connSt
 		if downtime < warnEvery || (!warnedAt.IsZero() && time.Since(warnedAt) < warnEvery) {
 			continue
 		}
-		w.log.Warn("NATS has not reconnected", "downtime", downtime.Round(time.Second).String(), "error", conn.LastError())
+		w.log.Warn("NATS has not reconnected", "connection", name, "downtime", downtime.Round(time.Second).String(), "error", conn.LastError())
 		warnedAt = time.Now()
 	}
 }

@@ -329,7 +329,7 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 	}
 	consumers := &Consumers{spec: spec, pool: pool, js: js, stream: stream, repos: slices.Clone(spec.Repositories)}
 	if spec.Names == consumernames.ModeFresh {
-		names, err := newDurableNames(pool, spec)
+		names, err := newDurableNames(js, pool, spec)
 		if err != nil {
 			return nil, err
 		}

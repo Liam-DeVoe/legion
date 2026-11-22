@@ -1952,7 +1952,8 @@ notice comes once per handoff commit, from whichever read finds it first.
   `<logical>~<id>` (`physical`, empty when none was read), which the logical name's row of the
   daemon's `intake_consumers` table selects. One step of settling that name failed (`op`): `select`
   refuses before anything is made, `create` and `missing_current` are a create, `recover` settles a
-  create another boot left open, `update` is the boot's update of the selected consumer,
+  create another boot left open or a convert's replace of the fixed name, `update` is the boot's
+  update of the selected consumer,
   `connect` and `info` are the dial of one name's own connection and a read on it, and
   `last_floor` records its floor. At the boot every step but `last_floor`, whose record only
   narrows a later restart, stops the boot. The same line from a later step does not stop the
@@ -1983,6 +1984,13 @@ notice comes once per handoff commit, from whichever read finds it first.
     and that connection was not admitted. A hub's static configuration grants the daemon's user
     every fresh name of its consumers; the NATS auth service grants such a connection that one
     consumer. Nothing was deleted, and the next boot settles the step it left.
+  - `recover` with `physical` the fixed name, `legion-go-<project>-<kind>`, and an error naming
+    `no consumer delete`: the operator's `convert` replaced the fixed name, and its delete of the
+    fixed name did not land, so the replace is still open and the stream still holds the fixed
+    consumer. The daemon reads the fixed name on its own connection and closes the replace once the
+    stream no longer holds it, but its grant has no consumer delete. The operator deletes it with
+    the operator's credential (`nats consumer rm ENVOY_NOTIFICATIONS legion-go-<project>-<kind>`),
+    and the next boot closes the replace.
 
   A name the daemon retired after a create nobody answered stays on the server, since the daemon's
   grant has no consumer delete: `envoy-infra consumer-names status` lists it and `cleanup` deletes
