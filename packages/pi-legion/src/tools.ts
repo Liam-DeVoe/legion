@@ -534,8 +534,11 @@ export function createLegionTool(deps: {
         "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
         "register_plan (issue, artifactId, version) gives Legion the plan of an issue you own: a document on that issue, by its id, slug " +
         "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
-        "steps its task runs, a subset of `planner implementer tester reviewer acceptance:owner` in that order with `implementer` in it; a " +
-        "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
+        "steps its task runs, in any order and with no role required: Legion's roles planner, implementer, tester, reviewer and acceptance, " +
+        "and the roles of the deployment and of the plan, each with an optional key after a colon that names its agent (`implementer:owner` " +
+        "is a step you do yourself, and `acceptance` with no key is a fresh agent of the role acceptance); a task that names none runs the " +
+        "project's default steps. Legion adds the retro, done by the agent of the task's last step of the type implementation or by you " +
+        "where it has none, and the merge where the issue has a pull request. Give it before the issue's " +
         "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
         "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
         "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first, and a plan of an issue " +
@@ -556,7 +559,8 @@ export function createLegionTool(deps: {
         "task with a later version of the plan, or stop it once the person has answered). It also refuses, changing nothing, a stop of " +
         "an issue outside your tree or one that left it (ISSUE_OUTSIDE_TREE), and a stop of a run of the issue that ended before Legion " +
         "applied it: read the issue again (TASK_STALE_GENERATION). " +
-        "sign_off is the architect's acceptance of an issue in accepting, moving it to retro. The daemon refuses, changing nothing, a " +
+        "sign_off is the architect's acceptance of an issue in accepting, moving it to the task's next step, or to its retro where the " +
+        "acceptance is the task's last step. The daemon refuses, changing nothing, a " +
         "sign-off of an issue you no longer own (ISSUE_NOT_OWNED, or ISSUE_OUTSIDE_TREE once it left your tree), one of a run of the " +
         "issue or of accepting that ended before Legion applied it (SIGNOFF_STALE_GENERATION, SIGNOFF_STALE_ENTRY: read the issue and " +
         "its evidence again) and one in every other phase (SIGNOFF_OUTSIDE_ACCEPTING); it also refuses it while an issue beneath it " +
@@ -568,7 +572,8 @@ export function createLegionTool(deps: {
         "handoff_complete carries for that step's role: the verdict pass or fail of a step that reports one, return_to with a fail, and " +
         "the rating of the plan on the retro; it reads the handoff record of a planning, implementing, testing or reviewing step, which " +
         "you write first with dispatch handoff-write, and the commit, as handoff_complete reads them. Your acceptance step's pass is " +
-        "your sign-off, and its fail sends the task back, to return_to or to the first implementation step before it. The daemon " +
+        "your sign-off, and its fail sends the task back, to return_to or to the first implementation step before it; a fail that " +
+        "names no return_to where no implementation step stands before it is refused (RETURN_TO_REQUIRED). The daemon " +
         "refuses, changing nothing, a report from any architect but the issue's own (NOT_THE_OWNER), one of a step that does not run " +
         "now or is not yours (OWNER_STEP_NOT_RUNNING, naming where the task stands and who works that place), and one that breaks " +
         "the rules of that step's completion, with the codes handoff_complete gets. " +
@@ -577,8 +582,8 @@ export function createLegionTool(deps: {
         "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
         "since closing it would stop that work mid-turn: answer it the same way, park_child under the same rule included. " +
         "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
-        "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
-        "under it now: wait for the ancestor to close, then release it. " +
+        "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since the head that ancestor's last step passed cannot carry work " +
+        "released under it now: wait for the ancestor to close, then release it. " +
         "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
         "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
         "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +

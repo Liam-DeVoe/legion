@@ -189,15 +189,17 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. A wake that a project pause held is " +
   "counted as `heldByPause` and left out of those seconds, since its wait measures the pause. A release that suspended no role is woken by " +
   "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. " +
-  "handoff_complete (phase workers alone: the daemon refuses an architect's completion, with ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first, since an architect accepts with sign_off; " +
+  "handoff_complete (phase workers alone: the daemon refuses an architect's completion, with ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first, since an architect accepts with sign_off and reports a step of its own with complete_step; " +
   "the daemon accepts a completion only from the role working the issue's current phase, " +
   "or a role's first completion of the phase it left, which it records and which moves nothing, " +
   "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
-  "architect), `verdict` pass|fail from the tester or a role of the deployment on a phase completion (the daemon refuses a verdict from " +
-  "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
+  "architect), `verdict` pass|fail on a phase completion from the tester, a role of the deployment or of the plan, the fresh agent of acceptance " +
+  "and a reviewer of an issue with no pull request, each of which must send one (the daemon refuses a verdict from any other role there, " +
+  "and from the retro) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
   "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow; on the check's last look, only for an issue with no such requirement). " +
-  "A tester's fail may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
-  "to; without it, the task goes back to the first implementation step before the step that failed. Only a completion with the verdict " +
+  "A fail may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
+  "to; without it, the task goes back to the first implementation step before the step that failed, and where no such step stands " +
+  "before it, Legion stops the task and tells its owner (task-stopped). Only a completion with the verdict " +
   "fail names it (RETURN_TO_NEEDS_FAIL), a place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to " +
   "(RETURN_REFUSED). " +
   "A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
@@ -235,8 +237,8 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. " +
   "The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. " +
   "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
-  "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move " +
-  "counts a review round. " +
+  "The architect that owns an issue in accepting moves it, named by `issue`, back to an earlier step of its task. That move " +
+  "counts no review round. " +
   "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
   "It also reports the contract the daemon states on its answer to the health route. " +
   "That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. " +
@@ -251,8 +253,11 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
   "register_plan (issue, artifactId, version) gives Legion the plan of an issue you own: a document on that issue, by its id, slug " +
   "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
-  "steps its task runs, a subset of `planner implementer tester reviewer acceptance:owner` in that order with `implementer` in it; a " +
-  "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
+  "steps its task runs, in any order and with no role required: Legion's roles planner, implementer, tester, reviewer and acceptance, " +
+  "and the roles of the deployment and of the plan, each with an optional key after a colon that names its agent (`implementer:owner` " +
+  "is a step you do yourself, and `acceptance` with no key is a fresh agent of the role acceptance); a task that names none runs the " +
+  "project's default steps. Legion adds the retro, done by the agent of the task's last step of the type implementation or by you " +
+  "where it has none, and the merge where the issue has a pull request. Give it before the issue's " +
   "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
   "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
   "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first, and a plan of an issue " +
@@ -318,8 +323,8 @@ const OMP_LEGION_TOOL_DESCRIPTION_AFTER_COMPLETE_STEP =
   "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
   "since closing it would stop that work mid-turn: answer it the same way, park_child under the same rule included. " +
   "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
-  "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
-  "under it now: wait for the ancestor to close, then release it. " +
+  "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since the head that ancestor's last step passed cannot carry work " +
+  "released under it now: wait for the ancestor to close, then release it. " +
   "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
   "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
   "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
@@ -985,10 +990,11 @@ test("read_release_records reads the window with this session's claim, and repor
   });
 });
 
-// Every role reads one description, and the daemon accepts a verdict from the tester and from a
-// role of the deployment alone (VERDICT_ROLE_FORBIDDEN): it may not leave another role to infer
+// Every role reads one description, and the daemon accepts a verdict on a completion only from the
+// tester, a role of the deployment or of the plan, the fresh agent of acceptance and a reviewer of
+// an issue with no pull request (VERDICT_ROLE_FORBIDDEN): it may not leave another role to infer
 // from its own instructions that it reports one.
-test("the legion tool's description gives a verdict to the tester or a role of the deployment", () => {
+test("the legion tool's description gives a verdict to the tester, a role of the deployment or of the plan, the fresh agent of acceptance and a reviewer with no pull request", () => {
   const tool = createLegionTool({
     pi,
     daemon: recordingDaemon({}).daemon,
@@ -1001,7 +1007,7 @@ test("the legion tool's description gives a verdict to the tester or a role of t
     session: () => claimSession("reviewer"),
   });
   expect(tool.description).toContain(
-    "`verdict` pass|fail from the tester or a role of the deployment"
+    "`verdict` pass|fail on a phase completion from the tester, a role of the deployment or of the plan, the fresh agent of acceptance and a reviewer of an issue with no pull request"
   );
   expect(tool.description).not.toContain("when your role's instructions require one");
 });

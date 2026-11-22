@@ -184,7 +184,7 @@ test("the description sets the host's sentences before and after handoff_complet
   // Every host states `ready_for_update`, so its sentences are the template's own, between
   // handoff_complete's contract and the host's `after`.
   expect(placed).toContain(
-    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. The controller's read_state returns the daemon's whole state. What a later phase needs"
+    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to an earlier step of its task. That move counts no review round. The controller's read_state returns the daemon's whole state. What a later phase needs"
   );
   expect(placed.endsWith("role topic with mcp__legion__envoy_publish.")).toBe(true);
 });
@@ -652,11 +652,12 @@ test("request_backward_move sends return_to as returnTo", async () => {
   );
 });
 
-// Contract 221: the daemon takes a verdict from a role of the deployment too, and the one
-// description every role reads says so.
-test("the description gives a verdict to the tester or a role of the deployment", () => {
+// Contract 221: the daemon takes a verdict from a role of the deployment too, and contract 227
+// from a role of the plan, the fresh agent of acceptance and a reviewer of an issue with no pull
+// request; the one description every role reads says so.
+test("the description gives a verdict to the tester, a role of the deployment or of the plan, the fresh agent of acceptance and a reviewer with no pull request", () => {
   expect(legionToolDescription({ envoyPublish: "envoy_publish" })).toContain(
-    "`verdict` pass|fail from the tester or a role of the deployment on a phase completion"
+    "`verdict` pass|fail on a phase completion from the tester, a role of the deployment or of the plan, the fresh agent of acceptance and a reviewer of an issue with no pull request"
   );
 });
 
