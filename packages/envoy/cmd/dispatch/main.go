@@ -547,7 +547,7 @@ func main() {
 
 	// Every project has an owner (INFRA-3862): a project the access migration left with none is
 	// given to DISPATCH_PROJECT_OWNER_FALLBACK's full member, and while one still has none the boot
-	// refuses, naming each and both repairs, as an unknown default project refuses it.
+	// refuses, naming each and both repairs.
 	if err := store.EnsureProjectOwners(store.WithTransactionTracking(ctx), database.Pool, boot.ProjectOwnerFallback); err != nil {
 		slog.Error("dispatch: give every project an owner", "error", err)
 		os.Exit(1)
@@ -1858,7 +1858,7 @@ func warnEveryServiceAccountAdmitted(boot bootConfig) {
 
 // commaList is the comma-separated list the setting name holds, each entry trimmed; a value blank
 // once trimmed is no list at all. An empty entry stays in the list for its reader to refuse by
-// position, as NATS_URLS and DISPATCH_REPO_PROJECTS refuse one.
+// position, as NATS_URLS refuses one.
 func commaList(env settingValues, name string) []string {
 	value := strings.TrimSpace(env.get(name))
 	if value == "" {

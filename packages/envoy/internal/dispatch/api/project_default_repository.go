@@ -112,8 +112,10 @@ func (s *server) putProjectDefaultRepository(w http.ResponseWriter, r *http.Requ
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The row as this write left it, read as the writer reads it: the project above passed that
-	// read, so this one finds it.
+	// The row as this write left it, read as the writer reads it. An access change can commit
+	// between the read above and the owner lock, so this read can find the project hidden: it is
+	// then the 404 PROJECT_NOT_FOUND of a key nobody holds, and the update rolls back with the
+	// transaction.
 	project, err := s.loadProject(r.Context(), tx, who, r.PathValue("key"))
 	if err != nil {
 		s.writeHandlerError(w, err)
