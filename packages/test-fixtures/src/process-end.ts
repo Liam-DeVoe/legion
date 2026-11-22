@@ -25,6 +25,15 @@ function procStat(pid: number): { readonly state: string; readonly start: string
   return { state: fields[0] ?? "", start: fields[19] ?? "" };
 }
 
+/** Throws unless `pid` names one process: a positive integer. `kill(0, 0)` and `kill(-n, 0)`
+ *  name a process group, and a pid read from an empty or garbled file is 0 or NaN, which would
+ *  read as a process already ended. */
+function oneProcess(pid: number): void {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    throw new Error(`${pid} is no process id: a process id is a positive integer`);
+  }
+}
+
 /** Whether the process with this pid, started at `start` where that is known, is running. */
 function running(pid: number, start: string | undefined): boolean {
   try {
@@ -39,8 +48,9 @@ function running(pid: number, start: string | undefined): boolean {
 }
 
 /** Whether the process with this pid is running: it exists and, where /proc says so, is not a
- *  zombie. */
+ *  zombie. Throws for a pid that names no process. */
 export function processRunning(pid: number): boolean {
+  oneProcess(pid);
   return running(pid, undefined);
 }
 
@@ -48,9 +58,11 @@ export function processRunning(pid: number): boolean {
  * Resolves once the process with this pid has ended: it is gone, a zombie, or its pid names a
  * process started since this call. It sets no bound of its own: the test's own timeout is the only
  * hang guard, so the wait says the process ended, however long a loaded machine takes to schedule
- * its end and its reap, and a process that never ends fails the test at that timeout.
+ * its end and its reap, and a process that never ends fails the test at that timeout. Rejects for a
+ * pid that names no process.
  */
 export async function processEnded(pid: number): Promise<void> {
+  oneProcess(pid);
   const start = PROC ? procStat(pid)?.start : undefined;
   // The pace of the poll, not a bound: nothing announces the end of a process this one did not
   // spawn.

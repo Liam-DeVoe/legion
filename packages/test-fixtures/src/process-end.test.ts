@@ -34,6 +34,15 @@ test("a running process reads as running, and the wait ends once it is killed", 
   }
 });
 
+// A pid read from an empty or garbled file is 0 or NaN, and `kill(0, 0)` names this process's own
+// group: read as a process, each would end the wait at once and pass a row that saw nothing.
+test("a pid that names no single process is refused, not read as ended", async () => {
+  for (const pid of [0, -1, Number.NaN, Number(""), 1.5]) {
+    expect(() => processRunning(pid)).toThrow("is no process id");
+    await expect(processEnded(pid)).rejects.toThrow("is no process id");
+  }
+});
+
 // A killed orphan stays a zombie until whatever adopted it reaps it, and `kill(pid, 0)` answers for
 // a zombie. Here the parent is stopped, so it cannot reap its killed child: the child has ended,
 // and the wait must say so.

@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isShellCommandReport } from "@legion/contracts";
+import { processEnded } from "@legion/test-fixtures/process-end";
 import { procmgr } from "@oh-my-pi/pi-utils";
 import {
   runShellCommand,
@@ -543,8 +544,9 @@ describe("running a person's command", () => {
         if (code === null) expect(runs.signalCode).toBe("SIGKILL");
         else expect(runs.exitCode).toBe(code);
         const pid = Number(readFileSync(pidFile, "utf8").trim());
-        expect(Number.isInteger(pid)).toBe(true);
-        expect(await untilTrue(() => !alive(pid))).toBe(true);
+        // Its end is the event: a zombie the process it was handed to has not reaped yet has
+        // ended, though `kill(pid, 0)` still answers for it. The row's timeout is the only bound.
+        await processEnded(pid);
       } finally {
         rmSync(directory, { recursive: true, force: true });
       }

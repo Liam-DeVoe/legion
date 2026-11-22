@@ -1,4 +1,4 @@
-import { describe, expect, setSystemTime, test } from "bun:test";
+import { describe, expect, jest, setSystemTime, test } from "bun:test";
 import {
   chmodSync,
   closeSync,
@@ -18,6 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
+import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { BUN_START_MS } from "@legion/test-fixtures/process-bounds";
 import { processEnded, processRunning } from "@legion/test-fixtures/process-end";
@@ -1432,34 +1433,43 @@ describe("a ! command in envoy.json", () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const pidFile = path.join(home, "child.pid");
-    // The child it starts sleeps far past the test's timeout, so only the kill ends it in time.
+    // The command's own `sleep 30` would end it at 30 s, and its child sleeps far past the test's
+    // timeout: only the 10 s limit, and the kill of the group it makes, end either in time.
     const file = writeFile(path.join(home, "envoy.json"), {
       dispatch: {
         ...dispatchOn,
         token: `!echo canary; sleep 600 & echo $! > ${pidFile}; sleep 30 # ${home}`,
       },
     });
-    const cwd = tempDir();
+    const config = await readEnvoyConfig(file, env, { cwd: tempDir() });
+    const childPid = (): number =>
+      Number(existsSync(pidFile) ? readFileSync(pidFile, "utf-8").trim() : "") || 0;
     let dispatch: DispatchWithToken | undefined;
-    let elapsed = 0;
+    // The limit is a timer, and the fake clock holds it: the command runs in real time, and the
+    // row moves the clock to the limit once the command is under way, so no span of the read is
+    // measured. The read arms the timer in the same run as its spawn, so once the command has
+    // written its child's pid the timer is set. The error names the limit from the runner's own
+    // `COMMAND_TIMEOUT_MS`, so a limit other than the 10 s moved here fails the value check: the
+    // command then ends on its own at 30 s and gives its output.
     const left = await inScratchTmp(async () => {
-      const config = await readEnvoyConfig(file, env, { cwd });
-      const started = Date.now();
-      dispatch = await dispatchSettings(env, config);
-      elapsed = Date.now() - started;
+      jest.useFakeTimers();
+      try {
+        const reading = dispatchSettings(env, config);
+        await turnsUntil(() => childPid() > 0, "the command to start its child");
+        jest.advanceTimersByTime(10_000);
+        dispatch = await reading;
+      } finally {
+        jest.useRealTimers();
+      }
     });
-    // Ended by the 10 s bound, not by the command: its own `sleep 30` would take 30 s. The rest is
-    // the read's own file and process steps around the command, which took 5.1 s at load ~1200
-    // (a run that read 15.1 s), and three times that is allowed for them.
-    expect(elapsed).toBeLessThan(25_000);
     expect(dispatch).toEqual({
       enabled: false,
       notice: null,
       error: `${file}: dispatch.token's command did not finish within 10 s, and does not run again in this process`,
     });
-    // Killed with the command's group at the timeout: its end is the event, and the per-test
-    // timeout is the only bound.
-    await processEnded(Number(readFileSync(pidFile, "utf-8").trim()));
+    // Killed with the command's group at the limit: its end is the event, and the per-test timeout
+    // is the only bound.
+    await processEnded(childPid());
     expect(left).toEqual([]);
   }, 60_000);
 
