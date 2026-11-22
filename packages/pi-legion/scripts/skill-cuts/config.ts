@@ -6,7 +6,7 @@
  * it leaves out and the repositories its copies map to) comes from this file at run time and never
  * from a committed file. The real file is kept outside the repository.
  *
- * Keys, every one required but the last, no other allowed:
+ * Keys, every one required but those marked optional, no other allowed:
  *   owners          GitHub owners whose repositories the copy lister reads
  *   stores          the session stores the count reads: `{name, context}`, `name` the database
  *                   name, `context` `devbox` or `legion:<PROJECT>` (whose sessions the store holds)
@@ -26,6 +26,13 @@
  *                   shows that file at `<dir>/CLAUDE.md` (capture.ts, "The harness strings"),
  *                   and a neutral path without it. It names a person's home on the dev box, a
  *                   private value that only this file holds.
+ *   sets            (optional) `{id, repo}`: each skill set `set-count` measures against our
+ *                   skills. `id` is the set's name, which is also its Claude Code plugin name and
+ *                   the `<id>:` prefix of its skills in a Claude Code `Skill` call; no cut may have
+ *                   it as its id, and no two sets. `repo` is the set's upstream repository
+ *                   (`owner/name`).
+ *   dotfilesRepo    (optional; required when `sets` is given) the repository (`owner/name`) whose
+ *                   `omp/plugins/package.json` and `installers/omp.sh` pin the sets (sets.ts)
  *
  * A file that is not JSON, or that misses a key, holds a key not above or holds a value of the
  * wrong shape, is refused with one line per fault, each naming the key.
@@ -40,6 +47,10 @@ const Repository = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$
 });
 /** An instant in UTC, as the window's ends are written: `2026-10-23T00:00:00Z`. */
 const Instant = z.iso.datetime({ error: "an ISO instant ending in Z" });
+/** A skill set's name: a directory name under set-count's `--out` and a `<name>:` skill prefix. */
+const SetId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, {
+  error: "a set name of letters, digits, ., _ and -",
+});
 
 /** A session store: its database name, which a query names only as a value, so it is held to the
  *  letters a database identifier needs, and whose sessions it holds. */
@@ -77,10 +88,42 @@ export const SkillCutsConfig = z
       .string()
       .refine((value) => path.isAbsolute(value), { error: "an absolute path" })
       .optional(),
+    sets: z.array(z.strictObject({ id: SetId, repo: Repository })).optional(),
+    dotfilesRepo: Repository.optional(),
   })
   .refine((config) => Date.parse(config.windowStart) < Date.parse(config.windowEnd), {
     error: "windowEnd must be after windowStart",
     path: ["windowEnd"],
+  })
+  .superRefine((config, ctx) => {
+    if (config.sets === undefined) return;
+    if (config.dotfilesRepo === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["dotfilesRepo"],
+        message: "required when sets is given",
+      });
+    }
+    const cuts = new Set(config.cuts.map((cut) => cut.id));
+    const seen = new Set<string>();
+    for (const [index, set] of config.sets.entries()) {
+      const id = JSON.stringify(set.id);
+      if (cuts.has(set.id)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["sets", index, "id"],
+          message: `${id} is the id of a cut; a set id may not equal a cut id`,
+        });
+      }
+      if (seen.has(set.id)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["sets", index, "id"],
+          message: `${id} is given twice`,
+        });
+      }
+      seen.add(set.id);
+    }
   });
 export type SkillCutsConfig = z.infer<typeof SkillCutsConfig>;
 

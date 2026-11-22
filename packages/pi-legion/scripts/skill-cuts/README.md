@@ -21,8 +21,9 @@ change what the agent does. Two such things did, and the runner now removes both
   value, or by a neutral one where the store holds none ("The harness strings", below).
 
 Every private value (the owners, the session stores, the gateway's address, the paths left out, the
-repositories copies map to, the dev box's Claude Code config directory) comes from the `--config
-<skill-cuts.json>` file at run time (`config.ts` says each key). No file here names one. The
+repositories copies map to, the dev box's Claude Code config directory, the skill sets and the
+repository that pins them) comes from the `--config <skill-cuts.json>` file at run time
+(`config.ts` says each key). No file here names one. The
 gateway key comes from `--key-file`, read inside the process that uses it, never printed, logged
 or written. The behaviour test and the load test read the skill texts from directories and the
 cases or tasks from a file outside the repository. The repositories a context needs come from
@@ -32,7 +33,7 @@ queries; a whole repository's tarball only for a plugin's checkout). A skill's d
 from its commit's tree and its blobs; where GitHub cuts that tree short (a repository of too many
 entries), the directory alone is read, along its path from the root tree, one level at a time
 where GitHub cuts its own tree short too, never from the whole repository's tarball. So
-`behaviour` and `load` need no GitHub token only with `--repos`. `copies`,
+`behaviour` and `load` need no GitHub token only with `--repos`. `copies`, `set-count`,
 `build-cases` and `build-tasks --profiles-out` read GitHub through `gh`, and only read it: GET
 calls, and GraphQL queries that read file contents in batches.
 
@@ -321,6 +322,89 @@ copy's reading sessions by model, and writes each ranked skill's
 sessions whose file's head names no model; `notQueried`, those no models query held;
 `notAnthropic`; `served`, those on a model the gateway serves; `withModel`), which `behaviour
 --reading-models` reads. Without `--models` it writes no models file.
+
+### `set-count`
+
+```
+bun scripts/skill-cuts/cli.ts set-count --config <skill-cuts.json> --rows <count dir> \
+  --spans <spans.jsonl> --out <dir> [--dotfiles-commit <sha>] [--rows-label <text>] \
+  [--not-read <name>=<reason>]...
+```
+
+The read count of each skill set's skills (`set-count.ts`, with the pins read by `sets.ts`). It
+reads no store and calls no model. The configuration must give two keys that only this command
+reads: `sets`, `[{id, repo}]`, each skill set measured against our skills (`id` the set's name,
+which is also its Claude Code plugin name and the `<id>:` prefix of its skills in a Claude Code
+`Skill` call, and may not be a cut's id or another set's; `repo` its upstream repository,
+`owner/name`); and `dotfilesRepo`, the `owner/name` whose `omp/plugins/package.json` and
+`installers/omp.sh` pin the sets (required when `sets` is given).
+
+Inputs:
+
+- `--rows`: the count's raw output, in `attribute --count`'s layout (`<store>/<day>.txt`, or
+  `<store>/<day>T<hour>.txt` for each hour of a split day), read by `attribute.ts`'s own reader.
+- `--spans`: each store's earliest record, in the form `attribute --spans` takes.
+- `--dotfiles-commit`: the commit of `dotfilesRepo` whose pins are read, 40 hex digits; without
+  it, the default branch's commit when the command runs.
+- `--rows-label`: words that name the rows (an artifact and its version), written as given.
+- `--not-read`: a source of sessions the rows cannot hold, with its reason (the Claude Code
+  transcripts), once for each.
+
+The pins. A set is pinned by a dependency `"<package>": "github:<owner>/<repo>#<ref>"` of
+`omp/plugins/package.json` (its owner and repository the set's, in any case, whatever the package
+key) or by a line `ensure_vendor <url> <dir> <commit>` of `installers/omp.sh` whose url is the
+set's repository on GitHub. A set that no line pins, or that two lines pin, fails the command. A
+40-hex ref is the commit; a tag resolves to its commit (a lightweight tag's ref names it, an
+annotated tag's tag object names it); any other ref fails the command. The set's skills are the
+`skills/<name>/SKILL.md` of its repository's tree at that commit, so the place its installer reads
+skills from must be `skills/`: for a package, its `omp.skills`, else its `pi.skills`, else (none
+declared, or no `package.json`) `skills/`, as Oh My Pi reads a plugin package; for a vendor
+checkout, the one `skills-sources.json` pool `vendor/<dir>`. Any other place fails the command.
+The set's upstreams are its repository's fork parent and source. The count also names each commit
+of `dotfilesRepo` in the window at which a set's pin changed, from GitHub's list of the commits of
+each manifest's path, each set against the commit's first parent, with the pin before and after.
+
+The rule. A count row counts as the skill S of a set when S is one of the set's skills at its pin.
+Its copy is the set's own copy when it starts with `<set>:` (a Claude Code `Skill` call), holds
+the pin's install directory (`/node_modules/<package>/` or `/vendor/<dir>/`), or holds
+`/plugins/cache/` and after it a path part that is the set's id (Claude Code's plugin cache). A
+copy that is a URL is no install directory: a URL that names the set's repository or an upstream
+of it is a read of the upstream by URL, any other URL another copy. A row with no path and no
+prefix (empty, a `skill://` path, a bare name) names no copy; any other path or prefix is another
+copy. A session is its store and file hash, and counts once for S, in the first of these columns
+that one of its `read` rows reaches: `own`, `upstream_url`, `other_copy` (it read only another
+copy, such as a Legion fork), `no_copy`. `reference_own` counts the sessions with a `reference`
+row of S at the own copy, apart. Only a row's paired reads count, never its unpaired calls.
+
+Before it reads GitHub it refuses (exit 2), naming each gap, rows in which a configured store that
+has rows lacks a summary row for a day from the window's start to its end: no output of that day
+or of all 24 of its hours, a file that is not one whole count.sql result, or a summary row whose
+mtime range is not its query's. A configured store with no rows is named as not read.
+
+Outputs under `--out`:
+
+- `exemplar-count.md`: the window; the rows read (the label as given, and one sha256 over the
+  files: of one line `<sha256>  <store>/<file>` per file, sorted by path); each store with its
+  earliest record from the spans file; each store not read and each `--not-read` with its reason;
+  the dotfiles commit and each pin with the commit it resolves to; the pin changes in the window;
+  the rule; the sessions per skill in each column, and per skill and store; the skills with at
+  least 20 own-copy sessions; the `count-sql` command line of each store and day the rows hold
+  (with its psqlCommand, as it made the file), and the command's own line, with the
+  `--dotfiles-commit` it read added when none was given, so it reads the same pins again.
+- `exemplar-count.tsv`: one row per skill of each set at its pin (a skill with no read at 0), in
+  the sets' order, most own-copy sessions first: `set`, `skill`, `own_sessions`,
+  `upstream_url_sessions`, `other_copy_sessions`, `no_copy_sessions`, `reference_own_sessions`,
+  then each again per configured store (`<column>:<store>`).
+- `sessions/<set>/<skill>.jsonl`: each own-copy session, one line `{"store", "hash"}`, sorted by
+  store then hash; an empty file for a skill with none.
+- `summary.json`: the numbers of each skill in total and per store, the rows' files with their
+  sha256, the stores, those not read, the pins, the pin changes, the skills at 20 or more
+  (`atLeast20`) and the commands.
+
+It exits 0 when the count is written, 1 when a GitHub read fails or a pin cannot be read as
+above, and 2 when it refuses its arguments, a configuration without sets, a `--not-read` that is
+not `<name>=<reason>`, rows or a spans file it cannot read, an `--out` inside `--rows`, or rows
+with a gap.
 
 ### `build-cases` and `build-tasks`
 

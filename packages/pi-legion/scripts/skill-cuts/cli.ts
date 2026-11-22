@@ -34,6 +34,8 @@
  *       [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]
  *   bun scripts/skill-cuts/cli.ts attribute --config <file> --count <dir> --copies <dir>
  *       --spans <file> --out <dir> [--changed <cut id>=<file>]... [--models <dir>]
+ *   bun scripts/skill-cuts/cli.ts set-count --config <file> --rows <dir> --spans <file>
+ *       --out <dir> [--dotfiles-commit <sha>] [--rows-label <text>] [--not-read <name>=<reason>]...
  *   bun scripts/skill-cuts/cli.ts build-cases --config <file> --key-file <file> --cut <id>
  *       --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir>
  *       --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>]
@@ -50,8 +52,8 @@
  *       --skill <dir> --sessions <file> --seed <n> [--max <n>] --out <tasks.jsonl>
  *       [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]
  *
- * `count-sql`, `copies`, `attribute`, `build-cases` and `build-tasks` are the commands of
- * countsql.ts, copies.ts, attribute.ts and build.ts, given their arguments whole.
+ * `count-sql`, `copies`, `attribute`, `set-count`, `build-cases` and `build-tasks` are the commands
+ * of countsql.ts, copies.ts, attribute.ts, set-count.ts and build.ts, given their arguments whole.
  *
  * **`behaviour`** runs the behaviour test of one skill: `--old` and `--new` are the skill's own
  * directories at the cut's base and in the cut, and `--cases` a case file of that skill (cases.ts,
@@ -275,6 +277,7 @@ import {
   skillVerdict,
   stageOutcome,
 } from "./score";
+import { main as setCountMain } from "./set-count";
 
 /** The longest one try of a model call may take: a reply with a long thinking budget is slow. */
 const CALL_TIMEOUT_MS = 600_000;
@@ -2147,6 +2150,7 @@ const USAGE = [
   "  load --config <skill-cuts.json> --key-file <file> --skill <dir> [--name <name>] --tasks <file> --host <omp|claude> [--profile <file>] --out <dir> ...",
   "  copies --config <skill-cuts.json> --at <ISO instant> --out <dir> [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]",
   "  attribute --config <skill-cuts.json> --count <dir> --copies <dir> --spans <file> --out <dir> [--changed <cut id>=<file>]... [--models <dir>]",
+  "  set-count --config <skill-cuts.json> --rows <dir> --spans <file> --out <dir> [--dotfiles-commit <sha>] [--rows-label <text>] [--not-read <name>=<reason>]...",
   "  build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]",
   "  build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>",
   "  build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>] [--max-search-minutes <m>]",
@@ -2179,6 +2183,8 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         });
       case "attribute":
         return attributeMain(rest, io);
+      case "set-count":
+        return await setCountMain(rest, { out: io.out, err: io.err, gh: spawnGh });
       case "build-cases":
       case "build-tasks":
         return await buildMain(argv, {
