@@ -519,8 +519,9 @@ filter and that gate together.
 The memory and CPU sampler the shard and alone jobs' browser steps start and read
 back, the reading of the lanes' PostgreSQL those two jobs run before the suite,
 the script the merge job runs to take each leg's newest attempt, and the script
-that makes the merge job's two reads of its own run, which reads this run's own
-attempt's jobs and says a refused blob download was a refused read. Beside them,
+that makes the merge job's three reads of its own run, which reads this run's own
+attempt's jobs, says a refused blob download was a refused read and sums the
+lane's machine time against its budget. Beside them,
 the thirteen scripts that hold the bodies of the binaries, the shard, the alone, the
 visual and the merge jobs' steps: the binaries job's build of the dashboard bundles beside
 its go build, the shard job's wait for the file store it starts, its

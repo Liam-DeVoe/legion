@@ -12,21 +12,20 @@ import { prefetchChunk, renderChunk } from "../shell/chunk-loads";
  * list's match ranking. That is bytes every page of the dashboard parsed before it drew
  * anything, for a bar most page loads never open.
  *
- * The bar is held in state rather than behind `lazy()` and a `Suspense`, which is what this
- * host was first written as. A `lazy()` bar mounts in a commit of its own, one task after the
- * keystroke that opened it, and the bar measures the window as it mounts to scroll its
- * highlighted row into view: in that later commit the measurement is of a window the browser
- * has already scrolled, and the row opens half out of view, which
- * `e2e/keyboard-palette.stub.e2e.ts`'s "on a short window the palette fits the screen and each
- * highlighted row shows whole" catches at 1440x300. Held in state, the bar is in the module
- * cache before the first keystroke and mounts in the same commit the keystroke makes, exactly
- * as it did when the entry carried it.
+ * The bar is held in state rather than behind `lazy()` and a `Suspense`. A `lazy()` bar mounts
+ * in a commit of its own, one task after the keystroke that opened it, and the bar measures the
+ * window as it mounts to scroll its highlighted row into view: in that later commit the
+ * measurement is of a window the browser has already scrolled, and the row opens half out of
+ * view, which `e2e/keyboard-palette.stub.e2e.ts`'s "on a short window the palette fits the
+ * screen and each highlighted row shows whole" catches at 1440x300. Held in state, the bar is
+ * in the module cache before the first keystroke and mounts in the same commit the keystroke
+ * makes, exactly as it did when the entry carried it.
  *
  * For the same reason the bar is not held until a document draws, as the margin and the
  * reference-preview layer are (`features/shell/content-drawn.ts`): a reader who presses
  * `$mod+k` on an issue page before its document has drawn would meet a bar that is not yet in
- * the module cache, and it would open with its row half out of view. The same row caught that
- * when the hold took the bar too. So the bar's 28,952 bytes (its chunk and the shortcut sheet's
+ * the module cache, and it would open with its row half out of view. The same row catches a
+ * hold that takes the bar too. So the bar's 28,952 bytes (its chunk and the shortcut sheet's
  * and the ask hit status's it imports) still come down before an issue page's first block,
  * after the shell's first paint; that is the price of a bar that opens whole on the first key.
  */

@@ -426,11 +426,13 @@ case "$mode" in
     # the defect this mode exists against, so a jobs file that is not there, that no job of
     # this lane has concluded in, or that jq cannot read is a refusal and names itself as one.
     #
-    # Read it again over any run, offline, with no runner and no second request:
+    # Read it again over any run, offline, with no runner and no GH_TOKEN: the `jobs` mode asks
+    # GitHub itself, with GH_TOKEN, for this run's own id and attempt, so over a saved list the
+    # step is its jq filter, run by hand:
     #
     #   gh api repos/cybermonklabs/legion/actions/runs/<id>/attempts/1/jobs?per_page=100 \
     #     --paginate --slurp > pages.json
-    #   .github/scripts/dispatch-browser-run-reads.sh jobs jobs.json   # over those pages
+    #   jq '<the `jobs` mode's filter, above>' pages.json > jobs.json
     #   .github/scripts/dispatch-browser-run-reads.sh machine-time jobs.json full
     case "$lane" in
       full)

@@ -203,7 +203,8 @@ export function useEventFeed({
     //
     // A download that fails is not kept (`keptUntilRejected`), and the next event starts the
     // import again. The failure does not always reload the tab: nothing reloads while the browser
-    // is offline, once the tab's recovery reloads are spent, or while the page is being left
+    // is offline, once the tab's recovery reloads are spent, or while the page is being left, and
+    // the reader can stay at the leave prompt a write not yet confirmed opens
     // (`features/shell/DeploymentResilience.tsx`, `reloadForChunkFailure`). A feed that kept the
     // one failed promise would read every later event against it, refreshing nothing for as long
     // as the tab stays open. The events waiting on the failed download refresh everything

@@ -4,11 +4,12 @@ import { afterNextPaint } from "./after-next-paint";
 
 /**
  * Whether the page a cold landing opened has drawn its own content yet, for the shell's code
- * that draws no part of that content: the margin, the reference-preview layer and the map from a
- * live event to the reads it refreshes. One more reader waits for the same moment for another
- * reason: the ring on a landed artifact's header (`features/artifacts/ArtifactHeader.tsx`)
- * counts its two seconds from it, because the margin comes in after it and the page is still
- * changing until then.
+ * that draws no part of that content: the margin, the reference-preview layer, the map from a
+ * live event to the reads it refreshes and the writes host's three chunks (the two lists of
+ * writes and the kinds of write, `features/writes/write-hosts.tsx`). One more reader waits for
+ * the same moment for another reason: the ring on a landed artifact's header
+ * (`features/artifacts/ArtifactHeader.tsx`) counts its two seconds from it, because the margin
+ * comes in after it and the page is still changing until then.
  *
  * WHY "AFTER THE FIRST PAINT" WAS NOT ENOUGH. Each of those starts its download after the
  * shell's first paint (an effect, or a render that follows one). The shell paints as soon as the
@@ -26,7 +27,7 @@ import { afterNextPaint } from "./after-next-paint";
  * THE RULE. A landing whose page draws a live document holds these until the document's first
  * block is in the page (`holdUntilContentDraws`, started from the address alone by
  * `preloadRouteChunk` in `app.tsx`, before React renders). Every other landing holds nothing,
- * and its shell starts them after its first paint, as before. The hold ends at the first of:
+ * and its shell starts them after its first paint. The hold ends at the first of:
  *
  * - the live document drew, or it cannot draw: a failed admission, an admission that found
  *   content this build cannot read yet, a failed load, or the document left the page

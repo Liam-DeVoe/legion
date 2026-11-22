@@ -72,14 +72,14 @@ dispatch-browser-nightly.yaml's full job declares the first two: its call passes
 
 ## What the job set costs, and the machine-time ceiling the run holds it to
 
-What the job set of dispatch-browser.yaml costs, measured rather than estimated, at b724461b
-on 2026-11-17. The full lane, run 44147547896: 2,398 s over eight jobs for 1,493 rows, 1.61
-machine-seconds a row, in an own time of 1,109 s - its binaries job, longest leg and merge
+What the job set of dispatch-browser.yaml costs, measured rather than estimated, at 0dbcde78
+on 2026-11-22. The full lane, run 44980647391: 2,411 s over eight jobs for 1,683 rows, 1.43
+machine-seconds a row, in an own time of 1,016 s - its binaries job, longest leg and merge
 job, end to end. The same lane on the default branch that day costs twelve jobs and a median
-of 3,292 s for 1,479 rows over its 20 green runs up to 21:01Z (3,068 to 3,645 s), 2.23 s a row
-at the median of their per-row figures, so this job set spends 0.72 of a row's machine time.
-The pull-request lane: 718 s over five jobs for 289 rows (run 44147484156), in an own time of
-415 s.
+of 3,751 s for 1,668 rows over its 13 green runs up to 04:00:15Z (3,615 to 3,976 s), 2.25 s a row
+at the median of their per-row figures, so this job set spends 0.64 of a row's machine time.
+The pull-request lane: 680 s over five jobs for 290 rows (run 44980640510), in an own time of
+425 s.
 
 That cost is now held to a budget by the run itself, at the merge job's step "Reading five, the
 lane's machine time": the jobs of a lane, this merge job apart, may cost that lane's committed
@@ -87,8 +87,8 @@ ceiling less that job's own worst case. Both are written in
 .github/scripts/dispatch-browser-run-reads.sh (`bound` and `merge_maximum` in its `machine-time`
 branch); the worst case is the 44 s of job 132733634671, the most a merge job of pull request
 #3513's runs of 2026-11-15 up to 17:44Z read. The reading above, taken as the budget takes it,
-which is the lane less its own merge job, is 2,359 s (44147547896, whose merge job took 39 s), and
-the pull-request lane's 682 s (44147484156, 36 s); both are inside that budget.
+which is the lane less its own merge job, is 2,379 s (44980647391, whose merge job took 32 s), and
+the pull-request lane's 662 s (44980640510, 18 s); both are inside that budget.
 
 That ceiling is a coarse guard and no reading of what dispatch://INFRA-1109 delivers: no job can
 read another run, so a figure written here cannot be a ratio against the day's default branch,
@@ -459,9 +459,12 @@ job's.
 
 Two legs. The count is written in the shard job's `matrix`, in the `--shard` denominator of
 the browser step (`--shard=$shard/2` in .github/scripts/dispatch-browser-shard-suite.sh) and
-in that step's own name, "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 2)",
-and nowhere else but .github/scripts/ci_job_reads.py, whose BROWSER_SHARD_SPECS copies that
-name to cite the step by, so the three move together and that copy with them: a denominator
+in that step's own name, "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 2)".
+.github/scripts/ci_job_reads.py's BROWSER_SHARD_SPECS copies that name to cite the step by,
+and prose repeats the count, among it the shard script's head (the step's name) and its note
+on the projects it names ("these two machines"), docs/testing.md's leg command
+(`--shard=1/2`) and packages/dispatch/e2e/accessibility.e2e.ts's `scannedHere` comment
+(`--shard=N/2`). So the three move together and those copies with them: a denominator
 larger than the leg list would leave the rows of the missing legs unrun with nothing red,
 and a name disagreeing with the denominator would misreport every leg.
 
@@ -1235,13 +1238,14 @@ shard and alone jobs' DISPATCH_E2E_PG_BIN is no route here either.
 The budget, by the rule in this file's head: the two step budgets stay at 4 and 4 min - the
 browser step absorbs the provider's 8.3 to 10.4 s (the one sample behind that figure is the
 visual job of run 43045412941, which the multiprocess job's head says no later run splits
-out) inside a budget set for rows whose step took 16 to 26 s in CI then, and 35 s at most
-(job 132024655331, run 43465266476) over every run of this job at this shape on pull request
-#3513's branch, 112 of them from 2026-11-11T18:09Z to 2026-11-16T06:37Z - and the borrowed
-maximum for the steps without one is the multiprocess job's 94 s, the 135 s with the downloads
-and the chmod added and the `Initialize containers`, setup-go and Go cache restore taken off, as
-that job's head says. 8 min plus 94 s is 9 min 34 s, which rounds up to 10 minutes. This
-job's own steps without a budget read 51 s summed at their maxima over those 112 runs.
+out) inside a budget set for rows whose step took 16 to 26 s over the nine runs the shard
+job's head lists, and 35 s at most (job 132024655331, run 43465266476) over every run of this
+job at this shape on pull request #3513's branch, 112 of them from 2026-11-11T18:09Z to
+2026-11-16T06:37Z - and the borrowed maximum for the steps without one is the multiprocess
+job's 94 s, the 135 s with the downloads and the chmod added and the `Initialize containers`,
+setup-go and Go cache restore taken off, as that job's head says. 8 min plus 94 s is 9 min
+34 s, which rounds up to 10 minutes. This job's own steps without a budget read 51 s summed
+at their maxima over those 112 runs.
 
 This job now has runs of its own: the nine runs the shard job's head lists, read by that
 job's command, the first of them still with this job's `postgres:` service. Every step is
@@ -1569,12 +1573,12 @@ The budget is measured. Over the 32 concluded `dispatch-browser / merge` jobs of
 43 completed ci.yaml runs, read from the jobs API on 2026-11-08, the job's maximum is
 34 s: job 128737694112 of run 42481906495, 12:57:25Z to 12:57:59Z. The 37 s this comment
 carried before was measured on another branch and is replaced by that sample. The merge
-jobs of pull request #3513's runs of 2026-11-15 read at most 44 s whole (job 132733634671, run
-43687205491), which is the figure `merge_maximum` takes off the lane's bound, and their
-steps without a budget sum to 48 s at their maxima (checkout 10 s, `bun install` 12 s and
-the merge of the blob reports 5 s among them), 49 s with the 1 s the refused-download step
-is allotted below, since no run of that day ran it. 180 + 49 = 229 s is 3 min 49 s, so the
-rule gives the same 4 minutes as the older sample below.
+jobs of pull request #3513's runs of 2026-11-15 up to 17:44Z read at most 44 s whole (job
+132733634671, run 43687205491), which is the figure `merge_maximum` takes off the lane's
+bound, and their steps without a budget sum to 48 s at their maxima (checkout 10 s, `bun
+install` 12 s and the merge of the blob reports 5 s among them), 49 s with the 1 s the
+refused-download step is allotted below, since no run of that day ran it. 180 + 49 = 229 s
+is 3 min 49 s, so the rule gives the same 4 minutes as the older sample below.
 
 Each step's own maximum over that sample, summed, is 40 s: Set up job 2 s, checkout 9 s,
 setup-bun 3 s, `bun install` 7 s, Download every leg's blob report 2 s, Take the newest

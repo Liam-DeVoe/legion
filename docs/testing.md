@@ -360,8 +360,9 @@ memory and CPU samplers, run from `packages/dispatch` with a Postgres provider
 DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin bunx playwright test --config e2e/playwright.config.ts --project=chromium --project=iphone --project=stub --project=stub-phone --grep='(^|\s)@pr(\s|$)' --shard=1/2 --workers 4
 ```
 
-A full-lane leg names the projects of the shard job's `full` arm in
-`.github/workflows/dispatch-browser.yaml` in place of those four, and passes no `--grep`.
+A full-lane leg names the projects of the `full` arm in
+`.github/scripts/dispatch-browser-shard-suite.sh`, the script the shard job runs, in place of
+those four, and passes no `--grep`.
 
 ## Unix sockets in Go tests
 

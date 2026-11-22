@@ -308,8 +308,9 @@ async function seedEveryRoute(): Promise<Seeded> {
  *
  *  `opens` is for a surface no address reaches: the search bar, the Create issue dialog and the
  *  shortcut sheet are chunks of their own (dispatch://INFRA-1109), and a reader's keystroke is
- *  the only thing that asks for one. It is also where a visit waits for a chunk the page fetches
- *  of its own accord and draws nothing from (`fetchedChunk`), which no landmark can show. It runs
+ *  the only thing that opens one; the search bar's host also prefetches its chunk as it mounts.
+ *  It is also where a visit waits for a chunk the page fetches of its own accord and draws
+ *  nothing from (`fetchedChunk`), which no landmark can show. It runs
  *  once the page has loaded, before `shows` is waited for, and its own asset requests are awaited
  *  with the visit's. */
 interface Visit {
@@ -356,8 +357,9 @@ function visits(seed: Seeded): readonly Visit[] {
       // an event to the reads it refreshes as it starts, once the page has drawn. Three surfaces
       // no address reaches are opened here too, each its own chunk and each opened by its key: the
       // search bar, the Create issue dialog and the shortcut sheet. A walk that never opened them
-      // would leave three of this build's scripts unasked for, which is what the last assertion
-      // of `walk` refuses, and they are opened on this visit rather than on a second landing at
+      // would leave the dialog's and the sheet's scripts unasked for (the search bar's host
+      // prefetches its chunk as it mounts), which is what the last assertion of `walk` refuses,
+      // and they are opened on this visit rather than on a second landing at
       // the same address, which would cost the walk another cold navigation, landing read and
       // shell render for nothing. The shell's two lists of writes, the pending-writes indicator
       // and what a lapsed session keeps, are chunks the writes host fetches once the page has

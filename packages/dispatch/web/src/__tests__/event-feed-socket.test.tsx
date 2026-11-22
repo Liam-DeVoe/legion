@@ -393,11 +393,12 @@ test("an event this page cannot read is skipped and refreshes everything", async
 });
 
 // The map's chunk can fail to download without the tab reloading for it: the browser is offline,
-// the tab's recovery reloads are spent, or the page is being left
-// (`features/shell/DeploymentResilience.tsx`, `reloadForChunkFailure`). The event that was waiting
-// on the map then refreshes everything, as an event the page cannot map does, and the next event
-// starts the import again: a feed that kept the one failed download would log every later event
-// and refresh nothing for as long as the tab stayed open.
+// the tab's recovery reloads are spent, the page is being left, or the reader stays at the leave
+// prompt a write not yet confirmed opens (`features/shell/DeploymentResilience.tsx`,
+// `reloadForChunkFailure`). The event that was waiting on the map then refreshes everything, as
+// an event the page cannot map does, and the next event starts the import again: a feed that
+// kept the one failed download would log every later event and refresh nothing for as long as
+// the tab stayed open.
 test("a map chunk that fails to download refreshes everything for the event waiting on it, and a later event loads the map again", async () => {
   const queryClient = newClient({ staleTime: Number.POSITIVE_INFINITY });
   // A list an `issue.updated` of CORE-1 refreshes through the map, and no whole-cache probe.

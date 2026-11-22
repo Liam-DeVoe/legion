@@ -7,7 +7,7 @@ import { credentialCapabilitiesQuery } from "./capabilities";
 
 // Through `lazyChunk` like every route chunk of `app.tsx`: the gate renders this page as soon as
 // the capabilities answer, so a reader is waiting on the download and its failure is one the
-// chunk-failure recovery must reload for, never one it may read as the entry's prefetch
+// chunk-failure recovery must reload for, never one it may read as a prefetch's
 // (`features/shell/DeploymentResilience.tsx`).
 const MachineLoginPage = lazyChunk(() =>
   import("./MachineLoginPage").then((module) => ({ default: module.MachineLoginPage }))

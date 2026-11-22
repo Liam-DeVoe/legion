@@ -4480,9 +4480,9 @@ test("/ falls through to the Dispatch-wide search dialog when no agents are conn
 
     await user.keyboard("/");
 
-    // `find`, not `get`: the bar is a chunk of its own now and the keystroke is what asks for
-    // it (`features/search/SearchPaletteHost.tsx`), so it arrives a microtask later than it
-    // did. The assertion is the same one: this dialog, by this name.
+    // `find`, not `get`: the bar is a chunk of its own, which its host starts downloading as it
+    // mounts (`features/search/SearchPaletteHost.tsx`), and the dialog draws only once that
+    // download is in, which can be after the keystroke.
     expect(await screen.findByRole("dialog", { name: "Search" })).toBeTruthy();
   } finally {
     page.view.unmount();

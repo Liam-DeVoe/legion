@@ -42,8 +42,10 @@ let renderedChunksOut = 0;
 
 /** Starts a chunk nothing is waiting for yet, and swallows its failure: the same import runs
  *  again under `renderChunk` when a reader comes to wait on it - the router rendering the route,
- *  or a body drawn after a failed warm of the Markdown engine, which keeps no failed load
- *  (`keptUntilRejected`) - and that is where a reader meets a chunk that will not download. */
+ *  a host drawing the component the chunk carries, a document or the write store's take-up
+ *  awaiting the modules, or a body drawn after a failed warm of the Markdown engine, which keeps
+ *  no failed load (`keptUntilRejected`) - and that is where a reader meets a chunk that will not
+ *  download. */
 export function prefetchChunk(load: () => Promise<unknown>): void {
   prefetchedChunksOut += 1;
   void load()
@@ -109,7 +111,8 @@ export function keptUntilRejected<T>(load: () => Promise<T>): () => Promise<T> {
  * `loadEditorLibrary` and `loadTransportModules`), the Yjs a past version awaits
  * (`features/doc/editor.ts`, `createDoc`) and the pending-edit store a removed document's edits
  * are deleted from (`features/doc/ProofDocument.tsx`) - the kinds of write the write store's
- * take-up waits for (`features/writes/write-hosts.tsx`, `loadWriteKinds`), and every `lazyChunk`.
+ * take-up waits for (`features/writes/write-hosts.tsx`, `loadWriteKinds`), every `lazyChunk`
+ * and every `chunkComponent` (`chunk-component.tsx`).
  */
 export async function importWhenOnline<T>(load: () => Promise<T>): Promise<T> {
   for (;;) {
@@ -138,7 +141,8 @@ export async function importWhenOnline<T>(load: () => Promise<T>): Promise<T> {
  * of the component with the same failure. Online the rejection does not outlive the page: the
  * failure is Vite's `vite:preloadError` while `renderChunk` counts the render as waiting, so the
  * recovery reloads the tab while its budget lasts, and the page that kept the rejection goes with
- * it. Offline the recovery reloads nothing (`DeploymentResilience.tsx`, `reloadForChunkFailure`),
+ * it unless the reader stays at the leave prompt a write not yet confirmed opens. Offline the
+ * recovery reloads nothing (`DeploymentResilience.tsx`, `reloadForChunkFailure`),
  * so a rejection kept there would leave the component broken for the life of the tab. Under
  * `importWhenOnline` the promise `lazy` keeps rejects only while the browser is online, where a
  * failure reloads; offline, the boundary's `Suspense` keeps its fallback until the window fires

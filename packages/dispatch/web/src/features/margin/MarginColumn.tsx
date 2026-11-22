@@ -35,8 +35,8 @@ import { MARGIN_COLUMN_CLASS, marginColumnWidth } from "./margin-width";
  * (`useMarginSheet.ts`).
  */
 // Through `lazyChunk`, whose `renderChunk` tells the chunk-failure recovery that a reader is
-// waiting on this download: the margin is mounted by the route, not prefetched by the entry, so a
-// failure here must spend the tab's reload rather than be read as the entry's prefetch
+// waiting on this download: the margin is mounted by the route, not prefetched, so a failure
+// here must spend the tab's reload rather than be read as a prefetch's
 // (`features/shell/DeploymentResilience.tsx`). The empty frame makes the wait invisible, not
 // harmless: a margin that never arrives is a page missing its comments, its threads and its
 // composer.

@@ -25,7 +25,7 @@ import { useContentDrawn } from "../shell/content-drawn";
  */
 // Through `lazyChunk`, like every chunk a `Suspense` waits on: this layer is what draws the card
 // a reader is pointing at, so a download that fails must spend one of the tab's recovery reloads
-// rather than be read as the entry's prefetch (`features/shell/DeploymentResilience.tsx`).
+// rather than be read as a prefetch's (`features/shell/DeploymentResilience.tsx`).
 const RefPreviewHost = lazyChunk(() =>
   import("./RefPreview").then((module) => ({ default: module.RefPreviewHost }))
 );

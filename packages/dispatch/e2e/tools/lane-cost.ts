@@ -14,8 +14,8 @@
  *  attempt `<attempt>` where the command names one, and leaves out a job that was skipped and one
  *  that has no `started_at` or no `completed_at`. The run's own fields are read at the same
  *  attempt: `runs/<id>`, which GitHub answers with the run's latest attempt, or
- *  `runs/<id>/attempts/<attempt>`. A run of the nightly workflow, whose jobs are named `full / …`,
- *  is not read: its jobs fail the filter above.
+ *  `runs/<id>/attempts/<attempt>`. A run of the nightly workflow, whose jobs are named `full / …`
+ *  and `re-record`, is not read: its jobs fail the filter above.
  *
  *  - cost: the sum over those jobs of `completed_at` less `started_at`, in seconds. `per_job`
  *    holds each job's, under its name after `dispatch-browser / `;

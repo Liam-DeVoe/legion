@@ -366,9 +366,10 @@ function shellLoad(page: Page) {
     // at the earliest in a microtask queued there, behind the `.finally` the `.catch` queued
     // before it (`react-dom-client.production.js`, `ensureRootIsScheduled` and
     // `scheduleImmediateRootScheduleTask`). So by the time a lazy component is in a committed
-    // tree the count has dropped. Neither draws anything on the pages these rows open - the margin
-    // is null on a route that has none, and the layer is null until a card opens - so the tree
-    // React committed is where they are read.
+    // tree the count has dropped. Neither draws anything on most of the pages these rows open -
+    // the margin is null on a route that has none (the issue page `keyed-writes.e2e.ts` opens has
+    // one), and the layer is null until a card opens - so the tree React committed is where they
+    // are read.
     await expect
       .poll(() => lazyComponentsRendered(page, chunks), {
         ...PROBE,

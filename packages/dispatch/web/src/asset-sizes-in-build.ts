@@ -62,8 +62,8 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * three sizes of `61e5c402` above - the entry, the Mermaid worker and the ECharts chunk - were
  * measured that way on 2026-11-16, and the entry sizes after them are this check's readings at
  * the commit or merge each names; the two older entry sizes are the readings of 2026-10-29 and
- * 2026-11-11 named above. `web/vite.config.ts` records the sizes of `b724461b` (2026-11-17), one
- * day after `61e5c402`: an entry of 486,627 bytes, and the Mermaid worker and the ECharts chunk
+ * 2026-11-11 named above. `web/vite.config.ts` records the sizes of `0dbcde78` (2026-11-22), six
+ * days after `61e5c402`: an entry of 497,993 bytes, and the Mermaid worker and the ECharts chunk
  * at the sizes above.
  */
 export const MAX_ENTRY_BYTES = 500_000;

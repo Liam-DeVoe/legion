@@ -15,7 +15,7 @@ import type { KeyBindingDescription } from "./keymap";
  */
 // Through `lazyChunk`, like every chunk a `Suspense` waits on: the reader has asked for the
 // sheet, so a download that fails must spend one of the tab's recovery reloads rather than be
-// read as the entry's prefetch (`features/shell/DeploymentResilience.tsx`).
+// read as a prefetch's (`features/shell/DeploymentResilience.tsx`).
 const Sheet = lazyChunk(() =>
   import("./ShortcutHelp").then((module) => ({ default: module.ShortcutHelp }))
 );

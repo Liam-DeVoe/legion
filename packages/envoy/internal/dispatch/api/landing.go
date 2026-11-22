@@ -73,7 +73,7 @@ var landingPages = []string{landingPageIssue, landingPageBoard, landingPageInbox
 // silent service costs every cold page, and the roster's bound is paid once however many parts
 // show a route (startLandingRoster). A part left null costs far less: the page reads it from the
 // route it stands in for once it has drawn, and that read waits on the service under the client's
-// own window (envoy.defaultTimeout and agentsecrets.defaultTimeout, five seconds each) while it
+// own window (envoy.defaultTimeout and cipher.defaultTimeout, five seconds each) while it
 // holds the one chip that part draws and nothing else, which is how every page read the part
 // before the landing existed. A route read unknown is what the route's own read answers for a
 // listener silent past routeRosterTimeout, two seconds. A listener that answers between one and
@@ -429,7 +429,7 @@ func landingNotFound(err error) bool {
 //
 // The bound is a deadline on the context the read itself runs on, so it stops the outbound call
 // rather than only the landing's wait for it: the listener client (envoy.Client.get) and the
-// broker client (agentsecrets.Client.do) each build their request with
+// broker client (cipher.Client.do) each build their request with
 // http.NewRequestWithContext and send it with http.Client.Do, and net/http abandons a request
 // whose context has ended and answers that context's error, whether it was dialling, sending,
 // waiting for the answer or reading its body; and the roster read behind the agents
@@ -735,13 +735,13 @@ func (s *server) landingIssuePage(ctx context.Context, caller model.Actor, key s
 // selects the issue's artifacts with issueArtifactsStatement and builds each through
 // collectArtifacts -> scanArtifact, queueing the detail batch queueArtifactDetails fills, while
 // loadArtifact selects one row and builds it through the same scanArtifact and then
-// loadArtifactDetails - the same columns, the same scan and the same details either way. So the
-// second read answered what this function was already holding, which is what its first sentence
-// says it answers.
+// loadArtifactDetails - the same columns, the same scan and the same details either way. So a
+// second read would answer what this function is already holding, which is what its first
+// sentence says it answers.
 //
 // The issue arrives by pointer because this reads two of its fields and the detail behind them
 // is the whole issue: its artifacts, its labels and its relations. Taken by value it
-// was all copied to read an id and a list. Its artifacts are already shaped as the artifact
+// would all be copied to read an id and a list. Its artifacts are already shaped as the artifact
 // route shapes one (readIssue), so the document part carries the same trees that route would.
 func (s *server) landingIssueDocument(ctx context.Context, caller model.Actor, issue *issueDetail, trees bool) *landingIssueDocument {
 	primary := issue.PrimaryArtifactID

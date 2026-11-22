@@ -11,7 +11,7 @@ name: Dispatch browser nightly
 # full-lane run 44980647391 at 0dbcde78 (2026-11-22) ran them as seven jobs on eight machines,
 # and cost 2,411 machine-seconds for 1,683 rows, 1.43 s a row, where the default branch's
 # twelve-job lane cost a median of 3,751 s for 1,668 rows, 2.25 s a row, over that day's 13 green
-# runs to 04:00:15Z. This run covers a day with no such event,
+# runs to 04:00:15Z. This run covers a day with no merge group,
 # and is what runs the full lane on main's tip (.github/workflows/dispatch-browser.yaml, which
 # holds every step). The re-record job's own head, below, says what it guards and why it is here
 # rather than in a file of its own.
@@ -48,8 +48,8 @@ on:
     # e2e.yaml's and codeql.yaml's, which the comment above names, and four hours after
     # dispatch-unit-repeat.yaml's weekly run (Saturdays at 09:23 when read at bacd5d7e on
     # 2026-11-19). A schedule
-    # starts a workflow and not a job, so each job's `if:` below names the cron it runs on: the cron
-    # above starts the full lane alone and the one below the re-record alone, and a
+    # starts a workflow and not a job, so each job's `if:` below names the one cron it does not run
+    # on: the cron above starts the full lane alone and the one below the re-record alone, and a
     # `workflow_dispatch`, which carries no cron, starts both.
     - cron: "41 13 * * *"
   workflow_dispatch:

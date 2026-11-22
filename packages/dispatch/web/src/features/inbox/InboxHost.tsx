@@ -28,8 +28,8 @@ import type * as InboxChunk from "./inbox-chunk";
  */
 // Through `lazyChunk`, like every chunk a `Suspense` waits on: a reader who lands on the Inbox's
 // own page or opens the peek is in front of a page that cannot draw until this arrives, so a
-// download that fails must spend one of the tab's recovery reloads rather than be read as the
-// entry's prefetch (`features/shell/DeploymentResilience.tsx`).
+// download that fails must spend one of the tab's recovery reloads rather than be read as a
+// prefetch's (`features/shell/DeploymentResilience.tsx`).
 const InboxList = lazyChunk(() => loadInboxChunk().then((module) => ({ default: module.Inbox })));
 
 const InboxPeek = lazyChunk(() =>
