@@ -29,22 +29,26 @@ var errEarlierAttemptInProcess = errors.New("the request ended while an earlier 
 // publishPastInProcess makes publish, and makes it again inProcessPause later each time a
 // clustered stream refuses it as still in process under another publish under the same message
 // id (bus.ErrDuplicateInProcess), since the next answer names the copy that publish stored. It is
-// the one handling of that refusal for every listener publish whose answer a request is answered
-// or charged by - the send route and the publish route's team and captured topics (sendHandler,
-// publishHandler), a role forward (startRoleForward, which every role send, role-lane delivery
-// and kept-lane walk forwards through), and a hand-off to a stopped Legion agent's daemon
-// (handOffToLegion, which a send, a role publish, a role send and an agent subject's give-up hand
-// off through) - and for a keep (storeKeptRoleCopy) and a takeover's copy (keepTakenRoleFrame).
-// So a resend that meets its own earlier attempt still being stored, as a hub failover leaves
-// one, is answered with that attempt's copy rather than as a bus that did not answer.
+// this package's one handling of that refusal, for every publish of its own whose answer a request
+// is answered or charged by - the send route's publish (sendHandler) and the publish route's of a
+// team or captured topic (publishHandler); a role forward (startRoleForward), which the publish
+// route's role sends (sendToRole), the role lane's deliveries (roleForwarder) and the kept lane's
+// walks (walkKeptRole) forward through; and a hand-off to a stopped Legion agent's daemon
+// (handOffToLegion), which a send, a role publish, a send marked with a role and an agent
+// subject's give-up (offerAgentDeliveryToLegion) hand off through - and for a keep
+// (storeKeptRoleCopy) and a takeover's copy (keepTakenRoleFrame). So a resend that meets its own
+// earlier attempt still being stored, as a hub failover leaves one, is answered with that
+// attempt's copy rather than as a bus that did not answer.
 //
-// Three publishes under a message id do not take it, since no request's answer or charge rides
-// on them and the earlier publish the refusal names stores the one copy all the same: the
-// sweep's wake report (publishSweptRoleWake), which logs the report as not published and leaves
-// the next sweep to raise it; a kept copy's dead letter (endKeptCopyWithDeadLetter), whose walk
-// ends as a failed one with its claim left, so the walk that takes the claim over sends it again
-// and is answered with that copy; and a delivery exception (publishDeliveryException), which logs
-// exceptionPublishFailedLine.
+// Three publishes of this package under a message id do not take it, since no request's answer
+// or charge rides on them and the earlier publish the refusal names stores the one copy all the
+// same: the sweep's wake report (publishSweptRoleWake), which logs the report as not published
+// and leaves the next sweep to raise it; a kept copy's dead letter (endKeptCopyWithDeadLetter),
+// whose walk ends as a failed one with its claim left, so the walk that takes the claim over
+// sends it again and is answered with that copy; and a delivery exception
+// (publishDeliveryException), which logs exceptionPublishFailedLine. Nor do the webhook routes,
+// which publish through internal/webhook rather than here: that refusal is their 503 `failed`
+// (webhook's failureOutcome), which asks for a redelivery as any failure there does.
 //
 // A call that ends after a refusal, because ctx ended or a later send failed, wraps
 // errEarlierAttemptInProcess: with ctx's error and the last refusal when ctx ended, and with the

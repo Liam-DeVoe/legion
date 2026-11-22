@@ -77,10 +77,11 @@ func TestMain(m *testing.M) {
 	// The tests run real git and jj, in-process and as children (fixtureenv.MustGuard).
 	// LEGION_GH_PATH is kept: it names the real gh a capture test runs, a binary and no credential.
 	fixtureenv.MustGuard("LEGION_GH_PATH")
-	// The bounds legion sets on a program it starts, at what is left of this binary's deadline,
-	// here and in every run of it as `legion` (boundByTheDeadline). After MustGuard, which takes
-	// LEGION_* variables out of the environment.
-	if deadline, ok := testBinaryDeadline(); ok {
+	// The bounds legion sets on a program it starts, at what is left of this binary's deadline
+	// (testwait.BinaryDeadline), here and in every run of it as `legion`, and in the `legion` it
+	// builds (boundByTheDeadline). After MustGuard, which takes LEGION_* variables out of the
+	// environment.
+	if deadline, ok := testwait.BinaryDeadline(); ok {
 		if err := boundByTheDeadline(deadline); err != nil {
 			fmt.Fprintln(os.Stderr, "TestMain:", err)
 			os.Exit(1)

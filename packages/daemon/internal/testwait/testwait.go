@@ -4,8 +4,9 @@
 // binary's own deadline rather than a fixed span: on a loaded machine a step that is merely slow
 // is not a failure, and a condition that never holds still fails, naming what it waited for.
 // Eventually is the wait a test usually wants; WithinPolling takes a bound and a pace of its
-// own; Holds answers rather than fails, for a caller whose failure text is its own; and Bounded
-// is the clamp alone, for a wait that holds the rest itself.
+// own; Holds answers rather than fails, for a caller whose failure text is its own; Bounded
+// is the clamp alone, for a wait that holds the rest itself; and BinaryDeadline is the deadline
+// itself, for a TestMain, which has no test to ask.
 package testwait
 
 import (

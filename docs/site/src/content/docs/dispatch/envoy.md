@@ -233,10 +233,12 @@ not released, and its project last said it answers, the listener hands the messa
 place of the `404`, the stored `stopped` answer, the `202` keep or the exception, and the caller
 reads the same `200` a delivered message gets. A role is handed off only once its issue has left
 the workflow; a role whose issue still runs, and a session whose idle pod the daemon released, keep
-the message for the next holder and wake it. An edge listener hands nothing off, since its grant
-(`natsgrant.Edge`) gives it no publish on `notifications.>`, so a role publish through an edge
-listener to a finished role is answered as it was before the hand-off: `404`, with nothing kept, as
-that grant publishes no kept role lane either.
+the message for the next holder and wake it. An edge listener hands nothing off: its grant
+(`natsgrant.Edge`) publishes the agent topics and its own projects' role topics
+(`notifications.agent.>`, `notifications.role.<project>.>`) but neither the hand-off subject
+`notifications.legion.<project>.agents.<session>` nor the kept lane `notifications.envoy.kept.>`, so
+a role publish through an edge listener to a finished role is answered as it was before the
+hand-off: `404`, with nothing kept.
 A role send the API refuses `404` also raises one exception on
 `notifications.envoy.exceptions.notifications.role.<role>`, naming the reason it refused:
 `unclaimed` when nothing claims the role and nothing was kept, or `holder_lapsed` when the claim's

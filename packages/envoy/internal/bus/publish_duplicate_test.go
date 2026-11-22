@@ -94,17 +94,27 @@ func TestPublishRetainedKeepsOneCopyPerMsgID(t *testing.T) {
 	ctx := context.Background()
 	const subject = "notifications.legion.infra.agents.ses_handoff"
 
+	// The duplicate's acknowledgement names the copy the stream already holds, by its sequence.
+	var first uint64
 	for i, want := range []bool{false, true} {
-		duplicate, err := client.PublishRetained(ctx, subject, []byte(`{"copy":`+strconv.Itoa(i)+`}`), "handoff.key-1")
+		ack, err := client.PublishRetained(ctx, subject, []byte(`{"copy":`+strconv.Itoa(i)+`}`), "handoff.key-1")
 		if err != nil {
 			t.Fatalf("publish %d: %v", i, err)
 		}
-		if duplicate != want {
-			t.Fatalf("publish %d duplicate = %t, want %t", i, duplicate, want)
+		if ack.Duplicate != want {
+			t.Fatalf("publish %d duplicate = %t, want %t", i, ack.Duplicate, want)
+		}
+		switch {
+		case ack.Sequence == 0:
+			t.Fatalf("publish %d sequence = 0, want the sequence the stream holds its copy at", i)
+		case i == 0:
+			first = ack.Sequence
+		case ack.Sequence != first:
+			t.Fatalf("publish %d sequence = %d, want %d, the sequence of the copy the stream holds", i, ack.Sequence, first)
 		}
 	}
-	if duplicate, err := client.PublishRetained(ctx, subject, []byte(`{"copy":2}`), "handoff.key-2"); err != nil || duplicate {
-		t.Fatalf("another MsgId = %t, %v; want stored", duplicate, err)
+	if ack, err := client.PublishRetained(ctx, subject, []byte(`{"copy":2}`), "handoff.key-2"); err != nil || ack.Duplicate {
+		t.Fatalf("another MsgId = %+v, %v; want stored", ack, err)
 	}
 	info, err := client.JS().StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: subject})
 	if err != nil {

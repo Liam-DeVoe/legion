@@ -1566,7 +1566,7 @@ Each agent is stopped the way the spec's kinds are made:
   Its spawn and its wait are soft: a merger that could not be spawned, or whose turn fails, fails A10's GPT-6.1 clause, naming why, and no other criterion, and its claim is suspended (else retired, which the run waits for) whatever the turn did, so A1's parked tree holds no running claim of it.
 
 **The issues' workspaces.**
-With the workflow on, an operator's spawn spec carries the repository the project's mapping gives the issue, `sjawhar/legion-smoke`, and the tmux runtime then works in the issue's jj workspace, `<state>/workspaces/sjawhar/legion-smoke/<issue lower-cased>` (`workspace.Location`), which must exist already:
+With the workflow on, an operator's spawn spec carries the repository Dispatch resolves the issue to, its project's default repository, `sjawhar/legion-smoke`, and the tmux runtime then works in the issue's jj workspace, `<state>/workspaces/sjawhar/legion-smoke/<issue lower-cased>` (`workspace.Location`), which must exist already:
 the workflow's outbox provisions it only for an issue it admits.
 So before each spawn, the pre-change ones included (the branch's daemon resumes that reviewer in A10), the run provisions the issue's workspace as an issue pod's init containers do, with the branch's own `legion workspace-init`:
 `fetch` fills the pass's feed from GitHub once (`LEGION_REPOSITORY_CACHE_URL` unset), under the read-only installation token of the implement App for the smoke repository's owner, released by the App's own `token_command` ([`lib/app-installation.ts`](lib/app-installation.ts)'s `installationFor`) into a 0600 file in the work directory, removed when the fetch ends and never printed;
@@ -1770,12 +1770,11 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   The control is the daemon's own log: with `answers` removed it writes no conversation to the agent registry and no `answers:` line.
   It does write the project's answering heartbeat, saying it does not answer, so that an operator who removes `answers` stops the listener's hand-offs at the next boot;
   on a listener without that route the heartbeat is the one 404 the boot shows.
-  Each daemon of this check boots on a project of its own, so each one makes the smoke repository that project's default in the Dispatch running then (`map_repo`):
-  a repository names one project at a time, so the second pass's own call moved it off the first pass's project.
-  The branch's daemon reads no mapping and boots without one;
+  Each daemon of this check boots on a project of its own, and each such project takes the smoke repository as its default repository in the Dispatch running then (`map_repo`, `PUT /api/v1/projects/<key>/default-repository`), once, when it is made:
+  a project holds a default of its own, and nothing moves it after.
+  The daemon reads no repository mapping (Dispatch keeps none since main's #4457) and boots without one;
   the default decides the repository Dispatch resolves the pass's rig issues to, which would otherwise be none.
-  A base commit from before the daemon took each issue's repository from Dispatch still reads the mapping, and its daemon exits at boot when its project maps no repository (`project <key> has no repository mapped in Dispatch`).
-  The base stack's Dispatch is a database of its own, so the base daemon's project is created and mapped there too.
+  The base stack's Dispatch is a database of its own, so the base daemon's project is created there and takes the same default.
 
 - A16 (once): the case-insensitive search for the spec's five phrases over the loop's packages, the daemon's prompts, `skills/`, `docs/` less `docs/plans/` and `docs/solutions/`, and every `AGENTS.md`, each hit printed;
   a hit fails unless `questions.json` records it as not about the loop.

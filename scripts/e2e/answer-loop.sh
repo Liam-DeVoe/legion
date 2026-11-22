@@ -1096,18 +1096,15 @@ register_asker() {
 }
 
 # ---- the pass's Dispatch project -------------------------------------------------------------------
-# map_repo PROJECT points the smoke repository at PROJECT in the Dispatch that runs now, as its
-# default, and the second owner's repository at it too, never as the default: every rig issue works
-# the smoke repository, and A17 names the second one in its question. Dispatch keys a mapping by
-# repository, so a repository names one project at a time and the second pass's call moves the
-# mapping off the first pass's project. The daemon reads no mapping (main's #4493): it takes each
-# issue's repository from Dispatch, which resolves an issue that names none to its project's
-# default repository, so every boot on a pass's project — A13's second round of daemons as much as
-# the pass's own — sets that default first, or the pass's rig issues would resolve to none.
+# map_repo PROJECT makes the smoke repository PROJECT's default repository in the Dispatch that runs
+# now (PUT /api/v1/projects/<key>/default-repository, main's #4457, which removed the repository
+# mapping): every rig issue names no repository of its own, so Dispatch resolves each to its
+# project's default, and the daemon takes each issue's repository from Dispatch (main's #4493).
+# Each project holds a default of its own, so the two passes' projects and the base daemon's each
+# set theirs once, and nothing moves it after. The second owner's repository is no project's: A17
+# reaches it through the implement App's installations, and its question names it.
 map_repo() {
-  dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$1" '{project: $project, default: true}')" >/dev/null
-  [ -z "$second_repo" ] ||
-    dispatch_human PUT "settings/repo-projects/$second_repo" "$(jq -cn --arg project "$1" '{project: $project, default: false}')" >/dev/null
+  dispatch_human PUT "projects/$1/default-repository" "$(jq -cn --arg repo "$repo" '{repo: $repo}')" >/dev/null
 }
 
 # ---- producing the stopped agents ------------------------------------------------------------------
@@ -1175,11 +1172,12 @@ write_claude_route() {
 }
 
 # ---- the issues' workspaces ------------------------------------------------------------------------
-# With the workflow on, an operator's spawn spec carries the repository Dispatch's repo-projects
-# mapping gives the issue (the smoke repository), and the tmux runtime then works in the issue's jj
-# workspace at workspace.Location's <state>/workspaces/<owner>/<repo>/<issue lower-cased>, which
-# must exist already (internal/runtime/tmux/spawn.go, workspaceDir): the workflow's outbox
-# provisions it for an issue it admits, and it admits no rig issue (none has the `legion` label).
+# With the workflow on, an operator's spawn spec carries the repository Dispatch resolves the issue
+# to, its project's default (the smoke repository, map_repo), and the tmux runtime then works in
+# the issue's jj workspace at workspace.Location's <state>/workspaces/<owner>/<repo>/<issue
+# lower-cased>, which must exist already (internal/runtime/tmux/spawn.go, workspaceDir): the
+# workflow's outbox provisions it for an issue it admits, and it admits no rig issue (none has the
+# `legion` label).
 # provision_workspace ISSUE provisions it as an issue pod's two init containers do, with the branch
 # daemon's own `legion workspace-init`: `fetch` fills the store pass's feed from GitHub once (no
 # repository cache), under an installation token of the implement App for the smoke repository
@@ -3231,12 +3229,9 @@ run_a13() {
     project=${project^^}
     daemon_db=legion_${store}_$run_tag
     state=$work/state-$store
-    # The pass's project takes the smoke repository as its default again before its daemon boots:
-    # a repository names one project at a time, so the other pass's own call moved it off this
-    # one. A daemon reads no mapping and boots without one; what the default decides is the
-    # repository Dispatch resolves the pass's rig issues to, which would otherwise be none
-    # (map_repo).
-    map_repo "$project"
+    # The pass's project kept the smoke repository as its default since the pass set it
+    # (map_repo), and the daemon reads each rig issue's repository from Dispatch, which resolves it
+    # to that default.
     write_legion_config "$work/plain-$store.yaml" no
     start_daemon "$work/branch/legion" "$work/plain-$store.yaml" "$evidence/logs/daemon-$store.log" "$branch_home" "$branch_profile" \
       "$branch_plugin"
@@ -3257,8 +3252,9 @@ run_a13() {
   daemon_db=legion_base_$run_tag
   state=$work/state-base
   mkdir -p "$state"
-  # The base stack's Dispatch is a database of its own, so the base daemon's project is made and
-  # mapped there as each pass's is in the branch stack's Dispatch.
+  # The base stack's Dispatch is a database of its own, so the base daemon's project is made there
+  # and takes the smoke repository as its default, as each pass's does in the branch stack's
+  # Dispatch (map_repo).
   dispatch_human POST projects "$(jq -cn --arg key "$project" '{key: $key, name: "A13 base daemon"}')" >/dev/null
   map_repo "$project"
   write_legion_config "$work/base-a13.yaml" base

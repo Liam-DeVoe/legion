@@ -15,7 +15,11 @@ body: |-
   comes from the envelope's dedupe key, so the copies two listeners hand off for one bus message
   are stored once, a send or role publish repeated under one key answers `duplicate: true` as a
   live session's repeat does (the role publish answer gains the field for this), and a bus
-  message is acknowledged only once its hand-off is stored. Otherwise
+  message is acknowledged only once its hand-off is stored. A send or role publish whose
+  hand-off meets an earlier attempt under the same MsgId still in process on the stream is
+  answered `duplicate: true` once the stream names that attempt's copy, or `503` with
+  `code: maybe_stored` when its time runs out first, and a bus message's hand-off gets 10 s,
+  after which the message is NAKed and tried again. Otherwise
   every path answers exactly as before. The answering record is the project's last stated flag
   and never expires: a project whose daemon stated `answering: true` has its agents' messages
   handed off whether that daemon runs now or not, and the daemon answers them when it returns; a

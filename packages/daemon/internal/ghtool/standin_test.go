@@ -13,9 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/ghroute/ghroutetest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The stand-in gh is this test binary, linked as `gh` into a directory of its own (standInGH): run
@@ -26,13 +27,15 @@ import (
 // which the one test that records calls in the store clones (testpg.Main), and gives the bounds
 // the tool's waits on a program take through programbound, its help reads' (ghroute.ReadHelp) and
 // its leak guard's reads among them, what is left of the binary's deadline
-// (ghroutetest.BoundByTheTestDeadline), so a stand-in a loaded machine makes slow is not stopped at
-// a product bound.
+// (testwait.BinaryDeadline) less 30 s when the wait starts, so a stand-in a loaded machine makes
+// slow is not stopped at a product bound. Under -timeout 0 the product's bounds hold.
 func TestMain(m *testing.M) {
 	if filepath.Base(os.Args[0]) == "gh" {
 		os.Exit(standIn())
 	}
-	ghroutetest.BoundByTheTestDeadline()
+	if deadline, ok := testwait.BinaryDeadline(); ok {
+		programbound.SetDeadline(deadline)
+	}
 	os.Exit(testpg.Main("legion_ghtool_test", m.Run))
 }
 

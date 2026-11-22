@@ -143,8 +143,7 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 	subject := listenerwire.LegionHandoffSubject(agent.LegionProject, agent.SessionID)
 	msgID := "legion.handoff." + handoff.Envelope.DedupeKey + ":" + subject
 	ack, err := publishPastInProcess(ctx, func() (bus.StoredAck, error) {
-		duplicate, err := h.client.PublishRetained(ctx, subject, data, msgID)
-		return bus.StoredAck{Duplicate: duplicate}, err
+		return h.client.PublishRetained(ctx, subject, data, msgID)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("publish legion hand-off to %s: %w", subject, err)
@@ -231,7 +230,9 @@ func (h *legionHandoff) answeringAgent(ctx context.Context, target legionHandoff
 // process included. A publish takes milliseconds and each send is bounded by the bus's own
 // publish bound, so a window well inside the consumer's ack wait (consumerAckWait) leaves the
 // NAK room to ask for the redelivery before the server would send the message again by itself.
-const legionHandoffGiveUpWindow = 10 * time.Second
+// It is a variable so that a test can shorten it
+// (TestTheAgentSubjectGiveUpStopsAtItsWindowWhileItsHandoffIsStillInProcess).
+var legionHandoffGiveUpWindow = 10 * time.Second
 
 // offerAgentDeliveryToLegion offers one agent-subject delivery this listener found no session
 // record for to the stopped Legion agent's daemon, and reports whether that offer was the

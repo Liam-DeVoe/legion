@@ -144,8 +144,8 @@ type roleSend struct {
 	w      http.ResponseWriter
 	record *requestRecord
 	d      *listenerDeps
-	// ctx bounds the leader read this send's answers confirm the holder by (shownHolder), the
-	// request's own send window (sendToRole).
+	// ctx is the request's own send window (sendToRole): it bounds the leader read this send's
+	// answers confirm the holder by (shownHolder) and the hand-off its give-up makes (noHolder).
 	ctx context.Context
 	// scope is the edge's scope of the request (edgeScopeOf), nil on every other listener: the
 	// holders this send's answers may name (edgeScope.holderConfirmed).
@@ -264,12 +264,12 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 // the role, drain what was kept for it (drainKeptRole) and take the sender's next attempt. The
 // report names the role and nothing else; which daemon owns it, and whether any claim of that
 // role is released, is for the daemons to decide.
-func (s *roleSend) noHolder(ctx context.Context, result roles.Resolution) {
+func (s *roleSend) noHolder(result roles.Resolution) {
 	reportRoleWake(s.d, s.d.delivery.logger, s.role)
 	// The wake is what this message costs its sender, whether it is handed off, kept or answered
 	// 404 below.
 	s.record.charge.woke()
-	handed, err := s.d.handoff.handOffToLegion(ctx, legionHandoffTarget{
+	handed, err := s.d.handoff.handOffToLegion(s.ctx, legionHandoffTarget{
 		envelope: s.item, roleToken: s.role, optedOut: s.optedOut,
 	})
 	switch {
@@ -520,7 +520,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 		return
 	}
 	if first.State != roles.Live {
-		send.noHolder(ctx, first)
+		send.noHolder(first)
 		return
 	}
 	send.hold(first)
@@ -550,7 +550,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 		case err != nil:
 			// Retried below, as every resolution not answered here is.
 		case resolved.State == roles.Unclaimed:
-			send.noHolder(ctx, resolved)
+			send.noHolder(resolved)
 			return
 		case resolved.State == roles.Live:
 			if send.holder != checked {

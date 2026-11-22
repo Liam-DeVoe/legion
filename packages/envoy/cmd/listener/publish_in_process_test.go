@@ -590,28 +590,7 @@ func TestATakeoverCopyPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing
 // duplicate, and the stream holds one hand-off.
 func TestAHandoffResendWhoseEarlierAttemptIsStillInProcessIsAnsweredDuplicate(t *testing.T) {
 	rig := newInProcessRig(t)
-	agents, err := legionagents.Open(t.Context(), rig.harness.client.Conn, legionagents.WithReplicas(1))
-	if err != nil {
-		t.Fatalf("open the legion agent registry: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if _, err := agents.Put(ctx, legionagents.Entry{
-		SessionID: handoffAgent, LegionProject: "infra", Issue: "INFRA-204", Role: "implementer",
-		RoleToken: "legion-infra-infra-204-implementer", Title: "Legion implementer · INFRA-204", Harness: "omp",
-		StartedAt: "2026-10-26T03:00:00Z",
-	}); err != nil {
-		t.Fatalf("record the stopped implementer: %v", err)
-	}
-	if _, err := agents.PutProject(ctx, "infra", legionagents.Project{
-		Answering: true, UpdatedAt: time.Now().UTC().Format("2006-01-02T15:04:05Z"),
-	}); err != nil {
-		t.Fatalf("state that the project answers: %v", err)
-	}
-	// The registries are on the package's shared server, as the rig's other reads are, so a
-	// frozen route holds the hand-off's publish over the rig's listener and none of its reads.
-	handoff := &legionHandoff{client: rig.d.client, registry: rig.harness.registry, sessions: rig.harness.sessions,
-		agents: newLegionAgentRegistry(agents), logger: rig.logger}
+	handoff := rig.stoppedAgentHandoff(t)
 	subject := listenerwire.LegionHandoffSubject("infra", handoffAgent)
 	item := envelopeFor(contracts.LegacyAgentSubject(handoffAgent), "agent."+handoffAgent+"."+id.New(), "agent")
 	type handedOff struct {
@@ -643,4 +622,128 @@ func TestAHandoffResendWhoseEarlierAttemptIsStillInProcessIsAnsweredDuplicate(t 
 			got.handed, got.err)
 	}
 	rig.requireOneCopy(t, subject, before)
+}
+
+// stoppedAgentHandoff is a hand-off over the rig's listener for handoffAgent, a stopped
+// implementer of the project infra, which says it answers. The registries are on the package's
+// shared server, as the rig's other reads are, so a frozen route holds the hand-off's publish over
+// the rig's listener and none of its reads.
+func (rig *inProcessRig) stoppedAgentHandoff(t *testing.T) *legionHandoff {
+	t.Helper()
+	agents, err := legionagents.Open(t.Context(), rig.harness.client.Conn, legionagents.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("open the legion agent registry: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := agents.Put(ctx, legionagents.Entry{
+		SessionID: handoffAgent, LegionProject: "infra", Issue: "INFRA-204", Role: "implementer",
+		RoleToken: "legion-infra-infra-204-implementer", Title: "Legion implementer · INFRA-204", Harness: "omp",
+		StartedAt: "2026-10-26T03:00:00Z",
+	}); err != nil {
+		t.Fatalf("record the stopped implementer: %v", err)
+	}
+	if _, err := agents.PutProject(ctx, "infra", legionagents.Project{
+		Answering: true, UpdatedAt: time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+	}); err != nil {
+		t.Fatalf("state that the project answers: %v", err)
+	}
+	return &legionHandoff{client: rig.d.client, registry: rig.harness.registry, sessions: rig.harness.sessions,
+		agents: newLegionAgentRegistry(agents), logger: rig.logger}
+}
+
+// The agent subject's give-up hands a message off within legionHandoffGiveUpWindow and no longer.
+// While an earlier attempt of the same hand-off is still in process, as routes frozen under it
+// leave it, the stream refuses every publish of the give-up's hand-off as in process
+// (bus.ErrDuplicateInProcess), and publishPastInProcess publishes again until its context ends.
+// The window is that context: the give-up returns once it ends, records the failed hand-off (its
+// line and its count) and NAKs the message to be tried again, rather than publishing again for as
+// long as the earlier attempt is not stored, which a stream that lost its quorum may never store.
+// The window is shortened to a second here; the row's own bound, ten seconds past it, is what
+// fails a give-up that does not stop.
+func TestTheAgentSubjectGiveUpStopsAtItsWindowWhileItsHandoffIsStillInProcess(t *testing.T) {
+	saved := legionHandoffGiveUpWindow
+	legionHandoffGiveUpWindow = time.Second
+	t.Cleanup(func() { legionHandoffGiveUpWindow = saved })
+	rig := newInProcessRig(t)
+	cfg := rig.harness.config
+	cfg.handoff = rig.stoppedAgentHandoff(t)
+	subject := listenerwire.LegionHandoffSubject("infra", handoffAgent)
+	item := envelopeFor(contracts.LegacyAgentSubject(handoffAgent), "agent."+handoffAgent+"."+id.New(), "agent")
+
+	// The message the give-up finalizes: one bound to a subscription, with a reply subject the
+	// test reads, so its NAK is heard where a durable message's would reach the server.
+	conn := rig.harness.client.Conn
+	nakInbox := natsgo.NewInbox()
+	naks, err := conn.SubscribeSync(nakInbox)
+	if err != nil {
+		t.Fatalf("subscribe the message's reply subject: %v", err)
+	}
+	t.Cleanup(func() { _ = naks.Unsubscribe() })
+	carrierSubject := "test.handoff-give-up." + id.New()
+	carrier, err := conn.SubscribeSync(carrierSubject)
+	if err != nil {
+		t.Fatalf("subscribe %s: %v", carrierSubject, err)
+	}
+	t.Cleanup(func() { _ = carrier.Unsubscribe() })
+	if err := conn.PublishMsg(&natsgo.Msg{Subject: carrierSubject, Reply: nakInbox, Data: marshalListenerEnvelope(t, item)}); err != nil {
+		t.Fatalf("publish the message: %v", err)
+	}
+	carried, err := carrier.NextMsg(5 * time.Second)
+	if err != nil {
+		t.Fatalf("receive the message: %v", err)
+	}
+	message := deliveryMessage{data: carried.Data, mode: durableDelivery, msg: carried}
+
+	rig.requireLeader(t)
+	heard := rig.hear(t, subject)
+	thaw := rig.cluster.FreezeRoutes(t)
+	t.Cleanup(thaw)
+	earlier := make(chan error, 1)
+	go func() {
+		_, err := cfg.handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: item, session: handoffAgent})
+		earlier <- err
+	}()
+	awaitHanded(t, heard, 1)
+
+	window := legionHandoffGiveUpWindow
+	bound := window + 10*time.Second
+	started := time.Now()
+	answered := make(chan bool, 1)
+	go func() { answered <- offerAgentDeliveryToLegion(cfg, message, item, handoffAgent) }()
+	select {
+	case owned := <-answered:
+		if !owned {
+			t.Fatalf("the give-up answered that the hand-off was not the message's outcome; want it to own the failed hand-off:\n%s", rig.harness.logs.String())
+		}
+	case <-time.After(bound):
+		t.Fatalf("the give-up had not returned %s after it began, %s past its %s window: its hand-off is still publishing again while the earlier attempt is in process",
+			bound, bound-window, window)
+	}
+	if elapsed := time.Since(started); elapsed < window {
+		t.Errorf("the give-up returned after %s, inside its %s window: it was to publish again until the window ended", elapsed, window)
+	}
+	failed := deliveryRecords(t, rig.harness.logs.String(), "listener legion hand-off failed")
+	if len(failed) != 1 || failed[0].SessionID != handoffAgent || failed[0].DeliveryStatus != "failed" {
+		t.Errorf("the give-up wrote %+v, want one failed hand-off line for %s:\n%s", failed, handoffAgent, rig.harness.logs.String())
+	}
+	if !strings.Contains(rig.harness.logs.String(), errEarlierAttemptInProcess.Error()) {
+		t.Errorf("the failed hand-off does not say it ended while the earlier attempt was in process (%q):\n%s", errEarlierAttemptInProcess, rig.harness.logs.String())
+	}
+	if nak, err := naks.NextMsg(5 * time.Second); err != nil || !strings.HasPrefix(string(nak.Data), "-NAK") {
+		t.Errorf("the message's reply subject read %v, %v; want the give-up's NAK", nak, err)
+	}
+	body := metricsBody(t, rig.harness)
+	for _, series := range []string{`test_messages_naked 1`, `test_messages_delivered{delivery_status="failed"} 1`} {
+		if !strings.Contains(body, series) {
+			t.Errorf("the listener's metrics lack %s:\n%s", series, body)
+		}
+	}
+
+	thaw()
+	select {
+	case <-earlier:
+	case <-time.After(15 * time.Second):
+		t.Fatalf("the earlier hand-off had not returned 15 s after the thaw")
+	}
 }

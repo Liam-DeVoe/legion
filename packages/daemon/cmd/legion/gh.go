@@ -745,15 +745,17 @@ func refuseLegionGhAsRealGh(gh string) error {
 }
 
 // The bounds legion sets on a program it starts and waits for, which this package's tests give
-// their own deadline through programbound. This package registers the three that live in it:
-// `legion gh`'s answer to the shared check's own visibility read (visibilityAnswerBound,
-// gh_visibility.go), the credential helper's fork read (forkReadBound, gitcredential_fork.go), and
-// the worker shim's grace for its agent (workerShimGrace, worker_shim.go). The git reads of
-// `legion gh` (ghroute.GitReadBound, which ghRepoGitConfigRefusal here reads too) and its read of
-// gh's help (ghroute.ReadHelp's helpTimeout) live in internal/ghroute, which registers them;
-// workspace-init's command budget (commandBudget) is registered in workspace_init.go, and the leak
-// guard's reads and the shim's warm-up floor in internal/leakguard and internal/shim. Each wait
-// reads its bound through programbound.Of.
+// their own deadline through programbound. Four live in this package, and this init registers
+// three of them: `legion gh`'s answer to the shared check's own visibility read
+// (visibilityAnswerBound, gh_visibility.go), the credential helper's fork read (forkReadBound,
+// gitcredential_fork.go), and the worker shim's grace for its agent (workerShimGrace,
+// worker_shim.go). The fourth, the command budget of workspace-init's provision, fetch and cache
+// (commandBudget), is registered where it lives, in workspace_init.go. The git reads of `legion
+// gh` (ghroute.GitReadBound, which ghRepoGitConfigRefusal here reads too) and its read of gh's
+// help (ghroute.ReadHelp's helpTimeout) live in internal/ghroute, which registers both; the leak
+// guard's gh, curl and git ls-remote reads (ghReadBound, curlBound, lsRemoteBound) and the shim's
+// warm-up floor (warmUpDrainFloor) live in internal/leakguard and internal/shim, which register
+// their own. Each wait reads its bound through programbound.Of.
 func init() {
 	programbound.Register(&visibilityAnswerBound, &forkReadBound, &workerShimGrace)
 }
