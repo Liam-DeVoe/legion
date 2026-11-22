@@ -34,6 +34,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -41,6 +42,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // experimentLive is one run of the proof: the person's handover rig with the daemon it boots, the
@@ -53,8 +55,10 @@ type experimentLive struct {
 	root    string
 	legion  string
 	cliHome string
-	// drawnA are the two issues drawn into the arm a, the first of which its owner gives a plan.
+	// drawnA are the two issues drawn into the arm a, the first of which its owner gives a plan,
+	// and drawnB the issue drawn into the arm b after the second boot.
 	drawnA []experimentIssue
+	drawnB experimentIssue
 }
 
 // experimentIssue is one issue the proof handed to Legion, and a minter of the grants its
@@ -67,7 +71,8 @@ type experimentIssue struct {
 // TestExperimentLive drives the proof's steps against one Dispatch and the daemon booted twice on
 // one database: first with the experiment at mode on and the arm a, for two issues, then with the
 // arm b, for a third. Each issue keeps the arm of its draw whatever the settings say later, which
-// the operator's line after the second boot shows.
+// the operator's line after the second boot shows, and each record of a step names the variant of
+// its issue, which `dispatch steps` prints.
 func TestExperimentLive(t *testing.T) {
 	fixtureenv.Live(t)
 	natsURL := os.Getenv(liveNATSURLEnv)
@@ -92,6 +97,7 @@ func TestExperimentLive(t *testing.T) {
 	l.step("group-recorded", l.groupRecorded)
 	l.step("owner-plan-taken", l.ownerPlanTaken)
 	l.step("default-not-taken", l.defaultNotTaken)
+	l.step("variant-on-steps", l.variantOnSteps)
 }
 
 // declare sets the daemon's project to declare the experiment planning at mode on, giving every
@@ -164,6 +170,7 @@ func (l *experimentLive) defaultNotTaken() {
 	l.note("the daemon was stopped and booted again with the experiment planning at the arm b")
 	created := l.r.create(asSession, "Search ranks fresher pages", map[string]any{"labels": []string{"legion"}})
 	issue := experimentIssue{scratchIssue: created, grant: l.r.admit(created.Key)}
+	l.drawnB = issue
 	document := l.writePlan(issue.Key)
 	refusal := intake.PlanNotTaken(issue.Key, record.Assignment{Experiment: "planning", Variant: "b", Plan: string(config.PlanGroupDefault)})
 	want := planAnswer{status: refusal.Status, failure: api.Failure{Code: refusal.Code, Error: refusal.Message}}
@@ -183,6 +190,35 @@ func (l *experimentLive) defaultNotTaken() {
 		l.t.Fatalf("`legion state` after the second boot printed no line %q:\n%s", counted, state)
 	}
 	l.note("`legion state` prints %q: the issues drawn before the second boot keep the arm a", counted)
+}
+
+// variantOnSteps reads the variant of each issue as a person reads it, with the real `dispatch
+// steps --issue <KEY>` under bun: the third issue, drawn at the arm b, prints `Experiment
+// planning: variant b.` above its steps, and the first, drawn at the arm a, `Experiment planning:
+// variant a.`. The daemon writes each step record of an issue in a group with the experiment and
+// the variant of its draw (the workflow's stepWrite), and its outbox sends the pair after the
+// record, on the record's experiment route of this checkout's Dispatch, so the line stands once
+// that row has run: the command runs again until it prints the line, within the wait's bound.
+// Control: a daemon whose step write leaves the pair out prints neither line, and this step fails.
+func (l *experimentLive) variantOnSteps() {
+	shell := cliShell{t: l.t, dir: l.cliHome, session: scratchSession, base: l.r.baseURL, token: scratchAgentToken}
+	for _, want := range []struct {
+		issue experimentIssue
+		line  string
+	}{
+		{issue: l.drawnB, line: "Experiment planning: variant b."},
+		{issue: l.drawnA[0], line: "Experiment planning: variant a."},
+	} {
+		var out string
+		if !testwait.Holds(testwait.Bounded(l.t, time.Minute, 5*time.Second), 500*time.Millisecond, func() bool {
+			ran, code := shell.bun(nil, dispatchCLI(l.root), "steps", "--issue", want.issue.Key)
+			out = string(ran.stdout) + string(ran.stderr)
+			return code == 0 && slices.Contains(strings.Split(out, "\n"), want.line)
+		}) {
+			l.t.Fatalf("`dispatch steps --issue %s` never printed the line %q; its last run printed:\n%s", want.issue.Key, want.line, out)
+		}
+		l.note("`dispatch steps --issue %s` prints %q above its steps", want.issue.Key, want.line)
+	}
 }
 
 // writePlan writes ownersPlan as the document plan.md of key with the real `dispatch artifact`,

@@ -24,7 +24,10 @@
 #     third issue is handed to Legion; register_plan on it answers 409 PLAN_NOT_TAKEN, and the same
 #     call sent again the same; once its gate opens, its run starts at planning, the project's
 #     default steps; `legion state` prints `planning: 3 issues — 2 a (on), 1 b (on)`, the issues
-#     drawn before the second boot keeping the arm `a`.
+#     drawn before the second boot keeping the arm `a`;
+#   - variant-on-steps: the real `dispatch steps --issue <KEY>` prints `Experiment planning:
+#     variant b.` above the steps of the third issue and `Experiment planning: variant a.` above the
+#     first's, as each record of a step names the variant of its issue's draw.
 #
 # Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
 # to start without them), bun (after `bun install` at the checkout's root), awk and python3, as
