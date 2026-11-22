@@ -364,12 +364,18 @@ export function IssueTree({
   const releasedHere = released.landing === landingKey ? released.ids : NO_FOLDS;
   const heldPath =
     releasedHere.size === 0 ? path : path.filter((above) => !releasedHere.has(above.id));
-  // The line of each overtaken node the path runs through, outermost first (`withLine`), which
-  // the path holds open so the node it names is a row, less each line the reader closed since
-  // the landing and every line below it on the path: the address opens a line and holds it open
-  // no further, since held at every render, the line drew open again at once, and a press, Enter
-  // and Left on it closed nothing and said nothing.
-  const pathLines = [...(withLine(undefined, path) ?? [])];
+  // The line of each overtaken node the path runs through (`withLine`), which the path holds
+  // open so the node it names is a row, less each line the reader closed since the landing and
+  // every line below it on the path: the address opens a line and holds it open no further,
+  // since held at every render, the line drew open again at once, and a press, Enter and Left on
+  // it closed nothing and said nothing. They are in the path's order, outermost first, read off
+  // the path by the node each hangs under, since a close lets go of the line it closes and each
+  // one after it here (`toggleOvertaken`), and `withLine` promises no order.
+  const linesOnPath = withLine(undefined, path);
+  const pathLines =
+    linesOnPath === undefined
+      ? []
+      : path.flatMap((above) => (linesOnPath.has(above.id) ? [above.id] : []));
   lineHold.current = { ids: pathLines, landing: landingKey };
   const releasedLinesHere = releasedLines.landing === landingKey ? releasedLines.ids : NO_FOLDS;
   const heldLines =

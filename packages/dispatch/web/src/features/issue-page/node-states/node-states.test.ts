@@ -1041,6 +1041,58 @@ test("a press, Enter and the left arrow close the overtaken line an address open
   }
 });
 
+// An address that names an overtaken node under another overtaken node opens the two lines on
+// its path, and a close of either lets go of that line and of each line below it on the path,
+// and of no line above it: the inner line closes alone, the outer one closes both, and a press
+// opens the outer one again with the inner one closed. The release takes the lines after the
+// closed one in the path's order, outermost first; taken innermost first, the inner line's close
+// let go of the outer line too, which closed with it.
+test("closing the inner of two overtaken lines an address opened leaves the outer one open", async () => {
+  readWide();
+  const user = userEvent.setup();
+  const tree = stamped(
+    node(KEY, "issue", [
+      node("comment-1", "comment"),
+      node("comment-2", "comment", [node("comment-3", "comment"), node("comment-4", "comment")]),
+    ]),
+    { "comment-2": { life: "overtaken" }, "comment-4": { life: "overtaken" } }
+  );
+  const view = renderTreeAt(pathTo(tree, "comment-4"), tree);
+  try {
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-4"));
+    const [outer, inner] = linesOf(view.container);
+    if (outer === undefined || inner === undefined) throw new Error("two lines are drawn");
+    expect(outer).toHaveAttribute("aria-expanded", "true");
+    expect(inner).toHaveAttribute("aria-expanded", "true");
+
+    await user.click(inner);
+    await waitFor(() => expect(rowOf(view.container, "comment-4")).toBeNull());
+    expect(outer, "the inner line's close closed the outer line").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    expect(inner).toHaveAttribute("aria-expanded", "false");
+    expect(rowOf(view.container, "comment-2")).not.toBeNull();
+
+    await user.click(outer);
+    await waitFor(() => expect(outer).toHaveAttribute("aria-expanded", "false"));
+    expect(rowOf(view.container, "comment-2")).toBeNull();
+    expect(linesOf(view.container)).toEqual([outer]);
+
+    await user.click(outer);
+    await waitFor(() => expect(outer).toHaveAttribute("aria-expanded", "true"));
+    expect(rowOf(view.container, "comment-2")).not.toBeNull();
+    const [, reopened] = linesOf(view.container);
+    expect(reopened, "the outer line's close left the inner line open").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    expect(rowOf(view.container, "comment-4")).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
 // Below 1024 px the left arrow on a closed line of overtaken nodes does what it does on a row at
 // the line's level, the line's parent being the node whose children it folds. Where the tree is
 // zoomed to that node already - the issue, or a row the reader zoomed into - the key says so at
