@@ -14,7 +14,7 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
 // TestTheCorpusIsSeededAndReadBack seeds the whole default corpus into an empty database of its
 // own and reads it back with the self-check, which must find every bullet and every named row
-// with the count the seed wrote, and name the three bullets left to a separate part. A second
+// with the count the seed wrote, and name the two bullets left to a separate part. A second
 // seed of the same project is refused, since it would double every count. Then one bullet is
 // broken in the store by a statement of the test's own - the answered ask put back to open - and
 // the self-check must fail naming that bullet and the read that found it, so a check that passes
@@ -42,10 +42,13 @@ func TestTheCorpusIsSeededAndReadBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the self-check of a fresh seed: %v", err)
 	}
-	for _, left := range []string{"LEFT: bullet 15,", "LEFT: bullet 16, a message under", "LEFT: bullet 17,"} {
+	for _, left := range []string{"LEFT: bullet 15,", "LEFT: bullet 16, a message under"} {
 		if !strings.Contains(printed.String(), left) {
 			t.Errorf("the self-check printed no line %q", left)
 		}
+	}
+	if strings.Contains(printed.String(), "LEFT: bullet 17") {
+		t.Errorf("the self-check leaves bullet 17 to a separate part, which the default seed writes")
 	}
 	passed := 0
 	for _, line := range strings.Split(printed.String(), "\n") {
@@ -53,8 +56,31 @@ func TestTheCorpusIsSeededAndReadBack(t *testing.T) {
 			passed++
 		}
 	}
-	if passed != 28 {
-		t.Errorf("the self-check passed %d clauses, want 28 (22 bullets, the three rows and the three replays)", passed)
+	if passed != 29 {
+		t.Errorf("the self-check passed %d clauses, want 29 (23 bullets, the three rows and the three replays)", passed)
+	}
+
+	// The map of a second conversion of the captured pre-mortem: one line of three tab-separated
+	// fields for each of the eleven risks, risk 8 naming the seeded check k-pass and every other
+	// risk none.
+	preventedBy, err := corpus.PreventedBy()
+	if err != nil {
+		t.Fatalf("the map of a second pre-mortem conversion: %v", err)
+	}
+	risks := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSuffix(preventedBy, "\n"), "\n") {
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) != 3 || fields[2] == "" {
+			t.Fatalf("the map holds the line %q, want three tab-separated fields with a reason", line)
+		}
+		risks[fields[0]] = fields[1]
+	}
+	if len(risks) != premortemRisks || risks["8"] != verificationRef(key, "k-pass") || risks["3"] != "none" {
+		t.Errorf("the map names %d risks, risk 8 prevented by %q and risk 3 by %q; want %d, %q and none:\n%s",
+			len(risks), risks["8"], risks["3"], premortemRisks, verificationRef(key, "k-pass"), preventedBy)
 	}
 
 	// A second seed finds the first one's events, and as a test copy finds its corpus.

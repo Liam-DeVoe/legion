@@ -9,11 +9,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// The titles of the seeded issue and of the issue the handover role holds, which the self-check
-// finds them by.
+// The titles of the seeded issue, of the issue the handover role holds, and of the two issues of
+// bullet 17, which the self-check finds them by.
 const (
 	modelTitle    = "The seeded issue of the graph model's corpus"
 	handoverTitle = "The issue the handover role holds"
+	waitedTitle   = "The issue the seeded issue waits on"
+	childTitle    = "The child issue whose plan waits on the seeded issue's plan"
 )
 
 // resultCommit is the commit every recorded result names. The project maps no repository, so the
@@ -40,6 +42,9 @@ func specRef(key, block string) string { return "dispatch://" + key + "/spec#b-"
 func verificationRef(key, block string) string {
 	return "dispatch://" + key + "/artifact/verification-md#b-" + block
 }
+
+// planRef is the dispatch:// address of a block of an issue's plan, as a needs pointer names it.
+func planRef(key, block string) string { return "dispatch://" + key + "/artifact/plan-md#b-" + block }
 
 // itemRef is the dispatch:// address of an ask, a comment or a message of an issue.
 func itemRef(key, kind, id string) string { return "dispatch://" + key + "/" + kind + "/" + id }
@@ -97,6 +102,9 @@ func (s *seeder) writeModelIssue(ctx context.Context) error {
 		":::requirement{#r-one serves=\"" + specRef(key, "c-want") + "\"}\nThe page lists every answered ask.\n:::\n",
 		":::requirement{#r-two serves=\"" + specRef(key, "c-want") + "\"}\nThe page lists every decision an agent made.\n:::\n",
 		":::requirement{#r-three serves=\"" + specRef(key, "c-other") + "\"}\nEach decision keeps its reason.\n:::\n",
+		// A requirement under the criterion alice wrote in her comment, so a reader walks up from a
+		// requirement to the words that asked for it (c-one-tree). No check or plan task serves it.
+		":::requirement{#r-said serves=\"" + specRef(key, "c-said") + "\"}\nThe page names who made each decision.\n:::\n",
 		":::ask{#q-answered urgency=\"high\" multiple=\"false\" shaped=\"" + specRef(key, "r-one") + "\"}\nWhich page lists the answered asks?\n\n" +
 			"- The issue page: one page holds every answer\n- A page of their own: the answers stand apart\n:::\n",
 		":::ask{#q-open urgency=\"med\" multiple=\"false\"}\nWhich order do the rows take?\n\n" +
@@ -128,6 +136,9 @@ func (s *seeder) writeModelIssue(ctx context.Context) error {
 	plan := ":::plan_task{#t-serves serves=\"" + specRef(key, "r-one") + " " + specRef(key, "r-two") + "\" size=\"2.5\"}\nDraw the answered asks and the decisions on the page.\n:::\n\n" +
 		":::plan_task{#t-none}\nRead the page with a person before it ships.\n:::\n"
 	if err := s.upload(ctx, asSession(agentSession), key, "plan.md", plan); err != nil {
+		return err
+	}
+	if err := s.writeWaits(ctx, key); err != nil {
 		return err
 	}
 
@@ -172,6 +183,38 @@ func (s *seeder) writeModelIssue(ctx context.Context) error {
 	}
 	s.corpus.set("model.interaction", run.ID)
 	return s.writeAgents(ctx, key)
+}
+
+// writeWaits writes bullet 17 as its two pairs (R24; c-needs's "an issue waiting on an issue, and a
+// plan_task node of one issue waiting on a plan_task node of another"): the seeded issue waits on
+// an unrelated issue, an issue-level needs written through the issue's own update; and a plan_task
+// of a child issue of the seeded issue waits on the seeded issue's t-serves, a needs pointer at a
+// plan task of an issue above the writing one, which the pointer rule admits.
+func (s *seeder) writeWaits(ctx context.Context, key string) error {
+	var waited, child model.Issue
+	if err := s.api.call(ctx, asPerson(alice), http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": s.project, "title": waitedTitle, "force": true,
+		"spec": "An issue of its own, which the seeded issue waits on.\n",
+	}, &waited, http.StatusCreated); err != nil {
+		return fmt.Errorf("create the issue the seeded issue waits on: %w", err)
+	}
+	if err := s.api.call(ctx, asPerson(alice), http.MethodPatch, "/api/v1/issues/"+key,
+		map[string]any{"needs": []string{waited.Key}}, nil); err != nil {
+		return fmt.Errorf("make %s wait on %s: %w", key, waited.Key, err)
+	}
+	if err := s.api.call(ctx, asPerson(alice), http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": s.project, "title": childTitle, "parent": key, "force": true,
+		"spec": "A child of the seeded issue, whose plan waits on the seeded issue's plan.\n",
+	}, &child, http.StatusCreated); err != nil {
+		return fmt.Errorf("create the child issue of %s: %w", key, err)
+	}
+	plan := ":::plan_task{#t-child needs=\"" + planRef(key, "t-serves") + "\"}\nDraw the child's part once the seeded issue's page is drawn.\n:::\n"
+	if err := s.upload(ctx, asSession(agentSession), child.Key, "plan.md", plan); err != nil {
+		return fmt.Errorf("write the child's plan: %w", err)
+	}
+	s.corpus.set("waits.issue", waited.Key)
+	s.corpus.set("waits.child", child.Key)
+	return nil
 }
 
 // upload writes name to the issue as a new document, or as its next version where the issue holds

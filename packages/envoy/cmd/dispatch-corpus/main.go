@@ -5,14 +5,17 @@
 //
 // Usage:
 //
-//	DATABASE_URL=<url> go run ./cmd/dispatch-corpus seed [--project CORE] [--fixtures <dir>] [--test-copy]
+//	DATABASE_URL=<url> go run ./cmd/dispatch-corpus seed [--project CORE] [--fixtures <dir>] [--test-copy] [--prevented-by-out <file>]
 //	DATABASE_URL=<url> go run ./cmd/dispatch-corpus check [--project CORE] [--fixtures <dir>]
 //
 // seed migrates the database, writes the corpus, prints each name the drivers read as one
 // `key=value` line, and then runs the self-check over what it wrote. It refuses a database that
 // already holds events, naming how many, unless --test-copy says the database is a test copy, such
-// as the one `bun run dispatch:local` seeds; it publishes no event and marks none published. check
-// runs the self-check alone, over a database a seed wrote. Each prints the self-check's lines
+// as the one `bun run dispatch:local` seeds; it publishes no event and marks none published. With
+// --prevented-by-out it also writes, to that file, the map a second conversion of the captured
+// pre-mortem reads (`envoy-dispatch premortem-convert --prevented-by`, seedcorpus.Corpus.PreventedBy),
+// which names checks of the issue it seeded and so exists only once the seed has run. check runs
+// the self-check alone, over a database a seed wrote. Each prints the self-check's lines
 // (seedcorpus.Check) and exits 1 when a seed is refused or one bullet or row is missing or holds a
 // count other than the one written, and 2 on a refused argument.
 package main
@@ -57,8 +60,10 @@ func run(ctx context.Context, args []string, databaseURL string, stdout, stderr 
 	project := flags.String("project", seedcorpus.DefaultProject, "the key of the project the corpus is written into")
 	fixtures := flags.String("fixtures", "", "the directory holding the three captured fixtures; empty finds packages/dispatch/e2e/fixtures in the working directory or above it")
 	testCopy := false
+	preventedByOut := ""
 	if command == "seed" {
 		flags.BoolVar(&testCopy, "test-copy", false, "the database is a test copy: seed it though it holds events the loader did not write")
+		flags.StringVar(&preventedByOut, "prevented-by-out", "", "a file to write the map of a second pre-mortem conversion to, from the names the seed wrote")
 	}
 	if err := flags.Parse(args[1:]); err != nil {
 		return 2
@@ -104,6 +109,16 @@ func run(ctx context.Context, args []string, databaseURL string, stdout, stderr 
 		}
 		corpus.Print(stdout)
 		fmt.Fprintf(stdout, "seeded in %s\n", time.Since(started).Round(time.Millisecond))
+		if preventedByOut != "" {
+			preventedBy, err := corpus.PreventedBy()
+			if err == nil {
+				err = os.WriteFile(preventedByOut, []byte(preventedBy), 0o644)
+			}
+			if err != nil {
+				fmt.Fprintf(stderr, "dispatch-corpus: write the map of a second pre-mortem conversion to %s: %v\n", preventedByOut, err)
+				return 1
+			}
+		}
 	}
 	report, err := seedcorpus.Check(ctx, database.Pool, seedcorpus.CheckOptions{Project: *project, Fixtures: *fixtures})
 	report.Print(stdout)

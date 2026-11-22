@@ -59,12 +59,13 @@
 //     store writer by writeRoles, with the model issue routed to the role. This head. The
 //     message under the page and the reply under that message are dispatch://INFRA-1152's (a
 //     message on no issue hangs from its agent's page, d37dd05857): seedINFRA1152, absent.
-//  17. A second issue this issue waits on, and a plan_task of this issue waiting on one of that
-//     issue: the separate part seedINFRA1253 (infra1253.go), absent from this commit and from the
-//     default seed. It waits on INFRA-1253 letting a needs pointer reach a plan_task of another
-//     issue (pmdoc/pointers.go documentReach/itemReach): at this head a needs names a plan task of
-//     an issue above the writing one alone, and an issue may not wait on an issue above it (the
-//     create answers 409 DEPENDENCY_CYCLE), so no one second issue can be both.
+//  17. A second issue this issue waits on, and a plan_task waiting on a plan_task of another issue,
+//     seeded as two pairs (R24; c-needs's "an issue waiting on an issue, and a plan_task node of
+//     one issue waiting on a plan_task node of another"): the seeded issue waits on an unrelated
+//     issue, an issue-level needs written through the issue's update (a `needs` tuple between the
+//     two issues' nodes); and plan_task t-child of a child issue of the seeded issue waits on its
+//     t-serves, a needs pointer at a plan task of an issue above the writing one, which the
+//     pointer rule admits at this head (pmdoc/pointers.go). This head.
 //  18. A lens of kind pre-mortem with two risks, one pointing at a check: the lens route, the risk
 //     route twice, one risk with `prevented_by` at k-pass. This head.
 //  19. A lens of kind inversion that the pre-mortem lens triggered: a lens with `triggered_by` the
@@ -74,7 +75,8 @@
 //     holds at visibility author for the credential that asked it. This head.
 //  21. A criterion the person wrote in a comment, a second in an ask, a third in a message:
 //     `criterion` blocks whose `parent` names alice's comment, her ask and her message (block
-//     schema 6). This head.
+//     schema 6), and requirement r-said serving the first, so c-one-tree walks up from a
+//     requirement to the words that asked for it. This head.
 //  22. A node held at `author` visibility whose parent, backlink and two neighbours are `project`:
 //     alice's first-principles lens reserved for her, on requirement r-three between two project
 //     lenses on it, and a project second-order lens on the issue triggered by it. This head.
@@ -112,7 +114,9 @@
 // one text of a copied spec that is not the capture's. And the pre-mortem of
 // acme-1098-premortem.json, converted by the API's own conversion (api.ConvertPremortem through its
 // route) into one lens of kind pre-mortem with its eleven risks directly under it, none under
-// another (decision 6).
+// another (decision 6). Beside the corpus a seed can write the map file a second conversion of that
+// pre-mortem reads (Corpus.PreventedBy, `seed --prevented-by-out`), which names a seeded check and
+// so is written for each run rather than committed.
 package seedcorpus
 
 import (

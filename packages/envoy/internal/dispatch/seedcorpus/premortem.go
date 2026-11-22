@@ -61,3 +61,38 @@ func (s *seeder) replayPremortem(ctx context.Context, capture premortemCapture) 
 	}
 	return nil
 }
+
+// preventedRisk is the one risk of the captured pre-mortem a second conversion's map names a check
+// for, as c-lens writes its map: risk 8 names one seeded check and every other risk, risk 3 among
+// them, names none.
+const preventedRisk = 8
+
+// PreventedBy is the map file `envoy-dispatch premortem-convert --prevented-by` reads for a second
+// conversion of the captured pre-mortem, which the browser file and lens.sh each run on an issue of
+// their own: a comment line, then one line for each risk the captured document numbers, in the
+// order this seed's own conversion answered them, of three fields with one tab between them - the
+// risk's number, `none` or the check address, and the reason. Risk 8 is prevented by the seeded
+// check k-pass; every other risk by none. The seeded issue's key exists only once the seed has
+// run, so the loader writes the map from the names it seeded, and no map file is committed.
+func (c Corpus) PreventedBy() (string, error) {
+	key := c.Get("model.issue")
+	if key == "" {
+		return "", fmt.Errorf("the corpus names no seeded issue, whose check k-pass the map names")
+	}
+	lines := []string{"# risk\tchecks\treason"}
+	for _, name := range c.names {
+		number, isRisk := strings.CutPrefix(name, "premortem.risk.")
+		if !isRisk {
+			continue
+		}
+		if number == fmt.Sprint(preventedRisk) {
+			lines = append(lines, number+"\t"+verificationRef(key, "k-pass")+"\tThe seeded check that draws every answered ask covers this risk.")
+		} else {
+			lines = append(lines, number+"\tnone\tNo check of the seeded corpus prevents risk "+number+".")
+		}
+	}
+	if len(lines) != premortemRisks+1 {
+		return "", fmt.Errorf("the corpus names %d risks of the captured pre-mortem, want %d", len(lines)-1, premortemRisks)
+	}
+	return strings.Join(lines, "\n") + "\n", nil
+}

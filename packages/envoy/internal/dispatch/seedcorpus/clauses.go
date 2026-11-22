@@ -5,19 +5,16 @@ import (
 	"strings"
 )
 
-// The separate parts of the loader this commit leaves out of the default seed, each named for the
-// head whose kind or relation its bullet needs. Neither can be written at this head: its bullet is
-// a relation no writer here states, so a part written here would write rows that hold none of it.
-// Each is absent until T6 brings that head to the line and writes it there.
+// The separate part of the loader this commit leaves out of the default seed, named for the head
+// whose kind or relation its bullets need. It cannot be written at this head: its bullets are
+// relations no writer here states, so a part written here would write rows that hold none of them.
+// It is absent until T6 brings that head to the line and writes it there.
 const (
 	leftINFRA1152Recipient = "the separate part seedINFRA1152 (infra1152.go), absent at this head: a person as the recipient " +
 		"of what reaches them is dispatch://INFRA-1152's delivery to a person (6fe7f108d3, inboxwrite.Record; 8dccf009d1, " +
 		"an ask's create and a session's reply deliver to the person; bd993067ba, a mention delivers to the person it names)"
 	leftINFRA1152Page = "the separate part seedINFRA1152 (infra1152.go), absent at this head: a message on no issue hangs " +
 		"from its agent's page, and a reply from the message it answers, by dispatch://INFRA-1152's message tuples (d37dd05857)"
-	leftINFRA1253Needs = "the separate part seedINFRA1253 (infra1253.go), absent at this head: it waits on INFRA-1253 letting a " +
-		"needs pointer reach a plan_task of another issue (pmdoc/pointers.go documentReach/itemReach); here a needs reaches a " +
-		"plan task of an issue above the writing one alone, and an issue may not wait on an issue above it (DEPENDENCY_CYCLE)"
 )
 
 // count is a read whose statement is `select count(*)` over the rest.
@@ -116,7 +113,12 @@ func modelClauses(key, handover string) []clause {
 			count("part_of tuples from the role's page to the role", "from "+current(tuple("page", "role/"+agentRole, "part_of", "role", agentRole))+" t", 1),
 		}},
 		{name: "bullet 16, a message under the agent's page and a reply under that message", left: leftINFRA1152Page},
-		{name: "bullet 17, a second issue this issue waits on, and a plan_task waiting on a plan_task of that one", left: leftINFRA1253Needs},
+		{name: "bullet 17, an issue waiting on an issue, and a plan_task of one issue waiting on a plan_task of another", reads: []read{
+			count("needs tuples from the seeded issue to the unrelated issue it waits on", "from "+current(`from_kind = 'issue' and from_id = $1 and kind = 'needs' and to_kind = 'issue'`)+
+				` t join issues w on w.key = t.to_id where w.title = $2`, 1, key, waitedTitle),
+			count("needs tuples from a plan task of a child of the seeded issue to its t-serves", "from "+current(`from_kind = 'block' and kind = 'needs' and to_kind = 'block' and to_id = '`+block("t-serves")+`'`)+
+				` t join issues c on t.from_id like c.key || '/tree#%' where c.parent_key = $1 and c.title = $2`, 1, key, childTitle),
+		}},
 		{name: "bullet 18, a lens of kind pre-mortem with two risks, one pointing at a check", reads: []read{
 			count("pre-mortem lenses on the seeded issue", "from "+premortem+" l", 1, key),
 			count("risks under it", "from "+current(`from_kind = 'risk' and kind = 'part_of'`)+" r where r.to_kind = 'lens' and r.to_id in "+premortem, 2, key),
@@ -133,6 +135,7 @@ func modelClauses(key, handover string) []clause {
 		{name: "bullet 21, a criterion the person wrote in a comment, a second in an ask, a third in a message", reads: []read{
 			count("kinds the parents of c-said, c-asked and c-messaged are of", `from (select distinct to_kind from `+current(`from_kind = 'block' and from_id in ('`+
 				block("c-said")+`', '`+block("c-asked")+`', '`+block("c-messaged")+`') and kind = 'parent'`)+` t where to_kind in ('comment', 'ask', 'message')) kinds`, 3),
+			count("serves tuples from r-said to c-said, the requirement under the comment's criterion", "from "+current(tuple("block", block("r-said"), "serves", "block", block("c-said")))+" t", 1),
 		}},
 		{name: "bullet 22, a node held at author visibility whose parent, backlink and two neighbours are project", reads: []read{
 			count("lenses reserved for their author on r-three", "from "+hidden+" h", 1, key),
