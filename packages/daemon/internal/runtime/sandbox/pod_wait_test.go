@@ -33,10 +33,11 @@ func podBuiltBeforeChecker(t *testing.T, g *rig) runtime.Locator {
 	return loc
 }
 
-// A launch of a role into a live pod built before the deployment defined it writes nothing and
-// waits: it neither replaces the pod nor suspends its Sandbox, since that would delete the issue's
-// disk with everything a role did not push, and only the pod's update round or its release
-// replaces it (ruling 18). The runtime answers which issue's pod lacks which role.
+// A launch into a live pod that lacks the slot of its claim or the role of its step, both
+// `checker` here (a claim named for its role), writes nothing and waits: it neither replaces the
+// pod nor suspends its Sandbox, since that would delete the issue's disk with everything a role
+// did not push, and only the pod's update round or its release replaces it (ruling 18). The
+// runtime answers which issue's pod lacks which name.
 func TestALaunchOfARoleItsPodWasBuiltWithoutWritesNothingAndWaits(t *testing.T) {
 	g := newRig(t, nil)
 	loc := podBuiltBeforeChecker(t, g)
@@ -64,9 +65,9 @@ func TestALaunchOfARoleItsPodWasBuiltWithoutWritesNothingAndWaits(t *testing.T) 
 	}
 }
 
-// One of Legion's roles still launches into a pod built before a role of the deployment: the
-// pod is judged by the roles it was built with, so the missing Secret of the deployment's role is
-// no reason to replace it.
+// One of Legion's roles, in its own claim's slot, still launches into a pod built before a role of
+// the deployment: the pod is judged by the slots and roles it was built with, so the missing
+// Secret of the deployment's role is no reason to replace it.
 func TestABuiltinRoleLaunchesIntoAPodBuiltBeforeADeploymentRole(t *testing.T) {
 	g := newRig(t, nil)
 	loc := podBuiltBeforeChecker(t, g)

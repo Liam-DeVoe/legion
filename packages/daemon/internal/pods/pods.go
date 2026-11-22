@@ -131,9 +131,10 @@ type IdleRoot struct {
 	Answered       bool
 }
 
-// StartWaitsForPodPrefix begins the last error of a start row that waits because the issue's
-// pod was built before the deployment defined its role (the outbox's roleWaitsForItsPod): the one
-// text the outbox writes and the idle view, the release's boundary and the served state read.
+// StartWaitsForPodPrefix begins the last error of a start row that waits because the issue's live
+// pod lacks the slot of the start's claim or the role of its step, built before the deployment
+// defined that name (the outbox's roleWaitsForItsPod): the one text the outbox writes and the idle
+// view, the release's boundary and the served state read.
 const StartWaitsForPodPrefix = "the start waits for its issue's pod: "
 
 // IdleView is one issue's pod as the idle rule reads it, in one read per issue: every claim of
@@ -161,13 +162,14 @@ type IdleView struct {
 	Claims      []IdleClaim
 	// Waiting is whether a task, notice, message or start of the issue waits for delivery to a
 	// role of its pod. The rule reads only whether there is one, so the store reads only that. A
-	// start that waits because the pod was built before its role (StartWaitsForPodPrefix) is no
-	// such delivery: the pod cannot run it, so it is counted in StartsWaitingForPod instead.
+	// start that waits because the pod lacks the slot of its claim or the role of its step
+	// (StartWaitsForPodPrefix) is no such delivery: the pod cannot run it, so it is counted in
+	// StartsWaitingForPod instead.
 	Waiting bool
-	// StartsWaitingForPod are the roles, distinct and in the order their rows were queued, whose
-	// start waits because the issue's pod was built before the deployment defined them (an outbox
-	// start row whose last error begins with StartWaitsForPodPrefix): only the pod's update round
-	// or its release lets them start.
+	// StartsWaitingForPod are the roles of the start rows, distinct and in the order the rows were
+	// queued, that wait because the issue's pod lacks the slot of the start's claim or the role of
+	// its step (an outbox start row whose last error begins with StartWaitsForPodPrefix): only the
+	// pod's update round or its release lets them start.
 	StartsWaitingForPod []claim.Role
 	// HeldFor is the reason of the pod's running hold streak (store's pod_holds), "" for none.
 	HeldFor string

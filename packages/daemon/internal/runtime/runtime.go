@@ -219,20 +219,22 @@ type IssuePodReader interface {
 	IssuePod(issue string) (pod string, read bool)
 }
 
-// ErrAwaitsPodUpdate is a launch of a role into its issue's live pod that was built before the
-// deployment defined that role: the pod has no launcher, Secret or volume of the role, and a
+// ErrAwaitsPodUpdate is a launch of a claim into its issue's live pod that was built before the
+// deployment defined the slot the claim runs in (its agent's name) or the role of its step: the pod
+// has no launcher, Secret or volume of that slot, or none of that role's own resources, and a
 // launch that replaced it would end every role in it and delete the issue's disk with everything
 // a role did not push. The launch writes nothing and answers this; the pod's update round, which
-// asks each role in it to push first, or its release replaces it, and the role starts in the new
+// asks each role in it to push first, or its release replaces it, and the claim starts in the new
 // pod (IssuePodRoles).
-var ErrAwaitsPodUpdate = errors.New("the issue's pod was built before this role, and only its update round or its release replaces it")
+var ErrAwaitsPodUpdate = errors.New("the issue's pod was built before the slot or the role of this launch, and only its update round or its release replaces it")
 
 // IssuePodRoles answers whether the issue's Sandbox holds a live pod whose launcher was built
-// without role, and that pod's uid; and whether the launcher of slot in the issue's live pod starts
-// a child only once the slot's gh files hold the start's credential (SlotWaitsForCredential), with
-// the pod's uid where it does not: a launcher of an image before that wait, which a re-role into
-// its slot waits out until the pod's update round or its release. A runtime with no pods (tmux)
-// does not implement it.
+// without role, a name the caller asks both as the slot of a claim and as the role of its step
+// (slots are named for roles), and that pod's uid; and whether the launcher of slot in the issue's
+// live pod starts a child only once the slot's gh files hold the start's credential
+// (SlotWaitsForCredential), with the pod's uid where it does not: a launcher of an image before
+// that wait, which a re-role into its slot waits out until the pod's update round or its release.
+// A runtime with no pods (tmux) does not implement it.
 type IssuePodRoles interface {
 	PodLacksRole(issue string, role claim.Role) (pod string, lacks bool)
 	SlotWaitsForCredential(issue string, slot claim.Role) (pod string, waits bool)
@@ -788,11 +790,13 @@ func (id GitIdentity) Env() map[string]string {
 type ActsAs func(ctx context.Context, token claim.Token) (claim.Role, bool, error)
 
 // SlotRole is the role whose App the slot of token holds: the role actsAs gives the token where
-// actsAs is set and gives one, else role, the claim's stored role, which is the role of the step
-// its agent does now (a claim takes the role of each step its agent runs). It is never the slot's
-// name: a keyed agent's slot is named by its agent, and that agent can do a step of another role.
-// Each write of a slot's gh credential asks it, at a launch and at each refresh, so a re-roled
-// claim's slot holds its new role's App.
+// actsAs is set and gives one, else role, which its caller reads: at a launch, the role of the
+// step the claim is launched for; at a refresh, the role the slot's process was launched as where
+// the slot records that launch for the stored claim's generation or a later one, and otherwise the
+// claim's stored role (the sandbox runtime's slotAppRole, the tmux runtime's paneRole). It is never
+// the slot's name: a keyed agent's slot is named by its agent, and that agent can do a step of
+// another role. Each write of a slot's gh credential asks it, so a re-roled claim's slot holds the
+// App of the role its process was launched as.
 func SlotRole(ctx context.Context, actsAs ActsAs, token claim.Token, role claim.Role) (claim.Role, error) {
 	if actsAs == nil {
 		return role, nil

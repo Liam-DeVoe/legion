@@ -597,9 +597,11 @@ type LauncherState struct {
 // repeated request is idempotent only when its payload, Files included, is unchanged. Files are
 // the generation's credentials, the boot token among them: the launcher writes each, owner-only
 // and exclusively, into a fresh directory for this generation in its own memory-backed storage
-// before the child starts, and removes the directory when the child ends — so a role started in a
-// running pod never waits on the kubelet to propagate a Secret. Argv and Env name those files by
-// path; no credential is ever in Argv, Env, or an error.
+// before the child starts, and removes the directory when the child ends — so these credentials
+// never wait on the kubelet to propagate a Secret. Only the slot's gh files do: a start into a pod
+// the daemon kept names in GitHubCredential what they must hold, and the launcher starts the child
+// only once they hold it. Argv and Env name those files by path; no credential is ever in Argv,
+// Env, or an error.
 //
 // ResumeFile is the session file the child resumes. ResumeSession is the id of a session the
 // child resumes where the daemon knows no file of it: the launcher looks the id up in the session
