@@ -22,13 +22,14 @@ import (
 // and a room left owed - the write that accepts a version writes each requirement, check and plan
 // task it holds, with its text value, its part_of, its row, its serves and, in a room, its
 // document, and no block of the version that is neither typed nor an ancestor of one; the spec,
-// the Verification and the plan are written by uploads, in the room left owed by edits too, and the
-// issue create writes a spec in the two deferrals by size alone, since a create cannot leave a room
-// owed (writeAcceptedVersions). Right after each write, with no reconciliation run, each reads in
-// the coverage read and in its view of the tree read, after its ranked siblings with no rank, the
-// census reads no row without its node and tuples, and both reads name the document owed; once the
-// reconciliation runs, each holds one of each, its first rank among them, nothing is owed and the
-// store census reads zero.
+// the Verification and the plan are written by uploads, and in each deferral the spec and the
+// Verification by edits too, which defer past the bound as an upload does in the two deferrals by
+// size; the issue create writes a spec in the two deferrals by size alone, since a create cannot
+// leave a room owed (writeAcceptedVersions). Right after each write, with no reconciliation run,
+// each reads in the coverage read and in its view of the tree read, after its ranked siblings with
+// no rank, the census reads no row without its node and tuples, and both reads name the document
+// owed; once the reconciliation runs, each holds one of each, its first rank among them, nothing is
+// owed and the store census reads zero.
 func TestAVersionAboveTheBoundListsItsUnreachedChecksAndRequirementsAtOnce(t *testing.T) {
 	for _, deferral := range acceptedDeferrals {
 		t.Run(deferral.name, func(t *testing.T) {
@@ -226,7 +227,8 @@ func requireGoneAtOnce(t *testing.T, handler http.Handler, database *store.Store
 // defers its block index and removes each of them states its node gone in its own transaction and
 // deletes its document_blocks row and its block_refs rows, a decision's and
 // a reading's as the rest's, so the coverage read and each view of the tree read drop it at once,
-// before any reconciliation. The room left owed takes the removal of the plan task by the edit route.
+// before any reconciliation. In each deferral the plan task's removal is the edit route's, which
+// defers past the bound as an upload does (docs.WithDeferredBlockIndex).
 func TestATypedBlockADeferredVersionRemovesReadsGoneAtOnce(t *testing.T) {
 	for _, deferral := range acceptedDeferrals {
 		t.Run(deferral.name, func(t *testing.T) {
@@ -260,11 +262,16 @@ func TestATypedBlockADeferredVersionRemovesReadsGoneAtOnce(t *testing.T) {
 			}
 			if deferral.leftOwed {
 				fixture.holdOwedBy(t, verification, "")
-				succeeded(t, "delete t1", dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+plan+"/edits", map[string]any{
-					"ops": []map[string]any{{"op": "delete", "block": "t1"}},
-				}, "alice"))
-			} else {
-				uploadDocument(t, handler, owner, "plan.md", typedDocument(issue.Key, deferral.plan, acceptedPlanTask("t2", "r2")))
+			}
+			// In a document above the bound the edit's own list puts the plan past it.
+			ops := []map[string]any{{"op": "delete", "block": "t1"}}
+			if deferral.plan {
+				ops = append(ops, map[string]any{"op": "insert", "after": "end", "markdown": deferralList(itemsOverTheBlockBound, "end")})
+			}
+			succeeded(t, "delete t1", dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+plan+"/edits", map[string]any{"ops": ops}, "alice"))
+			// The edit's own version defers, which a later upload of the room's spec cannot mark for it.
+			if indexed := blockIndexVersion(t, database, plan); indexed != nil {
+				t.Errorf("the edit that removed t1 indexed the plan at %d in its own request, want its block index deferred", *indexed)
 			}
 			requireGoneAtOnce(t, handler, database, issue.Key, blockKeyOf(t, database, plan), "plan_task", "t1", "the version of the plan that removed t1")
 			if read := requirementOf(t, readCoverage(t, handler, issue.Key), "r1"); read.PlanTasks != 0 {

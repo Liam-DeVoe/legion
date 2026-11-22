@@ -976,6 +976,11 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 				return settleDone, st.abandon(err)
 			}
 		}
+		// The version is written with no deferral mark (versionWrite.deferLarge unset), so its
+		// blocks are indexed in this transaction whatever its size: this index pass is one of the
+		// passes that close a document left owed its block index, and claimCopies
+		// (stateCopiesAndReadability, below) then reads the nodes of this version's ask blocks
+		// from the block index as the pass leaves it, passing over a block with no node.
 		result, writeErr := s.writeVersionTx(ctx, tx, room, renderedTree{tree: st.versioned, markdown: markdown, offsets: offsets}, st.credit.versionActor(), &versionWrite{
 			authors:          st.credit.authors,
 			capture:          &st.credit.capture,
@@ -1385,6 +1390,11 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 			continue
 		}
 		actor := st.credit.documentActor(fragment.document)
+		// Written with no deferral mark (versionWrite.deferLarge unset), and indexed by the room's
+		// one pass below (indexRoom), whatever the room's size: that pass is one of the passes that
+		// close a room left owed its block index (indexOwedRoom's case), and claimCopies
+		// (stateCopiesAndReadability) then reads the nodes of the room's ask blocks from the block
+		// index as the pass leaves it, passing over a block with no node.
 		result, err := s.writeVersionTx(ctx, tx, fragment.document,
 			renderedTree{tree: fragment.tree, markdown: fragment.markdown, offsets: fragment.offsets}, actor, &versionWrite{
 				authors:          st.credit.documents[fragment.document],

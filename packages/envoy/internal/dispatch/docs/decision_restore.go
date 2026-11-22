@@ -2405,6 +2405,10 @@ func (r *issueRestore) movedBlockOf(ctx context.Context, restore *restoredBlock,
 //
 // kept for one release: decisions-step
 func (r *issueRestore) writeVersion(ctx context.Context, document issueDocument, number *int) (int64, error) {
+	// The step's context carries no deferral mark (WithDeferredBlockIndex), so the version's
+	// blocks are indexed in this transaction whatever its size: writeFacts then states the
+	// moved_to of each block the pass moved, which graphcensus' danglingRead (moves.go), through
+	// moved_to_reach, resolves only to a block a document_blocks row holds.
 	written, err := r.service.SnapshotVersion(withDecisionStepWrite(ctx, r.stepCasesFor(document.id)), document.id, DecisionStepActor)
 	if err != nil {
 		return graphstore.NoEvent, err

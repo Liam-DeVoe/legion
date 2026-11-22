@@ -69,6 +69,13 @@ type versionWrite struct {
 	// (withDecisionStepWrite), which no route can send, and zero for every other version, which
 	// the restore's and the conversion's carry cases do not reach.
 	steps decisionStepCases
+	// deferLarge is set from the mark a write's route puts on its context (WithDeferredBlockIndex)
+	// by SnapshotVersion, NamedVersion and RebuildDocument: a version of more blocks than a write
+	// indexes in its own request (deferBlockIndexBlocks), or of an issue room holding more, then
+	// leaves its blocks to the block-index reconciliation and writes its references and typed
+	// nodes alone (indexVersion), as an upload's does. A settlement's version and the decisions
+	// step's leave it unset: each needs its version's blocks indexed in its own transaction.
+	deferLarge bool
 }
 
 // mergeInto copies src into *dst, allocating *dst if it is nil and src holds anything; a nil or
@@ -1825,7 +1832,9 @@ func (s *Service) JoinWrite(ctx context.Context, artifactID string) error {
 // live content has changed since the previous one. The version a comment's anchor is pinned to
 // under WithCommentMarks is taken on a closed issue's document too. A retired document
 // (RetireDocument), read under the owner's lock the version write takes, is given no version: the
-// write is refused with a RetiredDocumentError (retiredWriteRefusal).
+// write is refused with a RetiredDocumentError (retiredWriteRefusal). A write whose route marked
+// its context (WithDeferredBlockIndex) leaves the version's blocks above deferBlockIndexBlocks to
+// the block-index reconciliation (versionWrite.deferLarge).
 func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor model.Actor) (VersionResult, error) {
 	ctx = commentMarkOperation(ctx)
 	tx, joined := txFromContext(ctx)
@@ -1881,6 +1890,7 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 		capture:          &capture,
 		docUpdateVersion: rendered.head,
 		steps:            decisionStepCasesOf(ctx),
+		deferLarge:       deferredBlockIndex(ctx),
 	})
 	if err != nil {
 		return VersionResult{}, err
@@ -2403,6 +2413,8 @@ func (s *Service) KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor m
 // write, and refuses there a closed issue's document (ErrIssueClosed) and a retired document
 // (RetireDocument), which takes no new text, with a RetiredDocumentError (retiredWriteRefusal):
 // neither is read, so no room of a retired document is loaded for it, and neither is versioned.
+// A write whose route marked its context (WithDeferredBlockIndex) leaves the version's blocks
+// above deferBlockIndexBlocks to the block-index reconciliation (versionWrite.deferLarge).
 func (s *Service) NamedVersion(ctx context.Context, artifactID, summary string, actor model.Actor) (VersionResult, error) {
 	tx, joined := txFromContext(ctx)
 	if !joined {
@@ -2428,6 +2440,7 @@ func (s *Service) NamedVersion(ctx context.Context, artifactID, summary string, 
 		authors:          actorSlice(capture.authors),
 		capture:          &capture,
 		docUpdateVersion: rendered.head,
+		deferLarge:       deferredBlockIndex(ctx),
 	})
 	if err != nil {
 		return VersionResult{}, err
@@ -2992,11 +3005,13 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 	// version is written, and writes the version's node after it (commitRoomVersions); a version of
 	// a document of an issue room written outside that settlement - an upload's, an edit's, a named
 	// version - runs the room's pass itself (indexDocumentInRoom), since no pass indexes one
-	// fragment of a room alone.
+	// fragment of a room alone. A version whose route marked its write (versionWrite.deferLarge)
+	// leaves the blocks of a document or a room above deferBlockIndexBlocks to the block-index
+	// reconciliation, as an upload's does, and states no version_renders row of its own.
 	if spec.roomIndexed {
 		return s.finishVersionWrite(ctx, tx, artifactID, rendered, actor, spec, versionWriteResult{version: version, owner: owner})
 	}
-	changes, blocks, err := s.indexVersion(ctx, tx, artifactID, refs.OneVersion(artifactID, version.Number, version.CreatedAt), markdown, rendered, spec.settled)
+	changes, blocks, err := s.indexVersion(ctx, tx, artifactID, refs.OneVersion(artifactID, version.Number, version.CreatedAt), markdown, rendered, spec.settled, spec.deferLarge)
 	if err != nil {
 		return versionWriteResult{}, err
 	}

@@ -127,11 +127,17 @@ func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string
 	// part_of, its row and its serves, in the transaction that accepts it, whatever the size of its
 	// document, and a typed block the version removes is gone in it (indexDeferredVersion).
 	if held := len(rendered.offsets); rendered.tree != nil && held > deferBlockIndexBlocks {
-		slog.Info("dispatch: a document version left its blocks to the block-index reconciliation: it holds more blocks than a write indexes in its own request",
-			"artifact", artifactID, "version", version, "blocks", held, "bound", deferBlockIndexBlocks)
+		logDeferredVersion(artifactID, version, held)
 		return s.indexDeferredVersion(ctx, tx, artifactID, refs.OneVersion(artifactID, version, versionAt), markdown, rendered)
 	}
 	return s.indexDocument(ctx, tx, artifactID, refs.OneVersion(artifactID, version, versionAt), markdown, rendered, nil)
+}
+
+// logDeferredVersion logs a version of artifactID, a document that is its own room, whose write
+// left its blocks, held of them, to the block-index reconciliation (deferBlockIndexBlocks).
+func logDeferredVersion(artifactID string, version, held int) {
+	slog.Info("dispatch: a document version left its blocks to the block-index reconciliation: it holds more blocks than a write indexes in its own request",
+		"artifact", artifactID, "version", version, "blocks", held, "bound", deferBlockIndexBlocks)
 }
 
 // indexDeferredVersion indexes one document version whose blocks its write leaves to the
@@ -338,18 +344,48 @@ func removalsOfVersions(ctx context.Context, versions refs.Versions) graphstore.
 	return graphstore.Joined(held...)
 }
 
+// deferredBlockIndexKey marks the context of a write whose version defers its block index above
+// deferBlockIndexBlocks (WithDeferredBlockIndex).
+type deferredBlockIndexKey struct{}
+
+// WithDeferredBlockIndex marks ctx, a document write's context, as a write whose version leaves its
+// blocks to the block-index reconciliation where the document, or its issue room, holds more of
+// them than a write indexes in its own request, as an upload's and an issue create's do
+// (IndexDocumentReferences): SnapshotVersion, NamedVersion and RebuildDocument read the mark into
+// the version's write (versionWrite.deferLarge). A route marks it where nothing in its transaction
+// reads the version's block index or its record after the version write: the edit route, an
+// anchored comment's or ask's pin, the accept of a suggestion, the named-version route and the
+// rebuild. A settlement's version and the decisions step's are written unmarked.
+func WithDeferredBlockIndex(ctx context.Context) context.Context {
+	return context.WithValue(ctx, deferredBlockIndexKey{}, true)
+}
+
+// deferredBlockIndex reports whether the route marked ctx (WithDeferredBlockIndex).
+func deferredBlockIndex(ctx context.Context) bool {
+	marked, _ := ctx.Value(deferredBlockIndexKey{}).(bool)
+	return marked
+}
+
 // indexVersion is indexDocument for a version of artifactID its writer wrote outside an issue
 // room's settlement (writeVersionTx): the document's own pass where it is a room of its own with
 // no other fragment, and otherwise its room's one pass over every fragment (indexDocumentInRoom).
-func (s *Service) indexVersion(ctx context.Context, tx pgx.Tx, artifactID string, versions refs.Versions, markdown string, rendered renderedTree, settled *askBlockSources) (model.ReferenceChanges, graphstore.Uncaused, error) {
+// Where deferLarge is set (versionWrite.deferLarge), a version of a document that is its own room
+// holding more blocks than a write indexes in its own request leaves them to the block-index
+// reconciliation, its references and typed nodes indexed here (indexDeferredVersion), as
+// IndexDocumentReferences leaves an upload's, and the room's pass defers as it does for an upload.
+func (s *Service) indexVersion(ctx context.Context, tx pgx.Tx, artifactID string, versions refs.Versions, markdown string, rendered renderedTree, settled *askBlockSources, deferLarge bool) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	room, layout, err := indexedRoom(ctx, tx, artifactID)
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	if len(layout) == 0 {
-		return s.indexDocument(ctx, tx, artifactID, versions, markdown, rendered, settled)
+	if len(layout) > 0 {
+		return s.indexDocumentInRoom(ctx, tx, room, layout, artifactID, rendered, settled, deferLarge)
 	}
-	return s.indexDocumentInRoom(ctx, tx, room, layout, artifactID, rendered, settled, false)
+	if held := len(rendered.offsets); deferLarge && rendered.tree != nil && held > deferBlockIndexBlocks {
+		logDeferredVersion(artifactID, versions[artifactID].Number, held)
+		return s.indexDeferredVersion(ctx, tx, artifactID, versions, markdown, rendered)
+	}
+	return s.indexDocument(ctx, tx, artifactID, versions, markdown, rendered, settled)
 }
 
 // indexDocumentInRoom indexes, in tx, the issue room room, of layout, after a version of document -
@@ -374,7 +410,8 @@ func (s *Service) indexVersion(ctx context.Context, tx pgx.Tx, artifactID string
 // the settlement that versions that edit, indexes the room. Only document's typed blocks are
 // written then, where its writer's tree renders as its version (indexRoomLeftOwed). What the pass
 // stated of every document is answered together, for the event the writer appends. Where
-// deferLarge is set - an upload's or a create's write (IndexDocumentReferences) - and the room holds
+// deferLarge is set - an upload's or a create's write (IndexDocumentReferences), or a version write
+// its route marked (WithDeferredBlockIndex, indexVersion) - and the room holds
 // more blocks than a write indexes in its own request (deferBlockIndexBlocks), the blocks are left
 // to the block-index reconciliation, which indexes the room whole (indexOwedRoom), and the room's
 // references and typed nodes are indexed here, as one document's deferred version's are

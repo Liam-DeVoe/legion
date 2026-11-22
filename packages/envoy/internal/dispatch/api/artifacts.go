@@ -1740,7 +1740,9 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
-	named, err := s.deps.Docs.NamedVersion(documentCtx, artifact.ID, summary, actor)
+	// The route then reads the version's markdown alone (namedVersionDiff), so a version above the
+	// bound leaves its blocks to the block-index reconciliation (docs.WithDeferredBlockIndex).
+	named, err := s.deps.Docs.NamedVersion(docs.WithDeferredBlockIndex(documentCtx), artifact.ID, summary, actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1955,16 +1957,21 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	// A batch that left the document as it was names no version, however deliberate its summary,
 	// so edits that change nothing never pile up byte-identical versions.
 	if edit.Changed {
+		// Nothing this transaction does after its version reads the version's block index or its
+		// record - the diff reads its markdown alone (namedVersionDiff) - so either version of a
+		// document or a room above the bound leaves its blocks to the block-index reconciliation
+		// (docs.WithDeferredBlockIndex), as an upload's does.
+		versionCtx := docs.WithDeferredBlockIndex(documentCtx)
 		summary := strings.TrimSpace(input.Summary)
 		if summary != "" {
-			namedVersion, err := s.deps.Docs.NamedVersion(documentCtx, artifact.ID, summary, actor)
+			namedVersion, err := s.deps.Docs.NamedVersion(versionCtx, artifact.ID, summary, actor)
 			if err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
 			written = &namedVersion
 		} else {
-			snapshot, err := s.deps.Docs.SnapshotVersion(documentCtx, artifact.ID, actor)
+			snapshot, err := s.deps.Docs.SnapshotVersion(versionCtx, artifact.ID, actor)
 			if err != nil {
 				s.writeHandlerError(w, err)
 				return

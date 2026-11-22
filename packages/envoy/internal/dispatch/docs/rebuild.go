@@ -327,9 +327,13 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	if err != nil {
 		return RebuildReport{}, VersionResult{}, err
 	}
+	// A rebuild's route marks its write (WithDeferredBlockIndex): nothing after this version reads
+	// its block index or its record, so a version above deferBlockIndexBlocks leaves its blocks to
+	// the block-index reconciliation (versionWrite.deferLarge).
 	written, err := s.writeVersionTx(ctx, tx, artifactID, renderedTree{tree: tree, markdown: canonical, offsets: offsets}, actor, &versionWrite{
-		authors: actorSlice(capture.authors),
-		capture: &capture,
+		authors:    actorSlice(capture.authors),
+		capture:    &capture,
+		deferLarge: deferredBlockIndex(ctx),
 	})
 	if err != nil {
 		return RebuildReport{}, VersionResult{}, err
