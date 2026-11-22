@@ -3,6 +3,7 @@ package graphcensus
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -601,11 +602,13 @@ func HoldCommentCatchUp(ctx context.Context, tx pgx.Tx, ids []string) error {
 // of written, what it owed its thread and its tuples_stored, under the event beside it
 // (writeCommentPointers); threads_recorded on each of named past the store's bound
 // (pastBoundComments); the blocks of each of written, their links and its citations (the comment's
-// item passes); and then the user_threads rows of every thread those comments are in, each stated
-// and marked above every delivery the passes before it stated (writeUserThreads). Each pass reads
-// again, under the locks it takes, which of those rows it still owes, as it does in the backfill,
-// and leaves every other alone. The caller holds every owner and project lock those passes take
-// (refs.LockCommentOwners, HoldCommentCatchUp), so each of their takes returns at once.
+// item passes); the delivery attempts of each of named (the attempt pass); and then the
+// user_threads rows of every thread those comments are in whose items all hold their nodes
+// (threadItemsStored), each stated and marked above every delivery the passes before it stated
+// (writeUserThreads). Each pass reads again, under the locks it takes, which of those rows it still
+// owes, as it does in the backfill, and leaves every other alone. The caller holds every owner and
+// project lock those passes take (refs.LockCommentOwners, HoldCommentCatchUp), so each of their
+// takes returns at once.
 func CatchUpComments(ctx context.Context, tx pgx.Tx, named, written []string, causes []int64) error {
 	if _, err := writeCommentPointers(ctx, tx, written, causes); err != nil {
 		return err
@@ -626,22 +629,13 @@ func CatchUpComments(ctx context.Context, tx pgx.Tx, named, written []string, ca
 			written, 5, comment.writeLinks},
 		{`select r.from_id, r.to_kind, r.to_id ` + comment.citationsOwed() + ` and r.from_id = any($1::text[])
 			order by r.from_id, r.to_kind, r.to_id`, written, 3, comment.writeCitations},
-		{`select u.thread_id::text, u.login ` + userThreadsOwed + `
+		{`select ` + commentAttempts.keyText() + commentAttempts.owed() + ` and d.comment_id = any($1::uuid[])
+			order by ` + commentAttempts.keys, named, 3, writeAttemptsAndSessions},
+		{`select u.thread_id::text, u.login ` + userThreadsOwed + ` and ` + threadItemsStored + `
 			and u.thread_id in (select coalesce(c.ask_id, c.reply_to, c.id) from comments c where c.id = any($1::uuid[]))
 			order by u.thread_id, u.login`, named, 2, writeUserThreads},
 	} {
-		rows, err := tx.Query(ctx, pass.owed, pass.ids)
-		if err != nil {
-			return fmt.Errorf("read what the comments the events name still owe: %w", err)
-		}
-		keys, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) ([]string, error) {
-			key := make([]string, pass.width)
-			targets := make([]any, len(key))
-			for index := range key {
-				targets[index] = &key[index]
-			}
-			return key, row.Scan(targets...)
-		})
+		keys, err := readKeys(ctx, tx, pass.width, pass.owed, pass.ids)
 		if err != nil {
 			return fmt.Errorf("read what the comments the events name still owe: %w", err)
 		}
@@ -653,6 +647,164 @@ func CatchUpComments(ctx context.Context, tx pgx.Tx, named, written []string, ca
 		}
 	}
 	return nil
+}
+
+// writeAttemptsAndSessions is the attempt pass's write of the comment_deliveries rows keys names
+// (commentAttempts.writeAttempts) for the block-index tick, after the node of each session one of
+// them the listener took reached that the store holds no node of (attemptSessions,
+// writeSessionBatch). The backfill runs its session pass before its attempt pass, so every attempt
+// it marks reached a session that holds its node; an attempt a build before this one settled after
+// the backfill reached a session no pass gave one. It takes the rows `for no key update` in key
+// order first, as the attempt pass's read takes them, so a row the sessions were read off is the
+// row that pass marks.
+func writeAttemptsAndSessions(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWrote, error) {
+	if _, err := tx.Exec(ctx, `
+		select 1 from comment_deliveries d
+		where (d.comment_id, d.target, d.attempt) in (select * from unnest($1::uuid[], $2::text[], $3::text[]::int[]))
+		order by `+commentAttempts.keys+`
+		for no key update of d
+	`, column(keys, 0), column(keys, 1), column(keys, 2)); err != nil {
+		return inboxWrote{}, fmt.Errorf("lock a batch of %s: %w", commentAttempts.table, err)
+	}
+	sessions, err := attemptSessions(ctx, tx, keys)
+	if err != nil {
+		return inboxWrote{}, err
+	}
+	var wrote inboxWrote
+	if len(sessions) > 0 {
+		if wrote.nodes, wrote.tuples, err = writeSessionBatch(ctx, tx, sessions); err != nil {
+			return inboxWrote{}, err
+		}
+	}
+	attempts, err := commentAttempts.writeAttempts(ctx, tx, keys)
+	if err != nil {
+		return inboxWrote{}, err
+	}
+	wrote.add(attempts)
+	return wrote, nil
+}
+
+// readKeys reads the keys sql answers through q, each width text columns.
+func readKeys(ctx context.Context, q graphstore.Queryer, width int, sql string, args ...any) ([][]string, error) {
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) ([]string, error) {
+		key := make([]string, width)
+		targets := make([]any, width)
+		for index := range key {
+			targets[index] = &key[index]
+		}
+		return key, row.Scan(targets...)
+	})
+}
+
+// threadItemsStored is true of a user_threads row u each item of whose thread the thread pass's
+// catch-up states (writeUserThreads) holds the node that catch-up states it out of: the thread
+// holds no comment whose row names no node where the store holds such a comment
+// (refs.CommentInTheStore), and the issue of a message thread no message the store holds no node of
+// (messagesOwed's bound). The catch-up passes such an item by, so a row of its thread marked
+// meanwhile would stand at a version that already counts the item's write, while the item's
+// deliveries, stated once it has its node, land above the mark, where R6's equation counts them
+// again. The backfill gives every comment and message its node before its thread pass runs; the
+// block-index tick runs that pass while the release before this one may still be writing
+// (CatchUpComments, CatchUpOwedRows), so it reads only such rows: a comment takes its node from the
+// tick that reads its comment.created or comment.answered, and a message from the object pass, and
+// the rows of its thread are taken after that.
+var threadItemsStored = `not exists (
+		select 1 from comments c` + refs.CommentStoreJoins + `
+		where (c.id = u.thread_id or c.reply_to = u.thread_id or c.ask_id = u.thread_id)
+		  and coalesce(c.ask_id, c.reply_to, c.id) = u.thread_id
+		  and c.node_kind is null and ` + refs.CommentInTheStore + `)
+	  and not (u.kind = '` + graphstore.KindMessage + `' and exists (
+		select 1 from messages m
+		where m.issue_key = u.issue_key and m.node_kind is null
+		  and octet_length(coalesce(m.replies_to_block, '')) <= ` + addressBound + `
+		  and not exists (select 1 from graph_nodes n where n.kind = '` + graphstore.KindMessage + `' and n.id = m.id::text)))`
+
+// backfillRan is true where a run of the backfill has recorded the horizon it began at
+// (recordBackfillHorizon), of any marking rule: every run walks the inbox's passes after that. A
+// row a build before this one left unmarked before any run is the backfill's, which takes the
+// table in one walk.
+const backfillRan = `exists (select 1 from graph_backfill_horizon)`
+
+// RollRows is what the block-index tick's catch-up of the rows another build left unmarked did
+// (CatchUpOwedRows): how many rows it marked, and whether a pass read a full batch, so that rows
+// may still be owed.
+type RollRows struct {
+	Rows int64
+	More bool
+}
+
+// rollPasses are the backfill's passes CatchUpOwedRows runs, in the order the backfill runs them
+// (inboxPasses), each one batch of the backfill's size (backfillBatch) from the first row it owes:
+// the comment_deliveries attempt rows the attempt pass owes, read through the rows' node pair index
+// (comment_deliveries_node_address), with the nodes of the sessions they reached
+// (writeAttemptsAndSessions), and the user_threads rows the thread pass owes whose items all hold
+// their nodes (threadItemsStored). Each batch's write marks every row it reads, so the next tick's
+// batch starts past them.
+var rollPasses = []struct {
+	kind, batch string
+	width       int
+	write       func(context.Context, pgx.Tx, [][]string) (inboxWrote, error)
+}{
+	{commentAttempts.table, `select ` + commentAttempts.keyText() + commentAttempts.owed() + `
+		order by ` + commentAttempts.keys + ` limit $1`, 3, writeAttemptsAndSessions},
+	{"user_threads", `select u.thread_id::text, u.login ` + userThreadsOwed + ` and ` + threadItemsStored + `
+		order by u.thread_id, u.login limit $1`, 2, writeUserThreads},
+}
+
+// CatchUpOwedRows is the block-index tick's catch-up of two of the inbox's caches whose rows a build
+// before this one leaves unmarked after the backfill, with no event that names the row: the
+// comment_deliveries attempt rows, which its delivery sender inserts and updates (a claim, its
+// refresh and its release append no event), and the user_threads rows, which its Inbox routes move
+// (the read mark, the dismissal and its restore, whose user_thread_state.updated names a login and
+// a project but no thread) and its triggers move for the comments, messages and asks it writes.
+// Each such update unmarks the row (migrations 20261116150000 and 20261116160000), which only the
+// backfill marks again, so without this the unmarked class R9 holds to zero would stand until
+// someone ran the backfill again. The docs' tick runs it on each tick that owes the object pass
+// (writeObjectNodesAnotherBuildWrote) - every tick while another build serves, the first after it
+// left, a tick whose events leave such a row owed (EventsOweObjectPass), each process's first and
+// one an interval after its last pass - and keeps that debt while it answers More or fails.
+//
+// It runs the backfill's own write of each pass (rollPasses) over one batch of the rows that pass
+// owes, each batch in a transaction of its own under the locks the backfill's batch takes, outside
+// the tick's other transactions, so the class reaches zero one batch a tick after that build stops
+// writing. Until a run of the backfill has recorded its horizon (backfillRan) it reads nothing
+// more: every such row is the backfill's then.
+func CatchUpOwedRows(ctx context.Context, database *store.Store) (RollRows, error) {
+	var done RollRows
+	var ran bool
+	if err := database.Pool.QueryRow(ctx, `select `+backfillRan).Scan(&ran); err != nil {
+		return done, fmt.Errorf("read whether the backfill has run: %w", err)
+	}
+	if !ran {
+		return done, nil
+	}
+	var failed []error
+	for _, pass := range rollPasses {
+		keys, err := readKeys(ctx, database.Pool, pass.width, pass.batch, backfillBatch)
+		if err != nil {
+			failed = append(failed, fmt.Errorf("read the %s rows another build left unmarked: %w", pass.kind, err))
+			continue
+		}
+		if len(keys) == 0 {
+			continue
+		}
+		done.More = done.More || len(keys) == backfillBatch
+		var wrote inboxWrote
+		if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+			var err error
+			wrote, err = pass.write(ctx, tx, keys)
+			return err
+		}); err != nil {
+			failed = append(failed, fmt.Errorf("write a batch of the %s rows another build left unmarked: %w", pass.kind, err))
+			continue
+		}
+		done.Rows += wrote.rows
+	}
+	return done, errors.Join(failed...)
 }
 
 // writeCommentPointers reads again and locks the comments rows of ids still owed, and states them,

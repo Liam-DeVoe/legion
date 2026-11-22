@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // EventsOweObjectPass answers whether an event with an id in (after, through] leaves the store
@@ -27,6 +28,15 @@ import (
 // artifact and its address. A conversation's file is created with no event, so only a pass started
 // for another reason reaches it: the pass reads the four tables whole.
 //
+// The tick's pass also catches up the rows of two of the inbox's caches that build leaves unmarked
+// (CatchUpOwedRows), so once a run of the backfill has recorded its horizon (backfillRan) the read
+// answers true too for an event that leaves one of those rows owed: a user_thread_state.updated,
+// which that build's read mark, dismissal and restore append naming the person whose rows they
+// moved, where a user_threads row of that person is owed; an ask.answered, whose answer's trigger
+// moved the rows of the ask's thread, where a row of that thread is owed; and a comment.delivery,
+// the receipt of an attempt its sender settled, where an attempt row of that comment is owed. Its
+// claims append no event, so only a pass started for another reason reaches an attempt one moved.
+//
 // The read collects the ids the events name, kind by kind, and reads only those rows and their
 // nodes, through each row's unique key and the node's, so a tick whose events name only rows that
 // hold their nodes, and removals this build's own removal stated gone, reads no table whole and
@@ -42,18 +52,23 @@ func EventsOweObjectPass(ctx context.Context, q graphstore.Queryer, after, throu
 // eventsOweObjectPass is EventsOweObjectPass's read: the ids each kind's events in ($1, $2] name,
 // as one row of arrays, so each kind's rows are read by `= any` on their key, and of those the
 // rows the marker does not mark, a document past the store's bound left out as the backfill leaves
-// it (objectKinds), and the removed documents' nodes that stand orphaned. Read per event instead,
-// the planner hashes each kind's rows and nodes whole.
+// it (objectKinds), the removed documents' nodes that stand orphaned, and the inbox cache rows the
+// catch-up owes (rollPasses). Read per event instead, the planner hashes each kind's rows and
+// nodes whole.
 var eventsOweObjectPass = `
 	with named as (
 		select coalesce(array_agg(e.issue_key) filter (where e.type = 'issue.created'), '{}') as issues,
 		       coalesce(array_agg(e.payload->'artifact'->>'id') filter (where e.type = 'artifact.created'), '{}') as documents,
 		       coalesce(array_agg(e.payload->>'id') filter (where e.type = 'ask.opened'), '{}') as asks,
 		       coalesce(array_agg(e.payload->>'id') filter (where e.type in ('message.created', 'message.answered')), '{}') as messages,
-		       coalesce(array_agg(e.payload->'artifact'->>'ref_key') filter (where e.type = 'artifact.removed'), '{}') as removed
+		       coalesce(array_agg(e.payload->'artifact'->>'ref_key') filter (where e.type = 'artifact.removed'), '{}') as removed,
+		       coalesce(array_agg(e.payload->>'login') filter (where e.type = 'user_thread_state.updated'), '{}') as logins,
+		       coalesce(array_agg(` + store.CastableUUID(`e.payload->>'id'`) + `) filter (where e.type = 'ask.answered'), '{}') as answered,
+		       coalesce(array_agg(` + store.CastableUUID(`e.payload->>'comment_id'`) + `) filter (where e.type = 'comment.delivery'), '{}') as attempted
 		from events e
 		where e.id > $1 and e.id <= $2
-		  and e.type in ('issue.created', 'artifact.created', 'ask.opened', 'message.created', 'message.answered', 'artifact.removed')
+		  and e.type in ('issue.created', 'artifact.created', 'ask.opened', 'message.created', 'message.answered', 'artifact.removed',
+		                 'user_thread_state.updated', 'ask.answered', 'comment.delivery')
 	)
 	select exists (select 1 from named c join issues i on i.key = any(c.issues) where ` + unmarked(graphstore.KindIssue, "i.key") + `)
 	    or exists (select 1 from named c join artifacts a on a.issue_key = any(c.issues)
@@ -63,4 +78,8 @@ var eventsOweObjectPass = `
 	    or exists (select 1 from named c join asks k on k.id::text = any(c.asks) where ` + unmarked(graphstore.KindAsk, "k.id::text") + `)
 	    or exists (select 1 from named c join messages m on m.id::text = any(c.messages) where ` + unmarked(graphstore.KindMessage, "m.id::text") + `)
 	    or exists (select 1 from named c join graph_nodes n on n.kind = '` + graphstore.KindArtifact + `' and n.id = any(c.removed)
-		where ` + orphanedDocumentNode("n") + `)`
+		where ` + orphanedDocumentNode("n") + `)
+	    or (` + backfillRan + ` and (
+		exists (select 1 ` + userThreadsOwed + ` and ` + threadItemsStored + `
+		  and (u.login = any((select named.logins from named)::text[]) or u.thread_id = any((select named.answered from named)::uuid[])))
+		or exists (select 1 ` + commentAttempts.owed() + ` and d.comment_id = any((select named.attempted from named)::uuid[]))))`
