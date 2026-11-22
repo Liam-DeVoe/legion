@@ -54,9 +54,9 @@ export function viewKey(
  *  (`ViewReadProvider`), so a view a past load held is gone and each is read once: the open one at
  *  the load, at once, whether a write of the issue is out or not, and another when its filter is
  *  next on. It marks none, and clears the mark a write's drop put on a view (`droppedWhileHeld`):
- *  after a load the view is a load's first read. The issue page calls only this one.
- *  `subscribeTreeFreshness` resets none: it refreshes each held view through `refreshQueries`,
- *  and the view keeps what it draws until its new answer lands. */
+ *  after a load the view is a load's first read. `subscribeTreeFreshness` resets none: it
+ *  refreshes each held view through `refreshQueries`, and the view keeps what it draws until its
+ *  new answer lands. */
 export function resetViews(queryClient: QueryClient, key: string): void {
   for (const filter of TREE_FILTERS) {
     const queryKey = viewKey(key, filter);
@@ -68,13 +68,11 @@ export function resetViews(queryClient: QueryClient, key: string): void {
 }
 
 /** Drops every view of issue `key` for a write's own callback, as Dispatch answers the write,
- *  after which a held view could be older than the tree the page draws. Its callers would be a
- *  Settle, a Keep reading the decisions again and a Change; no surface calls it yet - the Keep and
- *  the Change of `DecisionActions.tsx` do not - and the issue page calls only `resetViews`. The
- *  write whose callback drops them has landed, so a view it drops is read at once, as a load's;
- *  but one it drops after a read of it while another write of the issue is out, which holds it, is
- *  a refresh: held as an answered one and read once as the last write settles
- *  (`droppedWhileHeld`, `mayReadNow`). One never read reads at once. */
+ *  after which a held view could be older than the tree the page draws. The write whose callback
+ *  drops them has landed, so a view it drops is read at once, as a load's; but one it drops after
+ *  a read of it while another write of the issue is out, which holds it, is a refresh: held as an
+ *  answered one and read once as the last write settles (`droppedWhileHeld`, `mayReadNow`). One
+ *  never read reads at once. */
 export function dropViews(queryClient: QueryClient, key: string): void {
   for (const filter of TREE_FILTERS) {
     const queryKey = viewKey(key, filter);

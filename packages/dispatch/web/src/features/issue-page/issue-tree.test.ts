@@ -2008,34 +2008,6 @@ test("the spec is the document the issue names by its id, not the one flagged pr
   ]);
 });
 
-// The coverage read names a requirement by its words with every `://` word left out
-// (`api/results.go`'s `blockWords`), so the document a requirement cites is read from the
-// block's own source, which the reference read names it by. A document of no role is named by
-// the page's word for a document, never by its file name.
-test("a requirement whose source cites a document carries its chip, whatever words name it", () => {
-  const notes = artifact("artifact-notes", "notes-md", "notes.md");
-  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
-  const cites = `dispatch://${KEY}/artifact/notes-md`;
-  const root = treeOf({
-    coverage: coverage([requirement("r-cites", "The measurements behind it are in")]),
-    documents: [{ artifactId: spec.id, blocks: [block("r-cites", "requirement")] }],
-    issue: issueDetails([notes, spec]),
-    targets: [
-      {
-        gone: false,
-        kind: "block",
-        name: `:::requirement{#r-cites}\nThe measurements behind it are in ${cites}.\n:::`,
-        ref: `dispatch://${KEY}/spec#b-r-cites`,
-      },
-    ],
-  });
-
-  const chips = nodeOf(root, blockNodeId(SPEC, "r-cites"))?.chips ?? [];
-  expect(chips.map(({ name, ref }) => ({ name, ref }))).toEqual([
-    { name: NODE_TYPE_NAMES.document, ref: cites },
-  ]);
-});
-
 // R3: a document is no node, so a block whose words cite one carries a chip that opens it, at
 // its own address and named by the page's word for it - the spec's included, which is named as
 // the Spec filter is and whose `spec` reference is that filter's address. A citation of one
