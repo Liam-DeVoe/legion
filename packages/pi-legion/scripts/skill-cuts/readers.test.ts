@@ -426,6 +426,150 @@ const claimInput = {
   files: [{ path: "SKILL.md", text: SKILL_MD }],
 };
 
+// The proposal readers' inputs: a made-up diff of a closed pull request (a changed file, a renamed
+// one and a deleted one), and the target texts of one proposal.
+const LEGION = "acme/skills at 1a2b3c4d";
+const DOTFILES = "acme/dotfiles at 5e6f7a8b";
+const PROPOSAL_DIFF = [
+  "diff --git a/.claude/CLAUDE.md b/.claude/CLAUDE.md",
+  "index 1111111..2222222 100644",
+  "--- a/.claude/CLAUDE.md",
+  "+++ b/.claude/CLAUDE.md",
+  "@@ -1,3 +1,3 @@",
+  " # Notes",
+  "-- Do not turn a correction into a rule all agents.",
+  "+- Do not turn a correction into a rule for all agents.",
+  " - Check findings first.",
+  "@@ -9,2 +9,3 @@ # Notes",
+  " - Ask for a reason.",
+  "+- Say what the reason is.",
+  " - Report the evidence.",
+  "diff --git a/skills/alpha/notes.md b/skills/alpha/references/notes.md",
+  "similarity index 90%",
+  "rename from skills/alpha/notes.md",
+  "rename to skills/alpha/references/notes.md",
+  "index 3333333..4444444 100644",
+  "--- a/skills/alpha/notes.md",
+  "+++ b/skills/alpha/references/notes.md",
+  "@@ -1,2 +1,2 @@",
+  " # Notes",
+  "-Old line.",
+  "+New line.",
+  "diff --git a/omp/old.md b/omp/old.md",
+  "deleted file mode 100644",
+  "index 5555555..0000000",
+  "--- a/omp/old.md",
+  "+++ /dev/null",
+  "@@ -1,2 +0,0 @@",
+  "-# Old",
+  "-Gone.",
+].join("\n");
+const proposalTargetInput = {
+  diff: {
+    pr: "41",
+    text: PROPOSAL_DIFF,
+    files: [
+      {
+        before: ".claude/CLAUDE.md",
+        after: ".claude/CLAUDE.md",
+        hunks: ["@@ -1,3 +1,3 @@", "@@ -9,2 +9,3 @@ # Notes"],
+      },
+      {
+        before: "skills/alpha/notes.md",
+        after: "skills/alpha/references/notes.md",
+        hunks: ["@@ -1,2 +1,2 @@"],
+      },
+      { before: "omp/old.md", after: null, hunks: ["@@ -1,2 +0,0 @@"] },
+    ],
+  },
+  item: {
+    id: "41-10.5",
+    state: "open",
+    text: 'a missing word in `CLAUDE.md` ("into a rule all agents" becomes "into a rule for all agents").',
+  },
+  repository: DOTFILES,
+  skills: [
+    { repo: LEGION, name: "alpha" },
+    { repo: DOTFILES, name: "alpha" },
+    { repo: DOTFILES, name: "beta-notes" },
+  ],
+};
+const dotfilesTarget = (path: string, why = "The hunk changes it.") => ({
+  kind: "dotfiles",
+  path,
+  why,
+});
+const skillTarget = (repo: string, name: string) => ({
+  kind: "skill",
+  skill: { repo, name },
+  why: `The change is for ${name}.`,
+});
+const noTarget = {
+  kind: "none",
+  why: "The proposal's file was deleted, and nothing took its line.",
+};
+
+const proposalInput = {
+  item: {
+    id: "41-1.1",
+    state: "open",
+    text: "before it deletes a rule, an agent finds the rule's reason.",
+  },
+  hunks: [
+    {
+      file: "skills/alpha/SKILL.md",
+      hunk: 0,
+      header: "@@ -8,3 +8,4 @@ # Alpha",
+      lines: [
+        " 1. Read `references/x.md` before the first step.",
+        "+2. Before you delete a rule, find its reason.",
+        " 2. Write each step's result on one line.",
+        " 3. Run the tests where needed.",
+      ],
+    },
+  ],
+  targets: [
+    {
+      kind: "skill",
+      repo: LEGION,
+      name: "alpha",
+      files: [
+        { path: "SKILL.md", text: SKILL_MD },
+        { path: "references/x.md", text: "# X\n\nRead me first.\n" },
+      ],
+    },
+    {
+      kind: "dotfiles",
+      repo: DOTFILES,
+      path: ".claude/CLAUDE.md",
+      text: "# Notes\n\n- Check findings first.\n",
+    },
+    { kind: "dotfiles", repo: DOTFILES, path: "omp/rules/new.md", text: null },
+  ],
+  findings: [
+    {
+      repo: LEGION,
+      name: "alpha",
+      gaps: [
+        craftGap({}),
+        craftGap({ line: 0, rule: "C1", kind: "missing", why: "No Use when clause." }),
+      ],
+    },
+  ],
+  style: craftReaderInput.style,
+  properties: craftReaderInput.properties,
+};
+const fix = (fields: Record<string, unknown>) => ({
+  why: "The change adds the reason.",
+  ...fields,
+});
+const make = (fields: Record<string, unknown>) => ({
+  rule: "S2",
+  why: "The new item holds two rules.",
+  ...fields,
+});
+const SUMMARY = "The change adds a step that finds a rule's reason before its deletion.";
+
 const ROWS: Record<ReaderName, Row> = {
   restate: {
     input: restateInput,
@@ -940,6 +1084,170 @@ const ROWS: Record<ReaderName, Row> = {
       { answer: { states: false, reason: "" }, why: "reason" },
     ],
   },
+  "proposal-target": {
+    input: proposalTargetInput,
+    valid: [
+      {
+        hunks: [{ file: ".claude/CLAUDE.md", hunk: 1 }],
+        targets: [dotfilesTarget(".claude/CLAUDE.md")],
+      },
+      // A renamed file named by its path before the change; a skill of the list beside a none.
+      {
+        hunks: [
+          { file: "skills/alpha/notes.md", hunk: 0 },
+          { file: ".claude/CLAUDE.md", hunk: 0 },
+        ],
+        targets: [skillTarget(DOTFILES, "alpha"), noTarget],
+      },
+      // A deleted file by its path before; a file the change would add is a dotfiles target.
+      {
+        hunks: [{ file: "omp/old.md", hunk: 0 }],
+        targets: [dotfilesTarget("omp/rules/new.md", "The line would go to a new rule file.")],
+      },
+      { hunks: [{ file: "omp/old.md", hunk: 0 }], targets: [noTarget] },
+    ],
+    bad: [
+      {
+        answer: { hunks: [{ file: "README.md", hunk: 0 }], targets: [noTarget] },
+        why: "hunks.0.file: is no file of the diff",
+      },
+      {
+        answer: { hunks: [{ file: ".claude/CLAUDE.md", hunk: 2 }], targets: [noTarget] },
+        why: "hunks.0.hunk: is past the last hunk, 1, of .claude/CLAUDE.md",
+      },
+      {
+        answer: {
+          hunks: [
+            { file: "skills/alpha/notes.md", hunk: 0 },
+            { file: "skills/alpha/references/notes.md", hunk: 0 },
+          ],
+          targets: [noTarget],
+        },
+        why: "hunks.1: names hunk 0 of skills/alpha/references/notes.md twice",
+      },
+      { answer: { hunks: [], targets: [noTarget] }, why: "hunks" },
+      {
+        answer: {
+          hunks: [{ file: "omp/old.md", hunk: 0 }],
+          targets: [skillTarget(LEGION, "gamma")],
+        },
+        why: "targets.0.skill: gamma of acme/skills at 1a2b3c4d is no skill of the list",
+      },
+      {
+        answer: {
+          hunks: [{ file: "omp/old.md", hunk: 0 }],
+          targets: [skillTarget(LEGION, "beta-notes")],
+        },
+        why: "targets.0.skill: beta-notes of acme/skills at 1a2b3c4d is no skill of the list",
+      },
+      {
+        answer: { hunks: [{ file: "omp/old.md", hunk: 0 }], targets: [{ kind: "none" }] },
+        why: "targets.0.why",
+      },
+      {
+        answer: { hunks: [{ file: "omp/old.md", hunk: 0 }], targets: [{ kind: "none", why: " " }] },
+        why: "targets.0.why: is blank",
+      },
+      {
+        answer: {
+          hunks: [{ file: "omp/old.md", hunk: 0 }],
+          targets: [
+            { ...dotfilesTarget(".claude/CLAUDE.md"), skill: { repo: LEGION, name: "alpha" } },
+          ],
+        },
+        why: "targets.0",
+      },
+      {
+        answer: {
+          hunks: [{ file: "omp/old.md", hunk: 0 }],
+          targets: [dotfilesTarget("../outside/CLAUDE.md")],
+        },
+        why: "targets.0.path: is not a path inside the repository",
+      },
+      {
+        answer: {
+          hunks: [{ file: "omp/old.md", hunk: 0 }],
+          targets: [dotfilesTarget(".claude/CLAUDE.md"), dotfilesTarget(".claude/CLAUDE.md")],
+        },
+        why: "targets.1: names the target .claude/CLAUDE.md twice",
+      },
+      { answer: { hunks: [{ file: "omp/old.md", hunk: 0 }], targets: [] }, why: "targets" },
+    ],
+  },
+  proposal: {
+    input: proposalInput,
+    valid: [
+      {
+        fixes: [fix({ finding: 1 })],
+        makes: [make({ file: "alpha/SKILL.md", line: 9 })],
+        summary: SUMMARY,
+      },
+      {
+        fixes: [fix({ rule: "C1", file: ".claude/CLAUDE.md", line: 3 })],
+        makes: [],
+        summary: SUMMARY,
+      },
+      // A make in a file the change adds (no text today), one in a hunk's file, and one with no
+      // file.
+      {
+        fixes: [],
+        makes: [
+          make({ rule: "S1", file: "omp/rules/new.md" }),
+          make({ file: "skills/alpha/SKILL.md" }),
+          make({}),
+        ],
+        summary: SUMMARY,
+      },
+    ],
+    bad: [
+      {
+        answer: { fixes: [fix({ finding: 0, rule: "S2" })], makes: [], summary: SUMMARY },
+        why: "fixes.0: gives both a finding and a rule",
+      },
+      {
+        answer: { fixes: [fix({})], makes: [], summary: SUMMARY },
+        why: "fixes.0: gives neither a finding nor a rule",
+      },
+      {
+        answer: { fixes: [fix({ finding: 2 })], makes: [], summary: SUMMARY },
+        why: "fixes.0.finding: is no finding of the input, which holds 2",
+      },
+      {
+        answer: { fixes: [fix({ rule: "S9" })], makes: [], summary: SUMMARY },
+        why: "fixes.0.rule: is no style rule or reader property of the input",
+      },
+      {
+        // C2 is a property a behaviour test checks: no reader property of the input.
+        answer: { fixes: [], makes: [make({ rule: "C2" })], summary: SUMMARY },
+        why: "makes.0.rule: is no style rule or reader property of the input",
+      },
+      {
+        answer: { fixes: [], makes: [make({ rule: "nearest:beta:SKILL.md:1" })], summary: SUMMARY },
+        why: "makes.0.rule: is not S<n> or C<n>",
+      },
+      {
+        answer: { fixes: [], makes: [make({ file: "SKILL.md", line: 2 })], summary: SUMMARY },
+        why: "makes.0.file: is no file of the targets or the hunks",
+      },
+      {
+        answer: {
+          fixes: [fix({ rule: "S1", file: ".claude/CLAUDE.md", line: 4 })],
+          makes: [],
+          summary: SUMMARY,
+        },
+        why: "fixes.0.line: is past the last line, 3, of .claude/CLAUDE.md",
+      },
+      {
+        answer: { fixes: [], makes: [make({ line: 2 })], summary: SUMMARY },
+        why: "makes.0.line: names a line and no file",
+      },
+      {
+        answer: { fixes: [], makes: [], summary: "One line.\nAnother line." },
+        why: "summary: is not one non-blank line",
+      },
+      { answer: { fixes: [], makes: [] }, why: "summary" },
+    ],
+  },
 };
 
 test("each reader's schema refuses a bad answer and a valid one parses", () => {
@@ -1384,6 +1692,161 @@ test("the claim answer is yes or no with a reason", () => {
       .success
   ).toBe(false);
   expect(READERS.claim.input.safeParse({ ...claimInput, claim: "one\ntwo" }).success).toBe(false);
+});
+
+// The proposal readers.
+
+// Catches: a hunk of a file the diff does not hold, or past its file's last hunk, or a skill the
+// reader does not read, passed on to the proposal reader as the item's change or its target.
+test("proposal-target names only files of the diff or skills of the list", () => {
+  const refused = (answer: unknown) => refusal("proposal-target", proposalTargetInput, answer);
+  for (const answer of ROWS["proposal-target"].valid) expect(refused(answer)).toBeUndefined();
+  // The item's text names CLAUDE.md, and a skill's file the diff does not hold is no file of it.
+  expect(
+    refused({ hunks: [{ file: "skills/alpha/SKILL.md", hunk: 0 }], targets: [noTarget] })
+  ).toContain("hunks.0.file: is no file of the diff");
+  // A renamed file has one hunk, by either of its paths.
+  expect(
+    refused({ hunks: [{ file: "skills/alpha/notes.md", hunk: 1 }], targets: [noTarget] })
+  ).toContain("hunks.0.hunk: is past the last hunk, 0, of skills/alpha/references/notes.md");
+  // A skill is named by its repository and its name, as the list gives both.
+  expect(
+    refused({
+      hunks: [{ file: "omp/old.md", hunk: 0 }],
+      targets: [skillTarget("acme/tools", "alpha")],
+    })
+  ).toContain("targets.0.skill: alpha of acme/tools is no skill of the list");
+  expect(
+    refused({
+      hunks: [{ file: "omp/old.md", hunk: 0 }],
+      targets: [{ kind: "skill", skill: { name: "alpha" }, why: "w" }],
+    })
+  ).toContain("targets.0.skill.repo");
+  // The input refuses a skill listed twice, and a file of the diff with no path.
+  const input = READERS["proposal-target"].input;
+  expect(
+    input.safeParse({
+      ...proposalTargetInput,
+      skills: [proposalTargetInput.skills[0], proposalTargetInput.skills[0]],
+    }).success
+  ).toBe(false);
+  expect(
+    input.safeParse({
+      ...proposalTargetInput,
+      diff: { ...proposalTargetInput.diff, files: [{ before: null, after: null, hunks: [] }] },
+    }).success
+  ).toBe(false);
+});
+
+// Catches: the diff sent after the item, so that no item of a pull request reads it from the
+// prompt cache, a request with no cache marker, or a marker on the part that differs per item.
+test("proposal-target's body puts the diff first with a cache marker", async () => {
+  const body = readerBody("proposal-target", proposalTargetInput);
+  const [user] = body.messages as { role: string; content: Record<string, unknown>[] }[];
+  expect(body.messages).toHaveLength(1);
+  expect(user?.content).toEqual([
+    {
+      type: "text",
+      text: [
+        `<diff pr="41">\n${PROPOSAL_DIFF}\n</diff>`,
+        "",
+        "<hunks>",
+        '<file path=".claude/CLAUDE.md">',
+        "hunk 0: @@ -1,3 +1,3 @@",
+        "hunk 1: @@ -9,2 +9,3 @@ # Notes",
+        "</file>",
+        '<file path="skills/alpha/references/notes.md" before="skills/alpha/notes.md">',
+        "hunk 0: @@ -1,2 +1,2 @@",
+        "</file>",
+        '<file path="omp/old.md" deleted="yes">',
+        "hunk 0: @@ -1,2 +0,0 @@",
+        "</file>",
+        "</hunks>",
+      ].join("\n"),
+      cache_control: { type: "ephemeral" },
+    },
+    {
+      type: "text",
+      text: [
+        "<repository>\nacme/dotfiles at 5e6f7a8b\n</repository>",
+        `<item id="41-10.5" state="open">\n${proposalTargetInput.item.text}\n</item>`,
+        [
+          "<skills>",
+          '<skill repo="acme/skills at 1a2b3c4d" name="alpha"/>',
+          '<skill repo="acme/dotfiles at 5e6f7a8b" name="alpha"/>',
+          '<skill repo="acme/dotfiles at 5e6f7a8b" name="beta-notes"/>',
+          "</skills>",
+        ].join("\n"),
+      ].join("\n\n"),
+    },
+  ]);
+  // Another item of the same pull request: the first part is the same, byte for byte.
+  const other = readerBody("proposal-target", {
+    ...proposalTargetInput,
+    item: {
+      id: "41-1.1",
+      state: "partly on main",
+      text: "before it deletes a rule, it reads why.",
+    },
+  });
+  const [otherUser] = other.messages as { content: Record<string, unknown>[] }[];
+  expect(JSON.stringify(otherUser?.content[0])).toBe(JSON.stringify(user?.content[0]));
+  expect(otherUser?.content[1]).not.toEqual(user?.content[1]);
+  // runReader sends that body.
+  const one = world(ROWS["proposal-target"].valid[0]);
+  await runReader("proposal-target", proposalTargetInput, one.gateway);
+  expect(one.bodies).toEqual([body]);
+});
+
+test("the proposal reader's request gives the hunks, each target's numbered text, the findings with their indexes, the style rules and the reader properties", () => {
+  const [user] = UserMessage.parse(readerBody("proposal", proposalInput).messages);
+  expect(user.content).toHaveLength(1);
+  const text = user.content[0]?.text ?? "";
+  expect(text).toStartWith(
+    `<item id="41-1.1" state="open">\n${proposalInput.item.text}\n</item>\n\n<hunks>\n<hunk file="skills/alpha/SKILL.md" index="0">\n@@ -8,3 +8,4 @@ # Alpha\n 1. Read \`references/x.md\` before the first step.\n+2. Before you delete a rule, find its reason.`
+  );
+  expect(text).toContain(
+    '<targets>\n<target kind="skill" repo="acme/skills at 1a2b3c4d" name="alpha">\n<file path="alpha/SKILL.md">\n1: ---\n2: name: alpha'
+  );
+  expect(text).toContain(
+    '<file path="alpha/references/x.md">\n1: # X\n2: \n3: Read me first.\n</file>\n</target>'
+  );
+  expect(text).toContain(
+    '<target kind="dotfiles" repo="acme/dotfiles at 5e6f7a8b">\n<file path=".claude/CLAUDE.md">\n1: # Notes\n2: \n3: - Check findings first.\n</file>\n</target>'
+  );
+  expect(text).toContain(
+    '<target kind="dotfiles" repo="acme/dotfiles at 5e6f7a8b">\n<file path="omp/rules/new.md">\nNone: the repository holds no such file at this commit.\n</file>\n</target>\n</targets>'
+  );
+  expect(text).toContain(
+    '<findings>\n<finding index="0" skill="alpha" repo="acme/skills at 1a2b3c4d" file="alpha/SKILL.md" line="9" rule="S2" kind="present">\nThe item holds two rules.\n</finding>\n<finding index="1" skill="alpha" repo="acme/skills at 1a2b3c4d" file="alpha/SKILL.md" line="0" rule="C1" kind="missing">\nNo Use when clause.\n</finding>\n</findings>'
+  );
+  expect(text).toContain(
+    '<style>\n<rule id="S1" line="9" part="the order table">\n| `**Done when:**` | The check that ends the skill |\n</rule>'
+  );
+  expect(text).toEndWith(
+    '<craft-properties>\n<property id="C1">\n<states>The description says when to use the skill, and never sums up its steps.</states>\n<looks-for>A Use when clause in the description, and no list of steps.</looks-for>\n</property>\n</craft-properties>'
+  );
+  const [none] = UserMessage.parse(
+    readerBody("proposal", { ...proposalInput, findings: [] }).messages
+  );
+  expect(none.content[0]?.text).toContain(
+    "<findings>\nNone: no target skill has a findings entry with an answer.\n</findings>"
+  );
+  // Its input refuses the findings of a skill that is no target, and a target with no text and no
+  // files.
+  const input = READERS.proposal.input;
+  expect(
+    input.safeParse({
+      ...proposalInput,
+      findings: [{ ...proposalInput.findings[0], name: "beta" }],
+    }).success
+  ).toBe(false);
+  expect(
+    input.safeParse({
+      ...proposalInput,
+      targets: [{ kind: "skill", repo: LEGION, name: "alpha", files: [] }],
+    }).success
+  ).toBe(false);
 });
 
 test("each prompt file pins its settings, and they reach every request made with it", async () => {

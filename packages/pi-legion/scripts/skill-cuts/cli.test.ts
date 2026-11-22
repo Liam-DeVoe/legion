@@ -2154,6 +2154,54 @@ describe("nearest", () => {
   }, 30_000);
 });
 
+// The `proposals` command's own rows are in proposals.test.ts; this one runs it as the command line
+// does, on F11 (testdata/CAPTURE.md "F11") and F15.
+describe("proposals", () => {
+  test("proposals is a command: --dry-run prints the items, and a --pr-diff that is not <id prefix>=<file> is refused before any call", async () => {
+    const body = path.join(TESTDATA, "F11-body.md");
+    const diff = path.join(TESTDATA, "F15-pr.diff");
+    const lists = [
+      "--list",
+      "Lines this pull request can carry",
+      "--list",
+      "Lines whose target is gone",
+    ];
+    const section = ["--section", "Open proposals of #41 and #75 (R5)"];
+    const dry = await cli(["proposals", "--dry-run", "--body", body, ...section, ...lists]);
+    expect({ code: dry.code, stderr: dry.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(dry.stdout).toStartWith(
+      `proposals: ${body}: 7 items: 4 in "Lines this pull request can carry", 3 in "Lines whose target is gone"\n41-1.1 (open): line 9\n`
+    );
+    const { config, keyFile } = setup();
+    const out = path.join(scratch, "proposals-refused");
+    const from = recorder.requests.length;
+    const refused = await cli([
+      ...["proposals", "--config", config, "--key-file", keyFile, "--body", body, ...section],
+      ...lists,
+      ...["--body-source", "acme/dotfiles#105 at ac1b11e8", "--pr-diff", diff],
+      ...[
+        "--skills-root",
+        `acme/skills at 1a2b3c4d=${scratch}`,
+        "--repo-root",
+        `acme/dotfiles=${scratch}`,
+      ],
+      ...["--style", STYLE, "--style-source", STYLE_SOURCE, "--craft", CRAFT_LIST],
+      ...[
+        "--craft-source",
+        LIST_SOURCE,
+        "--findings",
+        path.join(scratch, "none.jsonl"),
+        "--out",
+        out,
+      ],
+    ]);
+    expect(refused.code).toBe(2);
+    expect(refused.stderr).toContain(`--pr-diff ${diff} is not <id prefix>=<file>`);
+    expect(requestsSince(from)).toHaveLength(0);
+    expect(existsSync(out)).toBe(false);
+  }, 30_000);
+});
+
 describe("control craft", () => {
   const CLAIM_CHECK =
     "the skill has no check that runs the typecheck, the lint, the build or the tests before the summary of Step 5";

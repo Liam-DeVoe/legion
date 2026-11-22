@@ -1,8 +1,8 @@
 # How each fixture was captured
 
-Every fixture here came from a real system on 2026-11-20 (F10 on 2026-11-22), with made-up skills
-(`alpha`, `beta`, `tool-loop-alpha`) and made-up prompts, but for F12, F13, F14, the style texts
-and the control skills, which are made up in the shapes their sections give.
+Every fixture here came from a real system on 2026-11-20 (F10, F11 and F15 on 2026-11-22), with
+made-up skills (`alpha`, `beta`, `tool-loop-alpha`) and made-up prompts, but for F12, F13, F14, the
+style texts and the control skills, which are made up in the shapes their sections give.
 A test that reads a fixture cites its section of this file in its header. The scan at the end says
 how each file was checked for keys and private names.
 
@@ -680,11 +680,63 @@ heading (line 47) and summary (line 49); it also holds a LICENSE and one referen
 `tracker-first` has the layout of the skill that the other two change: three one-line list items
 at lines 37 to 39 under a heading at line 35. `check-before-claim` is a nearest skill of theirs.
 
+## F11: a pull request body (`F11-body.md`)
+
+The body of the dotfiles repository's pull request #105, at its head `ac1b11e8`, read with
+
+```sh
+gh pr view 105 --repo <owner>/dotfiles --json body,headRefOid --jq .body
+```
+
+(63,246 bytes; `.headRefOid` gave the head). Cut to: the heading `## Your choices` (line 23 of the
+body); the heading `### Open proposals of #41 and #75 (R5)` (line 44) and its first paragraph, less
+its last sentence (three links to comments of #41); each list's line and the blank lines around
+it, as the body has them; of the 45 items of `Lines this pull request can carry`, `41-1.1`
+(`open`), `41-3.2` (`partly on main`), `41-10.5` (`open`) and `75-1` (`open; no ruling found`); of
+the 10 of `Lines whose target is gone …`, `41-8.3` and `41-9.12` (`target gone`) and `41-9.14`
+(`done in its new home`); of the six lines of `Lines this pull request carries through another
+requirement`, which hold no state and so are no items of the parser's form, `41-8.2` and
+`41-13.2`; and the next heading, `## What else changes` (line 118). One list is added, made up,
+since the body holds no broken item: `Lines with an item in a broken form:` with the one item
+`` - `41-0.1` open: … ``, whose state is not in parentheses.
+
+Replaced: each Dispatch key of the deployment by a made-up one (the two of the first paragraph by
+`ACME-12` and `ACME-13`, the one in `41-8.3` by `ACME-11`; the keys are left out of this file), and
+the organization and repository of the skills repository, twice (in `41-8.3` and `41-9.14`), by
+`acme/skills`. Every other byte of the lines kept is as captured.
+
+## F15: a pull request diff (`F15-pr.diff`)
+
+The diff of the dotfiles repository's closed pull request #41, read with
+
+```sh
+gh pr diff 41 --repo <owner>/dotfiles
+```
+
+(348,532 bytes: 79 files, 101 hunks; `splitDiff` reads it whole). #41 renames no file, so the
+renamed file comes from the diff of the same repository's pull request #93, read the same day
+with `gh api repos/<owner>/dotfiles/pulls/93 -H 'Accept: application/vnd.github.diff'` (the diff
+`gh pr diff` prints). Cut, in the path order gh gives, to: `.claude/CLAUDE.md` whole (two hunks,
+lines 1 to 36 of #41's diff); the rename of `plugins/<owner>/skills/product-demos/pipeline.md` to
+`…/product-demos/references/pipeline.md`, its header and the first of its three hunks (lines 4717
+to 4733 of #93's diff); and the header and the first two of the three hunks of
+`plugins/<owner>/skills/writing-agent-skills/SKILL.md` (lines 6866 to 6896 of #41's diff), the
+hunk left out naming a private term. With `$OWNER` the owner's name (left out of this file):
+
+```sh
+{ sed -n '1,36p' pr41.diff; sed -n '4717,4733p' pr93.diff; sed -n '6866,6896p' pr41.diff; } \
+  | sed "s/$OWNER/acme/g"
+```
+
+Replaced: the owner's name in each path, `plugins/<owner>/skills/` to `plugins/acme/skills/`.
+Every other byte is as captured.
+
 ## The canned reader answers
 
-The answers of the `craft`, `nearest` and `claim` readers are made up and written in the tests, as
-the other readers' are: `readers.test.ts`'s rows, each valid answer and each refused one with why,
-and `cli.test.ts`'s stand-in, which answers each request by its prompt.
+The answers of the `craft`, `nearest`, `claim`, `proposal-target` and `proposal` readers are made
+up and written in the tests, as the other readers' are: `readers.test.ts`'s rows, each valid answer
+and each refused one with why, and the stand-ins of `cli.test.ts` and `proposals.test.ts`, which
+answer each request by its prompt (and, in `proposals.test.ts`, by its item's id).
 
 ## The scan
 
