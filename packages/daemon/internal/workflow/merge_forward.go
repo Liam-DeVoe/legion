@@ -215,7 +215,8 @@ func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string)
 // head they merge. The architect and the role asked are told nothing more: the architect's
 // checks-red notice already said the merge was asked for, and the role asked pushed it; in merging
 // that role is the merger, which the landed reaches as the worker of merging, since it tells it to
-// merge the new head only once the reviewer's approval of it is on the pull request. A tree that
+// merge the new head only once the reviewer's approval of it is on the pull request, where the
+// task has a reviewer step, and to go on at the new head where it has none. A tree that
 // lingers (record.TreeLingers, where every role is suspended) records and tells nothing.
 func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) error {
 	asked := pr.MergeForward

@@ -1529,8 +1529,9 @@ These arrive as messages on the Dispatch issue:
   holds.
 - **The merger merges nothing.** It merges nothing while the head conflicts with its base, which
   GitHub can neither merge nor start pull-request CI for: the merger merges the base forward itself
-  while the issue stays in `merging`, the daemon asks the reviewer to read that merge, and the
-  merger merges the new head once the reviewer's approval of it is on the pull request. And it
+  while the issue stays in `merging`. Where the task has a reviewer step, the daemon asks the
+  reviewer to read that merge, and the merger merges the new head once the reviewer's approval of
+  it is on the pull request; where it has none, the merger goes on at the new head. And it
   enqueues nothing on a merge-queue base whose
   `squash_merge_commit_message` still joins the branch's commit messages, since the enqueue can
   carry no message of its own: it tells the architect, and only a person can change that

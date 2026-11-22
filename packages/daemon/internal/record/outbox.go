@@ -1842,9 +1842,10 @@ const (
 // the merger); the hold to a worker of the phase the issue stays in that is neither the role
 // asked, whom the ask tells, nor the architect, whom the checks-red notice tells; the landed to the
 // worker of that phase, the merger included, which in merging made the merge and learns from it
-// to merge only once the reviewer approved the new head; and the review to the reviewer. The hold
-// still lists the merger, which a daemon before cybermonklabs/legion#4979 held in merging while it
-// asked the implementer, so a row that daemon queued is still read after the upgrade.
+// to merge only once the reviewer approved the new head, where its task has a reviewer step; and
+// the review to the reviewer. The hold still lists the merger, which a daemon before
+// cybermonklabs/legion#4979 held in merging while it asked the implementer, so a row that daemon
+// queued is still read after the upgrade.
 var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
 	MergeForwardAsk:    {claim.RoleImplementer, claim.RoleMerger},
 	MergeForwardHold:   {claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},

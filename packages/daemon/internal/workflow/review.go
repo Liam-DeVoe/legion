@@ -179,7 +179,7 @@ const conflictConfirmWait = time.Minute
 // (intake.PullRequestMergeability.Rules). A reason to act asks the implementer, or in merging the
 // merger, to merge the base forward, and the issue keeps its phase (mergeForward, R1); no reason
 // leaves the conflict recorded and logged with the checks the base requires and those green on
-// the head, and the tester and the reviewer go on at that head. A CONFLICTING read of a head the
+// the head, and the task's steps go on at that head. A CONFLICTING read of a head the
 // record already holds conflicting decides again in the same way, since the phase the issue has
 // reached since can need what the phase before did not, and mergeForward asks nothing twice for
 // one head.
