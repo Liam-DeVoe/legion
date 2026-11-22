@@ -239,14 +239,14 @@ func (c *HTTPClient) PutStepRating(ctx context.Context, key, id string, write St
 // PutStepExperiment writes the experiment and the variant of the record's issue onto the record id
 // of the issue key, through the record's experiment route, PUT
 // /api/v1/issues/{key}/steps/{id}/experiment, as the daemon's own session. The body is the run's
-// identity out of write, which Dispatch checks against the record it holds, and the pair, and no
-// other field: the start, the end and the rating are the record's own writes, which the outbox
-// sends first (publishStepRecord), so a Dispatch older than this route takes the record and only
-// the pair waits. The pair has a route of its own because the step route and the rating route
-// ignore a member they do not declare, so a pair sent there would be answered 200 and lost.
-// Dispatch answers the step route's refusals, and 400 STEP_INPUT for a pair off its rule; a
-// Dispatch older than the route answers its router's 404 (NoRoute), which the outbox's row waits
-// on.
+// identity out of write, of which Dispatch sets each field the record does not hold yet and keeps
+// each it holds, and the pair, and no other field: the start, the end and the rating are the
+// record's own writes, which the outbox sends first (publishStepRecord), so a Dispatch older than
+// this route takes the record and only the pair waits. The pair has a route of its own because the
+// step route and the rating route ignore a member they do not declare, so a pair sent there would
+// be answered 200 and lost. Dispatch answers the step route's refusals, and 400 STEP_INPUT for a
+// pair off its rule; a Dispatch older than the route answers its router's 404 (NoRoute), which the
+// outbox's row waits on.
 func (c *HTTPClient) PutStepExperiment(ctx context.Context, key, id string, write StepWrite, experiment StepExperiment) error {
 	identity := StepWrite{Task: write.Task, Step: write.Step, Kind: write.Kind, Role: write.Role, Type: write.Type,
 		Agent: write.Agent, Generation: write.Generation}

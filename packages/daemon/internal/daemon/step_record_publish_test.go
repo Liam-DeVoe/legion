@@ -31,7 +31,9 @@ const (
 	stepRecordID = "0b9e5c2a-7f43-5d1e-9a6b-3c4d5e6f7a8b"
 )
 
-// stepRefusedLine is the one line that says a step record ended unwritten.
+// stepRefusedLine is the one line that says Dispatch refused a write of a step record for good:
+// the record's own, so the record ended unwritten, or its variant's, so the record stays as
+// Dispatch took it and names no variant.
 const stepRefusedLine = "outbox step record refused by Dispatch and dropped"
 
 // stepPut is one step write as Dispatch received it, the rating it carried on the record's rating
