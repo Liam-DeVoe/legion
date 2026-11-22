@@ -357,9 +357,21 @@ func legionAgentSessionHandler(d *listenerDeps, logger *logging.Logger) http.Han
 			ctx, cancel := legionAgentReadContext(r)
 			defer cancel()
 			agent, err := registry.Get(ctx, sessionID)
-			// At the edge an agent of another project's issue is answered as one the registry
-			// does not hold (edgeScope.showsAgent).
-			if errors.Is(err, legionagents.ErrNotFound) || (err == nil && !edgeScopeOf(r, nil).showsAgent(agent)) {
+			if err == nil {
+				// At the edge an agent it does not show - one of another project's issue, or of a
+				// session that is no session of its issue's project confirmed by its stored record -
+				// is answered as one the registry does not hold (edgeScope.showsAgentConfirmed); a
+				// confirmation read that did not answer is the bus-unavailable 503
+				// writeLegionAgentError gives it.
+				var shown bool
+				var confErr error
+				if agent, shown, confErr = edgeScopeOf(r, nil).showsAgentConfirmed(ctx, d.sessions, agent); confErr != nil {
+					err = confErr
+				} else if !shown {
+					err = legionagents.ErrNotFound
+				}
+			}
+			if errors.Is(err, legionagents.ErrNotFound) {
 				writeJSONError(w, http.StatusNotFound, "unknown legion agent "+sessionID)
 				return
 			}
@@ -428,7 +440,11 @@ func legionAgentRoleHandler(d *listenerDeps) http.HandlerFunc {
 			writeLegionAgentError(w, err)
 			return
 		}
-		agents = edgeScopeOf(r, nil).agents(agents)
+		agents, err = edgeScopeOf(r, nil).agentsConfirmed(ctx, d.sessions, agents)
+		if err != nil {
+			writeLegionAgentError(w, err)
+			return
+		}
 		list, err := answerLegionAgents(ctx, registry, d.sessions, agents)
 		if err != nil {
 			writeLegionAgentError(w, err)
@@ -465,7 +481,11 @@ func legionAgentsHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFu
 				writeLegionAgentError(w, err)
 				return
 			}
-			agents = edgeScopeOf(r, nil).agents(agents)
+			agents, err = edgeScopeOf(r, nil).agentsConfirmed(ctx, d.sessions, agents)
+			if err != nil {
+				writeLegionAgentError(w, err)
+				return
+			}
 			list, err := answerLegionAgents(ctx, registry, d.sessions, agents)
 			if err != nil {
 				writeLegionAgentError(w, err)

@@ -461,6 +461,7 @@ func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
 		{http.MethodPost, "/v1/messages/publish", "/v1/messages/publish",
 			`{"topic":"notifications.github.rig","source_session":"<session>","message":"a message of the walk"}`},
 		{http.MethodDelete, "/v1/sessions/<session>", "/v1/sessions/", ""},
+		{http.MethodGet, "/v1/sessions/<session>/relay", relaySocketPattern, ""},
 		{http.MethodGet, "/v1", "/v1", ""},
 		{http.MethodGet, "/v1/no-such-route", "/v1/", ""},
 	}
