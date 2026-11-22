@@ -179,7 +179,6 @@ test("r on a statement aims the writer at it, and every other aim ends it", asyn
 
   const item: StatementItem = {
     artifact: "spec",
-    blockId: "r1",
     id: "spec#b-r1",
     kind: "statement",
     source: SPEC_SOURCE,
@@ -189,7 +188,6 @@ test("r on a statement aims the writer at it, and every other aim ends it", asyn
   expect(replyItemOf(statement)).toEqual(item);
   expect(replyItemOf(unread)).toEqual({
     artifact: "spec",
-    blockId: "r2",
     id: "spec#b-r2",
     kind: "statement",
     text: "The box takes the focus.",
@@ -380,7 +378,6 @@ test("a refused comment on a statement holds the writer on it, and a writer moun
     artifact: "spec",
     item: {
       artifact: "spec",
-      blockId: "r1",
       id: "spec#b-r1",
       kind: "statement",
       source: SPEC_SOURCE,

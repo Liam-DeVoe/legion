@@ -75,14 +75,10 @@ export interface AwayDraft {
 
 /** The address a draft kept by address is kept for (`AwayDraft`): the reply it answers, or none,
  *  for a margin compose the words of the document it was written about, or none for every other
- *  composer, and for the issue page's box the statement it is on, or none. The reply and the
- *  words are named, so a forget says which words it forgets; a composer that names no statement
- *  forgets the draft that is on none. */
-export interface AwayAddress {
-  readonly anchor: ComposerAnchor | undefined;
-  readonly replyTo: ReplyTarget | null;
-  readonly statement?: StatementAnchor;
-}
+ *  composer, and for the issue page's box the statement it is on, or none. It is the draft's own
+ *  fields, so a kept draft is its own address, and a field the address gains is named here once.
+ *  Words or a statement left out are none. */
+export type AwayAddress = Pick<AwayDraft, "anchor" | "replyTo" | "statement">;
 
 /** What a held send's draft is kept as once the send is gone (`AwayDraft`): its text and a
  *  suggestion's replacement, and an ask's fields, for the address it went to - its owner, the
@@ -100,18 +96,12 @@ export function sameReply(a: ReplyTarget | null, b: ReplyTarget | null): boolean
 
 /** Whether two drafts are for the same target: they answer the same reply and are on the same
  *  statement (`sameStatement`), or answer none or are on none. */
-export function sameTarget(
-  a: Pick<AwayAddress, "replyTo" | "statement">,
-  b: Pick<AwayAddress, "replyTo" | "statement">
-): boolean {
+export function sameTarget(a: AwayAddress, b: AwayAddress): boolean {
   return sameReply(a.replyTo, b.replyTo) && sameStatement(a.statement, b.statement);
 }
 
 /** Whether a draft kept at `away` is the one kept for `at`: the same target and the same words. */
-function sameAway(
-  away: Pick<AwayDraft, "anchor" | "replyTo" | "statement">,
-  at: Pick<AwayDraft, "anchor" | "replyTo" | "statement">
-): boolean {
+function sameAway(away: AwayAddress, at: AwayAddress): boolean {
   return sameTarget(away, at) && sameAnchor(away.anchor, at.anchor);
 }
 
@@ -249,11 +239,7 @@ export function unsentDraftsOf(client: QueryClient): UnsentDrafts {
     // A draft is kept by the reply part of its address, the words it is about and the statement
     // it is on: one per reply, one for a message that answers none, one per quote of a margin
     // compose, and one per statement of the issue page's box.
-    const writeAway = (
-      name: string,
-      at: Pick<AwayDraft, "anchor" | "replyTo" | "statement">,
-      away: AwayDraft | undefined
-    ) =>
+    const writeAway = (name: string, at: AwayAddress, away: AwayDraft | undefined) =>
       awayStore.set(name, (kept) => {
         const others = parseAway(kept).filter((other) => !sameAway(other, at));
         const next = away === undefined ? others : [...others, away];

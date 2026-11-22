@@ -457,8 +457,8 @@ test("a held reply keeps the mentions its box wrote across a reload, one kept wi
 // the request, so a box that mounts again over the send after a reload takes out those and no
 // others. A keep that carries none - the reader deleted the box's link and wrote their own at the
 // front - leaves the request no mention of the box's, and the draft is kept as the reader wrote
-// it, with no mention of its own. A keep that carries no mentions at all writes the request as it
-// was (the refusal case above).
+// it, with no mention of its own. A keep that carries no mentions at all - every other
+// composer's - leaves the request none either: a missing list and an empty one are both none.
 test("a keep over a refused reply writes the mentions its box holds into the request, across a reload", async () => {
   const tab = keptTab();
   const createComment = spyOn(api, "createComment").mockRejectedValue(verdict);
@@ -484,13 +484,18 @@ test("a keep over a refused reply writes the mentions its box holds into the req
     const before = heldOf(tab).held;
     before.send(keyOf("send-seeded"), { ...reply, seeds, sendKey: "send-seeded" });
     before.send(keyOf("send-let-go"), { ...reply, seeds, sendKey: "send-let-go" });
+    before.send(keyOf("send-unkept"), { ...reply, seeds, sendKey: "send-unkept" });
     await waitFor(() => expect(before.get(keyOf("send-seeded"))?.status).toBe("refused"));
     await waitFor(() => expect(before.get(keyOf("send-let-go"))?.status).toBe("refused"));
+    await waitFor(() => expect(before.get(keyOf("send-unkept"))?.status).toBe("refused"));
     before.keep(keyOf("send-seeded"), { ...own, seeds });
     before.keep(keyOf("send-let-go"), { ...own, seeds: [] });
+    before.keep(keyOf("send-unkept"), own);
     const letGo = tab.kept("send-let-go") as { detail: { draft: object; request: object } };
     expect(letGo.detail.draft).toEqual(own);
     expect("seeds" in letGo.detail.request).toBe(false);
+    const unkept = tab.kept("send-unkept") as { detail: { request: object } };
+    expect("seeds" in unkept.detail.request).toBe(false);
 
     const { held: after, writes } = heldOf(tab);
     writes.resume("alice");
@@ -503,7 +508,51 @@ test("a keep over a refused reply writes the mentions its box holds into the req
     });
     expect(after.get(keyOf("send-let-go"))).toMatchObject({ draft: own, status: "refused" });
     expect(after.get(keyOf("send-let-go"))?.request).toEqual({ ...reply, sendKey: "send-let-go" });
-    expect(createComment).toHaveBeenCalledTimes(2);
+    expect(after.get(keyOf("send-unkept"))?.request).toEqual({ ...reply, sendKey: "send-unkept" });
+    expect(createComment).toHaveBeenCalledTimes(3);
+  } finally {
+    createComment.mockRestore();
+    tab.close();
+  }
+});
+
+// The reader's own move off a refused reply - the box's own end of it - carries the send to the
+// issue with none of the mentions the box wrote for that reply (`carriedTo`), as it carries a
+// send off a statement on none. A box that mounts again over the send, after a reload too, then
+// has none to take out of the draft, which answers no reply.
+test("a refused reply the reader carries off its reply keeps none of its box's mentions, across a reload", async () => {
+  const tab = keptTab();
+  const createComment = spyOn(api, "createComment").mockRejectedValue(verdict);
+  const link = "[@Planner](dispatch://agent/planner-session)";
+  const reply: SentRequest = {
+    ...request,
+    draft: { body: `${link} hello`, replacement: "" },
+    replyTo: {
+      actor: { id: "planner-session", kind: "session" },
+      excerpt: "The relay is fixed",
+      id: "comment-3",
+      mentions: [{ target: "session:planner-session", title: "Planner" }],
+      parentKind: "comment",
+    },
+    sendKey: "send-carried",
+  };
+  const key: MutationKey = ["issue-composer", "send-carried"];
+  const carried = { ...reply, replyTo: null };
+  try {
+    const before = heldOf(tab).held;
+    before.send(key, { ...reply, seeds: [{ target: "session:planner-session", text: link }] });
+    await waitFor(() => expect(before.get(key)?.status).toBe("refused"));
+    before.carry(key, reply, { owner: reply.owner, replyTo: null });
+    expect(before.get(key)?.request).toEqual(carried);
+    const kept = tab.kept("send-carried") as { detail: { request: object } };
+    expect("seeds" in kept.detail.request).toBe(false);
+
+    const { held: after, writes } = heldOf(tab);
+    writes.resume("alice");
+    await settle();
+    expect(after.get(key)?.status).toBe("refused");
+    expect(after.get(key)?.request).toEqual(carried);
+    expect(createComment).toHaveBeenCalledTimes(1);
   } finally {
     createComment.mockRestore();
     tab.close();

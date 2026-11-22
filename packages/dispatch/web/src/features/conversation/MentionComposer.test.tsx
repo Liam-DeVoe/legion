@@ -123,6 +123,9 @@ interface ComposerOptions {
   edit?: { body: string; id: string };
   kind?: "ask" | "comment" | "suggestion";
   seedMentions?: readonly { target: string; title: string }[];
+  /** The send's name, under which the composer keeps a draft for the address it was written at
+   *  (`keptNames`' `awayName`), as the Conversation tab's composer does. */
+  mutationKey?: MutationKey;
   onCancelReply?: () => void;
   onKindChange?: (kind: "ask" | "comment" | "suggestion") => string | undefined;
   onSent?: () => void;
@@ -161,6 +164,7 @@ function renderComposer(options: ComposerOptions = {}) {
           edit={props.edit}
           kind={props.kind}
           seedMentions={props.seedMentions}
+          mutationKey={props.mutationKey}
           onCancelReply={props.onCancelReply}
           onClose={() => {}}
           onKindChange={props.onKindChange}
@@ -3621,6 +3625,47 @@ test("a stopped reply the reader cancels is sent anew from there, saying the fir
     realClock();
     view.unmount();
     createAgentMessage.mockRestore();
+  }
+});
+
+// The composer writes what the reader types over a refusal into its held send a short wait after
+// each edit (`KEEP_DRAFT_MS`, 300 ms). A host that moves a composer with no look - the
+// Conversation tab's reply - off the refused reply to one that keeps nothing writes the field into
+// the held send as it goes, and the field holds it as the reader left it: the words typed since
+// the last keep stay, where the held send's last kept draft would lose them.
+test("a refused reply the host moves to another reply keeps the words typed since its last keep", async () => {
+  const createComment = spyOn(api, "createComment").mockRejectedValue(commentRefused);
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const replyTo = { actor: plannerAuthor, excerpt: "Is the build green?", id: "comment-1" };
+  const { rerender, view } = renderComposer({ mutationKey: hostKey, replyTo });
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Status please");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    // A send's mutation function runs a task after the press (`pressSend`).
+    await tick(20);
+    expect(screen.getByText(`Couldn't send — ${COMMENT_REFUSED}`)).toBeTruthy();
+
+    await user.click(field);
+    await user.paste(" and the logs");
+    // The keep wait runs out, and the held send keeps the field as it stands.
+    await tick(300);
+    await user.paste(" too");
+    rerender({
+      mutationKey: hostKey,
+      replyTo: { actor: plannerAuthor, excerpt: "And the deploy?", id: "comment-2" },
+    });
+
+    expect(field.value).toBe("Status please and the logs too");
+    expect(createComment).toHaveBeenCalledTimes(1);
+  } finally {
+    realClock();
+    view.unmount();
+    createComment.mockRestore();
   }
 });
 

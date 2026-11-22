@@ -40,24 +40,31 @@ import {
   commentRecord,
   composerBox,
   drawBoxPage,
+  goneDrafts,
   KEPT_FOR_ISSUE,
+  KEPT_FOR_STATEMENT,
   KEY,
   keptLines,
   keptReplyLine,
+  messageNode,
   node,
   outline,
+  outlineRewritten,
+  outlineWithout,
   type Place,
   READER,
   rowOf,
   SPEC_SOURCE,
   STATEMENT_QUOTE,
+  STATEMENT_REWRITTEN,
   statementNode,
   targetWords,
   writeField,
 } from "./composer-fixture";
 import { FOOT_HEIGHT_PROPERTY } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
-import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import type { OutlineWriter } from "./outline-writer";
+import { ANSWER_LINES, CONTROL_LABELS, REPLY_WORD, WRITE_ON_ISSUE_WORDS } from "./page-words";
 
 /**
  * The new issue page's one box to write in, drawn as
@@ -331,6 +338,15 @@ test("under a view or a document the box is hidden until the reader asks to writ
   await waitFor(() => expect(composerBox()).toHaveAttribute("hidden"));
 });
 
+// The kept lines name the way back by a control's words, declared once in `page-words.ts` as
+// `REPLY_WORD` and `WRITE_ON_ISSUE_WORDS`, while `CONTROL_LABELS` keeps its own words for the two
+// controls as `main` wrote them. Each pair stays equal, so a kept line never names a control the
+// page draws under other words.
+test("the kept lines name the Reply and the write-on-issue control by the words those controls draw", () => {
+  expect(CONTROL_LABELS.reply).toBe(REPLY_WORD);
+  expect(CONTROL_LABELS.write_on_issue).toBe(WRITE_ON_ISSUE_WORDS);
+});
+
 // The reviewer's finding 4593511272: a Reply is a move of the page's, which carries nothing, so
 // it keeps what the reader has typed in the box at rest for the issue it was written for. The
 // box says the comment is kept and the way back, and opens on the reply with that row's own
@@ -385,6 +401,149 @@ test("a Reply on another row keeps the reply typed for its own row, and that row
   await waitFor(() => expect(targetWords()).toContain("Earlier words"));
   expect(writeField().value).toBe("My reply to bob");
   expect(keptLines()).toEqual([]);
+});
+
+/** What the reader writes in the box for a target the cases below take away. */
+const KEPT_WORDS = "Words for a target that goes";
+
+/** The statement's words as a later version writes them, after `STATEMENT_REWRITTEN`. */
+const REWRITTEN_AGAIN = "The page draws **a single** box, at the foot.";
+
+/** The outline with a message of bob's after its other rows. */
+function messageOutline(): TreeNode {
+  const root = outline();
+  return { ...root, children: [...root.children, messageNode("message-1", BOB, "A message")] };
+}
+
+/** Each target the box keeps a draft for that the outline can stop drawing: the row a Reply aims
+ *  the box at, the outline drawn with it and the one drawn once it is gone, the line the box says
+ *  of the draft while the target is drawn, and the words it leads the draft with once it is not. */
+const GONE_TARGETS = [
+  {
+    drawn: outline,
+    gone: () => outlineWithout("comment-1"),
+    kept: keptReplyLine("bob"),
+    lead: "The comment by bob that your reply answered is no longer listed. Your reply is kept here:",
+    name: "a reply kept for a comment a read then deletes",
+    row: "comment-1",
+  },
+  {
+    drawn: messageOutline,
+    gone: () => outlineWithout("message-1", messageOutline()),
+    kept: "Your reply to the message by bob is kept. Press Reply on that message to go on with it.",
+    lead: "The message by bob that your reply answered is no longer listed. Your reply is kept here:",
+    name: "a reply kept for a message a read then deletes",
+    row: "message-1",
+  },
+  {
+    drawn: outline,
+    gone: () => outlineWithout("ask-1"),
+    // The kept line names a question's thread as a comment's (`KeptReply`).
+    kept: keptReplyLine("carol"),
+    lead: "The ask by carol that your reply answered is no longer listed. Your reply is kept here:",
+    name: "a reply kept for a question a read then deletes",
+    row: "ask-1",
+  },
+  {
+    drawn: outline,
+    gone: () => outlineRewritten(STATEMENT_REWRITTEN),
+    kept: KEPT_FOR_STATEMENT,
+    lead: ANSWER_LINES.kept_statement_gone,
+    name: "a comment kept for a statement whose words a new version changes",
+    row: "spec#b-r1",
+  },
+] as const;
+
+/** Writes `words` in the box aimed at the row of `nodeId` with its `r`, then turns the box to the
+ *  issue with the issue's own Reply, a move of the page's, which keeps them for that row. Answers
+ *  the target they are kept for, as the writer aimed the box at it. */
+async function keepFor(
+  user: UserEvent,
+  page: DrawnPage,
+  nodeId: string,
+  words: string
+): Promise<Pick<OutlineWriter, "reply" | "statement">> {
+  await page.press(user, nodeId, "r");
+  await waitFor(() => expect(targetWords()).not.toBeNull());
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  const { reply, statement } = page.writer();
+  await user.clear(writeField());
+  await user.keyboard(words);
+  await act(async () => page.writer().writeOnIssue());
+  await waitFor(() => expect(targetWords()).toBeNull());
+  return { reply, statement };
+}
+
+// The reviewer's finding 6011026760: a read that takes away the entry a kept reply answers takes
+// its Reply with it, and a new version that rewrites a statement's words makes its Reply aim the
+// box at the new words, so the way back the kept line names is gone. The box draws such a draft
+// itself beside the line, with Discard my draft and, at rest on the issue with nothing of its
+// own, Use it here, as the Conversation draws a reply kept for a comment it no longer lists.
+// Discard forgets the draft in the tab too; Use it here puts it in the field. While the target is
+// drawn the draft keeps its line.
+for (const target of GONE_TARGETS) {
+  for (const press of ["Discard my draft", "Use it here"] as const) {
+    test(`${target.name} is drawn whole with its presses, and ${press} ${press === "Use it here" ? "puts it in the field" : "forgets it"}`, async () => {
+      const user = userEvent.setup();
+      const page = renderPage({}, target.drawn());
+      const { reply, statement } = await keepFor(user, page, target.row, KEPT_WORDS);
+      const drawn = { gone: goneDrafts(), kept: keptLines() };
+
+      page.redrawOutline(target.gone());
+      await waitFor(() => expect(goneDrafts()).toHaveLength(1));
+      const gone = { gone: goneDrafts(), kept: keptLines() };
+      await user.click(within(composerBox()).getByRole("button", { name: press }));
+      await waitFor(() => expect(goneDrafts()).toEqual([]));
+      const stored = unsentDraftsOf(page.client).readAway(
+        composerNameOf(["issue-composer", KEY]),
+        reply,
+        undefined,
+        statement
+      );
+      expect({
+        after: { field: writeField().value, kept: keptLines(), stored },
+        drawn,
+        gone,
+      }).toEqual({
+        after: { field: press === "Use it here" ? KEPT_WORDS : "", kept: [], stored: undefined },
+        drawn: { gone: [], kept: [target.kept] },
+        gone: {
+          gone: [
+            { draft: KEPT_WORDS, lead: target.lead, presses: ["Use it here", "Discard my draft"] },
+          ],
+          kept: [],
+        },
+      });
+    });
+  }
+}
+
+// The same finding: each kept line and each draft drawn whole is keyed by its draft's whole
+// address, so two the box keeps on one statement's row - for its words before a new version and
+// for those after - are two, both drawn, and React is handed no two under one key.
+test("two drafts kept on one statement's row, for its words before a new version and after, are both drawn", async () => {
+  const user = userEvent.setup();
+  const errors = stub(spyOn(console, "error"));
+  const page = renderPage();
+  await keepFor(user, page, "spec#b-r1", "On the first words");
+  page.redrawOutline(outlineRewritten(STATEMENT_REWRITTEN));
+  await waitFor(() => expect(goneDrafts()).toHaveLength(1));
+  await keepFor(user, page, "spec#b-r1", "On the second words");
+  const once = { gone: goneDrafts().map(({ draft }) => draft), kept: keptLines() };
+
+  page.redrawOutline(outlineRewritten(REWRITTEN_AGAIN));
+  await waitFor(() => expect(goneDrafts()).toHaveLength(2));
+  expect({
+    keys: errors.mock.calls
+      .map((call) => call.map(String).join(" "))
+      .filter((said) => said.includes("same key")),
+    once,
+    twice: { gone: goneDrafts().map(({ draft }) => draft), kept: keptLines() },
+  }).toEqual({
+    keys: [],
+    once: { gone: ["On the first words"], kept: [KEPT_FOR_STATEMENT] },
+    twice: { gone: ["On the first words", "On the second words"], kept: [] },
+  });
 });
 
 /** The outline with the planner's comment after its others: a Reply on it starts the box with a

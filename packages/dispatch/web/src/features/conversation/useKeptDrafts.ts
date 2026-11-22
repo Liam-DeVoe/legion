@@ -38,9 +38,11 @@ import {
   movedSendNote,
   type SentDraft,
   type SentRequest,
+  type StatementAnchor,
   sameAddress,
 } from "./send-request";
 import {
+  type AwayAddress,
   type AwayDraft,
   awayDraftOf,
   sameAnchor,
@@ -309,6 +311,10 @@ export function keptForOtherWords(
  *  (`ListedReplies`). */
 export type GoneReplyDraft = AwayDraft & { readonly replyTo: ReplyTarget };
 
+/** A draft the issue page's box keeps for a statement its host no longer draws
+ *  (`useKeptDrafts`' `listsStatement`). */
+export type GoneStatementDraft = AwayDraft & { readonly statement: StatementAnchor };
+
 /** What the composer keeps of a draft the field does not send, the edit it offers beside a newer
  *  body, the draft a margin compose offers beside a compose at other words, and the presses for a
  *  draft kept for a reply its host no longer lists. */
@@ -348,6 +354,13 @@ export interface KeptDrafts {
    *  it, so the composer draws each itself beside its field (`KeptDraftOffers`), with Discard my
    *  draft (`dropAway`) and, where `awayTakes` says so, Use it here (`takeAway`). */
   readonly goneAway: readonly GoneReplyDraft[];
+  /** The drafts the issue page's box keeps for other statements than the one it shows that its
+   *  host no longer draws (`listsStatement`): a new version of the spec took the statement out or
+   *  rewrote its words, so a Reply on its row aims the box at other words, and the way back a kept
+   *  line would name is gone. They are drawn as `goneAway`'s are, beside the field, with Discard
+   *  my draft (`dropAway`) and, where `awayTakes` says so, Use it here (`takeAway`), and
+   *  `keptAway` holds none of them. None for every other composer. */
+  readonly goneStatements: readonly GoneStatementDraft[];
   /** Writes what the field holds back to the held refusal now, as the debounced write does: the
    *  margin asks for it before it sends a refused compose again itself (`ComposerBridge`). */
   readonly keepDraft: () => void;
@@ -413,7 +426,8 @@ const KEEP_DRAFT_MS = 300;
  * `listsReply` says which replies the host lists. The issue page's box hands in `seeds`, the
  * mentions it wrote in front of the reply's draft it shows and that have opened that draft at each
  * of the reader's edits since (`openingSeeds`), which are kept and brought back with that draft
- * and which the reader's own move takes out of the draft it carries.
+ * and which the reader's own move takes out of the draft it carries, and `listsStatement`, which
+ * says which statements its host draws.
  */
 export function useKeptDrafts({
   anchor,
@@ -427,6 +441,7 @@ export function useKeptDrafts({
   intake,
   kind,
   listsReply,
+  listsStatement,
   mountedHeld,
   moves,
   outgoing,
@@ -460,6 +475,10 @@ export function useKeptDrafts({
      *  lists is drawn itself (`goneAway`), and a refusal held for a reply the composer has left
      *  goes back to it by its Reply only while it is listed (`writtenElsewhere`). */
     readonly listsReply: (reply: ReplyTarget) => boolean;
+    /** Whether the issue page's box's host draws `statement` (`OutlineLook.statements`): a draft
+     *  kept for a statement it no longer draws is drawn itself (`goneStatements`). Undefined for
+     *  every other composer, which keeps no draft for a statement. */
+    readonly listsStatement?: (statement: StatementAnchor) => boolean;
     readonly mountedHeld: RefObject<boolean>;
     readonly moves: number;
     readonly outgoing: ComposerSend;
@@ -478,12 +497,22 @@ export function useKeptDrafts({
   }): KeptDrafts {
   const { askOptions, body, multiple, replacement, urgency } = field;
   const { awayName, unsentName } = keptNames({ composerName, inline, standing });
+  // The address a draft is kept for at this render, named once, so every forget and read of a
+  // draft kept here names the same one.
+  const here: AwayAddress = { anchor, replyTo, statement };
   const keptByAddress = unsent.useAway(awayName ?? "");
   // A draft kept for a reply the host no longer lists has lost the Reply its line names, so it
   // is drawn itself beside the field (`KeptDraftOffers`), and every other one with its line.
   const unlisted = (away: AwayDraft): away is GoneReplyDraft =>
     away.replyTo !== null && !listsReply(away.replyTo);
-  const keptElsewhere = keptByAddress.filter((away) => !sameTarget(away, { replyTo, statement }));
+  // So has a draft the issue page's box kept for a statement its host no longer draws: a Reply on
+  // that row now aims the box at other words (`sameStatement`), so it is drawn itself too, apart
+  // from the replies, since it answers none (`goneStatements`). Other composers draw none.
+  const undrawn = (away: AwayDraft): away is GoneStatementDraft =>
+    away.statement !== undefined && listsStatement?.(away.statement) === false;
+  const otherTargets = keptByAddress.filter((away) => !sameTarget(away, here));
+  const goneStatements = otherTargets.filter(undrawn);
+  const keptElsewhere = otherTargets.filter((away) => !undrawn(away));
   const goneAway = keptElsewhere.filter(unlisted);
   const keptAway = keptElsewhere.filter((away) => !unlisted(away));
   // Only a composer with an anchor keeps drafts by it, so only a margin compose offers one: the
@@ -507,12 +536,19 @@ export function useKeptDrafts({
    *  composer in the same press draws no commit in between, and the unmount must not keep the
    *  draft the last commit showed. */
   const keepsNothing = useRef(false);
+  /** The box's mentions written in front of the reply's draft the field shows, which a draft kept
+   *  for that reply keeps (`AwayDraft.seeds`), and a keep over its refusal writes into its send
+   *  (`HeldDraft.seeds`); none for every other composer, and none where the box holds none. Read
+   *  as the draft is kept, not at the render: the reader's own move lets them go with no render
+   *  after it where it takes nothing out of the draft. */
+  const seedsField = () =>
+    seeds === undefined || seeds.current.length === 0 ? {} : { seeds: seeds.current };
   // What the reader wrote over a refusal goes back to the held send (`keep`, which a send still
   // out ignores), so the composer that mounts next shows it - and so a reload does: a refusal's
   // draft is the only copy of that message, and the entry it is kept in is what survives the
   // page (`write-storage.ts`). It is written as this composer unmounts, a short wait after each
   // keystroke, and as the page goes, which no unmount follows. The issue page's box keeps its
-  // mentions with it as it holds them then (`seeds`), so a box that mounts again over the send
+  // mentions with it as it holds them then (`seedsField`), so a box that mounts again over the send
   // takes out none the reader's edits let go of. A refusal the host has moved the composer off
   // (`elsewhere`) keeps the draft it was written with: what is typed over it there is for that
   // other address. So does an edit's refusal while it waits beside a newer body (`changed`): the
@@ -523,7 +559,7 @@ export function useKeptDrafts({
     outgoing.keep({
       ask: { multiple, options: submittedAskOptions(askOptions), urgency },
       draft: { body, replacement },
-      ...(seeds === undefined ? {} : { seeds: seeds.current }),
+      ...seedsField(),
     });
   };
   useEffect(() => () => keepDraft.current(), []);
@@ -595,12 +631,6 @@ export function useKeptDrafts({
     }),
     [discard]
   );
-  /** The box's mentions written in front of the reply's draft the field shows, which a draft kept
-   *  for that reply keeps (`AwayDraft.seeds`); none for every other composer. Read as the draft is
-   *  kept, not at the render: the reader's own move lets them go with no render after it where it
-   *  takes nothing out of the draft. */
-  const seedsField = () =>
-    seeds === undefined || seeds.current.length === 0 ? {} : { seeds: seeds.current };
   // What the reader wrote for this address and did not send waits for it once the composer leaves
   // the page (`awayName`): its host took the composer away - the issue the reader left, the Agents
   // page, the margin's document, a newer compose on that document, a comment's card - and the
@@ -635,14 +665,14 @@ export function useKeptDrafts({
         statement,
       });
     } else {
-      unsent.forgetAway(awayName, { anchor, replyTo, statement });
+      unsent.forgetAway(awayName, here);
     }
     return kept;
   };
   useEffect(() => () => void keepAway.current(), []);
   const takeBack = useRef(() => {});
   takeBack.current = () => {
-    if (awayName !== undefined) unsent.forgetAway(awayName, { anchor, replyTo, statement });
+    if (awayName !== undefined) unsent.forgetAway(awayName, here);
   };
   // A reload, and the tab's closing, end the page with no unmount, so the draft is kept for its
   // address as the page goes too (`pagehide`), which the tab's storage holds over a reload
@@ -775,7 +805,7 @@ export function useKeptDrafts({
     if (before === undefined) {
       // The field took the draft kept for this address, which is kept there no longer.
       if (initial.away && awayName !== undefined) {
-        unsent.forgetAway(awayName, { anchor, replyTo, statement });
+        unsent.forgetAway(awayName, here);
       }
       return;
     }
@@ -787,7 +817,7 @@ export function useKeptDrafts({
     // re-address the same compose. A newer compose on the document is a composer of its own
     // (`MarginSheet` keys the margin's composer by its compose), whose draft stays kept for its
     // own words.
-    const targetMoved = !sameTarget(before.address, { replyTo, statement });
+    const targetMoved = !sameTarget(before.address, here);
     const sendOut = holdsSend && heldRefusal === undefined;
     const kept =
       targetMoved && awayName !== undefined && !sendOut
@@ -811,11 +841,7 @@ export function useKeptDrafts({
     if (offRefusal) {
       // Written now, since the debounced write reads the address the composer shows by then, and
       // with the mentions of the address it leaves, which the box holds until it arrives.
-      outgoing.keep({
-        ask,
-        draft: leaving,
-        ...(seeds === undefined ? {} : { seeds: seeds.current }),
-      });
+      outgoing.keep({ ask, draft: leaving, ...seedsField() });
     } else if (awayName !== undefined) {
       if (wroteOver(before.fresh)) {
         unsent.keepAway(awayName, {
@@ -833,7 +859,7 @@ export function useKeptDrafts({
       }
     }
     if (awayName === undefined) return;
-    if (kept !== undefined) unsent.forgetAway(awayName, { anchor, replyTo, statement });
+    if (kept !== undefined) unsent.forgetAway(awayName, here);
     // Leaving the refusal's address, the field holds its draft as the reader left it, which the
     // held send has only from the write above on.
     const refusalHere = refusalAt(address);
@@ -858,16 +884,12 @@ export function useKeptDrafts({
     changed,
     dropAway: (away) => {
       if (awayName !== undefined) {
-        unsent.forgetAway(awayName, {
-          anchor: away.anchor,
-          replyTo: away.replyTo,
-          statement: away.statement,
-        });
+        unsent.forgetAway(awayName, away);
       }
     },
     dropChanged: () => {
       if (changed !== undefined && awayName !== undefined) {
-        unsent.forgetAway(awayName, { anchor, replyTo, statement });
+        unsent.forgetAway(awayName, here);
       }
       setChanged(undefined);
     },
@@ -877,6 +899,7 @@ export function useKeptDrafts({
       if (unsentName !== undefined) unsent.write(unsentName, undefined);
     },
     goneAway,
+    goneStatements,
     keepDraft: () => keepDraft.current(),
     keepNothing: () => {
       keepsNothing.current = true;
@@ -889,17 +912,13 @@ export function useKeptDrafts({
         body: seededDraft(seedMentions, away.draft.body, owner),
         replacement: away.draft.replacement,
       });
-      unsent.forgetAway(awayName, {
-        anchor: away.anchor,
-        replyTo: away.replyTo,
-        statement: away.statement,
-      });
+      unsent.forgetAway(awayName, away);
     },
     takeChanged: () => {
       if (changed === undefined) return;
       replaceDraft(changed);
       setChanged(undefined);
-      if (awayName !== undefined) unsent.forgetAway(awayName, { anchor, replyTo, statement });
+      if (awayName !== undefined) unsent.forgetAway(awayName, here);
     },
     takeOffered: () => {
       if (offered === undefined || anchor === undefined) return;

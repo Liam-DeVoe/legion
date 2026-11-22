@@ -6,6 +6,7 @@ import { FOOT_HELD_ATTRIBUTE, useFootInset } from "../../../hooks/useFootInset";
 import { type BoxPlace, IssueComposer, useComposerShown } from "../IssueComposer";
 import { IssueReadMark } from "../IssueReadMark";
 import { issueAddress } from "../issue-address";
+import { useOutlineReads } from "../outline-reads";
 import { isFilter } from "../presets";
 import type { SlotProps } from "../slot-props";
 
@@ -40,6 +41,12 @@ export function FootSlot({ issue, route }: SlotProps): ReactNode {
     documentOpen: address.document !== undefined,
     viewOn: isFilter(address.preset),
   };
+  // The issue's one tree, read as the outline reads it (`useOutlineReads`, as the view row does),
+  // so it costs no request: the box reads off it which entries and statements a draft it keeps
+  // can go back to. Until every read the tree is built from holds its answer and its names are
+  // held, the tree may lack a row that is there, so the box is handed none and draws no draft as
+  // gone meanwhile.
+  const { namesHeld, readsHeld, root } = useOutlineReads(issue);
   const shown = useComposerShown(place);
   const wrapper = useRef<HTMLDivElement>(null);
   useFootInset(wrapper, shown);
@@ -59,6 +66,7 @@ export function FootSlot({ issue, route }: SlotProps): ReactNode {
           documentOpen={place.documentOpen}
           isClosed={issue.closed_at !== null}
           issueKey={issue.key}
+          tree={readsHeld && namesHeld ? root : undefined}
           viewOn={place.viewOn}
         />
       </div>

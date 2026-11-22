@@ -100,7 +100,7 @@ import {
 import { deliveryModesOf, MODE_LABELS, noDeliveryReasons, plainDelivery } from "./delivery";
 import { DraftPills, draftSource, useDraftPills } from "./draft-pills";
 import type { HeldSend } from "./held-sends";
-import { KeptDraftOffers } from "./KeptDraftOffers";
+import { DraftOffer, KeptDraftOffers } from "./KeptDraftOffers";
 import { keptAwayLine } from "./KeptReply";
 import { MentionField, type MentionFieldChange, type MentionFieldHandle } from "./MentionField";
 import { ReplyQuote } from "./ReplyQuote";
@@ -119,7 +119,7 @@ import {
   saveCommentEdit,
   unedited,
 } from "./send-request";
-import { useUnsentDrafts } from "./unsent-drafts";
+import { type AwayAddress, useUnsentDrafts } from "./unsent-drafts";
 import { useAgents } from "./useAgents";
 import { useComposerSend } from "./useComposerSend";
 import { useDraftHomes } from "./useDraftHomes";
@@ -196,6 +196,19 @@ function askOptionRows(ask: SentRequest["ask"] | undefined): AskOptionDraft[] {
       }));
 }
 
+/** The key of a draft kept for another address than the composer shows, as its line or its offer
+ *  is drawn: its whole address - the words a margin compose was at, the reply it answers and the
+ *  statement the issue page's box was on - which no two drafts kept under one name share. Two the
+ *  box keeps on one statement's row, its words before a new version and after, share the row. The
+ *  key names each field of `AwayAddress`, so the compiler asks for a field the address gains. */
+function awayKey({ anchor, replyTo, statement }: AwayAddress): string {
+  return JSON.stringify({
+    anchor: [anchor?.artifact, anchor?.mark_id, anchor?.quote, anchor?.occurrence],
+    replyTo: replyTo?.id,
+    statement: [statement?.artifact, statement?.quote],
+  } satisfies Record<keyof AwayAddress, unknown>);
+}
+
 /** One kind the issue page's line writes, as a chip before its Send, in the host's own words
  *  (`OutlineLook`). */
 export interface OutlineKind {
@@ -266,6 +279,19 @@ export interface OutlineLook {
    *  sends, and the same words are refused again, so the line draws no Retry for it; the draft
    *  stays. */
   readonly statementTwice?: string;
+  /** Which statements the host draws now (`drawn`), and what the line says, in its host's words,
+   *  of a draft it keeps for one the host no longer draws - one a new version of its document
+   *  took out or rewrote, so that a Reply on its row aims the line at other words. Such a draft
+   *  has lost the way back its kept line names, so it is drawn beside the line with Discard my
+   *  draft and, while the line writes on the issue with nothing of its own, Use it here (`gone`),
+   *  or with words saying Use it here waits for the line to be empty (`goneWaits`), as a reply
+   *  kept for an entry the host no longer lists is (`listed`). With none, every statement is
+   *  drawn. */
+  readonly statements?: {
+    readonly drawn: (statement: StatementAnchor) => boolean;
+    readonly gone: string;
+    readonly goneWaits: string;
+  };
   /** The entry the target names - the row a reply answers, the statement a comment is on, the
    *  comment an edit changes - drawn above the line while there is one. */
   readonly target?: ReactNode;
@@ -824,6 +850,7 @@ export function MentionComposer({
     elsewhere,
     forgetUnsent,
     goneAway,
+    goneStatements,
     keepDraft,
     keepNothing,
     keptAway,
@@ -843,6 +870,8 @@ export function MentionComposer({
     intake,
     kind,
     listsReply,
+    // Only the issue page's box keeps a draft for a statement, and its host says which it draws.
+    listsStatement: outline?.statements?.drawn,
     mountedHeld,
     moves: ownMoves + cancels,
     outgoing,
@@ -876,7 +905,7 @@ export function MentionComposer({
       // never sees it: Escape shuts the list, and the one after it reaches the composer.
       // The issue page's line stays mounted with its draft whatever ends it, so Escape there
       // asks nothing: it ends the target as the target line's control does (`endTarget`).
-      if (outline !== undefined) {
+      if (outlined) {
         event.preventDefault();
         event.stopPropagation();
         endTargetNow.current();
@@ -895,7 +924,7 @@ export function MentionComposer({
   }, [
     // A dormant composer renders no form; the one it renders when it wakes takes the listener.
     dormant,
-    outline,
+    outlined,
     replyTo,
   ]);
   // A composer fixed at the foot of the screen - the docked one below `sm`, or one a host's frame
@@ -1205,6 +1234,31 @@ export function MentionComposer({
       onTakeOffered={refusedKind ? undefined : takeOffered}
     />
   );
+  // A draft the issue page's line keeps for a statement its host no longer draws
+  // (`OutlineLook.statements`): a Reply on that row aims the line at other words now, so the draft
+  // waits beside the line in the host's words, as a reply kept for an entry the host no longer
+  // lists does (`KeptDraftOffers`), with Discard my draft and, where the line writes on the issue
+  // with nothing of its own, Use it here, which puts it in the field as a comment on the issue.
+  // Each is keyed by its whole address (`awayKey`): two kept on one row - its words before a new
+  // version and after - are two drafts.
+  const statementLook = outline?.statements;
+  const goneStatementOffers =
+    statementLook === undefined
+      ? null
+      : goneStatements.map((away) => (
+          <DraftOffer
+            body={away.draft.body}
+            drop={{ label: "Discard my draft", press: () => dropAway(away) }}
+            key={awayKey(away)}
+            lead={awayTakes === "once empty" ? statementLook.goneWaits : statementLook.gone}
+            replacement={away.draft.replacement}
+            take={
+              awayTakes === "here"
+                ? { label: "Use it here", press: () => takeAway(away) }
+                : undefined
+            }
+          />
+        ));
   // The colours the send's own lines are drawn in: the page's on the issue page's box, whose
   // whole look is the page's own, and the dashboard's on every other surface.
   const mutedTone = outlined ? pageMutedText : textMutedOnSurface;
@@ -1311,13 +1365,10 @@ export function MentionComposer({
           line says whose it is and the way back, so the host's move takes nothing with no word.
           The issue page's line says what it keeps for no reply in its host's words, which name
           the way back: the target line's control for the issue, a statement's Reply for that
-          statement (`OutlineLook.kept`). */}
+          statement (`OutlineLook.kept`). Each line is keyed by its draft's whole address
+          (`awayKey`). */}
       {keptAway.map((away) => (
-        <p
-          className={`text-sm ${quietTone}`}
-          key={away.replyTo?.id ?? away.statement?.row ?? ""}
-          role="status"
-        >
+        <p className={`text-sm ${quietTone}`} key={awayKey(away)} role="status">
           {!outlined || away.replyTo !== null || outline.kept === undefined
             ? keptAwayLine(away)
             : away.statement === undefined
@@ -1467,6 +1518,7 @@ export function MentionComposer({
         </div>
       </div>
       {keptOffers}
+      {goneStatementOffers}
       {deliveryNotices}
       {sendState}
     </fieldset>

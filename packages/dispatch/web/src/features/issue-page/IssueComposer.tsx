@@ -30,6 +30,7 @@ import {
   keepFocusOnPress,
   MentionComposer,
   type OutlineKind,
+  type OutlineLook,
   OutlineRefusal,
   OutlineTargetLine,
   sendOnEnter,
@@ -47,9 +48,8 @@ import { AgentName } from "../refs/AgentName";
 import { PlainText } from "../refs/plain-text";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { useMediaQuery } from "../shell/useDialog";
-import { outlineCommentsQuery, outlineMessagesQuery } from "./conversation-reads";
 import { FOOT_HEIGHT_PROPERTY, HEADER_SCROLLS_QUERY } from "./identity-block";
-import { firstLineOf } from "./issue-tree";
+import { firstLineOf, type TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { useCriterionLine } from "./model-rows/criterion-write";
 import { useRoomFacts } from "./model-rows/room-target";
@@ -58,12 +58,16 @@ import {
   type CriterionItem,
   type Landing,
   type OutlineWriter,
+  replyItemOf,
+  type StatementTarget,
+  statementTargetOf,
   useOutlineWriter,
 } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
-import { TAB_STOP_ROW } from "./slots/stage";
-import { issueAsksQuery } from "./useIssueTree";
+import { TAB_STOP_ROW } from "./tree-focus";
+import { nodesInOrder } from "./tree-keys";
+import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
 
 /** The kinds the line writes, as its chips before Send, in this order: a comment, which is on at
  *  first, and a question, which is an ask of the issue with no options (R2). A later part adds a
@@ -160,10 +164,15 @@ export function IssueComposer({
   documentOpen,
   isClosed,
   issueKey,
+  tree,
   viewOn,
 }: BoxPlace & {
   readonly isClosed: boolean;
   readonly issueKey: string;
+  /** The outline's whole tree once every read it is built from and its names are held
+   *  (`slots/foot.tsx`), which says which entries and statements a draft the write line keeps
+   *  can go back to; none until then. */
+  readonly tree: TreeNode | undefined;
 }): ReactNode {
   const writer = useOutlineWriter();
   const shown = useComposerShown({ documentOpen, viewOn });
@@ -281,7 +290,13 @@ export function IssueComposer({
           than unmounted while the line answers or edits: its draft is the reader's. */}
       <div data-composer-write="" hidden={!writing}>
         <div hidden={writer.criterion !== undefined}>
-          <WriteLine isClosed={isClosed} issueKey={issueKey} place={place} writer={writer} />
+          <WriteLine
+            isClosed={isClosed}
+            issueKey={issueKey}
+            place={place}
+            tree={tree}
+            writer={writer}
+          />
         </div>
       </div>
     </section>
@@ -324,11 +339,13 @@ function WriteLine({
   isClosed,
   issueKey,
   place,
+  tree,
   writer,
 }: {
   isClosed: boolean;
   issueKey: string;
   place: LinePlace;
+  tree: TreeNode | undefined;
   writer: OutlineWriter;
 }): ReactNode {
   const { reply, statement } = writer;
@@ -377,11 +394,52 @@ function WriteLine({
     }
     finish(writer, place, { to: "self", under });
   };
+  // The targets the outline draws (`drawnTargets`), so a draft the line keeps for an entry or a
+  // statement it no longer draws - a comment, a message or a question deleted, a statement a new
+  // version took out or rewrote - is drawn beside the line with Discard my draft and Use it here,
+  // rather than named with a way back that is gone. None until the foot hands the line a tree
+  // whose reads have all answered, so no draft is drawn as gone while a read is out.
+  const targets = useMemo(() => (tree === undefined ? undefined : drawnTargets(tree)), [tree]);
+  const look: OutlineLook = {
+    anchor,
+    cancelReply: CONTROL_LABELS.write_on_issue,
+    end,
+    kept: { issue: ANSWER_LINES.kept_on_issue, statement: ANSWER_LINES.kept_on_statement },
+    kinds: writesKinds ? KINDS : [],
+    placeholder: aimed
+      ? place.phone
+        ? CONTROL_LABELS.reply_placeholder_phone
+        : CONTROL_LABELS.reply_placeholder
+      : place.phone
+        ? CONTROL_LABELS.issue_placeholder_phone
+        : CONTROL_LABELS.issue_placeholder,
+    retry: CONTROL_LABELS.retry,
+    send: CONTROL_LABELS.send,
+    sending: ANSWER_LINES.sending,
+    statementTwice: ANSWER_LINES.statement_twice,
+    statements:
+      targets === undefined
+        ? undefined
+        : {
+            drawn: (kept) => targets.statements.get(kept.artifact)?.has(kept.quote) === true,
+            gone: ANSWER_LINES.kept_statement_gone,
+            goneWaits: ANSWER_LINES.kept_statement_gone_waits,
+          },
+    target:
+      reply !== null ? (
+        <ReplyTargetLine issueKey={issueKey} reply={reply} />
+      ) : statement === undefined ? undefined : (
+        <StatementTargetLine statement={statement} />
+      ),
+    uploadedUnanswered: ANSWER_LINES.uploaded_unanswered,
+    uploading: ANSWER_LINES.uploading,
+  };
   return (
     <MentionComposer
       box="issue-page-composer"
       closed={isClosed}
       kind={writesKinds ? writer.kind : "comment"}
+      listed={targets?.entries}
       mutationKey={writer.sendKey}
       onClose={place.giveBack}
       onKindChange={(next) => {
@@ -392,48 +450,36 @@ function WriteLine({
       // aimed at, or under the issue - and the line writes on the issue again. Neither is refused
       // here: the write store drops the send before it calls this, so no send is out by then.
       onSent={() => finish(writer, place, { to: "newest", under })}
-      outline={{
-        anchor,
-        cancelReply: CONTROL_LABELS.write_on_issue,
-        end,
-        kept: { issue: ANSWER_LINES.kept_on_issue, statement: ANSWER_LINES.kept_on_statement },
-        kinds: writesKinds ? KINDS : [],
-        placeholder: aimed
-          ? place.phone
-            ? CONTROL_LABELS.reply_placeholder_phone
-            : CONTROL_LABELS.reply_placeholder
-          : place.phone
-            ? CONTROL_LABELS.issue_placeholder_phone
-            : CONTROL_LABELS.issue_placeholder,
-        retry: CONTROL_LABELS.retry,
-        send: CONTROL_LABELS.send,
-        sending: ANSWER_LINES.sending,
-        statementTwice: ANSWER_LINES.statement_twice,
-        target:
-          reply !== null ? (
-            <ReplyTargetLine issueKey={issueKey} reply={reply} />
-          ) : statement === undefined ? undefined : (
-            <>
-              <span {...pageChrome}>{CONTROL_LABELS.replying_to}</span>{" "}
-              {/* A statement a Reply aimed the line at is named by its row's words; a row's
-                  text is the coverage read's words, which leave every reference out, so its
-                  tree's references are named whole. One taken up from a held send is its quote
-                  alone, named in plain words as a row's statement is. */}
-              <TargetWords
-                markdown={statement.item?.text ?? statement.quote}
-                namesAll={statement.item !== undefined}
-                source={statement.item?.source}
-                tree={statement.item?.tree}
-              />
-            </>
-          ),
-        uploadedUnanswered: ANSWER_LINES.uploaded_unanswered,
-        uploading: ANSWER_LINES.uploading,
-      }}
+      outline={look}
       owner={owner}
       replyTo={reply}
     />
   );
+}
+
+/** What the outline's tree draws that a draft the write line keeps can go back to: the id of each
+ *  entry a row's Reply answers (`replyItemOf`) - a comment, a message, a question - and each
+ *  statement's whole words as a Reply on its row aims the line (`statementTargetOf`), by its
+ *  document: the two are what make two statements the same (`sameStatement`), and not the row. A
+ *  row the tree draws under two parents counts once. */
+function drawnTargets(root: TreeNode): {
+  readonly entries: ReadonlySet<string>;
+  readonly statements: ReadonlyMap<string, ReadonlySet<string>>;
+} {
+  const entries = new Set<string>();
+  const statements = new Map<string, Set<string>>();
+  for (const node of nodesInOrder(root)) {
+    const item = replyItemOf(node);
+    if (item?.kind === "statement") {
+      const { artifact, quote } = statementTargetOf(item);
+      const words = statements.get(artifact) ?? new Set<string>();
+      words.add(quote);
+      statements.set(artifact, words);
+    } else if (item !== undefined) {
+      entries.add(item.id);
+    }
+  }
+  return { entries, statements };
 }
 
 /** A reply's target line (R3): "Replying to:", the entry's author, and the entry's first line,
@@ -447,12 +493,12 @@ function ReplyTargetLine({ issueKey, reply }: { issueKey: string; reply: ReplyTa
     refetchOnMount: false,
   });
   const comments = useQuery({
-    ...outlineCommentsQuery(issueKey),
+    ...issueCommentsQuery(issueKey),
     enabled: reply.parentKind === "comment",
     refetchOnMount: false,
   });
   const messages = useQuery({
-    ...outlineMessagesQuery(issueKey),
+    ...issueMessagesQuery(issueKey),
     enabled: reply.parentKind === "message",
     refetchOnMount: false,
   });
@@ -479,6 +525,24 @@ function ReplyTargetLine({ issueKey, reply }: { issueKey: string; reply: ReplyTa
   );
 }
 
+/** A statement's target line: "Replying to:" and the statement's words. A statement a Reply aimed
+ *  the line at is named by its row's words; a row's text is the coverage read's words, which
+ *  leave every reference out, so its tree's references are named whole. One taken up from a held
+ *  send is its quote alone, named in plain words as a row's statement is. */
+function StatementTargetLine({ statement }: { statement: StatementTarget }): ReactNode {
+  return (
+    <>
+      <span {...pageChrome}>{CONTROL_LABELS.replying_to}</span>{" "}
+      <TargetWords
+        markdown={statement.item?.text ?? statement.quote}
+        namesAll={statement.item !== undefined}
+        source={statement.item?.source}
+        tree={statement.item?.tree}
+      />
+    </>
+  );
+}
+
 /** The reader's own comment, edited in the line: its words in the box, Save writes them back,
  *  and the outline draws the comment again from the read that answers after and takes the
  *  reader back to its row. */
@@ -494,7 +558,7 @@ function EditLine({
   writer: OutlineWriter;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const comments = useQuery(outlineCommentsQuery(issueKey));
+  const comments = useQuery(issueCommentsQuery(issueKey));
   const tree = comments.data?.find((one) => one.id === editing.id)?.body_tree;
   const owner = useMemo(() => ({ issueKey, kind: "issue" as const }), [issueKey]);
   const mutationKey = useMemo(
@@ -505,6 +569,29 @@ function EditLine({
   // back on the comment's row.
   const back = () =>
     finish(writer, place, { to: "self", under: { id: editing.id, kind: "comment" } });
+  const look: OutlineLook = {
+    cancelReply: CONTROL_LABELS.write_on_issue,
+    end: back,
+    kinds: [],
+    placeholder: place.phone
+      ? CONTROL_LABELS.edit_placeholder_phone
+      : CONTROL_LABELS.edit_placeholder,
+    retry: CONTROL_LABELS.retry,
+    send: CONTROL_LABELS.save,
+    sending: ANSWER_LINES.saving_field,
+    target: (
+      <>
+        <span {...pageChrome}>{CONTROL_LABELS.editing}</span>{" "}
+        <TargetWords
+          markdown={editing.body}
+          source={textSourceOf("comment", editing.id, issueKey)}
+          tree={tree}
+        />
+      </>
+    ),
+    uploadedUnanswered: ANSWER_LINES.uploaded_unanswered,
+    uploading: ANSWER_LINES.uploading,
+  };
   return (
     <MentionComposer
       box="issue-page-composer"
@@ -512,33 +599,11 @@ function EditLine({
       mutationKey={mutationKey}
       onClose={back}
       onSent={back}
-      outline={{
-        cancelReply: CONTROL_LABELS.write_on_issue,
-        end: back,
-        kinds: [],
-        placeholder: place.phone
-          ? CONTROL_LABELS.edit_placeholder_phone
-          : CONTROL_LABELS.edit_placeholder,
-        retry: CONTROL_LABELS.retry,
-        send: CONTROL_LABELS.save,
-        sending: ANSWER_LINES.saving_field,
-        target: (
-          <>
-            <span {...pageChrome}>{CONTROL_LABELS.editing}</span>{" "}
-            <TargetWords
-              markdown={editing.body}
-              source={textSourceOf("comment", editing.id, issueKey)}
-              tree={tree}
-            />
-          </>
-        ),
-        uploadedUnanswered: ANSWER_LINES.uploaded_unanswered,
-        uploading: ANSWER_LINES.uploading,
-      }}
+      outline={look}
       owner={owner}
       saveEdit={async (id, body, carried, bounds) => {
         const saved = await saveCommentEdit(id, body, carried, bounds);
-        await queryClient.invalidateQueries({ queryKey: outlineCommentsQuery(issueKey).queryKey });
+        await queryClient.invalidateQueries({ queryKey: issueCommentsQuery(issueKey).queryKey });
         return saved;
       }}
     />
