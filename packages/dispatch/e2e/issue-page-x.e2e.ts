@@ -1069,16 +1069,18 @@ async function jWalk(page: Page, traffic: ApiRequests, plain: string): Promise<s
 }
 
 /** Details' "Referenced by" count of statement 2, read only where Details draws the focused
- *  row's facts, beside the count `answer` makes; null where it is not read. */
+ *  row's facts, beside the count `answer` makes; null where it is not read. `traffic` is the
+ *  page's one watcher, so the load settles before its rows are opened, as each step's does. */
 async function statementTwoReferences(
   page: Page,
+  traffic: ApiRequests,
   key: string,
   statementTwo: string,
   answer: IssueTreeRead,
   who: string
 ): Promise<number | null> {
   if (!noteOwed(FOCUSED_FACTS_GATE)) return null;
-  await gotoIssue(page, presetPath(key, "conversation"));
+  await gotoSettled(page, traffic, presetPath(key, "conversation"));
   await focusRow(page, await drawnRowId(page, statementTwo, "statement 2"));
   await openDetails(page);
   const count = await referencedByCount(page);
@@ -1128,7 +1130,8 @@ async function expectNothingReserved(
   ).toEqual([]);
 
   // The project lens names no lens he cannot read, and offers no chain.
-  await gotoIssue(page, plain);
+  // Opened before the load settles, a row takes back the focus the opener leaves for the page.
+  await gotoSettled(page, traffic, plain);
   const projectLens = readIdHolding(his.answer, seeded.nodes.projectLens.word, "project lens");
   const lensRow = await focusRow(page, await drawnRowId(page, projectLens, "the project lens"));
   expect(
@@ -1166,7 +1169,14 @@ async function bobsReading(
     await page.setViewportSize(DESKTOP);
     const his = await readAsReader(page, traffic, key, "bob");
     const statementTwo = seeded.whole.requirements[1] ?? "";
-    const references = await statementTwoReferences(page, key, statementTwo, his.answer, "bob");
+    const references = await statementTwoReferences(
+      page,
+      traffic,
+      key,
+      statementTwo,
+      his.answer,
+      "bob"
+    );
     await expectNothingReserved(page, traffic, seeded, reserved, his);
     return { his, references };
   } finally {
@@ -1238,6 +1248,7 @@ test("a node reserved for its author is on its author's page and on nobody else'
     );
     const herReferences = await statementTwoReferences(
       page,
+      traffic,
       key,
       statementTwo,
       her.answer,
