@@ -41,8 +41,8 @@ one through GitHub's compare.
 ## The quarantine check's measured steps and its budget
 
 The budget, by the rule .github/ci-notes/dispatch-browser.md states for every job. Over the
-nightly's quarantine-check jobs of 2026-11-21 and 22 that succeeded, 17 of them, the check step
-took 77 to 104 s on the runner. The longest was job 137021330193 of run 44961580846, 23:28:02Z to
+nightly's quarantine-check jobs of 2026-11-21 and 22 that succeeded, 37 of them, the check step
+took 68 to 104 s on the runner. The longest was job 137021330193 of run 44961580846, 23:28:02Z to
 23:29:46Z on 2026-11-21. On 2026-11-22 at 03:15Z, from this issue's pod, the tool's reads of the
 same 14 days took 22 s: 1,195 runs in 34 REST calls and 13 GraphQL calls costing 132 points. The
 budget takes the longer, 104 x 1.15 = 120 s. The steps without a budget, at their maximum over
