@@ -131,7 +131,7 @@ person's later request is a requirement only once written into the spec and appr
 
 A root under an approved ancestor can be written as a view on it, and open its gated steps on the
 ancestor's approval with no approval of its own. The ancestor is the nearest issue up the root's
-`child_of` chain, in any project (read with `dispatch read`), whose document for the step has a review or an open
+`child_of` chain (read with `dispatch read`) whose document for the step has a review or an open
 approval request; never take one farther up. A route version is a version of the ancestor's
 document that adds, revises, restores or takes out a requirement a root sent up; its approval
 request is a route request.
