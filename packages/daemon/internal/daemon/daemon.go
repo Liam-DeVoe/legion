@@ -68,11 +68,15 @@ const (
 	// (storeOpenRetry, appMintRetry, imageProbeRetry); the work after each has a budget anew.
 	bootTimeout = 30 * time.Second
 	// stalePluginReadBound bounds each read of a claim's plan the stale-plugin pass makes, at boot
-	// and at each sweep (refreshStalePlugins): a store that takes the read and never answers ends
-	// that one read, which the next sweep makes again, and holds neither the pass nor the boot. It
-	// bounds a read rather than the pass, as the replay's budget is one fact's (replayTerminal), so
-	// a fleet of any size is read whole.
+	// and at each sweep (refreshStalePlugins): a store that takes a read and never answers ends
+	// that one read, which the next sweep makes again. It bounds one read; the boot's pass as a
+	// whole is bounded by stalePluginBootBound.
 	stalePluginReadBound = bootTimeout
+	// stalePluginBootBound bounds the boot's stale-plugin pass as a whole (bootStalePlugins). The
+	// API starts only once that pass returns, so a store that takes reads and never answers holds
+	// the boot this long at most, whatever the number of stale claims, and the claims the pass has
+	// not read by then are named in one line and left to the next sweep.
+	stalePluginBootBound = bootTimeout
 	// storeOpenAttempt bounds one attempt to open the store (storeOpenRetry). With no
 	// connect_timeout in the DSN, pgxpool bounds a connection it opens at two minutes, so without
 	// this bound a connection the database takes and never answers would hold the attempt that long.
@@ -2150,17 +2154,25 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 		s.reconcileOrphans(store.ForConcurrentWorker(s.supervisor.ctx))
 	}()
 	s.endPluginRounds(s.claims)
-	// The pass reads the plan of a claim's issue, and the boot's budget can be spent by now: the
-	// replay above runs on a budget of its own, since the boot's would end it (run). A read on the
-	// spent budget fails, and the pass decides nothing for that claim, so a daemon that cannot
-	// relaunch would never write the boot's line for it. So the pass runs on the machines' context,
-	// which the daemon's stop ends as it ends boot, with a hold mark of its own, and bounds each read
-	// itself (stalePluginReadBound).
-	s.refreshStalePlugins(store.ForConcurrentWorker(s.supervisor.ctx), s.claims, "boot")
+	s.bootStalePlugins()
 	if len(unfinished) > 0 {
 		s.relaunchUnfinished(unfinished, reconciled)
 	}
 	return nil
+}
+
+// bootStalePlugins is the boot's stale-plugin pass (refreshStalePlugins, trigger "boot"). It reads
+// the plan of a claim's issue, and the boot's budget can be spent by now: the replay before it runs
+// on a budget of its own, since the boot's would end it (run). So it runs on the machines'
+// context, which the daemon's stop ends as it ends the boot, with a hold mark of its own. The API
+// starts only once it returns, so it is bounded as a whole (stalePluginBootBound), whatever the
+// fleet's size. A daemon that cannot relaunch onto a plugin writes its boot line for each stale
+// claim the pass read within that bound; one line names how many it did not read, and the next
+// sweep reads them.
+func (s *supervision) bootStalePlugins() {
+	pass, end := context.WithTimeout(store.ForConcurrentWorker(s.supervisor.ctx), stalePluginBootBound)
+	defer end()
+	s.refreshStalePlugins(pass, s.claims, "boot")
 }
 
 // endPluginRounds takes every claim this boot restored out of the plugin update round an earlier
@@ -2325,13 +2337,16 @@ func (s *supervision) refreshStalePlugins(ctx context.Context, claims []supervis
 	parked, refreshes := s.parkedWakes()
 	s.refreshGate.Correct(refreshes)
 	refused := 0
-	for _, c := range claims {
+	left := 0
+	for i, c := range claims {
 		if ctx.Err() != nil {
+			left = len(claims) - i
 			break
 		}
 		stale, err := staleForTheLane(ctx, c, noInstall)
 		if err != nil {
 			if ctx.Err() != nil {
+				left = len(claims) - i
 				break
 			}
 			s.log.Warn("supervise: the stale-plugin pass could not read whether this claim's launch installs a plugin, so it decides nothing for the claim; the next sweep reads it again",
@@ -2363,6 +2378,12 @@ func (s *supervision) refreshStalePlugins(ctx context.Context, claims []supervis
 			continue
 		}
 		s.supervisor.post(c.Token, supervise.StalePlugin{Claim: c.Token, Trigger: trigger, Admitted: true})
+	}
+	// A pass whose own bound ended (bootStalePlugins) says how many claims it left unread; a pass
+	// the daemon's stop ended says nothing, since no sweep follows a stop.
+	if left > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		s.log.Warn("supervise: the stale-plugin pass's bound ended before it read every claim; the next sweep reads the rest",
+			"claims", left, "trigger", trigger)
 	}
 	if refused > 0 {
 		s.log.Info("supervise: the stale-plugin refresh gate is full; these claims are left to a later sweep",
