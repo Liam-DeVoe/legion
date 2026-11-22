@@ -4928,9 +4928,10 @@ async function expectEveryAction(
   }
 }
 
-/** k-every-action's items: a question nobody holds, a question with options the reader can ask
- *  back on, an approval request, a snoozed question, a reply thread and an agent thread; and the
- *  issues of the first two, which Assign to me and Ask back write to. */
+/** k-every-action's items: a question nobody holds, on an issue whose assignee is cleared, a
+ *  question with options the reader can ask back on, an approval request, a snoozed question, a
+ *  reply thread and an agent thread; and the issues of the first two, which Assign to me and Ask
+ *  back write to. */
 interface EveryActionSeed {
   readonly unassigned: string;
   readonly askBack: string;
@@ -4949,6 +4950,10 @@ async function seedEveryAction(): Promise<EveryActionSeed> {
     return { id: (await createAsk(issue.key, input, asker)).id, issue: issue.key };
   };
   const unassigned = await question("Lease rollout", { question: "Who takes the lease rollout?" });
+  // Dispatch gives every issue it creates an assignee - alice, who creates it - and only a write
+  // of none clears it (`issue_assignee.go`'s `defaultAssignee`), so Assign to me's write is what
+  // makes the reader its assignee.
+  await patchIssue(unassigned.issue, { assignee: null });
   const askBack = await question("Mirror replay", {
     options: SHIP_OR_HOLD,
     question: "Ship the mirror replay?",
@@ -4977,9 +4982,10 @@ async function seedEveryAction(): Promise<EveryActionSeed> {
 /** The two places k-every-action reads the Inbox in. */
 type EveryActionPlace = "the reading pane" | "card mode";
 
-/** Opens the Inbox where `place` draws it over k-every-action's items. Every project names a
- *  default assignee, so no seed makes a question nobody holds: the Inbox's reads answer as if the
- *  first one were. */
+/** Opens the Inbox where `place` draws it over k-every-action's items. The first question's issue
+ *  holds nobody, but every project names a default assignee, and a question on an issue nobody
+ *  holds waits on its project's (`coalesce(a.asked_of, i.assignee, p.default_assignee)`), so no
+ *  seed makes a question nobody holds: the Inbox's reads answer as if the first one were. */
 async function openEveryActionInbox(
   page: Page,
   place: EveryActionPlace,
@@ -5171,7 +5177,12 @@ async function everyActionRunSteps(page: Page, place: EveryActionPlace): Promise
   await page.keyboard.press("Escape");
   await expect(decline, step("Escape closes the decline note")).toHaveCount(0);
 
-  // Assign to me makes the reader the issue's assignee.
+  // Assign to me makes the reader the issue's assignee. The issue holds nobody before it, so the
+  // assignee read after it is the write's.
+  expect(
+    (await getIssue(seed.issues.unassigned)).assignee,
+    step("Assign to me: the issue holds nobody before it")
+  ).toBeNull();
   const assigns = issueWrites(page, seed.issues.unassigned);
   await take(seed.unassigned);
   await runFromCommandBar(page, "Assign to me", step("Assign to me"));

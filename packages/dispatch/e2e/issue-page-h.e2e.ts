@@ -1,4 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
+import { assigneeControlName } from "../web/src/features/issue/AssigneeControl";
 import { labelsControlName } from "../web/src/features/issue/IssueLabels";
 import { repoControlName, repoTextControlName } from "../web/src/features/issue/RepoControl";
 import {
@@ -1202,21 +1203,27 @@ test("each control in Details saves and reads back", async ({ browser }) => {
       }),
       "TWO resolves to no repository, but its Repository row does not read None"
     ).toHaveText(CONTROL_LABELS.none);
-    await addControl(page).click();
-    // Add lists Assignee while TWO has no assignee, for the header's assignee control, which the
-    // menu reaches by its mark: an issue someone is assigned to has a value for it, and Add lists
-    // no property that has one. The menu is read once the header that draws that control is drawn.
+    // TWO has no assignee (the seed clears the one Dispatch gives every issue it creates), so the
+    // header's assignee control, which Add reaches by its mark, draws Unassigned, and Add lists
+    // Assignee for it: an issue someone is assigned to has a value for it, and Add lists no
+    // property that has one. Both are read before Add opens, once the header that draws that
+    // control is drawn.
     const twoStored = await getIssue(two);
+    expect(twoStored.assignee, "TWO has an assignee, so Add lists no Assignee").toBeNull();
     await expect(
       issuePage(page).getByRole("heading", { level: 1, name: twoStored.title })
     ).toBeVisible();
-    const listsAssignee = twoStored.assignee === null;
+    await expect(
+      issuePage(page).getByLabel(assigneeControlName(two), { exact: true }),
+      "the header draws an assignee of TWO"
+    ).toHaveAccessibleName(`${assigneeControlName(two)} ${CONTROL_LABELS.unassigned}`);
+    await addControl(page).click();
     await expect(
       openMenu(page).getByRole("menuitem"),
       "the Add menu lists other than TWO's empty fields, in `IssueAddMenu`'s order"
     ).toHaveText([
       PROPERTY_LABELS.parent,
-      ...(listsAssignee ? [PROPERTY_LABELS.assignee] : []),
+      PROPERTY_LABELS.assignee,
       PROPERTY_LABELS.labels,
       PROPERTY_LABELS.route,
       PROPERTY_LABELS.blocked_by,
@@ -1926,9 +1933,8 @@ const DRAFT_ONLY_LABEL = "label-draft-only";
 // right after the one that goes, so the page's focus rescue, which would answer a focus left to
 // fall with the control now at the lost one's place (`handOn`), would put it on that row: the
 // text box holding the focus is the list's own hand-off.
-// @webkit @firefox: where each engine leaves the focus of an element a commit takes off the page
-// (the HTML spec's focus fixup), which the list's check reads (`focusLost`: the body, or an
-// element no longer on the page).
+// @webkit @firefox: each engine's handling of a focused element a commit takes off the page,
+// which the list reads through `focusLost` (the body, or an element no longer on the page).
 test("Details' labels list gives its text box the focus when Enter on the focused row of a label only the draft holds takes that row away @firefox @webkit", async ({
   browser,
 }) => {
