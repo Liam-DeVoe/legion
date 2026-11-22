@@ -279,14 +279,16 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		(!installing && !covered && (drifted ||
 			len(r.leakCheckDrift(recordedLeakChecker(s.Spec.PodTemplate.Metadata.Annotations, s.Annotations, string(pod.UID)))) > 0))
 	if !replace {
-		// A pod it would keep that was built before the deployment defined this role has no
-		// launcher, Secret or volume of the role: replacing it here would end every role in it
-		// and delete the issue's disk with whatever they did not push, so the launch writes
-		// nothing and waits for the pod's update round or its release (runtime.ErrAwaitsPodUpdate,
-		// PodLacksRole, rolesDrift). A launch of a role the template holds goes on as before.
-		if held := templateRoles(s); len(held) > 0 && !slices.Contains(held, spec.Role) {
-			return runtime.Locator{}, fmt.Errorf("launch %s: the pod %s of %s was built without the role %s: %w",
-				spec.Claim, pod.UID, spec.Issue, spec.Role, runtime.ErrAwaitsPodUpdate)
+		// A pod it would keep that was built before the deployment defined the slot this claim
+		// runs in (slotOf, its agent's name) or the role of its step has no launcher, Secret or
+		// volume of that slot, or none of that role's own resources (its role_config_files
+		// overlays): replacing it here would end every role in it and delete the issue's disk
+		// with whatever they did not push, so the launch writes nothing and waits for the pod's
+		// update round or its release (runtime.ErrAwaitsPodUpdate, PodLacksRole, rolesDrift),
+		// naming what the pod lacks. A launch whose slot and role the template holds goes on.
+		if lacks := templateLacks(templateRoles(s), slotOf(spec.Claim), spec.Role); lacks != "" {
+			return runtime.Locator{}, fmt.Errorf("launch %s: the pod %s of %s was built without %s: %w",
+				spec.Claim, pod.UID, spec.Issue, lacks, runtime.ErrAwaitsPodUpdate)
 		}
 		bound, err := r.launcherBound(bounded, s, pod, &l)
 		if err != nil {

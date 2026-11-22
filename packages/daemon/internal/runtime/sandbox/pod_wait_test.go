@@ -128,6 +128,51 @@ func TestALaunchTheSupervisorMakesIntoAPodBuiltWithoutItsRoleIsRefusedNamingTheP
 	}
 }
 
+// A claim runs in the slot of its agent (slotOf) and on the role of its step, and a launch into a
+// pod the runtime keeps needs both of that pod: the slot's launcher, Secret and volumes, and the
+// role's own resources, its role_config_files overlays among them. A keyed agent's slot and its
+// step's role can be two names, so a launch into a pod built before a role of the deployment waits
+// where the pod lacks either, its text naming the one it lacks, and goes on where it holds both.
+func TestALaunchIntoAKeptPodWaitsForTheSlotOfItsClaimAndTheRoleOfItsStep(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		token claim.Token
+		role  claim.Role
+		// lacks is what the refusal names, "" for a launch that goes on.
+		lacks string
+	}{
+		{"the pod lacks the slot of the claim's agent", checkerToken, claim.RoleTester, "the slot checker"},
+		{"the pod lacks the role of the step", workerToken, "checker", "the role checker"},
+		{"the pod holds the slot and the role", workerToken, claim.RoleReviewer, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newRig(t, nil)
+			loc := podBuiltBeforeChecker(t, g)
+			g.clearActions()
+			spec := testSpec(t, tc.token, tc.role, testTree)
+			if tc.lacks == "" {
+				if launched := g.spawn(spec); launched.Sandbox.PodUID != loc.Sandbox.PodUID {
+					t.Errorf("the launch went into the pod %s, want the kept pod %s", launched.Sandbox.PodUID, loc.Sandbox.PodUID)
+				}
+				return
+			}
+			_, err := g.r.Spawn(g.ctx, spec)
+			if !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
+				t.Errorf("the launch = %v, want an error that is runtime.ErrAwaitsPodUpdate", err)
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.lacks) || !strings.Contains(err.Error(), loc.Sandbox.PodUID) {
+				t.Errorf("the launch = %v, want its text to name %s and the pod %s", err, tc.lacks, loc.Sandbox.PodUID)
+			}
+			if writes := g.writes(); len(writes) > 0 {
+				t.Errorf("the launch wrote %v, want nothing written", writes)
+			}
+			if pod := g.pod(loc.Sandbox.Name); pod == nil || string(pod.UID) != loc.Sandbox.PodUID {
+				t.Errorf("the issue's pod is %v, want the pod %s kept", pod, loc.Sandbox.PodUID)
+			}
+		})
+	}
+}
+
 // The gh refresh of a pod built before a role of the deployment reads the Secrets of the roles the
 // pod was built with, its own --role values, and never the Secret the pod has no role of: that
 // read would fail at every tick and log a failed refresh for a role no process of the pod runs.
