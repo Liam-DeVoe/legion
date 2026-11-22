@@ -1508,8 +1508,10 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 			"check_runs = '[]'::jsonb, statuses = '[]'::jsonb, merge_forward = null where " + where,
 		// A role that stood at two steps has a row for each, and the clear below gives every row of
 		// the role the same step, ('', 0), so the rows of one role fold first into the one whose
-		// entry is the highest: the number the claim's next entry rises from, which is never reset.
-		// The other rows are the last generation's steps, whose reports go with the generation.
+		// entry is the highest: the number the role's next entry rises from, which is never reset.
+		// The other rows are the last generation's steps, whose reports go with the generation. A
+		// claim whose rows go keeps the entry it was last given on its claims row, which its next
+		// step's entry also rises above (workflow's enter).
 		"delete from phases p where " + where + " and exists (select 1 from phases q where q.issue = p.issue and q.role = p.role " +
 			"and (q.entry, q.step_task, q.step_place) > (p.entry, p.step_task, p.step_place))",
 		// The entry's task goes with the run, and the entry itself stays where it stands: the
