@@ -175,7 +175,8 @@ function lineOf(runs: DisplayTree[]): DisplayTree {
  * reading (`storedReading`) named (`storeAddressesIn`), its text runs in order and spaced as
  * `wordsOf` joins them, white space collapsed. A name's run keeps one mark, its link: a bare
  * address's, an autolink's, and an author's own words linked to a node the index holds, words
- * in a code span among them. Every other run is plain text, so an author's link to a node the
+ * in a code span among them but for code words that are the link's own address, which link
+ * nothing (`linkedRuns`). Every other run is plain text, so an author's link to a node the
  * index does not hold, or to anything else, reads as its words. A run in code - marked as inline
  * code, or inside a code block - reads as written, a name's run in a code span too, and every
  * other run's words are written by `others`. A name's run joins the one before it where both
@@ -399,7 +400,7 @@ function namedRuns(
   const marks = Array.isArray(run.marks) ? (run.marks as DisplayTree[]) : NO_MARKS;
   const code = marks.some((mark) => mark.type === "inlineCode");
   const link = inLink ? undefined : marks.find((mark) => mark.type === "link");
-  if (link !== undefined) return linkedRuns(run, text, link, index, code);
+  if (link !== undefined) return linkedRuns(run, text, link, index);
   if (code || !cites(text)) return undefined;
   const runs: DisplayTree[] = [];
   // The run's own words since the last name, the kind's words written into them included.
@@ -432,24 +433,27 @@ function namedRuns(
 }
 
 /**
- * The runs the text run `run`, of words `text`, is written as where its link mark `link` links;
- * `code` says the run stands in inline code. A link to a store address of a lens, a risk, a
- * constraint or a finding (`linkedAddress`): an autolink, whose words are that address, is named
- * as a bare address is (`namedRuns`); any other words are the author's, each store address in
- * them named as plain words, linked as a name is - the address as the link's `href`, the path of
- * the node's row as its `title` - where `index` holds the node, and with no link otherwise, which
- * would go nowhere. Words in code are linked or unlinked so, and stay as written: no store
- * address in them is named, the link's own address included. A link to anything else keeps the
- * run's marks, the author's link among them, and only each store address in its words is named,
- * as plain words; undefined where its words hold none or are code, so it stays as its author
- * wrote it.
+ * The runs the text run `run`, of words `text`, is written as where its link mark `link` links.
+ * A link to a store address of a lens, a risk, a constraint or a finding (`linkedAddress`): an
+ * autolink, whose words are that address, is named as a bare address is (`namedRuns`); any other
+ * words are the author's, each store address in them named as plain words, linked as a name is -
+ * the address as the link's `href`, the path of the node's row as its `title` - where `index`
+ * holds the node, and with no link otherwise, which would go nowhere. Words in code - the run's
+ * own marks hold inline code - are linked or unlinked so, and stay as written: no store address
+ * in them is named, the link's own address included. Code whose words are that very address
+ * links nothing, so every row draws it as written, as the body's reference pass draws an anchor
+ * whose words are its `dispatch://` address (`refs/RefLink.tsx`'s `collectReferenceAnchors`). A
+ * link to anything else keeps the run's marks, the author's link among them, and only each store
+ * address in its words is named, as plain words; undefined where its words hold none or are code,
+ * so it stays as its author wrote it. In a reading drawn as a body, each run of one author link
+ * keeps its own link beside its other marks, and how the shared renderer draws a marked link
+ * (several anchors) is decision 407's, part N's; a one-line row joins them (`lineRuns`).
  */
 function linkedRuns(
   run: DisplayTree,
   text: string,
   link: DisplayTree,
-  index: () => StoreIndex,
-  code: boolean
+  index: () => StoreIndex
 ): DisplayTree[] | undefined {
   const address = linkedAddress(link);
   if (address === undefined) return namedRuns(run, text, index, true);
@@ -457,7 +461,10 @@ function linkedRuns(
   const { marks: _, ...bare } = run;
   const marks = (run.marks as DisplayTree[]).filter((mark) => mark !== link);
   const unlinked = marks.length === 0 ? bare : { ...bare, marks };
-  if (!code && storeAddressReference(text) === address) return namedRuns(unlinked, text, index);
+  const code = marks.some((mark) => mark.type === "inlineCode");
+  if (storeAddressReference(text) === address) {
+    return code ? [unlinked] : namedRuns(unlinked, text, index);
+  }
   const named = index().get(address);
   const linked =
     named === undefined

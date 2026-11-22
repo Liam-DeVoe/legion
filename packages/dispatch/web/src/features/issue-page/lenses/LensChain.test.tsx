@@ -811,9 +811,13 @@ const WARNING_ROW = {
   risk: "d4000000-0000-4000-8000-000000000004",
 } as const;
 
-/** The early warning `earlyWarning` of a risk row drawn from the tree read (`buildIssueTree`),
- *  as its line draws it: its author's words, and each link in it as its words and its address. */
-async function earlyWarningDrawn(earlyWarning: string): Promise<[string, [string, string][]]> {
+/** Draws a risk row from the tree read (`buildIssueTree`) whose early warning is `earlyWarning`,
+ *  and waits until its line draws `expected`: its author's words, and each link in it as its
+ *  words and its address. */
+async function expectEarlyWarningDrawn(
+  earlyWarning: string,
+  expected: [string, [string, string][]]
+): Promise<void> {
   await warmMarkdownRenderer();
   const { constraint, lens, risk } = WARNING_ROW;
   const root = buildIssueTree({
@@ -837,21 +841,17 @@ async function earlyWarningDrawn(earlyWarning: string): Promise<[string, [string
   if (drawn === undefined) throw new Error("the tree draws no row of the risk");
   const view = renderOnIssue(<LensRow drawn={drawn} />);
   try {
-    let read: [string, [string, string][]] = ["", []];
     await waitFor(() => {
       const line = view.container.querySelector('[data-lens-line="early_warning"]');
-      const words = line?.querySelector("[data-author-text]")?.textContent ?? "";
-      expect(words).not.toBe("");
       const links = [...(line?.querySelectorAll("a") ?? [])];
-      read = [
-        words,
+      expect([
+        line?.querySelector("[data-author-text]")?.textContent ?? "",
         links.map((link): [string, string] => [
           link.textContent ?? "",
           link.getAttribute("href") ?? "",
         ]),
-      ];
+      ]).toEqual(expected);
     });
-    return read;
   } finally {
     view.unmount();
   }
@@ -863,9 +863,7 @@ async function earlyWarningDrawn(earlyWarning: string): Promise<[string, [string
 // (`buildIssueTree`).
 test("a risk row draws its early warning's address of a constraint as a link to the constraint's row", async () => {
   const { constraint } = WARNING_ROW;
-  expect(
-    await earlyWarningDrawn(`A reply breaks dispatch://constraint/${constraint} first.`)
-  ).toEqual([
+  await expectEarlyWarningDrawn(`A reply breaks dispatch://constraint/${constraint} first.`, [
     "A reply breaks RFC 9110 first.",
     [["RFC 9110", `/issues/${KEY}?node=${constraint}`]],
   ]);
@@ -876,12 +874,11 @@ test("a risk row draws its early warning's address of a constraint as a link to 
 // that opens the constraint's row (`?node=`), not one link for each run of them.
 test("a risk row draws its early warning's author's link of marked words as one link", async () => {
   const { constraint } = WARNING_ROW;
-  expect(
-    await earlyWarningDrawn(
-      `A reply breaks [the **HTTP** rule](dispatch://constraint/${constraint}) first.`
-    )
-  ).toEqual([
-    "A reply breaks the HTTP rule first.",
-    [["the HTTP rule", `/issues/${KEY}?node=${constraint}`]],
-  ]);
+  await expectEarlyWarningDrawn(
+    `A reply breaks [the **HTTP** rule](dispatch://constraint/${constraint}) first.`,
+    [
+      "A reply breaks the HTTP rule first.",
+      [["the HTTP rule", `/issues/${KEY}?node=${constraint}`]],
+    ]
+  );
 });

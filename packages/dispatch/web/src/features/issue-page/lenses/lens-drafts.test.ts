@@ -27,7 +27,7 @@ import {
 import { type TreeWords, treeDraftsFrom } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 import { check } from "../verification-filter/verification-fixtures";
-import { type FactParts, kindWords, type LensFacts } from "./lens-drafts";
+import { type FactParts, factText, kindWords, type LensFacts } from "./lens-drafts";
 import { lensReadId } from "./lens-reads";
 
 /**
@@ -214,13 +214,10 @@ function factsOf(row: TreeNode): LensFacts {
   return row.lens;
 }
 
-/** A fact line's words as its row draws them: a string as it stands, and parts joined with
- *  nothing between them, each string as its text and each chip as its words alone; `""` for a
- *  line the row does not carry. */
+/** A fact line's words read through `factText`, as its row draws them; `""` for a line the row
+ *  does not carry. */
 function lineText(line: string | FactParts | undefined): string {
-  if (line === undefined) return "";
-  if (typeof line === "string") return line;
-  return line.map((part) => (typeof part === "string" ? part : part.words)).join("");
+  return line === undefined ? "" : factText(line);
 }
 
 /** The lens facts of a node that carries no chip and no fact of its own. */
@@ -573,9 +570,9 @@ test("a statement's and an early warning's words read a constraint they cite by 
 // A risk's fact lines that name a node the answer holds are their parts: the text, and a chip for
 // each name, which holds the node's address, the words the line names it by and its read id, so
 // the line links its row. An early warning's bare address of a constraint is named by the
-// constraint's words, and a prevention's author's link to a lens keeps the author's words. Joined,
-// the parts are the line's words, which stay as they were. A line that cites a node the answer
-// does not hold names it by its kind's word and is its words, with no parts.
+// constraint's words, and a prevention's author's link to a lens keeps the author's words. A line
+// that cites a node the answer does not hold names it by its kind's word and is its words, with
+// no parts.
 test("a risk's fact lines that name a node the answer holds carry a chip of that node", () => {
   const constraint = "e5000000-0000-4000-8000-000000000005";
   const toConstraint = `dispatch://constraint/${constraint}`;
@@ -607,10 +604,6 @@ test("a risk's fact lines that name a node the answer holds carry a chip of that
   const named = factsOf(rowOf(root, "risk-1"));
   const unheld = factsOf(rowOf(root, "risk-2"));
 
-  expect([named.earlyWarning, named.prevention].map(lineText)).toEqual([
-    "A reply breaks RFC 9110 first.",
-    "Run this lens again.",
-  ]);
   expect({ earlyWarning: named.earlyWarning, prevention: named.prevention }).toEqual({
     earlyWarning: [
       "A reply breaks ",
@@ -1133,6 +1126,72 @@ test("a server's reading links an author's code words to the constraint's row", 
       text: "RFC 9110",
       type: "text",
     },
+    { text: ".", type: "text" },
+  ]);
+});
+
+// An author's link whose words are a code span of the held constraint's own address,
+// ``[`dispatch://constraint/<uuid>`](dispatch://constraint/<uuid>)``, links nothing: a verdict
+// draws its words as written, the code's words, with no link, as the body's reference pass draws
+// an anchor whose words are its `dispatch://` address.
+test("a verdict's author's link whose code words are its own address draws no link", () => {
+  const constraint = "e5000000-0000-4000-8000-000000000005";
+  const held = `dispatch://constraint/${constraint}`;
+  const { root } = drawn(
+    answer(
+      [
+        block("r1", "requirement", KEY, SPEC, 0),
+        lens(FIRST, "r1", "2026-11-05T09:00:00Z", {
+          attributes: { verdict: `Held to [\`${held}\`](${held}).` },
+        }),
+        bare(constraint, "constraint", KEY, { attributes: { standard: "HTTP semantics" } }),
+        PRE_MORTEM,
+      ],
+      [tuple("has_kind", FIRST, PRE_MORTEM.id)]
+    )
+  );
+  const verdict = rowOf(root, FIRST);
+
+  expect(verdict.text).toBe(`Held to ${held}.`);
+  expect(linksIn(verdict.tree)).toEqual([]);
+});
+
+// A server's reading of that link, a run of the held constraint's own address that carries a
+// code mark and a link to that address, keeps the code mark and its words, and carries no link.
+test("a server's reading of an author's link whose code words are its own address carries no link", () => {
+  const constraint = "e5000000-0000-4000-8000-000000000005";
+  const held = `dispatch://constraint/${constraint}`;
+  const tree: DisplayTree = {
+    content: [
+      {
+        content: [
+          { text: "Held to ", type: "text" },
+          {
+            marks: [{ type: "inlineCode" }, { attrs: { href: held }, type: "link" }],
+            text: held,
+            type: "text",
+          },
+          { text: ".", type: "text" },
+        ],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
+  const { root } = drawn(
+    answer([
+      block("r1", "requirement", KEY, SPEC, 0, {
+        text: `Held to [\`${held}\`](${held}).`,
+        text_tree: tree,
+      }),
+      bare(constraint, "constraint", KEY, { attributes: { standard: "HTTP semantics" } }),
+    ])
+  );
+  const statement = rowOf(root, blockNodeId("spec", "r1"));
+
+  expect((statement.tree?.content as DisplayTree[] | undefined)?.[0]?.content).toEqual([
+    { text: "Held to ", type: "text" },
+    { marks: [{ type: "inlineCode" }], text: held, type: "text" },
     { text: ".", type: "text" },
   ]);
 });
