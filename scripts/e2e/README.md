@@ -4155,11 +4155,12 @@ Each item below names an input and its default, then what it means.
   The script makes the path absolute, because `dash-refused` runs the command in another directory.
   A negative control names the command of another tree here, with no change to the checkout
 
-- `VERIFICATION_RESULTS_E2E_RELEASE_BEFORE` — unset: main at the commit the change's branch last merged
+- `VERIFICATION_RESULTS_E2E_RELEASE_BEFORE` — unset: the newest commit of main without this change
 
   the commit of the release before this change, whose build writes `older-rows`' database.
-  Unset, the script reads it at each run as `git merge-base` of HEAD with `origin`'s main (`release_before_of_head`): it clones main's commits alone, with no trees, into a bare repository of the run's own, which takes HEAD's commits from this checkout's history, or from `origin` for a shallow checkout such as CI's.
-  So no merge of main leaves it stale.
+  Unset, the script reads it at each run (`release_before_of_head`): it clones main's commits and trees, no file contents, into a bare repository of the run's own, which takes HEAD's commits from this checkout's history, or from `origin` in one fetch for a shallow checkout such as CI's, and takes `git merge-base` of HEAD with `origin`'s main.
+  On a branch that has not merged that is the answer, so no merge of main leaves it stale.
+  Where the merge base holds this change's first migration (`20261117111040_pull_request_texts`), the change is on main, and the answer is the first parent of the commit on main's first-parent line that added that migration, the commit of main just before the merge: from main's nightly run and from every later branch, the release before is still a build without this change.
   The script takes its `packages/envoy` with `git archive` and builds `./cmd/dispatch`: from this checkout's repository where it holds the commit, else from a bare repository of the run's own that fetches that one commit at depth 1 from `origin`.
   The working copy is never touched
 
