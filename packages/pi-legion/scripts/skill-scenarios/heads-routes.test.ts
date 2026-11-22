@@ -406,6 +406,51 @@ test("reviews and comments: the writes kept, the lists, a review by its id, and 
   });
 });
 
+// Catches: a flag that comes first after the command unseen, as when a route's lookahead wanted a
+// space before the flag and the command's own space had been taken already: `-X GET` first kept a
+// read of the reviews or comments as one written, a body (`--input`, `-f`) or `-X POST` first and
+// alone left a review or comment unkept and answered it as the list, and `--required` first
+// answered for the first pull request. Each row asserts the route's answer and what it keeps.
+for (const [call, expected] of [
+  [
+    "gh api -X GET repos/example/widgets/pulls/702/reviews -f per_page=100",
+    { match: "^gh api .*pulls/702/reviews", stdout: [], list: "reviews", pull: 702 },
+  ],
+  [
+    "gh api --method GET repos/example/widgets/issues/703/comments -f per_page=100",
+    { match: "^gh api .*issues/703/comments([ ?]|$)", stdout: [], list: "comments", pull: 703 },
+  ],
+  [
+    "gh api --method=GET repos/example/widgets/pulls/703/reviews -F per_page=100",
+    { match: "^gh api .*pulls/703/reviews", stdout: [], list: "reviews", pull: 703 },
+  ],
+  [
+    "gh api -XGET repos/example/widgets/issues/702/comments --raw-field per_page=100",
+    { match: "^gh api .*issues/702/comments([ ?]|$)", stdout: [], list: "comments", pull: 702 },
+  ],
+  ["gh api -X POST repos/example/widgets/pulls/702/reviews -f event=APPROVE", { keep: "review" }],
+  [
+    "gh api --method=POST repos/example/widgets/pulls/702/reviews --input r.json",
+    { keep: "review" },
+  ],
+  ["gh api -XPOST repos/example/widgets/pulls/703/reviews", { keep: "review" }],
+  ["gh api --input r.json repos/example/widgets/pulls/702/reviews", { keep: "review" }],
+  ["gh api -f body=x repos/example/widgets/issues/703/comments", { keep: "comment" }],
+  [
+    "gh pr checks --required 703",
+    { stderr: "no required checks reported on the 'legion/ACME-7-703' branch\n", exit: 1 },
+  ],
+] as const satisfies readonly (readonly [string, Route])[]) {
+  test(`a flag first after the command is seen as it is later: ${call}`, () => {
+    const route = routeOf(plain, call);
+    expect(route).toMatchObject(expected);
+    expect({ keep: route.keep, list: route.list }).toEqual({
+      keep: "keep" in expected ? expected.keep : undefined,
+      list: "list" in expected ? expected.list : undefined,
+    });
+  });
+}
+
 // Catches: the REST reads of a pull request answered for another one, its files without the
 // status or patch GitHub gives, its commit without the base as parent, and a PATCH of its body
 // answered by a read.
