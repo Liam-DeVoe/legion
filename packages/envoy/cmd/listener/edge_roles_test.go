@@ -461,6 +461,46 @@ func TestAnEdgeRefusedRoleForwardNamesNoHiddenHolder(t *testing.T) {
 	}
 }
 
+// A role send whose window ends after its last forward ended while an earlier forward under its
+// Nats-Msg-Id was still in process (roleSend.endedInProcess) names no holder the edge does not
+// show either. That forward's error can name the holder's agent subject: a send of it after the
+// stream's in-process refusal that publishConfirmed could not confirm carries the subject it went
+// to. So at the edge the answer for a holder the scope does not show is the listener's own text,
+// still the 503 maybe_stored with Retry-After that every listener gives such a send, and the
+// error goes to the log; a holder the scope shows is answered with the error as it is. Control:
+// with edge mode off, the scope shows every holder and the row fails.
+func TestAnEdgeRoleSendThatEndedInProcessNamesNoHiddenHolder(t *testing.T) {
+	rig := newEdgeRig(t)
+	var scope *edgeScope
+	if rig.edgeOn() {
+		scope = &edgeScope{projects: rig.projects}
+	}
+	const hidden, shown = "ses_edge_in_process_pub", "ses_edge_in_process_priv"
+	for _, holder := range []struct {
+		id       string
+		projects []string
+	}{{hidden, []string{"PUB"}}, {shown, []string{"PRIV"}}} {
+		recorder := httptest.NewRecorder()
+		send := &roleSend{w: recorder, record: &requestRecord{logger: rig.harness.config.logger, line: "listener publish", laneKey: "topic"},
+			d: rig.deps, scope: scope, role: "legion-priv-priv-5-tester", arrived: time.Now()}
+		send.hold(roles.Resolution{State: roles.Live, Holder: holder.id, HolderState: session.Live, Entry: session.SessionEntry{Projects: holder.projects}})
+		unconfirmed := fmt.Errorf("bus: %w: NATS disconnected during the publish to %q", bus.ErrPublishUnconfirmed, contracts.LegacyAgentSubject(holder.id))
+		send.windowEnded(fmt.Errorf("%w: %w: %w", errEarlierAttemptInProcess, bus.ErrForwardNotStored, unconfirmed))
+		body := strings.TrimSpace(recorder.Body.String())
+		t.Logf("the send to %s that ended in process: status %d %s", holder.id, recorder.Code, body)
+		var answer listenerwire.APIError
+		_ = json.Unmarshal(recorder.Body.Bytes(), &answer)
+		if recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") != "1" ||
+			answer.Code != listenerwire.CodeMaybeStored || !strings.HasPrefix(answer.Error, earlierAttemptInProcessPrefix) {
+			t.Errorf("the send to %s that ended in process: status %d, Retry-After %q, %s; want the 503 maybe_stored of an earlier attempt in process",
+				holder.id, recorder.Code, recorder.Header().Get("Retry-After"), body)
+		}
+		if names := strings.Contains(body, holder.id); names != (holder.id == shown) {
+			t.Errorf("the send to %s that ended in process answers %s, which names the holder: %v; want it named only for the holder of PRIV", holder.id, body, names)
+		}
+	}
+}
+
 // A session that holds a role of another project when it registers at the edge, which another
 // listener claimed for it, loses that role at the registration: the claim is released rather than
 // renewed, and the answer's warnings name it, as a claim of that role at the edge is refused. A

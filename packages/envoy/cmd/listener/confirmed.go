@@ -317,17 +317,25 @@ func (s *roleSend) unresolved(err error) {
 // denies (forwardRefused), as requestRecord.refuseBusUnavailable maps it. The refusal's own text
 // names the subject the forward went to, the holder's agent subject, so at the edge, for a holder
 // the scope does not show, the answer is in the listener's own words under the same status, and
-// the refusal goes to the log (hideHolder). The refused forward stored nothing, so it marks
+// the refusal goes to the log (shownForwardError). The refused forward stored nothing, so it marks
 // nothing: an earlier forward of the same send that may have stored the message has marked the
 // charge already (sendToRole).
 func (s *roleSend) refused(err error) {
 	s.record.holder = s.holder
-	if s.shown.State == roles.Unclaimed {
-		err = hideHolder(s.d.delivery.logger, "edge listener's forward of a role message was refused; its answer names no holder",
-			s.role, s.holder, "forward role "+s.role+"'s message to its holder", err)
-	}
-	s.record.refuseBusUnavailable(s.w, err)
+	s.record.refuseBusUnavailable(s.w, s.shownForwardError("edge listener's forward of a role message was refused; its answer names no holder", err))
 	s.settle(sendFailed)
+}
+
+// shownForwardError is err, a forward's error, as this send's answer may give it. Such an error
+// can name the subject the forward went to, the holder's agent subject, so at the edge, for a
+// holder the scope does not show (shown reads unclaimed, edgeScope.holder), it is the listener's
+// own words with err beneath, which still decides the answer's status, code and Retry-After, and
+// err goes to the log under line (hideHolder). Every other holder's answer carries err as it is.
+func (s *roleSend) shownForwardError(line string, err error) error {
+	if s.shown.State != roles.Unclaimed {
+		return err
+	}
+	return hideHolder(s.d.delivery.logger, line, s.role, s.holder, "forward role "+s.role+"'s message to its holder", err)
 }
 
 // timedOut answers the 504 of a send whose window ended with no forward the stream stored for its
@@ -357,10 +365,12 @@ func (s *roleSend) timedOut() {
 // routes give a request that ends so (writeBusUnavailable), under earlierAttemptInProcessPrefix
 // and recorded earlier_attempt_in_process, where a send whose window ends otherwise is the 504
 // (timedOut). It costs its sender one, as the 504 does: the forward that ended in process marked
-// the charge (sendToRole).
+// the charge (sendToRole). At the edge it names no holder the scope does not show
+// (shownForwardError), since a send of the forward after the stream's in-process refusal that
+// could not be confirmed names the holder's agent subject.
 func (s *roleSend) endedInProcess(err error) {
 	s.record.holder = s.holder
-	s.record.refuseBusUnavailable(s.w, err)
+	s.record.refuseBusUnavailable(s.w, s.shownForwardError("edge listener's role send ended while an earlier forward was in process; its answer names no holder", err))
 	s.settle(sendDeliveryFailed)
 }
 
