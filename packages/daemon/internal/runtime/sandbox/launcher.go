@@ -123,7 +123,8 @@ func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, saved ru
 
 // accept registers a launcher connection of the pod of issue, created at podCreated, whose
 // Sandbox owns the issue's kept volume since keptSince (the zero time for a pod on a volume of its
-// own). The newest authenticated connection for a role wins: a half-open predecessor is closed so
+// own). The newest authenticated connection for a slot, by the slot's token, wins: two claims of one
+// role run in two slots, each with its own launcher. A half-open predecessor is closed so
 // its pending requests fail instead of waiting forever.
 func (d *launchers) accept(token claim.Token, issue string, podCreated, keptSince time.Time, hello shimwire.LauncherHello) *launcherSession {
 	s := &launcherSession{owner: d, token: token, issue: issue, podCreated: podCreated, keptSince: keptSince, id: hello.LauncherID, podUID: hello.PodUID,
