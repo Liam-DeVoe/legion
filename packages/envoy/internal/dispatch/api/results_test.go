@@ -3361,18 +3361,37 @@ func TestAnUnsettledCICheckOnACheckHoldingARolesResultChangesNothingUntilSettlem
 // checkRunsFake is GitHub's listing of each commit's check runs, a hundred to a page, as the
 // read of a check CI proves asks for it, and the count of the pages asked for each commit. A
 // test sets the runs of a commit, a status and body every read answers in place of the listing,
-// or a hold that keeps every read waiting until its caller gives up (ciHeldRead).
+// a hold that keeps every read waiting until its caller gives up (ciHeldRead), or the commits
+// whose reads each wait so (blockReadsOf).
 type checkRunsFake struct {
 	mu        sync.Mutex
 	runs      map[string][]map[string]any
 	fault     int
 	faultBody string
 	hold      *ciHeldRead
+	blocked   map[string]chan<- string
+	release   <-chan struct{}
 	asked     map[string]int
 }
 
 func newCheckRunsFake() *checkRunsFake {
 	return &checkRunsFake{runs: map[string][]map[string]any{}, asked: map[string]int{}}
+}
+
+// blockReadsOf makes each read of each of shas send its commit on the channel it answers, then
+// wait until its caller gives up, or until t ends, as a read GitHub never answers does.
+func (f *checkRunsFake) blockReadsOf(t *testing.T, shas ...string) <-chan string {
+	t.Helper()
+	entered := make(chan string, 64)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.blocked, f.release = map[string]chan<- string{}, release
+	for _, sha := range shas {
+		f.blocked[sha] = entered
+	}
+	return entered
 }
 
 // set is the runs GitHub lists for sha, in the order given.
@@ -3435,7 +3454,16 @@ func (f *checkRunsFake) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.asked[sha]++
 	fault, faultBody, hold, runs := f.fault, f.faultBody, f.hold, f.runs[sha]
+	blocked, release := f.blocked[sha], f.release
 	f.mu.Unlock()
+	if blocked != nil {
+		blocked <- sha
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+		return
+	}
 	if hold != nil {
 		hold.wait(r)
 		return

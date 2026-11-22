@@ -1495,6 +1495,8 @@ Each loop that runs passes through `duty.RunWoken` starts two passes no closer t
   A former head is a head a pull request left while it stays open: its tester may have tested that head while the pull request moved on, and the testing move reads the states at the head the tester tested, so a result recorded or retracted there, a change of a check's words or a settled CI run there publishes the new state there, naming that pull request, as at an open head.
   Each write of `pull_request_heads` that moves an open pull request keeps the head it left in `pull_request_former_heads`, in the writer's own transaction (`20261122042244`, `20261122042245`), whichever build wrote the row, so a head is a former head whether or not a settle ran while the pull request was there.
   A close, a merge or a delete of the row drops that pull request's former heads, and a head's rows in `check_states` go, with no event, once no open pull request is or was at it.
+  A check CI proves is read at the open heads first, as the results route reads them, and then at the former heads in a batch of their own under its own 10 s bound, at most eight reads at a time, the head whose read started longest ago first (`check_states.ci_read_at`, `20261122042853`).
+  A former head whose read had not started when that bound ended keeps the state published there, with no event and no `read_failed`, and the issue keeps one mark due 1 s on, so the next settle reads that head before every head read in this one: of N former heads, each is read within ceil(N/8) settles, whatever GitHub answers for the others.
   A state that reads `read_failed` keeps one mark due 30 s on, doubling with each failure to 10 minutes, with no notification.
   Passes start at least 1 s apart, and one comes at most a minute after the one before it, so a mark whose notification no process received is settled within a minute; a pass that failed is retried 30 s later.
   A `test` handoff waits up to 30 s, before its transaction opens, until every mark of its issue due when it began is settled, and stores the issue's serial (`handoffs.check_states_serial`); past that it answers `503 CHECK_STATES_UNSETTLED` and records nothing.
@@ -2626,6 +2628,9 @@ Migration `20261122042245_pull_request_former_heads_keep` attaches that function
 The update trigger fires only where the key, the head or the state moved, since every writer rewrites every column on each write, and a write of the release before this one fires it too.
 The re-key of a row stored under a repository's old name carries its former heads, and its head where the canonical row's is another, to the canonical row where that row is open (`delivery.upsertHeadUnderCanonicalName`).
 It touches no row; its census answers `0`.
+
+Migration `20261122042853_check_states_ci_read_at` adds `check_states.ci_read_at`, nullable `timestamptz` with no default: on a head's set row, when the check states settler last started a read of GitHub's check runs there as a former head, which orders the former heads it reads in a settle (Background loops, above).
+The ALTER holds ACCESS EXCLUSIVE on `check_states` for the catalog write alone, the previous release neither reads nor writes the column, and its census answers `0`.
 
 Migration `20261116163813_issue_role_holders` creates `issue_role_holders`, the session that holds each Legion role of an issue, which the Legion daemon publishes (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
 The key is `(issue_key, role)`, and a unique index on `(issue_key, session)` keeps a session to one role of an issue.

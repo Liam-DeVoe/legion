@@ -358,7 +358,7 @@ func TestAHeadOfEachRepositoryTakesItsOwnComputedState(t *testing.T) {
 			ordinary.PassStands = eachSubjectStands(ordinary, comparison{subjects: subjects}, nil)
 			proved := model.CheckBlock{BlockID: "k3", When: docs.CheckWhenBeforeMerge}
 			proved.PassStands = eachSubjectStands(proved, comparison{subjects: subjects, ci: reads}, nil)
-			computed, readFailed, err := checkStatesAtHeads("ACME-1", heads, issueCheckResults{Checks: []model.CheckBlock{ordinary, proved}})
+			computed, readFailed, err := checkStatesAtHeads("ACME-1", heads, nil, issueCheckResults{Checks: []model.CheckBlock{ordinary, proved}})
 			if err != nil {
 				t.Fatalf("compute the states at the two heads: %v", err)
 			}

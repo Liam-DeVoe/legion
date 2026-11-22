@@ -263,10 +263,10 @@ func (h *ciHeldRead) wait(r *http.Request) {
 }
 
 // ciReadBounds stands in for ciReadBound for one test, so no bound of a read of GitHub ends on a
-// clock. The first bound made outside another of its own is the bound of the reads of every head
-// (readCIHeads): it ends with context.DeadlineExceeded when expire is called, as ciReadDeadline
-// would end it. A bound made inside one is the bound of one head's read (readCIRuns), and it says on
-// ended when its read has returned and cancelled it.
+// clock. A bound made outside another of its own is the bound of the reads of a batch of heads
+// (readCIHeads): expire ends the newest of them with context.DeadlineExceeded, as ciReadDeadline
+// would end it. A bound made inside one is the bound of one head's read (readCIRuns), and it says
+// on ended when its read has returned and cancelled it.
 type ciReadBounds struct {
 	mu    sync.Mutex
 	outer *ciEndedBound
@@ -288,7 +288,7 @@ func (b *ciReadBounds) bound(ctx context.Context) (context.Context, context.Canc
 	bound := &ciEndedBound{parent: ctx, done: make(chan struct{})}
 	stop := context.AfterFunc(ctx, func() { bound.end(ctx.Err()) })
 	b.mu.Lock()
-	if !inner && b.outer == nil {
+	if !inner {
 		b.outer = bound
 	}
 	b.mu.Unlock()
@@ -301,7 +301,7 @@ func (b *ciReadBounds) bound(ctx context.Context) (context.Context, context.Canc
 	}
 }
 
-// expire ends the bound of the reads of every head as its deadline would.
+// expire ends the bound of the newest batch of reads as its deadline would.
 func (b *ciReadBounds) expire(t *testing.T) {
 	t.Helper()
 	b.mu.Lock()

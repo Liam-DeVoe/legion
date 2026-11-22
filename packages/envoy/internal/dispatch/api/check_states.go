@@ -245,7 +245,7 @@ func (c *checkStatesSettler) settleRound(ctx context.Context, issue string) (mor
 		if err != nil {
 			return false, fmt.Errorf("compute the checks of %s: %w", issue, err)
 		}
-		computed, readFailed, err := checkStatesAtHeads(issue, slices.Concat(heads, former), answer)
+		computed, readFailed, err := checkStatesAtHeads(issue, heads, former, answer)
 		if err != nil {
 			return false, err
 		}
@@ -283,12 +283,17 @@ func dueMarksOf(ctx context.Context, pool *store.Pool, issue string) ([]int64, i
 // formerHeadsOf is each former head of an open pull request of issue, heads being the pull
 // requests delivery.HeadsAttributedTo answers: each head that pull request left while it was open
 // (pull_request_former_heads, which each write of pull_request_heads keeps in its own
-// transaction), but its current head and a head an open pull request heads now, the head it left
-// last first. Each former head is the open pull request's row moved back to that commit, so the
-// computation reads it as it reads an open head (answerIssueChecks) and an event there names the
-// open pull requests that were at it. A closed or merged pull request keeps no former head, so
-// publish deletes the rows of a head no open pull request is or was at, as it deletes those of an
-// open head whose pull request closed.
+// transaction), but its current head and a head an open pull request heads now. Each former head
+// is the open pull request's row moved back to that commit, so the computation reads it as it
+// reads an open head (answerIssueChecks) and an event there names the open pull requests that were
+// at it. A closed or merged pull request keeps no former head, so publish deletes the rows of a
+// head no open pull request is or was at, as it deletes those of an open head whose pull request
+// closed.
+//
+// The head whose read of GitHub's check runs started longest ago comes first, a head no read
+// started at before any (check_states.ci_read_at, which publish moves for each former head whose
+// read started), and among those the head left last: the order deriveCIResults starts their reads
+// in, so each settle reads first the heads the settle before did not reach.
 func formerHeadsOf(ctx context.Context, pool *store.Pool, issue string, heads []delivery.AttributedHead) ([]delivery.AttributedHead, error) {
 	var repos []string
 	var numbers []int
@@ -303,8 +308,11 @@ func formerHeadsOf(ctx context.Context, pool *store.Pool, issue string, heads []
 	rows, err := pool.Query(ctx, `
 		select former.repo, former.number, former.head_sha
 		from pull_request_former_heads former
-		join unnest($1::text[], $2::integer[]) as held (repo, number) on held.repo = former.repo and held.number = former.number
-		order by former.left_at desc, former.repo, former.head_sha, former.number`, repos, numbers)
+		join unnest($2::text[], $3::integer[]) as held (repo, number) on held.repo = former.repo and held.number = former.number
+		left join check_states published on published.issue_key = $1 and published.repo = former.repo
+			and published.head_sha = former.head_sha and published.check_block_id = ''
+		order by published.ci_read_at nulls first, former.left_at desc, former.repo, former.head_sha, former.number`,
+		issue, repos, numbers)
 	if err != nil {
 		return nil, fmt.Errorf("read the former heads of %s: %w", issue, err)
 	}
@@ -337,12 +345,17 @@ func formerHeadsOf(ctx context.Context, pool *store.Pool, issue string, heads []
 // headStates is what the settler computed at one head of an issue, open or former: the head's
 // repository and commit, the open pull requests of the issue at it or that were at it, in number
 // order, the block ids of the issue's `before_merge` checks in document order, which is the head's
-// set of checks, and the state of each of them there, in the same order.
+// set of checks, and the state of each of them there, in the same order. At a former head, kept is
+// each check CI proves whose read of GitHub's check runs had not started when its batch's bound
+// ended (ciCaseNotStarted), which has no state in states and keeps the one published; ciRead is
+// whether a read of that head's check runs started.
 type headStates struct {
 	repo, head   string
 	pullRequests []int
 	checks       []string
 	states       []checkStateAt
+	kept         []string
+	ciRead       bool
 }
 
 // checkStateAt is the state of one check at one head: its subject there, as passStandsOf computed
@@ -354,8 +367,8 @@ type checkStateAt struct {
 }
 
 // checkStatesAtHeads is the states of issue at each of its open heads and its former heads: heads
-// are the pull requests delivery.HeadsAttributedTo answers followed by formerHeadsOf's, and answer
-// is answerIssueChecks's, given the same former heads. Two open pull requests at one commit of one
+// are the pull requests delivery.HeadsAttributedTo answers, former formerHeadsOf's, and answer is
+// answerIssueChecks's, given the same former heads. Two open pull requests at one commit of one
 // repository are one head with one state, and so are two that were at one commit. The state of a
 // check at a head is its subject whose basis is that head's pull request and commit. readFailed
 // says whether a state reads read_failed: a check CI proves whose check runs GitHub could not be
@@ -365,26 +378,33 @@ type checkStateAt struct {
 // the two reads is a head the computation holds no subject of. That is an error, which keeps every
 // mark: the move marked the issue owed after these marks were read, and the round after the next
 // wake computes both from one read.
-func checkStatesAtHeads(issue string, heads []delivery.AttributedHead, answer issueCheckResults) ([]headStates, bool, error) {
+func checkStatesAtHeads(issue string, heads, former []delivery.AttributedHead, answer issueCheckResults) ([]headStates, bool, error) {
 	type headKey struct{ repo, head string }
 	grouped := map[headKey]*headStates{}
 	linked := map[headKey][]string{}
+	formerOnly := map[headKey]bool{}
 	var order []headKey
-	for _, head := range heads {
-		if !head.Open {
-			continue
-		}
+	add := func(head delivery.AttributedHead, isFormer bool) {
 		key := headKey{head.Repo, head.HeadSHA}
 		group, held := grouped[key]
 		if !held {
 			group = &headStates{repo: head.Repo, head: head.HeadSHA}
 			grouped[key] = group
+			formerOnly[key] = isFormer
 			order = append(order, key)
 		}
 		group.pullRequests = append(group.pullRequests, head.Number)
 		if head.LinkedRepo != "" {
 			linked[key] = append(linked[key], head.LinkedRepo)
 		}
+	}
+	for _, head := range heads {
+		if head.Open {
+			add(head, false)
+		}
+	}
+	for _, head := range former {
+		add(head, true)
 	}
 	slices.SortFunc(order, func(a, b headKey) int {
 		return strings.Compare(a.repo+"\x00"+a.head, b.repo+"\x00"+b.head)
@@ -407,6 +427,14 @@ func checkStatesAtHeads(issue string, heads []delivery.AttributedHead, answer is
 				return nil, false, fmt.Errorf("the computation of %s holds no state of %s at %s of %s#%v: the head moved after its read",
 					issue, check.BlockID, group.head, group.repo, group.pullRequests)
 			}
+			group.checks = append(group.checks, check.BlockID)
+			if subject.CI != nil && formerOnly[key] {
+				if subject.CI.Case == ciCaseNotStarted {
+					group.kept = append(group.kept, check.BlockID)
+					continue
+				}
+				group.ciRead = true
+			}
 			state := checkStateAt{
 				check: check.BlockID, version: check.Version, state: subject.Answer, reason: subject.Reason,
 				roles: nonNilStrings(subject.Roles), results: nonNilStrings(subject.Results),
@@ -415,7 +443,6 @@ func checkStatesAtHeads(issue string, heads []delivery.AttributedHead, answer is
 				state.ciCase = subject.CI.Case
 			}
 			readFailed = readFailed || subject.Reason == model.PassSubjectReasonReadFailed
-			group.checks = append(group.checks, check.BlockID)
 			group.states = append(group.states, state)
 		}
 		computed = append(computed, *group)
@@ -491,11 +518,14 @@ func (p publishedCheckState) sameState(state checkStateAt) bool {
 // carry it, in one transaction under the issue's owner lock: it raises the issue's serial by one
 // for each event, stores what each event published, deletes the rows of heads neither open nor
 // former (checkStatesAtHeads computed no state there) and of checks no longer in a head's set,
-// with no event, and deletes the marks the round read. Where a state reads read_failed it inserts
-// one mark due later, with no notification, so the issue is read again once GitHub may answer.
-// Only the settler writes check_states, under the issue's lease, so the rows it reads here are the
-// newest published. It answers the events, which the caller publishes once the transaction has
-// committed.
+// with no event, and deletes the marks the round read. The row of a check a former head kept
+// (headStates.kept) stays as published, and each former head whose read of GitHub's check runs
+// started takes the time of this settle (check_states.ci_read_at). Where a former head kept a
+// check it inserts one mark due a minimum gap on, and else where a state reads read_failed one mark
+// due later, each with no notification, so the issue is read again: a head this settle did not
+// read comes first in the next, and a failed read is tried again once GitHub may answer. Only the
+// settler writes check_states, under the issue's lease, so the rows it reads here are the newest
+// published. It answers the events, which the caller publishes once the transaction has committed.
 func (c *checkStatesSettler) publish(
 	ctx context.Context, issue string, marks []int64, failures int, artifact *string, computed []headStates, readFailed bool,
 ) ([]model.Event, error) {
@@ -529,7 +559,16 @@ func (c *checkStatesSettler) publish(
 		return int64(event.Seq), nil
 	}
 	kept := map[checkStateKey]bool{}
+	var readRepos, readHeads []string
+	readsLeft := false
 	for _, head := range computed {
+		for _, check := range head.kept {
+			kept[checkStateKey{head.repo, head.head, check}] = true
+			readsLeft = true
+		}
+		if head.ciRead {
+			readRepos, readHeads = append(readRepos, head.repo), append(readHeads, head.head)
+		}
 		var lastSeq int64
 		for _, state := range head.states {
 			key := checkStateKey{head.repo, head.head, state.check}
@@ -580,6 +619,16 @@ func (c *checkStatesSettler) publish(
 			return nil, fmt.Errorf("delete the published state of %s at %s of %s: %w", key.check, key.head, issue, err)
 		}
 	}
+	if len(readRepos) > 0 {
+		// Each former head whose read of GitHub's check runs started goes behind every head whose
+		// read started earlier or never, in the order formerHeadsOf gives the next settle.
+		if _, err := tx.Exec(ctx, `
+			update check_states set ci_read_at = now()
+			where issue_key = $1 and check_block_id = '' and (repo, head_sha) in (select * from unnest($2::text[], $3::text[]))`,
+			issue, readRepos, readHeads); err != nil {
+			return nil, fmt.Errorf("store when %s's former heads were read: %w", issue, err)
+		}
+	}
 	if len(events) > 0 {
 		if _, err := tx.Exec(ctx, `
 			insert into check_state_serials (issue_key, serial) values ($1, $2)
@@ -590,10 +639,19 @@ func (c *checkStatesSettler) publish(
 	if _, err := tx.Exec(ctx, `delete from check_states_owed where id = any($1)`, marks); err != nil {
 		return nil, fmt.Errorf("delete the settled marks of %s: %w", issue, err)
 	}
-	if readFailed {
+	if readsLeft || readFailed {
+		// A former head whose read had not started is read in a settle a gap on, before the heads
+		// read in this one; a failed read alone waits its retry. A failed read counts either way.
+		wait, counted := c.schedule.minGap, failures
+		if readFailed {
+			counted = failures + 1
+			if !readsLeft {
+				wait = c.retryAfter(failures)
+			}
+		}
 		if _, err := tx.Exec(ctx, `
 			insert into check_states_owed (issue_key, due_at, failures) values ($1, now() + make_interval(secs => $2), $3)`,
-			issue, c.retryAfter(failures).Seconds(), failures+1); err != nil {
+			issue, wait.Seconds(), counted); err != nil {
 			return nil, fmt.Errorf("keep a mark of %s to read GitHub again: %w", issue, err)
 		}
 	}

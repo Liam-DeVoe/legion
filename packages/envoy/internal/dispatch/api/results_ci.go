@@ -23,35 +23,39 @@ import (
 // results_ci.go answers a check CI proves (validCICheck) on the read of an issue's results. No
 // role records a result for such a check (refuseResultOfAnotherRecorder), and nothing is stored
 // of the run its `ci_check` names: each read takes the head of each open pull request of the
-// issue (delivery.HeadsAttributedTo), and on the check states settler's read the former heads of
-// those pull requests too (formerHeadsOf), or where none is open the newest merged one
+// issue (delivery.HeadsAttributedTo), or where none is open the newest merged one
 // (delivery.NewestPullRequestHead), reads each such commit's check runs from GitHub once, in the
 // repository of that pull request's own row, and derives a result at each from the run its
-// `ci_check` names. A check CI proves holds those derived results beside each result a run of its
+// `ci_check` names. The check states settler's read takes the former heads of those pull requests
+// too (formerHeadsOf), in a batch of their own after the open heads, the head whose read started
+// longest ago first. A check CI proves holds those derived results beside each result a run of its
 // CI job recorded through the job's results token (ci_check_results: role ci, Branch set), newest
 // first. The derived results go through the same comparisonReader a recorded result does, so one
 // rule judges where both kinds stand. The branch such a recorded result names is read here too,
 // for the comparison of every `before_merge` check of the issue: its head, as GitHub answers it on
 // this read (readBranchHead).
 
-// ciReadDeadline bounds the whole read of the check runs of every head of one results read, the
-// token mints and every page together, and the read of one pushed branch's head, its token mint
-// included (readBranchHead): the route is read inside a role's turn and inside the reviewer's
-// gate, and a read that runs out is a failed read the next one repairs. githubapp.RequestTimeout
-// bounds one call at twice this, so the bound is the context's (ciReadBound).
+// ciReadDeadline bounds the whole read of the check runs of every head of one batch (readCIHeads),
+// the token mints and every page together: the open heads of a results read, or the former heads
+// the check states settler reads after them. It bounds the read of one pushed branch's head too,
+// its token mint included (readBranchHead): the route is read inside a role's turn and inside the
+// reviewer's gate, and a read that runs out is a failed read the next one repairs.
+// githubapp.RequestTimeout bounds one call at twice this, so the bound is the context's
+// (ciReadBound).
 const ciReadDeadline = 10 * time.Second
 
 // ciReadBound is ctx bounded by ciReadDeadline, the bound of each read of GitHub a results read
-// makes: the reads of every head together (readCIHeads), each head's read inside it (readCIRuns),
-// and one pushed branch's head (readBranchHead). A var so a test can end a bound on an event of its
-// own, once the reads it waits for have ended, and never on a clock a stopped scheduler runs past.
+// makes: the reads of every head of a batch together (readCIHeads), each head's read inside it
+// (readCIRuns), and one pushed branch's head (readBranchHead). A var so a test can end a bound on an
+// event of its own, once the reads it waits for have ended, and never on a clock a stopped
+// scheduler runs past.
 var ciReadBound = func(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, ciReadDeadline)
 }
 
-// ciHeadReadConcurrency is how many heads' check runs one results read reads at one time: the
-// number the reconcile reads pull requests with (delivery's reconcilePartialConcurrency), so an
-// issue with eleven open pull requests takes two rounds within the one ciReadDeadline.
+// ciHeadReadConcurrency is how many heads' check runs one batch reads at one time: the number the
+// reconcile reads pull requests with (delivery's reconcilePartialConcurrency), so an issue with
+// eleven open pull requests takes two rounds within the one ciReadDeadline.
 const ciHeadReadConcurrency = 8
 
 // ciCheckRunPages bounds the pages of one head's check runs, a hundred runs a page, as
@@ -93,6 +97,14 @@ const (
 	ciCaseUnreadable      = "github_unreadable"
 )
 
+// ciCaseNotStarted is the case of a check CI proves at a former head the check states settler
+// computes, where the read of that head's check runs had not started when the bound of its batch
+// ended (readCIHeads): there is no answer of GitHub to judge and no failed read either, so the
+// settler keeps the state it published there and reads that head before the others in a later
+// settle (checkStatesAtHeads, formerHeadsOf). The results route reads no former head, so it never
+// answers this case.
+const ciCaseNotStarted = "not_started"
+
 // ciRunCompleted is the status of a check run that has concluded.
 const ciRunCompleted = "completed"
 
@@ -113,19 +125,28 @@ type ciRun struct {
 // `ci` member, the read of the newest head, and, at each head where the run that decides it passed
 // or failed, the result derived from that run, merged into the results the read loaded for it,
 // newest first (newestResultsFirst). The heads are the head of each open pull request of the issue
-// and each of former, the former heads the check states settler computes beside them (ciHeadsOf),
-// each read in the repository of its own row, or where none is open the newest merged
-// one. It answers each check's read at each head, by block id and then by the head's repository
-// and commit (ciHeadKey), which the comparison gives each subject (comparison.ci): two
-// repositories at one commit each read their own runs there, and each derives a result of its
-// own, so a fail in one is never hidden by a pass in the other (R8). A head whose read did not end
-// within the one ciReadDeadline of the whole read is unread there alone (readCIHeads). A result
-// the read loaded for such a check that no run of the job its ci_check names recorded, a role's or
-// another job's, counts for nothing and says why (notCountedOnCICheck). An issue holding no check
-// CI proves asks nothing of the database or of GitHub. issueKey is the route's issue, whose
-// Verification document holds the checks and whose pull request heads they are read at. Only a
-// failed read of Dispatch's own database is an error; whatever GitHub answers is a case of the
-// answer.
+// (ciHeadsOf), each read in the repository of its own row, or where none is open the newest merged
+// one, and then each of former, the former heads the check states settler computes beside the open
+// heads (formerHeadsOf), at a commit of a repository no open head names (ciFormerHeadsOf). It
+// answers each check's read at each head, by block id and then by the head's repository and commit
+// (ciHeadKey), which the comparison gives each subject (comparison.ci): two repositories at one
+// commit each read their own runs there, and each derives a result of its own, so a fail in one is
+// never hidden by a pass in the other (R8). A head whose read did not end within the one
+// ciReadDeadline of its batch is unread there alone (readCIHeads). A result the read loaded for
+// such a check that no run of the job its ci_check names recorded, a role's or another job's,
+// counts for nothing and says why (notCountedOnCICheck). An issue holding no check CI proves asks
+// nothing of the database or of GitHub. issueKey is the route's issue, whose Verification document
+// holds the checks and whose pull request heads they are read at. Only a failed read of Dispatch's
+// own database is an error; whatever GitHub answers is a case of the answer.
+//
+// The former heads are read in a batch of their own after the open heads, so an open head is read
+// as the route reads it, and former, which formerHeadsOf orders by the head whose read started
+// longest ago first, starts its first ciHeadReadConcurrency reads at once, under a bound of their
+// own. A former head whose read had not started when that bound ended answers ciCaseNotStarted,
+// no failed read: the settler keeps its published state, and the next settle reads it before every
+// head whose read started in this one. So a former head with k heads before it in that order is
+// read within ceil((k+1)/ciHeadReadConcurrency) settles, however long GitHub takes to answer for the
+// heads before it, while no more than ciHeadReadConcurrency reads run at one time.
 func (s *server) deriveCIResults(
 	ctx context.Context, issueKey string, checks []model.CheckBlock, former []delivery.AttributedHead,
 ) (map[string]map[ciHeadKey]*model.CheckCI, error) {
@@ -148,7 +169,7 @@ func (s *server) deriveCIResults(
 	if err != nil {
 		return nil, err
 	}
-	heads, err := s.ciHeadsOf(ctx, issueKey, former)
+	heads, err := s.ciHeadsOf(ctx, issueKey)
 	if err != nil {
 		return nil, err
 	}
@@ -160,16 +181,25 @@ func (s *server) deriveCIResults(
 		return nil, nil
 	}
 	reads := s.readCIHeads(ctx, heads, names)
+	formerHeads := ciFormerHeadsOf(heads, former)
+	formerReads := s.readCIHeads(ctx, formerHeads, names)
 	answers := make(map[string]map[ciHeadKey]*model.CheckCI, len(proved))
 	for _, p := range proved {
-		atHead := make(map[ciHeadKey]*model.CheckCI, len(heads))
+		atHead := make(map[ciHeadKey]*model.CheckCI, len(heads)+len(formerHeads))
 		for index, head := range heads {
-			if reads[index].err != nil {
-				atHead[ciHeadKeyOf(head)] = ciUnconcluded(*p.check, p.name, &head, model.CIStateUnread, ciCaseUnreadable,
-					ciUnreadDetail(head, reads[index].err), words)
+			answer, result := ciAnswerOfRead(*p.check, p.name, head, reads[index], words)
+			atHead[ciHeadKeyOf(head)] = answer
+			if result != nil {
+				p.check.Results = append(p.check.Results, *result)
+			}
+		}
+		for index, head := range formerHeads {
+			if !formerReads[index].started {
+				atHead[ciHeadKeyOf(head)] = ciUnconcluded(*p.check, p.name, &head, model.CIStateUnread, ciCaseNotStarted,
+					fmt.Sprintf("The read of the check runs of %s at %s had not started when its batch's bound ended.", head.Repo, head.HeadSHA), words)
 				continue
 			}
-			answer, result := ciAnswerOf(*p.check, p.name, head, reads[index].runs[p.name], words)
+			answer, result := ciAnswerOfRead(*p.check, p.name, head, formerReads[index], words)
 			atHead[ciHeadKeyOf(head)] = answer
 			if result != nil {
 				p.check.Results = append(p.check.Results, *result)
@@ -180,6 +210,15 @@ func (s *server) deriveCIResults(
 		answers[p.check.BlockID] = atHead
 	}
 	return answers, nil
+}
+
+// ciAnswerOfRead decides one check CI proves at head from read, GitHub's answer for head's check
+// runs: unread where the read failed, and else as ciAnswerOf decides from the run named name.
+func ciAnswerOfRead(check model.CheckBlock, name string, head delivery.NewestHead, read ciHeadRead, words lineWords) (*model.CheckCI, *model.CheckResult) {
+	if read.err != nil {
+		return ciUnconcluded(check, name, &head, model.CIStateUnread, ciCaseUnreadable, ciUnreadDetail(head, read.err), words), nil
+	}
+	return ciAnswerOf(check, name, head, read.runs[name], words)
 }
 
 // ciHeadKey is one head a check CI proves is read at: the repository of its pull request, where
@@ -199,34 +238,24 @@ func ciHeadKeyOf(head delivery.NewestHead) ciHeadKey {
 // ciHeadsOf is the heads a check CI proves is read at: the head of each open pull request of
 // issueKey (delivery.HeadsAttributedTo), each in its own row's repository and each commit of a
 // repository once, the open pull request of the highest number first, whose read is the check's
-// `ci`, then each of former, the former heads of those pull requests the check states settler
-// computes beside them (formerHeadsOf), at a commit no head before it names; where none is open,
-// the one head delivery.NewestPullRequestHead answers, the final head of the merged pull request
-// of the highest number; and none where Dispatch holds neither.
-func (s *server) ciHeadsOf(ctx context.Context, issueKey string, former []delivery.AttributedHead) ([]delivery.NewestHead, error) {
+// `ci`; where none is open, the one head delivery.NewestPullRequestHead answers, the final head of
+// the merged pull request of the highest number; and none where Dispatch holds neither.
+func (s *server) ciHeadsOf(ctx context.Context, issueKey string) ([]delivery.NewestHead, error) {
 	attributed, err := delivery.HeadsAttributedTo(ctx, s.deps.Store.Pool, issueKey)
 	if err != nil {
 		return nil, err
 	}
 	var heads []delivery.NewestHead
-	add := func(head delivery.AttributedHead) {
+	for _, head := range attributed {
 		read := delivery.NewestHead{Repo: head.Repo, Number: head.Number, HeadSHA: head.HeadSHA}
-		if !slices.ContainsFunc(heads, func(held delivery.NewestHead) bool {
+		if head.Open && !slices.ContainsFunc(heads, func(held delivery.NewestHead) bool {
 			return held.Repo == read.Repo && held.HeadSHA == read.HeadSHA
 		}) {
 			heads = append(heads, read)
 		}
 	}
-	for _, head := range attributed {
-		if head.Open {
-			add(head)
-		}
-	}
 	if len(heads) > 0 {
 		slices.SortStableFunc(heads, func(a, b delivery.NewestHead) int { return b.Number - a.Number })
-		for _, head := range former {
-			add(head)
-		}
 		return heads, nil
 	}
 	head, found, err := delivery.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey)
@@ -236,17 +265,39 @@ func (s *server) ciHeadsOf(ctx context.Context, issueKey string, former []delive
 	return []delivery.NewestHead{head}, nil
 }
 
-// ciHeadRead is GitHub's answer for the check runs at one head: the run of each name, or the
-// error that made the read fail.
-type ciHeadRead struct {
-	runs map[string]*ciRun
-	err  error
+// ciFormerHeadsOf is the former heads a check CI proves is read at beside heads, the heads
+// ciHeadsOf answers: each of former at a commit of a repository no head of heads and no former
+// head before it names, in the order of former.
+func ciFormerHeadsOf(heads []delivery.NewestHead, former []delivery.AttributedHead) []delivery.NewestHead {
+	var formerHeads []delivery.NewestHead
+	for _, head := range former {
+		read := delivery.NewestHead{Repo: head.Repo, Number: head.Number, HeadSHA: head.HeadSHA}
+		named := func(held delivery.NewestHead) bool { return held.Repo == read.Repo && held.HeadSHA == read.HeadSHA }
+		if !slices.ContainsFunc(heads, named) && !slices.ContainsFunc(formerHeads, named) {
+			formerHeads = append(formerHeads, read)
+		}
+	}
+	return formerHeads
 }
 
-// readCIHeads reads the check runs of each head (readCIRuns), at most ciHeadReadConcurrency at one
-// time, all under one ciReadDeadline: a head whose read did not end by then answers its error,
-// and every other head keeps its own answer. Each answer is at the index of its head.
+// ciHeadRead is GitHub's answer for the check runs at one head: the run of each name, or the
+// error that made the read fail, and whether the read started before the bound of its batch ended
+// (readCIHeads). A head queued behind reads that held every slot until then never started, and its
+// error is that bound's.
+type ciHeadRead struct {
+	runs    map[string]*ciRun
+	err     error
+	started bool
+}
+
+// readCIHeads reads the check runs of each head (readCIRuns), in the order of heads, at most
+// ciHeadReadConcurrency at one time, all under one ciReadDeadline: a head whose read did not end by
+// then answers its error, and every other head keeps its own answer. Each answer is at the index of
+// its head.
 func (s *server) readCIHeads(ctx context.Context, heads []delivery.NewestHead, names map[string]struct{}) []ciHeadRead {
+	if len(heads) == 0 {
+		return nil
+	}
 	ctx, cancel := ciReadBound(ctx)
 	defer cancel()
 	reads := make([]ciHeadRead, len(heads))
@@ -254,8 +305,9 @@ func (s *server) readCIHeads(ctx context.Context, heads []delivery.NewestHead, n
 	group.SetLimit(ciHeadReadConcurrency)
 	for index, head := range heads {
 		group.Go(func() error {
+			started := groupCtx.Err() == nil
 			runs, err := s.readCIRuns(groupCtx, head, names)
-			reads[index] = ciHeadRead{runs: runs, err: err}
+			reads[index] = ciHeadRead{runs: runs, err: err, started: started}
 			return nil
 		})
 	}
