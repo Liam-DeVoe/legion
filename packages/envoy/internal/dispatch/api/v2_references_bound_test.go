@@ -7,10 +7,11 @@ import (
 	"time"
 )
 
-// GET /api/v2/issues/{key}/references walks the closure GET /api/v1/issues/{key}/references
-// walks, under the same bound (issueClosure): a walk past referencesClosureBound answers 503
-// REFERENCES_TIMEOUT at about that bound, as /api/v1 does. refs is locked in another connection,
-// so the walk waits however fast it would run; the read before the lock answers 200.
+// GET /api/v2/issues/{key}/references makes the read GET /api/v1/issues/{key}/references makes,
+// one hop in each direction, under the same bound (issueClosure): a read that reaches
+// referencesClosureBound answers 503 REFERENCES_TIMEOUT at about that bound, as /api/v1 does. refs
+// is locked in another connection, so the read waits however fast it would run; the read before
+// the lock answers 200.
 func TestV2IssueReferencesRefuseAtTheClosureBound(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")

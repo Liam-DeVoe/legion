@@ -61,7 +61,10 @@ func (s *server) v2CredentialRows() []routeRow {
 				"maps to the caller acts for no one, so its other grants are listed to the caller naming no operator. Any " +
 				"other grant of a private project the caller may not see is left out, and one the broker cannot ask " +
 				"Dispatch about is left out while it cannot. Dispatch names the caller from its own session, so nobody " +
-				"lists another person's. Needs the person scope. " + brokerPageText + ". " + brokerRelayText + ".",
+				"lists another person's. A caller Dispatch calls a restricted member is listed the grants of the " +
+				"sessions that act for them alone; while the broker cannot ask Dispatch what kind of member the caller " +
+				"is, the list holds no other grant either. Needs the person scope. " + brokerPageText + ". " +
+				brokerRelayText + ".",
 			Handler:  s.listCredentialGrantsV2,
 			Resource: "credential-grants", Kind: kindCollection, Key: "{id}",
 			Query:       brokerListV2Query{},
@@ -78,8 +81,20 @@ func (s *server) v2CredentialRows() []routeRow {
 				"PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; of the grants they may see, they end one " +
 				"whose approver is anyone, and any other is 403 NOT_APPROVER. A grant the broker saw move to another box " +
 				"each time it read it, three times in a row, is 409 GRANT_MOVING, revoking nothing; the same revoke " +
-				"succeeds once it stays put. Needs the person and approve scopes; a credential scoped to one project is " +
-				"refused. " + brokerRelayText + ".",
+				"succeeds once it stays put. A caller Dispatch calls a restricted member ends a grant only as the " +
+				"person its enrollment acts for: every other grant they may see is refused them with that same " +
+				"NOT_APPROVER, saying why. While Dispatch does not " +
+				"answer the broker what kind of member the caller is (a timeout, a failed connection, a gateway's 502, " +
+				"503 or 504, Dispatch's own DATABASE_UNAVAILABLE or OIDC_ISSUER_UNAVAILABLE, or a 500 naming no code " +
+				"or INTERNAL, which Dispatch answers while its database fails), only the person the grant names as its " +
+				"approver ends it as an approver: every revoke through a group or as anyone then, whatever session " +
+				"holds the grant, and every revoke while Dispatch answers anything else the broker cannot read (a " +
+				"refused account, a kind the broker does not know, another code, a certificate or a name that does not " +
+				"resolve), is 503 MEMBER_KIND_UNCHECKABLE, revoking nothing. A grant on a person's session can still " +
+				"be ended then by that person, who asks Dispatch nothing; a grant on a session that acts for no person " +
+				"(a service's pod, a person's pod the broker no longer maps, or a machine's own session) is ended " +
+				"through the broker by nobody but its named approver until Dispatch answers. Needs the person and " +
+				"approve scopes; a credential scoped to one project is refused. " + brokerRelayText + ".",
 			Handler:  s.revokeCredentialGrantV2,
 			Resource: "credential-grants", Kind: kindItem, Key: "{id}",
 			Shape:       routeShape{Status: http.StatusNoContent},
@@ -93,9 +108,12 @@ func (s *server) v2CredentialRows() []routeRow {
 			Description: "The credential requests the caller may decide, from the secrets broker, newest first: those " +
 				"naming the caller, and a shared secret's and a service's machine login, which anyone signed in decides, " +
 				"each {record_id, kind, identifiers, requested_at, session, approve_url?}, a secret request's approve_url " +
-				"the broker's own page where it is decided. The caller is the approver; no query names another. Needs the " +
-				"person scope. " + brokerPageText + ". " + brokerRelayText + ", so a client tells a Dispatch with no " +
-				"broker from one with nothing waiting.",
+				"the broker's own page where it is decided. The caller is the approver; no query names another. A " +
+				"caller Dispatch calls a restricted member is no approver of a secret or of a service's machine login, " +
+				"so their list holds their own machine logins alone; while the broker cannot ask Dispatch what kind of " +
+				"member the caller is, it holds none of those other rows either. Needs the person scope. " +
+				brokerPageText + ". " + brokerRelayText + ", so a client tells a Dispatch with no broker from one with " +
+				"nothing waiting.",
 			Handler:  s.listCredentialRequestsV2,
 			Resource: "credential-requests", Kind: kindCollection, Key: "{id}",
 			Query:       brokerListV2Query{},
@@ -109,17 +127,26 @@ func (s *server) v2CredentialRows() []routeRow {
 				"request {state}. state approved or denied decides a machine login, and code is the login's " +
 				"confirmation code as the person typed it, which the secrets broker checks on both. The broker " +
 				"decides whether the caller is its approver, refuses a secret request with 403 DECIDE_ON_BROKER_PAGE " +
-				"naming its page on the broker, and refuses a code that is missing or not the login's own. A request " +
-				"the broker already holds in that state, sent by a caller the broker would let decide it (anyone signed " +
-				"in, for a service's machine login; the person its approver names, for any other), is answered as it " +
-				"stands and nothing is relayed. Answers 200 the request as the broker " +
+				"naming its page on the broker, and refuses a code that is missing or not the login's own. A service's " +
+				"machine login is denied by anyone signed in but a caller Dispatch calls a restricted member. A request " +
+				"the broker already holds in that state, sent by a caller the broker would let decide it, is answered " +
+				"as it stands: an approval of a service's machine login sent by anyone signed in, and a decision of " +
+				"another sent by the person its approver names, relaying nothing. A deny of a service's machine login " +
+				"is relayed, since the broker alone asks what kind of member its caller is, and where the code read the " +
+				"login already denied, the broker's refusal of a decided login (below) is answered 200 that login as it " +
+				"stands. Answers 200 the request as the broker " +
 				"records it once decided, the record POST /api/v2/machine-login-lookups answers. state dismissed takes " +
 				"an expired request, a secret request or a machine login whose deadline passed before anybody decided " +
 				"it, off every list for good, the caller's and, for a shared request, everybody's, and answers 200 the " +
-				"dismissal {record_id, dismissed_by, dismissed_at}: only a person whose list holds it may dismiss it " +
-				"(403 NOT_APPROVER), a request that can still be decided is 409 RECORD_PENDING, and one that was " +
-				"decided, or cancelled before its deadline, is 409 RECORD_TERMINAL; a request already dismissed is " +
-				"answered the dismissal the broker holds, and nothing is written. Whichever the state, a secret request " +
+				"dismissal {record_id, dismissed_by, dismissed_at}: only a person whose list holds it may dismiss it, " +
+				"and a caller Dispatch calls a restricted member dismisses only their own machine logins; a request " +
+				"already dismissed is answered the dismissal the broker holds, and nothing is written. A caller the " +
+				"broker does not let decide or dismiss a request is 403 NOT_APPROVER, saying why; a request that can " +
+				"still be decided is 409 RECORD_PENDING to a dismissal, and one that was decided, or cancelled before " +
+				"its deadline, is 409 RECORD_TERMINAL to a decision and a dismissal alike; and while the broker cannot " +
+				"ask Dispatch what kind of member the caller is, a deny of a service's machine login, and a dismissal " +
+				"of a secret request or of a service's machine login, is 503 MEMBER_KIND_UNCHECKABLE, writing nothing. " +
+				"Whichever the state, a secret request " +
 				"of a private project the caller may not see is 404 CREDENTIAL_REQUEST_NOT_FOUND, as is an id the broker " +
 				"holds no request of, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. Deciding " +
 				"needs the person and approve scopes, dismissing the person scope; a credential scoped to one project is " +
@@ -167,8 +194,10 @@ func (s *server) v2CredentialRows() []routeRow {
 				"caller's own pods', unexpired, or expired with a session still running, each {credential_id, host, " +
 				"service, subject, person, approved_by, issued_at, expires_at, expired}. A person's pod login is the " +
 				"login of a pod whose Kubernetes account the broker's BROKER_POD_OPERATORS maps to a person: only that " +
-				"person's list holds it, and its person names that person; person is null on every other login. " +
-				"Needs the person scope. " + brokerPageText + ". " + brokerRelayText + ".",
+				"person's list holds it, and its person names that person; person is null on every other login. A " +
+				"caller Dispatch calls a restricted member is listed their own machines' and pods' logins alone, and so " +
+				"is any caller while the broker cannot ask Dispatch what kind of member the caller is. Needs the person " +
+				"scope. " + brokerPageText + ". " + brokerRelayText + ".",
 			Handler:  s.listMachineLoginsV2,
 			Resource: "machine-logins", Kind: kindCollection, Key: "{id}",
 			Query:       brokerListV2Query{},
@@ -184,9 +213,12 @@ func (s *server) v2CredentialRows() []routeRow {
 				"person: the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to that person) revokes " +
 				"that one, as the secrets broker decides. The revoke does not keep that pod out: it logs in again with " +
 				"its token under a new login while the broker's BROKER_SERVICE_LOGINS names its account, and that " +
-				"login is the person's while BROKER_POD_OPERATORS still maps the account to that person. 204. Needs " +
-				"the person and approve scopes; a credential scoped to one project is refused. 404 " +
-				"MACHINE_LOGIN_NOT_FOUND for an id the broker holds no machine login of, and " + brokerRelayText + ".",
+				"login is the person's while BROKER_POD_OPERATORS still maps the account to that person. A caller " +
+				"Dispatch calls a restricted member revokes their own logins alone: a service's login is answered them " +
+				"as an id no login has, and so it is to any caller while the broker cannot ask Dispatch what kind of " +
+				"member the caller is, who still revokes their own. 204. Needs the person and approve scopes; a " +
+				"credential scoped to one project is refused. 404 MACHINE_LOGIN_NOT_FOUND for an id the broker holds " +
+				"no machine login of, and " + brokerRelayText + ".",
 			Handler:  s.revokeMachineLoginV2,
 			Resource: "machine-logins", Kind: kindItem, Key: "{id}",
 			Shape:       routeShape{Status: http.StatusNoContent},
@@ -347,7 +379,13 @@ func (s *server) listCredentialRequestsV2(w http.ResponseWriter, r *http.Request
 // that selects its record, so the record the code reads (Client.MachineLookup) is held to the
 // path's id, the state sent and the caller as one who may decide it (recordSetter) before anything
 // is relayed, and a PUT that would change nothing answers that record and relays no decision. A
-// decision that names no code reads no record: the broker refuses it, and its refusal is relayed.
+// deny of a service's login is the one decision whose caller Dispatch cannot judge: the broker
+// refuses it to a person Dispatch calls a restricted member, a member kind it asks for, and checks
+// that before it checks the record's state (machine.Service.ApplyDecision). So such a deny is
+// relayed, and where the code read the login already denied, the broker's 409 RECORD_TERMINAL,
+// which it answers only a caller it admitted, is that same no-op, answered with the login as the
+// code read it. A decision that names no code reads no record: the broker refuses it, and its
+// refusal is relayed.
 func (s *server) putCredentialRequestStateV2(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -363,6 +401,9 @@ func (s *server) putCredentialRequestStateV2(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	input, id, login := v2Body[credentialRequestStateV2Input](r), r.PathValue("id"), model.CanonicalLogin(actor.ID)
+	// standing is a service's login the code read already denied, which a deny sent again leaves
+	// as it stands once the broker admits its caller.
+	var standing json.RawMessage
 	if input.Code != nil {
 		record, raw, err := lookupMachineRecord(r.Context(), client, *input.Code)
 		if err != nil {
@@ -370,7 +411,14 @@ func (s *server) putCredentialRequestStateV2(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		current := credentialRequestStateV2Input{State: record.State, Code: input.Code}
-		if raw != nil && record.RecordID == id && putChangesNothing(input, current, recordSetter(record, login), login) {
+		switch {
+		case raw == nil || record.RecordID != id:
+			// The code read no record, or another record than the path's: the broker decides.
+		case input.State == "denied" && record.Service != nil && *record.Service != "":
+			if record.State == input.State {
+				standing = raw
+			}
+		case putChangesNothing(input, current, recordSetter(record, login), login):
 			relayBrokerResponse(w, r, raw, nil)
 			return
 		}
@@ -381,6 +429,11 @@ func (s *server) putCredentialRequestStateV2(w http.ResponseWriter, r *http.Requ
 	}
 	decided, err := decide(r.Context(), id, cipher.Decision{Approver: login, Code: input.Code})
 	if err != nil {
+		var brokerErr *cipher.Error
+		if standing != nil && errors.As(err, &brokerErr) && brokerErr.Status == http.StatusConflict && brokerErr.Code == "RECORD_TERMINAL" {
+			relayBrokerResponse(w, r, standing, nil)
+			return
+		}
 		relayBrokerRefusalV2(w, r, err, apicode.CredentialRequestNotFound, "credential request")
 		return
 	}
@@ -470,7 +523,8 @@ func lookupMachineRecord(ctx context.Context, client *cipher.Client, code string
 // dispatch://INFRA-4071/spec R8 compares the caller with, login its canonical login: the caller
 // where the broker would let it decide stored, and otherwise a setter nobody matches. The broker's
 // one rule decides it (record.MayDecide, over the record's kind, approver and service), so the
-// no-op admits exactly the callers the decision it stands in for admits: anyone signed in for a
+// no-op admits exactly the callers the decision it stands in for admits, a deny of a service's
+// login aside, which putCredentialRequestStateV2 leaves to the broker: anyone signed in for a
 // service's machine login, whatever approver it stored, and for a request for a shared human-tier
 // secret (the approver `anyone`); otherwise the one person the approver names, so a person's
 // machine login whose approver is `anyone`, which only an older broker opened, admits nobody, and

@@ -4,17 +4,20 @@
 // (the repositories a project's issues resolve to). It holds what the two must not do two ways:
 // the read of the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), the bound on one
 // call, the headers (the User-Agent naming which client asks among them), the bounded read of the
-// body, and which failures are that token's and not Dispatch's (ErrBrokerRefused). It decodes no
-// answer: each client reads its own route's body, so no field of one answer reaches a reader of
-// the other.
+// body, which failures are that token's and not Dispatch's (ErrBrokerRefused), and which are
+// Dispatch giving no answer at all (ErrNoAnswer). It decodes no answer: each client reads its own
+// route's body, so no field of one answer reaches a reader of the other.
 package dispatchread
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -30,6 +33,16 @@ import (
 // misconfiguration and not an outage, so no caller mints, enrolls or answers through it as it would
 // through a failure to reach Dispatch: every read made with that credential would be wrong.
 var ErrBrokerRefused = errors.New("dispatchread: the broker's own account token was refused or could not be read")
+
+// ErrNoAnswer is a call Dispatch gave no whole answer to: the transport failed before its status
+// arrived or while its body was read (a refused or reset connection, a name server that did not
+// answer in time, an answer cut short), or the call's timeout, or its caller's deadline, passed
+// first. It is Dispatch, or the way to it, not answering, which clears by itself once it answers
+// again, unlike ErrBrokerRefused and unlike an answer that is wrong; so a caller that lets
+// something through only while Dispatch does not answer goes ahead on it
+// (projectaccess.Unanswered). A certificate that does not verify and a name that does not resolve
+// are no such failure (transportAnswers): each lasts until somebody fixes the deployment.
+var ErrNoAnswer = errors.New("dispatchread: dispatch gave no whole answer")
 
 // Reader reads Dispatch's routes at one base URL, presenting the broker's own account token and
 // naming its client in each call's User-Agent, each call bounded by its timeout and each body by
@@ -70,7 +83,9 @@ type Answer struct {
 // ErrBrokerRefused too, Dispatch refusing that token, decided by the status alone before the body
 // is read: a body cut short or past the limit only leaves the error without the code it names, and
 // never turns the refusal into a failure to ask. A transport failure, the timeout passing, and a
-// body it could not read or one past the limit are errors.
+// body it could not read are ErrNoAnswer, but for a certificate that does not verify and a name
+// that does not resolve (transportAnswers), each an error of its own; a body past the limit is an
+// error of its own too, an answer too long rather than none.
 func (r Reader) Get(ctx context.Context, commit, path string, query url.Values) (Answer, error) {
 	bearer, err := r.account.Read()
 	if err != nil {
@@ -94,7 +109,10 @@ func (r Reader) Get(ctx context.Context, commit, path string, query url.Values) 
 	request.Header.Set("User-Agent", r.program+"/"+commit)
 	response, err := r.http.Do(request)
 	if err != nil {
-		return Answer{}, fmt.Errorf("dispatchread: ask dispatch: %w", err)
+		if transportAnswers(err) {
+			return Answer{}, fmt.Errorf("dispatchread: ask dispatch %s: %w", path, err)
+		}
+		return Answer{}, fmt.Errorf("%w to %s: %w", ErrNoAnswer, path, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
@@ -103,12 +121,30 @@ func (r Reader) Get(ctx context.Context, commit, path string, query url.Values) 
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, int64(r.limit)+1))
 	if err != nil {
-		return Answer{}, fmt.Errorf("dispatchread: read dispatch's answer to %s: %w", path, err)
+		return Answer{}, fmt.Errorf("%w to %s: read its body: %w", ErrNoAnswer, path, err)
 	}
 	if len(body) > r.limit {
 		return Answer{}, fmt.Errorf("dispatchread: dispatch's answer to %s is over %d bytes", path, r.limit)
 	}
 	return Answer{Status: response.StatusCode, Body: body}, nil
+}
+
+// transportAnswers reports whether err, a call that failed before Dispatch's status arrived, is
+// the way to Dispatch answering rather than not answering: a certificate that does not verify
+// (tls.CertificateVerificationError, or an x509 error the handshake returned as it is), or a name
+// the resolver answered does not resolve (a net.DNSError that is not found, or neither a timeout
+// nor temporary). Each lasts until somebody fixes the deployment's address or certificate, unlike
+// a name server that did not answer in time, which clears by itself.
+func transportAnswers(err error) bool {
+	var verify *tls.CertificateVerificationError
+	var unknownAuthority x509.UnknownAuthorityError
+	var hostname x509.HostnameError
+	var invalid x509.CertificateInvalidError
+	if errors.As(err, &verify) || errors.As(err, &unknownAuthority) || errors.As(err, &hostname) || errors.As(err, &invalid) {
+		return true
+	}
+	var name *net.DNSError
+	return errors.As(err, &name) && (name.IsNotFound || !name.IsTimeout && !name.IsTemporary)
 }
 
 // RefusalCode is the code a refusal's body names, cut by Clip, and empty for a body that is cut

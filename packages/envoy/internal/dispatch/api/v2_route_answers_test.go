@@ -54,7 +54,10 @@ func TestTheCredentialStateAnswersItsOwnRecordAlone(t *testing.T) {
 // approver is anyone, which only an older broker opened, is the broker's to refuse to everybody,
 // so its state sent again by any person is relayed, and the broker's 403 NOT_APPROVER answered.
 // A login whose approver is a group is relayed the same way: Dispatch reads no group's members, so
-// the broker, which does, decides it.
+// the broker, which does, decides it. A deny of a service's login is relayed too, since the
+// broker refuses it to a person Dispatch calls a restricted member (#4848), which Dispatch cannot
+// tell: the broker's 409 RECORD_TERMINAL for a login already denied, which it answers only a
+// caller it admitted, is answered 200 the login as it stands, and its 403 NOT_APPROVER relayed.
 // No broker-issued token holds approve (brokerTokenActor), so the approver's own broker token
 // sending the state again is refused 403 OAUTH_SCOPE_REQUIRED naming approve at the state's rule,
 // before the compare reads the record, and nothing is relayed or looked up, as /api/v1 refuses
@@ -116,6 +119,42 @@ func TestTheCredentialStateNoOpAdmitsWhomTheBrokerLetsDecide(t *testing.T) {
 		if relayed, looked := tour.secrets.callsTo(http.MethodPost, approve),
 			tour.secrets.callsTo(http.MethodPost, "/v1/machine-logins/lookup")-lookups; relayed != 0 || looked != 0 {
 			t.Fatalf("the refused approval was relayed %d times and looked up %d times, want never", relayed, looked)
+		}
+	})
+
+	t.Run("a service's login denied again", func(t *testing.T) {
+		for _, broker := range []struct {
+			name, code string
+			status     int
+		}{
+			{"by a caller the broker admits", "RECORD_TERMINAL", http.StatusConflict},
+			{"by a restricted member", "NOT_APPROVER", http.StatusForbidden},
+		} {
+			t.Run(broker.name, func(t *testing.T) {
+				id := "tour-record-" + uuid.NewString()
+				stored := tourLoginRecord(id, "denied")
+				stored.Approver, stored.Service = "alice", &service
+				tour.secrets.answer(http.MethodPost, "/v1/machine-logins/lookup", http.StatusOK, stored)
+				deny := "/v1/credential-requests/" + id + "/deny"
+				tour.secrets.answer(http.MethodPost, deny, broker.status, map[string]string{
+					"code": broker.code, "error": "the broker's refusal",
+				})
+				response := tour.send(t, route, tourRequest{
+					Path: map[string]string{"id": id}, Body: map[string]any{"state": "denied", "code": "ABCD-1234"}, As: tourPerson("bob"),
+				}, "")
+				relayed := tour.secrets.callsTo(http.MethodPost, deny)
+				if broker.status == http.StatusConflict {
+					if answered := decodeBody[wire.RecordResponse](t, response); response.Code != http.StatusOK || answered.RecordID != id || answered.State != "denied" || relayed != 1 {
+						t.Fatalf("the deny sent again answered %d %s and was relayed %d times, want 200 with the login as it stands, relayed once",
+							response.Code, response.Body.String(), relayed)
+					}
+					return
+				}
+				if code, _ := refusalOf(t, response); response.Code != http.StatusForbidden || code != "NOT_APPROVER" || relayed != 1 {
+					t.Fatalf("the deny sent again answered %d %s and was relayed %d times, want the broker's 403 NOT_APPROVER, relayed once",
+						response.Code, response.Body.String(), relayed)
+				}
+			})
 		}
 	})
 }
