@@ -878,12 +878,15 @@ a `git clone --no-checkout --no-hardlinks --no-local` of the shared clone, which
 through git's transport rather than as copies of the shared clone's files, so no
 `objects/info/alternates` the shared clone holds reaches it, with origin's branches as the shared
 clone records them, the head fetched from the shared clone by its id where no branch brings it,
-origin set to GitHub, and a detached checkout of the head, with jj colocated in it. A clone that
-is already there gets those branches and the head fetched again from the shared clone, with no
-network, and a `jj new` on the head. Its stale git locks are removed first, and the reviewer's
-earlier writes stay in a change of their own. The launch is refused, naming both commits, when the
-shared clone does not hold the head or the clone's `HEAD` is not that head afterwards, and a clone
-that holds an `objects/info/alternates` file is refused. The shared clone's store lock is
+origin set to GitHub, and a detached checkout of the head, with jj colocated in it. Where the
+shared clone does not hold the head, the daemon first fetches that commit into the shared clone
+from its origin with the repository owner's read lease. A clone that is already there gets those
+branches and the head fetched again from the shared clone, and a `jj new` on the head. Its stale
+git locks are removed first, and the reviewer's earlier writes stay in a change of their own; a
+clone that holds an `objects/info/alternates` file is removed and made again instead, and the
+daemon logs a warning naming the file and the store it names. The launch is refused, naming both
+commits, when neither the shared clone nor its origin holds the head, or the clone's `HEAD` is not
+that head afterwards. The shared clone's store lock is
 held only while the clone or its fetch reads the shared clone, and the checkout takes one of the 16
 places. The clone is removed with the issue's workspace. It costs the disk one more copy of the
 repository's objects and one checkout.

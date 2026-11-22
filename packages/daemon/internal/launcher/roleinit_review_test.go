@@ -35,8 +35,9 @@ type reviewStagePlan struct{ Self, Mount, Path string }
 // built, makes the clone from the pod's shared clone at the head the daemon gives it
 // (LEGION_REVIEW_HEAD), and starts the reviewer's shim in it; the next start of the reviewer
 // brings the clone to the new head it is given, though another role moved the shared clone's
-// record of the issue's branch elsewhere, and a start at a head the shared clone does not hold is
-// refused before the shim runs. Every other role's role-init covers the volume's reviews directory
+// record of the issue's branch elsewhere; a head the shared clone does not hold is fetched into it
+// from its origin first; and a start at a head origin does not hold either is refused before the
+// shim runs. Every other role's role-init covers the volume's reviews directory
 // with an empty filesystem of the role's own and starts the role in the issue's workspace: the
 // role sees no clone there, and what it writes there never reaches the volume.
 func TestARolesInitMakesTheReviewersOwnCloneThatNoOtherRoleSees(t *testing.T) {
@@ -81,18 +82,20 @@ func TestARolesInitMakesTheReviewersOwnCloneThatNoOtherRoleSees(t *testing.T) {
 		{"agent-reviewer head", report["stage first"], "the reviewer's clone stands on the head it is given"},
 		{"stage reviewer2 status", "0", "the reviewer's next role-init brought its clone to the new head"},
 		{"agent-reviewer2 head", report["stage second"], "the reviewer's next start reviews the head it is given, not the shared clone's moved record"},
-		{"stage reviewer3 status", "none", "a start at a head the shared clone does not hold is refused before the shim runs"},
+		{"stage reviewer3 status", "0", "a start at a head the shared clone lacks fetches it from origin and runs the shim"},
+		{"agent-reviewer3 head", report["stage third"], "the reviewer stands on the head origin gave the shared clone"},
+		{"stage reviewer4 status", "none", "a start at a head origin does not hold either is refused before the shim runs"},
 		{"stage review-kept", "present", "the reviewer's clone is still on the volume after the other roles ran"},
 	} {
 		if got, ok := report[want.key]; !ok || got != want.value || got == "" {
 			t.Errorf("%s = %q, want %q: %s\n%s", want.key, got, want.value, want.why, output)
 		}
 	}
-	if pwd, ran := report["agent-reviewer3 pwd"]; ran {
-		t.Errorf("the reviewer's shim ran in %s at a head the shared clone does not hold\n%s", pwd, output)
+	if pwd, ran := report["agent-reviewer4 pwd"]; ran {
+		t.Errorf("the reviewer's shim ran in %s at a head no repository holds\n%s", pwd, output)
 	}
-	if third := report["stage third"]; third == "" || !strings.Contains(string(output), "the head under review "+third) {
-		t.Errorf("the refused start names no head under review %q\n%s", third, output)
+	if nowhere := report["stage nowhere"]; nowhere == "" || !strings.Contains(string(output), "the head under review "+nowhere) {
+		t.Errorf("the refused start names no head under review %q\n%s", nowhere, output)
 	}
 	for _, role := range []string{"tester", "implementer"} {
 		for _, want := range []struct{ key, value, why string }{
@@ -286,6 +289,11 @@ func runReviewStage(t *testing.T, plan reviewStagePlan) error {
 	}
 	fmt.Printf("stage third=%s\n", third)
 	if err := generation("reviewer", "agent-reviewer3", review, third); err != nil {
+		return err
+	}
+	nowhere := strings.Repeat("ab", 20)
+	fmt.Printf("stage nowhere=%s\n", nowhere)
+	if err := generation("reviewer", "agent-reviewer4", review, nowhere); err != nil {
 		return err
 	}
 	for _, role := range []string{"tester", "implementer"} {

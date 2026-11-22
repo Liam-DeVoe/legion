@@ -76,8 +76,10 @@ func (f reviewFixture) commit(t *testing.T, body string) string {
 // writes what the reviewer's git reads, and it names no other object store. An
 // objects/info/alternates that another role plants in the shared clone, naming a store that role
 // writes, does not reach the review clone, whose objects come through git's transport and not as
-// a copy of the shared clone's files; and a review clone that holds such a file is refused,
-// naming it, rather than handed to a reviewer whose git would read objects from that store.
+// a copy of the shared clone's files; and a review clone that holds such a file (on the tmux
+// runtime any pane can write one there) is removed and made again, with a log line naming the
+// file and the store it names, rather than handed to a reviewer whose git would read objects from
+// that store, or left to refuse every start of the reviewer after.
 func TestAReviewCloneSharesNoObjectFileWithTheSharedClone(t *testing.T) {
 	f := newReviewFixture(t)
 	planted := filepath.Join(filepath.Dir(f.origin), "planted")
@@ -117,8 +119,21 @@ func TestAReviewCloneSharesNoObjectFileWithTheSharedClone(t *testing.T) {
 	}
 
 	writeFiles(t, f.request.Dir, map[string]string{".git/objects/info/alternates": plantedObjects + "\n"})
-	if err := ProvisionReviewClone(context.Background(), run, f.request); err == nil || !strings.Contains(err.Error(), alternates) {
-		t.Fatalf("a provision of a review clone that holds %s = %v, want a refusal naming it", alternates, err)
+	var logged []string
+	f.request.Log = func(line string) { logged = append(logged, line) }
+	if err := ProvisionReviewClone(context.Background(), run, f.request); err != nil {
+		t.Fatalf("a provision of a review clone that holds %s: %v, want the clone made again", alternates, err)
+	}
+	if body, err := os.ReadFile(alternates); !os.IsNotExist(err) {
+		t.Errorf("after the provision the review clone still holds %s = %q (%v), want it made again without one", alternates, body, err)
+	}
+	if at := f.setup.Run(f.request.Dir, f.git, "rev-parse", "HEAD"); at != f.first {
+		t.Errorf("the review clone made again stands on %s, want the head given %s", at, f.first)
+	}
+	if !slices.ContainsFunc(logged, func(line string) bool {
+		return strings.Contains(line, alternates) && strings.Contains(line, plantedObjects)
+	}) {
+		t.Errorf("the provision logged %q, want a line naming the planted %s and the store %s it names", logged, alternates, plantedObjects)
 	}
 }
 
@@ -155,9 +170,10 @@ func TestAReviewCloneLeftAtAnotherCommitIsRefused(t *testing.T) {
 // branch, which any role that writes the shared clone can move and which goes stale when the
 // branch moves at origin without the shared clone's fetch. A head the shared clone holds is
 // checked out, fetched by its id where no branch the shared clone records reaches it, whatever the
-// shared clone's branch names; a head it does not hold is refused, naming the head and the commit
-// the shared clone records for the branch, on a fresh clone and on one already there; and a head
-// that is not a full commit id is refused before git reads it.
+// shared clone's branch names; with no origin to fetch from (a zero ReviewRequest.Origin), a head
+// it does not hold is refused, naming the head and the commit the shared clone records for the
+// branch, on a fresh clone and on one already there; and a head that is not a full commit id is
+// refused before git reads it.
 func TestAReviewCloneStandsOnTheHeadTheDaemonGives(t *testing.T) {
 	f := newReviewFixture(t)
 	run := NewRunner(testTimeout, map[string]string{"git": f.git, "jj": f.jj})
@@ -205,6 +221,91 @@ func TestAReviewCloneStandsOnTheHeadTheDaemonGives(t *testing.T) {
 		if err := ProvisionReviewClone(context.Background(), run, f.request); err == nil || !strings.Contains(err.Error(), "full commit id") {
 			t.Errorf("a provision at head %q = %v, want a refusal of a head that is no full commit id", head, err)
 		}
+	}
+}
+
+// Where the shared clone does not hold the head the daemon gives, the provision fetches that
+// commit into the shared clone from the shared clone's origin first, with the credential the
+// request names — the tmux daemon's read lease, asked only when that fetch runs and removed after
+// it, or a pod reviewer's own GitHub credential helper — and the reviewer starts on it, on a clone
+// already there and on a fresh one. Only a head origin does not hold either is refused, naming it
+// and the commit the shared clone records for the issue's branch; and an origin that is neither
+// GitHub over https nor a local repository is never fetched from.
+func TestAReviewCloneFetchesAHeadTheSharedCloneLacksFromOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		lease bool
+	}{{"the daemon's read lease", true}, {"the reviewer's own credential helper", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newReviewFixture(t)
+			run := NewRunner(testTimeout, map[string]string{"git": f.git, "jj": f.jj})
+			credentials := t.TempDir()
+			minted := 0
+			f.request.Origin = OriginWithHelper()
+			if tc.lease {
+				f.request.Origin = OriginWithToken(func() (string, error) { minted++; return "read-lease", nil }, credentials)
+			}
+			if err := ProvisionReviewClone(context.Background(), run, f.request); err != nil {
+				t.Fatalf("a provision at %s, which the shared clone holds: %v", f.first, err)
+			}
+			if minted != 0 {
+				t.Errorf("a provision at a head the shared clone holds asked for the read lease %d times, want none", minted)
+			}
+			holds := func(commit string) bool {
+				_, err := f.setup.Try(f.request.Clone, f.git, "cat-file", "-e", commit+"^{commit}")
+				return err == nil
+			}
+
+			// The branch moves at origin, and the shared clone does not fetch it.
+			second := f.commit(t, "base\nfirst\nsecond\n")
+			f.request.Head = second
+			if err := ProvisionReviewClone(context.Background(), run, f.request); err != nil {
+				t.Fatalf("a refresh at %s, which the shared clone lacks and origin holds: %v", second, err)
+			}
+			if at := f.setup.Run(f.request.Dir, f.git, "rev-parse", "HEAD"); at != second {
+				t.Fatalf("the review clone stands on %s, want the head given %s", at, second)
+			}
+			if !holds(second) {
+				t.Errorf("the shared clone does not hold %s after the provision fetched it from origin", second)
+			}
+			if tc.lease && minted != 1 {
+				t.Errorf("the fetch from origin asked for the read lease %d times, want once", minted)
+			}
+			if left, err := os.ReadDir(credentials); err != nil || len(left) != 0 {
+				t.Errorf("the credential directory holds %v (%v) after the fetch, want nothing", left, err)
+			}
+
+			// A fresh clone, at a head the shared clone lacks again.
+			if err := RemoveReviewClone(f.request.Dir); err != nil {
+				t.Fatal(err)
+			}
+			third := f.commit(t, "base\nfirst\nsecond\nthird\n")
+			f.request.Head = third
+			if err := ProvisionReviewClone(context.Background(), run, f.request); err != nil {
+				t.Fatalf("a first provision at %s, which the shared clone lacks and origin holds: %v", third, err)
+			}
+			if at := f.setup.Run(f.request.Dir, f.git, "rev-parse", "HEAD"); at != third {
+				t.Fatalf("the fresh review clone stands on %s, want the head given %s", at, third)
+			}
+
+			nowhere := strings.Repeat("ab", 20)
+			f.request.Head = nowhere
+			if err := ProvisionReviewClone(context.Background(), run, f.request); err == nil || !strings.Contains(err.Error(), nowhere) || !strings.Contains(err.Error(), f.first) {
+				t.Fatalf("a provision at %s, which origin does not hold either (the shared clone's branch at %s) = %v, want a refusal naming both", nowhere, f.first, err)
+			}
+
+			// Another role points the shared clone's origin at a command.
+			marker := filepath.Join(t.TempDir(), "ran")
+			f.setup.Run(f.request.Clone, f.git, "remote", "set-url", "origin", "ext::sh -c touch% "+marker)
+			fourth := f.commit(t, "base\nfirst\nsecond\nthird\nfourth\n")
+			f.request.Head = fourth
+			if err := ProvisionReviewClone(context.Background(), run, f.request); err == nil || !strings.Contains(err.Error(), fourth) || !strings.Contains(err.Error(), "ext::") {
+				t.Fatalf("a provision at %s with the shared clone's origin at a command = %v, want a refusal naming the head and that origin", fourth, err)
+			}
+			if _, err := os.Lstat(marker); !os.IsNotExist(err) {
+				t.Fatalf("the origin's command ran: %s exists (%v)", marker, err)
+			}
+		})
 	}
 }
 

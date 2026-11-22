@@ -22,8 +22,10 @@ import (
 // deterministic place workspace.ReviewLocation names, at the head of the issue's pull request the
 // daemon records, under the issue's turn, which every provision and removal of the issue's
 // workspace takes, and handed the repository's store lock free, for the clone to take around its
-// steps on the shared clone, and the checkout places. A clone that cannot be made fails the call,
-// naming the issue; under a runtime that provisions its own (a Sandbox pod), the host makes none.
+// steps on the shared clone, the checkout places, and a way to origin with the repository owner's
+// read lease, for a head the shared clone lacks (workspace.OriginWithToken). A clone that cannot be
+// made fails the call, naming the issue; under a runtime that provisions its own (a Sandbox pod),
+// the host makes none.
 func TestAReviewCloneIsMadeUnderItsIssuesTurnWithTheStoreLockFree(t *testing.T) {
 	repo := ghrepo.MustParse("acme/widgets")
 	stateDir := t.TempDir()
@@ -74,6 +76,9 @@ func TestAReviewCloneIsMadeUnderItsIssuesTurnWithTheStoreLockFree(t *testing.T) 
 	}
 	if got := made[0]; got.Clone != located.Clone || got.Dir != review || got.Repo != repo || got.Issue != "S1-2" || got.DefaultBranch != "release/v7.1" || got.Head != head {
 		t.Errorf("the review clone was asked of %+v, want the shared clone %s into %s for S1-2 of %s at %s, release/v7.1 its default", got, located.Clone, review, repo, head)
+	}
+	if made[0].Origin.IsZero() {
+		t.Error("the review clone was handed no way to origin, so a head the shared clone lacks would refuse the reviewer")
 	}
 
 	refuse = errors.New("the shared clone records no branch")
