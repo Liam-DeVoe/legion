@@ -229,12 +229,16 @@ half-open, so an issue that leaves at the instant another enters is not counted 
   merge-forward segment.
 - `waits`, by what ended them: a wait is a stretch in which an issue in flight, standing before its
   review, waits on another issue (an unfinished `blocked_by` link, or, at admitted under an open
-  gate, an open child), from the moment the wait begins to the moment nothing is left to wait on.
-  The words: `blocker_done` (the last blocker reached `done`), `link_removed` (the last unfinished
-  link was taken off), `child_done` (the last open child closed `done` or `icebox`),
-  `child_moved_out` (the last open child moved from under the issue), `gate_closed` (a new spec
-  version closed the gate), `left_workflow` (the waiting issue left), and `open` (still waiting at
-  `to`). A child at admitted that a link holds has not started; its wait is the line's, not this.
+  gate, an open child), from the moment the wait begins to the moment nothing is left to wait on,
+  or the issue moves on or leaves. The words: `blocker_done` (the last blocker reached `done`),
+  `link_removed` (the last unfinished link was taken off), `child_done` (the last open child closed
+  `done` or `icebox`), `child_moved_out` (the last open child moved from under the issue),
+  `gate_closed` (a new spec version closed the gate), `moved_on` (the waiting issue moved past its
+  review, or out of the phase its open children held), `left_workflow` (the waiting issue left),
+  and `open` (still waiting at `to`). A child at admitted that a link holds has not started; its
+  wait is the line's, not this, and so is the wait of a child at admitted whose own first phase its
+  open children hold. A wait goes on while the root of its tree lingers: it ends where its children
+  close or move out, or its blockers are done.
 - `slotHoursInTurn` and `slotHoursNoTurn`: over each slot, from the pass that gives it to its
   release (or `to`), the time a worker of the holder, of any role, is in a turn (`supervise: a turn
   started` to `a turn ended`, its claim's failure, or its issue's leave), and the rest.

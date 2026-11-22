@@ -586,6 +586,13 @@ const tickDelay = time.Minute
 // slot rule the repository does not keep (record.SlotRuleNamed), whose phases no slot span or
 // worker start could be read by; what it reads and cannot place it names in Trace.Unplaced.
 func BuildTrace(w Window) (Trace, error) {
+	return buildTrace(w, nil)
+}
+
+// buildTrace is BuildTrace of w, its log written from w's start on by a daemon that ran ran: a
+// replay's own log (driver.lineTimeline), whose rule need be no rule the repository keeps, while
+// the lines before the start are its record's. nil reads every line under the rule w's parts name.
+func buildTrace(w Window, ran *record.SlotRule) (Trace, error) {
 	for _, part := range w.Parts {
 		if _, kept := record.SlotRuleNamed(part.Rule); !kept {
 			return Trace{}, fmt.Errorf("replay: the window's part from %s names the slot rule %q, which the repository does not keep (legion replay rules)",
@@ -596,6 +603,7 @@ func BuildTrace(w Window) (Trace, error) {
 		t: &Trace{Project: w.Project, From: w.From, To: w.To, Start: w.From.Add(-time.Duration(w.Before)), Parts: w.Parts,
 			GateSteps: w.GateSteps, TickInterval: time.Duration(w.TickInterval), Branches: map[string]string{},
 			Issues: map[string]*IssueTrace{}},
+		ran:         ran,
 		held:        make(map[string]bool, len(w.Lines)),
 		turns:       map[claim.Token]turnAt{},
 		backKind:    map[string]string{},
@@ -668,6 +676,9 @@ type turnAt struct {
 // traceBuilder is BuildTrace's state while it reads a window.
 type traceBuilder struct {
 	t *Trace
+	// ran is the rule a replay's own log was written under from the window's start on, nil for a
+	// record (buildTrace).
+	ran *record.SlotRule
 	// held is the line kinds the window holds; recordLines and heldLines whether they include the
 	// record line of a pass and the hold's line.
 	held                   map[string]bool
@@ -2082,12 +2093,17 @@ func (b *traceBuilder) childrenWaitEnd(iss *IssueTrace, candidates []string, wai
 // closed at a full cap, and that its architect files another child under before its own first
 // phase can start, waits for that child again with no line; read from the line alone, it would
 // stand waiting for a slot alone. The gate stands open where the line began it (since), the daemon
-// judging only an issue of an open gate, and from then as the tree's gate facts leave it.
+// judging only an issue of an open gate, and from then as the tree's gate facts leave it. Under a
+// rule whose children-first holds a started parent in any phase (childrenHoldAnyPhase), the wait
+// begins again anywhere in the issue's run, the visit it waited in or a later one.
 func (b *traceBuilder) childrenWaitAgain(iss *IssueTrace, candidates []string, ended Wait, since time.Time) (Wait, bool) {
 	if ended.EndedBy != WaitChildDone && ended.EndedBy != WaitChildMovedOut && ended.EndedBy != WaitGateClosed {
 		return Wait{}, false
 	}
 	until, _ := iss.visitExitAfter(ended.Start)
+	if b.childrenHoldAnyPhase(ended.End) {
+		until = iss.runExitAfter(ended.Start)
+	}
 	if next := iss.nextWaitStart(&ended); !next.IsZero() && (until.IsZero() || next.Before(until)) {
 		until = next
 	}
@@ -2130,6 +2146,30 @@ func (b *traceBuilder) childrenWaitAgain(iss *IssueTrace, candidates []string, e
 		}
 	}
 	return Wait{}, false
+}
+
+// childrenHoldAnyPhase says whether the children-first rule of the daemon that wrote the log at at
+// holds a started parent in any phase, as a rule whose wait stops the phase under way does
+// (record.SlotRule.ChildrenFirstCandidates): the rule a replay's own log was written under from the
+// window's start on (buildTrace), and otherwise the rule the record's part names (Trace.ruleAt).
+func (b *traceBuilder) childrenHoldAnyPhase(at time.Time) bool {
+	if b.ran != nil && !at.Before(b.t.From) {
+		return b.ran.OrMain().WaitStopsPhase
+	}
+	return b.t.ruleAt(at).OrMain().WaitStopsPhase
+}
+
+// runExitAfter is the end of the run iss stands in at at: the exit of the last of the visits that
+// follow the one standing at at by moves, zero while the run goes on at the window's end.
+func (iss *IssueTrace) runExitAfter(at time.Time) time.Time {
+	i := slices.IndexFunc(iss.Visits, func(visit Visit) bool { return standsAt(visit.Enter, visit.Exit, at) })
+	if i < 0 {
+		return time.Time{}
+	}
+	for i+1 < len(iss.Visits) && iss.Visits[i+1].In != nil && iss.Visits[i+1].Enter.Equal(iss.Visits[i].Exit) {
+		i++
+	}
+	return iss.Visits[i].Exit
 }
 
 // treeOf is the tree iss stood in at at: its latest entry's at or before it, or its own where it had

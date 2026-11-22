@@ -347,20 +347,44 @@ func TestReplayStatesAreTheProjectionsStates(t *testing.T) {
 
 // The two timelines of a replay agree (design 10.1; the design review's Q5): on every fixture
 // window, on a window shaped as a deployment's (deploymentShapedWindow: issues placed at its
-// start, holds read from failed claims, children filed in it, a stop and a boot), and on a window
-// with a drop from the merge queue (queueDropWindow), each measure of the line timeline, which
-// BuildTrace reads from the replay's own log through the window's line kinds as it reads a record,
-// stands within a third of R5's gap for that measure of the snapshot timeline, which the admission
-// passes' own views give: 10% of the issues done and of the slots given each day, 0.05 of the
-// share of priority taken, 30% of every other measure (the median wait for a slot and the hours of
-// reading (a) among them), and, for each issue's first slot and its done, 60 minutes at the
-// median. A gap of the line timeline wider than that would make a record's scorecard, which only
-// the lines can give, err by more than a replay may. The deployment-shaped window holds a root that
-// waits for its children again after its last child closed, with no line of the second wait, since
-// the daemon tells a generation's wait once. In the queue-drop window both timelines name the
-// merger's send-back one round of queue_drop and none of send_back: the replay writes the line of
-// the pull request leaving the merge queue that the record shows before the move, as the trace of
-// its own log needs to name the move's cause.
+// start, holds read from failed claims, children filed in it, a stop and a boot), on a window
+// with a drop from the merge queue (queueDropWindow), on two windows that hold each way an issue
+// in flight comes to hold no slot (returnedPartWindow, restartAndTreeWindow), and on a window of a
+// started parent waiting on its child while the root of its tree lingers (lingeringParentWindow),
+// each measure of the line timeline, which BuildTrace reads from the replay's own log through the
+// window's line kinds as it reads a record, stands within a third of R5's gap for that measure of
+// the snapshot timeline, which the admission passes' own views give: 10% of the issues done and
+// of the slots given each day, 0.05 of the share of priority taken, 30% of every other measure
+// (the median wait for a slot and the hours of reading (a) among them), and, for each issue's
+// first slot and its done, 60 minutes at the median. A gap of the line timeline wider than that
+// would make a record's scorecard, which only the lines can give, err by more than a replay may.
+// The deployment-shaped window holds a root that waits for its children again after its last
+// child closed, with no line of the second wait, since the daemon tells a generation's wait once.
+// In the queue-drop window both timelines name the merger's send-back one round of queue_drop and
+// none of send_back: the replay writes the line of the pull request leaving the merge queue that
+// the record shows before the move, as the trace of its own log needs to name the move's cause.
+// In the two windows of an issue with no slot, the replay's daemon places each issue in the line
+// as the record's line reading does (TestAnIssueWithNoSlotWaitsForOneOnlyWhereTheLinePlacesIt,
+// TestARetriedHoldOwesItsStartAndATreeThatIsNotLiveWaitsForNoSlot): the snapshot timeline counts
+// each issue's hours in both readings as that test counts them in the record. A wait that stands
+// while its tree stops being live ends in both timelines where the record's facts end it, though
+// no pass judges it from then: in the second of those windows the link wait of an issue whose
+// tree stopped being live at 11:20 ends at 11:40 with its blocker's done, though the passes after
+// 11:20 read no mirror row of that issue (unfinishedLinks), and in the lingering-parent window,
+// replayed under a rule whose wait stops the phase, the wait of a started parent on its child ends
+// at 11:40 with the child's close, though the passes after its root's leave at 11:20 judge no wait
+// of it on its children (openChildren), and a child of it that the daemon recorded and that left
+// the workflow in backlog holds it no longer (recordOf). Both timelines count only the waits of an
+// issue in flight before its review (the windows' README, "The measures"): in childrenFirstWindow
+// no wait of ACME-2, a child that has not started whose own first phase its open child holds from
+// 09:20 to 10:20, and in linkPastReviewWindow a link wait cut at the move past the review, though
+// its blocker is done only later (issueWaits). Both timelines count each wait by what ended it as
+// the window's own doc counts it, a parent's second wait on its children in one run of its tree
+// among them, which the daemon tells no line of (childrenAgainWindow, read under the rule the
+// replay ran: buildTrace). And neither has an issue a hold of the daemon's line keeps from
+// its first start wait for a slot (startingAt): ACME-2 of childrenFirstWindow while its own open
+// child holds it, of acceptedAncestorWindow while its parent stands accepted, and of
+// ancestryWindow, a queued root, while its Dispatch chain names a live root.
 func TestSnapshotAndLineTimelinesAgree(t *testing.T) {
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
 	if dsn == "" {
@@ -390,16 +414,16 @@ func TestSnapshotAndLineTimelinesAgree(t *testing.T) {
 					if slowdown == 0 {
 						slowdown = 1
 					}
-					timelinesAgree(t, dsn, window, run.branch, run.want.Seed, slowdown)
+					timelinesAgree(t, dsn, window, record.MainRule, run.branch, run.want.Seed, slowdown)
 				})
 			}
 		})
 	}
 	t.Run("deployment-shaped", func(t *testing.T) {
-		timelinesAgree(t, dsn, deploymentShapedWindow(t), MainBranch, 1, 1)
+		timelinesAgree(t, dsn, deploymentShapedWindow(t), record.MainRule, MainBranch, 1, 1)
 	})
 	t.Run("queue-drop", func(t *testing.T) {
-		result := timelinesAgree(t, dsn, queueDropWindow(t), MainBranch, 1, 1)
+		result := timelinesAgree(t, dsn, queueDropWindow(t), record.MainRule, MainBranch, 1, 1)
 		for _, timeline := range []struct {
 			name string
 			card Scorecard
@@ -411,6 +435,92 @@ func TestSnapshotAndLineTimelinesAgree(t *testing.T) {
 			}
 		}
 	})
+	t.Run("returned-part", func(t *testing.T) {
+		result := timelinesAgree(t, dsn, returnedPartWindow(t), record.MainRule, MainBranch, 1, 1)
+		assertSnapshotHours(t, result, []issueHours{{key: "ACME-1"}, {key: "ACME-2", b: 1, a: 1}, {key: "ACME-3", b: 2, a: 1.0 / 3}})
+	})
+	t.Run("restart-and-tree", func(t *testing.T) {
+		result := timelinesAgree(t, dsn, restartAndTreeWindow(t), record.MainRule, MainBranch, 1, 1)
+		assertSnapshotHours(t, result, []issueHours{{key: "ACME-1", b: 1.5, a: 1.5}, {key: "ACME-2", b: 2}, {key: "ACME-3", b: 4.0 / 3}})
+		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitLeft: {Count: 1, Hours: 2}, WaitBlockerDone: {Count: 1, Hours: 5.0 / 3}})
+	})
+	t.Run("lingering-parent", func(t *testing.T) {
+		result := timelinesAgree(t, dsn, lingeringParentWindow(t), stopsPhaseRule(), MainBranch, 1, 1)
+		assertSnapshotHours(t, result, []issueHours{{key: "ACME-1", b: 2}, {key: "ACME-2", b: 4.0 / 3}})
+		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitLeft: {Count: 1, Hours: 2}, WaitChildDone: {Count: 1, Hours: 5.0 / 3}})
+	})
+	t.Run("children-again", func(t *testing.T) {
+		result := timelinesAgree(t, dsn, childrenAgainWindow(t), stopsPhaseRule(), MainBranch, 1, 1)
+		assertSnapshotHours(t, result, []issueHours{{key: "ACME-1", b: 11.0 / 3}, {key: "ACME-2", b: 1}})
+		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitOpen: {Count: 1, Hours: 11.0 / 3}, WaitChildDone: {Count: 2, Hours: 1}})
+	})
+	t.Run("children-first", func(t *testing.T) {
+		// ACME-1, the root, waits on ACME-2 from 09:20 to the window's end at 15:00: one wait, open,
+		// of 5 hours 40 minutes. ACME-2 has not started while its child holds it (09:20 to 10:20).
+		window := childrenFirstWindow(t)
+		result := timelinesAgree(t, dsn, window, record.MainRule, MainBranch, 1, 1)
+		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitOpen: {Count: 1, Hours: 17.0 / 3}})
+		assertWaitsForNoSlot(t, window, result, "ACME-2", clock(9, 40))
+	})
+	t.Run("link-past-review", func(t *testing.T) {
+		result := timelinesAgree(t, dsn, linkPastReviewWindow(t), record.MainRule, MainBranch, 1, 1)
+		assertSnapshotHours(t, result, []issueHours{{key: "ACME-1", b: 1.0 / 3}})
+		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitMovedOn: {Count: 1, Hours: 1.0 / 3}})
+	})
+	t.Run("accepted-ancestor", func(t *testing.T) {
+		// ACME-2 stands beneath ACME-1, accepted in its retro, from 11:30 to 12:30.
+		window := acceptedAncestorWindow(t)
+		result := timelinesAgree(t, dsn, window, record.MainRule, MainBranch, 1, 1)
+		assertWaitsForNoSlot(t, window, result, "ACME-2", clock(12, 0))
+	})
+	t.Run("ancestry", func(t *testing.T) {
+		// ACME-2, a queued root, stands under ACME-1, a live root, from 09:10 to 10:10.
+		window := ancestryWindow(t)
+		result := timelinesAgree(t, dsn, window, record.MainRule, MainBranch, 1, 1)
+		assertWaitsForNoSlot(t, window, result, "ACME-2", clock(9, 40))
+	})
+}
+
+// assertTimelineWaits fails where either timeline of result counts the waits on other issues by
+// what ended them otherwise than want: the same words, each with its count and its hours.
+func assertTimelineWaits(t *testing.T, result RunResult, want map[WaitEnd]WaitHours) {
+	t.Helper()
+	for _, timeline := range []struct {
+		name string
+		card Scorecard
+	}{{"snapshot", result.Scorecard}, {"line", result.LineScorecard}} {
+		same := len(timeline.card.Waits) == len(want)
+		for word, hours := range want {
+			got, ok := timeline.card.Waits[string(word)]
+			same = same && ok && got.Count == hours.Count && math.Abs(got.Hours-hours.Hours) <= fixtureTolerance
+		}
+		if !same {
+			t.Errorf("the %s timeline counts the waits %+v, want %+v", timeline.name, timeline.card.Waits, want)
+		}
+	}
+}
+
+// assertWaitsForNoSlot fails where key, an issue a hold of the daemon's line keeps from its first
+// start at at, waits for a slot then in the snapshot timeline of result, which the daemon's own
+// passes give, or in the line timeline of window's record, which Score reads.
+func assertWaitsForNoSlot(t *testing.T, window Window, result RunResult, key string, at time.Time) {
+	t.Helper()
+	trace, err := BuildTrace(window)
+	if err != nil {
+		t.Fatalf("build the trace: %v", err)
+	}
+	for _, timeline := range []struct {
+		name string
+		tl   Timeline
+	}{{"snapshot", result.snapshot}, {"line", lineTimeline(trace, ranksOf(trace), trace.ruleAt)}} {
+		c := timeline.tl.Issues[key]
+		if c == nil {
+			continue
+		}
+		if state, ok := stateAt(c, at); ok && waitsForSlot(state) {
+			t.Errorf("the %s timeline has %s wait for a slot at %s, in %+v: the daemon's line holds it", timeline.name, key, stamp(at), state)
+		}
+	}
 }
 
 // queueDropWindow is a window from 09:00 to 15:00 with a drop from the merge queue. ACME-1, a root,
@@ -441,13 +551,13 @@ func queueDropWindow(t *testing.T) Window {
 	return b.build()
 }
 
-// timelinesAgree replays window under main on branch, with seed and slowdown, and fails for each
+// timelinesAgree replays window under rule on branch, with seed and slowdown, and fails for each
 // measure in which the line timeline stands further from the snapshot timeline than a third of
 // R5's gap for it, and where the median gap of each issue's first slot and done is above a third
 // of R5's 60 minutes (TestSnapshotAndLineTimelinesAgree). It answers the replay's result.
-func timelinesAgree(t *testing.T, dsn string, window Window, branch Branch, seed int64, slowdown float64) RunResult {
+func timelinesAgree(t *testing.T, dsn string, window Window, rule record.SlotRule, branch Branch, seed int64, slowdown float64) RunResult {
 	t.Helper()
-	result, err := Run(context.Background(), RunConfig{Window: window, Rule: record.MainRule, Branch: branch, Seed: seed,
+	result, err := Run(context.Background(), RunConfig{Window: window, Rule: rule, Branch: branch, Seed: seed,
 		Slowdown: slowdown, PGDSN: dsn, Out: t.TempDir()})
 	if err != nil {
 		t.Fatalf("the replay failed: %v", err)

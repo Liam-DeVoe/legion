@@ -372,8 +372,8 @@ var laterLines = []string{passMovedSlotsLine, phaseHeldLine}
 // was built from, and from the start on the replay's own log and the events its copy of Dispatch
 // applied, recorded and its own alike: each issue's log past the recorded events that brought the
 // copy to the window's start (shadowIssue.seeded), which the record's own events before the start
-// stand for here. It is measured by the record's true ranks (design 10.7) under the rule the
-// replay ran.
+// stand for here. Its log from the start on is read as written under the rule the replay ran
+// (buildTrace), and it is measured by the record's true ranks (design 10.7) under that rule.
 //
 // The replay's log is read through the window's line kinds as the record is, so a later kind the
 // replay's daemon writes in place of the older lines a window holds (laterLines) is left out, and
@@ -430,7 +430,8 @@ func (d *driver) lineTimeline() (Timeline, error) {
 	for key, iss := range d.shadow.issues {
 		lined.Events[key] = append(lined.Events[key], iss.log[iss.seeded:]...)
 	}
-	t, err := BuildTrace(lined)
+	rule := d.rule
+	t, err := buildTrace(lined, &rule)
 	if err != nil {
 		return Timeline{}, fmt.Errorf("replay: read the run's own log and events back as a record: %w", err)
 	}

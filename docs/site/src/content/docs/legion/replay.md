@@ -510,6 +510,8 @@ At a moment with no pair, the share is 0.
 
 - `waits[<word>]`: the `.count` and `.hours` of the waits on other issues, by what ended each.
   A wait runs while an issue in flight, before its review, waits on an unfinished `blocked_by` link, or, at admitted under an open design gate, on an open child.
+  A child at admitted that has not started has no wait here: its wait is the line's.
+  A wait goes on while the root of its tree lingers.
 
 | Cause | The move back |
 | --- | --- |
@@ -528,6 +530,7 @@ At a moment with no pair, the share is 0.
 | `child_done` | The last open child closed as done or icebox. |
 | `child_moved_out` | The last open child moved from under the issue. |
 | `gate_closed` | A new spec version closed the design gate. |
+| `moved_on` | The waiting issue moved past its review, or out of the phase its open children held. |
 | `left_workflow` | The waiting issue left the workflow. |
 | `open` | Nothing, because the issue still waits at `--to`. |
 

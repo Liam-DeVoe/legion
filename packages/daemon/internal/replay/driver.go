@@ -678,8 +678,8 @@ func (d *driver) down(at time.Time) bool {
 // branch shows, reads its report into the run — the issues it named, and into the divergence the
 // turns it wrote no claim of under each assumption, the slots the trace inferred and the difference
 // of the trace's slots from the record's count, the assumptions of the turns and of the slots being
-// named among those the run rests on where it counted any — and reads back the claims it wrote for
-// the stub.
+// named among those the run rests on where it counted any — hands the records it wrote to the
+// snapshot timeline, and reads back the claims it wrote for the stub.
 func (d *driver) seed() error {
 	return d.st.Tx(d.ctx, func(tx pgx.Tx) error {
 		report, err := SeedAndReport(d.ctx, tx, d.records, d.st, withRanks(d.trace, d.shadow.ranks), d.window.From)
@@ -702,6 +702,7 @@ func (d *driver) seed() error {
 		if len(issues) > 0 {
 			d.used[6] = true
 		}
+		d.snap.seeded(issues)
 		for _, issue := range issues {
 			if !record.InWorkflow(issue) {
 				continue

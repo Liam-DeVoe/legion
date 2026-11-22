@@ -40,6 +40,9 @@ type snapshots struct {
 	given []record.SlotGiven
 	waits map[string]*standingWait
 	live  map[string]bool
+	// records is the daemon's newest record of every issue it has recorded, by key: each the start
+	// state wrote (seeded), and each a view has held since (read).
+	records map[string]record.Issue
 	// firstStartHeld says a pass found an issue not yet started held by a hold other than the cap
 	// (assumption 7): a link, a design gate, an ancestor, a tree.
 	firstStartHeld bool
@@ -67,8 +70,16 @@ var firstStartHolds = []record.HeldReason{record.HeldTreeClosed, record.HeldTree
 // newSnapshots is the snapshot timeline of a replay of [from, to), its ranks read by ranks.
 func newSnapshots(from, to time.Time, ranks rankFunc) *snapshots {
 	return &snapshots{timeline: Timeline{From: from, To: to, Issues: map[string]*Course{}}, ranks: ranks,
-		waits: map[string]*standingWait{}, live: map[string]bool{}, keys: map[string]struct{}{}, working: map[string]bool{},
-		byIssue: map[string][]supervise.Claim{}}
+		waits: map[string]*standingWait{}, live: map[string]bool{}, records: map[string]record.Issue{}, keys: map[string]struct{}{},
+		working: map[string]bool{}, byIssue: map[string][]supervise.Claim{}}
+}
+
+// seeded takes the records the start state wrote, the issues that left the workflow before the
+// window's start among them, which no pass's view holds.
+func (s *snapshots) seeded(issues []record.Issue) {
+	for _, issue := range issues {
+		s.records[issue.Key] = issue
+	}
 }
 
 // pass is the admission pass's observer (admit.Admission.UsePassObserver): the view of a pass
@@ -107,12 +118,14 @@ func (s *snapshots) roundEnds(key string, at time.Time) {
 // read reads the newest view once: its records and its own slots by key, its line and what holds
 // each member back, admission.blocked and admission.held over its judgement (blockers.Blocked,
 // record.HeldList), as the state's projection reads them; and whether an issue not yet started,
-// neither in flight nor holding a slot, is held by a hold other than the cap.
+// neither in flight nor holding a slot, is held by a hold other than the cap. Its records join the
+// daemon's newest records (records).
 func (s *snapshots) read(inFlight map[string]bool) {
 	v := s.view
 	s.byKey = make(map[string]record.Issue, len(v.Issues))
 	for _, issue := range v.Issues {
 		s.byKey[issue.Key] = issue
+		s.records[issue.Key] = issue
 	}
 	s.slotOf = make(map[string]record.Slot, len(v.Slots))
 	own := make([]record.Slot, 0, len(v.Slots))
@@ -258,16 +271,14 @@ func (s *snapshots) holderState(issue record.Issue, slot record.Slot, claims []s
 }
 
 // waitAt begins, carries or ends key's wait on other issues at at: an issue in flight that stands
-// before its review waits while a blocker its links name is not done (blockers.Unfinished over
-// the pass's mirror rows) or a Dispatch child its first phase waits for is open (the pass's
-// children-first judgement); the wait ends at the first settle where nothing is left.
+// before its review waits while a blocker its links name is not done (unfinishedLinks) or a
+// Dispatch child its first phase waits for is open (openChildren); the wait ends at the first
+// settle where nothing is left.
 func (s *snapshots) waitAt(at time.Time, key string, issue record.Issue, inWorkflow, inFlight bool, v *admit.PassView, dispatch *shadow) {
 	var links, children []string
 	if inWorkflow && inFlight && beforeReview(record.StandsAt(issue)) {
-		links = blockers.Unfinished(v.Rows, key)
-		for _, child := range v.Facts.ChildWaits[key].Open {
-			children = append(children, child.Key)
-		}
+		links, _ = unfinishedLinks(key, v, dispatch)
+		children = s.openChildren(key, issue, v, dispatch)
 	}
 	wait := s.waits[key]
 	switch {
@@ -286,19 +297,97 @@ func (s *snapshots) waitAt(at time.Time, key string, issue record.Issue, inWorkf
 	}
 }
 
+// openChildren is the open Dispatch children key's first phase waits for: the pass's
+// children-first judgement of it (record.LineFacts.ChildWaits), and, where that judgement leaves
+// out an issue whose wait on its children stood at the last settle because the root of its tree
+// lingers or the pass's records hold no root of it (record.SlotRule.ChildrenFirstCandidates), the
+// children the replay's copy of Dispatch shows under it, each open by the daemon's own reading
+// (record.ChildOpen) with the daemon's record of it (recordOf). That is the trace's reading of the
+// wait (traceBuilder.childrenAt), which no linger of a root ends: the wait goes on until its
+// children close or move out, as the line timeline reads it from the record.
+func (s *snapshots) openChildren(key string, issue record.Issue, v *admit.PassView, dispatch *shadow) []string {
+	var open []string
+	if judged, ok := v.Facts.ChildWaits[key]; ok {
+		for _, child := range judged.Open {
+			open = append(open, child.Key)
+		}
+		return open
+	}
+	root, recorded := s.byKey[issue.Tree]
+	if standing := s.waits[key]; standing == nil || len(standing.children) == 0 || recorded && !root.Lingers() {
+		return nil
+	}
+	for child, shown := range dispatch.issues {
+		if shown.payload == nil || shown.parent() != key {
+			continue
+		}
+		if record.ChildOpen(record.DispatchIssueRow{Key: child, Status: shown.status(), Parent: key}, s.recordOf(child)) {
+			open = append(open, child)
+		}
+	}
+	slices.Sort(open)
+	return open
+}
+
+// recordOf is the daemon's record of key now, nil for an issue it has never recorded: the newest
+// view's where that view holds it, and otherwise the newest it has held, standing at done. A view
+// holds every record but a done one that is not set back to todo and holds no slot
+// (record.Store.LiveIssues), so a record the view leaves out has finished or left the workflow,
+// as the trace reads a child it holds in no visit (traceBuilder.childrenAt).
+func (s *snapshots) recordOf(key string) *record.Issue {
+	if issue, live := s.byKey[key]; live {
+		return &issue
+	}
+	issue, recorded := s.records[key]
+	if !recorded {
+		return nil
+	}
+	issue.Phase = phase.Done
+	return &issue
+}
+
+// unfinishedLinks is the blockers key's Dispatch links name that are not done, and every blocker
+// they name, as the pass read them where it read key's mirror row (blockers.Unfinished over
+// v.Rows), and as the replay's copy of Dispatch shows them where it read none, by the same rule: a
+// blocker it holds no payload of is not done. The mirror keeps a row of every issue the project
+// ever had (blockers.Load), but a pass reads the rows of the issues it judges alone
+// (blockers.JudgeLine): one a blocker can hold where it stands, and one it has started
+// (blockers' startedIssues: a slot, an owed start or the mark of a release for a wait). An issue
+// of a tree that is not live, or whose root lingers, is none of these once a pass has cleared its
+// mark (admit's releaseSlots, as record.LineFacts.NeedsSlot answers false of it), so the pass
+// reads no row of it while its links still stand in Dispatch, and the copy the mirror is written
+// from shows them (TestTheShadowMatchesTheMirrorAfterEveryFact).
+func unfinishedLinks(key string, v *admit.PassView, dispatch *shadow) (unfinished, linked []string) {
+	if row, read := v.Rows[key]; read {
+		return blockers.Unfinished(v.Rows, key), row.Blockers
+	}
+	iss, shown := dispatch.issues[key]
+	if !shown {
+		return nil, nil
+	}
+	linked = iss.blockers()
+	for _, blocker := range linked {
+		if other, ok := dispatch.issues[blocker]; !ok || other.status() != record.DoneStatus {
+			unfinished = append(unfinished, blocker)
+		}
+	}
+	return unfinished, linked
+}
+
 // waitEnd is what ended key's wait, which stood on wait's blockers and children at the settle
 // before: an issue that moved past its review moved on; a wait on blockers ended with a link taken
-// off where one of them is no longer linked, and with a blocker done where each is linked still;
-// a wait on children ended by the first of them, as the replay's copy of Dispatch shows it now: a
-// child closed done or icebox is done, one under another parent moved out, and a child still open
-// under the issue holds it no longer because its tree's gate closed.
+// off where one of them is no longer linked (unfinishedLinks), and with a blocker done where each
+// is linked still; a wait on children ended by the first of them, as the replay's copy of Dispatch
+// shows it now: a child closed done or icebox is done, one under another parent moved out, and a
+// child still open under the issue holds it no longer because its tree's gate closed.
 func waitEnd(key string, issue record.Issue, wait *standingWait, v *admit.PassView, dispatch *shadow) WaitEnd {
 	if !beforeReview(record.StandsAt(issue)) {
 		return WaitMovedOn
 	}
 	if len(wait.links) > 0 {
+		_, linked := unfinishedLinks(key, v, dispatch)
 		for _, blocker := range wait.links {
-			if !slices.Contains(v.Rows[key].Blockers, blocker) {
+			if !slices.Contains(linked, blocker) {
 				return WaitLinkRemoved
 			}
 		}
