@@ -76,7 +76,7 @@ func TestTheWholeTextReadsAsSteLintReadsTheLine(t *testing.T) {
 			t.Fatalf("%q: the charge refuses the judgment's one reading of each sentence", line)
 		}
 		read++
-		want, verbs := lintedWhole(line, nil)
+		want, verbs := lintedWhole(line, ste.Held{})
 		dangles := false
 		for key := range want {
 			if key.rule == "ste100-dangling-conjunction" {
@@ -126,7 +126,7 @@ func TestTheWholeTextReadsAChangeOfASentenceAsSteLintReadsTheTextItWrites(t *tes
 			continue
 		}
 		texts++
-		before, _ := lintedWhole(line, nil)
+		before, _ := lintedWhole(line, ste.Held{})
 		for index, each := range sentences {
 			place := each.in(line)
 			pieces := ste.Words(place)
@@ -168,7 +168,7 @@ func TestTheWholeTextReadsAChangeOfASentenceAsSteLintReadsTheTextItWrites(t *tes
 						}
 						written.WriteString(span)
 					}
-					after, _ := lintedWhole(written.String(), nil)
+					after, _ := lintedWhole(written.String(), ste.Held{})
 					if full := noneNew(after, before); passed != full {
 						t.Errorf("%q: %q to %q in sentence %d: the judge says %v, and ste-lint over the written text says %v (%v, was %v)",
 							line, way.from, way.to, index, passed, full, after, before)

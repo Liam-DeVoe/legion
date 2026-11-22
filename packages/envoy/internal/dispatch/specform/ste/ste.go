@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"math/bits"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -720,13 +721,53 @@ func EndsInConjunction(text string) bool {
 // own uses each of those verbs of is Lint's finding of the text, and one that a text of held uses
 // each of is that text's finding.
 func Rotations(own Verbs, held []Verbs) Verbs {
-	all := own
-	for _, each := range held {
-		all |= each
+	return HeldOf(held).Rotations(own)
+}
+
+// Held is the verbs of the texts that a text holds, as Rotations reads them, read once: their verbs
+// together (all), and, for each synonym group in the order of rules.json, each set of its verbs that
+// one of the texts uses (uses), at most two to the power of the group's size, so at most 16 for the
+// groups of rules.json. So Rotations of many sets of own verbs against the same texts reads each
+// group's sets, not the texts: its work does not grow with how many texts are held.
+type Held struct {
+	all  Verbs
+	uses [][]Verbs
+}
+
+// HeldOf is held, the verbs of each text that a text holds, as Held reads them.
+func HeldOf(held []Verbs) Held {
+	if len(held) == 0 {
+		return Held{}
 	}
-	rotated := all.Rotated() & (own ^ all).Groups()
+	read := Held{uses: make([][]Verbs, len(rules.groups))}
 	for _, each := range held {
-		rotated &= (each ^ all).Groups()
+		read.all |= each
+		for index, group := range rules.groups {
+			if used := each & group; !slices.Contains(read.uses[index], used) {
+				read.uses[index] = append(read.uses[index], used)
+			}
+		}
+	}
+	return read
+}
+
+// Rotations is Rotations(own, held) for the texts of h: each group of which own and the texts use
+// two verbs or more together, where own does not use each of those verbs, and no one text uses
+// each of them (a set of uses that holds each).
+func (h Held) Rotations(own Verbs) Verbs {
+	all := own | h.all
+	rotated := all.Rotated() & (own ^ all).Groups()
+	for index, uses := range h.uses {
+		group := rules.groups[index]
+		if rotated&group == 0 {
+			continue
+		}
+		for _, used := range uses {
+			if all&group&^used == 0 {
+				rotated &^= group
+				break
+			}
+		}
 	}
 	return rotated
 }

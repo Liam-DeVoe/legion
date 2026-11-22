@@ -2,6 +2,7 @@ package ste
 
 import (
 	"encoding/json"
+	"math/rand/v2"
 	"reflect"
 	"strings"
 	"testing"
@@ -166,6 +167,52 @@ func TestRotationsJoinTheVerbsOfTexts(t *testing.T) {
 		if got := Rotations(verbs(test.own), held).Words(); !reflect.DeepEqual(got, test.want) {
 			t.Errorf("%s: Rotations(%q, %q) = %q, want %q", test.name, test.own, test.held, got, test.want)
 		}
+	}
+}
+
+// Held reads the texts that a text holds once (HeldOf), and its Rotations is Rotations as its
+// comment defines it, each held text read for each set of own verbs: for 20,000 sets of own verbs
+// and of 0 to 40 held texts, drawn at random from the verbs of the synonym groups, the two agree.
+// The cases hold groups that a held text uses each verb of and groups it does not (counted), so
+// both answers of the rule are read.
+func TestHeldReadsTheHeldTextsOnceAsRotationsReadsThemEach(t *testing.T) {
+	definition := func(own Verbs, held []Verbs) Verbs {
+		all := own
+		for _, each := range held {
+			all |= each
+		}
+		rotated := all.Rotated() & (own ^ all).Groups()
+		for _, each := range held {
+			rotated &= (each ^ all).Groups()
+		}
+		return rotated
+	}
+	var every Verbs
+	for _, group := range rules.groups {
+		every |= group
+	}
+	draw := func(random *rand.Rand) Verbs { return Verbs(random.Uint64()&random.Uint64()) & every }
+	random := rand.New(rand.NewPCG(4179, 21))
+	rotated, kept := 0, 0
+	for range 20_000 {
+		own := draw(random)
+		held := make([]Verbs, random.IntN(41))
+		for index := range held {
+			held[index] = draw(random)
+		}
+		want := definition(own, held)
+		if got := HeldOf(held).Rotations(own); got != want {
+			t.Fatalf("own %b, held %b: Held gives %b, the definition %b", own, held, got, want)
+		}
+		if want != 0 {
+			rotated++
+		} else if (own | HeldOf(held).all).Rotated() != 0 {
+			kept++
+		}
+	}
+	t.Logf("20,000 cases: %d rotate a group, %d rotate none where the verbs together use two of a group", rotated, kept)
+	if rotated == 0 || kept == 0 {
+		t.Errorf("%d cases rotate a group and %d rotate none beside two verbs of a group: the test reads too little", rotated, kept)
 	}
 }
 

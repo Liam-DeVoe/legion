@@ -66,13 +66,14 @@ type wholeText struct {
 	// time that a finding asks where its words stand (holding, indexed).
 	bare    charge.Index[wordAt]
 	indexed bool
-	// held is the verbs of each footnote that the text holds (footnotesHeld.verbs). elsewhere, for
-	// the text of a footnote, reports whether a way out that changes the verbs of its words from
-	// one set to another gives a finding of the rule synonym-rotation of the footnotes and the
-	// texts that hold the footnote that the judgment does not give (footnoteJudge.rotationCanChange).
-	// lines is whether the judge reads the text whole for each way out, and readFor each finding
-	// whose ways out it read so.
-	held      []ste.Verbs
+	// held is the verbs of each footnote that the text holds (footnotesHeld.verbs), read once
+	// (ste.HeldOf), so that the reading of a way out reads the sets of verbs of each synonym group
+	// that the footnotes use, not each footnote. elsewhere, for the text of a footnote, reports
+	// whether a way out that changes the verbs of its words from one set to another gives a finding
+	// of the rule synonym-rotation of the footnotes and the texts that hold the footnote that the
+	// judgment does not give (footnoteJudge.rotationCanChange). lines is whether the judge reads the
+	// text whole for each way out, and readFor each finding whose ways out it read so.
+	held      ste.Held
 	elsewhere func(before, after ste.Verbs) bool
 	lines     bool
 	readFor   map[wayKey]bool
@@ -152,7 +153,7 @@ type wholeWay struct {
 // judgment's texts, with what the judgment keeps of its place (charge.Texts.Name, Keep). Its split
 // of the line reads the line, which the rules hand it, and no sentence through the charge.
 func newWholeText(line string, held []ste.Verbs, elsewhere func(before, after ste.Verbs) bool, texts *charge.Texts[sentenceAt]) *wholeText {
-	w := &wholeText{texts: texts, held: held, elsewhere: elsewhere, at: map[charge.Unit][]int{}, lines: ste.Lines(line) > 1}
+	w := &wholeText{texts: texts, held: ste.HeldOf(held), elsewhere: elsewhere, at: map[charge.Unit][]int{}, lines: ste.Lines(line) > 1}
 	ticks := 0
 	for index, each := range sentencesOf(line) {
 		span, unit := line[each.start:each.end], texts.Name(each.in(line), false, false)
@@ -462,11 +463,10 @@ func (w *wholeText) writesNoNewFinding(changed map[int]writtenSentence) (passed 
 	if w.lines {
 		return noneNew(after, w.before), true
 	}
-	for key, count := range w.before {
-		if key.rule == "ste100-long-sentence" {
-			after[key] += count
-		}
-	}
+	// The way out changes the count of the findings of long-sentence only in the pieces that its
+	// runs take part in: long is each change of a count, the pieces of the text taken away and the
+	// pieces of the way out added, so the reading reads those pieces, not each finding of the text.
+	long := map[findingKey]int{}
 	runs, charged := w.changedRuns(changed, read)
 	if !charged {
 		return false, false
@@ -491,11 +491,16 @@ func (w *wholeText) writesNoNewFinding(changed map[int]writtenSentence) (passed 
 		// before it where the way out makes a piece run on into it.
 		first, last := changed[run[0]], changed[run[1]]
 		next := last.was.spread.Open || last.spread.Open
-		pieces(run[0], run[1], spreadOf(false), first.was.left, last.was.after, next, func(words int) { addLong(after, words, -1) })
-		pieces(run[0], run[1], spreadOf(true), first.was.left, last.was.after, next, func(words int) { addLong(after, words, 1) })
+		pieces(run[0], run[1], spreadOf(false), first.was.left, last.was.after, next, func(words int) { addLong(long, words, -1) })
+		pieces(run[0], run[1], spreadOf(true), first.was.left, last.was.after, next, func(words int) { addLong(long, words, 1) })
 	}
 	if !noneNew(after, w.before) {
 		return false, true
+	}
+	for _, count := range long {
+		if count > 0 {
+			return false, true
+		}
 	}
 	if !w.dangling(changed) {
 		return true, true
@@ -517,7 +522,7 @@ func (w *wholeText) writesNoNewFinding(changed map[int]writtenSentence) (passed 
 // read whole by ste-lint, with the verbs of its footnotes, held, and its verbs: the reading of a
 // text that ste-lint reads as more than one line, and the one that the sentences of any other text
 // add up to.
-func lintedWhole(line string, held []ste.Verbs) (map[findingKey]int, ste.Verbs) {
+func lintedWhole(line string, held ste.Held) (map[findingKey]int, ste.Verbs) {
 	lint, verbs := ste.LintVerbs(line)
 	found := map[findingKey]int{}
 	for _, finding := range lint {
@@ -526,7 +531,7 @@ func lintedWhole(line string, held []ste.Verbs) (map[findingKey]int, ste.Verbs) 
 			found[findingKeyOf(steBreak(finding))]++
 		}
 	}
-	for _, each := range rotationBreaks(ste.Rotations(verbs, held), "its footnotes") {
+	for _, each := range rotationBreaks(held.Rotations(verbs), "its footnotes") {
 		found[findingKeyOf(each)]++
 	}
 	return found, verbs
@@ -545,9 +550,10 @@ func noneNew(after, before map[findingKey]int) bool {
 // rotations is the findings of the rule synonym-rotation of the text with the sentences of changed
 // in place of its own, and its verbs: of its own words, each member of a group after the first one
 // to stand in it, at its first place, in the order of ste.LintVerbs; and of its words with those of
-// its footnotes (ste.Rotations, held); and whether the charge of each sentence that it read let it
-// read it. A member whose first place is in a sentence of changed first stands, beside changed, in
-// the next sentence of stands that changed does not hold, which it reads through its charge (read).
+// its footnotes (ste.Held.Rotations, held); and whether the charge of each sentence that it read
+// let it read it. A member whose first place is in a sentence of changed first stands, beside
+// changed, in the next sentence of stands that changed does not hold, which it reads through its
+// charge (read).
 func (w *wholeText) rotations(changed map[int]writtenSentence, read map[charge.Unit][]sentenceAt) (map[findingKey]int, ste.Verbs, charge.Answer) {
 	firsts := map[[2]int]sentenceHit{}
 	for member, first := range w.firsts {
@@ -595,7 +601,7 @@ func (w *wholeText) rotations(changed map[int]writtenSentence, read map[charge.U
 			found[findingKeyOf(steBreak(each.hit.Rotation()))]++
 		}
 	}
-	for _, each := range rotationBreaks(ste.Rotations(verbs, w.held), "its footnotes") {
+	for _, each := range rotationBreaks(w.held.Rotations(verbs), "its footnotes") {
 		found[findingKeyOf(each)]++
 	}
 	return found, verbs, true
