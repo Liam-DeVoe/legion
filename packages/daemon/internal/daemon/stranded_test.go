@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
-	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -505,7 +504,8 @@ func TestStateSnapshotKeepsStrandedClaimsConsistentWithWorkerStates(t *testing.T
 // earlier version of the plan. A wake of the keyed agent's claim ran out two hours ago with no
 // turn: that claim is stranded, and the role's own claim, which nothing woke, waits for a delivery
 // as a released claim is meant to. A wake the release before recorded names no claim and still
-// stands for each claim of its role.
+// stands for each claim of its role, and it strands the one of them that works the role's step:
+// the role's own claim works no step a start of the phase brings back, so no wake strands it.
 func TestAReleasedClaimIsStrandedByItsOwnWakeAlone(t *testing.T) {
 	cfg := testConfig(t)
 	issue := cfg.Project + "-1"
@@ -580,11 +580,7 @@ func TestAReleasedClaimIsStrandedByItsOwnWakeAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	wake("")
-	got := stranded()
-	slices.Sort(got)
-	want := []claim.Token{keyed.Token, own.Token}
-	slices.Sort(want)
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("stranded after a wake that names no claim ran out = %v, want both claims of its role %v", got, want)
+	if got := stranded(); !reflect.DeepEqual(got, []claim.Token{keyed.Token}) {
+		t.Fatalf("stranded after a wake that names no claim ran out = %v, want %s alone: it stands for each claim of its role, and the role's own claim works no step", got, keyed.Token)
 	}
 }

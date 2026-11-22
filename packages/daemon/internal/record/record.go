@@ -2486,8 +2486,10 @@ type RoleRunKey struct {
 
 // RoleRun is what the store holds of one claim's run of a role of an issue generation: the role's
 // supervise rows for the generation still queued that reach that claim, each a row that names its
-// token or names no claim, oldest first (finishing deletes a row, so each is one the outbox has
-// not run), and this daemon's claim of that token, nil when it has none.
+// token, or one that names no claim where that claim is the worker on the role's step
+// (WorkerClaim), which is the claim such a row reaches when it runs, oldest first (finishing
+// deletes a row, so each is one the outbox has not run), and this daemon's claim of that token,
+// nil when it has none. Two claims of one role are two runs: a row of the role is the run of one.
 type RoleRun struct {
 	Queued []QueuedSupervise
 	Claim  *RoleClaim

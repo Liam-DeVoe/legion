@@ -3439,7 +3439,9 @@ func (s *Postgres) RoleRun(ctx context.Context, tx pgx.Tx, token claim.Token, is
 
 // roleRunIdentity is a candidate role run as an outbox supervise row names it: its issue, and the
 // payload's role and generation exactly as Postgres renders them (`payload->>'role'`,
-// `payload->>'generation'`), so a row is matched before it is decoded.
+// `payload->>'generation'`), so a row is matched before it is decoded. Two claims can hold one
+// role of an issue at one generation — the agent of a key on a step of another role, beside that
+// role's own claim of an earlier version of the plan — so one identity can stand for several keys.
 type roleRunIdentity struct {
 	issue      string
 	role       string
@@ -3478,18 +3480,26 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 	tokens := make([]string, 0, len(keys))
 	issues := make([]string, 0, len(keys))
 	seenIssues := make(map[string]struct{}, len(keys))
-	candidates := make(map[roleRunIdentity]claim.Token, len(keys))
+	candidates := make(map[roleRunIdentity][]claim.Token, len(keys))
 	for _, key := range keys {
 		if _, exists := runs[key.Token]; exists {
 			continue
 		}
 		runs[key.Token] = RoleRun{}
 		tokens = append(tokens, string(key.Token))
-		candidates[roleRunIdentity{issue: key.Issue, role: string(key.Role), generation: strconv.FormatUint(key.Generation, 10)}] = key.Token
+		identity := roleRunIdentity{issue: key.Issue, role: string(key.Role), generation: strconv.FormatUint(key.Generation, 10)}
+		candidates[identity] = append(candidates[identity], key.Token)
 		if _, seen := seenIssues[key.Issue]; !seen {
 			seenIssues[key.Issue] = struct{}{}
 			issues = append(issues, key.Issue)
 		}
+	}
+	// A row that names no claim, which the release before wrote, reaches the claim of the worker
+	// on its role's step when it runs (the outbox's workerToken, WorkerClaim), so it is read as
+	// that claim's run; the rows of the phases table say which claim that is.
+	entries, err := s.PhaseEntries(ctx, tx, issues)
+	if err != nil {
+		return nil, err
 	}
 
 	rows, err := tx.Query(ctx, `select `+outboxColumns+`, coalesce(payload->>'role', ''), coalesce(payload->>'generation', ''),
@@ -3510,9 +3520,14 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		}
 		// A row that names a claim (SuperviseRequest.Claim) is that claim's alone: a keyed agent
 		// on a step of another role holds the role beside the role's own claim from an earlier
-		// version, and a start that names one is no queued run of the other.
-		token, wanted := candidates[roleRunIdentity{issue: row.Issue, role: role, generation: generation}]
-		if !wanted || (named != "" && named != string(token)) {
+		// version, and a start that names one is no queued run of the other. A row that names
+		// none is the run of the claim it reaches, the worker on its role's step.
+		wanted := candidates[roleRunIdentity{issue: row.Issue, role: role, generation: generation}]
+		token := claim.Token(named)
+		if token == "" && len(wanted) > 0 {
+			token = roleRunWorker(wanted[0], row.Issue, claim.Role(role), entries)
+		}
+		if token == "" || !slices.Contains(wanted, token) {
 			continue
 		}
 		decoded, err := DecodeOutboxPayload(row)
@@ -3544,6 +3559,22 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		return nil, err
 	}
 	return runs, nil
+}
+
+// roleRunWorker is the claim a supervise row of role on issue that names no claim reaches when it
+// runs, as WorkerClaim reads it over entries: the claim role's phases row names while that row
+// runs a step of the issue's plan, and the role's own token otherwise. The role's own token is
+// spelled from the issue's part of key, the token of a claim of that issue, so no project token is
+// needed here; a key that names no issue's part reaches nothing.
+func roleRunWorker(key claim.Token, issue string, role claim.Role, entries map[PhaseRole]PhaseEntry) claim.Token {
+	if entry := entries[PhaseRole{Issue: issue, Role: role}]; entry.StepTask != "" && entry.Claim != "" {
+		return entry.Claim
+	}
+	prefix, _, ok := key.Cut()
+	if !ok {
+		return ""
+	}
+	return claim.Token(prefix + "-" + string(role))
 }
 
 // RoleClaims reads the claims of tokens and nothing else, keyed by token: RoleRuns' second

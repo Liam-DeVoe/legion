@@ -191,6 +191,22 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 	if err != nil {
 		return nil, err
 	}
+	// The worker of a role's step is the claim the record gives it (record.WorkerClaimOf over the
+	// issues' phases rows, read once here): two claims can hold one role — the agent of a key on a
+	// step of another role, beside that role's own claim of an earlier version of the plan — and
+	// only the worker is one a start of the phase brings back.
+	var keys []string
+	seen := make(map[string]bool, len(claims))
+	for _, c := range claims {
+		if !seen[c.Issue] {
+			seen[c.Issue] = true
+			keys = append(keys, c.Issue)
+		}
+	}
+	entries, err := s.PhaseEntries(ctx, tx, keys)
+	if err != nil {
+		return nil, err
+	}
 	type candidate struct {
 		claim   supervise.Claim
 		issue   record.Issue
@@ -241,7 +257,7 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		var current phase.Phase
 		switch {
 		case claim.IsTreeArchitect(c.Role, issue.Key, issue.Tree):
-		case c.Role != claim.RoleArchitect && issue.RoleAt(issue.WorkingPhase()) == c.Role:
+		case c.Role != claim.RoleArchitect && issue.RoleAt(issue.WorkingPhase()) == c.Role && worksItsRolesStep(c, entries):
 			if c.State == supervise.StateSuspended && c.SuspendedBy.ByRule() {
 				continue
 			}
@@ -275,4 +291,13 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		return cmp.Or(cmp.Compare(a.Issue, b.Issue), cmp.Compare(a.Role, b.Role))
 	})
 	return stranded, nil
+}
+
+// worksItsRolesStep is whether c is the worker of its role's step on its issue, the claim the
+// record gives that step (record.WorkerClaimOf over entries): the claim the role's phases row names
+// while that row runs a step of the plan, and otherwise the role's own claim. Another claim of the
+// role works nothing a start of the phase brings back.
+func worksItsRolesStep(c supervise.Claim, entries map[record.PhaseRole]record.PhaseEntry) bool {
+	worker, err := record.WorkerClaimOf(c.Project, c.Issue, c.Role, entries)
+	return err == nil && worker == c.Token
 }
