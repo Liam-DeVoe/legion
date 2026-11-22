@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  The `GET /api/v1/issues` query's `sort?: "closed_at" | "-closed_at"`, which orders the
+  listing by its issues' close time, oldest or newest first.
+time: 2026-11-22T05:34:24Z
+custom:
+    Issue: pr4959
