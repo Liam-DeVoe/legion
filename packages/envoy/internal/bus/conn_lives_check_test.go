@@ -30,8 +30,14 @@ import (
 // window is refused. A check that never ends a pinned life fails the first; a >= rather than > in
 // endReconnected fails both the second and the third. A pin whose wait for a connection runs on the
 // real clock fails the second once its staged reconnect takes longer than that wait
-// (publishAcknowledgementTimeout, 5 s). Every wait is testwait's, with no bound of the row's: each
-// only guards against NATS not changing state.
+// (publishAcknowledgementTimeout, 5 s); a pin loop that keeps the life it took first, never the
+// fresh one after the reconnect, fails the second at its first send's give-up.
+//
+// Each wait for a fact is testwait's, with no bound of the row's: nats.go's state and a life's end
+// through Until and Receive (the second row's hooks through waitInHook), and the first send of a
+// window not yet pinned through firstSend, since that send's wait for a connection is on the held
+// window clock, which only a pin ends. Each gives up only when NATS does not change state or a pin
+// never comes, and names what it waited for.
 func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 	every := lifeCheckEvery.Swap(int64(time.Hour))
 	t.Cleanup(func() { lifeCheckEvery.Store(every) })
@@ -40,7 +46,7 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 		client, hold := heldHandshakeClient(t)
 		conn := client.Connection()
 		old := client.WindowUntil(nil).(*window)
-		if err := old.pinToSend(); err != nil {
+		if err := firstSend(t, old, "control: the old window's first send to pin the connection before the missed report"); err != nil {
 			t.Fatalf("control: pin the old window: %v", err)
 		}
 		life := lifeOf(conn)
@@ -59,7 +65,9 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 		// attempt ends only when the row releases it, with a connect timeout of the test's own. The
 		// pin's own wait for a connection is on the client's window clock, a fake the row never moves
 		// (heldHandshakeClient), so it does not end inside the staged drop and reconnect, however long
-		// they take: the hooks' waits are the row's only give-up.
+		// they take: only a pin ends it. The row's give-ups are the shared wait's: the first send runs
+		// inside it (firstSend), which names the pin should the loop never take a life it can pin, and
+		// each hook's wait (waitInHook) writes its give-up at once and hands it to hookFailed.
 		testnats.OwnConnectTimeout(t, conn)
 		w := client.WindowUntil(nil).(*window)
 		original := lifeOf(conn).current()
@@ -100,7 +108,7 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 			close(ended)
 			hold.Release()
 		})
-		pinned := w.pinToSend()
+		pinned := firstSend(t, w, "the window's first send to pin the life after the staged drop and reconnect (its wait for a connection is on the held window clock)")
 		select {
 		case err := <-hookFailed:
 			t.Fatalf("a hook of the staged drop failed: %v; the pin answered %v", err, pinned)
@@ -121,7 +129,7 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 		client, hold := heldHandshakeClient(t)
 		conn := client.Connection()
 		old := client.WindowUntil(nil).(*window)
-		if err := old.pinToSend(); err != nil {
+		if err := firstSend(t, old, "control: the old window's first send to pin the connection before the clean reconnect"); err != nil {
 			t.Fatalf("control: pin the old window: %v", err)
 		}
 		life := lifeOf(conn)
@@ -163,7 +171,7 @@ func TestAConnectionsCheckKeepsALifePinnedAfterItsRead(t *testing.T) {
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
 	old := client.WindowUntil(nil).(*window)
-	if err := old.pinToSend(); err != nil {
+	if err := firstSend(t, old, "control: the old window's first send to pin the connection before the drop"); err != nil {
 		t.Fatalf("control: pin the old window: %v", err)
 	}
 	life := lifeOf(conn)
@@ -185,7 +193,7 @@ func TestAConnectionsCheckKeepsALifePinnedAfterItsRead(t *testing.T) {
 		life.end(nats.RECONNECTING)
 		waitForLifeEnded(t, old.life)
 		fresh = client.WindowUntil(nil).(*window)
-		if err := fresh.pinToSend(); err != nil {
+		if err := firstSend(t, fresh, "control: a new window's first send, in the check's read hook, to pin the connection's next life"); err != nil {
 			t.Fatalf("control: a window's first send after the old life ended answered %v, want nil", err)
 		}
 		life.mu.Lock()
@@ -256,7 +264,7 @@ func requireStale(t *testing.T, w *window, what string) {
 func requireFresh(t *testing.T, client *Client, after string) {
 	t.Helper()
 	w := client.WindowUntil(nil).(*window)
-	if err := w.pinToSend(); err != nil {
+	if err := firstSend(t, w, "the first send of a fresh window after "+after+" to pin the connection"); err != nil {
 		t.Errorf("a fresh window after %s answered %v, want nil", after, err)
 	}
 }
@@ -272,6 +280,12 @@ func waitForLifeEnded(t *testing.T, life <-chan struct{}) {
 // goroutine. It answers the wait's give-up, or that the row ended first, as an error the hook hands
 // to the test goroutine. A nil ch never closes.
 func waitInHook(what string, ch, stop <-chan struct{}) error {
+	// A closed ch answers at once: a pass after the margin must not report a fact it sees as missing.
+	select {
+	case <-ch:
+		return nil
+	default:
+	}
 	either := make(chan struct{})
 	go func() {
 		defer close(either)
@@ -316,7 +330,7 @@ func pinAfterReconnect(t *testing.T, client *Client, conn *nats.Conn, before uin
 	t.Helper()
 	waitForReconnect(t, conn, before)
 	w := client.WindowUntil(nil).(*window)
-	if err := w.pinToSend(); err != nil {
+	if err := firstSend(t, w, "control: a new window's first send after the reconnect to pin the connection"); err != nil {
 		t.Fatalf("control: a window's first send after the reconnect answered %v, want nil", err)
 	}
 	return w
