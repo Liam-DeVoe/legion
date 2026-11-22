@@ -55,9 +55,10 @@ import (
 // issue's scratch is `/legion/scratch` (scratchRoot) on its volume, and the roles of the issue
 // share it: one temporary directory, one cache home, one data home and one bun install cache,
 // `/legion/scratch/{tmp,cache,data,bun/install/cache}`, every role told the same four
-// (roleEnvironment). The one directory of it that is one per role is its state home,
-// `/legion/scratch/state/<role>` (roleStateHome), which keeps one role's browser broker lock from
-// blocking its siblings'. The go command's two caches are the issue's too, one pair every role of
+// (roleEnvironment). The one directory of it that is one per slot is its state home,
+// `/legion/scratch/state/<slot>` (roleStateHome), the slot being the name of the agent that runs
+// in it whatever role its step is on, which keeps one agent's browser broker lock from blocking
+// its siblings'. The go command's two caches are the issue's too, one pair every role of
 // it is told, `/legion/go/build` and `/legion/go/mod` (goBuildCache, goModCache) under
 // `/legion/go`, a top-level directory of the volume beside the workspaces, the repositories,
 // feedSubPath and uv's own (uvPythonRoot, uvCacheDir). The pod's ephemeral storage bounds none of
@@ -462,7 +463,8 @@ func (r *Runtime) launcherRoles() []claim.Role {
 	return append(slices.Clone(r.issueRoles), claim.RoleController)
 }
 
-// issueSandboxName is SandboxName of issue's role claims, from the issue key. project need not
+// issueSandboxName is SandboxName of the claims of issue, one name for every agent of it, from the
+// issue key. project need not
 // already be a claim.ProjectToken (the caller's own Options.Project, the legion.dev/project
 // label's value, may carry characters one drops); it goes through ProjectToken here before
 // naming a claim.
