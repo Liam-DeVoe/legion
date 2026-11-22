@@ -4246,9 +4246,9 @@ this set; its seed belongs to the daemon, not to a host or session.
 `ListenerPermissions(machineID)`, the session consumers' left out, the info, filtered create,
 delete and acknowledgements of Dispatch's `delivery-events` and `delivery-jobs`
 durables; the key-value calls for `envoy_webhook_redelivery`; publication of every session's
-agent-stream control subject; for the listener beside it, the selection bucket's stream info, which
-its lookup of the bucket reads at start (`$JS.API.STREAM.INFO.KV_envoy_session_consumers`), and the
-stream's message get (`$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers`, which reads the bucket's
+agent-stream control subject; for the listener beside it, the two calls its selection store makes
+(`consumernames.KVStore`, no stream info): the bucket's message get
+(`$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers`, which reads the bucket's
 sentinel and that listener's record, and, taking the key in its body, any other key: that listener
 holds Dispatch's credential, which already reaches every delivery) and the write of that one
 listener's record alone, `$KV.envoy_session_consumers.durable.<listener-<machine id>>`

@@ -159,9 +159,11 @@ func selectionKey(machineID string) string {
 // The listener beside Dispatch shares Dispatch's grant, so that grant carries the one selection
 // record that listener keeps: the write of its own durable's key, for the machine the auth service
 // granted (never one a connection name says), and the bucket's leader-answered get it reads that
-// key and the sentinel with. Another machine's key, a session's key, the sentinel's write and the
-// whole bucket are refused, whatever the connection is named. The control is the bucket's
-// wildcard: a grant holding it admits another machine's key, so the refusal rows can fail.
+// key and the sentinel with: the two calls its store makes (consumernames.KVStore). Another
+// machine's key, a session's key, the sentinel's write, the whole bucket and the bucket's stream
+// info, which the store never asks, are refused, whatever the connection is named. The control is
+// the bucket's wildcard: a grant holding it admits another machine's key, so the refusal rows can
+// fail.
 func TestDispatchsListenerWritesOnlyItsOwnSelectionKey(t *testing.T) {
 	stream := "KV_" + consumernames.SessionBucket
 	for _, name := range []string{"dispatch", natsgrant.DispatchIntakeConnection(bus.DispatchDeliveryDurable, ownGen, oldGen), "listener-intake/m2/" + ownGen} {
@@ -169,7 +171,7 @@ func TestDispatchsListenerWritesOnlyItsOwnSelectionKey(t *testing.T) {
 		for subject, want := range map[string]bool{
 			selectionKey(exampleMachine):                                           true,
 			"$JS.API.STREAM.MSG.GET." + stream:                                     true,
-			"$JS.API.STREAM.INFO." + stream:                                        true,
+			"$JS.API.STREAM.INFO." + stream:                                        false,
 			selectionKey("m2"):                                                     false,
 			"$KV." + consumernames.SessionBucket + ".s-x":                          false,
 			"$KV." + consumernames.SessionBucket + "." + consumernames.SentinelKey: false,

@@ -122,9 +122,9 @@ func (c *Client) GateOnMarker(converted func(error)) {
 //     sentinel whose marker is none or rolled back;
 //   - ErrConsumerNotGranted for a read the connection's user may not make, which is no marker too,
 //     for its caller to log: a hub whose listener grant has no read of the bucket was never given the
-//     window's grants, which come before the bucket's creation. The listener beside Dispatch reads
-//     the bucket on Dispatch's grant, which holds its stream info and message get
-//     (natsgrant.Dispatch), so it reads the real sentinel;
+//     window's grants, which come before the bucket's creation. The listener beside Dispatch is not
+//     such a hub: Dispatch's grant holds the bucket's STREAM.MSG.GET (natsgrant.Dispatch), so it
+//     reads the real sentinel, and a done one stops it (ErrConvertedStore, below);
 //   - ErrConvertedStore, naming ENVOY_CONSUMER_NAMES, when the sentinel says the cutover is done: the
 //     bucket holds the sessions' fresh names, and today's fixed names must not run over it;
 //   - any other failed read as ErrMarkerRead wrapping its error, on which the gate stays shut and

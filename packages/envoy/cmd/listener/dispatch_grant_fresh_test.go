@@ -30,14 +30,14 @@ import (
 
 // The listener beside Dispatch holds Dispatch's credential, so its grant is exactly the one the
 // hub's auth service decides for Dispatch (natsgrant.Dispatch): its own durable's fixed name, the
-// selection bucket's lookup, its leader read and the write of its own record's key, and each fresh
-// generation of its durable on a connection named for it (listener-intake/<machine id>/<generation>).
+// selection bucket's leader read and the write of its own record's key, and each fresh generation
+// of its durable on a connection named for it (listener-intake/<machine id>/<generation>).
 // In the fresh mode, after the cutover's conversion, it starts on that grant alone: it binds a fresh
 // generation of its durable, its subscription is live (what /healthz reads), and it is delivered the
 // stream's messages on it and acknowledges them.
 //
-// Two controls, each an -overlay that makes the row fail: the grant without the bucket's lookup and
-// leader read (natsgrant's listenerSelection), which the start refuses; and the durable bound on the
+// Two controls, each an -overlay that makes the row fail: the grant without the bucket's leader
+// read (natsgrant's listenerSelection), which the start refuses; and the durable bound on the
 // listener's own connection rather than its generation's (startListenerSubscription), whose
 // acknowledgement Dispatch's grant refuses.
 func TestTheListenerBesideDispatchStartsOnDispatchsGrantInTheFreshMode(t *testing.T) {
@@ -231,10 +231,10 @@ func (h *dispatchGrantHub) connect(t *testing.T, name string) *natsgo.Conn {
 // standby pod beside the active one makes possible -- race on the listener's own selection record:
 // each round both write at one revision and the store takes one, refusing the other as a conflict.
 // The grant has no direct get of the bucket, so the store reads only from the stream's leader and
-// writes only on the key's expected last sequence. The control is nats.go's kvs.Create on the same
-// grant: over a key whose last message is a delete, its refused first write falls back to a direct
-// get of that marker, which Dispatch's grant refuses, so it fails where the admin's full grant
-// recreates the key.
+// writes only on the key's expected last sequence. The control is nats.go's KV on the same grant,
+// which the store does not use: its handle's lookup of the bucket asks the stream's info, which
+// Dispatch's grant refuses (bus.ErrPublishDenied), so it cannot even bind the bucket, where the
+// admin's full grant binds it and kvs.Create recreates a deleted key.
 func TestTwoWritersOnDispatchsGrantRaceOnTheListenersRecord(t *testing.T) {
 	hub := startDispatchGrantHub(t)
 	ctx := t.Context()
@@ -277,7 +277,7 @@ func TestTwoWritersOnDispatchsGrantRaceOnTheListenersRecord(t *testing.T) {
 		t.Fatalf("a write of another machine's key on Dispatch's grant = %v, want it refused", err)
 	}
 
-	// Control: kvs.Create over a deleted key, on the admin's full grant and on Dispatch's, each
+	// Control: nats.go's KV over a deleted key, on the admin's full grant and on Dispatch's, each
 	// writing a well-formed record of the key, so only the grant can refuse it.
 	record, err := json.Marshal(consumernames.Record{Key: key})
 	if err != nil {
@@ -300,18 +300,26 @@ func TestTwoWritersOnDispatchsGrantRaceOnTheListenersRecord(t *testing.T) {
 	if err := adminKV.Delete(ctx, key); err != nil {
 		t.Fatalf("delete the record again: %v", err)
 	}
-	js, err := jetstream.New(hub.connect(t, "dispatch"))
+	dispatch, err := bus.Connect([]string{hub.url}, bus.WithName("dispatch"), bus.WithEnvironment(hub.environment))
+	if err != nil {
+		t.Fatalf("connect as Dispatch: %v", err)
+	}
+	t.Cleanup(dispatch.Close)
+	info := "$JS.API.STREAM.INFO.KV_" + consumernames.SessionBucket
+	if _, err := dispatch.RequestCore(ctx, info, dispatch.Connection().NewInbox(), nil); !errors.Is(err, bus.ErrPublishDenied) {
+		t.Fatalf("the bucket's stream info on Dispatch's grant = %v, want bus.ErrPublishDenied", err)
+	}
+	js, err := jetstream.New(dispatch.Connection())
 	if err != nil {
 		t.Fatal(err)
 	}
-	kv, err := js.KeyValue(ctx, consumernames.SessionBucket)
-	if err != nil {
-		t.Fatalf("bind the bucket on Dispatch's grant: %v", err)
-	}
-	createCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	bindCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if _, err := kv.Create(createCtx, key, record); err == nil {
-		t.Fatal("kvs.Create over a deleted key on Dispatch's grant recreated it: its fallback read was not refused")
+	if kv, err := js.KeyValue(bindCtx, consumernames.SessionBucket); err == nil {
+		if _, err := kv.Create(bindCtx, key, record); err == nil {
+			t.Fatal("nats.go's KV recreated a deleted key on Dispatch's grant")
+		}
+		t.Fatal("nats.go's KV bound the bucket on Dispatch's grant: its lookup's stream info was not refused")
 	}
 	if _, _, err := first.Read(ctx, key); !errors.Is(err, consumernames.ErrRecordDeleted) {
 		t.Fatalf("the store's read of the deleted record on Dispatch's grant = %v, want ErrRecordDeleted", err)

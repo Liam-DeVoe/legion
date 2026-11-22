@@ -1043,7 +1043,7 @@ What the two processes share, and what each keeps to itself:
 
   - `listener-intake/<machine id>/<generation>[/<old generation>]` and `listener-cleanup/<machine id>/<generation>`, the envoy-listener's beside Dispatch, which holds Dispatch's credential: the calls of the two forms above, in that order, on `listener-<machine id>~<generation>`, its create without the filter subject, and only when the name's machine id is the one the auth service's entry grants.
 
-  - Every Dispatch connection, whatever its name, also holds the fixed names' calls, and, for that listener, the selection bucket's `$JS.API.STREAM.INFO.KV_envoy_session_consumers` and `$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers` and the write of its own record's key alone.
+  - Every Dispatch connection, whatever its name, also holds the fixed names' calls, and, for that listener, the selection bucket's `$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers` and the write of its own record's key alone, the two calls its store makes (`consumernames.KVStore`).
 
   `durable` is `delivery-events` or `delivery-jobs`, and each generation is 1 to 64 letters and digits: any other name is granted the fixed names alone.
   A generation's connection the auth service does not admit within 5 seconds ends the take-over before anything is deleted, and until a probe connection (`dispatch-admission`, granted the fixed names alone) is admitted again no take-over reserves another candidate, so an outage does not grow the row's retired list.

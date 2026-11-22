@@ -64,8 +64,7 @@ func requireSet(t *testing.T, want set, got natsgrant.Permissions, name string) 
 // the merge base, so moving them here rewrites no hub's rendered authorization; with two decided
 // changes since, both for the fresh consumer naming mode: Listener and ListenerHost end with the
 // selection bucket's reads and writes (withSelectionBucket), and Dispatch with its listener's
-// lookup and leader read of that bucket and the write of that listener's own key
-// (withListenerSelectionKey).
+// leader read of that bucket and the write of that listener's own key (withListenerSelectionKey).
 func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 	var base mergeBase
 	readJSON(t, "testdata/merge-base-grants.json", &base)
@@ -102,12 +101,12 @@ func withSelectionBucket(s set) set {
 }
 
 // withListenerSelectionKey is s with what Dispatch's grant adds for the listener beside it: the
-// selection bucket's stream info and leader-answered get (its sentinel and its own key) and the
-// write of its own listener durable's key alone, the machine id's.
+// selection bucket's leader-answered get (its sentinel and its own key) and the write of its own
+// listener durable's key alone, the machine id's: the two calls consumernames.KVStore makes, the
+// write held to one key.
 func withListenerSelectionKey(s set, machineID string) set {
 	stream := "KV_" + consumernames.SessionBucket
 	s.Publish = append(slices.Clone(s.Publish),
-		"$JS.API.STREAM.INFO."+stream,
 		"$JS.API.STREAM.MSG.GET."+stream,
 		selectionKey(machineID),
 	)

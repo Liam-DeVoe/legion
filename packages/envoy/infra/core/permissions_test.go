@@ -320,7 +320,6 @@ func TestDispatchPermissions(t *testing.T) {
 		"$JS.API.CONSUMER.DELETE.KV_envoy_webhook_redelivery.>",
 		"$JS.FC.KV_envoy_webhook_redelivery.>",
 		"agentstream.*.control",
-		"$JS.API.STREAM.INFO.KV_envoy_session_consumers",
 		"$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers",
 		"$KV.envoy_session_consumers.durable.listener-example-host-a",
 	)

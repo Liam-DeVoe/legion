@@ -566,11 +566,12 @@ func (intake DispatchIntake) entries(machineID string) []string {
 }
 
 // listenerSelection is what the listener beside Dispatch, as machine machineID, needs of the
-// session consumers' selection bucket (consumernames.SessionBucket): the bucket's stream info,
-// which its lookup of the bucket reads at start, the stream's leader-answered message get, which
-// reads the bucket's sentinel and the listener's own record, and the write of that one record's
-// key (consumernames.DurableKey of its durable), never the bucket's wildcard. No other call of the
-// bucket's stream is granted, so it changes no record but its own, and creates no bucket.
+// session consumers' selection bucket (consumernames.SessionBucket): the two calls its store
+// makes (consumernames.KVStore, as KVRecordStore grants them to the listener), the stream's
+// leader-answered message get, which reads the bucket's sentinel and the listener's own record,
+// and the write of that one record's key alone (consumernames.DurableKey of its durable), never
+// the bucket's wildcard. No other call of the bucket's stream is granted, its info included, so
+// it changes no record but its own, creates no bucket, and binds no nats.go KV handle.
 //
 // The get takes the key in its body, so it reads any key of the bucket, and that is kept on
 // purpose: the listener runs with Dispatch's credential, which already reaches every delivery
@@ -580,7 +581,6 @@ func (intake DispatchIntake) entries(machineID string) []string {
 func listenerSelection(machineID string) []string {
 	stream := kvStream + consumernames.SessionBucket
 	return []string{
-		jsAPI + "STREAM.INFO." + stream,
 		jsAPI + "STREAM.MSG.GET." + stream,
 		kvSubjects + consumernames.SessionBucket + "." + consumernames.DurableKey(bus.ListenerDurable(machineID)),
 	}

@@ -92,8 +92,8 @@ func guardFixedNaming(ctx context.Context, host bool, connections []gatedConnect
 //     connection's grant refuses, which is logged as a warning: a hub whose listener grant holds no
 //     read of the bucket was never given the window's grants, which come before the bucket's
 //     creation, so it holds no converted bucket. The listener beside Dispatch reads the bucket on
-//     Dispatch's grant, which holds its stream info and message get (natsgrant's
-//     listenerSelection), so it reads the real sentinel, and done ends its start (below);
+//     Dispatch's grant, which holds its message get (natsgrant's listenerSelection), so it reads
+//     the real sentinel, and done ends its start (below);
 //   - bus.ErrConvertedStore when the marker says the cutover converted every session consumer, on
 //     which the start ends, naming ENVOY_CONSUMER_NAMES;
 //   - ctx's error when ctx ends first.

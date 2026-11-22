@@ -201,7 +201,7 @@ session consumers. The same two sets end with the session consumers' selection b
 `envoy_session_consumers`'s leader read and key writes, and none of its stream's create or update
 (`natsgrant.KVRecordStore`), so a listener keeps each session's current consumer name there in
 the fresh consumer naming mode and never makes the bucket itself. `DispatchPermissions` ends with
-that bucket's stream info and stream message get and the write of its own listener's record alone
+that bucket's stream message get and the write of its own listener's record alone
 ([Permission sets](../README.md#permission-sets)). Every set above subscribes to the role lanes in
 the queue group every listener shares, `envoy-roles`, beside the machine's own, since each user
 runs a listener.
@@ -758,7 +758,7 @@ The release that adds `envoy_known_sessions` to `bus.ListenerBuckets()` adds tha
 `machineId`, a `listenerMachineId` or a `dispatchMachineId` user: upgrading such a hub to it
 replaces its VM once, with the outage below, and a hub with none of them keeps its VM.
 The release that adds Dispatch's fresh consumer names adds to `DispatchPermissions` the selection
-bucket's stream info and stream message get and the write of its own listener's record, which changes the rendered
+bucket's stream message get and the write of its own listener's record, which changes the rendered
 user of every hub with a `dispatchMachineId` user: upgrading such a hub to it replaces its VM once,
 with the outage below, and a hub with none keeps its VM.
 The release that adds the fresh consumer names (`ENVOY_CONSUMER_NAMES`) adds the selection bucket
