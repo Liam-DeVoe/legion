@@ -996,3 +996,52 @@ test("saved views are kept per project for the signed-in login, saved, replaced 
     storage.restore();
   }
 });
+
+// R3, found by INFRA-3221's tester: a reader with the Issues tab open in two tabs of one browser
+// keeps the views each tab saves. Each tab holds its own copy of `project.saved-views`, and the
+// browser tells a tab of the other's write with a `storage` event, which the test sends as the
+// browser would. A save or a delete in one tab must not write back a copy that lacks a view the
+// other tab saved.
+test("a view saved in one tab survives a save and a delete in a second tab of the same browser", async () => {
+  const key = userPreferenceStorageKey("alice", "project.saved-views");
+  const storage = installCountingStorage();
+  // Two holders of the store, each with its own copy of it, as two tabs have.
+  const page = renderSignedIn(
+    () => ({ one: useSavedViews("CORE"), two: useSavedViews("CORE") }),
+    "/projects/CORE/issues"
+  );
+  const tab = (name: "one" | "two") => page.result.current.value[name];
+  const stored = () => JSON.parse(window.localStorage.getItem(key) ?? "null");
+  const tellOtherTabs = () =>
+    window.dispatchEvent(
+      new StorageEvent("storage", { key, newValue: window.localStorage.getItem(key) })
+    );
+  try {
+    await page.signedIn();
+    const first = { name: "First", query: "status=triage" };
+    const second = { name: "Second", query: "status=todo" };
+    const third = { name: "Third", query: "status=backlog" };
+
+    act(() => {
+      tab("one").save(first.name, first.query);
+    });
+    expect(stored()).toEqual({ version: 1, projects: { CORE: [first] } });
+    act(tellOtherTabs);
+    act(() => {
+      tab("two").save(second.name, second.query);
+    });
+    act(tellOtherTabs);
+    expect(stored()).toEqual({ version: 1, projects: { CORE: [first, second] } });
+
+    act(() => {
+      tab("one").save(third.name, third.query);
+    });
+    act(tellOtherTabs);
+    act(() => tab("two").remove(second.name));
+    act(tellOtherTabs);
+    expect(stored()).toEqual({ version: 1, projects: { CORE: [first, third] } });
+  } finally {
+    page.done();
+    storage.restore();
+  }
+});
