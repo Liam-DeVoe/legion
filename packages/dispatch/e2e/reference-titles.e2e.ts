@@ -199,6 +199,7 @@ async function expectReadAs(
   kind: TargetKind
 ): Promise<void> {
   await expect(references).toHaveCount(count);
+  // The count above waits until all of them are drawn, so one read of the list holds every one.
   for (const reference of await references.all()) {
     if (kind === "Issue") {
       await expectIssueReference(reference, world.target);
