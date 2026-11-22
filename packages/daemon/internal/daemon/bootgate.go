@@ -1109,11 +1109,16 @@ func ProbeController(ctx context.Context, p ControllerProbe) error {
 	}
 	// No refusal names a profile: which one Oh My Pi reads is its own resolution, which this does
 	// not port, so the words say only what Oh My Pi did, where it ran, and how. The launch is named
-	// as WithPrefixShown shows it, so the check names the prefix's program and how many arguments
-	// it takes, never the arguments: the operator runs it with their own.
+	// as WithPrefixShown shows it, the prefix's program and how many arguments it takes, never the
+	// arguments; the check the operator pastes names the setting the prefix comes from in its place,
+	// since they run it with their own.
 	launch := omplaunch.WithPrefixShown(p.Prefix, p.Omp)
 	where := fmt.Sprintf("Oh My Pi, launched as the controller launches it (%q, in %s),", launch, p.WorkDir)
-	check := fmt.Sprintf("`cd %s && %s plugin", shellprefix.Word(p.WorkDir), launch)
+	runs := p.Omp
+	if len(p.Prefix) > 0 {
+		runs = "<your omp_launch_prefix> " + p.Omp
+	}
+	check := fmt.Sprintf("`cd %s && %s plugin", shellprefix.Word(p.WorkDir), runs)
 	// The controller's lane is discovery's, with its own refusals: it reads no manifest, so it
 	// names no version, and a check that names nothing needs no words for how the plugin loaded.
 	lane := pluginLane{

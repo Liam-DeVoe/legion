@@ -1474,16 +1474,17 @@ func TestControllerStartRefusesLocallyBeforeTheRequest(t *testing.T) {
 	})
 	// Each refusal of the load probe says what Oh My Pi did, launched as the controller launches
 	// it, and the remedy under the controller's environment; none names a profile, which only Oh
-	// My Pi resolves.
+	// My Pi resolves. The default controller.yaml sets omp_launch_prefix, so the check a person
+	// pastes names that setting where the prefix goes, never `env (1 argument, not shown)`.
 	for _, testCase := range []struct {
 		name  string
 		loads func(c *operatorMachine)
 		want  []string
 	}{
 		{"an Oh My Pi that does not load the plugin", (*operatorMachine).loadsNothing,
-			[]string{"did not load pi-legion (not installed, disabled, or unregistered). Install the @sjawhar/pi-legion release built from this daemon's commit into the Oh My Pi the controller runs", "plugin list` under the controller's environment"}},
+			[]string{"did not load pi-legion (not installed, disabled, or unregistered). Install the @sjawhar/pi-legion release built from this daemon's commit into the Oh My Pi the controller runs", " && <your omp_launch_prefix> ", "plugin list` under the controller's environment"}},
 		{"an Oh My Pi that loads the plugin but no pi-envoy", func(c *operatorMachine) { c.loadsEnvoyAt("none") },
-			[]string{"loaded pi-legion but no pi-envoy. Install the @sjawhar/pi-envoy release built from this daemon's commit into the Oh My Pi the controller runs, and check it with `cd ", "plugin list`"}},
+			[]string{"loaded pi-legion but no pi-envoy. Install the @sjawhar/pi-envoy release built from this daemon's commit into the Oh My Pi the controller runs, and check it with `cd ", " && <your omp_launch_prefix> ", "plugin list`"}},
 		// The module URL's query (`?mtime=1,`, which runs to the next space) is cut by the URL rule
 		// the refusal is printed through (printRefusal), as a query can carry a credential.
 		{"an Oh My Pi whose pi-envoy publishes another interface", func(c *operatorMachine) { c.loadsEnvoyAt("2") },
@@ -1504,6 +1505,9 @@ func TestControllerStartRefusesLocallyBeforeTheRequest(t *testing.T) {
 			}
 			if strings.Contains(errb, "OMP profile") {
 				t.Errorf("legion controller start's refusal names a profile, which only Oh My Pi resolves: %q", errb)
+			}
+			if strings.Contains(errb, "&& env (1 argument, not shown)") {
+				t.Errorf("legion controller start's check reads the launch as shown, which no one can paste: %q", errb)
 			}
 			c.wantNoMintRequest()
 			c.wantNothingLaunchedOrWritten(c.defaultDir)
