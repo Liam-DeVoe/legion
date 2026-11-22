@@ -364,13 +364,16 @@ map_repository() {
 # issue's labels, link, blocker, child (with a link of its own), parent, design gate and role
 # holder; each project's gated steps; an ask with options left open and followed, the seed's ask
 # given options, followed and answered with one; replies to both asks, to the seed's comment and
-# to its message, each naming the session; a comment of the shared token's that mentions the
-# session, and a message to it, which the session answers and carol follows up; an issue whose
-# spec holds a question with options, and a decisions document whose section names that question
-# and its block; an open P0 issue of each project with no owner (Delivery's unowned_p0); a
-# broadcast; and a Delivery session group. Each send is settled before the next write (settle).
+# to its message, each naming the session, the reply to the seed's comment naming the other
+# project's first issue too, so each first issue's references hold a row in linked_from, which
+# lists only a node outside the issue's own content that links into it; a comment of the shared
+# token's that mentions the session, and a message to it, which the session answers and carol
+# follows up; an issue whose spec holds a question with options, and a decisions document whose
+# section names that question and its block; an open P0 issue of each project with no owner
+# (Delivery's unowned_p0); a broadcast; and a Delivery session group. Each send is settled before
+# the next write (settle).
 seed_lists() {
-  local build=$1 project key ask edited_at index block
+  local build=$1 project key ask edited_at index block other
   send "$build" carol POST /api/v1/priorities '{"id":"blob-work","title":"The blob work"}'
   created "$build" "carol writes the priority blob-work"
   # A repository mapping of each project, so GET /api/v1/settings/repo-projects answers a row of
@@ -379,6 +382,8 @@ seed_lists() {
   map_repository "$build" acme/priv-map PRIV
   for project in PUB PRIV; do
     key=$project-1
+    other=PRIV
+    [ "$project" = PUB ] || other=PUB
     send "$build" carol PUT "/api/v1/projects/$project/gated-steps" '{"steps":["decisions","criteria","spec"]}'
     created "$build" "carol publishes $project's gated steps"
     send "$build" carol POST /api/v1/issues "$(jq -cn --arg p "$project" --arg k "$key" \
@@ -426,8 +431,8 @@ seed_lists() {
     send "$build" bob POST "/api/v1/asks/$(recalled "$build" "$project ask")/answer" \
       "$(jq -cn --argjson e "$edited_at" '{selected: ["This way"], text: "Yes, it is.", expected_edited_at: $e}')"
     created "$build" "bob answers the $project ask with This way"
-    send "$build" carol POST "/api/v1/issues/$key/comments" "$(jq -cn --arg c "$(recalled "$build" "$project comment")" --arg p "$project" \
-      '{body: ("A reply, naming dispatch://" + $p + "/artifact/playbook-md."), reply_to: $c,
+    send "$build" carol POST "/api/v1/issues/$key/comments" "$(jq -cn --arg c "$(recalled "$build" "$project comment")" --arg p "$project" --arg o "$other-1" \
+      '{body: ("A reply, naming dispatch://" + $p + "/artifact/playbook-md and dispatch://" + $o + "."), reply_to: $c,
         mentions: [{target: "session:ses-pub-session"}], delivery: "btw"}')"
     created "$build" "carol replies to the $project comment, mentioning ses-pub-session"
     remember "$build" "$project comment reply" "$(jq -r .id "$work/body")"
