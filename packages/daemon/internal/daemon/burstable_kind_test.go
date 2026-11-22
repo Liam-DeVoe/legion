@@ -137,7 +137,7 @@ func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Confi
 	opts.Conns, opts.StreamURL, opts.Store = listener, listener.Addr(), firstLaunchStore{}
 	opts.Tokens = publicCloneTokens{}
 	opts.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		app, err := appauth.AppRoleFor(role, nil)
+		app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 		if err != nil {
 			return ghconfig.Bundle{}, err
 		}

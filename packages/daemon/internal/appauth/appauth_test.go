@@ -232,7 +232,7 @@ func TestAppRoleForEveryRole(t *testing.T) {
 		{claim.RoleController, Review},
 	} {
 		t.Run(string(tc.role), func(t *testing.T) {
-			if got, err := AppRoleFor(tc.role, nil); err != nil || got != tc.want {
+			if got, err := AppRoleFor(tc.role, nil, Planned{}); err != nil || got != tc.want {
 				t.Errorf("AppRoleFor(%q, nil) = %q, %v; want %q", tc.role, got, err, tc.want)
 			}
 		})
@@ -259,18 +259,18 @@ func TestADeploymentRolesAppIsItsSetting(t *testing.T) {
 		{claim.RoleMerger, Implement},
 		{claim.RoleController, Review},
 	} {
-		if got, err := AppRoleFor(tc.role, deployed); err != nil || got != tc.want {
+		if got, err := AppRoleFor(tc.role, deployed, Planned{}); err != nil || got != tc.want {
 			t.Errorf("AppRoleFor(%q) under %v = %q, %v; want %q", tc.role, deployed, got, err, tc.want)
 		}
 	}
-	if got, err := AppRoleFor(claim.RoleImplementer, DeploymentApps{claim.RoleImplementer: Review}); err != nil || got != Implement {
+	if got, err := AppRoleFor(claim.RoleImplementer, DeploymentApps{claim.RoleImplementer: Review}, Planned{}); err != nil || got != Implement {
 		t.Errorf("AppRoleFor(implementer) under a map naming it review = %q, %v; want %q: the deployment never overrides a role of Legion's", got, err, Implement)
 	}
-	got, err := AppRoleFor("ghost", deployed)
+	got, err := AppRoleFor("ghost", deployed, Planned{})
 	if !errors.Is(err, ErrRoleNotDefined) || got != "" {
 		t.Fatalf("AppRoleFor(ghost) = %q, %v; want no App and an error that is ErrRoleNotDefined", got, err)
 	}
-	if want := "the role ghost is none of Legion's, and the deployment defines no such role"; err.Error() != want {
+	if want := "the role ghost is none of Legion's, and neither the deployment nor the issue's plan defines it"; err.Error() != want {
 		t.Errorf("AppRoleFor(ghost)'s error reads %q, want %q", err, want)
 	}
 }
@@ -283,7 +283,7 @@ func TestADeploymentRolesBundleIsMintedAsItsApp(t *testing.T) {
 	served := servesOneOf("sjawhar/legion")
 	repo := ghrepo.MustParse("sjawhar/legion")
 	deployed := DeploymentApps{"checker": Implement}
-	credential := GitHubCredential(sourceOf(ownerTokens{}, installedEverywhere("sjawhar/legion")), served, ghrepo.Renames{}, nil, nil, deployed, quietBundleLog())
+	credential := GitHubCredential(sourceOf(ownerTokens{}, installedEverywhere("sjawhar/legion")), served, ghrepo.Renames{}, nil, nil, RoleApps{Deployed: deployed}, quietBundleLog())
 	for role, app := range map[claim.Role]string{"checker": "implement", claim.RoleReviewer: "review"} {
 		bundle, err := credential(context.Background(), role, repo)
 		if err != nil {
@@ -298,7 +298,7 @@ func TestADeploymentRolesBundleIsMintedAsItsApp(t *testing.T) {
 	}
 	var minted []string
 	counted := GitHubCredential(sourceOf(countingTokens{ownerTokens: ownerTokens{}, minted: &minted}, installedEverywhere("sjawhar/legion")), served,
-		ghrepo.Renames{}, nil, nil, deployed, quietBundleLog())
+		ghrepo.Renames{}, nil, nil, RoleApps{Deployed: deployed}, quietBundleLog())
 	if _, err := counted(context.Background(), "ghost", repo); !errors.Is(err, ErrRoleNotDefined) || len(minted) != 0 {
 		t.Errorf("the bundle of ghost = %v, minting %v; want an error that is ErrRoleNotDefined and no mint", err, minted)
 	}

@@ -96,10 +96,11 @@ type specs struct {
 	// refuses it there, while a tmux pane holds the role's own bundle and reads that App alone.
 	// The daemon answers it from what GitHub last answered of that App's installations
 	// (appauth.Installed, plan.appOwners): the boot's proof of the App's key first, then the last
-	// gh bundle of it, which costs no read of its own on a launch. The daemon sets it at boot
-	// whether or not a workflow is configured; a nil one, and a daemon with no GitHub Apps, names
-	// no owner, as an App installed nowhere does.
-	appOwners func(role claim.Role) []string
+	// gh bundle of it, which costs no read of its own on a launch. It names the claim's issue,
+	// since a role of that issue's plan acts as the App of its type there (appauth.RoleApps.Of).
+	// The daemon sets it at boot whether or not a workflow is configured; a nil one, and a daemon
+	// with no GitHub Apps, names no owner, as an App installed nowhere does.
+	appOwners func(ctx context.Context, issue string, role claim.Role) []string
 	// owner is the architect that owns a claim on an issue that is not its tree's root, as the
 	// store records the architect claims of the issue's tree at the launch
 	// (workflowRuntime.owningArchitect): what the claim's addressing names (ownerOf). It is nil
@@ -130,14 +131,14 @@ func rolePromptPath(stateDir string, token claim.Token) string {
 	return filepath.Join(stateDir, "prompts", string(token)+".md")
 }
 
-// ownersOf is the owner accounts role's own GitHub App is installed on (appOwners), and none
-// for a specs built without that function, which is a test's literal: a launch is told its App
-// reaches nothing rather than told nothing at all.
-func (s specs) ownersOf(role claim.Role) []string {
+// ownersOf is the owner accounts the GitHub App role acts as on issue is installed on
+// (appOwners), and none for a specs built without that function, which is a test's literal: a
+// launch is told its App reaches nothing rather than told nothing at all.
+func (s specs) ownersOf(ctx context.Context, issue string, role claim.Role) []string {
 	if s.appOwners == nil {
 		return nil
 	}
-	return s.appOwners(role)
+	return s.appOwners(ctx, issue, role)
 }
 
 // SpawnSpec is the launch's secrets (launchSecrets: the Envoy bearer and the NATS nkey seed, each
@@ -156,7 +157,7 @@ func (s specs) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnS
 	var spec runtime.SpawnSpec
 	var err error
 	if c.Role == claim.RoleController {
-		spec, err = s.controllerSpawnSpec()
+		spec, err = s.controllerSpawnSpec(ctx)
 	} else {
 		spec, err = s.workerSpawnSpec(ctx, c)
 	}
@@ -232,7 +233,7 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	if err != nil {
 		return runtime.SpawnSpec{}, fmt.Errorf("the addressing of %s: %w", c.Token, err)
 	}
-	addressing := addressingFragment(s.project, c, architect, spec.Repository, spec.DefaultBranch, s.ownersOf(c.Role))
+	addressing := addressingFragment(s.project, c, architect, spec.Repository, spec.DefaultBranch, s.ownersOf(ctx, c.Issue, c.Role))
 	// Every architect owns a plan, whose steps name the roles this sentence lists; it stands
 	// before the tree architect's design-gate line, which ends that addressing.
 	if c.Role == claim.RoleArchitect {
@@ -443,7 +444,7 @@ func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *r
 // those two bound serves every Legion role, the controller's session among them
 // (refusalCooldownVariables). The stall limits reach it from SpawnSpec, after the fork, as they
 // reach a worker's launch (stallLimitVariables).
-func (s specs) controllerSpawnSpec() (runtime.SpawnSpec, error) {
+func (s specs) controllerSpawnSpec(ctx context.Context) (runtime.SpawnSpec, error) {
 	if s.prompts == nil {
 		return runtime.SpawnSpec{}, errors.New("the daemon prompt bundle was not constructed at boot")
 	}
@@ -451,7 +452,7 @@ func (s specs) controllerSpawnSpec() (runtime.SpawnSpec, error) {
 	if err != nil {
 		return runtime.SpawnSpec{}, err
 	}
-	addressing := DesignGateFragment(s.designSteps) + " " + RepositoriesSentence(s.ownersOf(claim.RoleController))
+	addressing := DesignGateFragment(s.designSteps) + " " + RepositoriesSentence(s.ownersOf(ctx, "", claim.RoleController))
 	if len(s.slackChannels) > 0 {
 		addressing += " " + SlackChannelsFragment(s.slackChannels)
 	}

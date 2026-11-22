@@ -27,7 +27,7 @@ import (
 
 // noAppOwners is the owner supplier of a daemon with no GitHub App installed anywhere: every
 // role is told its App reaches no owner.
-func noAppOwners(claim.Role) []string { return nil }
+func noAppOwners(context.Context, string, claim.Role) []string { return nil }
 
 // A role the deployment defines launches with its own prompt file between the headless mechanics
 // and Legion's worker part (prompts.ComposeStep), so it is told the SEPARATE-POD line every phase
@@ -320,7 +320,7 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
 			return ghrepo.MustParse("acme/widgets"), "release/v7.1", nil
 		},
-		appOwners: func(claim.Role) []string { return owners },
+		appOwners: func(context.Context, string, claim.Role) []string { return owners },
 	}
 	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
 	if err != nil {
@@ -349,7 +349,7 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 		{"no installation", nil, own + "your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s.appOwners = func(claim.Role) []string { return tc.owners }
+			s.appOwners = func(context.Context, string, claim.Role) []string { return tc.owners }
 			got := launch()
 			if !strings.HasSuffix(got, tc.want) {
 				t.Fatalf("addressing = %q, want it to end with %q", got, tc.want)
@@ -363,8 +363,8 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 	// The owners named are the role's own App's: an implementer's and a reviewer's addressing
 	// differ where their Apps' installations do, which is what the clause promises and what the
 	// owners of the repositories the project's records name could not say (INFRA-2543 R6).
-	s.appOwners = func(role claim.Role) []string {
-		app, err := appauth.AppRoleFor(role, nil)
+	s.appOwners = func(_ context.Context, _ string, role claim.Role) []string {
+		app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 		if err != nil {
 			t.Fatalf("the App of %s: %v", role, err)
 		}
@@ -374,7 +374,7 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 		t.Fatalf("the implementer's addressing = %q, want it to end with %q", got, want)
 	}
 
-	s.appOwners = func(claim.Role) []string { return owners }
+	s.appOwners = func(context.Context, string, claim.Role) []string { return owners }
 	s.repository = nil
 	if got := launch(); strings.Contains(got, "GitHub App is installed") || strings.Contains(got, "repository is") {
 		t.Fatalf("addressing with no repository resolved (a daemon with no workflow) = %q, want no repository sentence", got)
@@ -505,7 +505,7 @@ func TestTheControllersAddressingGainsTheReachItsAppGives(t *testing.T) {
 			var asked []claim.Role
 			s := specs{
 				stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: config.DesignGateOff.Steps(),
-				appOwners: func(role claim.Role) []string {
+				appOwners: func(_ context.Context, _ string, role claim.Role) []string {
 					asked = append(asked, role)
 					return tc.owners
 				},

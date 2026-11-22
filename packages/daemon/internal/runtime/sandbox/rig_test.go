@@ -129,7 +129,7 @@ var staticCredentialExpiry = time.Date(2026, 10, 8, 13, 0, 0, 0, time.UTC)
 // defines no role of its own); a role it does not define fails the test.
 func appOf(t testing.TB, role claim.Role) appauth.AppRole {
 	t.Helper()
-	app, err := appauth.AppRoleFor(role, nil)
+	app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func appOf(t testing.TB, role claim.Role) appauth.AppRole {
 // legionApp is appOf for a helper with no test to fail: it panics on a role the deployment does
 // not define, which only a test of a role Legion does not have reaches.
 func legionApp(role claim.Role) appauth.AppRole {
-	app, err := appauth.AppRoleFor(role, nil)
+	app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 	if err != nil {
 		panic(err)
 	}
@@ -164,7 +164,7 @@ func staticOwnerToken(role claim.Role, owner string) string {
 // controller's — holding the role's App's token for that owner (appauth.AppRoleFor), and acme
 // holding acme's own, rendered as gh's files with a fixed expiry; repo's owner is the default.
 func staticCredential(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-	app, err := appauth.AppRoleFor(role, nil)
+	app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 	if err != nil {
 		return ghconfig.Bundle{}, err
 	}
@@ -310,7 +310,7 @@ func servingRenamed(repos ...ghrepo.Repository) func(*Options) {
 		apps := sourceOf(&namedLeases{}, installedOnServed{repos: listed})
 		o.CacheRepositories = listed
 		o.Tokens = servingTokens{served: served, renames: renames}
-		o.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, nil, nil)
+		o.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, appauth.RoleApps{}, nil)
 		o.ControllerCredential = appauth.ControllerCredential(apps, served, renames, installed, left, nil)
 		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 			return appauth.GitHubDirs(served, renames, installed, left, roles, repo)

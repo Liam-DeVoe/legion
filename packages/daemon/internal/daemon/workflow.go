@@ -1517,7 +1517,7 @@ func deploymentApps(roles []config.Role) appauth.DeploymentApps {
 // adoption (adoptIdentity) — so neither can mint on an owner the repository has left and fail
 // every launch of a tree open at the transfer.
 func (w *workflowRuntime) identity(ctx context.Context, role claim.Role, recorded ghrepo.Repository) (runtime.GitIdentity, error) {
-	app, err := appauth.AppRoleFor(role, w.deployed)
+	app, err := appauth.AppRoleFor(role, w.deployed, appauth.Planned{})
 	if err != nil {
 		return runtime.GitIdentity{}, err
 	}

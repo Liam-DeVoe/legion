@@ -31,7 +31,7 @@ var staticCredentialExpiry = time.Date(2026, 10, 8, 13, 0, 0, 0, time.UTC)
 // defines no role of its own); a role it does not define fails the test.
 func appOf(t testing.TB, role claim.Role) appauth.AppRole {
 	t.Helper()
-	app, err := appauth.AppRoleFor(role, nil)
+	app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func appOf(t testing.TB, role claim.Role) appauth.AppRole {
 // legionApp is appOf for a helper with no test to fail: it panics on a role the deployment does
 // not define, which only a test of a role Legion does not have reaches.
 func legionApp(role claim.Role) appauth.AppRole {
-	app, err := appauth.AppRoleFor(role, nil)
+	app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 	if err != nil {
 		panic(err)
 	}
@@ -67,7 +67,7 @@ func staticOwnerToken(role claim.Role, owner string) string {
 // Repository — and each other owner's own lease in its own, rendered as gh's files with a fixed
 // expiry.
 func staticCredential(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-	app, err := appauth.AppRoleFor(role, nil)
+	app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 	if err != nil {
 		return ghconfig.Bundle{}, err
 	}
@@ -749,7 +749,7 @@ func TestAPaneWithNoRepositoryIsRenderedForThatSameAbsentRepository(t *testing.T
 	var logs strings.Builder
 	bundle := appauth.GitHubCredential(leaseTokens{},
 		servesOneOf(ghrepo.MustParse("sjawhar/legion"), ghrepo.MustParse("acme/widgets")),
-		ghrepo.Renames{}, nil, nil, nil, slog.Default())
+		ghrepo.Renames{}, nil, nil, appauth.RoleApps{}, slog.Default())
 	var mu sync.Mutex
 	var asked []string
 	credential := func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
@@ -866,7 +866,7 @@ func TestAPaneRecordedOnAPairsFromKeepsRefreshing(t *testing.T) {
 	pair := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
 	credential := appauth.GitHubCredential(pairTokens{},
 		servesOneOf(ghrepo.MustParse("cybermonklabs/legion"), ghrepo.MustParse("sjawhar/ygo")),
-		pair, nil, nil, nil, slog.Default())
+		pair, nil, nil, appauth.RoleApps{}, slog.Default())
 	f := newFakeServerRuntime(t, credential, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	token, err := claim.NewToken("omp", "LEGION-48", claim.RoleImplementer)
 	if err != nil {
@@ -921,7 +921,7 @@ func TestAWalkBuildsOneBundlePerAppRoleAndRepository(t *testing.T) {
 		writeBundle:          ghconfig.WriteBundle,
 	}
 	r.gitHubCredential = func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		app, err := appauth.AppRoleFor(role, nil)
+		app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 		if err != nil {
 			return ghconfig.Bundle{}, err
 		}

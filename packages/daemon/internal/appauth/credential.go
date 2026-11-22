@@ -113,9 +113,9 @@ var ErrDefaultOwnerNotInstalled = errors.New("is no owner the controller's App i
 // refresh ask GitHub only when a lease turns over, and one lease is minted per scope however many
 // directories carry it: a configured rename's two owner directories hold the one lease.
 func GitHubCredential(source Source, served func(ghrepo.Repository) bool, renames ghrepo.Renames,
-	installed *Installed, left *LeftOut, deployed DeploymentApps, log *slog.Logger) runtime.GitHubCredential {
+	installed *Installed, left *LeftOut, apps RoleApps, log *slog.Logger) runtime.GitHubCredential {
 	return func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		appRole, err := AppRoleFor(role, deployed)
+		appRole, err := AppRoleFor(role, apps.Deployed, Planned{})
 		if err != nil {
 			return ghconfig.Bundle{}, err
 		}
@@ -172,7 +172,7 @@ func NewBundles(credential runtime.GitHubCredential) *Bundles {
 // credential, naming itself. A walk is one goroutine, so the memo needs no lock of its own.
 func (b *Bundles) Bundle(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 	key := bundleKey{repo: strings.ToLower(repo.String())}
-	if app, err := AppRoleFor(role, nil); err == nil {
+	if app, err := AppRoleFor(role, nil, Planned{}); err == nil {
 		key.app = app
 	} else {
 		key.role = role
@@ -214,7 +214,7 @@ func (b *Bundles) Bundle(ctx context.Context, role claim.Role, repo ghrepo.Repos
 func ControllerCredential(source Source, served func(ghrepo.Repository) bool, renames ghrepo.Renames,
 	installed *Installed, left *LeftOut, log *slog.Logger) runtime.ControllerCredential {
 	return func(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
-		appRole, err := AppRoleFor(claim.RoleController, nil)
+		appRole, err := AppRoleFor(claim.RoleController, nil, Planned{})
 		if err != nil {
 			return ghconfig.Bundle{}, err
 		}

@@ -1022,23 +1022,25 @@ type plan struct {
 // those Apps is built, since no pod may be compared against the boot's read, so it is not what
 // this asks.
 //
-// deployed is the App of each role the deployment defines (deploymentApps): such a role's own App
-// is the one its github_app names, and an issue pod runs those roles beside Legion's. A role that
-// acts as no App (appauth.ErrRoleNotDefined) holds no bundle, so its addressing names no owner.
-func (p plan) appOwners(runtimeName string, deployed appauth.DeploymentApps) func(claim.Role) []string {
-	return func(role claim.Role) []string {
-		app, err := appauth.AppRoleFor(role, deployed)
+// apps is the one value every reader of a claim's App holds (roleApps): such a role's own App is
+// the one its github_app names, a role of the issue's plan acts as the App of its type, and an
+// issue pod runs those roles beside Legion's, so a role of a plan reaches what its pod's other
+// roles reach. A role that acts as no App (appauth.ErrRoleNotDefined), or whose plan cannot be
+// read, holds no bundle, so its addressing names no owner.
+func (p plan) appOwners(runtimeName string, apps appauth.RoleApps) func(ctx context.Context, issue string, role claim.Role) []string {
+	return func(ctx context.Context, issue string, role claim.Role) []string {
+		app, err := apps.Of(ctx, issue, role)
 		if err != nil {
 			return nil
 		}
-		apps := []appauth.AppRole{app}
+		roles := []appauth.AppRole{app}
 		if runtimeName == "kubernetes" {
-			if apps, err = sandbox.PodAppRoles(role, deployed); err != nil {
+			if roles, err = sandbox.PodAppRoles(role, apps.Deployed); err != nil {
 				return nil
 			}
 		}
 		owners, read := p.installed.Owners(app)
-		for _, other := range apps {
+		for _, other := range roles {
 			if _, otherRead := p.installed.Owners(other); !otherRead {
 				read = false
 			}
@@ -1046,7 +1048,7 @@ func (p plan) appOwners(runtimeName string, deployed appauth.DeploymentApps) fun
 		if !read {
 			return nil
 		}
-		held := appauth.AddressingDirs(p.repositories.servesRepository, p.repositories.renames, p.installed, p.left, apps, ghrepo.Repository{})
+		held := appauth.AddressingDirs(p.repositories.servesRepository, p.repositories.renames, p.installed, p.left, roles, ghrepo.Repository{})
 		return slices.DeleteFunc(owners, func(owner string) bool { return !slices.Contains(held, owner) })
 	}
 }
@@ -1333,7 +1335,7 @@ func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backen
 			// projects nothing and nothing compares one against left — a directory left out
 			// of one pane's bundle is left out of the next pane's by the mint, not by a
 			// record — so the addressing is this runtime's one reader of it.
-			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, served, cfg.RepositoryRenames, installed, left, deploymentApps(cfg.Roles), log), gh
+			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, served, cfg.RepositoryRenames, installed, left, roleApps(deploymentApps(cfg.Roles), planRoleOf(st)), log), gh
 			opts.ControllerCredential = appauth.ControllerCredential(tokens, served, cfg.RepositoryRenames, installed, left, log)
 			opts.ClaimRepository = claimRepository(st.ClaimIssue, repository)
 			opts.ClaimRole = st.ClaimRole
@@ -1724,15 +1726,18 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	// The clean stops of session registrations the machines send run past their decisions and are
 	// counted here (sessionStopsInFlight).
 	var sessionStops sessionStopsInFlight
+	// The daemon's one reader of a role of a plan, which a launch's prompt and model and a launch's
+	// App (roleApps) read alike.
+	planRole := planRoleOf(st)
 	sup.deps = supervise.Deps{
 		Runtime: rt,
 		Conns:   listener,
 		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
 		Specs: specs{
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
-			roles: cfg.Roles, planRole: planRoleOf(st),
+			roles: cfg.Roles, planRole: planRole,
 			identity: p.identity, repository: p.launchRepository, owner: p.owner,
-			appOwners:   p.appOwners(cfg.Runtime.Name, deploymentApps(cfg.Roles)),
+			appOwners:   p.appOwners(cfg.Runtime.Name, roleApps(deploymentApps(cfg.Roles), planRole)),
 			designSteps: cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,

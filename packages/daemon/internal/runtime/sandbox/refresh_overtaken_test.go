@@ -66,7 +66,7 @@ func TestARefreshALaunchOvertakesLeavesTheSlotOnTheLaunchesApp(t *testing.T) {
 					if owner == "" {
 						owner = "sjawhar"
 					}
-					appRole, err := appauth.AppRoleFor(role, nil)
+					appRole, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 					if err != nil {
 						return ghconfig.Bundle{}, err
 					}
@@ -114,7 +114,7 @@ func TestARefreshALaunchOvertakesLeavesTheSlotOnTheLaunchesApp(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the implementer slot's hosts.yml: %v", err)
 			}
-			testerApp, err := appauth.AppRoleFor(claim.RoleTester, nil)
+			testerApp, err := appauth.AppRoleFor(claim.RoleTester, nil, appauth.Planned{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -152,7 +152,7 @@ func TestARefreshReadsTheLaunchRecordOnlyOfTheClaimsLatestGeneration(t *testing.
 					if owner == "" {
 						owner = "sjawhar"
 					}
-					appRole, err := appauth.AppRoleFor(role, nil)
+					appRole, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 					if err != nil {
 						return ghconfig.Bundle{}, err
 					}

@@ -38,7 +38,7 @@ func TestALaunchOfAReroledClaimWritesItsSlotsCredentialAtOnce(t *testing.T) {
 			if owner == "" {
 				owner = "sjawhar"
 			}
-			appRole, err := appauth.AppRoleFor(role, nil)
+			appRole, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 			if err != nil {
 				return ghconfig.Bundle{}, err
 			}

@@ -650,7 +650,7 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 			// every launch's addressing reads its role's App's owners out of beside the drift
 			// check.
 			opts.Tokens = newImplementTokens(apps, serving)
-			opts.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, deployed, opts.Log)
+			opts.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, roleApps(deployed, planRoleOf(st)), opts.Log)
 			opts.ControllerCredential = appauth.ControllerCredential(apps, served, renames, installed, left, opts.Log)
 			opts.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 				return appauth.GitHubDirs(served, renames, installed, left, roles, repo)

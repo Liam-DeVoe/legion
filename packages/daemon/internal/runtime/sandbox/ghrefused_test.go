@@ -79,7 +79,7 @@ func withProjectTokens(tokens appauth.Tokens) rigOption {
 		installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
 		apps := sourceOf(tokens, installedOnServed{repos: refusedProjectRepos})
 		served := servesOneOf(refusedProjectRepos)
-		o.GitHubCredential = appauth.GitHubCredential(apps, served, ghrepo.Renames{}, installed, left, o.DeploymentApps, o.Log)
+		o.GitHubCredential = appauth.GitHubCredential(apps, served, ghrepo.Renames{}, installed, left, appauth.RoleApps{Deployed: o.DeploymentApps}, o.Log)
 		o.ControllerCredential = appauth.ControllerCredential(apps, served, ghrepo.Renames{}, installed, left, o.Log)
 		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 			return appauth.GitHubDirs(served, ghrepo.Renames{}, installed, left, roles, repo)
@@ -158,7 +158,7 @@ func TestAPodProjectsTheGhDirectoriesEveryRolesBundleHolds(t *testing.T) {
 	tokens := refusingOwnerTokens{refuse: &refuse, owner: "acme", app: appauth.Review}
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.GitHubCredential = appauth.GitHubCredential(sourceOf(tokens, installedOnServed{repos: refusedProjectRepos}),
-			servesOneOf(refusedProjectRepos), ghrepo.Renames{}, nil, nil, nil, o.Log)
+			servesOneOf(refusedProjectRepos), ghrepo.Renames{}, nil, nil, appauth.RoleApps{}, o.Log)
 	}))
 
 	loc := g.spawn(workerSpec(t))

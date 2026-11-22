@@ -163,18 +163,18 @@ func TestAppOwnersAreTheInstalledOwnersTheRolesContainerHoldsADirectoryFor(t *te
 			}
 			// Each bundle is built as a runtime builds it, over the plan's own two records, so
 			// what a row reads is what a real mint recorded.
-			credential := appauth.GitHubCredential(tc.source, p.repositories.servesRepository, p.repositories.renames, p.installed, p.left, nil, quietLogger())
+			credential := appauth.GitHubCredential(tc.source, p.repositories.servesRepository, p.repositories.renames, p.installed, p.left, appauth.RoleApps{}, quietLogger())
 			for _, role := range tc.built {
 				if _, err := credential(context.Background(), role, ghrepo.MustParse(tc.repo)); err != nil {
 					t.Fatalf("build the %s's bundle for %s: %v", role, tc.repo, err)
 				}
 			}
 			for runtimeName, want := range map[string]roleOwners{"tmux": tc.tmux, "kubernetes": tc.pod} {
-				owners := p.appOwners(runtimeName, nil)
+				owners := p.appOwners(runtimeName, appauth.RoleApps{})
 				for role, want := range map[claim.Role][]string{
 					claim.RoleImplementer: want.implementer, claim.RoleReviewer: want.reviewer, claim.RoleController: want.controller,
 				} {
-					if got := owners(role); !slices.Equal(got, want) {
+					if got := owners(context.Background(), "", role); !slices.Equal(got, want) {
 						t.Errorf("under %s, appOwners(%s) = %q, want %q: the installed owners the %s's container holds a directory for",
 							runtimeName, role, got, want, role)
 					}

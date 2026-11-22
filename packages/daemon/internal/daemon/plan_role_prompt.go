@@ -12,7 +12,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	stepplan "github.com/sjawhar/legion/daemon/internal/plan" // the package's own `plan` type holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -74,4 +76,18 @@ func planRoleOf(st *store.Store) func(ctx context.Context, issue string, role cl
 		}
 		return defined, found, nil
 	}
+}
+
+// roleApps is the one value every reader of a claim's App holds (appauth.RoleApps): deployed, the
+// App of each role the deployment defines (deploymentApps), and planRole, the daemon's one reader
+// of a role of a plan (planRoleOf), read for the role's type, so a role of an issue's plan acts as
+// the App of its type.
+func roleApps(deployed appauth.DeploymentApps, planRole func(ctx context.Context, issue string, role claim.Role) (record.PlanRole, bool, error)) appauth.RoleApps {
+	return appauth.RoleApps{Deployed: deployed, Plan: func(ctx context.Context, issue string, role claim.Role) (appauth.Planned, error) {
+		defined, found, err := planRole(ctx, issue, role)
+		if err != nil {
+			return appauth.Planned{}, err
+		}
+		return appauth.Planned{Defines: found, Type: stepplan.Type(defined.Type)}, nil
+	}}
 }

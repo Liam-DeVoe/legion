@@ -153,7 +153,7 @@ func TestTheRefresherFollowsAReMintedLeaseIntoEveryRolesSecret(t *testing.T) {
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 		o.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-			app, err := appauth.AppRoleFor(role, nil)
+			app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 			if err != nil {
 				return ghconfig.Bundle{}, err
 			}
@@ -251,7 +251,7 @@ func TestATickBuildsOneBundlePerAppRoleAndRepository(t *testing.T) {
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 		o.GitHubCredential = func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-			app, err := appauth.AppRoleFor(role, nil)
+			app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 			if err != nil {
 				return ghconfig.Bundle{}, err
 			}
@@ -851,7 +851,7 @@ func TestTheRefresherKeepsARenamedIssuesWriteLeaseInItsOwnDirectory(t *testing.T
 	installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
 	installs := installedOnServed{repos: listed}
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.GitHubCredential = appauth.GitHubCredential(sourceOf(leases, installs), served, renames, installed, left, nil, nil)
+		o.GitHubCredential = appauth.GitHubCredential(sourceOf(leases, installs), served, renames, installed, left, appauth.RoleApps{}, nil)
 		o.ControllerCredential = appauth.ControllerCredential(sourceOf(leases, installs), served, renames, installed, left, nil)
 		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 			return appauth.GitHubDirs(served, renames, installed, left, roles, repo)
@@ -931,7 +931,7 @@ func TestASlotsGhFilesFollowItsClaimsRole(t *testing.T) {
 			if owner == "" {
 				owner = "sjawhar"
 			}
-			appRole, err := appauth.AppRoleFor(role, nil)
+			appRole, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 			if err != nil {
 				return ghconfig.Bundle{}, err
 			}
@@ -1192,7 +1192,7 @@ func TestACredentialRefreshGoesOnAfterTheServedNamesMovedTheRoutedDefault(t *tes
 				o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 				o.CacheRepositories = listed
 				o.Tokens = servingTokens{served: served, renames: renames}
-				o.GitHubCredential = appauth.GitHubCredential(sourceOf(leases, installs), served, renames, installed, left, nil, nil)
+				o.GitHubCredential = appauth.GitHubCredential(sourceOf(leases, installs), served, renames, installed, left, appauth.RoleApps{}, nil)
 				o.ControllerCredential = appauth.ControllerCredential(sourceOf(leases, installs), served, renames, installed, left, nil)
 				o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 					return appauth.GitHubDirs(served, renames, installed, left, roles, repo)
