@@ -158,6 +158,15 @@ func (t tlsRunTerms) limit(timeout time.Duration) time.Duration {
 	return timeout
 }
 
+// tlsRunLimit is the limit a run of client at site takes, given the limit its terms give it
+// (tlsRunTerms.limit): that limit, in the legion binary. It is a variable so that a test can keep
+// the short limit for the run it needs that limit to end and give every other run its own
+// deadline: those runs share the client's one limit, and a run a loaded machine made slower than
+// it would be ended too.
+var tlsRunLimit = func(client string, site tlsSite, terms tlsRunTerms, limit time.Duration) time.Duration {
+	return limit
+}
+
 // tlsNoVerdicts is the positive controls' runs that have no verdict, each "<site> positive control
 // at <url>: <detail>" or "<site> positive control isolation endpoint <url>: <detail>"
 // (verifyTLSPositiveControls), as their error where they have such runs and no failure.
@@ -672,7 +681,7 @@ func (c tlsCommandClient) name() string { return c.clientName }
 // the chain should have carried says so (tlsSignatureFailure), and a refusal of an expired
 // certificate says so (tlsLeafExpired), each read from the whole output.
 func (c tlsCommandClient) probe(ctx context.Context, site tlsSite, terms tlsRunTerms) tlsOutcome {
-	r := c.run(ctx, site, terms.limit(c.timeout))
+	r := c.run(ctx, site, tlsRunLimit(c.clientName, site, terms, terms.limit(c.timeout)))
 	message := tlsCommandMessage(r.err, r.output)
 	accepted := r.err == nil || c.applicationSeen != nil && c.applicationSeen(message)
 	refused, detail := tlsCertificateError(message), trimTLSDetail(message)
@@ -849,7 +858,7 @@ type tlsChromiumClient struct {
 
 func (c tlsChromiumClient) probe(ctx context.Context, site tlsSite, terms tlsRunTerms) tlsOutcome {
 	c.keepStdout = true
-	r := c.run(ctx, site, terms.limit(c.timeout))
+	r := c.run(ctx, site, tlsRunLimit(c.clientName, site, terms, terms.limit(c.timeout)))
 	failure := chromiumNavigationFailure(r.output)
 	message := failure
 	if failure == "" {

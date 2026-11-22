@@ -45,8 +45,15 @@ const WaitDelay = time.Second
 // the command's exit loses what the command printed.
 var WaitDelayBound = WaitDelay
 
+// StopGraceBound is StopGrace as the grace reads it, through programbound (groupOutlivedGrace): a
+// variable so that cmd/legion's tests, whose stand-ins answer a stop's SIGTERM on a loaded machine,
+// can give it their own deadline, since a stand-in a loaded machine left unscheduled past StopGrace
+// after its SIGTERM is SIGKILLed and its own answer lost. StopGrace stays the constant the rows of
+// internal/workspace bound their stops by.
+var StopGraceBound = StopGrace
+
 func init() {
-	programbound.Register(&WaitDelayBound)
+	programbound.Register(&WaitDelayBound, &StopGraceBound)
 }
 
 // WaitDelayNow is the WaitDelay a command configured now gets: WaitDelay in a legion binary, and in
@@ -148,7 +155,7 @@ func Configure(cmd *exec.Cmd) (killed func() bool) {
 // last question and the caller's SIGKILL is the one a cancel that kills unconditionally has too,
 // so the poll can only send fewer signals than the kill alone did.
 func groupOutlivedGrace(group int) bool {
-	for deadline := time.Now().Add(StopGrace); ; time.Sleep(stopPoll) {
+	for deadline := time.Now().Add(programbound.Of(&StopGraceBound)); ; time.Sleep(stopPoll) {
 		if errors.Is(syscall.Kill(group, 0), syscall.ESRCH) {
 			return false
 		}

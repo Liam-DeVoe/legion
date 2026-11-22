@@ -14,12 +14,14 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/capabilities/capabilitiestest"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // imageOmp is an `omp` that passes the image's three probes as a working image's Oh My Pi does:
@@ -31,10 +33,12 @@ import (
 // capability check's two commands as this pod's omp does: `setup python --check --json` says
 // Python is available when python3 is on its PATH and $LEGION_TEST_NO_PYTHON is unset, else
 // `available: false` and exit 1; `config get retry.modelFallback --json` refuses an overlay whose
-// path holds `malformed` at once, with Oh My Pi's parse error, sleeps (`exec sleep 30`) under one
+// path holds `malformed` at once, with Oh My Pi's parse error, sleeps (`exec sleep 86400`) under one
 // whose path holds `slow`, so only a stop ends it, and under one whose path holds `refuses-late`
 // answers like a refusal (`malformed overlay` on stderr, exit 1) once a SIGTERM reaches it, as the
-// probe's deadline sends one; otherwise it says the setting is false, or true under
+// probe's deadline sends one; each of those two first writes the file $LEGION_TEST_WAITING names,
+// where it is set, so the probe's deadline can pass once it waits (budgetEndsOnceWaiting);
+// otherwise it says the setting is false, or true under
 // $LEGION_TEST_FALLBACK_ON, or fails with a message on stderr and exit 1 under
 // $LEGION_TEST_FALLBACK_FAIL. With $LEGION_TEST_SEEN set, each run appends the
 // environment it saw there: PI_CONFIG_FILES, whether the first overlay it names exists, and
@@ -70,8 +74,8 @@ case "$*" in
     case "$overlay" in
     *malformed*)
       printf '%s\n          ^\nerror: Failed to parse config overlay %s: SyntaxError: YAML Parse error\n' "` + strings.Repeat("x", 400) + `" "$overlay" >&2; exit 1 ;;
-    *refuses-late*) trap 'echo "malformed overlay" >&2; exit 1' TERM; sleep 30 & wait ;;
-    *slow*) exec sleep 30 ;;
+    *refuses-late*) trap 'echo "malformed overlay" >&2; exit 1' TERM; : >"${LEGION_TEST_WAITING:-/dev/null}"; sleep 86400 & wait ;;
+    *slow*) : >"${LEGION_TEST_WAITING:-/dev/null}"; exec sleep 86400 ;;
     esac
   done
   unset IFS
@@ -752,9 +756,47 @@ func TestProbeImageReadsEachRolesOwnOverlaysAsTheRoleStarts(t *testing.T) {
 	}
 }
 
-// shortProbeBudget is a --probe-budget that outlasts the steps a stubbed image's probe makes before
-// its role overlays, with room to spare under load, and ends while a step still waits on it.
+// shortProbeBudget is a --probe-budget the rows pass so that the probe runs its steps under a
+// deadline at all; when that deadline passes is budgetEndsOnceWaiting's to say, not this value's.
 const shortProbeBudget = "4s"
+
+// budgetEndsOnceWaiting makes, until t ends, the probe's --probe-budget deadline pass once a step
+// writes the file it answers, the step the row needs the deadline to cut (probeBudgetContext): the
+// omp stand-in reads it from $LEGION_TEST_WAITING, a stand-in a row writes takes it literally. A
+// fixed budget had to outlast every step ahead of that one on a loaded machine and still end while
+// that step waited. A step that never writes it fails the row by name at the test binary's
+// deadline less testBoundMargin, where the deadline then passes.
+func budgetEndsOnceWaiting(t *testing.T) string {
+	t.Helper()
+	waiting := filepath.Join(t.TempDir(), "waiting")
+	t.Setenv("LEGION_TEST_WAITING", waiting)
+	previous, bound := probeBudgetContext, testwait.Bounded(t, 1<<60, testBoundMargin)
+	t.Cleanup(func() { probeBudgetContext = previous })
+	probeBudgetContext = func(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+		deadline := newPassedDeadline()
+		go func() {
+			giveUp := time.After(bound)
+			for deadline.Err() == nil {
+				if _, err := os.Stat(waiting); err == nil {
+					deadline.pass()
+					return
+				}
+				select {
+				case <-parent.Done():
+					deadline.pass()
+					return
+				case <-giveUp:
+					t.Errorf("no step wrote %s, the step the probe's deadline must cut, %s before the test binary's deadline", waiting, testBoundMargin)
+					deadline.pass()
+					return
+				case <-time.After(testwait.Poll):
+				}
+			}
+		}()
+		return deadline, deadline.pass
+	}
+	return waiting
+}
 
 // c-slow-probe-passes case (6): the steps after the TLS check still run, and each answer is judged
 // by the probe's deadline as its step returns. A role's overlay read the deadline cuts with no
@@ -796,6 +838,9 @@ func TestTLSProbeJudgesAStepAfterTheTLSCheckByTheDeadline(t *testing.T) {
 			refusal: "Oh My Pi refuses " + malformed + ": "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if len(tc.args) > 0 {
+				budgetEndsOnceWaiting(t)
+			}
 			code, stdout, stderr := probeImageWith(tc.clients, passingTLSPositiveControls, img.flags(append([]string{"--role-config-files", "implementer=" + tc.file}, tc.args...)...)...)
 
 			if code != tc.code || strings.Contains(stdout, bootprobe.OKPrefix) {

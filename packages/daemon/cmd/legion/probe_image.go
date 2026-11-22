@@ -141,6 +141,12 @@ type probeImageFlags struct {
 	roleOverlays                                                                          roleConfigFilesFlag
 }
 
+// probeBudgetContext is the context the probe's steps run under for a --probe-budget of budget:
+// one that ends budget from now (context.WithTimeout), in the legion binary. It is a variable so
+// that this package's tests can end it once the step they need it to cut has started, rather than
+// at a fixed time a loaded machine can make come before the steps ahead of that one are done.
+var probeBudgetContext = context.WithTimeout
+
 func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 {
 		fmt.Fprintf(stderr, "legion probe-image: unexpected argument %q\n", args[0])
@@ -165,7 +171,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	}
 	if f.probeBudget > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, f.probeBudget)
+		ctx, cancel = probeBudgetContext(ctx, f.probeBudget)
 		defer cancel()
 	}
 	if f.roleNamespaces != "" {
