@@ -15,7 +15,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -29,22 +28,11 @@ import (
 // refused it.
 func TestTheDaemonsGenerationConnectionReachesThatGenerationAloneOnTheHub(t *testing.T) {
 	const user, identity = "pub-daemon", "legion-daemon-PUB"
-	keys := testnats.NewCalloutKeys(t)
-	keys.XKeySeed, keys.XKeyPublic = "", ""
-	adminSeed, adminPublic := testnats.User(t)
-	url := testnats.StartImageWithCallout(t, keys, testnats.StaticUser{NKey: adminPublic, Publish: []string{">"}, Subscribe: []string{">"}})
-	serveCallout(t, url, keys, generationGrants(user, natsgrant.Scope{Projects: []string{"PUB"}, Identity: identity}))
-
-	admin, err := testnats.ConnectSeed(t, url, adminSeed)
-	require.NoError(t, err)
-	t.Cleanup(admin.Close)
-	adminJS, err := jetstream.New(admin)
-	require.NoError(t, err)
+	hub := startLiveHub(t, generationGrants(user, natsgrant.Scope{Projects: []string{"PUB"}, Identity: identity}))
+	url := hub.url
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	_, err = adminJS.CreateStream(ctx, jetstream.StreamConfig{Name: bus.Stream, Subjects: bus.StreamCarriedSubjects()})
-	require.NoError(t, err)
-	_, err = adminJS.Publish(ctx, contracts.GithubSubject("acme", "pub", "pr.1"), []byte("github acme/pub pr.1"))
+	_, err := hub.js.Publish(ctx, contracts.GithubSubject("acme", "pub", "pr.1"), []byte("github acme/pub pr.1"))
 	require.NoError(t, err)
 
 	const filter = "notifications.github.>"

@@ -63,7 +63,7 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 		"empty-publish": {Subscribe: []string{natsgrant.InboxPrefix("empty-publish") + ".>"}},
 	}
 
-	hub := startLiveHub(t, grants)
+	hub := startLiveHub(t, staticGrants(grants))
 	url, admin, adminJS, answers := hub.url, hub.admin, hub.js, hub.answers
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
@@ -306,7 +306,7 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 func TestWithinProjectsReadsAWideConsumerWhole(t *testing.T) {
 	const identity = "legion-daemon-PUB-wide"
 	consumer := "legion-go-PUB-dispatch"
-	hub := startLiveHub(t, map[string]natsgrant.Permissions{"held-pub": within(t, natsgrant.Scope{Projects: []string{"PUB"}, Identity: identity})})
+	hub := startLiveHub(t, staticGrants(map[string]natsgrant.Permissions{"held-pub": within(t, natsgrant.Scope{Projects: []string{"PUB"}, Identity: identity})}))
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 	// Today's daemon's dispatch consumer, on every project's issue events.
@@ -360,14 +360,15 @@ type liveHub struct {
 	answers *calloutAnswers
 }
 
-// startLiveHub starts a liveHub whose auth callout admits each user of grants with its grant.
-func startLiveHub(t *testing.T, grants map[string]natsgrant.Permissions) liveHub {
+// startLiveHub starts a liveHub whose auth callout answers each authorization request with
+// resolve's grant (staticGrants, or a resolver that reads the connection's name).
+func startLiveHub(t *testing.T, resolve grantResolver) liveHub {
 	t.Helper()
 	keys := testnats.NewCalloutKeys(t)
 	keys.XKeySeed, keys.XKeyPublic = "", "" // requests in the clear: natscallout's own tests test the sealing
 	adminSeed, adminPublic := testnats.User(t)
 	url := testnats.StartImageWithCallout(t, keys, testnats.StaticUser{NKey: adminPublic, Publish: []string{">"}, Subscribe: []string{">"}})
-	answers := serveCallout(t, url, keys, staticGrants(grants))
+	answers := serveCallout(t, url, keys, resolve)
 	admin, err := testnats.ConnectSeed(t, url, adminSeed)
 	require.NoError(t, err)
 	t.Cleanup(admin.Close)
