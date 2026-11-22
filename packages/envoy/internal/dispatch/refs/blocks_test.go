@@ -581,16 +581,26 @@ func TestAListWrittenWithTheOtherMarkerKeepsItsChangedVersion(t *testing.T) {
 	checkKeptAcrossRenderers(t, "other-marker-md", otherMarkerDocument, otherMarkerDocumentBlocks, map[int]string{3: "* ", 9: "1) "}, 12)
 }
 
-// typedDocument is version 1 of a document as another renderer version stored it: a callout
-// holding a bullet list and a second one that the renderer writes with the other marker, `*`, then
-// a quote holding a bullet list, and a closing paragraph. Each list is loose in renderer version
-// 1's spelling, two blank lines between its items, the quote's two written as its marker alone,
-// where this build writes one. typedDocumentBlocks is each of its blocks in document order, with
-// its type and its slice of the document as that renderer's build indexed it.
-const typedDocument = ":::callout{#t1 kind=\"note\" title=\"T\"}\n- one\n\n\n- two\n\n* three\n\n\n* four\n:::\n\n" +
-	"> - alpha\n>\n>\n> - bravo\n\nClosing paragraph.\n"
+// typedDocument is version 1 of a document as another renderer version stored it: a bullet list;
+// a callout holding a bullet list and a second one that the renderer writes with the other marker,
+// `*`; a callout holding a bullet list whose item holds a bullet list; a bullet list whose item
+// holds a callout holding a bullet list; a quote holding a bullet list and a callout holding a
+// bullet list; and a closing paragraph. Each list of two items is loose in renderer version 1's
+// spelling, two blank lines between its items, a quote's two written as its marker alone, where
+// this build writes one, so this build spells every block but a paragraph otherwise.
+// typedDocumentBlocks is each of its blocks in document order, with its type and its slice of the
+// document as that renderer's build indexed it.
+const typedDocument = "- top\n\n\n- level\n\n" +
+	":::callout{#t1 kind=\"note\" title=\"T\"}\n- one\n\n\n- two\n\n* three\n\n\n* four\n:::\n\n" +
+	":::callout{#t2 kind=\"note\" title=\"T\"}\n- outer\n\n  - five\n\n\n  - six\n:::\n\n" +
+	"- item\n\n  :::callout{#t3 kind=\"note\" title=\"T\"}\n  - seven\n\n\n  - eight\n  :::\n\n" +
+	"> - alpha\n>\n>\n> - bravo\n>\n> :::callout{#t4 kind=\"note\" title=\"T\"}\n> - charlie\n>\n>\n> - delta\n> :::\n\n" +
+	"Closing paragraph.\n"
 
 var typedDocumentBlocks = []struct{ nodeType, text string }{
+	{"bullet_list", "- top\n\n\n- level"},
+	{"paragraph", "top"},
+	{"paragraph", "level"},
 	{"callout", ":::callout{#t1 kind=\"note\" title=\"T\"}\n- one\n\n\n- two\n\n* three\n\n\n* four\n:::"},
 	{"bullet_list", "- one\n\n\n- two"},
 	{"paragraph", "one"},
@@ -598,26 +608,51 @@ var typedDocumentBlocks = []struct{ nodeType, text string }{
 	{"bullet_list", "* three\n\n\n* four"},
 	{"paragraph", "three"},
 	{"paragraph", "four"},
-	{"blockquote", "> - alpha\n>\n>\n> - bravo"},
+	{"callout", ":::callout{#t2 kind=\"note\" title=\"T\"}\n- outer\n\n  - five\n\n\n  - six\n:::"},
+	{"bullet_list", "- outer\n\n  - five\n\n\n  - six"},
+	{"paragraph", "outer"},
+	{"bullet_list", "- five\n\n\n  - six"},
+	{"paragraph", "five"},
+	{"paragraph", "six"},
+	{"bullet_list", "- item\n\n  :::callout{#t3 kind=\"note\" title=\"T\"}\n  - seven\n\n\n  - eight\n  :::"},
+	{"paragraph", "item"},
+	{"callout", ":::callout{#t3 kind=\"note\" title=\"T\"}\n  - seven\n\n\n  - eight\n  :::"},
+	{"bullet_list", "- seven\n\n\n  - eight"},
+	{"paragraph", "seven"},
+	{"paragraph", "eight"},
+	{"blockquote", "> - alpha\n>\n>\n> - bravo\n>\n> :::callout{#t4 kind=\"note\" title=\"T\"}\n> - charlie\n>\n>\n> - delta\n> :::"},
 	{"bullet_list", "- alpha\n>\n>\n> - bravo"},
 	{"paragraph", "alpha"},
 	{"paragraph", "bravo"},
+	{"callout", ":::callout{#t4 kind=\"note\" title=\"T\"}\n> - charlie\n>\n>\n> - delta\n> :::"},
+	{"bullet_list", "- charlie\n>\n>\n> - delta"},
+	{"paragraph", "charlie"},
+	{"paragraph", "delta"},
 	{"paragraph", "Closing paragraph."},
 }
 
-// A typed block writes the blocks it holds from a line's start with no prefix, so a block inside
-// one reads alone as it stands there, as a top-level block does. Version 1, which another renderer
-// version stored, holds a callout holding two lists and a quote holding one, in that renderer's
-// spelling (typedDocument); version 2 rewords the closing paragraph. The callout and both lists
-// inside it keep changed version 1 and its time, and take the new text's sum with no text recorded
-// at version 2: each list's text recorded at version 1 started a line there, and reads alone as its
-// text now, the second list's too, which this build writes with the other marker. The quote keeps
-// version 1 as well, but the list inside it, whose text read alone loses the quote's prefix, takes
-// version 2, as does the reworded paragraph, and each has its text recorded at version 2.
+// A typed block writes the blocks it holds from a line's start with no prefix, so a block that
+// only typed blocks enclose reads alone as it stands there, as a top-level block does. A list item
+// or a quote writes its prefix on the lines of each block it holds, a typed block and the blocks
+// in it included, and that block's text read alone loses the prefix. Version 1, which another
+// renderer version stored, holds in that renderer's spelling (typedDocument) a top-level list, a
+// callout holding two lists, a callout holding a list whose item holds a list, a list whose item
+// holds a callout holding a list, and a quote holding a list and a callout holding a list; version
+// 2 rewords the closing paragraph, and this build spells every block but a paragraph otherwise.
+// Each such block that no list item or quote encloses keeps changed version 1 and its time, and
+// takes the new text's sum with no text recorded at version 2, since its text recorded at version
+// 1 started a line there and reads alone as its text now: the top-level list, the two top-level
+// callouts and the lists that stand directly in them, the second list in the first callout too,
+// which this build writes with the other marker, the list whose item holds a callout, and the
+// quote. Each such block that a list item or a quote encloses takes version 2, as does the
+// reworded paragraph, and each has its text recorded at version 2: the list in the item of the
+// second callout's list, the callout in the list item and the list in that callout, and the list
+// in the quote, the callout in the quote and the list in that callout.
 func TestABlockInsideATypedBlockKeepsItsChangedVersion(t *testing.T) {
-	// Block 4 is the second list in the callout, with the marker this build writes it with; block 8
-	// is the list inside the quote, and block 11 the reworded paragraph.
-	checkKeptAcrossRenderers(t, "typed-md", typedDocument, typedDocumentBlocks, map[int]string{4: "* "}, 8, 11)
+	// Block 7 is the second list in the first callout, with the marker this build writes it with;
+	// blocks 13, 18, 19, 23, 26 and 27 are the lists and callouts a list item or a quote encloses,
+	// and block 30 is the reworded paragraph.
+	checkKeptAcrossRenderers(t, "typed-md", typedDocument, typedDocumentBlocks, map[int]string{7: "* "}, 13, 18, 19, 23, 26, 27, 30)
 }
 
 // footnotedDocument is version 1 of a document that defines the footnote 1, as another renderer
