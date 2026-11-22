@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -170,12 +171,19 @@ func writeHoldRefusal(w http.ResponseWriter, status int, code, message string, c
 // writeHoldConflict is writeHoldRefusal for a refusal that carries the row a write read
 // (conflict.Current). That row goes through this broker's floor of the row first (acceptRow), as
 // GET's does, so no route hands out a row the floor reads as a replay or a fork: the answer is then
-// 409 below_floor with no row, which the operator's client reads as unknown.
+// 409 below_floor with no row, which the operator's client reads as unknown. A hold_mismatch names
+// the hold the row names (conflict.HoldID) only when that row verifies: a hold id from an unsigned
+// row is a database writer's choice, so the refusal then names none.
 func (s *server) writeHoldConflict(w http.ResponseWriter, status int, code, message string, conflict *natshold.Conflict) {
 	if conflict != nil && conflict.Current != nil {
 		if err := s.acceptRow(*conflict.Current); err != nil {
 			writeHoldRefusal(w, http.StatusConflict, "below_floor", fmt.Sprintf("refused %s against a hold row that reads as unknown: %v: an older row put back, or another row at the gen this broker served or wrote", code, err), nil)
 			return
+		}
+		if conflict.HoldID != "" && signedrecord.Verify(s.deps.NATSHold.Keys, conflict.Current.Sig, holdRowLines(*conflict.Current)) != nil {
+			named := *conflict
+			named.HoldID = ""
+			conflict = &named
 		}
 	}
 	writeHoldRefusal(w, status, code, message, conflict)
@@ -315,23 +323,53 @@ type holdMoveBody struct {
 
 // errRowSkewed is a row a move or restore would write whose signed_at the broker refuses: more than
 // signedrecord.SignedAtSkew from the broker's own clock, or more than that before the latest row
-// this broker's floor of the row accepted. It is answered 409 clock_skew, naming both times, and
-// nothing is stored: a row signed by a clock far fast, once stored, would raise the floor past every
-// genuine move until each replica restarts, and one signed far behind would be stored and then read
-// as unknown.
+// this broker's floor of the row accepted, or the latest signing time among the log's verified
+// entries, which every replica shares. It is answered 409 clock_skew, naming both times and the gen
+// compared with, and nothing is stored: a row signed by a clock far fast, once stored, would raise
+// the floor past every genuine move, and one signed far behind would be stored and then read as
+// unknown, on this replica or on another whose floor took a later time.
 var errRowSkewed = errors.New("the row's signed_at is outside the clock-skew allowance")
 
 // rowSignedAtAdmitted judges the signed_at of a row a move or restore would write at gen, before
-// the write: against the broker's own clock, and against this broker's floor of the row
-// (signedrecord.Floor.Admits, which moves nothing). It answers errRowSkewed, naming both times.
-func (s *server) rowSignedAtAdmitted(gen uint64, signedAt time.Time) error {
-	if err := signedrecord.WithinSkewOf(signedAt, time.Now()); err != nil {
+// the write, given log, every log entry as the write's transaction reads it: against the broker's
+// own clock, against this broker's floor of the row (signedrecord.Floor.Admits, which moves
+// nothing), and against the latest signing time among the log's verified entries
+// (signedrecord.NotBackdated), so a row one replica stores never reads as unknown on the other. It
+// answers errRowSkewed, naming both times and the gen compared with.
+func (s *server) rowSignedAtAdmitted(gen uint64, signedAt time.Time, log []natshold.LogEntry) error {
+	now := time.Now()
+	if err := signedrecord.WithinSkewOf(signedAt, now); err != nil {
 		return fmt.Errorf("%w: %w", errRowSkewed, err)
 	}
 	if err := s.holdRowFloor.Admits(gen, signedAt); err != nil {
 		return fmt.Errorf("%w: %w", errRowSkewed, err)
 	}
+	if latest, ok := s.latestSigned(log); ok && gen > latest.Gen {
+		if err := signedrecord.NotBackdated(gen, signedAt, latest.Gen, latest.SignedAt, now); err != nil {
+			return fmt.Errorf("%w: %w", errRowSkewed, err)
+		}
+	}
 	return nil
+}
+
+// verifiedLogEntry reports whether a key of BROKER_NATS_HOLD_SIGNING_KEYS signed e, the row a log
+// entry carries.
+func (s *server) verifiedLogEntry(e natshold.LogEntry) bool {
+	return signedrecord.Verify(s.deps.NATSHold.Keys, e.Sig, signedrecord.HoldRow(e.Gen, e.Phase, e.HoldID, e.SignedAt)) == nil
+}
+
+// latestSigned is the log entry with the latest signing time among those that verify, and false
+// when none does. It verifies the entries from the latest signing time down, so it stops at the
+// first that verifies.
+func (s *server) latestSigned(log []natshold.LogEntry) (natshold.LogEntry, bool) {
+	bySignedAt := slices.Clone(log)
+	slices.SortFunc(bySignedAt, func(a, b natshold.LogEntry) int { return b.SignedAt.Compare(a.SignedAt) })
+	for _, e := range bySignedAt {
+		if s.verifiedLogEntry(e) {
+			return e, true
+		}
+	}
+	return natshold.LogEntry{}, false
 }
 
 // moveNATSHold moves the hold row, once its signature verifies over the gen it will store, and
@@ -357,11 +395,11 @@ func (s *server) moveNATSHold(w http.ResponseWriter, r *http.Request, operator s
 		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the row at the gen it would store", nil)
 		return
 	}
-	accept := func(current natshold.Row) error {
+	accept := func(current natshold.Row, log []natshold.LogEntry) error {
 		if err := s.acceptRow(current); err != nil {
 			return err
 		}
-		return s.rowSignedAtAdmitted(gen, signedAt)
+		return s.rowSignedAtAdmitted(gen, signedAt, log)
 	}
 	row, err := s.holdStore().Move(r.Context(), uint64(body.ExpectedGen), natshold.Row{
 		Phase: body.Phase, HoldID: body.HoldID, Reason: body.Reason, UpdatedBy: operator, SignedAt: signedAt, Sig: body.Sig,
@@ -569,9 +607,11 @@ func (s *server) readNATSHoldRecords(w http.ResponseWriter, r *http.Request, _ s
 	writeJSON(w, http.StatusOK, answer)
 }
 
-// errJournalGone is a cohort delete on a released row whose hold has no done record, where this
-// broker's floor of that record saw it: a journal a database writer deleted, not one never written.
-var errJournalGone = errors.New("the hold's done record is gone, which this broker wrote or served")
+// errJournalUnknown is a cohort delete on a released row whose hold's done record this broker's
+// floor of that record reads as unknown: gone, where the floor saw it present (a journal a database
+// writer deleted, not one never written), or at a gen below the floor (an older signed version put
+// back).
+var errJournalUnknown = errors.New("the hold's done record is gone, or older than one this broker wrote or served")
 
 // holdJournalKey is the done record's one key (natshold's journalKey, internal/holdrecord's
 // journal).
@@ -583,9 +623,9 @@ const holdJournalKey = "hold"
 // (signedrecord.RecordDelete), only while the row is prepare with that hold id, or released with
 // it while the table admits hold abort on the released row (holdrecord.Request.RowReleased): the
 // hold's done record verifies and shows prepare, or the hold has no done record, which the table
-// reads as the zero Done, and this broker's floor of that record never saw it (409 below_floor
-// otherwise: a journal a writer deleted); and only the record at that gen, so neither the
-// operator's token alone nor an old signature deletes a record.
+// reads as the zero Done; in either case read against this broker's floor of that record, so a
+// journal it saw present and is now gone, or one below its gen, is 409 below_floor; and only the
+// record at that gen, so neither the operator's token alone nor an old signature deletes a record.
 func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ string) {
 	query := r.URL.Query()
 	holdID, kind, key := query.Get("hold_id"), query.Get("kind"), query.Get("key")
@@ -599,18 +639,22 @@ func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ 
 		return
 	}
 	released := func(journal *natshold.Record) error {
-		var d holdrecord.Done // no done record: the zero Done, a hold with no journal
-		if journal == nil && s.holdFloors.gone(recordFloorKey{holdID: holdID, kind: natshold.KindDone, key: holdJournalKey}) {
-			return fmt.Errorf("%w: hold %s", errJournalGone, holdID)
+		floorKey := recordFloorKey{holdID: holdID, kind: natshold.KindDone, key: holdJournalKey}
+		switch {
+		case journal == nil && s.holdFloors.gone(floorKey):
+			return fmt.Errorf("%w: hold %s's done record is gone", errJournalUnknown, holdID)
+		case journal != nil && s.holdFloors.below(floorKey, journal.Gen):
+			return fmt.Errorf("%w: hold %s's done record is at gen %d", errJournalUnknown, holdID, journal.Gen)
 		}
+		var d holdrecord.Done // no done record: the zero Done, a hold with no journal
 		if journal != nil {
 			var ok bool
 			if d, ok = s.verifiedJournal(holdID, journal); !ok {
-				return &natshold.Conflict{Err: fmt.Errorf("%w: the row is released, and hold %s's done record does not verify", natshold.ErrHoldMismatch, holdID), HoldID: holdID}
+				return &natshold.Conflict{Err: fmt.Errorf("%w: the row is released, and hold %s's done record does not verify", natshold.ErrHoldMismatch, holdID)}
 			}
 		}
 		if err := holdrecord.Decide(d, holdrecord.Request{Command: holdrecord.CommandAbort, RowReleased: true}); err != nil {
-			return &natshold.Conflict{Err: fmt.Errorf("%w: the row is released, and hold %s's journal does not show prepare", natshold.ErrHoldMismatch, holdID), HoldID: holdID}
+			return &natshold.Conflict{Err: fmt.Errorf("%w: the row is released, and hold %s's journal does not show prepare", natshold.ErrHoldMismatch, holdID)}
 		}
 		return nil
 	}
@@ -618,7 +662,7 @@ func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ 
 	var conflict *natshold.Conflict
 	switch {
 	case err == nil:
-	case errors.Is(err, errJournalGone):
+	case errors.Is(err, errJournalUnknown):
 		writeHoldRefusal(w, http.StatusConflict, "below_floor", "the cohort is not deleted: "+err.Error(), nil)
 		return
 	case !errors.As(err, &conflict):

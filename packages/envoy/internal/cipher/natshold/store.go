@@ -216,12 +216,13 @@ func moveRefusal(current Row, phase, holdID string, used bool) error {
 // Move moves the hold row from expectedGen to next's phase, hold id, reason, writer, signing time
 // and signature, at gen expectedGen+1, and answers the row it stored. The row is locked while the
 // move is checked, and the write is one statement: the update, which still names expectedGen, and
-// its nats_hold_log row. accept sees the locked row first, and its error, the routes' floor of the
-// row refusing an older row put back, is answered as it is. It refuses with a Conflict: ErrNoRow,
+// its nats_hold_log row. accept sees the locked row first, with every log entry by gen as the same
+// transaction reads it, and its error (the routes' floor of the row refusing an older row put back,
+// or a new row's signing time) is answered as it is. It refuses with a Conflict: ErrNoRow,
 // ErrGenMismatch when the row's gen is not expectedGen, moveRefusal's refusal, and ErrGenLogged
 // when the log already holds the gen the move would store, which only a row put back below the log
 // leads to.
-func (s Store) Move(ctx context.Context, expectedGen uint64, next Row, accept func(current Row) error) (Row, error) {
+func (s Store) Move(ctx context.Context, expectedGen uint64, next Row, accept func(current Row, log []LogEntry) error) (Row, error) {
 	var moved Row
 	err := s.in(ctx, pgx.ReadWrite, func(tx pgx.Tx) error {
 		current, found, err := s.currentRow(ctx, tx, "for update")
@@ -231,7 +232,11 @@ func (s Store) Move(ctx context.Context, expectedGen uint64, next Row, accept fu
 		case !found:
 			return &Conflict{Err: ErrNoRow}
 		}
-		if err := accept(current); err != nil {
+		log, err := s.logIn(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if err := accept(current, log); err != nil {
 			return err
 		}
 		if current.Gen != expectedGen {
@@ -287,12 +292,12 @@ type LogEntry struct {
 // each answering nil to go on and its refusal otherwise, which Restore answers as it is. Trust sees
 // the log's latest entry (nil for an empty log) before any gen is compared, and answers whether a
 // restore may judge by it at all: the route verifies its signature, since a database writer can
-// add or change a log row but not one that verifies. Admit sees it again once next's gen is the
-// one above it, with journals, every hold's done record as the same transaction reads it, and
-// answers whether next may be restored after it.
+// add or change a log row but not one that verifies. Admit sees, once next's gen is the one above
+// the latest entry, every log entry by gen (the latest last) and every hold's done record, as the
+// same transaction reads them, and answers whether next may be restored after them.
 type RestoreJudge struct {
 	Trust func(latest *LogEntry) error
-	Admit func(latest *LogEntry, journals []Record, next Row) error
+	Admit func(log []LogEntry, journals []Record, next Row) error
 }
 
 // journalKey is the done record's one key, the hold's journal (internal/holdrecord's).
@@ -365,9 +370,13 @@ func (s Store) Restore(ctx context.Context, next Row, judge RestoreJudge) (Row, 
 		case found:
 			return &Conflict{Err: ErrRowExists, Current: &current}
 		}
-		latest, err := s.latestLog(ctx, tx)
+		log, err := s.logIn(ctx, tx)
 		if err != nil {
 			return err
+		}
+		var latest *LogEntry
+		if len(log) > 0 {
+			latest = &log[len(log)-1]
 		}
 		if err := judge.Trust(latest); err != nil {
 			return err
@@ -383,7 +392,7 @@ func (s Store) Restore(ctx context.Context, next Row, judge RestoreJudge) (Row, 
 		if err != nil {
 			return err
 		}
-		if err := judge.Admit(latest, journals, next); err != nil {
+		if err := judge.Admit(log, journals, next); err != nil {
 			return err
 		}
 		restored, err = scanRow(tx.QueryRow(ctx, `with restored as (
@@ -408,22 +417,28 @@ func (s Store) Restore(ctx context.Context, next Row, judge RestoreJudge) (Row, 
 	return restored, err
 }
 
-// latestLog reads the log's latest entry inside tx, nil for an empty log.
-func (s Store) latestLog(ctx context.Context, tx pgx.Tx) (*LogEntry, error) {
-	var e LogEntry
-	var gen int64
-	err := tx.QueryRow(ctx, `select gen, phase, hold_id, signed_at, sig from `+s.table("nats_hold_log")+` order by gen desc limit 1`).
-		Scan(&gen, &e.Phase, &e.HoldID, &e.SignedAt, &e.Sig)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return nil, nil
-	case err != nil:
-		return nil, fmt.Errorf("natshold: read the log's latest entry: %w", err)
-	case gen < 1:
-		return nil, fmt.Errorf("natshold: the log's latest entry is at gen %d", gen)
+// logIn reads every log entry inside tx, by gen, the latest last; empty for an empty log.
+func (s Store) logIn(ctx context.Context, tx pgx.Tx) ([]LogEntry, error) {
+	rows, err := tx.Query(ctx, `select gen, phase, hold_id, signed_at, sig from `+s.table("nats_hold_log")+` order by gen`)
+	if err != nil {
+		return nil, fmt.Errorf("natshold: read the log: %w", err)
 	}
-	e.Gen = uint64(gen)
-	return &e, nil
+	log, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (LogEntry, error) {
+		var e LogEntry
+		var gen int64
+		if err := row.Scan(&gen, &e.Phase, &e.HoldID, &e.SignedAt, &e.Sig); err != nil {
+			return LogEntry{}, err
+		}
+		if gen < 1 {
+			return LogEntry{}, fmt.Errorf("natshold: a log entry is at gen %d", gen)
+		}
+		e.Gen = uint64(gen)
+		return e, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("natshold: read the log: %w", err)
+	}
+	return log, nil
 }
 
 // heldBy reads the hold row inside tx under a share lock, so no move commits until tx does, and

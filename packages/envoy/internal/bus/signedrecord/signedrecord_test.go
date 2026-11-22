@@ -166,8 +166,53 @@ func TestTheFloorAdmitsWithoutMovingAndKeepsTheLatestSigningTime(t *testing.T) {
 	if err := floor.Accept(3, at.Add(-4*time.Minute), lines(3)); err != nil {
 		t.Fatal(err)
 	}
-	if err := floor.Accept(4, at.Add(-6*time.Minute), lines(4)); !errors.Is(err, signedrecord.ErrBackdated) {
+	err = floor.Accept(4, at.Add(-6*time.Minute), lines(4))
+	if !errors.Is(err, signedrecord.ErrBackdated) {
 		t.Errorf("after gen 3 signed 4 minutes before gen 2, gen 4 signed 6 minutes before gen 2 was read as %v, want ErrBackdated", err)
+	} else if !strings.Contains(err.Error(), "before gen 2 signed at") || !strings.Contains(err.Error(), "12:00:00") {
+		// The refusal names the gen whose time it judged by, gen 2, not the floor's gen 3, whose time
+		// is 4 minutes earlier: fails while it prints gen 3 beside gen 2's time, as at 3d48321338.
+		t.Errorf("the refusal %q does not name gen 2 and its time, the latest signing time accepted", err)
+	}
+}
+
+// A signing time more than the allowance ahead of the reader's clock (a row stored before the hold's
+// routes judged signing times, or read after the reader's clock jumped back) is no genuine row's, so
+// a later gen is judged against the reader's clock instead: a gen signed now is admitted, by the
+// floor and by NotBackdated alike, and one signed 6 minutes before now is not. Fails while the floor
+// judges by a far-future time as it is, as at 3d48321338, and fails too with the time capped at the
+// clock plus the allowance, which refuses a gen signed even a moment before the reader reads it.
+// NotBackdated names the gen it compared with, and WithinSkewOf refuses either way.
+func TestAFutureSigningTimeIsJudgedByTheReadersClock(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	lines := func(gen uint64) []string { return signedrecord.Record("hold-1", "done", "hold", gen, []byte(`{}`)) }
+	floor := &signedrecord.Floor{}
+	if err := floor.Accept(2, now.Add(20*time.Minute), lines(2)); err != nil {
+		t.Fatal(err)
+	}
+	if err := floor.Admits(3, now); err != nil {
+		t.Errorf("after a row signed 20 minutes ahead, Admits of a gen signed now answered %v, want nil", err)
+	}
+	if err := floor.Accept(3, now, lines(3)); err != nil {
+		t.Errorf("after a row signed 20 minutes ahead, Accept of a gen signed now answered %v, want nil", err)
+	}
+	if err := floor.Admits(4, now.Add(-signedrecord.SignedAtSkew-time.Minute)); !errors.Is(err, signedrecord.ErrBackdated) {
+		t.Errorf("Admits of a gen signed 6 minutes before now answered %v, want ErrBackdated", err)
+	}
+	if err := signedrecord.NotBackdated(5, now, 4, now.Add(20*time.Minute), now); err != nil {
+		t.Errorf("NotBackdated against a time 20 minutes ahead answered %v, want nil", err)
+	}
+	err := signedrecord.NotBackdated(5, now.Add(-6*time.Minute), 4, now, now)
+	if !errors.Is(err, signedrecord.ErrBackdated) || !strings.Contains(err.Error(), "gen 5") || !strings.Contains(err.Error(), "before gen 4 signed at") {
+		t.Errorf("NotBackdated of a gen 6 minutes before gen 4 answered %v, want ErrBackdated naming gens 5 and 4", err)
+	}
+	for _, x := range []struct {
+		off  time.Duration
+		want error
+	}{{4 * time.Minute, nil}, {-4 * time.Minute, nil}, {6 * time.Minute, signedrecord.ErrSkewed}, {-6 * time.Minute, signedrecord.ErrSkewed}} {
+		if err := signedrecord.WithinSkewOf(now.Add(x.off), now); !errors.Is(err, x.want) || (x.want == nil && err != nil) {
+			t.Errorf("WithinSkewOf a time %v off the clock answered %v, want %v", x.off, err, x.want)
+		}
 	}
 }
 
