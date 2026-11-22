@@ -61,55 +61,66 @@ type Level struct {
 	Components []specgraph.Component
 }
 
-// ParseLevel reads a level from its level document and its notes document.
+// ParseLevel reads a level from its level document and its notes document, each through the
+// document parser every write goes through (pmdoc.ParseRendering), as a change request's versions
+// are read (specchange.FromVersions). A statement is each requirement block, wherever the level
+// holds it, with the block's own text (specchange.BlockText). A heading of the document's top
+// starts the part the blocks after it stand in: one of level two ends the part before it, and a
+// heading `## Components` starts the part whose tables name each component and interface, one row
+// each; one of level three `Under <id>` sets the parent of the statements after it, and one of
+// level three of any other title sets none. So a directive, a heading, a table row or a note that
+// a code example shows is none of them.
 func ParseLevel(level, notes string) (Level, error) {
+	doc, err := pmdoc.ParseRendering(level)
+	if err != nil {
+		return Level{}, fmt.Errorf("read the level: %w", err)
+	}
 	var parsed Level
-	lines := strings.Split(strings.ReplaceAll(level, "\r\n", "\n"), "\n")
 	parent, components := "", false
-	for index := 0; index < len(lines); index++ {
-		line := strings.TrimRight(lines[index], " \t")
+	for _, block := range doc.Children {
 		switch {
-		case strings.HasPrefix(line, "## "):
-			parent, components = "", strings.TrimSpace(line[3:]) == "Components"
-			continue
-		case strings.HasPrefix(line, "### "):
-			parent = ""
-			if under, ok := strings.CutPrefix(strings.TrimSpace(line[4:]), "Under "); ok {
-				parent = strings.TrimSpace(under)
-			}
-			continue
-		}
-		if components && strings.HasPrefix(line, "|") {
-			cells := tableCells(line)
-			if len(cells) != 5 || cells[0] == "Id" || strings.Trim(cells[0], "-: ") == "" {
-				continue
-			}
-			component := specgraph.Component{ID: cells[0], Interface: cells[1] == "interface", Name: cells[2], Purpose: cells[3]}
-			if related := cells[4]; related != "none" && related != "" {
-				if component.Interface {
-					// specgraph.Component holds the components an interface joins sorted and unique, as
-					// a change request's parse writes them, so an approved interface compares equal to
-					// the same interface a later request names as context.
-					component.Joins = sortedUnique(splitIDs(related))
-				} else {
-					component.Parent = related
+		case block.Type == "heading":
+			title := strings.TrimSpace(pmdoc.TextContent(block))
+			switch headingLevel(block) {
+			case 2:
+				parent, components = "", title == "Components"
+			case 3:
+				parent = ""
+				if under, ok := strings.CutPrefix(title, "Under "); ok {
+					parent = strings.TrimSpace(under)
 				}
 			}
-			parsed.Components = append(parsed.Components, component)
+			continue
+		case components && block.Type == "table":
+			rows, err := specchange.BlockText(block)
+			if err != nil {
+				return Level{}, fmt.Errorf("read the components table of the level: %w", err)
+			}
+			parsed.Components = append(parsed.Components, componentsOf(rows)...)
 			continue
 		}
-		name, attrs, ok := pmdoc.ParseTypedDirectiveOpen(line)
-		if !ok || name != "requirement" {
-			continue
+		var failed error
+		pmdoc.Walk(block, func(node *pmdoc.Node) bool {
+			if node.Type != "requirement" {
+				return true
+			}
+			id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
+			text, err := statementText(node)
+			if err != nil {
+				failed = fmt.Errorf("read the requirement %s of the level: %w", id, err)
+				return false
+			}
+			parsed.Statements = append(parsed.Statements, LevelStatement{ID: id, Text: text, Parent: parent})
+			return true
+		})
+		if failed != nil {
+			return Level{}, failed
 		}
-		id, _ := attrs[pmdoc.BlockIDAttr].(string)
-		var body []string
-		for index++; index < len(lines) && strings.TrimRight(lines[index], " \t") != ":::"; index++ {
-			body = append(body, strings.TrimRight(lines[index], " \t"))
-		}
-		parsed.Statements = append(parsed.Statements, LevelStatement{ID: id, Text: strings.TrimSpace(strings.Join(body, "\n")), Parent: parent})
 	}
-	noted := notesOf(notes)
+	noted, err := notesOf(notes)
+	if err != nil {
+		return Level{}, err
+	}
 	for index := range parsed.Statements {
 		statement := &parsed.Statements[index]
 		if note, held := noted[statement.ID]; held {
@@ -119,33 +130,106 @@ func ParseLevel(level, notes string) (Level, error) {
 	return parsed, nil
 }
 
-// notesOf reads the kind, about and supports of each statement of a notes document, under a
-// heading `### <id>`, from its `- Kind:`, `- About:` and `- Supports:` lines.
-func notesOf(notes string) map[string]LevelStatement {
-	noted := map[string]LevelStatement{}
-	current := ""
-	for _, raw := range strings.Split(strings.ReplaceAll(notes, "\r\n", "\n"), "\n") {
-		line := strings.TrimSpace(raw)
-		if heading, ok := strings.CutPrefix(line, "### "); ok {
-			current = strings.TrimSpace(heading)
-			noted[current] = LevelStatement{ID: current}
+// headingLevel is the level of a heading, 1 to 6.
+func headingLevel(node *pmdoc.Node) int {
+	switch level := node.Attrs["level"].(type) {
+	case int:
+		return level
+	case int64:
+		return int(level)
+	case float64:
+		return int(level)
+	}
+	return 1
+}
+
+// statementText is the text of a requirement block as a change request's reader reads a
+// statement's: the lines of the block's own markdown (specchange.BlockText) between its opening
+// line and its closing one, each without its trailing white space, and without the blank lines
+// at either end.
+func statementText(block *pmdoc.Node) (string, error) {
+	text, err := specchange.BlockText(block)
+	if err != nil {
+		return "", err
+	}
+	_, body, _ := strings.Cut(text, "\n")
+	end := strings.LastIndexByte(body, '\n')
+	if end < 0 {
+		return "", nil
+	}
+	lines := strings.Split(body[:end], "\n")
+	for index := range lines {
+		lines[index] = strings.TrimRight(lines[index], " \t")
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n")), nil
+}
+
+// componentsOf is each component and interface the rows of a components table name, the table's
+// markdown as specchange.BlockText writes it: a row of five cells - its id, `component` or
+// `interface`, its name, its purpose, and its parent or the components it joins - other than the
+// header and the delimiter row.
+func componentsOf(rows string) []specgraph.Component {
+	var components []specgraph.Component
+	for _, line := range strings.Split(rows, "\n") {
+		cells := tableCells(line)
+		if len(cells) != 5 || cells[0] == "Id" || strings.Trim(cells[0], "-: ") == "" {
 			continue
 		}
-		if current == "" {
+		component := specgraph.Component{ID: cells[0], Interface: cells[1] == "interface", Name: cells[2], Purpose: cells[3]}
+		if related := cells[4]; related != "none" && related != "" {
+			if component.Interface {
+				// specgraph.Component holds the components an interface joins sorted and unique, as
+				// a change request's parse writes them, so an approved interface compares equal to
+				// the same interface a later request names as context.
+				component.Joins = sortedUnique(splitIDs(related))
+			} else {
+				component.Parent = related
+			}
+		}
+		components = append(components, component)
+	}
+	return components
+}
+
+// notesOf reads, from a notes document parsed as the level is, the kind, about and supports of
+// each statement under a heading `### <id>` of the document's top: the items `Kind: …`, `About: …`
+// and `Supports: …` of the lists after it, each read to its first line break.
+func notesOf(notes string) (map[string]LevelStatement, error) {
+	doc, err := pmdoc.ParseRendering(notes)
+	if err != nil {
+		return nil, fmt.Errorf("read the notes of the level: %w", err)
+	}
+	noted := map[string]LevelStatement{}
+	current := ""
+	for _, block := range doc.Children {
+		if block.Type == "heading" {
+			if headingLevel(block) == 3 {
+				current = strings.TrimSpace(pmdoc.TextContent(block))
+				noted[current] = LevelStatement{ID: current}
+			}
+			continue
+		}
+		if current == "" || block.Type != "bullet_list" {
 			continue
 		}
 		note := noted[current]
-		switch {
-		case strings.HasPrefix(line, "- Kind:"):
-			note.Kind = strings.TrimSpace(strings.TrimPrefix(line, "- Kind:"))
-		case strings.HasPrefix(line, "- About:"):
-			note.About = splitIDs(strings.TrimPrefix(line, "- About:"))
-		case strings.HasPrefix(line, "- Supports:"):
-			note.Supports = splitIDs(strings.TrimPrefix(line, "- Supports:"))
+		for _, item := range block.Children {
+			if len(item.Children) == 0 || item.Children[0].Type != "paragraph" {
+				continue
+			}
+			line, _, _ := strings.Cut(pmdoc.TextContent(item.Children[0]), "\n")
+			switch name, value, _ := strings.Cut(line, ":"); name {
+			case "Kind":
+				note.Kind = strings.TrimSpace(value)
+			case "About":
+				note.About = splitIDs(value)
+			case "Supports":
+				note.Supports = splitIDs(value)
+			}
 		}
 		noted[current] = note
 	}
-	return noted
+	return noted, nil
 }
 
 // tableCells is the cells of one row of a markdown table, trimmed.
