@@ -166,13 +166,30 @@ export const ARTIFACT_NAME_EXISTS_RULE =
 export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dispatch stores as Markdown, and a text the store would write under another spelling is refused. The refusal prints the text Dispatch stores: send that text. A name without the extension .md or .markdown has a second way out, which keeps the text as it was written: send it as a file with ${PATH_KEEPS_BYTES}.`;
 
 /** A name's extension, or undefined for a name with none: what follows its last dot when that
- *  holds no blank. uploadTypeFrom reads it once TRAILING_DIGIT_EXTENSIONS are dropped. */
+ *  holds no blank. uploadTypeFrom reads it in the name withoutTrailingDigitExtensions returns. */
 const NAME_EXTENSION = /\.([^\s.]+)$/u;
 
-/** A name's trailing extensions of digits alone, a version or a date rather than a type:
- *  "rows.jsonl.1" reads as rows.jsonl, and a title such as "Plan v1.2" as Plan v1, which has no
- *  extension. */
-const TRAILING_DIGIT_EXTENSIONS = /(?:\.\d+)+$/u;
+/** The name trimmed, with its trailing extensions of ASCII digits alone cut off, a version or a
+ *  date rather than a type: "rows.jsonl.1" reads as rows.jsonl, and a title such as "Plan v1.2"
+ *  as Plan v1, which has no extension. It reads the name in time linear in its length, because
+ *  the name is the writer's own argument and AskGate reads it on the session's thread. */
+function withoutTrailingDigitExtensions(name: string): string {
+  const trimmed = name.trim();
+  let end = trimmed.length;
+  while (end > 0) {
+    const dot = trimmed.lastIndexOf(".", end - 1);
+    if (dot < 0 || dot + 1 === end) break;
+    let at = dot + 1;
+    while (at < end) {
+      const code = trimmed.charCodeAt(at);
+      if (code < 48 || code > 57) break;
+      at++;
+    }
+    if (at < end) break;
+    end = dot;
+  }
+  return trimmed.slice(0, end);
+}
 
 const MARKDOWN_EXTENSION = /^(md|markdown)$/i;
 
@@ -235,7 +252,7 @@ function uploadPreconditionArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E
  * reading (`uploadIsDocument`, packages/envoy-client/src/askgate-marker.ts).
  */
 export function uploadTypeFrom(name: string): "markdown" | "name" | "path" {
-  const extension = NAME_EXTENSION.exec(name.trim().replace(TRAILING_DIGIT_EXTENSIONS, ""))?.[1];
+  const extension = NAME_EXTENSION.exec(withoutTrailingDigitExtensions(name))?.[1];
   if (extension === undefined) return "path";
   return MARKDOWN_EXTENSION.test(extension) ? "markdown" : "name";
 }

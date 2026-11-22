@@ -205,7 +205,7 @@ function routeLines(route: Route): string[] {
   if (route.scopes !== undefined && route.scopes.length > 0) {
     lines.push(`- **Needs the scope:** ${codeList(route.scopes)}`);
   }
-  const parameters = [...route.path.matchAll(/\{([^}]+)\}/g)].map((match) => `\`${match[1]}\``);
+  const parameters = [...route.path.matchAll(/\{([^{}]+)\}/g)].map((match) => `\`${match[1]}\``);
   if (parameters.length > 0) {
     lines.push(`- **Path parameters:** ${parameters.join(", ")}`);
   }
