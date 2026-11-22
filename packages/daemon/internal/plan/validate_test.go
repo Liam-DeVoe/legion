@@ -44,7 +44,7 @@ func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 	}) {
 		t.Fatalf("Validate(prober implementer prober) = %+v", r)
 	}
-	// A role the plan's own role block defines is defined (Supported refuses the role block).
+	// A role the plan's own role block defines is defined (Supported takes the role block too).
 	defined := oneTask("a", "implementer prober")
 	defined.Roles = []PlanRole{{Name: "prober", Type: TypeTesting}}
 	if r := Validate(defined, d); len(r) != 0 {

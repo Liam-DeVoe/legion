@@ -141,8 +141,8 @@ func TestBuiltinRolesAreLegionsFiveStepRoles(t *testing.T) {
 }
 
 // How a step runs is decided by its role alone: each of Legion's five roles of a step runs as its
-// own phase, and every other role, a role of the deployment, runs as the phase step. No type is
-// read, so a role of the deployment whose type is review still runs as step.
+// own phase, and every other role, a role of the deployment or of the plan, runs as the phase step.
+// No type is read, so a role of the deployment whose type is review still runs as step.
 func TestHowAStepRunsIsItsRolesAndNeverItsType(t *testing.T) {
 	for role, want := range map[string]phase.Phase{
 		"planner": phase.Planning, "implementer": phase.Implementing, "tester": phase.Testing,
