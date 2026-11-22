@@ -461,6 +461,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.repository, plan.launchRepository = workflow.issueRepository, workflow.launchRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
 		plan.owner = workflow.owningArchitect
+		plan.stepWorkers = workflow.stepWorkers
 		// The arms a launch runs in are read from the daemon's own store (launchVariants), not
 		// from here: the operator's spawn draws a tree's experiments with no workflow
 		// configured, and the launch that follows it must honour the draw it made.
@@ -851,6 +852,10 @@ type plan struct {
 	// the claims the store records at each launch (workflowRuntime.owningArchitect), which the
 	// launch's addressing names; nil without a workflow.
 	owner func(ctx context.Context, project string, c supervise.Claim) (claim.Token, error)
+	// stepWorkers is the agent of each step of the plan of a claim's issue, read from the plan rows
+	// the store records at each launch (workflowRuntime.stepWorkers), which the launch's addressing
+	// names; nil without a workflow.
+	stepWorkers func(ctx context.Context, project string, c supervise.Claim) ([]stepWorker, error)
 	// repositories is the repository state the workflow fills, empty until its preparations read
 	// GitHub: the rename rule every gh bundle resolves a configured pair against
 	// (repositories.servesRepository, appauth.GitHubCredential) and, under the Kubernetes runtime,
@@ -1731,7 +1736,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Specs: specs{
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
 			roles:    cfg.Roles,
-			identity: p.identity, repository: p.launchRepository, owner: p.owner,
+			identity: p.identity, repository: p.launchRepository, owner: p.owner, stepWorkers: p.stepWorkers,
 			appOwners:   p.appOwners(cfg.Runtime.Name, deploymentApps(cfg.Roles)),
 			designSteps: cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
