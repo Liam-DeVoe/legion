@@ -940,6 +940,33 @@ test("a timers module or bun bound by import() or require() starts a wait throug
   ]);
 });
 
+// docs/testing.md, "The clock of a unit test", says the scan fails the `scheduler.wait` of
+// node:timers "reached through a namespace or default import", and every wait "imported ... under
+// another name" or given a destructure. In Bun, as in Node, node:timers holds its scheduler under
+// `promises`, and a dynamic import's `then` hands its callback the namespace. Each of these waits
+// 50 ms of real time, and the scan found none of them at 54a60643 (INFRA-983, tester round 4).
+test("the scheduler of node:timers' promises and a namespace a dynamic import hands on start waits", () => {
+  refusedAndKept([
+    'import * as timers from "node:timers";\nawait timers.promises.scheduler.wait(50);',
+    'import { promises } from "node:timers";\nawait promises.scheduler.wait(50);',
+    'await import("node:timers/promises").then(({ setTimeout: d }) => d(50));',
+    'await import("bun").then((m) => m.sleep(50));',
+  ]);
+});
+
+// The same section says the scan fails every call that starts a wait of real time, whatever wraps
+// it, and the comment above the five spellings' row records that the sentence is not narrowed.
+// `Bun` handed to a helper, `Bun` stored in an object, and a timer of `globalThis` reached by a
+// key held in a constant each wait 50 ms of real time, and the scan found none of them at
+// 54a60643 (INFRA-983, tester round 4).
+test("Bun handed on or stored, and a timer reached by a constant key, start waits", () => {
+  refusedAndKept([
+    "function nap(b: typeof Bun) {\n  return b.sleep(50);\n}\nawait nap(Bun);",
+    "const helpers = { bun: Bun };\nawait helpers.bun.sleep(50);",
+    'const key = "setTimeout";\nawait new Promise((r) => globalThis[key](r, 50));',
+  ]);
+});
+
 // The `call` and the `apply` of a wait start it, by a member's key too, and so does a call of its
 // `bind`, at once or under a name: what `bind` answers is an alias, and its own `call` is a call.
 test("the call, the apply and the bind of a wait are found where the wait is started", () => {
