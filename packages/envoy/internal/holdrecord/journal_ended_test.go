@@ -43,11 +43,12 @@ func putJournalBack(t *testing.T, r rig, holdID string, j savedJournal) {
 }
 
 // endedHoldRows are TestTheHoldJournal's rows of a released restore beside the journals of holds
-// the verified log shows ended: a hold's journal holds no restore once the log shows a released
-// entry naming it, at any gen; a later hold's prepare shows nothing (forkRows). Every other hold's
-// journal is judged against this replica's record floor and its signature: an older version, or
-// one that does not verify, is unknown (409 below_floor). A hold_mismatch names only a hold a
-// verified row or log entry names.
+// the verified log shows ended. Every hold's journal, an ended one's included, is judged first
+// against this replica's record floor and its signature: an older version, or one that does not
+// verify, is unknown (409 below_floor). Then a hold's journal holds no restore once the log shows
+// a released entry naming it, at any gen, while it shows no command's intent pending but hold
+// release's or hold abort's (repairRows' B5); a later hold's prepare shows nothing (forkRows). A
+// hold_mismatch names only a hold a verified row or log entry names.
 func endedHoldRows(t *testing.T) {
 	ctx := context.Background()
 	stored := func(t *testing.T, r rig) (int64, string) {
@@ -155,9 +156,12 @@ func endedHoldRows(t *testing.T) {
 		restoresReleased(t, r, "with hold A's mid-hold journal put back")
 	})
 
-	t.Run("an older version of an ended hold's journal on the replica that saw the newer one is ignored, and the released restore stores", func(t *testing.T) {
-		// Claude's swap, with no restart: the record floor saw A's newer journal, and the log shows
-		// A released, so the older version is ignored. Fails while it refuses the restore.
+	t.Run("an older version of an ended hold's journal on the replica that saw the newer one is unknown: 409 below_floor", func(t *testing.T) {
+		// Claude's swap, with no restart: the record floor saw A's newer journal. Every journal is
+		// judged against the floor and its signature before any log entry ends its hold, so the
+		// older version is refused, a database writer's residual infra/README.md lists. Fails
+		// while the log's released entry skips A's journal first, as at e481b26500: released is
+		// stored.
 		r := newRig(t)
 		c := r.client(t)
 		hold(t, c, "h-swap-a", holdrecord.WorkflowCutover, nil)
@@ -169,7 +173,14 @@ func endedHoldRows(t *testing.T) {
 		if _, err := r.Pool.Exec(ctx, `delete from nats_hold`); err != nil {
 			t.Fatal(err)
 		}
-		restoresReleased(t, r, "with an older version of hold A's journal")
+		fresh := r.client(t)
+		got := restoreRefusal(t, fresh, restoreGen(t, fresh), natsgrant.OperatorPhaseReleased, "")
+		if !refusedWith(got, http.StatusConflict, "below_floor", `hold "h-swap-a"'s done record`, handRepair) {
+			t.Errorf("the released restore answered %s; want 409 below_floor naming h-swap-a's done record and the hand repair", refusalText(got))
+		}
+		if gen, phase := stored(t, r); gen != 0 {
+			t.Errorf("after the refused restore the table holds %s at gen %d, want no row", phase, gen)
+		}
 	})
 
 	t.Run("an older version of a held hold's journal is unknown: 409 below_floor", func(t *testing.T) {

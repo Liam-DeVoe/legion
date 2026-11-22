@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -293,6 +294,44 @@ func TestASignatureWithNoKeyIDVerifiesByTryingEachListedKey(t *testing.T) {
 	var unlisted *signedrecord.UnlistedKeyError
 	if !errors.Is(err, signedrecord.ErrBadSignature) || errors.As(err, &unlisted) || !strings.Contains(err.Error(), "signed with no key id") {
 		t.Errorf("Verify of a signature with no key id that no listed key verifies answered %v, want ErrBadSignature saying it was signed with no key id", err)
+	}
+}
+
+// A key id and a signature are read only in the one text Sign writes for them: the id 11
+// characters, the signature 86, unpadded base64url with zero spare bits and no line break, which
+// Go's decoder skips even in Strict mode. Anything else is a signature that does not decode, and
+// no part of it reaches the error or an UnlistedKeyError, so no refusal suggests listing a key that
+// no one has; an id in that form that no listed key has is named, saying no listed key has it.
+// The id rows fail while isKeyID takes any text that decodes to 8 bytes, as at e481b26500, where a
+// line break inside the operator's own id reaches UnlistedKeyError.KeyID; the signature rows while
+// the signature part is decoded leniently, as at e481b26500, where a line break inside it, or a
+// spare bit set, still verifies.
+func TestAKeyIDAndASignatureAreReadOnlyInSignsForm(t *testing.T) {
+	operator, operatorKey := newKey(t)
+	stranger, _ := newKey(t)
+	keys := []ed25519.PublicKey{operator}
+	lines := signedrecord.HoldRow(3, "held", "hold-1", time.Unix(0, 0))
+	kid, signature, _ := strings.Cut(sign(t, operatorKey, lines), ".")
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	last := strings.IndexByte(alphabet, signature[len(signature)-1])
+	spareBit := signature[:len(signature)-1] + string(alphabet[last^1])
+	for name, sig := range map[string]string{
+		"a line break inside the key id":         kid[:5] + "\n" + kid[5:] + "." + signature,
+		"a CR and LF inside the key id":          kid[:5] + "\r\n" + kid[5:] + "." + signature,
+		"a key id of 12 characters":              kid + "A." + signature,
+		"a line break inside the signature part": kid + "." + signature[:10] + "\n" + signature[10:],
+		"a spare bit set in the signature part":  kid + "." + spareBit,
+		"a line break in a signature with no id": signature[:10] + "\n" + signature[10:],
+	} {
+		err := signedrecord.Verify(keys, sig, lines)
+		var unlisted *signedrecord.UnlistedKeyError
+		if !errors.Is(err, signedrecord.ErrBadSignature) || errors.As(err, &unlisted) || !strings.Contains(fmt.Sprint(err), "does not decode") || strings.ContainsAny(fmt.Sprint(err), "\r\n") {
+			t.Errorf("Verify of %s answered %q, want a signature that does not decode, naming no part of it", name, err)
+		}
+	}
+	err := signedrecord.Verify([]ed25519.PublicKey{stranger}, kid+"."+signature, lines)
+	if text := fmt.Sprint(err); !strings.Contains(text, "key id "+kid) || !strings.Contains(text, "no listed key has") {
+		t.Errorf("Verify of an id no listed key has answered %q, want it to name the id and say no listed key has it", text)
 	}
 }
 
