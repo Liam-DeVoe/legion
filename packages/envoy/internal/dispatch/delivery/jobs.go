@@ -135,6 +135,7 @@ func (j *JobIntake) Run(ctx context.Context) {
 // deliveryConsumerConfig gives.
 func jobConsumerConfig() natsgo.ConsumerConfig {
 	config := bus.DispatchJobConsumer()
+	config.DeliverSubject = natsgo.NewInbox()
 	config.AckWait = jobAckWait
 	config.MaxAckPending = jobMaxAckPending
 	config.Metadata = consumerGenerationMetadata()

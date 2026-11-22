@@ -81,7 +81,7 @@ func DeclaredConsumers(set ConsumerSet) []ConsumerShape {
 	for _, config := range []nats.ConsumerConfig{bus.DispatchDeliveryConsumer(), bus.DispatchJobConsumer()} {
 		shapes = append(shapes, ConsumerShape{
 			Stream: bus.Stream, Name: config.Durable, FilterSubjects: filterSubjects(config),
-			Push: config.DeliverSubject != "", DeliverGroup: config.DeliverGroup, AckPolicy: config.AckPolicy,
+			Push: true, DeliverGroup: config.DeliverGroup, AckPolicy: config.AckPolicy,
 		})
 	}
 	return append(shapes, set.Daemons...)

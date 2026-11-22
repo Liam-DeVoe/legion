@@ -309,6 +309,7 @@ func intakeAckWait() time.Duration {
 // TestTheConsumerConfigEqualsItsGenerationsPinnedRow.
 func deliveryConsumerConfig() natsgo.ConsumerConfig {
 	config := bus.DispatchDeliveryConsumer()
+	config.DeliverSubject = natsgo.NewInbox()
 	config.AckWait = intakeAckWait()
 	config.MaxAckPending = intakeMaxAckPending
 	config.Metadata = consumerGenerationMetadata()

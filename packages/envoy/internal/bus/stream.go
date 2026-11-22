@@ -134,17 +134,16 @@ const (
 )
 
 // DispatchDeliveryConsumer is the shape of Dispatch's delivery intake's durable: its name, one
-// push consumer over every GitHub notification, delivered to a reply inbox of its own and
-// acknowledged one message at a time. Dispatch's intake builds its durable on it, adding its ack
-// wait, pending bound and generation (internal/dispatch/delivery), and the operator's census keeps
-// a consumer of that name only while it has this shape (packages/envoy/infra/streams), so the two
-// cannot drift apart.
+// push consumer over every GitHub notification, acknowledged one message at a time. It names no
+// deliver subject: the intake adds a reply inbox of its own, with its ack wait, pending bound and
+// generation (internal/dispatch/delivery), and the operator's census keeps a consumer of that name
+// only while it has this shape, delivered to a reply inbox (packages/envoy/infra/streams), so the
+// two cannot drift apart.
 func DispatchDeliveryConsumer() nats.ConsumerConfig {
 	return nats.ConsumerConfig{
-		Durable:        DispatchDeliveryDurable,
-		DeliverSubject: nats.NewInbox(),
-		FilterSubject:  DispatchDeliveryFilter,
-		AckPolicy:      nats.AckExplicitPolicy,
+		Durable:       DispatchDeliveryDurable,
+		FilterSubject: DispatchDeliveryFilter,
+		AckPolicy:     nats.AckExplicitPolicy,
 	}
 }
 
@@ -153,11 +152,10 @@ func DispatchDeliveryConsumer() nats.ConsumerConfig {
 // messages.
 func DispatchJobConsumer() nats.ConsumerConfig {
 	return nats.ConsumerConfig{
-		Durable:        DispatchJobDurable,
-		DeliverSubject: nats.NewInbox(),
-		FilterSubject:  DispatchJobFilter,
-		DeliverPolicy:  nats.DeliverNewPolicy,
-		AckPolicy:      nats.AckExplicitPolicy,
+		Durable:       DispatchJobDurable,
+		FilterSubject: DispatchJobFilter,
+		DeliverPolicy: nats.DeliverNewPolicy,
+		AckPolicy:     nats.AckExplicitPolicy,
 	}
 }
 
