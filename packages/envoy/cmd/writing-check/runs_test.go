@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -41,7 +42,12 @@ func labelArgs(stub *stubModel, cases, definition, key, out string, extra ...str
 // The top-level score writes outputs.jsonl, which holds sentences of the labelled texts: an --out
 // inside a repository is refused before any input is read, and nothing is made there.
 func TestScoreRefusesAnOutInsideARepository(t *testing.T) {
-	repo := t.TempDir()
+	// The refusal names the repository with its links resolved (t.TempDir is under a link on
+	// macOS).
+	repo, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -78,6 +84,91 @@ func TestAFinalTestWhoseOutCannotBeMadeSpendsNoSet(t *testing.T) {
 	}
 	if stub.calls.Load() != 0 {
 		t.Error("the refused run called the model")
+	}
+}
+
+// A final-test score makes the --out it writes its files in: --out work/link/../o is work/o, the
+// name filepath.Join gives each file, and not x/o, where the kernel takes the name. So the run
+// writes its files in work/o and makes no x/o; and an --out work/link/../f, where the file work/f
+// stands, cannot be made, though the kernel would make x/f, so that run fails before it claims
+// the set: the exposure log holds no run, and no reader is called.
+func TestAFinalTestMakesTheOutItWrites(t *testing.T) {
+	work, x := linkedDirs(t)
+	dir := t.TempDir()
+	labels, manifest := fixtureLabels(t, dir)
+	stub := newStubModel(t, containsAny("names the"), nil)
+	final := func(out, log string) (int, string) {
+		t.Helper()
+		args := append([]string{"score", "--labels", labels, "--planted", manifest, "--stratum", stratumReal, "--out", out,
+			"--root", "../..", "--final-test", "--set-digest", strings.Repeat("ab", 32), "--seed", "42", "--exposure-log", log}, stub.args(t, dir)...)
+		code, _, stderr := runCmd(t, args...)
+		return code, stderr
+	}
+	if err := os.WriteFile(filepath.Join(work, "f"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	refused := filepath.Join(dir, "refused.jsonl")
+	// Written out, as linkedDirs says.
+	if code, stderr := final(work+"/link/../f", refused); code != 1 || !strings.Contains(stderr, "not a directory") {
+		t.Errorf("a final test whose --out work/link/../f cannot be made = %d, want 1 and the refusal:\n%s", code, stderr)
+	}
+	if _, err := os.Stat(refused); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the final test whose --out cannot be made wrote the exposure log (%v)", err)
+	}
+	if n := stub.calls.Load(); n != 0 {
+		t.Errorf("the final test whose --out cannot be made made %d reader calls", n)
+	}
+	if code, stderr := final(work+"/link/../o", filepath.Join(dir, "exposure.jsonl")); code != 0 {
+		t.Errorf("a final test with --out work/link/../o = %d:\n%s", code, stderr)
+	}
+	if names, err := dirNames(filepath.Join(work, "o")); err != nil || !slices.Equal(names, []string{"figures.json", "figures.md", "outputs.jsonl"}) {
+		t.Errorf("work/o holds %v (%v), want the run's three files", names, err)
+	}
+	for _, name := range []string{"f", "o"} {
+		if _, err := os.Stat(filepath.Join(x, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the final tests made x/%s (%v), a directory they write nothing in", name, err)
+		}
+	}
+}
+
+// A reading makes the --out it writes its files in, as a final-test score does
+// (TestAFinalTestMakesTheOutItWrites): --out work/link/../o is work/o, and it makes no x/o; and an
+// --out work/link/../f, where the file work/f stands, cannot be made, so that reading fails before
+// its first detector call.
+func TestAReadingMakesTheOutItWrites(t *testing.T) {
+	work, x := linkedDirs(t)
+	dir := t.TempDir()
+	in := writeCases(t, dir, "cases.jsonl", []Case{
+		{EventID: 210, SourceID: "r1", Surface: surfaceComment, Field: "body", Text: sentA, Project: "ALPHA"},
+		{EventID: 220, SourceID: "r2", Surface: surfaceComment, Field: "body", Text: sentH, Project: "BETA"},
+	})
+	stub := newStubModel(t, containsAny("names the"), nil)
+	reading := func(out string) (int, string) {
+		t.Helper()
+		code, _, stderr := runCmd(t, append([]string{"reading", "--in", in, "--after", "200", "--through", "300", "--out", out, "--root", "../.."}, stub.args(t, dir)...)...)
+		return code, stderr
+	}
+	if err := os.WriteFile(filepath.Join(work, "f"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Written out, as linkedDirs says.
+	if code, stderr := reading(work + "/link/../f"); code != 1 || !strings.Contains(stderr, "not a directory") {
+		t.Errorf("a reading whose --out work/link/../f cannot be made = %d, want 1 and the refusal:\n%s", code, stderr)
+	}
+	if n := stub.calls.Load(); n != 0 {
+		t.Errorf("the reading whose --out cannot be made made %d detector calls", n)
+	}
+	if code, stderr := reading(work + "/link/../o"); code != 0 {
+		t.Errorf("a reading with --out work/link/../o = %d:\n%s", code, stderr)
+	}
+	want := []string{"manifest.jsonl", "manifest.sha256", "report.json", "report.md", "results.jsonl"}
+	if names, err := dirNames(filepath.Join(work, "o")); err != nil || !slices.Equal(names, want) {
+		t.Errorf("work/o holds %v (%v), want %v", names, err, want)
+	}
+	for _, name := range []string{"f", "o"} {
+		if _, err := os.Stat(filepath.Join(x, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the readings made x/%s (%v), a directory they write nothing in", name, err)
+		}
 	}
 }
 
@@ -555,6 +646,80 @@ func TestEveryCommandRefusesTwoOutputsOnOnePath(t *testing.T) {
 			t.Errorf("the refused %s made %s (%v)", c.args[0], c.made, err)
 		}
 	}
+}
+
+// Every other command of package main that makes its output directory makes the one it writes
+// its files in, as score and reading do (TestAFinalTestMakesTheOutItWrites): --out
+// work/link/../<name> is work/<name>, and the command makes no x/<name>. build and followups
+// stage their files in a directory under --out (dsStaged), and build --from, owner-texts --from
+// and followups join the bundle's files in one (dsMakeOut): each is made in work/<name> too, and
+// removed once the command ends.
+func TestEveryCommandMakesTheOutItWrites(t *testing.T) {
+	work, x := linkedDirs(t)
+	dir := t.TempDir()
+	// lists: a build of one development question case, with no verdict and no label.
+	listed := filepath.Join(dir, "listed")
+	if err := os.Mkdir(listed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dsWriteGzipJSONL(filepath.Join(listed, "cases.jsonl.gz"), []dsListCase{{ID: "question/q1", Group: dsGroupQuestion, Part: dsDevelopment}}); err != nil {
+		t.Fatal(err)
+	}
+	none := filepath.Join(dir, "none.jsonl")
+	if err := os.WriteFile(none, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// plant, rule-cost and split: a grouped corpus of made-up writes.
+	writes := syntheticCorpus(map[string]int{"comment": 20, "document": 20, "message": 20, "result": 20, "issue_title": 20})
+	assignGroups(writes)
+	corpus := writeCases(t, dir, "corpus.jsonl", writes)
+	labels, manifest := fixtureLabels(t, dir)
+	// build, owner-texts and followups: followups' fixture, built and packed.
+	in := dsInputs{Seed: fixtureSeed}
+	in.Snapshot, in.Verdicts = followupsFixture().write(t, dir)
+	built, bundle := filepath.Join(dir, "build"), filepath.Join(dir, "bundle.tar.gz")
+	if _, err := buildDataset(in, built); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := packBundle(in, bundle, dsPartSize); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name  string
+		args  []string
+		files []string
+	}{
+		{"lists", []string{"dataset", "lists", "--cases", listed, "--verdicts", none, "--plain-labels", none}, []string{dsListQuestion, dsListAnswer, dsListPlain}},
+		{"plant", []string{"plant", "--in", corpus, "--corpus", corpus, "--seed", "11", "--per-shape", "6", "--nolist", "8", "--controls"}, []string{"planted.jsonl", "manifest.jsonl", "sha256"}},
+		{"recall", []string{"recall", "--labels", labels, "--planted", manifest}, []string{"recall.json", "recall.md"}},
+		{"rule-cost", []string{"rule-cost", "--in", corpus, "--seed", "3", "--writes", "50", "--min-per-surface", "10"}, []string{"table.md", "table.json", "manifest.jsonl", "manifest.sha256"}},
+		{"split", []string{"split", "--in", corpus, "--cut-a", "1010", "--cut-b", "1030"}, []string{setDevelopment + ".jsonl", setCalibration + ".jsonl", setFinalPool + ".jsonl", "counts.json"}},
+		{"build", []string{"dataset", "build", "--snapshot", in.Snapshot, "--verdicts", in.Verdicts, "--seed", strconv.Itoa(fixtureSeed)}, dsBuildFiles},
+		{"build-from", []string{"dataset", "build", "--from", bundle}, dsBuildFiles},
+		{"owner-texts", []string{"dataset", "owner-texts", "--from", bundle}, []string{dsOwnerTextsFile}},
+		{"followups", []string{"dataset", "followups", "--from", bundle, "--cases", built}, []string{dsFollowupsFile, dsExplanationsDir}},
+	} {
+		// Written out, as linkedDirs says.
+		if code, _, stderr := runCmd(t, append(c.args, "--out", work+"/link/../"+c.name)...); code != 0 {
+			t.Errorf("%s --out work/link/../%s = %d:\n%s", strings.Join(c.args, " "), c.name, code, stderr)
+		}
+		if names, err := dirNames(filepath.Join(work, c.name)); err != nil || !slices.Equal(names, slices.Sorted(slices.Values(c.files))) {
+			t.Errorf("work/%s holds %v (%v), want %v", c.name, names, err, c.files)
+		}
+		if _, err := os.Stat(filepath.Join(x, c.name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the %s run made x/%s (%v), a directory it writes nothing in", c.name, c.name, err)
+		}
+	}
+}
+
+// dirNames is the names of dir's entries, in order, or the error its listing gave.
+func dirNames(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Name()
+	}
+	return names, err
 }
 
 // A write renamed over its output once whole goes through a file of a name of its own: a file

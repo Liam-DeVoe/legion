@@ -108,6 +108,8 @@ func runReading(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		fmt.Fprintf(stderr, "writing-check reading: %v\n", err)
 		return 2
 	}
+	// The reading makes and checks the directory filepath.Join names its files in: --out cleaned.
+	*out = filepath.Clean(*out)
 	reads := append(harness.Files("--in", *in), rf.files()...)
 	for _, path := range excludes {
 		reads = append(reads, harness.Files("--exclude", path)...)

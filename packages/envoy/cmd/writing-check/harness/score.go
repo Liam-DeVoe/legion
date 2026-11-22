@@ -801,6 +801,8 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	case *dryRun && *figuresOnly:
 		return usage("give --dry-run or --figures-only, not both")
 	}
+	// The run makes and checks the directory filepath.Join names its files in: --out cleaned.
+	*out = filepath.Clean(*out)
 	if err := OutsideRepository("--out", *out); err != nil {
 		return usage(err.Error())
 	}

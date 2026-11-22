@@ -177,6 +177,8 @@ func runDatasetLists(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "writing-check dataset lists: --cases, --verdicts, --plain-labels and --out are required, and nothing else")
 		return 2
 	}
+	// The step makes and checks the directory filepath.Join names its files in: --out cleaned.
+	*out = filepath.Clean(*out)
 	if err := harness.OutsideRepository("--out", *out); err != nil {
 		fmt.Fprintf(stderr, "writing-check dataset lists: %v\n", err)
 		return 2

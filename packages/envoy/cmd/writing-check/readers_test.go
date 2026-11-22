@@ -369,7 +369,12 @@ func TestAnEventThatDoesNotDecodeLeavesTheReplayWhereItWas(t *testing.T) {
 // fetch and readers, which read Dispatch's own texts, refuse an output path inside a repository
 // before they read anything: fetch's cases file, and readers' cases file and replayed state.
 func TestFetchAndReadersRefuseAnOutputInsideARepository(t *testing.T) {
-	repo := t.TempDir()
+	// The refusal names the repository with its links resolved (t.TempDir is under a link on
+	// macOS).
+	repo, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +400,12 @@ func TestFetchAndReadersRefuseAnOutputInsideARepository(t *testing.T) {
 // label and plant the writes' sentences, recall the no-list halves), so each refuses an output
 // inside a repository before it reads anything, as fetch and readers do.
 func TestTheCommandsThatCopyDispatchTextRefuseAnOutputInsideARepository(t *testing.T) {
-	repo := t.TempDir()
+	// The refusal names the repository with its links resolved (t.TempDir is under a link on
+	// macOS).
+	repo, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}

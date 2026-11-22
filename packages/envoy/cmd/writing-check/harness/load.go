@@ -528,6 +528,8 @@ func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if *part != PartDevelopment && *part != PartHeldOut {
 		return usage("--part is development or held_out")
 	}
+	// The load makes and checks the directory filepath.Join names its files in: --out cleaned.
+	*out = filepath.Clean(*out)
 	if err := OutsideRepository("--out", *out); err != nil {
 		return usage(err.Error())
 	}

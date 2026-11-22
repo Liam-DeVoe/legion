@@ -2906,9 +2906,11 @@ func buildDataset(in dsInputs, out string) (dsBuildResult, error) {
 // into out, over a file of the same name, and answers what write answered. A directory write
 // left there takes the place of the one of its name whole (followups' explanations/). A write
 // that fails moves nothing: out is as it was, and an out that did not exist is removed again.
-// The directory is removed either way.
+// The directory is removed either way. out is taken cleaned, the name filepath.Join gives each
+// file in it, so the directory made, the one staged under and the one moved into are one.
 func dsStaged[T any](out string, write func(dir string) (T, error)) (T, error) {
 	var res T
+	out = filepath.Clean(out)
 	_, err := os.Stat(out)
 	made := errors.Is(err, os.ErrNotExist)
 	if err := os.MkdirAll(out, 0o755); err != nil {
@@ -2948,8 +2950,10 @@ func dsStaged[T any](out string, write func(dir string) (T, error)) (T, error) {
 // joins the bundle's files in a directory under it (openBundle) and answers its inputs. done
 // removes that directory, and out again where this call made it and the step left it empty, so a
 // refused step leaves no out it made; the step calls it once it ends. A refusal here has removed
-// both already.
+// both already. out is taken cleaned, the name filepath.Join gives each file the step writes in
+// it, so the directory made, and the one the bundle is joined under, are where the step writes.
 func dsMakeOut(out, from string) (dsInputs, func(), error) {
+	out = filepath.Clean(out)
 	_, err := os.Stat(out)
 	made := errors.Is(err, os.ErrNotExist)
 	dir := ""

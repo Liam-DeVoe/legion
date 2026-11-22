@@ -210,6 +210,8 @@ func runGraderTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if !slices.Contains(AddedGraders, *addedGrader) {
 		return usage("--added-grader is " + strings.Join(AddedGraders, ", "))
 	}
+	// The test makes and checks the directory filepath.Join names its files in: --out cleaned.
+	*out = filepath.Clean(*out)
 	if err := OutsideRepository("--out", *out); err != nil {
 		return usage(err.Error())
 	}

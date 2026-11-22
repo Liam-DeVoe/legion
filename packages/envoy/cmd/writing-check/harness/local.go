@@ -237,6 +237,8 @@ func runLocal(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	case *keep && *database == "":
 		return usage("--keep starts again on a database made before: give --database")
 	}
+	// The start makes and checks the directory filepath.Join names its files in: --out cleaned.
+	*out = filepath.Clean(*out)
 	if err := OutsideRepository("--out", *out); err != nil {
 		return usage(err.Error())
 	}

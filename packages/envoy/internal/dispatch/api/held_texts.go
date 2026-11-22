@@ -346,13 +346,17 @@ type heldWriteOf struct {
 // does not waits, decided, for its parent to post. A text that names no held text first runs its
 // whole write in a transaction that is rolled back (dryRunHeld), so a write its own path refuses
 // is refused now, as with the reviewer off, and never fails at its post; a reply its route
-// answers with no new text is answered so now, and nothing is held. A text beside a held parent,
-// which no dry run can write before that parent posts, reads what its post writes off the held
-// texts it waits on instead (heldBeside), read once (heldWaitedBeside), and is refused now where
-// its post would refuse it, but for a reply whose route writes it then as it writes it now, which
-// runs its dry run. A text that waits only for its turn counts in its advice the held texts that
-// post before it, as its post will find them posted (countWaited); a new issue's advice is a new
-// issue's, which none of them writes to.
+// answers with no new text is answered so now, and nothing is held. An ask, comment, message or
+// reply beside a held parent, which no dry run can write before that parent posts, runs none, and
+// reads what its post writes off the held texts it waits on instead (heldBeside), read once
+// (heldWaitedBeside), but for a reply whose route writes it then as it writes it now, which runs
+// its dry run. A new issue beside a held parent runs its dry run at its hold, with no parent and
+// none of the held issues it waits on among its blockers (heldIssueCreateError), and reads off it
+// the spec its seed renders, and off the held texts it waits on its assignee and its advice
+// (issueCreate.beside). Each is refused now where its post would refuse it. A text that waits
+// only for its turn counts in its advice the held texts that post before it, as its post will
+// find them posted (countWaited); a new issue's advice is a new issue's, which none of them
+// writes to.
 // The answer carries the advice the write's own answer carries (heldAdvice), worked out before
 // the id is reserved, and, for a new issue, the assignee its post writes, which the dry run or
 // heldBeside read (heldDryRun.assignee). What else the post writes it reads off the dry run, or

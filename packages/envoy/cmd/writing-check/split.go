@@ -60,6 +60,8 @@ func runSplit(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "writing-check split: --cut-a must be below --cut-b")
 		return 2
 	}
+	// split makes and checks the directory filepath.Join names its files in: --out cleaned.
+	*out = filepath.Clean(*out)
 	if err := harness.NoOutputIsAnInput(harness.Files("--out", *out, setDevelopment+".jsonl", setCalibration+".jsonl", setFinalPool+".jsonl", "counts.json"), harness.Files("--in", *in)); err != nil {
 		fmt.Fprintf(stderr, "writing-check split: %v\n", err)
 		return 2

@@ -196,19 +196,11 @@ func TestPhrasesLabelsRefusesLabelsChangedInPlace(t *testing.T) {
 // directory of its own though it holds the same bytes, and though --labels made absolute and
 // clean is work/labels, the first run's.
 func TestPhrasesLabelsRefusesTheLabelsOfAnotherDirectory(t *testing.T) {
-	// run.json names the labels with their links resolved (t.TempDir is under a link on macOS).
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	work, x := filepath.Join(dir, "work"), filepath.Join(dir, "x")
-	for _, d := range []string{filepath.Join(work, "labels"), filepath.Join(x, "sub"), filepath.Join(x, "labels")} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+	work, x := linkedDirs(t)
+	for _, d := range []string{filepath.Join(work, "labels"), filepath.Join(x, "labels")} {
+		if err := os.Mkdir(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if err := os.Symlink(filepath.Join(x, "sub"), filepath.Join(work, "link")); err != nil {
-		t.Fatal(err)
 	}
 	writePhrasesRound(t, filepath.Join(work, "labels"))
 	writePhrasesRound(t, filepath.Join(x, "labels"))
@@ -557,5 +549,101 @@ func TestCreateBesideMakesItsFileWhereTheRenameLands(t *testing.T) {
 	}
 	if data, err := os.ReadFile(filepath.Join(x, "out.json")); err != nil || string(data) != "whole\n" {
 		t.Errorf("x/out.json holds %q (%v), want the write", data, err)
+	}
+}
+
+// Every harness command that makes its output directory makes the one it writes its files in:
+// --out work/link/../<name> is work/<name>, the name filepath.Join gives each file, and not
+// x/<name>, where the kernel takes the name; so the command writes its files there and makes no
+// x/<name>. load writes loaded.jsonl before it reaches the instance's database, here a port that
+// answers nothing, and fails there. local: TestALocalStartMakesTheOutItWrites.
+func TestEveryHarnessCommandMakesTheOutItWrites(t *testing.T) {
+	work, x := linkedDirs(t)
+	build, sessions := writeFixture(t)
+	stand := modeltest.New(t, allJudgementRules(t)...)
+	gateway := []string{"--gateway", stand.URL, "--gateway-key-file", keyFile(t)}
+	labels, dir := t.TempDir(), t.TempDir()
+	writePhrasesRound(t, labels)
+	local, verdicts := filepath.Join(dir, "local.json"), filepath.Join(dir, "verdicts.jsonl")
+	writeJSONFile(t, local, LocalInstance{BaseURL: "http://127.0.0.1:4200", Database: "dispatch_harness_1", DatabaseURL: "postgres://127.0.0.1:1/dispatch_harness_1"})
+	if err := os.WriteFile(verdicts, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		args []string
+		// fails is what the command's failure says once it has written its files; "" for none.
+		fails string
+		files []string
+	}{
+		{"score", append([]string{"score", "--cases", build, "--sessions", sessions, "--draws", "50", "--exposure-log", filepath.Join(dir, "exposure.log")}, gateway...), "",
+			[]string{"cases.jsonl", "run.json", "scores.json", "scores.md", "session-excerpts.jsonl.gz"}},
+		{"phrases", append([]string{"phrases-labels", "--labels", labels, "--draws", "50"}, gateway...), "", []string{"agreement.json", "agreement.md", "results.jsonl", "run.json"}},
+		{"grader", append([]string{"grader-test", "--planted", writePlanted(t), "--cases", build, "--sessions", sessions}, gateway...), "",
+			[]string{"grader-test.json", "grader-test.md", "session-excerpts.jsonl.gz"}},
+		{"load", []string{"load", "--local", local, "--cases", build, "--verdicts", verdicts}, "the local instance's database", []string{"loaded.jsonl"}},
+	} {
+		// Written out, as linkedDirs says.
+		code, _, stderr := runHarness(append(c.args, "--out", work+"/link/../"+c.name)...)
+		if c.fails == "" && code != 0 || c.fails != "" && (code != 1 || !strings.Contains(stderr, c.fails)) {
+			t.Errorf("harness %s --out work/link/../%s = %d:\n%s", strings.Join(c.args, " "), c.name, code, stderr)
+		}
+		entries, err := os.ReadDir(filepath.Join(work, c.name))
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		if err != nil || !slices.Equal(names, c.files) {
+			t.Errorf("work/%s holds %v (%v), want %v", c.name, names, err, c.files)
+		}
+		if _, err := os.Stat(filepath.Join(x, c.name)); !os.IsNotExist(err) {
+			t.Errorf("harness %s made x/%s (%v), a directory it writes nothing in", c.args[0], c.name, err)
+		}
+	}
+}
+
+// A `harness local` start makes the --out it writes local.json in, as the other harness commands
+// do (TestEveryHarnessCommandMakesTheOutItWrites): --out work/link/../local is work/local, and the
+// start makes no x/local.
+func TestALocalStartMakesTheOutItWrites(t *testing.T) {
+	work, x := linkedDirs(t)
+	bin := t.TempDir()
+	pids := filepath.Join(t.TempDir(), "pids")
+	script := "#!/bin/sh\necho $$ >> \"$HARNESS_TEST_BUN_PID\"\nexec sleep 300\n"
+	if err := os.WriteFile(filepath.Join(bin, "bun"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HARNESS_TEST_BUN_PID", pids)
+	t.Cleanup(func() {
+		data, _ := os.ReadFile(pids)
+		for _, line := range strings.Fields(string(data)) {
+			if pid, err := strconv.Atoi(line); err == nil {
+				syscall.Kill(-pid, syscall.SIGKILL)
+			}
+		}
+	})
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	// Written out, as linkedDirs says.
+	args := []string{"local", "--out", work + "/link/../local", "--pg-dsn", "postgres://harness@127.0.0.1:1/postgres", "--database", "dispatch_harness_1", "--repo", t.TempDir()}
+	done := make(chan int, 1)
+	var stderr strings.Builder
+	go func() {
+		var stdout strings.Builder
+		done <- Run(ctx, args, &stdout, &stderr)
+	}()
+	testwait.Eventually(t, "the start's instance to run, or the start to end", func() bool {
+		data, _ := os.ReadFile(pids)
+		return len(strings.Fields(string(data))) == 1 || len(done) == 1
+	})
+	// The start removes its local.json as it ends.
+	_, held := os.Stat(filepath.Join(work, "local", "local.json"))
+	stop()
+	if code := <-done; held != nil {
+		t.Errorf("the start = %d, and wrote no work/local/local.json while its instance ran (%v):\n%s", code, held, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(x, "local")); !os.IsNotExist(err) {
+		t.Errorf("the start made x/local (%v), a directory it writes nothing in", err)
 	}
 }

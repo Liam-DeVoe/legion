@@ -252,6 +252,8 @@ func runPlant(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "writing-check plant: --in, --corpus, --seed and --out are required, at least one fault, and nothing else")
 		return 2
 	}
+	// plant makes and checks the directory filepath.Join names its files in: --out cleaned.
+	*out = filepath.Clean(*out)
 	if err := harness.OutsideRepository("--out", *out); err != nil {
 		fmt.Fprintf(stderr, "writing-check plant: %v\n", err)
 		return 2

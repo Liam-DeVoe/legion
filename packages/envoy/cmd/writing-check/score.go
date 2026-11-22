@@ -329,6 +329,8 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	case *bootstrapN < 0:
 		return usage("--bootstrap must not be negative")
 	}
+	// The run makes and checks the directory filepath.Join names its files in: --out cleaned.
+	*out = filepath.Clean(*out)
 	// outputs.jsonl holds the candidates and the rewrites, sentences of the labelled texts.
 	if err := harness.OutsideRepository("--out", *out); err != nil {
 		return usage(err.Error())
@@ -380,12 +382,12 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			return fail(err)
 		}
 	}
-	// --out is made, and a final test reads the reader's key and token files, refusing one it
-	// cannot read or that holds nothing (harness.ReadCredential), before the final test is
-	// claimed, so a key the calls could not send or an --out that cannot be made spends no set;
-	// the claim is the last step before the first write is read. Any other run reads the key on
-	// each reader call alone, so one that calls none, its writes holding no candidate, scores with
-	// no key.
+	// --out, the directory its files are written in, is made, and a final test reads the reader's
+	// key and token files, refusing one it cannot read or that holds nothing
+	// (harness.ReadCredential), before the final test is claimed, so a key the calls could not send
+	// or an --out that cannot be made spends no set; the claim is the last step before the first
+	// write is read. Any other run reads the key on each reader call alone, so one that calls none,
+	// its writes holding no candidate, scores with no key.
 	if *finalTest {
 		for _, f := range rf.files() {
 			if err := harness.ReadCredential(f.Flag, f.Path); err != nil {

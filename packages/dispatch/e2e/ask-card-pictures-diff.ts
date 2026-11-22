@@ -11,7 +11,7 @@
  *  are. */
 import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, normalize } from "node:path";
 
 /** The pixelmatch release the comparison runs. */
 const pixelmatch = "pixelmatch@5.3.0";
@@ -87,24 +87,27 @@ export function comparePicture(
 /** Compares every picture named in `names` in `builtDir` with the demo's of the same name in
  *  `demoDir`, and writes into `outDir`, for each, the build's picture, the demo's and their
  *  difference (`<name>.png`, `<name>.demo.png`, `<name>.diff.png`), then `report.json` and
- *  `report.md`, which list each one's share of changed pixels. */
+ *  `report.md`, which list each one's share of changed pixels. `outDir` is taken normalized, the
+ *  name `join` gives each file in it, so the directory made is the one written: with `link`
+ *  pointing at `x/sub`, `w/link/../o` is `w/o`, where the kernel would make `x/o`. */
 export function comparePictures(
   names: readonly string[],
   builtDir: string,
   demoDir: string,
   outDir: string
 ): PictureComparison[] {
-  mkdirSync(outDir, { recursive: true });
+  const out = normalize(outDir);
+  mkdirSync(out, { recursive: true });
   const comparisons = names.map((name) => {
-    const built = join(outDir, `${name}.png`);
+    const built = join(out, `${name}.png`);
     if (join(builtDir, `${name}.png`) !== built) copyFileSync(join(builtDir, `${name}.png`), built);
-    const demo = join(outDir, `${name}.demo.png`);
+    const demo = join(out, `${name}.demo.png`);
     copyFileSync(join(demoDir, `${name}.png`), demo);
-    return comparePicture(name, built, demo, join(outDir, `${name}.diff.png`));
+    return comparePicture(name, built, demo, join(out, `${name}.diff.png`));
   });
-  writeFileSync(join(outDir, "report.json"), `${JSON.stringify(comparisons, null, 2)}\n`);
+  writeFileSync(join(out, "report.json"), `${JSON.stringify(comparisons, null, 2)}\n`);
   writeFileSync(
-    join(outDir, "report.md"),
+    join(out, "report.md"),
     [
       "| Picture | Changed pixels | Share | Note |",
       "| --- | ---: | ---: | --- |",

@@ -335,6 +335,8 @@ func runPhrasesLabels(ctx context.Context, args []string, stdout, stderr io.Writ
 	if *labelsDir == "" || *out == "" || fs.NArg() > 0 || *draws < 1 {
 		return fail(2, errors.New("--labels and --out are required, and nothing else"))
 	}
+	// The run makes and checks the directory filepath.Join names its files in: --out cleaned.
+	*out = filepath.Clean(*out)
 	if err := OutsideRepository("--out", *out); err != nil {
 		return fail(2, err)
 	}

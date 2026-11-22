@@ -113,6 +113,8 @@ func runRuleCost(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "writing-check rule-cost: --plant %q names no carried rule\n", *plant)
 		return 2
 	}
+	// rule-cost makes and checks the directory filepath.Join names its files in: --out cleaned.
+	*out = filepath.Clean(*out)
 	if err := harness.NoOutputIsAnInput(harness.Files("--out", *out, "table.md", "table.json", "manifest.jsonl", "manifest.sha256"), harness.Files("--in", *in)); err != nil {
 		fmt.Fprintf(stderr, "writing-check rule-cost: %v\n", err)
 		return 2
