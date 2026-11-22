@@ -34,6 +34,7 @@ package storetest
 import (
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -42,7 +43,6 @@ import (
 	"os"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -585,10 +585,12 @@ func claimRun(ctx context.Context) (*pgx.Conn, string, error) {
 // a random part of its own (randomName, OpenFrom). Postgres reads it as a regular expression too.
 var runName = regexp.MustCompile(`^dispatch_(?:test|template)_([0-9a-f]{16})_[0-9a-f]{16}$`)
 
-// runKey is the advisory lock key of run, sixteen hex digits (randomSuffix, runName).
+// runKey is the advisory lock key of run, sixteen hex digits (randomSuffix, runName): its eight
+// bytes read as one int64, every bit of them kept.
 func runKey(run string) int64 {
-	key, _ := strconv.ParseUint(run, 16, 64)
-	return int64(key)
+	var key [8]byte
+	_, _ = hex.Decode(key[:], []byte(run))
+	return int64(binary.BigEndian.Uint64(key[:]))
 }
 
 // sweepInBackground runs sweepOrphans on a connection of its own, so a drop that waits holds no
