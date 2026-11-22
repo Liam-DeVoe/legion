@@ -4160,9 +4160,10 @@ func TestAnUnreadOwnRepositoryBesideALinkedReadThatDidNotAnswerStoresTheResult(t
 // INTERNAL and stores nothing, and the caller records the result again. The table of the links
 // is renamed out of the read's reach once the issue links acme/tools#7, so the record's read of
 // them fails as a read of a row the database cannot read does, and no linked pull request is
-// read from GitHub. Where GitHub answers for acme/widgets, a result at a commit it holds is still
-// stored, since the links are read only where GitHub does not say the issue's own repository
-// holds the commit: so nothing the record reads before the links fails on the renamed table.
+// read from GitHub. The read of the heads of the issue's pull requests reads the links too
+// (delivery.HeadsAttributedTo), so it fails first, and refuses the record the same way. Where
+// GitHub answers for acme/widgets, a result at a commit it holds is still stored, since neither
+// failed read refuses a commit GitHub says the issue's own repository holds.
 func TestAFailedReadOfTheLinkedRepositoriesRefusesTheRecord(t *testing.T) {
 	// linkedCommit is a commit acme/tools holds and acme/widgets does not.
 	const linkedCommit = "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"

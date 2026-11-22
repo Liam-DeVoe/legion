@@ -305,3 +305,47 @@ func TestAResultAtTheHeadOfAPullRequestInAnotherRepository(t *testing.T) {
 		}
 	})
 }
+
+// TestAFailedReadOfThePullRequestHeadsRefusesTheRecord: R17, where Dispatch cannot read its own
+// rows of the issue's pull requests. The issue's repository is acme/app, and its open pull request
+// #9 is in acme/infra, at J, which acme/app does not hold. The table of the heads is renamed out of
+// the read's reach, so the record can tell neither that J is #9's head nor that acme/infra is a
+// repository to ask; the issue's links stay readable, and name nothing. A result at J, which GitHub
+// proves acme/app does not hold, is refused 500 INTERNAL and stores nothing, as a failed read of
+// the links is: a 400 RESULT_COMMIT_UNKNOWN there would name acme/app alone, though acme/infra
+// holds J, and a stored result would be taken to be acme/app's. A result at H, which GitHub says
+// acme/app holds, is stored, since no other repository is asked about a commit the issue's own
+// repository holds.
+func TestAFailedReadOfThePullRequestHeadsRefusesTheRecord(t *testing.T) {
+	github := &otherRepositoryGitHub{
+		held: map[string]bool{}, down: map[string]bool{}, runs: map[string][]map[string]any{},
+		commitReads: map[string]int{}, runReads: map[string]int{},
+	}
+	github.hold("acme/infra", otherRepositoryJ)
+	github.hold("acme/app", otherRepositoryH)
+	handler, database := github.serve(t)
+	issue := issueInRepository(t, handler, "ACME", "acme/app", "Pull request heads Dispatch cannot read")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", otherRepositoryVerification)
+	writeHead(t, database, "acme/infra", 9, otherRepositoryJ, "open", issue.Key)
+	if _, err := database.Pool.Exec(t.Context(),
+		`alter table pull_request_heads rename to pull_request_heads_unreadable`); err != nil {
+		t.Fatalf("make the pull request heads unreadable: %v", err)
+	}
+	eventsBefore := resultEventsOn(t, database, issue.Key)
+
+	refused := recordResult(t, handler, issue.Key, resultBody("k1", "pass", otherRepositoryJ, nil))
+
+	if code, _ := refusalOf(t, refused); refused.Code != http.StatusInternalServerError || code != "INTERNAL" {
+		t.Fatalf("a result at J, the head of acme/infra#9, with the heads unreadable: status=%d body=%s; want 500 INTERNAL",
+			refused.Code, refused.Body.String())
+	}
+	if stored := resultEventsOn(t, database, issue.Key) - eventsBefore; stored != 0 {
+		t.Errorf("the refused result appended %d result.recorded events, want none", stored)
+	}
+	if rows := resultRowsOn(t, database, issue.Key); rows != 0 {
+		t.Errorf("the refused result left %d check_results rows, want none", rows)
+	}
+	if status, body := otherRepositoryRecord(t, handler, issue.Key, otherRepositoryH); status != http.StatusCreated {
+		t.Fatalf("a result at H, which acme/app holds, with the heads unreadable: status=%d body=%s; want 201", status, body)
+	}
+}

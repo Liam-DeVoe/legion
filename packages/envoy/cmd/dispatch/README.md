@@ -5011,7 +5011,8 @@ Each item below names a path with its method and identity, then its purpose.
     Dispatch asks GitHub whether each repository that counts holds the commit, and refuses a result at a commit that each repository it asked answers it does not hold with `400 RESULT_COMMIT_UNKNOWN`, naming the commit, each `owner/repo` it asked, each repository whose links it set aside for the naming rule, and how many linked pull requests the bound left unread where it left any.
     So an issue whose work is in two repositories takes a result at the head of the pull request it links in the second repository, also while GitHub cannot answer for the first.
 
-  - A failed read of Dispatch's own rows of the issue's links refuses the record with `500 INTERNAL` and stores nothing: the links are read, before anything is written, wherever GitHub does not say that the issue's own repository holds the commit.
+  - Where GitHub does not say that the issue's own repository holds the commit, a failed read of Dispatch's own rows of the issue's pull requests or of its links refuses the record with `500 INTERNAL` and stores nothing, since those rows say which other repositories may hold the commit.
+    The pull requests are read before GitHub is asked anything, and the links only where GitHub does not say so, before anything is written; a result at a commit GitHub says the issue's own repository holds is stored though the rows of the issue's pull requests could not be read.
 
   - Otherwise only GitHub's `422 No commit found for SHA`, from each repository asked, refuses:
     a deployment with no App key, an issue resolving to no repository, a repository the App is not installed on or cannot read (GitHub answers `404` for the issue's own, and a `403` that is no rate limit for a linked one), a rate limit, a timeout, a `5xx` and a failed read, from any of them, all store the result as before, where no repository is shown to hold the commit.
@@ -5039,7 +5040,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/issues/{key}/results/dry-run` (POST; cookie, trusted header, or bearer)
 
-  The dry run of a result's record, which `dispatch result --dry-run` sends: it takes the record's body and refuses it as the record does before it writes anything (`400 RESULT_INPUT`, `400 RESULT_CONTRADICTS`, `400 UNKNOWN_CHECK`, `409 CHECK_AMBIGUOUS`, `409 CHECK_PROVED_BY_CI`, `400 RESULT_COMMIT_UNKNOWN`, `500 INTERNAL` for a failed read of the issue's links).
+  The dry run of a result's record, which `dispatch result --dry-run` sends: it takes the record's body and refuses it as the record does before it writes anything (`400 RESULT_INPUT`, `400 RESULT_CONTRADICTS`, `400 UNKNOWN_CHECK`, `409 CHECK_AMBIGUOUS`, `409 CHECK_PROVED_BY_CI`, `400 RESULT_COMMIT_UNKNOWN`, `500 INTERNAL` for a failed read of the issue's pull requests or links).
   Otherwise it answers `200 {line}`, the line the record would answer, and records nothing: no row and no event.
   A closed issue, a screenshot and a check reworded while the record writes are refused by the record alone, since the record judges them under its locks.
   The dry run is a path of its own, not a flag on the record: a release that does not serve it answers `404`, where it would drop a flag it did not know and record the result.

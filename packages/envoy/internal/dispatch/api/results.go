@@ -300,10 +300,10 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	// resolves to no repository, and a read of Dispatch's own row of the issue's repository that
 	// failed, which is logged; with no repository to ask about, none of the refusals below is
 	// asked, and the result is stored, as with no App key. A failed read of Dispatch's own rows of
-	// the issue's links is another read, which the
-	// refusal below makes where there is a repository to ask about and GitHub does not say it
-	// holds the commit, and it refuses the record with 500 and stores nothing
-	// (refuseUnknownCommit, results_linked.go).
+	// the issue's pull requests or of its links is another read, which the refusal below makes
+	// where there is a repository to ask about, and where GitHub does not say that repository
+	// holds the commit it refuses the record with 500 and stores nothing (refuseUnknownCommit,
+	// results_linked.go).
 	//
 	// It is the check's issue's repository, not the recording issue's, and refuseUnknownCommit
 	// reads the links of the check's issue too: the results read resolves check_issue_key, and a
@@ -323,10 +323,9 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	// nothingReason). This route takes the repository alone, on purpose: the refusal below and
 	// the read-through it answers for are already answered by a nil, and the two nothings would
 	// earn one answer here anyway. Only GitHub's proof that every repository asked holds no such
-	// commit and a failed read of the issue's links refuse a record, and neither is asked of a nil
-	// repository, so a resolve that did not
-	// answer stores the result, exactly as a deployment with no App key and an issue with no
-	// repository do.
+	// commit and a failed read of Dispatch's own rows of the issue's pull requests or links refuse
+	// a record, and neither is asked of a nil repository, so a resolve that did not answer stores
+	// the result, exactly as a deployment with no App key and an issue with no repository do.
 	var checkRepo *string
 	if s.deps.GitHub != nil {
 		checkRepo, _ = s.checkIssueRepository(r.Context(), pool, check.IssueKey)
