@@ -99,10 +99,33 @@ var heldFreshContexts = map[string]heldFresh{
 	"(github.com/sjawhar/envoy/internal/bus.contextRequests).with -> the field github.com/sjawhar/envoy/internal/bus.contextRequests.ctx": {1,
 		"the start's own context (requestsUnder, ensureStreamReported), reached here only through the call graph's join of the JetStream interface: the takeover records' read uses the client's bound wrapper"},
 	"(github.com/sjawhar/envoy/internal/bus.streamMessageReads).read -> a JetStream call whose options carry no nats.Context (github.com/nats-io/nats.go.JetStreamContext.GetLastMsg)": {1,
-		"an edge listener's stream message get, on a raw JetStream context of the handle's connection (newStreamMessageReads), which waits for no reconnect (the reconnect buffer is off, so nats.go refuses a request on a connection that is not connected) and ends at the context's MaxWait (RequestTimeout). streamMessageReads implements nats.KeyValue, whose Get, GetRevision and Create take no options, so no context reaches the get. Each path into read is KeyValue.Get (internal/bus/kv.go:470), GetRevision (kv.go:550) or Create (kv.go:574), each through refusedAfterOn (kv.go:228) into kvRequest, whose RequestBounded (kv.go:479) runs the get on its own goroutine and returns to the caller at the caller's context or at the loss of the connection, so no lock is held across it past the drop"},
+		"an edge listener's stream message get, on a raw JetStream context of the handle's connection (newStreamMessageReads), which waits for no reconnect (the reconnect buffer is off, so nats.go refuses a request on a connection that is not connected) and ends at the context's MaxWait (RequestTimeout). streamMessageReads implements nats.KeyValue, whose Get, GetRevision and Create take no options, so no context reaches the get. Each path into read is KeyValue.Get (internal/bus/kv.go:470), GetRevision (kv.go:550) or Create (kv.go:574), each through refusedAfterOn (kv.go:228) into kvRequest, whose RequestBounded (kv.go:479) runs the get on its own goroutine and returns to the caller at the caller's context or at the loss of the connection, so no lock is held across it past the drop. boundedReads holds that claim: the walk fails on any other caller of the handle's Get, GetRevision or Create, and on any caller of read but those three"},
 	"(github.com/sjawhar/envoy/internal/bus.streamMessageReads).read -> a JetStream call whose options carry no nats.Context (github.com/nats-io/nats.go.JetStreamContext.GetMsg)": {1,
-		"the same stream message get of one revision, reached through GetRevision (internal/bus/kv.go:550) and the same RequestBounded (kv.go:479): the reasons of GetLastMsg's entry above"},
+		"the same stream message get of one revision, reached through GetRevision (internal/bus/kv.go:550) and the same RequestBounded (kv.go:479): the reasons of GetLastMsg's entry above, which boundedReads holds"},
 }
+
+// boundedReads are the functions that reach the two stream message gets heldFreshContexts lets
+// through ((bus.streamMessageReads).read), each with the only callers the walk may reach it from.
+// The exemption is sound only while every way into a get runs it under RequestBounded (kvRequest,
+// internal/bus/kv.go:479), whose wait ends at its caller's context and at the connection's loss:
+// bus.KeyValue's Get, GetRevision and Create hand the legacy handle's call to it in a closure
+// (Get$1, GetRevision$1, Create$1), and the handle's own methods are read's only callers. A walked
+// caller outside these - a call of the legacy handle got by KeyValue.Legacy, say - makes the get
+// with a lock held and nothing but its MaxWait to end it, and the check names that caller.
+var boundedReads = map[string][]string{
+	"(github.com/sjawhar/envoy/internal/bus.streamMessageReads).Get":         {"(github.com/sjawhar/envoy/internal/bus.KeyValue).Get$1"},
+	"(github.com/sjawhar/envoy/internal/bus.streamMessageReads).GetRevision": {"(github.com/sjawhar/envoy/internal/bus.KeyValue).GetRevision$1"},
+	"(github.com/sjawhar/envoy/internal/bus.streamMessageReads).Create":      {"(github.com/sjawhar/envoy/internal/bus.KeyValue).Create$1"},
+	"(github.com/sjawhar/envoy/internal/bus.streamMessageReads).read": {
+		"(github.com/sjawhar/envoy/internal/bus.streamMessageReads).Get",
+		"(github.com/sjawhar/envoy/internal/bus.streamMessageReads).GetRevision",
+		"(github.com/sjawhar/envoy/internal/bus.streamMessageReads).Create",
+	},
+}
+
+// unboundedReadCall is the callee prefix of a freshContext the walk records for a caller of one of
+// boundedReads that the table does not allow.
+const unboundedReadCall = "a call outside RequestBounded of "
 
 // A context a function makes from context.Background() or context.TODO() while its caller holds a
 // session's lock or a role's keep guard carries no mark of that lock (bus.WithLockHeld), nor its
@@ -136,7 +159,8 @@ var heldFreshContexts = map[string]heldFresh{
 func TestNoContextMadeUnderALockIsFresh(t *testing.T) {
 	t.Run("this tree", func(t *testing.T) {
 		sites := map[string][]freshContext{}
-		for _, fresh := range freshContextsUnderLocks(t, nil) {
+		found, reached := freshContextsUnderLocks(t, nil)
+		for _, fresh := range found {
 			sites[fresh.call()] = append(sites[fresh.call()], fresh)
 		}
 		for call, found := range sites {
@@ -144,6 +168,11 @@ func TestNoContextMadeUnderALockIsFresh(t *testing.T) {
 			switch {
 			case !ok:
 				for _, fresh := range found {
+					if strings.HasPrefix(fresh.callee, unboundedReadCall) {
+						t.Errorf("%s calls %s at %s while its caller holds a lock, outside RequestBounded (kvRequest), so the stream message get heldFreshContexts lets through waits up to its MaxWait with the lock held; read through bus.KeyValue's methods. Reached by: %s",
+							fresh.caller, strings.TrimPrefix(fresh.callee, unboundedReadCall), fresh.site, fresh.path)
+						continue
+					}
 					t.Errorf("%s makes a fresh context (%s at %s) while its caller holds a lock, so a request under it waits for a reconnect with the lock held; derive it from the caller's context, or add it to heldFreshContexts with why it is no such wait. Reached by: %s",
 						fresh.caller, fresh.callee, fresh.site, fresh.path)
 				}
@@ -154,6 +183,22 @@ func TestNoContextMadeUnderALockIsFresh(t *testing.T) {
 		for call := range heldFreshContexts {
 			if len(sites[call]) == 0 {
 				t.Errorf("heldFreshContexts allows %s, which the walk no longer reaches. Remove it only if the code that made it is gone: if that code is still there, the walk has gone blind to it, and the control subtest names the rule that broke", call)
+			}
+		}
+		// The bounded reads' guard cannot pass by reaching nothing: the walk must follow the
+		// bounded paths that lead to the exempted gets under a lock in this tree, a registration's
+		// row read and write (KeyValue.Get and Create into the handle, the handle into read), so a
+		// walk gone blind to the edge listener's reads fails here rather than passes. No caller
+		// under a lock reads by revision (KeyValue.GetRevision), so that path is allowed and not
+		// required.
+		for _, call := range []string{
+			"(github.com/sjawhar/envoy/internal/bus.KeyValue).Get$1 -> (github.com/sjawhar/envoy/internal/bus.streamMessageReads).Get",
+			"(github.com/sjawhar/envoy/internal/bus.KeyValue).Create$1 -> (github.com/sjawhar/envoy/internal/bus.streamMessageReads).Create",
+			"(github.com/sjawhar/envoy/internal/bus.streamMessageReads).Get -> (github.com/sjawhar/envoy/internal/bus.streamMessageReads).read",
+			"(github.com/sjawhar/envoy/internal/bus.streamMessageReads).Create -> (github.com/sjawhar/envoy/internal/bus.streamMessageReads).read",
+		} {
+			if !reached[call] {
+				t.Errorf("the walk followed no call %s, a bounded path into the stream message gets heldFreshContexts lets through; if that code is still there, the walk has gone blind to the edge listener's reads", call)
 			}
 		}
 	})
@@ -189,7 +234,12 @@ func TestNoContextMadeUnderALockIsFresh(t *testing.T) {
 		// is no context made under the lock, and the check must not name it.
 		plantContext(t, overlay, "role_keep_sweep.go", "\towed := newKeptRoleOwed(handoverCtx, cfg, role)\n",
 			"\tgo func() { _ = context.TODO() }()\n\towed := newKeptRoleOwed(handoverCtx, cfg, role)\n")
-		found := freshContextsUnderLocks(t, overlay)
+		// A read of the edge listener's legacy handle that skips RequestBounded: under the delete's
+		// session lock, a get heldFreshContexts lets through only because every way into it is bounded
+		// (boundedReads), which this call is not.
+		plantContext(t, overlay, "../../internal/session/registry.go", "\tkv, epoch := r.watcher.Handle()\n\tgot, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(ctx, sessionID) })\n",
+			"\tkv, epoch := r.watcher.Handle()\n\t_, _ = kv.Legacy().Get(sessionID)\n\tgot, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(ctx, sessionID) })\n")
+		found, _ := freshContextsUnderLocks(t, overlay)
 		for _, want := range []struct{ what, caller string }{
 			{"the registration repair's record read, a plain call under the delete's lock", "(*" + listenerPackage + ".sessionDelivery).registeredTarget"},
 			{"the filter step's row read, in a closure the fence calls", "(*" + listenerPackage + ".sessionDelivery).storedFilterStep"},
@@ -210,6 +260,12 @@ func TestNoContextMadeUnderALockIsFresh(t *testing.T) {
 			return strings.HasPrefix(fresh.caller, listenerPackage+".handOverSweptLane$")
 		}); started >= 0 {
 			t.Errorf("the check named %s, a fresh context in a goroutine the sweep's handover starts, which runs outside the guard", found[started])
+		}
+		const bypass = "(*github.com/sjawhar/envoy/internal/session.SessionRegistry).Refresh"
+		if !slices.ContainsFunc(found, func(fresh freshContext) bool {
+			return fresh.caller == bypass && strings.HasPrefix(fresh.callee, unboundedReadCall)
+		}) {
+			t.Errorf("the check did not name %s's read of the legacy handle outside RequestBounded, so a caller that skips the bound the stream message gets' exemption rests on could pass; it named: %v", bypass, found)
 		}
 	})
 }
@@ -253,8 +309,10 @@ func (f freshContext) call() string { return f.caller + " -> " + f.callee }
 
 // freshContextsUnderLocks walks the listener from every function that takes a lock or holds one
 // handed to it, with overlay (file contents in place of the files on disk), and answers every call
-// of a freshContexts function that envoy's own code makes there, one per call site.
-func freshContextsUnderLocks(t *testing.T, overlay map[string][]byte) []freshContext {
+// of a freshContexts function that envoy's own code makes there, one per call site, with every
+// call of one of boundedReads from a caller the table does not allow; and reached, each allowed
+// call of boundedReads the walk followed ("caller -> callee").
+func freshContextsUnderLocks(t *testing.T, overlay map[string][]byte) (found []freshContext, reached map[string]bool) {
 	t.Helper()
 	cfg := &packages.Config{Mode: packages.LoadAllSyntax, Dir: ".", Overlay: overlay}
 	pkgs, err := packages.Load(cfg, listenerPackage)
@@ -301,6 +359,7 @@ func freshContextsUnderLocks(t *testing.T, overlay map[string][]byte) []freshCon
 		w.visit(root, nil)
 	}
 	var fresh []freshContext
+	reached = map[string]bool{}
 	for len(w.queue) > 0 {
 		fn := w.queue[0]
 		w.queue = w.queue[1:]
@@ -354,6 +413,16 @@ func freshContextsUnderLocks(t *testing.T, overlay map[string][]byte) []freshCon
 						continue
 					}
 				}
+				if allowed, bounded := boundedReads[callee.String()]; bounded {
+					if slices.Contains(allowed, fn.String()) {
+						reached[fn.String()+" -> "+callee.String()] = true
+					} else {
+						fresh = append(fresh, freshContext{
+							caller: fn.String(), callee: unboundedReadCall + callee.String(),
+							site: siteIn(prog.Fset, edge.Pos()), path: w.pathTo(fn),
+						})
+					}
+				}
 				w.visit(callee, fn)
 			}
 		}
@@ -362,7 +431,7 @@ func freshContextsUnderLocks(t *testing.T, overlay map[string][]byte) []freshCon
 		}
 	}
 	slices.SortFunc(fresh, func(a, b freshContext) int { return strings.Compare(a.String(), b.String()) })
-	return slices.CompactFunc(fresh, func(a, b freshContext) bool { return a.String() == b.String() })
+	return slices.CompactFunc(fresh, func(a, b freshContext) bool { return a.String() == b.String() }), reached
 }
 
 // handedIn is whether v is a function value its function was handed: a parameter, a closure's free
