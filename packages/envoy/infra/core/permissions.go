@@ -45,6 +45,16 @@ func WebhookListenerHostPermissions(machineID string) Permissions {
 	return rules(natsgrant.WebhookListenerHost(machineID))
 }
 
+// EdgePermissions is the grant of an edge listener's own NATS user (natsgrant.Edge), or its refusal.
+// Like every set built on the listener grant, it denies Dispatch's lane and GitHub's lane.
+func EdgePermissions(machineID string, projects []string) (Permissions, error) {
+	grant, err := natsgrant.Edge(machineID, projects)
+	if err != nil {
+		return Permissions{}, err
+	}
+	return rules(grant), nil
+}
+
 // DispatchDurables are the fixed durable consumers of the stream that Dispatch's grant lets it
 // bind, beside the listener durable of its machine id (natsgrant.DispatchDurables).
 func DispatchDurables() []string {

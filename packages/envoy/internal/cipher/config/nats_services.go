@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"unicode"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // NATSServicesVariable is the setting ParseNATSServices reads.
@@ -18,14 +18,15 @@ const NATSServicesVariable = "BROKER_NATS_SERVICES"
 // NATSServiceKind is which kind of service a BROKER_NATS_SERVICES entry names.
 type NATSServiceKind string
 
-// The kinds of entry. Dispatch, a listener, the webhook listener, a Legion daemon and the
-// measurement job are services the NATS auth service admits by their platform identity, each
-// answered with its kind's grant of natsgrant. The webhook listener is the listener that receives
-// GitHub's webhook (its ENVOY_WEBHOOKS names github): its grant is a listener's with GitHub's lane
-// off its publish deny (natsgrant.WebhookListener), so it publishes every GitHub event, which a
-// listener's grant refuses. An edge listener's entry is read for the projects it serves
-// (NATSCallout.EdgeListeners), whether or not the broker runs the auth service, and the auth
-// service admits no connection of it: natsgrant holds no edge listener's grant yet.
+// The kinds of entry. Dispatch, a listener, the webhook listener, a Legion daemon, the measurement
+// job and an edge listener are services the NATS auth service admits by their platform identity,
+// each answered with its kind's grant of natsgrant, an edge listener's built for the projects its
+// entry lists (natsgrant.Edge). The webhook listener is the listener that receives GitHub's webhook
+// (its ENVOY_WEBHOOKS names github): its grant is a listener's with GitHub's lane off its publish
+// deny (natsgrant.WebhookListener), so it publishes every GitHub event, which a listener's grant
+// refuses. An edge listener's grant keeps a listener's deny of Dispatch's lane and GitHub's lane.
+// An edge listener's entry is also read for its projects (NATSCallout.EdgeListeners), whether or
+// not the broker runs the auth service.
 const (
 	NATSDispatch        NATSServiceKind = "dispatch"
 	NATSListener        NATSServiceKind = "listener"
@@ -41,10 +42,9 @@ const (
 type NATSService struct {
 	Kind NATSServiceKind
 	// MachineID is the machine id the grant is built for, which Dispatch's, a listener's and the
-	// webhook listener's name their durable and queue group by. An edge listener's entry names one
-	// too, the machine it runs on: this build holds no edge listener's grant, and the auth
-	// service's refusal by grant (natscallout's scopeGrant) names that machine. Required for those
-	// four kinds and refused for the others.
+	// webhook listener's name their durable and queue group by, and an edge listener's its durable
+	// and its inbox prefix (natsgrant.EdgeInboxPrefix); required for those four kinds and refused
+	// for the others.
 	MachineID string
 	// Account is the platform account whose token the service presents: a ServiceAccount
 	// subject, or a Google account address.
@@ -85,10 +85,11 @@ const (
 // edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>. It refuses, naming the entry: an entry of
 // none of these forms or of an unknown kind; a dispatch, listener, webhook-listener or
 // edge-listener entry with no machine id, and a daemon or measure entry with one; an empty
-// machine id, one holding a control character, and one the listener itself refuses
-// (bus.CheckListenerMachineID: one holding the escape character '%', or whose durable name is too
-// long), so the auth service takes every machine id a listener starts with, a dotted one among
-// them, whose names the grant escapes as the listener does (bus.ListenerDurable); a measure entry
+// machine id, one holding a wildcard, a space or a control character (natsgrant.MachineIDToken),
+// and one the listener itself refuses (bus.CheckListenerMachineID: one holding the escape
+// character '%', or whose durable name is too long), so the auth service takes every machine id a
+// listener starts with, a dotted one among them, whose names the grant escapes as the listener
+// does (bus.ListenerSpelling), an edge listener's inbox prefix among them; a measure entry
 // with -, since its grant holds a KV read no project scope can hold and it reads no project's
 // messages; an edge listener's entry with * or -, or whose projects are no list of at most
 // oauthwire.MaxProjects project keys named once each; an account ParseAccount refuses (a
@@ -128,13 +129,9 @@ func parseNATSService(text string) (NATSService, error) {
 	switch entry.Kind {
 	case NATSDispatch, NATSListener, NATSWebhookListener, NATSEdgeListener:
 		if machineID == noMachineID {
-			reason := "a " + string(entry.Kind) + "'s grant names its durable and its queue group by one"
-			if entry.Kind == NATSEdgeListener {
-				reason = "an edge listener's entry names the machine it runs on, which the auth service's refusal of its connection by grant names"
-			}
-			return NATSService{}, fmt.Errorf("%s entry %q names no machine id: %s", NATSServicesVariable, text, reason)
+			return NATSService{}, fmt.Errorf("%s entry %q names no machine id, which the %s grant is built for", NATSServicesVariable, text, entry.Kind)
 		}
-		if !machineIDToken(machineID) {
+		if !natsgrant.MachineIDToken(machineID) {
 			return NATSService{}, fmt.Errorf("%s entry %q names a machine id that is empty or holds a wildcard, a space or a control character", NATSServicesVariable, text)
 		}
 		if err := bus.CheckListenerMachineID(machineID); err != nil {
@@ -173,16 +170,6 @@ func parseNATSService(text string) (NATSService, error) {
 	}
 	entry.Account, entry.Google = parsed.Address, parsed.Google
 	return entry, nil
-}
-
-// machineIDToken is natsgrant.SessionToken's rule with the dot allowed: a listener's machine id may
-// hold dots, since bus.ListenerDurable and bus.ListenerQueue spell each dot out (bus.listenerName),
-// so the grant's durable and queue group stay one token. A wildcard, a space or a control
-// character is still refused, as SessionToken refuses them.
-func machineIDToken(id string) bool {
-	return id != "" && !strings.ContainsFunc(id, func(r rune) bool {
-		return r == '*' || r == '>' || unicode.IsSpace(r) || unicode.IsControl(r)
-	})
 }
 
 // edgeProjects reads an edge listener's scope, the projects it serves: project keys separated by

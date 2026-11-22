@@ -44,6 +44,14 @@ func shouldNAKFanoutDelivery(sessionLive bool, err error) bool {
 
 type listenerDeliveryHandlerConfig struct {
 	client *bus.Client
+	// edge is the edge listener's own grant (edgeGrant, edge_nats.go), nil on every other
+	// listener. The grant publishes no kept role lane (natsgrant.Edge), so an edge listener keeps
+	// no role message for a role's next holder and hands no kept lane over (keepForNextHolder,
+	// drainKeptRole, startKeptRoleSweep): the shared listeners' sweeps hand every lane over, a
+	// role held at the edge among them. It publishes a delivery exception only on a lane the
+	// grant holds (edgeGrant.publishesException). And it publishes no agent wake report, since
+	// the grant may not publish the wake topic (reportNoRecordWake).
+	edge *edgeGrant
 	// forwardRole publishes a role-lane envelope to the holder's agent subject under msgID, its
 	// Nats-Msg-Id when not empty, and returns the wait for its outcome; main.go wires
 	// startRoleForward(client). The forward counts as delivered once the stream acknowledges
@@ -366,7 +374,9 @@ type deliveryOutcome struct {
 
 	// exceptionReason, when non-empty, publishes a delivery exception via
 	// publishDeliveryException for control topics. fanoutRefusal publishes one for this terminal
-	// fanout outcome on any topic, each on the transport its own lane takes.
+	// fanout outcome on any topic, each on the transport its own lane takes. An edge listener
+	// withholds one whose lane its grant does not publish (edgeGrant.publishesException), and the
+	// outcome is otherwise applied as it would be had the exception gone out.
 	exceptionReason string
 	fanoutRefusal   bool
 	// exceptionFailureClearsAttempt: an exception-publish failure clears the
@@ -404,7 +414,9 @@ func applyDeliveryOutcome(cfg listenerDeliveryHandlerConfig, item contracts.Enve
 		outcome.log(cfg.logger)
 	}
 	if outcome.exceptionReason != "" && !isExceptionsTopic(item.Topic) && (isControlTopic(item.Topic) || outcome.fanoutRefusal) {
-		if err := publishDeliveryException(cfg.client, item, outcome.exceptionReason, outcome.sessionID); err != nil {
+		if !cfg.edge.publishesException(item) {
+			cfg.edge.withhold(cfg.logger, item, outcome.exceptionReason)
+		} else if err := publishDeliveryException(cfg.client, item, outcome.exceptionReason, outcome.sessionID); err != nil {
 			cfg.logger.Error(exceptionPublishFailedLine, slog.String("error", err.Error()), slog.String("topic", item.Topic))
 			if outcome.exceptionFailureClearsAttempt {
 				cfg.attemptCache.Clear(item.DedupeKey, outcome.sessionID)

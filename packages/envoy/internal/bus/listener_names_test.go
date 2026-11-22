@@ -9,7 +9,9 @@ import (
 
 // The listener's durable and role-lane queue are the names cmd/listener spelled itself before they
 // moved here: a space in the machine id becomes a hyphen in both. Each other character NATS
-// refuses in a consumer name becomes '%' and its byte in two upper-case hex digits.
+// refuses in a consumer name becomes '%' and its byte in two upper-case hex digits. ListenerSpelling
+// is the same spelling with no prefix, which an edge listener's inbox prefix and receipt family
+// carry, so it is each name with its prefix cut off.
 func TestListenerDurableAndQueueKeepTheListenersNames(t *testing.T) {
 	for _, tc := range []struct{ machineID, durable, queue string }{
 		{"example-host-a", "listener-example-host-a", "envoy-listener-example-host-a"},
@@ -22,6 +24,9 @@ func TestListenerDurableAndQueueKeepTheListenersNames(t *testing.T) {
 		}
 		if got := bus.ListenerQueue(tc.machineID); got != tc.queue {
 			t.Errorf("ListenerQueue(%q) = %q, want %q", tc.machineID, got, tc.queue)
+		}
+		if got, want := bus.ListenerSpelling(tc.machineID), strings.TrimPrefix(tc.durable, "listener-"); got != want {
+			t.Errorf("ListenerSpelling(%q) = %q, want %q", tc.machineID, got, want)
 		}
 	}
 }

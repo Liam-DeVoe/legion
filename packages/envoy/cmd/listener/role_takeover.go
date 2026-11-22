@@ -280,8 +280,14 @@ func (t takeoverTries) beforeTry(ctx context.Context, read store.RoleClaim) erro
 // publishTakeover writes the takeover record of role taken from previous, on a subject of its own
 // (bus.TakeoverSubject with a fresh attempt id), with the claim's time on the listener's clock. A
 // previous holder whose id no session consumer can be named for (bus.SessionConsumerName) has no
-// subject of its own to copy from, so it gets none.
+// subject of its own to copy from, so it gets none. An edge listener writes none (cfg.edge): its
+// grant publishes no takeover lane and no kept role lane (natsgrant.Edge), so its claim of a role
+// another session holds lands with no record, and no pass copies what the previous holder had not
+// read: that stays on the previous holder's own subject, which its relay sends it.
 func publishTakeover(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, previous string) error {
+	if cfg.edge != nil {
+		return nil
+	}
 	if _, ok := bus.SessionConsumerName(previous); !ok {
 		return nil
 	}
@@ -301,8 +307,13 @@ func publishTakeover(ctx context.Context, cfg listenerDeliveryHandlerConfig, rol
 
 // runTakenRoleDrain is runKeptRoleDrain for a role the claim route has just granted: under the
 // role's guard and the handover's window, it runs the passes of the role's takeover records and
-// then hands its kept lane over (handOverTakenRole).
+// then hands its kept lane over (handOverTakenRole). An edge listener runs none (cfg.edge), as it
+// hands no kept lane over (drainKeptRole): a pass writes the kept role lane and the takeover lane,
+// which its grant publishes neither of (natsgrant.Edge).
 func runTakenRoleDrain(cfg listenerDeliveryHandlerConfig, role string) {
+	if cfg.edge != nil {
+		return
+	}
 	if skip := cfg.takeoverFaults.faults().skipClaimHandover; skip != nil && skip(role) {
 		return
 	}
@@ -663,7 +674,14 @@ func keepTakenRoleFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 // is a duplicate the stream stores once, but a relay that by then reads a claim naming this session
 // sends the frame itself, beside the copy the walk forwards. The holder can then receive the event
 // twice, under the same event id.
+//
+// An edge listener takes no frame (cfg.edge): its grant publishes no kept role lane
+// (natsgrant.Edge), so a copy would never store and the frame would be given back at every
+// delivery. The frame goes to the session as every frame does.
 func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg bus.SessionMessage) bool {
+	if m.cfg.edge != nil {
+		return false
+	}
 	role, mark, ok := decodeRoleMark(msg.Data)
 	if !ok {
 		return false

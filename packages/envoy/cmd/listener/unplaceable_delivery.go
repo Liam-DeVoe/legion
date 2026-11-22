@@ -207,7 +207,25 @@ func noRecordAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMe
 // delivery (consumerMaxDeliver), or with nothing that redelivers or bounds the message - a core
 // delivery, or metadata that does not parse - a report not stored is logged and the message is
 // acknowledged, since the stream sends it no more.
+//
+// An edge listener reports no wake (cfg.edge): its grant may not publish the wake topic
+// (natsgrant.Edge), so the stream would never store the report and the message would be sent
+// back at every delivery. It acknowledges the message with no publish, logged and counted
+// delivery_status="wake_left_to_shared". The shared listeners read the same message from their own
+// durables and report the wake when no listener holds the session's interest row. A session whose
+// row the edge holds gets no wake from any listener.
 func reportNoRecordWake(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string) {
+	if cfg.edge != nil {
+		applyDeliveryOutcome(cfg, item, deliveryOutcome{
+			sessionID:    sessionID,
+			metricStatus: "wake_left_to_shared",
+			log: func(logger *logging.Logger) {
+				logger.DeliveryLog(slog.LevelInfo, "edge listener left the agent wake to the shared listeners", sessionID, item.Topic, item.EventID, "wake_left_to_shared")
+			},
+		})
+		message.finalize(false)
+		return
+	}
 	err := storeAgentWake(cfg.client, cfg.logger, sessionID)
 	if err == nil {
 		applyDeliveryOutcome(cfg, item, deliveryOutcome{

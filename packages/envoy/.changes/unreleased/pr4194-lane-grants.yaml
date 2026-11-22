@@ -6,9 +6,11 @@ body: |-
   the new input `githubWebhook: true` to get that grant (`core.WebhookListenerHostPermissions`);
   the input is refused beside any other user kind. The auth service's `BROKER_NATS_SERVICES`
   takes the new kind `webhook-listener` for that listener (`natsgrant.WebhookListener`), and
-  answers a `listener` entry with both lanes denied. The hub's own listener, host users and
-  listener users without the input are denied both lanes, and Dispatch's user is denied GitHub's
-  lane and the listener's resume lane (`notifications.envoy.resume.>`); it keeps the kept lane and
+  answers a `listener` entry with both lanes denied. An edge listener's grant (`natsgrant.Edge`,
+  `core.EdgePermissions`, the auth service's `edge-listener` kind) denies both lanes too. The hub's
+  own listener, host users and listener users without the input are denied both lanes, and
+  Dispatch's user is denied GitHub's lane and the listener's resume lane
+  (`notifications.envoy.resume.>`); it keeps the kept lane and
   `notifications.legion.wake`, which its outbox and the listener beside it publish. Each deny
   refuses a direct publish on its lane. A session on a host user that it shares with the host's
   listener can still have a message stored under either lane, by a stream update that adds a

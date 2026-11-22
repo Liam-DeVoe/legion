@@ -29,12 +29,14 @@ func publishes(grant natsgrant.Permissions, subject string) bool {
 // lane, and only the user of the listener that receives GitHub's webhook may publish directly on
 // GitHub's lane. The rows are infra/core's lanes_test.go rows, each set named by the natsgrant
 // grant core wraps, then the rows of WebhookListener, the webhook listener's grant as the auth
-// service answers it. A session on a shared host user can still have a message stored under either
+// service answers it, then the rows of Edge, the edge listener's grant, to which the spec gives
+// neither lane. A session on a shared host user can still have a message stored under either
 // lane, by a stream update that adds a subject transform, until the host's sessions connect through
 // the auth service (dispatch://INFRA-840); this test checks the deny alone. Every other grant built
 // on the listener grant still publishes the rest of notifications.>, a role lane among them.
 // Dispatch's user may not publish the listener's resume lane, and still publishes the kept lane,
-// the wake topic and a session's agent subject. The listener sets keep the resume and kept lanes.
+// the wake topic and a session's agent subject. The listener sets keep the resume and kept lanes,
+// and so does Edge the resume lane.
 func TestOnlyDispatchMayPublishItsLane(t *testing.T) {
 	const (
 		machine  = "example-host-a"
@@ -46,6 +48,11 @@ func TestOnlyDispatchMayPublishItsLane(t *testing.T) {
 		wake     = "notifications.legion.wake"
 		agent    = "notifications.agent.ses_X"
 	)
+	edge := func(machineID string) natsgrant.Permissions {
+		grant, err := natsgrant.Edge(machineID, []string{"PRIV"})
+		require.NoError(t, err)
+		return grant
+	}
 	for _, row := range []struct {
 		name    string
 		grant   func(string) natsgrant.Permissions
@@ -76,6 +83,9 @@ func TestOnlyDispatchMayPublishItsLane(t *testing.T) {
 		{"WebhookListener, the auth service's webhook listener grant, may publish GitHub's lane", natsgrant.WebhookListener, github, true},
 		{"WebhookListener may not publish Dispatch's lane", natsgrant.WebhookListener, dispatch, false},
 		{"WebhookListener may publish the resume lane", natsgrant.WebhookListener, resume, true},
+		{"Edge may not publish Dispatch's lane", edge, dispatch, false},
+		{"Edge may not publish GitHub's lane", edge, github, false},
+		{"Edge may publish the resume lane", edge, resume, true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			grant := row.grant(machine)
@@ -89,11 +99,13 @@ func TestOnlyDispatchMayPublishItsLane(t *testing.T) {
 // Each grant's deny lists, element for element, for each machine id the merge-base fixture names.
 // TestEachGrantMatchesTheSetItReplaces compares the allow lists alone, and the lane deny adds deny
 // entries alone, so these are the deny's own assertions: the listener grant's deny in every grant
-// built on it, the lane of each lane's one publisher taken off its own, the resume lane added to
-// Dispatch's, and no deny in a session's, the daemon's or the measurement job's grant. The webhook
-// listener's grants differ from the listener's in that deny alone.
+// built on it, Edge's included, the lane of each lane's one publisher taken off its own, the
+// resume lane added to Dispatch's, and no deny in a session's, the daemon's or the measurement
+// job's grant. The webhook listener's grants differ from the listener's in that deny alone.
 func TestEachGrantDeniesTheLanesItDoesNotPublish(t *testing.T) {
 	for _, id := range []string{"example-host-a", "example-dispatch", "example-hub"} {
+		edge, err := natsgrant.Edge(id, []string{"PRIV"})
+		require.NoError(t, err)
 		for name, row := range map[string]struct {
 			grant natsgrant.Permissions
 			deny  []string
@@ -104,6 +116,7 @@ func TestEachGrantDeniesTheLanesItDoesNotPublish(t *testing.T) {
 			"WebhookListener":     {natsgrant.WebhookListener(id), []string{"notifications.dispatch.>"}},
 			"WebhookListenerHost": {natsgrant.WebhookListenerHost(id), []string{"notifications.dispatch.>"}},
 			"Dispatch":            {natsgrant.Dispatch(id), []string{"notifications.github.>", "notifications.envoy.resume.>"}},
+			"Edge":                {edge, listenerDeny},
 		} {
 			require.Equal(t, row.deny, row.grant.PublishDeny, "%s(%q) publish deny", name, id)
 			require.Empty(t, row.grant.SubscribeDeny, "%s(%q) subscribe deny", name, id)
