@@ -47,14 +47,14 @@ func reserveForAuthor(t *testing.T, tx pgx.Tx, kind, id string) {
 	}
 }
 
-// closureOf is CORE-1's closure as who reads it.
+// closureOf is the members of CORE-1's references read as who reads it.
 func closureOf(t *testing.T, tx pgx.Tx, who model.Actor) []Member {
 	t.Helper()
-	members, _, err := Closure(context.Background(), tx, who, "CORE-1")
+	references, err := Closure(context.Background(), tx, who, "CORE-1")
 	if err != nil {
 		t.Fatalf("read the closure as %s: %v", who.ID, err)
 	}
-	return members
+	return references.Members
 }
 
 // A private comment's links are no part of the closure another person reads, so it is neither
@@ -84,26 +84,35 @@ func TestTheClosureAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.
 	}
 }
 
-// The closure reads its second hop under the same visibility as its first. An issue comment links
-// a public document A, and A links a document B reserved for its author. Another person's closure
-// is A alone, at depth 1 through the comment, and nothing of B. Its author's is A at depth 1 and
-// B at depth 2 through A.
-func TestTheClosureAnswersADocumentReservedForItsAuthorTwoHopsAwayToThatAuthorAlone(t *testing.T) {
+// The references read reads one hop, under the visibility of the reader. The issue's comment links
+// a public document A and, directly, a document B reserved for its author; A links a third
+// document C reserved for its author. Another person's read is A alone, at depth 1 through the
+// comment: nothing of B, which is reserved for its author, and nothing of C. The author's read is
+// A and B, each at depth 1 through the comment. C is in neither: it is two hops from the issue's
+// own content, and the read of one hop never reaches it, whoever reads.
+func TestTheReferencesReadAnswersADocumentReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
 	tx := prefixFixture(t)
 	publicDocument, publicDocumentKey := createReferenceArtifact(t, tx, "", "CORE", "public-md")
 	_, privateDocumentKey := createReferenceArtifact(t, tx, "", "CORE", "private-md")
+	_, farDocumentKey := createReferenceArtifact(t, tx, "", "CORE", "far-private-md")
 	comment := createReferenceComment(t, tx, "CORE-1")
 	insertReference(t, tx, "comment", comment, "artifact", publicDocumentKey)
-	insertReference(t, tx, "artifact", publicDocument, "artifact", privateDocumentKey)
+	insertReference(t, tx, "comment", comment, "artifact", privateDocumentKey)
+	insertReference(t, tx, "artifact", publicDocument, "artifact", farDocumentKey)
 	reserveForAuthor(t, tx, "artifact", privateDocumentKey)
+	reserveForAuthor(t, tx, "artifact", farDocumentKey)
 
-	firstHop := Member{RefKey: publicDocumentKey, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: comment}}
-	if got, want := closureOf(t, tx, privateReader), []Member{firstHop}; !reflect.DeepEqual(got, want) {
-		t.Errorf("another person's closure = %#v; want %#v, without the private document %s", got, want, privateDocumentKey)
+	via := model.ReferenceVia{Kind: "comment", ID: comment}
+	public := Member{RefKey: publicDocumentKey, Depth: 1, Via: via}
+	if got, want := closureOf(t, tx, privateReader), []Member{public}; !reflect.DeepEqual(got, want) {
+		t.Errorf("another person's read = %#v; want %#v, without the private document %s and the far one %s",
+			got, want, privateDocumentKey, farDocumentKey)
 	}
-	want := []Member{firstHop, {RefKey: privateDocumentKey, Depth: 2, Via: model.ReferenceVia{Kind: "artifact", ID: publicDocument}}}
+	want := []Member{public, {RefKey: privateDocumentKey, Depth: 1, Via: via}}
+	sort.Slice(want, func(left, right int) bool { return want[left].RefKey < want[right].RefKey })
 	if got := closureOf(t, tx, privateAuthor); !reflect.DeepEqual(got, want) {
-		t.Errorf("the author's closure = %#v; want %#v", got, want)
+		t.Errorf("the author's read = %#v; want %#v, without the far document %s, which is two hops away",
+			got, want, farDocumentKey)
 	}
 }
 
