@@ -42,8 +42,8 @@ import (
 // close message names it to the worker (workHoldSentence).
 const HoldStopGrace = 2 * time.Minute
 
-// The sentences of the hold's texts beside today's gate messages (gateClosedSentence,
-// gateOpenedMessage). Every one is a reader's words and part of the contract.
+// The sentences of the hold's texts beside today's gate messages (gateClosedHead,
+// gateOpenedSentence). Every one is a reader's words and part of the contract.
 var (
 	// workHoldSentence follows today's first sentence of the close under `work`, and every opening
 	// task repeats it. The time it names is HoldStopGrace.
@@ -64,26 +64,14 @@ const (
 	noPhaseWork = "The issue's other roles may ask you questions."
 )
 
-// gateClosedSentence is today's first sentence of the close message: the tree whose gate closed,
-// and the version, the step and the document that closed it. The step and its own document, never
+// gateClosedHead is today's first sentence of the close message: the tree whose gate closed, and
+// the version, the step and the document that closed it. The step and its own document, never
 // "spec version": under more than one gated step the version is that step's document's, and a
-// message naming the spec would send a reader to the wrong one.
-func gateClosedSentence(tree string, step record.DesignStep, document string, version int) string {
+// message naming the spec would send a reader to the wrong one. The merge hold's close message is
+// this sentence and its own ending (gateClosedSentence).
+func gateClosedHead(tree string, step record.DesignStep, document string, version int) string {
 	return fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
 		"so the design you are working to may change.", tree, version, step, document)
-}
-
-// mergeCloseMessage is today's close message, which `merge` sends word for word.
-func mergeCloseMessage(tree string, step record.DesignStep, document string, version int) string {
-	return gateClosedSentence(tree, step, document, version) +
-		" Your phase goes on; the merge waits until every gated step stands open again."
-}
-
-// gateOpenedMessage is today's open message, which both holds send at the opening.
-func gateOpenedMessage(tree string, step record.DesignStep, document string, version int) string {
-	return fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
-		"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
-		"A merge the closed gate held is released.", tree, version, step, document)
 }
 
 // workCloseMessage is the close message under `work`: today's first sentence, the hold's, and the
@@ -93,7 +81,7 @@ func workCloseMessage(hold record.WorkHold, architect bool) string {
 	if architect {
 		end = architectCloseEnd
 	}
-	return gateClosedSentence(hold.Tree, hold.Step, hold.ArtifactID, hold.Version) + " " + workHoldSentence + " " + end
+	return gateClosedHead(hold.Tree, hold.Step, hold.ArtifactID, hold.Version) + " " + workHoldSentence + " " + end
 }
 
 // bootOpenedSentence is what the boot's end of a tree's hold says in place of today's open
@@ -119,7 +107,7 @@ func unrecordedOpeningSentence(tree string) string {
 func openingSentences(closing *record.WorkHold, ended string) string {
 	opening := workHoldSentence
 	if closing != nil {
-		opening = gateClosedSentence(closing.Tree, closing.Step, closing.ArtifactID, closing.Version) + " " + opening
+		opening = gateClosedHead(closing.Tree, closing.Step, closing.ArtifactID, closing.Version) + " " + opening
 	}
 	return opening + " " + holdStoppedSentence + " " + ended + " " + checkTurnSentence
 }
@@ -152,6 +140,16 @@ func HeldClaimOpening(hold *record.WorkHold, root record.Issue) (opening string,
 		return "", true
 	}
 	return heldClaimOpening(hold, root.Tree), false
+}
+
+// OpeningTellsTheGate is whether the opening's sentences a start of a claim the hold stopped in
+// root's tree gives now (HeldClaimOpening) carry today's open message, from hold, the tree's record
+// of its hold as it stands then: a record of root's generation (lastOpening) whose hold no longer
+// stands, and whose opening tells the gate's opening (tellsOpening). Such a start is that holder's
+// one delivery of the opening (internal/daemon's settleHeldOpening, openHeldClaims).
+func OpeningTellsTheGate(hold *record.WorkHold, root record.Issue) bool {
+	hold = lastOpening(hold, root)
+	return hold != nil && !hold.Standing() && tellsOpening(hold, root)
 }
 
 // lastOpening is hold, the record of root's tree's hold, where a start of a claim the hold stopped
@@ -356,20 +354,33 @@ func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue
 }
 
 // workHoldOpen is the work hold's end at the gate's move to open under `work`: a person's approval
-// of version of step's document, or Dispatch's carried approval after an exact undo. Every live
+// of version of step's document, or Dispatch's carried approval after an exact undo. Each live
 // architect and phase worker of the tree is told today's open message, a worker whose stop the
-// outbox has not made among them, since that stop is not made now; then the hold ends
-// (tellAndEndWorkHold).
+// outbox has not made among them, since that stop is not made now, as openingDelivery decides for
+// a holder; then the hold ends (tellAndEndWorkHold).
 func (e *Engine) workHoldOpen(ctx context.Context, tx pgx.Tx, root record.Issue, step record.DesignStep, document string, version int) error {
 	fallback := record.WorkHold{Project: root.Project, Tree: root.Tree, Step: step, ArtifactID: document, Version: version}
-	return e.tellAndEndWorkHold(ctx, tx, root, gateOpenedMessage(root.Tree, step, document, version), fallback,
-		"workflow: the design gate opened and the work hold ends", "tree", root.Tree, "step", step, "document", document, "version", version)
+	return e.tellAndEndWorkHold(ctx, tx, root, gateOpenedSentence(root.Tree, step, document, version), &gateOpening{step: step, version: version},
+		fallback, "workflow: the design gate opened and the work hold ends", "tree", root.Tree, "step", step, "document", document, "version", version)
+}
+
+// gateOpening is the approval that opened a tree's standing gate under `work`: the step of the
+// document approved and its version, which the opening decides each holder's opening by
+// (openingDelivery).
+type gateOpening struct {
+	step    record.DesignStep
+	version int
 }
 
 // tellAndEndWorkHold tells every live architect and phase worker of root's tree ended, what ended
 // its work hold, logs line with args and the number told, and ends the hold (endWorkHold): the
 // opening's end of it (workHoldOpen) and the boot's end of a hold the deployment no longer holds
 // (workHoldBooted). fallback is the hold the end names where the tree holds no work_holds row.
+//
+// At the gate's opening (opened, nil at the boot's end, which opens no gate) each holder is told
+// the opening once, as under `merge` (heldOpening): a live holder by openingDelivery, a claim the
+// hold stopped by the task that starts it, and a child's architect that holds a member owed news
+// by that news (settleChildArchitectOpenings).
 //
 // It takes the tree's work_holds row for update before it reads the tree's claims
 // (record.Store.LockWorkHold), and the transaction deletes the row, keeps it as the record of the
@@ -383,8 +394,8 @@ func (e *Engine) workHoldOpen(ctx context.Context, tx pgx.Tx, root record.Issue,
 // reads the row again (supervise's holdReadAfterStop), and that read waits for this commit. Where
 // it finds the row gone, the daemon applies intake.WorkHoldOpened, which starts the claim with the
 // task this opening gave (workHoldOpened).
-func (e *Engine) tellAndEndWorkHold(ctx context.Context, tx pgx.Tx, root record.Issue, ended string, fallback record.WorkHold,
-	line string, args ...any) error {
+func (e *Engine) tellAndEndWorkHold(ctx context.Context, tx pgx.Tx, root record.Issue, ended string, opened *gateOpening,
+	fallback record.WorkHold, line string, args ...any) error {
 	locked, err := e.store.LockWorkHold(ctx, tx, root.Tree)
 	if err != nil {
 		return err
@@ -397,18 +408,108 @@ func (e *Engine) tellAndEndWorkHold(ctx context.Context, tx pgx.Tx, root record.
 	if err != nil {
 		return err
 	}
+	var opening *heldOpening
+	if opened != nil {
+		if opening, err = e.readHeldOpening(ctx, tx, root, ended, *opened); err != nil {
+			return err
+		}
+	}
 	told := 0
 	for _, c := range claims {
-		if !c.live() {
+		body := ended
+		if opening != nil {
+			if body, err = e.heldOpeningMessage(ctx, tx, opening, c, root); err != nil {
+				return err
+			}
+		}
+		if body == "" || !c.live() {
 			continue
 		}
-		if err := e.enqueue(ctx, tx, c.issue.Key, record.RoleMessage{Role: string(c.token), Body: ended}); err != nil {
+		if err := e.enqueue(ctx, tx, c.issue.Key, record.RoleMessage{Role: string(c.token), Body: body}); err != nil {
 			return err
 		}
 		told++
 	}
 	e.logOnCommit(ctx, line, append(args, "told", told)...)
+	if opening != nil && opening.byNews > 0 {
+		e.logOnCommit(ctx, "workflow: the opening is owed to each holder owed news, and the task carrying their news tells it",
+			"tree", root.Tree, "step", string(opened.step), "version", opened.version, "holders", opening.byNews)
+	}
 	return e.endWorkHold(ctx, tx, root, claims, ended, closing)
+}
+
+// heldOpening is what the work hold's opening decides each claim's opening by: the opened
+// sentence and the approval (gateOpening), what the tree owes of its approved design as the
+// opening leaves the record (record.OwedNews) with its told rows, the issue of each child's
+// architect whose news carries the opening (settleChildArchitectOpenings), and how many holders
+// the news tells it (byNews).
+type heldOpening struct {
+	gateOpening
+	opened string
+	owed   record.TreeNews
+	told   []record.DesignTold
+	owners map[string]bool
+	byNews int
+}
+
+// readHeldOpening reads heldOpening of root's tree in tx, after the write that opened the gate,
+// and settles the opening of each member in accepting that a child's architect holds and that is
+// owed news (settleChildArchitectOpenings).
+func (e *Engine) readHeldOpening(ctx context.Context, tx pgx.Tx, root record.Issue, opened string, at gateOpening) (*heldOpening, error) {
+	facts, err := record.TreeNewsFacts(ctx, e.store, tx, e.cfg.Steps, root.Tree)
+	if err != nil {
+		return nil, err
+	}
+	members, err := e.store.TreeIssues(ctx, tx, root.Tree)
+	if err != nil {
+		return nil, err
+	}
+	opening := &heldOpening{gateOpening: at, opened: opened, owed: record.OwedNews(facts), told: facts.Told, owners: map[string]bool{}}
+	owners, err := e.settleChildArchitectOpenings(ctx, tx, root, members, opening.owed, opening.told, opened, at.step, at.version)
+	if err != nil {
+		return nil, err
+	}
+	for _, owner := range owners {
+		opening.owners[owner] = true
+	}
+	opening.byNews = len(owners)
+	return opening, nil
+}
+
+// heldOpeningMessage is the message the work hold's opening sends claim c of root's tree, "" for
+// none, the caller sending nothing to a claim that is not live:
+//
+//   - a live holder, the root's architect or the claim that holds its member's phase, is told as
+//     openingDelivery decides, which its told row then records (record.Store.SettleOpening): owed
+//     news, it is sent nothing and its row owes the opening, which the task carrying its news
+//     leads with; else it is sent the opened message, and its row is settled as told;
+//   - a child's architect whose news carries the opening is sent nothing
+//     (settleChildArchitectOpenings);
+//   - any other live claim, a child's architect or a worker of a phase its issue has left, is sent
+//     the opened message, as it was sent the close.
+//
+// A holder the hold stopped is told the opening by the one task that starts it, which settles its
+// row (openHeldClaims).
+func (e *Engine) heldOpeningMessage(ctx context.Context, tx pgx.Tx, opening *heldOpening, c treeClaim, root record.Issue) (string, error) {
+	audience, holder := record.AudienceHolder, c.role != claim.RoleArchitect && RoleFor(c.issue.Phase) == c.role
+	if c.role == claim.RoleArchitect && c.issue.Key == root.Tree {
+		audience, holder = record.AudienceArchitect, true
+	}
+	switch {
+	case holder && c.live():
+		way := openingDelivery(opening.owed, opening.told, c.issue.Key, audience, opening.opened, opening.step, opening.version)
+		if err := e.store.SettleOpening(ctx, tx, c.issue.Key, audience, way.byNews); err != nil {
+			return "", err
+		}
+		if way.byNews {
+			opening.byNews++
+			return "", nil
+		}
+		return way.message, nil
+	case c.role == claim.RoleArchitect && opening.owners[c.issue.Key]:
+		return "", nil
+	}
+	return opening.opened, nil
 }
 
 // endWorkHold ends root's work hold at the engine's now: the tree's work_holds row goes, and the
@@ -424,7 +525,15 @@ func (e *Engine) endWorkHold(ctx context.Context, tx pgx.Tx, root record.Issue, 
 		return err
 	}
 	closing.OpenedAt, closing.Opening = at, ended
-	return e.openHeldClaims(ctx, tx, root, claims, heldClaimOpening(&closing, root.Tree), closing.Version)
+	return e.openHeldClaims(ctx, tx, root, claims, heldClaimOpening(&closing, root.Tree), closing.Version, tellsOpening(&closing, root))
+}
+
+// tellsOpening is whether the opening's sentences built from opened, the record of root's tree's
+// last opening (heldClaimOpening), tell the gate's opening: the record names what ended the hold,
+// and that is today's open message, not the boot's sentence (bootOpenedSentence) of a gate that did
+// not open. With no record, the sentences say only that the hold ended.
+func tellsOpening(opened *record.WorkHold, root record.Issue) bool {
+	return opened != nil && opened.Opening != "" && opened.Opening != bootOpenedSentence(root.Tree)
 }
 
 // openHeldClaims starts each claim of claims the hold stopped (stored suspended by hold), and no
@@ -443,12 +552,24 @@ func (e *Engine) endWorkHold(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // carries no phase work does not stand over the start of a claim that holds its phase now. Each
 // start is one log line naming the issue, the role and version, the version that closed the gate,
 // which is 0 where no record or stop names it.
-func (e *Engine) openHeldClaims(ctx context.Context, tx pgx.Tx, root record.Issue, claims []treeClaim, opening string, version int) error {
+//
+// Where opening tells the gate's opening (told, tellsOpening), the holder row of each such claim
+// that holds its member's phase is settled as told (record.Store.SettleOpening): the one task tells
+// the opening, so the news its start carries leads with no second gate sentence, and no later task
+// of news tells it again (openingDelivery's one delivery of the opening per holder). That holds
+// for a claim the opening read live and whose stop was made after it too, whose row the opening
+// left owing the opening (workHoldOpened).
+func (e *Engine) openHeldClaims(ctx context.Context, tx pgx.Tx, root record.Issue, claims []treeClaim, opening string, version int, told bool) error {
 	for _, c := range claims {
 		if c.role == claim.RoleArchitect || !c.state().WorkHeld() {
 			continue
 		}
 		holds := phase.RoleFor(c.issue.Phase) == c.role
+		if told && holds {
+			if err := e.store.SettleOpening(ctx, tx, c.issue.Key, record.AudienceHolder, false); err != nil {
+				return err
+			}
+		}
 		if holds {
 			finished, err := e.phaseFinished(ctx, tx, c.issue)
 			if err != nil {
@@ -559,7 +680,7 @@ func (e *Engine) workHoldBooted(ctx context.Context, tx pgx.Tx, owners phaseOwne
 			}
 		case holdsWork:
 		case held:
-			if err := e.tellAndEndWorkHold(ctx, tx, root, bootOpenedSentence(root.Key), hold,
+			if err := e.tellAndEndWorkHold(ctx, tx, root, bootOpenedSentence(root.Key), nil, hold,
 				"workflow: the boot ends the work hold of a tree the deployment no longer holds", "tree", root.Key, "hold", e.cfg.Hold); err != nil {
 				return err
 			}
@@ -633,5 +754,5 @@ func (e *Engine) openStoppedClaims(ctx context.Context, tx pgx.Tx, root record.I
 	if err != nil {
 		return err
 	}
-	return e.openHeldClaims(ctx, tx, root, claims, heldClaimOpening(hold, root.Tree), version)
+	return e.openHeldClaims(ctx, tx, root, claims, heldClaimOpening(hold, root.Tree), version, tellsOpening(hold, root))
 }

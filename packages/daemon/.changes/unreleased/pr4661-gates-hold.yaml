@@ -27,6 +27,12 @@ body: |-
   claim it stopped with one task, which names the version that closed the gate and tells the worker
   to check what its turn already did. The daemon builds that task when the start runs, so a start
   that waits through a second close and opening names the later version and the later approval.
+  That task also carries the news of the approved version that the worker is owed, after its work,
+  and each send of the task keeps the opening's sentences in front. A news task alone never starts
+  a claim the hold stopped. Under `work`, the start of a merger the hold stopped also waits until
+  the daemon records what changed in the approved version, as every start of a merger does. Each
+  holder is told the opening once: a live holder that is owed news gets no open message, and the
+  task that carries its news starts with the opening.
   An operator's own resume or retry of such a claim starts it
   too. The hold survives a daemon restart. Any other value of `gates.hold` is refused at load,
   `legion config check` prints the word as `design-gate-hold=`, and `legion state --json` shows it

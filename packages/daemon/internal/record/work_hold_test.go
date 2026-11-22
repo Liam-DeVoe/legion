@@ -73,6 +73,22 @@ func TestWorkHoldPredicateHoldsWhileAGatedStepStandsClosed(t *testing.T) {
 		}
 	})
 
+	// A criteria row the root's architect registered beside a deployment that gates spec and not
+	// criteria joins the steps the tree is gated on (TreeSteps), so a new version of that
+	// Verification document holds the work as a new spec version does, and the hold names its row.
+	t.Run("a criteria row registered beside a deployment of spec alone", func(t *testing.T) {
+		criteria := row(DesignStepCriteria, 2, new(1))
+		gate := TreeGate{Steps: []DesignStep{DesignStepSpec}, Rows: map[DesignStep]DesignGate{
+			DesignStepCriteria: criteria, DesignStepSpec: row(DesignStepSpec, 4, new(4))}}
+		if held, holds := gate.Standing(); !holds || !reflect.DeepEqual(held, criteria) {
+			t.Fatalf("Standing() = %+v, %v; want the registered criteria row, which the tree is gated on", held, holds)
+		}
+		gate.Rows[DesignStepCriteria] = row(DesignStepCriteria, 2, new(2))
+		if held, holds := gate.Standing(); holds {
+			t.Fatalf("Standing() with the criteria approved = %+v, want nothing", held)
+		}
+	})
+
 	t.Run("a deployment that gates no step holds nothing", func(t *testing.T) {
 		gate := TreeGate{Steps: []DesignStep{}, Rows: map[DesignStep]DesignGate{DesignStepSpec: row(DesignStepSpec, 4, new(3))}}
 		if held, holds := gate.Standing(); holds {

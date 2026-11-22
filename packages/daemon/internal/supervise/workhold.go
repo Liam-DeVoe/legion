@@ -332,17 +332,21 @@ func OpeningWork(task, opening string) string {
 // openingTask is the one task the hold's opening gives a claim it stopped (EndHold): task, the
 // opening start's own, unless the claim kept a task of its own that no turn has taken and task
 // carries no newer work than it. Then it is the kept task's work behind task's opening sentences
-// (RequestDeliver.Opening): its phase, run, entry, kept decisions, check look and review round,
-// under task's id and row, a resend of its entry (RequestDeliver.ResendEntry), so the row decides
-// it and the entry the claim was given stands. kept says which of the two it is. The daemon's own
-// delivery of a relaunch's record is no work, and is never kept: its sentence goes in front of
-// whatever task follows it (Delivery.message).
+// (RequestDeliver.Opening): its phase, run, entry, kept decisions, check look, review round and
+// news, under task's id and row, a resend of its entry (RequestDeliver.ResendEntry), so the row
+// decides it and the entry the claim was given stands. kept says which of the two it is. The
+// daemon's own delivery of a relaunch's record is no work, and is never kept: its sentence goes in
+// front of whatever task follows it (Delivery.message). Nor is a task of news alone
+// (Delivery.NewsOnly) kept: it holds no work, and the opening's start carries the news it still
+// owes, which no turn confirmed (the daemon's startNewsOf).
 //
 // The kept task's work is its text with the sentences of an earlier opening taken off its front
 // (Delivery.Work): a claim an earlier opening started and a later close stopped before any turn
 // took that opening's task keeps the earlier opening's task. The one task carries the newest
 // opening's sentences once, then that work, and it is marked with those sentences
-// (RequestDeliver.Opening), so the next opening reads it the same way.
+// (RequestDeliver.Opening), so the next opening reads it the same way. A kept task's news goes
+// with it (Delivery.News), whose own text is the work without the opening's sentences, so each
+// send renders that news again behind the newest sentences (Deps.DesignNews).
 //
 // Newer work is a task of a later run than the kept one's, or of a later entry of the same run,
 // that is no resend: a transition or an owed entry written for the role while the gate was closed,
@@ -350,7 +354,7 @@ func OpeningWork(task, opening string) string {
 // no entry, the phase's resume task the boot builds, carries none.
 func (m *Machine) openingTask(task RequestDeliver) (one RequestDeliver, kept bool) {
 	p := m.claim.Pending
-	if p == nil || !p.ConfirmedAt.IsZero() || p.Relaunch() {
+	if p == nil || !p.ConfirmedAt.IsZero() || p.Relaunch() || p.NewsOnly {
 		return task, false
 	}
 	if task.Entry > 0 && !task.ResendEntry && (task.Generation > p.Generation || (task.Generation == p.Generation && task.Entry > p.Entry)) {
@@ -363,6 +367,6 @@ func (m *Machine) openingTask(task RequestDeliver) (one RequestDeliver, kept boo
 		one.Task, one.Opening = OpeningTask(opening, one.Task), opening
 	}
 	one.Phase, one.Generation, one.Entry, one.ResendEntry = p.Phase, p.Generation, p.Entry, true
-	one.Kept, one.CheckLook, one.RoundNamed = p.Kept, p.CheckLook, p.RoundNamed
+	one.Kept, one.CheckLook, one.RoundNamed, one.News = p.Kept, p.CheckLook, p.RoundNamed, p.News
 	return one, true
 }

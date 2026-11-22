@@ -999,6 +999,51 @@ func TestWorkHoldReleaseStartsTheClaimWithItsKeptTask(t *testing.T) {
 	})
 }
 
+// The hold's end keeps no task of news alone (Delivery.NewsOnly). Such a task holds no work, so
+// the one task is the opening start's own, and the news the kept task told, which no turn
+// confirmed, is still owed for the opening's start to carry (the daemon's startNewsOf). A kept
+// task that carries news keeps that news with its work, under the newest opening's sentences, so
+// each send renders the news again behind them (Deps.DesignNews).
+func TestWorkHoldOpeningOfAClaimThatKeptNews(t *testing.T) {
+	news := []byte(`{"task":"` + phaseTask + `"}`)
+	// releasedWith is a claim released while it held task, which no turn took, that the hold's
+	// stop took over at once.
+	releasedWith := func(t *testing.T, task RequestDeliver) *harness {
+		t.Helper()
+		h := newHarness(t)
+		h.reach(StateRegistered)
+		task.Claim = h.token
+		h.must(task)
+		h.must(RequestSuspend{Claim: h.token, By: SuspendedByReleased, Reason: "the idle pod was released"})
+		h.must(directHoldStop(h))
+		h.wantHeld()
+		return h
+	}
+	t.Run("a task of news alone gives way to the opening start's own", func(t *testing.T) {
+		h := releasedWith(t, RequestDeliver{Task: "A person approved a new version of the design.",
+			ID: "outbox:7", Row: 7, Phase: phase.Implementing, Generation: 1, News: news, NewsOnly: true})
+		start := openingStart(h)
+		if resumed, err := h.m.EndHold(h.ctx, &start); !resumed || err != nil {
+			t.Fatalf("the hold's end = %v, %v; want the claim started", resumed, err)
+		}
+		if p := h.wantPendingTask(start.Task); p.NewsOnly || p.News != nil || p.Opening != holdOpening || p.ID != start.ID {
+			t.Fatalf("the one task is %+v, want the opening start's own, with no news and the opening apart", p)
+		}
+	})
+	t.Run("a kept task's news goes with its work", func(t *testing.T) {
+		const told = phaseTask + "\n\nThe news of the approved version."
+		h := releasedWith(t, RequestDeliver{Task: told, ID: "outbox:7", Row: 7, Phase: phase.Implementing,
+			Generation: 1, Entry: 2, News: news})
+		start := openingStart(h)
+		if resumed, err := h.m.EndHold(h.ctx, &start); !resumed || err != nil {
+			t.Fatalf("the hold's end = %v, %v; want the claim started", resumed, err)
+		}
+		if p := h.wantPendingTask(holdOpening + "\n\n" + told); string(p.News) != string(news) || p.Opening != holdOpening {
+			t.Fatalf("the one task is %+v, want the kept task's work and news behind the opening's sentences", p)
+		}
+	})
+}
+
 // M14: a Claude Code worker is stopped and started as an Oh My Pi worker is: at its turn's end,
 // its session and its file kept, and resumed in that session at the hold's end with its task.
 func TestWorkHoldStopsAndStartsAClaudeCodeWorker(t *testing.T) {

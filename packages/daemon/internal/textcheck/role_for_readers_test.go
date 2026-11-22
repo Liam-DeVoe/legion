@@ -56,11 +56,15 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/admit/stalled.go", fn: "stalledTreeReason"}:                  {calls: 1, test: "TestAWaitByDesignIsNeverToldAsAStall"},
 	{file: "internal/api/handoff.go", fn: "entryFence"}:                           {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/daemon/daemon.go", fn: "serve"}:                              {calls: 1, test: "TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine"},
+	{file: "internal/daemon/design_news_holders.go", fn: "phaseHolder"}:           {calls: 1, test: "TestOnlyAPhaseWorkerHoldsAMembersPhase"},
+	{file: "internal/daemon/outbox.go", fn: "outbox.settleHeldOpening"}:           {calls: 1, test: "TestWorkHoldOpeningStartOfAMergerWaitsForItsNews"},
 	{file: "internal/phase/phase.go", fn: "Of"}:                                   {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/projection/project.go", fn: "Project"}:                       {calls: 1, test: "TestProjectShowsARootsArchitectHandshake"},
 	{file: "internal/projection/why.go", fn: "workHeld"}:                          {calls: 1, test: "TestWorkHoldShowsWhyInTheState"},
+	{file: "internal/record/design_news.go", fn: "untold"}:                        {calls: 1, test: "TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken"},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}:       {calls: 1, test: "TestTheArchitectTaskOfEachShape"},
 	{file: "internal/workflow/catch_up.go", fn: "Engine.readyWorkerTask"}:         {calls: 1, test: "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted"},
+	{file: "internal/workflow/design_news.go", fn: "memberWords"}:                 {calls: 1, test: "TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend"},
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}:                      {calls: 1, test: "TestACarriedRootResumesFromTheApprovedHeadAndTheHold"},
 	{file: "internal/workflow/effects.go", fn: "RoleFor"}:                         {calls: 1, test: "TestRoleForAnswersEveryPhaseOfPhaseAll"},
 	{file: "internal/workflow/effects.go", fn: "backwardMoveReason"}:              {calls: 1, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
@@ -81,6 +85,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/steps.go", fn: "endOfTransition"}:                   {calls: 1, test: "TestAnIssueAtAdmittedRunsNoStep"},
 	{file: "internal/workflow/stranded.go", fn: "Stranded"}:                       {calls: 1, test: "TestStrandedNamesTheClaimsNothingWillWake"},
 	{file: "internal/workflow/wake.go", fn: "OpenPhaseRole"}:                      {calls: 1, test: "TestAnArchitectGetsNoBackstop"},
+	{file: "internal/workflow/work_hold.go", fn: "Engine.heldOpeningMessage"}:     {calls: 1, test: "TestWorkHoldMakesNoStopAfterTheGateOpens"},
 	{file: "internal/workflow/work_hold.go", fn: "Engine.openHeldClaims"}:         {calls: 1, test: "TestWorkHoldOpensAWorkerOfAnIssueAtAdmittedWithNoPhase"},
 }
 

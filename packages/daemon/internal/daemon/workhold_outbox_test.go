@@ -55,25 +55,34 @@ const holdGrace = 2 * time.Minute
 
 // holdTree is the tree a work-hold rig holds: its root, which is its own tree and its one member,
 // the Dispatch project of its issues, the document of its gated spec and the version a person
-// approved, the phase the root stands in, the deployment's hold, and the steps the deployment
-// gates, the spec alone where steps is nil.
+// approved, the phase the root stands in, the deployment's hold, the steps the deployment gates,
+// the spec alone where steps is nil, and the version of the spec the root's phase holder and its
+// architect took (took).
+//
+// took is the version whose approval opens the gate in the rig's cases. Each holder took it, so
+// the record owes it no news of that approval (record.OwedNews): the cases hold the hold's close
+// and opening, and the news of an approved version, which main's own tests hold, waits on nothing
+// here. The merger's start waits for no news (mergerWaitsForTheDesignGate), a start carries no
+// news, and the opening tells each live holder the open message with the words that nothing its
+// issue holds changed since that version (openingDelivery, openedTo).
 type holdTree struct {
 	key, project, document string
-	approved               int
+	approved, took         int
 	at                     phase.Phase
 	hold                   config.Hold
 	steps                  []record.DesignStep
 }
 
-// legionTree is LEGION-208 standing in at under hold, its spec (artifact-208) approved at version 3.
+// legionTree is LEGION-208 standing in at under hold, its spec (artifact-208) approved at version
+// 3, and version 4 taken by its holders.
 func legionTree(at phase.Phase, hold config.Hold) holdTree {
-	return holdTree{key: "LEGION-208", project: "LEGION", document: "artifact-208", approved: 3, at: at, hold: hold}
+	return holdTree{key: "LEGION-208", project: "LEGION", document: "artifact-208", approved: 3, took: 4, at: at, hold: hold}
 }
 
 // carriedTree is F3's root: ACME-2694 implementing, its spec (F3's document) approved at version
-// 24, which Dispatch carried onto version 46 after an exact undo.
+// 24, which Dispatch carried onto version 46 after an exact undo, version 46 taken by its holders.
 func carriedTree() holdTree {
-	return holdTree{key: "ACME-2694", project: "ACME", document: "aec8fb48-fd46-458a-99a3-a1b199a46b38", approved: 24,
+	return holdTree{key: "ACME-2694", project: "ACME", document: "aec8fb48-fd46-458a-99a3-a1b199a46b38", approved: 24, took: 46,
 		at: phase.Implementing, hold: config.HoldWork}
 }
 
@@ -121,6 +130,13 @@ func newWorkHoldRig(t *testing.T, tree holdTree) *workHoldRig {
 		if err := records.PutGate(ctx, tx, record.DesignGate{Issue: tree.key, Step: record.DesignStepSpec, ArtifactID: tree.document,
 			LatestVersion: tree.approved, ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 3}, EverOpened: true}); err != nil {
 			return err
+		}
+		// The root's phase holder and its architect took version took of the spec (holdTree).
+		for _, audience := range []record.DesignAudience{record.AudienceHolder, record.AudienceArchitect} {
+			if err := records.RaiseTold(ctx, tx, tree.key, audience, []record.NewsItem{{Step: record.DesignStepSpec, To: tree.took}},
+				time.Now().UTC()); err != nil {
+				return err
+			}
 		}
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: tree.key, Repo: "acme/widgets",
 			Number: 42, Branch: "legion/" + tree.key, HeadSHA: "head1", Failing: []string{}})
@@ -441,6 +457,16 @@ func (r *workHoldRig) openedMessage(version int) string {
 	return fmt.Sprintf("The design gate of %s opened: a person approved version %d of its spec document (%s), "+
 		"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
 		"A merge the closed gate held is released.", r.tree.key, version, r.tree.document)
+}
+
+// openedTo is the open role message at version of the root's spec as role's live claim is told it
+// (openingDelivery): the open message, then the words that nothing its issue holds, or for the
+// architect nothing the tree holds, changed since the version the rig's holders took (holdTree).
+func (r *workHoldRig) openedTo(role claim.Role, version int) string {
+	if role == claim.RoleArchitect {
+		return fmt.Sprintf("%s Nothing the tree holds changed since version %d, which you took.", r.openedMessage(version), r.tree.took)
+	}
+	return fmt.Sprintf("%s Nothing your issue holds changed since version %d, which your phase took.", r.openedMessage(version), r.tree.took)
 }
 
 // opening is the sentences the one task of the opening starts with: the close message's two, that
@@ -1067,7 +1093,7 @@ func TestWorkHoldMakesNoStopOnceTheGateOpensAgain(t *testing.T) {
 		r.close(4)
 		r.approve(4, 12)
 		r.drain()
-		if got := r.published(claim.RoleImplementer); len(got) != 1 || got[0] != r.openedMessage(4) {
+		if got := r.published(claim.RoleImplementer); len(got) != 1 || got[0] != r.openedTo(claim.RoleImplementer, 4) {
 			t.Fatalf("the implementer was told %q, want the opening alone: the close message met the open gate before its publish", got)
 		}
 		if stops := r.holdStops(claim.RoleImplementer); len(stops) != 0 {
@@ -2508,7 +2534,7 @@ func TestGatesHoldPublishesNoCloseMessageOnceTheGateOpensAgain(t *testing.T) {
 		r.clock.advance(65 * time.Second)
 		r.runOnce()
 
-		if got := r.published(claim.RoleImplementer); len(got) != 1 || got[0] != r.openedMessage(4) {
+		if got := r.published(claim.RoleImplementer); len(got) != 1 || got[0] != r.openedTo(claim.RoleImplementer, 4) {
 			t.Fatalf("the implementer was told %q, want the opening alone", got)
 		}
 		if got := r.rows(record.OutboxKindRoleMessage, "", ""); got != 0 {
@@ -2550,7 +2576,7 @@ func TestGatesHoldPublishesNoCloseMessageOnceTheGateOpensAgain(t *testing.T) {
 			if message == closed {
 				t.Fatalf("the architect was told %q, want no close: the gate opened before the close was published", told)
 			}
-			opened = opened || message == r.openedMessage(4)
+			opened = opened || message == r.openedTo(claim.RoleArchitect, 4)
 		}
 		if !opened {
 			t.Fatalf("the architect was told %q, want the opening", told)
@@ -2792,7 +2818,7 @@ func TestWorkHoldPublishesNoCloseThatANewerCloseOutran(t *testing.T) {
 	r.clock.advance(65 * time.Second)
 	r.runOnce()
 
-	if got := r.published(claim.RoleImplementer); len(got) != 2 || got[0] != r.openedMessage(4) || got[1] != r.workerClose(5) {
+	if got := r.published(claim.RoleImplementer); len(got) != 2 || got[0] != r.openedTo(claim.RoleImplementer, 4) || got[1] != r.workerClose(5) {
 		t.Fatalf("the implementer was told %q, want the opening and then the close of version 5 alone", got)
 	}
 	if got := r.rows(record.OutboxKindRoleMessage, "", ""); got != 0 {
@@ -3419,7 +3445,7 @@ func TestWorkHoldPublishesNoCloseWhoseHoldEndedAfterItReadTheGate(t *testing.T) 
 	}
 	r.drain()
 
-	if got := r.published(claim.RoleImplementer); len(got) != 1 || got[0] != r.openedMessage(4) {
+	if got := r.published(claim.RoleImplementer); len(got) != 1 || got[0] != r.openedTo(claim.RoleImplementer, 4) {
 		t.Fatalf("the implementer was told %q, want the opening alone: the hold ended before the close was published", got)
 	}
 	if got := r.rows(record.OutboxKindRoleMessage, "", ""); got != 0 {
@@ -3455,8 +3481,19 @@ func TestWorkHoldPublishesNoCloseOfAnotherDocumentThatANewerCloseOutran(t *testi
 	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
 	approved := 1
 	r.inTx(func(tx pgx.Tx) error {
-		return r.records.PutGate(r.ctx, tx, record.DesignGate{Issue: r.tree.key, Step: record.DesignStepCriteria, ArtifactID: criteria,
-			LatestVersion: 1, ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 2}, EverOpened: true})
+		if err := r.records.PutGate(r.ctx, tx, record.DesignGate{Issue: r.tree.key, Step: record.DesignStepCriteria, ArtifactID: criteria,
+			LatestVersion: 1, ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 2}, EverOpened: true}); err != nil {
+			return err
+		}
+		// The holders took the approved Verification document too, so the spec's opening owes
+		// them no news of it (holdTree).
+		for _, audience := range []record.DesignAudience{record.AudienceHolder, record.AudienceArchitect} {
+			if err := r.records.RaiseTold(r.ctx, tx, r.tree.key, audience,
+				[]record.NewsItem{{Step: record.DesignStepCriteria, To: approved}}, time.Now().UTC()); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	r.working(claim.RoleImplementer)
 	implementer := r.token(claim.RoleImplementer)
@@ -3472,7 +3509,7 @@ func TestWorkHoldPublishesNoCloseOfAnotherDocumentThatANewerCloseOutran(t *testi
 
 	criteriaClose := "The design gate of LEGION-208 closed: version 2 of its criteria document (" + criteria + ") is with its reviewer, " +
 		"so the design you are working to may change. " + holdSentence + " End your turn now."
-	if got := r.published(claim.RoleImplementer); len(got) != 2 || got[0] != r.openedMessage(4) || got[1] != criteriaClose {
+	if got := r.published(claim.RoleImplementer); len(got) != 2 || got[0] != r.openedTo(claim.RoleImplementer, 4) || got[1] != criteriaClose {
 		t.Fatalf("the implementer was told %q, want the opening and then the close of the criteria step alone", got)
 	}
 	if got := r.rows(record.OutboxKindRoleMessage, "", ""); got != 0 {

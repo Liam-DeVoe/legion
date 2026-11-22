@@ -3152,6 +3152,13 @@ package api
 // #4182, #4193, #4251, #4259, #4261, #4269, #4290, #4932 and #4984, 217 by #4273, #4590 and
 // #4771, 218 by #3831, 219 by #4611, #4902 and #4948, 220 by #4930, 221 by #4065, #4392 and
 // #4432, 223 by #4805, 224 by #4960, and no open head declaring 222 (this change's own head
-// declared 210 before this merge). Read the base's own number and every open pull request again
-// at the next merge rather than from this line.)
+// declared 210 before this merge). It keeps 222 at the merge that brought main in at
+// 64887452470c, main still at 213: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for
+// each of the 490 open pull requests, made between 2026-11-22T19:32:08Z and 19:38:18Z, found 214
+// declared by #4592 and #4918, 215 by #4596, 216 by #4173, #4180, #4182, #4193, #4251, #4259,
+// #4261, #4269, #4290, #4932 and #4984, 217 by #4273, 218 by #3831, 219 by #4611, #4902 and
+// #4948, 220 by #4930 and #5014, 221 by #3993, #4049, #4392, #4432, #4771 and #4942, 222 by this
+// change alone, 223 by #4805, 224 by #4960, 225 by #3712 and #4580, 226 by #4175 and #5017, 227 by
+// #4065, 228 by #4590 and 229 by #2230. Read the base's own number and every open pull request
+// again at the next merge rather than from this line.)
 const DaemonAPIVersion = 222
