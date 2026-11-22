@@ -667,9 +667,9 @@ export async function pastStaleTime(
       },
       {
         message:
-          `no frame came on the page's live socket in ${JUMP_FRAME_WAIT_MS / 1000} s, though ` +
-          "the server sends a heartbeat every 15 s, so the clock cannot jump 31 s without the " +
-          "page replacing the socket",
+          `the page's live socket carried no frame ${JUMP_FRAME_MIN_AGE_MS / 1000} to ` +
+          `${JUMP_FRAME_MAX_AGE_MS / 1000} s old within ${JUMP_FRAME_WAIT_MS / 1000} s, so the ` +
+          "clock cannot jump 31 s without the page replacing the socket",
         timeout: JUMP_FRAME_WAIT_MS,
       }
     )

@@ -1,6 +1,7 @@
-import { expect, spyOn, test } from "bun:test";
-import { QueryClient } from "@tanstack/react-query";
+import { expect, jest, spyOn, test } from "bun:test";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 
+import { realClock, settle, tick } from "../__tests__/fake-clock";
 import {
   type TreeNodeExtra,
   treeAnswer,
@@ -13,12 +14,12 @@ import { refreshQueries, trackQueryFetches } from "./query-refresh";
 import type { DispatchEvent, IssueTreeParent } from "./types";
 
 /**
- * The issue page's tree read is told of every event of its issue: each one names the tree's key
- * (`issueTreeKey`), by prefix, so the views under it (`["issue-tree", key, view]`) are reached
- * too. An event of another issue reaches a tree or a view where its answer holds a node of that
- * issue, or a node standing under one, of a kind the event can move - for an ask's event, one the
- * ask is on - and an issue write that may have moved its issue's parent each ancestor's tree it
- * names; an event of no issue reaches none.
+ * The issue page's tree read is told of every event of its issue but a person's edit notice: each
+ * one names the tree's key (`issueTreeKey`), by prefix, so the views under it
+ * (`["issue-tree", key, view]`) are reached too. An event of another issue reaches a tree or a
+ * view where its answer holds a node of that issue, or a node standing under one, of a kind the
+ * event can move - for an ask's event, one the ask is on - and an issue write that may have moved
+ * its issue's parent each ancestor's tree it names; an event of no issue reaches none.
  */
 
 /** An event of `type`, with the payload its reader reads; the feed's union is wider than this
@@ -76,6 +77,32 @@ test("an event of an issue marks its tree and each view stale, and no other issu
     eventRefreshTargets(issueless, "alice").some((target) => target.queryKey[0] === "issue-tree"),
     "an event of no issue"
   ).toBe(false);
+});
+
+// A person's edit notice comes once the document has been quiet after the edits it tells of,
+// each of which sent its own version: it moves nothing the issue's tree or a view of it draws,
+// so it reads neither, while the issue's detail and log take its line as before.
+test("a person's edit notice marks no tree or view of its issue, and marks its detail and its log", () => {
+  const client = new QueryClient();
+  const tree = issueTreeKey("CORE-1");
+  const plan = viewKey("CORE-1", "plan");
+  for (const queryKey of [tree, plan]) {
+    client.setQueryData(queryKey, treeAnswer([treeNode("CORE-1", "issue", null)]));
+  }
+  client.setQueryData(["issue", "CORE-1"], { key: "CORE-1" });
+  client.setQueryData(["events", "CORE-1"], { pageParams: [null], pages: [[]] });
+  const notice = eventOf(
+    "artifact.human_edited",
+    { artifact_id: "artifact-1", from_version: 4, to_version: 7 },
+    "CORE-1"
+  );
+  refreshQueries(client, eventRefreshTargets(notice, "alice"));
+  expect({
+    detail: client.getQueryState(["issue", "CORE-1"])?.isInvalidated,
+    log: client.getQueryState(["events", "CORE-1"])?.isInvalidated,
+    plan: client.getQueryState(plan)?.isInvalidated,
+    tree: client.getQueryState(tree)?.isInvalidated,
+  }).toEqual({ detail: true, log: true, plan: false, tree: false });
 });
 
 /** The child CORE-2's Verification view, which carries its parent CORE-1's requirement as
@@ -477,49 +504,69 @@ test("a child's ask event marks stale a tree of its parent only where its answer
   }
 });
 
+/** The child CORE-2's ask block q7 in its Decisions document, as a node standing under it names
+ *  it. */
+const ASK_BLOCK: IssueTreeParent = {
+  first_line: "Which outline?",
+  id: "CORE-2/decisions#q7",
+  issue: "CORE-2",
+  kind: "block",
+  supertag: "ask",
+};
+
+/** An event of `type` of the child CORE-2's block ask q7, in `state`, written in the document
+ *  `document` names: its Decisions document unless the case says otherwise, or none, as an event
+ *  settlement writes names none. */
+function blockAsk(
+  type: string,
+  state: string,
+  document: Record<string, unknown> = {
+    block_artifact: { id: "artifact-decisions", primary: false, slug: "decisions" },
+  }
+): DispatchEvent {
+  return eventOf(
+    type,
+    { anchor: null, block_id: "q7", id: "ask-7", question: "Which outline?", state, ...document },
+    "CORE-2"
+  );
+}
+
 // A block ask is on its block and on a node standing under it, which names the block by its
 // address (`<KEY>/<slug>#<id>`): a block id is the block's id within its document alone, so a
-// node standing under a block of that id in another document of the child is under no ask.
+// node standing under a block of that id in another document of the child is under no ask. An
+// event settlement writes names no document, and is on each block of the child of that id.
 test("a child's block ask marks stale a tree of its parent that holds a node standing under the ask's block, and none whose node stands under a block of that id in another document", () => {
-  const askBlock: IssueTreeParent = {
-    first_line: "Which outline?",
-    id: "CORE-2/decisions#q7",
-    issue: "CORE-2",
-    kind: "block",
-    supertag: "ask",
-  };
-  const asked = (artifact: string, slug: string) =>
-    eventOf(
-      "ask.opened",
-      {
-        anchor: null,
-        block_artifact: { id: artifact, primary: false, slug },
-        block_id: "q7",
-        id: "ask-7",
-        question: "Which outline?",
-        state: "open",
-      },
-      "CORE-2"
-    );
   const seen: Record<string, boolean> = {};
   for (const [name, event] of [
-    ["the ask's block", asked("artifact-decisions", "decisions")],
-    ["a block of its id in another document", asked("artifact-notes", "notes")],
+    ["the ask's block", blockAsk("ask.opened", "open")],
+    [
+      "a block of its id in another document",
+      blockAsk("ask.opened", "open", {
+        block_artifact: { id: "artifact-notes", primary: false, slug: "notes" },
+      }),
+    ],
+    [
+      "the ask's block, from settlement, which names no document",
+      blockAsk("ask.opened", "open", {}),
+    ],
   ] as const) {
     const client = new QueryClient();
     const outline = issueTreeKey("CORE-1");
     client.setQueryData(
       outline,
       treeAnswer([
-        treeNode("CORE-1", "issue", null),
-        treeNode("CORE-2", "issue", "CORE-1", { ...CHILD, text: "Draw each child" }),
-        treeNode("c1", "criterion", askBlock, { ...CHILD, in: "decisions", text: "One outline." }),
+        ...(OUTLINE_WITH_CHILD.nodes ?? []),
+        treeNode("c1", "criterion", ASK_BLOCK, { ...CHILD, in: "decisions", text: "One outline." }),
       ])
     );
     refreshQueries(client, eventRefreshTargets(event, "alice"));
     seen[name] = client.getQueryState(outline)?.isInvalidated === true;
   }
-  expect(seen).toEqual({ "a block of its id in another document": false, "the ask's block": true });
+  expect(seen).toEqual({
+    "a block of its id in another document": false,
+    "the ask's block": true,
+    "the ask's block, from settlement, which names no document": true,
+  });
 });
 
 // A child's view carries as context an ask of its parent's that a person answered and that
@@ -606,37 +653,19 @@ test("an ancestor's block ask answered marks stale a descendant's view that hold
   }
 });
 
-// The tie a block ask's first answer brings is carried by the views that read ties alone - the
-// Spec and the Verification views (`readTies`) - so the answer marks such a view that holds a
-// block of the ask's issue, the parent's Verification view holding the child's check here, and no
-// Plan view, whatever block of the child it holds. The outline carries no tie: it is marked only
-// where it holds a node the ask is on, and every view follows it then.
+// The tie a block ask's answer brings is carried by the views that read ties alone - the Spec
+// and the Verification views (`readTies`) - so the answer marks such a view that holds a block of
+// the ask's issue, the parent's Verification view holding the child's check here, and no Plan
+// view, whatever block of the child it holds. The outline carries no tie: it is marked only where
+// it holds a node the ask is on, and every view follows it then.
 test("a child's block ask answered marks the parent's views that carry ties and hold a block of the child, and its outline and every view only where the outline holds what the ask is on", () => {
-  const answered = eventOf(
-    "ask.answered",
-    {
-      anchor: null,
-      block_artifact: { id: "artifact-decisions", primary: false, slug: "decisions" },
-      block_id: "q7",
-      id: "ask-7",
-      question: "Which outline?",
-      state: "answered",
-    },
-    "CORE-2"
-  );
-  const askBlock: IssueTreeParent = {
-    first_line: "Which outline?",
-    id: "CORE-2/decisions#q7",
-    issue: "CORE-2",
-    kind: "block",
-    supertag: "ask",
-  };
+  const answered = blockAsk("ask.answered", "answered");
   const check = treeNode("k1", "check", "CORE-2", { ...CHILD, in: "verification" });
   const cases = [
     ["an outline holding no node the ask is on", []],
     [
       "an outline holding a node under the ask's block",
-      [treeNode("c1", "criterion", askBlock, { ...CHILD, in: "decisions" })],
+      [treeNode("c1", "criterion", ASK_BLOCK, { ...CHILD, in: "decisions" })],
     ],
   ] as const;
   const seen: Record<string, unknown> = {};
@@ -644,13 +673,7 @@ test("a child's block ask answered marks the parent's views that carry ties and 
     const client = new QueryClient();
     const { marks } = parentBeforeTheCheck(
       client,
-      treeAnswer([
-        treeNode("CORE-1", "issue", null),
-        PARENT_REQUIREMENT,
-        treeNode("CORE-2", "issue", "CORE-1", { ...CHILD, text: "Draw each child" }),
-        check,
-        ...underAsk,
-      ])
+      treeAnswer([...(OUTLINE_WITH_CHILD.nodes ?? []), check, ...underAsk])
     );
     client.setQueryData(
       viewKey("CORE-1", "verification"),
@@ -878,6 +901,104 @@ test("a parent's views waiting on the outline's read are judged by the answer a 
     },
     "the outline removed": { listeners: [1, 0], views: none },
   });
+});
+
+/** The parent CORE-1's outline and Verification view (`holdingChildNode`), each observed as the
+ *  page observes the open filter's, the outline's query made first unless `viewFirst` says
+ *  otherwise: each read of the outline answers `outlineRead`, and each read of the view is
+ *  counted. */
+function observedParent(
+  client: QueryClient,
+  outlineRead: Promise<unknown>,
+  viewFirst = false
+): { readonly stop: () => void; readonly viewReads: () => number } {
+  trackQueryFetches(client);
+  const { outline, verification } = holdingChildNode(client, viewFirst);
+  let viewReads = 0;
+  const observers = [
+    new QueryObserver(client, {
+      queryFn: () => outlineRead,
+      queryKey: outline,
+      staleTime: Number.POSITIVE_INFINITY,
+    }),
+    new QueryObserver(client, {
+      queryFn: async () => {
+        viewReads += 1;
+        return VERIFICATION_WITH_REQUIREMENT;
+      },
+      queryKey: verification,
+      staleTime: Number.POSITIVE_INFINITY,
+    }),
+  ];
+  const stops = observers.map((observer) => observer.subscribe(() => undefined));
+  return {
+    stop: () => {
+      for (const stop of stops) stop();
+      client.clear();
+    },
+    viewReads: () => viewReads,
+  };
+}
+
+// On the page the outline and the open view are both observed, and the outline's query comes
+// first in the cache: the event's refresh judges the outline's answer, which holds the child's
+// node, and starts the outline's read before it judges the view. That read answers nothing the
+// view waits for, so the view is read at once, beside the outline, whichever query was made
+// first.
+test("a parent's observed view is read at once where the event's own refresh starts its outline's read, whichever query was made first", async () => {
+  const seen: Record<string, unknown> = {};
+  for (const viewFirst of [false, true]) {
+    const client = new QueryClient();
+    const response = Promise.withResolvers<unknown>();
+    const parent = observedParent(client, response.promise, viewFirst);
+    refreshQueries(client, eventRefreshTargets(CHILD_VERSION, "alice"));
+    await settle();
+    seen[viewFirst ? "view first" : "outline first"] = {
+      outline: client.getQueryState(issueTreeKey("CORE-1"))?.fetchStatus,
+      viewReads: parent.viewReads(),
+    };
+    response.resolve(OUTLINE_WITH_CHILD);
+    await settle();
+    parent.stop();
+  }
+  const atOnce = { outline: "fetching", viewReads: 1 };
+  expect(seen, "before the outline's read answers").toEqual({
+    "outline first": atOnce,
+    "view first": atOnce,
+  });
+});
+
+// Two events of one batch each wait on the outline's read that was out before them, and each
+// marks the open view once that read answers: the view is read once, by the first, and the
+// second finds it read and reads it no more.
+test("a parent's observed view that two events of one batch wait on is read once the outline's read answers, and once only", async () => {
+  jest.useFakeTimers();
+  const client = new QueryClient();
+  const response = Promise.withResolvers<unknown>();
+  const parent = observedParent(client, response.promise);
+  try {
+    const read = client.fetchQuery({
+      queryFn: () => response.promise,
+      queryKey: issueTreeKey("CORE-1"),
+      staleTime: 0,
+    });
+    const versions = ["artifact-2", "artifact-3"].map((artifact) =>
+      eventOf("artifact.version", { artifact_id: artifact, number: 2 }, "CORE-2")
+    );
+    refreshQueries(
+      client,
+      versions.flatMap((version) => eventRefreshTargets(version, "alice"))
+    );
+    await settle();
+    const waiting = parent.viewReads();
+    response.resolve(OUTLINE_WITH_CHILD);
+    await read;
+    await tick(3_000, 100);
+    expect({ answered: parent.viewReads(), waiting }).toEqual({ answered: 1, waiting: 0 });
+  } finally {
+    parent.stop();
+    realClock();
+  }
 });
 
 /** The grandparent CORE-1's outline, which holds its child CORE-2's node and no node of the
