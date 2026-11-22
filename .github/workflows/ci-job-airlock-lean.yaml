@@ -82,11 +82,21 @@ jobs:
       # a host-less entry carrying guidance, a field the generator never writes, which both
       # validations refuse.
       - name: Compare the Go airlock with the model over the seed corpus
-        run: go test -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelRefusesAHostlessEntry)$' ./internal/cipher/proxyrules/
+        id: seed-corpus
+        run: ../../.github/scripts/go_test_events.py go test -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelRefusesAHostlessEntry)$' ./internal/cipher/proxyrules/
         working-directory: packages/envoy
       - name: Fuzz the Go airlock against the model
-        run: go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/cipher/proxyrules/
+        id: fuzz
+        run: ../../.github/scripts/go_test_events.py go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/cipher/proxyrules/
         working-directory: packages/envoy
+
+      - name: Upload the go test events
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: go-test-events-${{ job.check_run_id }}
+          path: ${{ runner.temp }}/go-test-events/
+          if-no-files-found: error
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

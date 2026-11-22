@@ -117,9 +117,11 @@ jobs:
       # step ran without it. With the fill's entry the step took 50 s (run 44565671151); with none,
       # 234 s (run 44563221379), against 28 to 34 s for the plain step.
       - name: Unit test envoy-infra
-        run: scripts/race-unit.sh run
+        id: unit
+        run: ../../../.github/scripts/go_test_events.py scripts/race-unit.sh run
         working-directory: packages/envoy/infra
       - name: Live tests of envoy-infra against nats-server (natslive)
+        id: natslive
         # gcp's live tests build helm, nats-server, the config reloader and the exporter with go
         # install first, minutes on a cold cache, so the package gets more than go test's 10 m.
         # One call per package, never one union -run over the three: a name an untagged test of
@@ -129,9 +131,16 @@ jobs:
         run: |
           for pkg in ./core ./seed ./gcp; do
             pattern=$(../../../.github/scripts/go-tagged-tests.sh natslive "$pkg")
-            go test -count=1 -timeout 30m -tags natslive -run "$pattern" "$pkg"
+            ../../../.github/scripts/go_test_events.py go test -count=1 -timeout 30m -tags natslive -run "$pattern" "$pkg"
           done
         working-directory: packages/envoy/infra
+      - name: Upload the go test events
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: go-test-events-${{ job.check_run_id }}
+          path: ${{ runner.temp }}/go-test-events/
+          if-no-files-found: error
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

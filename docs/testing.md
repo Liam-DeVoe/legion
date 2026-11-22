@@ -779,6 +779,32 @@ A job that carries `.github/scripts/disk_watch.py` through its steps prints the 
 `tool-fallback` and `tool-fallback-arm` carry it from before their first faulted install to after their last, and `envoy-smoke` carries it around its live-tests step alone.
 It says nothing about the run that was lost: the series goes to the log, and that run has none (dispatch://INFRA-2605).
 
+## Which tests a CI job ran
+
+A go test step's log says `ok <package> <time>` for a package that passed, and nothing about which of its tests ran, passed or skipped.
+Each go test step of CI runs its go test under `.github/scripts/go_test_events.py`, which runs it with `-json`, keeps every test2json event in `go-test-events/<step id>.jsonl` and prints the log go test prints without `-json`.
+Its job uploads those files as the artifact `go-test-events-<job id>`, failed and cancelled runs included, and `.github/scripts/check-workflow-files.sh` refuses a go test step that keeps none (its rule 7).
+A step that wrote no event fails, so an empty or missing file never reads as a step that ran no test.
+
+To read one job's results, with the job id from its URL (`.../job/<job id>`) or the jobs API:
+
+```sh
+job=<job id>
+run=$(gh api repos/cybermonklabs/legion/actions/jobs/$job --jq .run_id)
+dir=$(mktemp -d)
+gh run download "$run" -R cybermonklabs/legion -n "go-test-events-$job" -D "$dir"
+jq -c --arg t '<the test full name, subtests included>' 'select(.Action == "pass" and .Test == $t)' "$dir"/*.jsonl
+```
+
+A skipped test's own event says `"Action":"skip"`, so a skip is no pass.
+Each test's `pass`, `fail` and `skip` event carries test2json's `Elapsed`, its seconds, and `Time`, so a CI run's per-test times can be read from the same files.
+
+The upload step has no `continue-on-error`, so an artifact upload that fails fails its job, as a step that keeps no event does: a run whose record cannot be kept does not read as green.
+
+The artifacts of this public repository can be downloaded by anyone for 90 days, and GitHub's log masking does not reach them: every event is kept, a passing test's `t.Log` lines included.
+No go test step's environment holds a secret today.
+A step that is ever given one must keep it out of its tests' output, since rule 7 wraps that step like any other.
+
 ## A test asserts no count of work a broker may repeat
 
 A message broker that gives at-least-once delivery may hand one message to a handler twice. NATS

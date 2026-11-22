@@ -343,6 +343,7 @@ daemon_go_tests:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-daemon-go.yaml'
+  - '.github/scripts/go_test_events.py'
   - *go_workspace
   - 'packages/daemon/**'
   - *daemon_envoy_deps
@@ -433,6 +434,7 @@ plugin_pack:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-plugin-pack.yaml'
+  - '.github/scripts/go_test_events.py'
   - *go_workspace
   - *bun_install
   - *omp_install
@@ -978,6 +980,14 @@ race_memory_test: &race_memory_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/race_memory.test.sh'
   - '.github/scripts/race_memory.py'
+go_test_events_test: &go_test_events_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/go_test_events.test.sh'
+  - '.github/scripts/go_test_events.py'
+  - 'packages/envoy/scripts/backend-count.sh'
 disk_watch_test: &disk_watch_test
   - *ci_router
   - *ci_filters_data
@@ -1088,6 +1098,7 @@ test:
   - *gh_read_test
   - *dispatch_browser_samples_test
   - *race_memory_test
+  - *go_test_events_test
   - *disk_watch_test
   - *priorities_seed_check_test
   - *check_ci_filters_test
@@ -1668,6 +1679,7 @@ envoy_infra_go:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-envoy-infra-go.yaml'
+  - '.github/scripts/go_test_events.py'
   - *go_workspace
   - 'packages/envoy/infra/**'
   - '.github/scripts/go_build_tags.py'
@@ -1707,6 +1719,7 @@ envoy_go:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-envoy-go.yaml'
+  - '.github/scripts/go_test_events.py'
   - *bun_install
   - *go_workspace
   - 'packages/envoy/**'
@@ -1830,6 +1843,7 @@ dispatch_memory:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-dispatch-memory.yaml'
+  - '.github/scripts/go_test_events.py'
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
@@ -1867,6 +1881,7 @@ dispatch_multiprocess:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-dispatch-multiprocess.yaml'
+  - '.github/scripts/go_test_events.py'
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
@@ -1906,6 +1921,7 @@ dispatch_two_builds_go:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-dispatch-two-builds.yaml'
+  - '.github/scripts/go_test_events.py'
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
@@ -1998,6 +2014,7 @@ dispatch_two_builds:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-dispatch-two-builds.yaml'
+  - '.github/scripts/go_test_events.py'
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
@@ -2093,6 +2110,7 @@ listener_server_change:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-listener-server-change.yaml'
+  - '.github/scripts/go_test_events.py'
   - *go_workspace
   - *listener_command
   # why: .github/ci-notes/ci.md#listener_server_change-what-cmdlisteners-test-binary-compiles-that-go-list
@@ -2200,6 +2218,7 @@ broker_multiprocess:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-broker-multiprocess.yaml'
+  - '.github/scripts/go_test_events.py'
   - *go_workspace
   - 'packages/envoy/cipheraddr/*'
   - 'packages/envoy/agentloop/*'
@@ -2292,6 +2311,7 @@ airlock_lean:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-airlock-lean.yaml'
+  - '.github/scripts/go_test_events.py'
   - *go_workspace
   - 'packages/envoy/internal/cipher/proxyrules/**'
   - 'packages/envoy/internal/fold/*'
@@ -2310,6 +2330,7 @@ envoy_smoke:
   - *ci_filters_data
   # why: .github/ci-notes/ci.md#envoy_smoke-the-jobs-steps-which-build-the-image-and-smoke-it
   - '.github/workflows/ci-job-envoy-smoke.yaml'
+  - '.github/scripts/go_test_events.py'
   - '.dockerignore'
   - '.bun-version'
   - 'package.json'
@@ -2563,6 +2584,11 @@ ci_filters:
   - '**/go.work.sum'
   - 'packages/daemon/**'
   - 'packages/envoy/**'
+  # why: .github/ci-notes/ci.md#ci_filters-the-scripts-rule-7-of-the-workflow-file-check-reads
+  - '.github/scripts/**'
+  - 'scripts/**'
+  - 'packages/*/scripts/**'
+  - 'packages/dispatch/e2e/visual-run.sh'
 # why: .github/ci-notes/ci.md#tool_fallback-ciyamls-tool-fallback-and-tool-fallback-arm-jobs-the
 tool_fallback:
   - '.github/ci-tools.yaml'
@@ -2649,6 +2675,7 @@ envoy_go_race:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-envoy-go-race.yaml'
+  - '.github/scripts/go_test_events.py'
   - *go_workspace
   - 'packages/envoy/**'
   # why: .github/ci-notes/ci.md#envoy_go_race-listener-server-change-takes-its--run-from-this-script
@@ -2836,6 +2863,7 @@ envoy_go_race_api:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-envoy-go-race-api.yaml'
+  - '.github/scripts/go_test_events.py'
   - *go_workspace
   - 'packages/envoy/scripts/database-skips.sh'
   - 'packages/envoy/cipheraddr/*'
@@ -3075,6 +3103,7 @@ envoy_go_claim_model:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-envoy-go-claim-model.yaml'
+  - '.github/scripts/go_test_events.py'
   - *go_workspace
   - 'packages/envoy/**'
   - 'packages/contracts/fixtures/live/**'
@@ -3198,6 +3227,7 @@ envoy_go_race_docs:
   # why: .github/ci-notes/ci.md#envoy_go_race_docs-two-jobs-run-this-package-under-the-detector-and-share
   - '.github/workflows/ci-job-envoy-go-race-docs.yaml'
   - '.github/workflows/ci-job-envoy-go-docs-finalizers.yaml'
+  - '.github/scripts/go_test_events.py'
   - '.github/scripts/race_memory.py'
   - '.github/scripts/pg-connection-ceiling.sh'
   - *go_workspace

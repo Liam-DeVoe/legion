@@ -834,6 +834,18 @@ reads them all to find the files only this one calls - and a rule that reads a
 workflow has to run on the change that adds or edits one, which a list of the
 names already there cannot select.
 
+## ci_filters: The scripts rule 7 of the workflow file check reads
+
+Rule 7 of .github/scripts/check-workflow-files.sh reads every repository script a step of
+ci.yaml's run runs, sources or hands a shell, and the scripts those run, since a go test in any
+of them is one the rule holds to .github/scripts/go_test_events.py. This job is the one that runs
+the rule on a whole checkout, so a change to such a script has to start it: otherwise a go test
+added to scripts/e2e/stage1-skeleton.sh merges on a pull request this check never ran on, and the
+next pull request that starts the job fails on a step it never touched. The scripts the rule
+reads today lie under .github/scripts, scripts, packages/<package>/scripts and one in
+packages/dispatch/e2e, and the rule refuses a step whose script this filter does not select, so a
+new place a step reaches is added here by the change that makes the step reach it.
+
 ## tool_fallback: ci.yaml's tool-fallback and tool-fallback-arm jobs, the
 
 ci.yaml's tool-fallback and tool-fallback-arm jobs, the live proof of the second

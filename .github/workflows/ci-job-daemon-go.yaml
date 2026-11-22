@@ -196,9 +196,10 @@ jobs:
       # and the other job's from the one list and holds each step to it, so the skip and the run
       # cannot come to name different tests.
       - name: Test the Go daemon
+        id: unit
         run: |
           set -o pipefail
-          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/intake|internal/shimwire|internal/textcheck)$' | xargs go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
+          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/intake|internal/shimwire|internal/textcheck)$' | xargs ../../.github/scripts/go_test_events.py go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
         working-directory: packages/daemon
 
       # The outbox's lane registry, lease renewal and held clock are the daemon's first goroutines
@@ -241,7 +242,8 @@ jobs:
       # other job's from the one list and holds each step to it, so the skip and the run cannot
       # come to name different tests.
       - name: Test the concurrent packages under the race detector
-        run: go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/ ./internal/intake/ ./internal/shimwire/
+        id: race
+        run: ../../.github/scripts/go_test_events.py go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/ ./internal/intake/ ./internal/shimwire/
         working-directory: packages/daemon
 
       # What the race step's packages hold that the race build cannot run, run plain by name, one
@@ -251,8 +253,9 @@ jobs:
       # and builds its call graph twice, which without the detector took about a minute at a 2.3 GB
       # peak, and the detector multiplies both.
       - name: Test what the race build cannot run
+        id: race-impossible
         run: |
-          go test -count=1 -timeout 10m -run '^(TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt)$' ./internal/launcher
+          ../../.github/scripts/go_test_events.py go test -count=1 -timeout 10m -run '^(TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt)$' ./internal/launcher
         working-directory: packages/daemon
 
       # The proof builds the daemon's ./cmd/legion and boots it against the Postgres above, so it
@@ -261,6 +264,14 @@ jobs:
       # this split exists to shrink.
       - name: Stage 1 live proof
         run: bash scripts/e2e/stage1-skeleton.sh
+
+      - name: Upload the go test events
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: go-test-events-${{ job.check_run_id }}
+          path: ${{ runner.temp }}/go-test-events/
+          if-no-files-found: error
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

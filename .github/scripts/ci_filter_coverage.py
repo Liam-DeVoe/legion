@@ -1163,6 +1163,11 @@ PACKAGE = re.compile(r"\.\.?(/[A-Za-z0-9_./-]*)?")
 FLAG = re.compile(r"-v|-race|-count=[0-9]+|-timeout=[0-9]+[smh]|-buildvcs=false")
 DURATION = re.compile(r"[0-9]+[smh]")
 TAGS = re.compile(r"[A-Za-z0-9_,]+")
+# The script every go test step of CI runs its go test under (.github/scripts/go_test_events.py):
+# it runs `go test -json` with the step's own flags and packages, so the command compiles what the
+# go test behind it does. Named by its path from the step's directory; the gate that claims the
+# line declares the script as a read of its own.
+EVENTS_WRITER = re.compile(r"(?:\.\./)*\.github/scripts/go_test_events\.py")
 
 
 def reduce_line(line: str) -> tuple:
@@ -1182,6 +1187,10 @@ def reduce_line(line: str) -> tuple:
     while words and (assignment := ASSIGNMENT.fullmatch(words[0])):
         if assignment.group(1) not in ENV_ALLOWED:
             return *unreduced, f"it sets {assignment.group(1)}, which can change what go compiles"
+        words = words[1:]
+    # The events writer runs the go test behind it with its flags and packages unchanged (and
+    # -json, which moves no file go compiles), so the go command is what is left.
+    if len(words) > 2 and EVENTS_WRITER.fullmatch(words[0]) and words[1:3] == ["go", "test"]:
         words = words[1:]
     if not words or words[0] != "go":
         return *unreduced, f"it starts with `{words[0] if words else line}`, not go"

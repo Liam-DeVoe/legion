@@ -1881,6 +1881,20 @@ check "fails" "$(is "$status" 1)"
 check "names the command, the name it sets and the filter" \
   "$(contains "$out" 'job app step "Test the app" runs `GOOS=linux go test ./cmd/app ./lib`, which this check does not reduce (it sets GOOS, which can change what go compiles), so it counts as reading every Go file of the repository and every file under a Go module.s directory; filter app must select them all on any Go change')"
 
+# The events writer runs the go test behind it with -json and the step's own flags and packages,
+# so the line reduces to that go test; a script of another name in that place is no such writer.
+echo "case: a claimed simple go test behind the events writer"
+root=$(fixture events-writer)
+replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: ../.github/scripts/go_test_events.py go test ./cmd/app ./lib"
+run_check "$root"
+check "passes, the command reduced to the Run's closure" "$(is "$status" 0)"
+check "counts the job's files" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
+root=$(fixture events-writer-other)
+replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: ../.github/scripts/other.py go test ./cmd/app ./lib"
+run_check "$root"
+check "a script of another name in its place is not reduced" \
+  "$(contains "$out" 'runs `../.github/scripts/other.py go test ./cmd/app ./lib`, which this check does not reduce (it starts with `../.github/scripts/other.py`, not go)')"
+
 echo "case: an earlier step writes GOFLAGS to GITHUB_ENV before a claimed simple go command"
 root=$(fixture github-env-goflags)
 cat > "$root/mod/cmd/app/probe_test.go" <<'GO'
@@ -3268,17 +3282,17 @@ GO
 echo "case: the plain step's -run lists are what the lane's packages hold"
 root=$(race_tree)
 out=$(derived "$root" "lane/a/... lane/b")
-check "names every test of a !race file, sorted, TestMain aside, and the raceEnabled ones" \
+check "names every test of a !race file, sorted, TestMain aside, and the raceEnabled ones, each run under the events writer" \
   "$(is "$out" "$(printf '%s\n%s' \
-    "go test -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a" \
-    "go test -count=1 -timeout 10m -run '^(TestTheta)\$' ./lane/a/sub")")"
+    "../../.github/scripts/go_test_events.py go test -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a" \
+    "../../.github/scripts/go_test_events.py go test -count=1 -timeout 10m -run '^(TestTheta)\$' ./lane/a/sub")")"
 check "passes over the testdata package" "$(is "$(contains "$out" 'TestIgnored')" false)"
 check "and leaves out a package with no such test" "$(is "$(contains "$out" './lane/b')" false)"
 
 echo "case: a package the lane names alone does not reach the packages under it"
 out=$(derived "$root" "lane/a")
 check "names the package alone" \
-  "$(is "$out" "go test -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a")"
+  "$(is "$out" "../../.github/scripts/go_test_events.py go test -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a")"
 
 echo "case: a raceEnabled no top-level function encloses"
 root="$work/race-unattributable"

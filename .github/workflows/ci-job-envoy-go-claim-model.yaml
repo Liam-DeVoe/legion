@@ -87,8 +87,17 @@ jobs:
       # CLAIM_MODEL_TESTS builds this -run and leaves exactly these two out of envoy-go's plain
       # step. -v prints the model's table of states and checks to the log.
       - name: Search every order of the mention sender's claims
-        run: go test -count=1 -timeout 40m -v -run '^(TestTheClaimModelsRulesAreTheSQLsRules|TestTheMentionSenderClaimModel)$' ./internal/dispatch/api
+        id: claim-model
+        run: ../../.github/scripts/go_test_events.py go test -count=1 -timeout 40m -v -run '^(TestTheClaimModelsRulesAreTheSQLsRules|TestTheMentionSenderClaimModel)$' ./internal/dispatch/api
         working-directory: packages/envoy
+
+      - name: Upload the go test events
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: go-test-events-${{ job.check_run_id }}
+          path: ${{ runner.temp }}/go-test-events/
+          if-no-files-found: error
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

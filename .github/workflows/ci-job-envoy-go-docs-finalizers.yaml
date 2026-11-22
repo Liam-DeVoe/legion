@@ -97,7 +97,8 @@ jobs:
       # and the count of services the tests left alive is the half of this job that no detector
       # of Go's reports.
       - name: Test the document service under the cleanup detector
-        run: GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 34m ./internal/dispatch/docs/
+        id: finalizers
+        run: GODEBUG=checkfinalizers=1 ../../.github/scripts/go_test_events.py go test -v -count=1 -timeout 34m ./internal/dispatch/docs/
         working-directory: packages/envoy
         # This step judges the document service's xid window gaps (storetest.XidJudgesGaps). With
         # this set, a runner whose kernel stops showing a thread's scheduler clocks, or refuses to
@@ -105,6 +106,14 @@ jobs:
         # them on the window's shape alone (storetest.XidRequireGapsEnv).
         env:
           DISPATCH_XID_REQUIRE_GAP_JUDGMENT: "1"
+
+      - name: Upload the go test events
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: go-test-events-${{ job.check_run_id }}
+          path: ${{ runner.temp }}/go-test-events/
+          if-no-files-found: error
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

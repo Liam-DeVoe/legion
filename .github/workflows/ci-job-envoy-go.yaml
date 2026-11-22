@@ -142,13 +142,14 @@ jobs:
       # 127 s; with the xid window tests in, one run on a two-vCPU pod took the API 134.082 s and
       # delivery 4.106 s (INFRA-636). 10 minutes each is ample.
       - name: Test what the race build cannot run at all or at full size
+        id: race-impossible
         run: |
-          go test -count=1 -timeout 10m -run '^(TestXidWindowAttributionMoveRecorded|TestXidWindowDeployedEventRecorded)$' ./internal/dispatch/delivery
-          go test -count=1 -timeout 10m -run '^(TestACommitThatEndsAfterTheCaptureIsInsideTheTrace|TestAGapsDeviceSoftirqsHoldOnlyTheirMeasuredTime|TestAMeasureUnderGoTestTraceSaysSo|TestAQuotasReadingSeesASleepAsASleep|TestAQuotasThrottlingReadsAsAWaitForACPU|TestARigProblemHidesNoViolation|TestASleepAfterARuntimeHandoffIsNotErasedByIt|TestASoftirqCountIsReadAtItsCPUsColumn|TestASoftirqCountThatWrappedInAGapReadsItsRuns|TestAStallInTheTracesCalibrationShiftsNoMoment|TestAStalledCalibrationLeavesAGapOfTheCodesCPUMade|TestAStatementTheRigCouldNotReadIsUnknown|TestAStoppedMeasureLeavesTheNextItsOwnTrace|TestAWaitOnAPHandedToALockedThreadDecidesNothing|TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown|TestRuleTwoReadsTheStatementsTheCodeMade|TestTheKernelsInterruptAccountingIsReadOffProcStat|TestTheRigCountsTheSoftirqsItsPinnedCPURuns|TestTheTracersEventsInAWindowTouchNoFreshPage|TestXidGapJudgmentNeedsReadableThreadClocks)$' ./internal/dispatch/store/storetest
-          go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
-          go test -count=1 -timeout 10m -run '^(TestACalloutStormAfterAServerRestartAdmitsEveryConnection)$' ./internal/cipher/natscallout
-          go test -count=1 -timeout 10m -run '^(TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec)$' ./internal/dispatch/api
-          go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound|TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP|TestXidWindowKeepsD6WhenTheLoadHoldsThePs|TestXidWindowRigHoldsAGapsSoftirqsToTheirCap|TestXidWindowRigNeverExcusesASleepForSoftirqs)$' ./internal/dispatch/docs
+          ../../.github/scripts/go_test_events.py go test -count=1 -timeout 10m -run '^(TestXidWindowAttributionMoveRecorded|TestXidWindowDeployedEventRecorded)$' ./internal/dispatch/delivery
+          ../../.github/scripts/go_test_events.py go test -count=1 -timeout 10m -run '^(TestACommitThatEndsAfterTheCaptureIsInsideTheTrace|TestAGapsDeviceSoftirqsHoldOnlyTheirMeasuredTime|TestAMeasureUnderGoTestTraceSaysSo|TestAQuotasReadingSeesASleepAsASleep|TestAQuotasThrottlingReadsAsAWaitForACPU|TestARigProblemHidesNoViolation|TestASleepAfterARuntimeHandoffIsNotErasedByIt|TestASoftirqCountIsReadAtItsCPUsColumn|TestASoftirqCountThatWrappedInAGapReadsItsRuns|TestAStallInTheTracesCalibrationShiftsNoMoment|TestAStalledCalibrationLeavesAGapOfTheCodesCPUMade|TestAStatementTheRigCouldNotReadIsUnknown|TestAStoppedMeasureLeavesTheNextItsOwnTrace|TestAWaitOnAPHandedToALockedThreadDecidesNothing|TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown|TestRuleTwoReadsTheStatementsTheCodeMade|TestTheKernelsInterruptAccountingIsReadOffProcStat|TestTheRigCountsTheSoftirqsItsPinnedCPURuns|TestTheTracersEventsInAWindowTouchNoFreshPage|TestXidGapJudgmentNeedsReadableThreadClocks)$' ./internal/dispatch/store/storetest
+          ../../.github/scripts/go_test_events.py go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
+          ../../.github/scripts/go_test_events.py go test -count=1 -timeout 10m -run '^(TestACalloutStormAfterAServerRestartAdmitsEveryConnection)$' ./internal/cipher/natscallout
+          ../../.github/scripts/go_test_events.py go test -count=1 -timeout 10m -run '^(TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec)$' ./internal/dispatch/api
+          ../../.github/scripts/go_test_events.py go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound|TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP|TestXidWindowKeepsD6WhenTheLoadHoldsThePs|TestXidWindowRigHoldsAGapsSoftirqsToTheirCap|TestXidWindowRigNeverExcusesASleepForSoftirqs)$' ./internal/dispatch/docs
         working-directory: packages/envoy
         # This step judges the xid window tests' statement-free gaps (storetest.XidJudgesGaps).
         # With this set, a runner whose kernel stops showing a thread's scheduler clocks, or
@@ -183,8 +184,9 @@ jobs:
       # are built from the same list. So are the backend count's four tests of cmd/cipher,
       # which the count step below runs in this same job and env (BACKEND_COUNT_TESTS).
       - name: Unit test envoy Go package
+        id: unit
         run: |
-          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/cipher($|/)|/cmd/cipherd$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$'
+          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/cipher($|/)|/cmd/cipherd$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs ../../.github/scripts/go_test_events.py go test -count=1 -timeout 20m -skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$'
         working-directory: packages/envoy
         # The refs package's xid window test runs here, so this step judges gaps too.
         env:
@@ -201,7 +203,8 @@ jobs:
       # neither package, reads aws=0 and fails, as the verification's check c8 requires. It is
       # their one run: the unit step and the database-skips step skip them by name.
       - name: Count the store-form rows on each backend
-        run: packages/envoy/scripts/backend-count.sh ./cmd/cipher/ ./internal/cipher/api/ -- TestEverySecretFormNamesTheSourceItUses TestNoSecretFormAsksTheBrokerForACredential TestUseCommandOutsideASessionReachesTheMachineSource TestTheChainSkipsAbsenceAndStopsOnABrokenSource TestSettingsNameTheGoogleExchangeAudienceOnEitherStore
+        id: backend-count
+        run: .github/scripts/go_test_events.py packages/envoy/scripts/backend-count.sh ./cmd/cipher/ ./internal/cipher/api/ -- TestEverySecretFormNamesTheSourceItUses TestNoSecretFormAsksTheBrokerForACredential TestUseCommandOutsideASessionReachesTheMachineSource TestTheChainSkipsAbsenceAndStopsOnABrokenSource TestSettingsNameTheGoogleExchangeAudienceOnEitherStore
       # The step below is the one skip counter of the module's database-backed packages, which
       # envoy-go-race-api runs the Dispatch API through too, so its own test runs first:
       # packages/envoy/scripts/database-skips.test.sh plants a skipped test in
@@ -233,8 +236,9 @@ jobs:
       # that same job, before cmd/cipherd joined this step: 355 s for the step. Its --skip leaves
       # out the backend count's test of ./internal/cipher/api/, which the count step above runs.
       - name: Count the database broker suites' skips
+        id: database-skips
         timeout-minutes: 30
-        run: packages/envoy/scripts/database-skips.sh --timeout 20m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$'
+        run: .github/scripts/go_test_events.py packages/envoy/scripts/database-skips.sh --timeout 20m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$'
       # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
       # never runs it. Vetting it keeps it compiling as the package changes.
       - name: Vet agentloop's live proof (no model call)
@@ -278,21 +282,23 @@ jobs:
       # assignment is a line of its own: under bash -e it carries the script's exit status, so an
       # empty or refused list fails the step instead of running -run "", which matches every test.
       - name: Test the container-backed NATS matrix (natslive)
+        id: natslive
         run: |
           rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
-          go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
+          ../../.github/scripts/go_test_events.py go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
           cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
-          go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
+          ../../.github/scripts/go_test_events.py go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
           callout=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/cipher/natscallout)
-          go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/cipher/natscallout/
+          ../../.github/scripts/go_test_events.py go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/cipher/natscallout/
           grant=$(../../.github/scripts/go-tagged-tests.sh natslive ./natsgrant)
-          go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
+          ../../.github/scripts/go_test_events.py go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
           edge=$(../../.github/scripts/go-tagged-tests.sh natslive ./cmd/listener)
-          go test -count=1 -timeout 10m -tags natslive -run "$edge" -v ./cmd/listener/
+          ../../.github/scripts/go_test_events.py go test -count=1 -timeout 10m -tags natslive -run "$edge" -v ./cmd/listener/
         working-directory: packages/envoy
 
       - name: Integration test envoy (a real NATS server, in the test process)
-        run: go test ./internal/integration/ -timeout 300s -count=1
+        id: integration
+        run: ../../.github/scripts/go_test_events.py go test ./internal/integration/ -timeout 300s -count=1
         working-directory: packages/envoy
       # check c-callout-live of the NATS auth service's verification: the real broker (twice, one
       # queue group), listener, Dispatch and nats-server behind the auth callout, built and started
@@ -304,6 +310,13 @@ jobs:
         env:
           LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
         working-directory: packages/envoy
+      - name: Upload the go test events
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: go-test-events-${{ job.check_run_id }}
+          path: ${{ runner.temp }}/go-test-events/
+          if-no-files-found: error
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

@@ -61,10 +61,19 @@ jobs:
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Memory tests of the Dispatch server
+        id: memory-tests
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh memory ./cmd/dispatch)
-          go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch
+          ../../.github/scripts/go_test_events.py go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
+
+      - name: Upload the go test events
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: go-test-events-${{ job.check_run_id }}
+          path: ${{ runner.temp }}/go-test-events/
+          if-no-files-found: error
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
