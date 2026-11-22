@@ -15,13 +15,15 @@ import (
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestAForwardWhoseOutcomeComesLateInTheDrainsWaitEndsBeforeIt names no symbol this round added, so
-// it builds against the forwarder before it and fails there for the reason it names.
-// TestAHeldRetryInItsClaimReadAtTheStopEndsBeforeTheDrainsWait reads the claim through the
-// delivery configuration's claim store (claims) and checks the cut keep's line (roleKeepCutLine),
-// both this round's; its control is the head with the retry's steps under context.Background().
+// it builds against the forwarder before it and fails there for the reason it names. The other two
+// rows read the claim through the delivery configuration's claim store (claims), and
+// TestAHeldRetryInItsClaimReadAtTheStopEndsBeforeTheDrainsWait checks the cut keep's line
+// (roleKeepCutLine), both this round's; their controls are the head with the delivery off the
+// handler under context.Background(), as it was at 106f8d769f for a queued forward resolved again.
 
 // keepThatNeverAnswers is a keep whose publish NATS never answers: it waits for its context to
 // end and fails with the context's error, as a keep over a connection whose replies are lost does.
@@ -138,11 +140,7 @@ func TestAHeldRetryInItsClaimReadAtTheStopEndsBeforeTheDrainsWait(t *testing.T) 
 	item, msg := laneMessage(t, role, "retry-in-its-claim-read")
 
 	coreNATSDeliveryHandler(cfg)(msg)
-	select {
-	case <-claims.entered:
-	case <-time.After(20 * time.Second):
-		t.Fatalf("UNKNOWN: the held message's retry made no claim read within 20 s:\n%s", harness.logs.String())
-	}
+	testwait.Receive(t, "the held message's retry to start its claim read", claims.entered)
 	forwarder.stopHolding()
 	waitEnds := forwarder.keepHeldNow()
 	forwarder.settled(t)
@@ -171,5 +169,102 @@ func TestAHeldRetryInItsClaimReadAtTheStopEndsBeforeTheDrainsWait(t *testing.T) 
 	}
 	if ended.After(waitEnds) {
 		t.Fatalf("the message ended %s after the drain's wait ended, want before it: its line comes after the process has gone on to exit:\n%s", ended.Sub(waitEnds), logs)
+	}
+}
+
+// A queued forward whose resolution grew too old while it waited behind its holder's worker
+// (roles.ForwardFenceAge) is resolved again on that worker, off the lane's handler, and when the
+// listener stops in that resolution's claim read the message still ends with its own line before
+// the drain's wait ends: the worker resolves under the forwarder's stop context, so the stop cuts
+// the read, the message holds and parks, and it ends under the stop's deadline. The holder's first
+// forward blocks in its publish while the second message queues behind it; the listener's clock
+// then moves past the fence, the claim read stops answering and the keep never answers, and the
+// first forward is let go, so the worker takes the second and resolves it again. The row stops the
+// listener once that read has started. Before, the context of a delivery was chosen by its attempts,
+// and this first delivery off the handler read and kept under context.Background(), 2 s each, so
+// the message ended 2 s after the drain's wait.
+func TestAForwardResolvedAgainOnItsWorkerAtTheStopEndsBeforeTheDrainsWait(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
+	const role = "resolved-again-on-its-worker"
+	claimFor(t, harness, role, "ses_resolved_again")
+	claims := &claimReadThatStopsAnswering{claims: harness.registry, entered: make(chan struct{})}
+	var clock atomic.Int64
+	clock.Store(time.Now().UnixNano())
+	entered, release := make(chan struct{}), make(chan struct{})
+	var forwards atomic.Int32
+	cfg := harness.config
+	cfg.claims = claims
+	cfg.keepPublish = keepThatNeverAnswers
+	cfg.now = func() time.Time { return time.Unix(0, clock.Load()) }
+	cfg.forwardRole = func(string, contracts.Envelope, string, time.Duration) (func() error, error) {
+		if forwards.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+		return func() error { return nil }, nil
+	}
+	cfg = wireTestRoleForwarder(t, cfg)
+	forwarder := cfg.roleForwards
+	handler := coreNATSDeliveryHandler(cfg)
+	_, firstMsg := laneMessage(t, role, "resolved-again-first")
+	second, secondMsg := laneMessage(t, role, "resolved-again-second")
+
+	handler(firstMsg)
+	testwait.Receive(t, "the holder's first forward to start", entered)
+	handler(secondMsg)
+	clock.Add(int64(roles.ForwardFenceAge + time.Minute))
+	claims.stopAnswering.Store(true)
+	close(release)
+	testwait.Receive(t, "the queued forward's resolution again to start its claim read", claims.entered)
+	forwarder.stopHolding()
+	waitEnds := forwarder.keepHeldNow()
+	forwarder.settled(t)
+	ended := time.Now()
+
+	logs := harness.logs.String()
+	if got := forwards.Load(); got != 1 {
+		t.Fatalf("the lane made %d forwards, want only the first: the second was cut in its resolution:\n%s", got, logs)
+	}
+	if got := endsOf(logs, second.EventID); got != 1 {
+		t.Fatalf("the second message ended %d times, want once: kept, or the line that it was not:\n%s", got, logs)
+	}
+	if ended.After(waitEnds) {
+		t.Fatalf("the second message ended %s after the drain's wait ended, want before it: its line comes after the process has gone on to exit:\n%s", ended.Sub(waitEnds), logs)
+	}
+}
+
+// A keep whose caller's context the stop cancelled is logged as cut, at INFO, only when its failure
+// holds the message (keepFailureHolds): a keep a rule refuses for good in the same instant is
+// logged at ERROR, as roleKeepFailedLine, since the caller gives the message up and that line is
+// where the refusal's text appears. Control: the same cancelled caller with a failure that holds
+// the message is the INFO line.
+func TestAKeepARuleRefusesAtTheStopIsLoggedAsAFailure(t *testing.T) {
+	for _, row := range []struct {
+		name      string
+		failure   error
+		wantLine  string
+		wantLevel string
+	}{
+		{"a refusal for good", fmt.Errorf("keep: %w", bus.ErrRefused), roleKeepFailedLine, "ERROR"},
+		{"control: a failure that holds the message", context.Canceled, roleKeepCutLine, "INFO"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			harness := newListenerDeliveryHarness(t)
+			cfg := harness.config
+			cfg.keepPublish = func(context.Context, string, contracts.Envelope, string) (bus.StoredAck, error) {
+				return bus.StoredAck{}, row.failure
+			}
+			item := listenerTestEnvelope(contracts.RoleTopicPrefix+"refused-at-the-stop", "refused-at-the-stop")
+			parent, cancel := context.WithCancel(context.Background())
+			cancel()
+			if _, err := keepRoleMessage(parent, cfg, "refused-at-the-stop", item); err == nil {
+				t.Fatal("the keep succeeded, want its failure")
+			}
+			logs := harness.logs.String()
+			lines := linesIn(logs, row.wantLine, map[string]any{"event_id": item.EventID})
+			if len(lines) != 1 || lines[0]["level"] != row.wantLevel {
+				t.Fatalf("lines %v, want one %q at %s:\n%s", lines, row.wantLine, row.wantLevel, logs)
+			}
+		})
 	}
 }

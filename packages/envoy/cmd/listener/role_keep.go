@@ -233,8 +233,8 @@ const (
 const roleKeepFailedLine = "listener kept role message publish failed"
 
 // roleKeepCutLine is logged at INFO in place of roleKeepFailedLine when the keep's caller cut it
-// (keepRoleMessage): the stop cancels a held message's retry, which holds the message and keeps it
-// again under the stop's deadline, so the keep it cut lost nothing.
+// (keepRoleMessage): the stop cancels a delivery off the lane's handler, which holds the message
+// and keeps it again under the stop's deadline, so the keep it cut lost nothing.
 const roleKeepCutLine = "listener kept role message publish cut by its caller; the message is held"
 
 // roleKeepLaneCursor is one walk's hold on a role's drain cursor: everything each write of it
@@ -494,15 +494,18 @@ type keptRolePublish func(ctx context.Context, subject string, item contracts.En
 // noHolder and the role lane's keepRoleLaneMessage), so neither carries a copy of it; the error
 // goes back to the caller, which decides from it whether the message is held for another attempt
 // (resolveCoreRoleHolder). A keep the caller cut itself - its context cancelled, as the stop
-// cancels a held message's retry - is no failure of the keep's: the caller holds the message and
-// keeps it again, so the line is roleKeepCutLine at INFO rather than roleKeepFailedLine at ERROR.
+// cancels a delivery off the lane's handler - with a failure that holds the message
+// (keepFailureHolds) is no failure of the keep's: the caller holds the message and keeps it again,
+// so the line is roleKeepCutLine at INFO rather than roleKeepFailedLine at ERROR. A keep a rule
+// refused for good is logged at ERROR even then: the caller gives the message up, and this line is
+// where the refusal's text appears.
 func keepRoleMessage(parent context.Context, cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, error) {
 	ctx, cancel := context.WithTimeout(parent, roleKeepPublishWindow)
 	defer cancel()
 	kept, err := storeKeptRoleCopy(ctx, cfg, role, item, cfg.keepPublish)
 	if err != nil {
 		line, level := roleKeepFailedLine, slog.LevelError
-		if errors.Is(parent.Err(), context.Canceled) {
+		if errors.Is(parent.Err(), context.Canceled) && keepFailureHolds(err) {
 			line, level = roleKeepCutLine, slog.LevelInfo
 		}
 		cfg.logger.LogEvent(level, line,
