@@ -2803,7 +2803,78 @@ Name it by its contract entry rather than by its number: it is the release whose
 A daemon of any release before it knows neither, and it decodes an outbox payload strictly (`validNoticeKinds` and `validSuperviseOp` in `record/outbox.go`), so an `owner-step` or `slot_credential` row still queued when that image is pinned can never be decoded.
 An `owner-step` row fails `GET /legion/v1/state` for the whole project on every attempt, by the chain the `volume-near-full` row above sets out (`WaitingNotices` in `record/store.go`, `pacedCatchUps` in `daemon/daemon.go`), and a `slot_credential` row fails every read of its role's runs (`RoleRuns` in `record/store.go`), each admission pass of its issue among them.
 
-No migration of that earlier release deletes these rows, so the delete is the operator's.
+**Finish or stop each task whose plan the earlier release refuses before its image is pinned.**
+This release takes five shapes of a task that the earlier release refuses when an owner gives its plan (`Supported` and `stepReasons` in that release's `plan/validate.go`).
+They are a step of the key `owner` on a role but `acceptance`, such as `implementer:owner`; `acceptance` with no key, which this release runs as a fresh agent of the role `acceptance`, or with a key but `owner`; a task with no step `implementer`, which opens no pull request and is done when its retro ends; a step of `tester`, `reviewer` or `acceptance` with no step `implementer` before it; and a step whose role is of the type `implementation` after the step `implementer`.
+The earlier release checks a plan only as an owner gives it (`registerPlan` in `api/plan.go`), and it walks a plan its rows already hold as the rows say, so it runs such a task wrongly.
+This release writes the owner's architect claim on the phases row of a step of the key `owner` (`enter` in `workflow/effects.go`).
+The earlier release acts on the claim a role's phases row names for each row of that role on the issue that names no claim of its own, a start among them (`WorkerClaim` in `record/record.go`, `workerToken` in `daemon/outbox.go`), and its own entry into such a step takes the claim of the tree's architect (`stepToken` in `workflow/steps.go`), so it starts that step's role on an architect's claim.
+The retro of a task with no step `implementer` is the owner's here and a fresh implementer's there (`RoleFor` in `phase/phase.go`), and there a retro moves on to `merging` alone, which only the merge of a pull request ends (`stepRows` and `TableOf` in `workflow/table.go`), so the task waits in `merging` for a pull request nobody opens.
+The earlier loader holds each project's `default_steps` to the same checks and refuses `legion.yaml` with `projects.<KEY>.default_steps:` and each reason (`checkDefaultSteps` in `config/roles.go`), so where the file gives steps of these shapes, change them to steps the earlier release takes before you pin its image.
+
+With this release's daemon still running, list each task the earlier release could still walk with the statement below, with `<PROJECT>` the key of the project whose daemon rolls back.
+It reads the plan rows and the issues, and changes nothing.
+
+```sql
+with listed as (
+  select t.issue, t.generation, t.task, t.state, t.running_kind, t.position,
+    (select min(s.position) from plan_steps s where (s.issue, s.generation, s.task) = (t.issue, t.generation, t.task) and s.role = 'implementer') as implementer_at
+  from plan_tasks t
+  join issue_plans v on (v.issue, v.generation, v.version) = (t.issue, t.generation, t.plan_version)
+  where split_part(t.issue, '-', 1) = '<PROJECT>'
+    and t.generation = (select max(g.generation) from issue_plans g where g.issue = t.issue)
+    and (t.state in ('waiting', 'running') or v.source = 'owner')
+), reasons as (
+  select issue, generation, task, null::integer as step, 'no step implementer' as reason from listed where implementer_at is null
+  union all
+  select l.issue, l.generation, l.task, s.position, r.reason
+  from listed l
+  join plan_steps s on (s.issue, s.generation, s.task) = (l.issue, l.generation, l.task)
+  cross join lateral (values
+    (s.agent_key = 'owner' and s.role <> 'acceptance', s.role || ':owner, the key owner on a role but acceptance'),
+    (s.role = 'acceptance' and s.agent_key = '', 'acceptance with no key'),
+    (s.role = 'acceptance' and s.agent_key not in ('', 'owner'), 'acceptance:' || s.agent_key || ', a key on acceptance but owner'),
+    (s.role in ('tester', 'reviewer', 'acceptance') and s.position < coalesce(l.implementer_at, s.position + 1), s.role || ' with no step implementer before it'),
+    (s.role <> 'implementer' and s.type = 'implementation' and s.position > l.implementer_at, s.role || ' of the type implementation after the step implementer')
+  ) as r (hit, reason)
+  where r.hit
+)
+select l.issue, l.task, l.state,
+  case l.running_kind when '' then 'none' when 'step' then 'step ' || l.position else l.running_kind end as place,
+  coalesce(i.phase, 'not recorded') as phase, coalesce(i.status, '') as status, r.step, r.reason
+from reasons r
+join listed l on (l.issue, l.generation, l.task) = (r.issue, r.generation, r.task)
+left join issues i on i.key = l.issue
+order by l.issue, l.task, r.step nulls first;
+```
+
+For each issue it reads the plan of the newest generation that holds plan rows: the plan its run walks, or the plan its next run takes, since a new run takes the newest plan its owner gave, of any generation, in the earlier release too (`planFirstStep` in `workflow/plan.go`).
+It lists each task that is `waiting` or `running`, and each task that is `stopped`, `done` or `left` of a plan its owner gave.
+It leaves out an ended task of the project's default steps, since a later run with no plan of its owner takes the `default_steps` the earlier release reads.
+Each line is one reason the earlier release refuses the task for, with the issue, the task, its state, where it stands (`place`: its step, `retro`, `merge`, or `none` before its first step), the issue's phase and Dispatch status (`not recorded` for an issue the daemon has not recorded, whose plan waits at generation 0), and the place of the step the reason names (`step`, empty for a reason of the whole task).
+Act on each listed task by its state:
+
+- A task that is `running`: let it reach `done`, or have its owner, the issue's architect, stop it with `stop_task`.
+  Finishing costs the time the rollback waits for it.
+  The stop ends the running step, stops that step's process and keeps its session, and holds the issue `task-stopped` from the phase its task stood in.
+  Under the earlier release its owner then gives a later version of the plan, which that release checks as it is given, and that version starts the task again at its first step, so the stop costs the run of the task so far.
+
+- A task that is `waiting`: its owner gives a later version of the plan with `register_plan` whose task the earlier release takes, which costs nothing, since no work of the task started.
+  Where the daemon has recorded the issue, `stop_task` stops the task too.
+
+- A task that is `stopped`: no step of it runs, and its owner gives the later version under the earlier release, which checks it.
+  But a person's `todo` on a root held for the stop starts the task again at its first step on the same plan (`restartTask` in `workflow/plan_stop.go`), so set no such root to `todo` before its owner gives that version.
+
+- A task that is `done` or `left`: no step of it runs, but a new run of its issue, a `rerun_child` of a child or a person's `todo` on a root, takes this plan again, and before that run `register_plan` refuses a later version (`TASK_DONE`), so run such an issue again only after the roll-forward.
+  Where the issue already stands at `admitted` in a new run, its owner stops its task with `stop_task`, which settles the plan the run's first step would walk and stops it.
+
+Once every project's daemon on the database is stopped, run the statement again: it must list no task that is `waiting` or `running`.
+A plan given or a step started since the first run shows there, and to finish or stop such a task, start this release's daemon again.
+
+In a rollback past several releases, run this section's steps first, before the ways back of the older releases: the release that keys a phases row by its step, the release whose deployment defines roles, and the release whose owner's plan picks the steps, with the migrations its section runs before it (`20261117213545_plan_step_agent.up.sql`, `20261117201743_plan_roles.up.sql`).
+The stops need this release's `stop_task`, and the statement reads the plan rows that the last of those ways back drops.
+
+No migration of that earlier release deletes the `owner-step` and `slot_credential` rows, so the delete is the operator's.
 Run this with every project's daemon on that database stopped, before the earlier image is pinned, with `<PROJECT>` the key of the project whose daemon rolls back:
 
 ```sql
