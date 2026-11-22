@@ -786,7 +786,7 @@ func TestTheResolveSettingMayNameThePortItsDialReaches(t *testing.T) {
 
 // TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne: BROKER_AIRLOCK_PRIVATE_UPSTREAM is one
 // <host>=<url> entry, read as that host and that URL, and unset is none. Two entries, the setting
-// with no rules file, an entry not of that form, a host that is not one lower-case host name, and a
+// with no profiles file, an entry not of that form, a host that is not one lower-case host name, and a
 // URL that does not parse, is not http or https, names no host or a port outside 1 to 65535, carries
 // a user, a path, a query or a fragment, or names a host every dial of the proxy refuses (localhost,
 // a name under .localhost, a loopback, link-local, unspecified or multicast address, a cloud
@@ -868,21 +868,22 @@ func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
 	}
 }
 
-// privateEntry is the rules entry the private destination's host is bound by: DISPATCH_RESULTS_TOKEN
-// (resultsEntry), bound to dispatch.test.
+// privateEntry is the proxy block the private destination's host is bound by: the profile
+// DISPATCH_RESULTS_TOKEN's (resultsEntry), bound to dispatch.test.
 func privateEntry() proxyrules.SecretRule {
 	entry := resultsEntry()
 	entry.Hosts = []string{"dispatch.test"}
 	return entry
 }
 
-// TestAPrivateUpstreamNeedsOneBindingEntry: AirlockResultRules takes rules in which the one entry
-// that binds the destination's host is DISPATCH_RESULTS_TOKEN, bound to that host alone, of kind
-// dpop, with a non-empty allow list, carried in Authorization alone (an entry naming no headers
-// carries the default, Authorization). No entry for the host, a second entry over it
-// (proxyrules.HostBound, so a "*." entry over the host binds it too), an entry of no kind, no allow
-// list, an empty one and another header are each refused, naming the setting or the entry and what
-// is wrong. With no destination, no result entries and no dpop entry, any rules are taken.
+// TestAPrivateUpstreamNeedsOneBindingEntry: AirlockResultRules takes the profiles' proxy blocks
+// when the one block that binds the destination's host is the profile DISPATCH_RESULTS_TOKEN's,
+// bound to that host alone, of kind dpop, with a non-empty allow list, carried in Authorization
+// alone (a block naming no headers carries the default, Authorization). No profile for the host, a
+// second profile over it (proxyrules.HostBound, so a "*." block over the host binds it too, and the
+// refusal names that host), a profile of no kind, no allow list, an empty one and another header
+// are each refused, naming BROKER_PROFILES_FILE, the setting or the profile, and what is wrong.
+// With no destination, no result entries and no dpop block, any profiles are taken.
 func TestAPrivateUpstreamNeedsOneBindingEntry(t *testing.T) {
 	const setting = "BROKER_AIRLOCK_PRIVATE_UPSTREAM"
 	e := airlockEnv()
@@ -908,9 +909,9 @@ func TestAPrivateUpstreamNeedsOneBindingEntry(t *testing.T) {
 		name, says string
 		spoil      func(*proxyrules.Rules)
 	}{
-		{"no entry for the host", "names the host dispatch.test", func(r *proxyrules.Rules) { r.Secrets[0].Hosts = []string{"other.test"} }},
-		{"a second entry *.test", "WILDCARD_TOKEN", func(r *proxyrules.Rules) { r.Secrets = append(r.Secrets, pattern) }},
-		{"an entry of no kind", "kind dpop", func(r *proxyrules.Rules) { r.Secrets[0].Kind = "" }},
+		{"no profile for the host", "names the host dispatch.test", func(r *proxyrules.Rules) { r.Secrets[0].Hosts = []string{"other.test"} }},
+		{"a second profile *.test", "the profile WILDCARD_TOKEN of BROKER_PROFILES_FILE binds the host dispatch.test", func(r *proxyrules.Rules) { r.Secrets = append(r.Secrets, pattern) }},
+		{"a profile of no kind", "kind dpop", func(r *proxyrules.Rules) { r.Secrets[0].Kind = "" }},
 		{"no allow list", "allow list", func(r *proxyrules.Rules) { r.Secrets[0].Allow = nil }},
 		{"an empty allow list", "allow list", func(r *proxyrules.Rules) { r.Secrets[0].Allow = []proxyrules.Allow{} }},
 		{"a header X-Token", "Authorization header alone", func(r *proxyrules.Rules) { r.Secrets[0].Headers = []string{"X-Token"} }},
@@ -920,6 +921,10 @@ func TestAPrivateUpstreamNeedsOneBindingEntry(t *testing.T) {
 		err := AirlockResultRules(rules, upstream, false)
 		if err == nil || !strings.Contains(err.Error(), c.says) || (!strings.Contains(err.Error(), setting) && !strings.Contains(err.Error(), "DISPATCH_RESULTS_TOKEN")) {
 			t.Errorf("%s: err = %v, want a refusal naming %s or DISPATCH_RESULTS_TOKEN and %q", c.name, err, setting, c.says)
+			continue
+		}
+		if !strings.Contains(err.Error(), "BROKER_PROFILES_FILE") || strings.Contains(err.Error(), "BROKER_AIRLOCK_RULES_FILE") {
+			t.Errorf("%s: err = %v, want a refusal naming BROKER_PROFILES_FILE, whose proxy blocks are the rules, and not the removed BROKER_AIRLOCK_RULES_FILE", c.name, err)
 		}
 	}
 }
