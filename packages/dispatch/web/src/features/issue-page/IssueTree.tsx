@@ -30,7 +30,7 @@ import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
-import { NoteOwnAct, sameOwnFields } from "./own-act";
+import { drawnWords, NoteOwnAct, sameOwnFields } from "./own-act";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, nodeStateWord } from "./page-words";
 import { type Press, trackPress, usePressFocus } from "./press-focus";
@@ -274,39 +274,41 @@ export function IssueTree({
         : { line, ...(row === undefined ? {} : { row }) }
     );
   }, []);
-  // The node the reader last acted on themselves - a Keep of its decision, an edit in its row's
-  // editor - with the tree drawn as it was noted, and for an edit the row it was made in: a read
-  // that drops that node's row is theirs (`heldRow`, below).
+  // The node the reader last acted on themselves, with the tree drawn as it was noted: a read
+  // that drops that node's row is theirs (`heldRow`, below). A Keep of a decision notes the node
+  // as that tree draws it, and an edit in a row's editor notes the node's id, the row it was
+  // made in and the words it left in the row's block.
   const ownAct = useRef<
-    | { readonly node: TreeNode; readonly root: TreeNode; readonly row: string | undefined }
+    | { readonly kind: "keep"; readonly node: TreeNode; readonly root: TreeNode }
+    | {
+        readonly id: string;
+        readonly kind: "edit";
+        readonly root: TreeNode;
+        readonly row: string;
+        readonly words: string;
+      }
     | undefined
   >(undefined);
   const drawnRoot = useRef(root);
   drawnRoot.current = root;
-  const noteAct = useCallback((acted: (node: TreeNode) => boolean, row?: string) => {
-    const tree = drawnRoot.current;
-    const noted = ownAct.current;
-    if (noted?.root === tree && noted.row === row && acted(noted.node)) return;
-    const node = nodesInOrder(tree).find(acted);
-    if (node !== undefined) ownAct.current = { node, root: tree, row };
-  }, []);
   // A Keep names its decision's node by its address (`own-act.ts`), and an edit names the row it
   // was made in (`useNodeEditing.ts`).
-  const noteWrite = useCallback(
-    (reference: string) => noteAct((node) => node.reference === reference),
-    [noteAct]
-  );
-  const noteEdit = useCallback(
-    (row: string) => {
-      // A row key names one node (`rowKeyOf`), so a note already held for this row on the drawn
-      // tree holds that row's node.
-      const noted = ownAct.current;
-      if (noted?.root === drawnRoot.current && noted.row === row) return;
-      const id = body.current?.querySelector<HTMLElement>(rowSelectorOf(row))?.dataset.nodeId;
-      if (id !== undefined) noteAct((node) => node.id === id, row);
-    },
-    [noteAct]
-  );
+  const noteWrite = useCallback((reference: string) => {
+    const tree = drawnRoot.current;
+    const node = nodesInOrder(tree).find((drawn) => drawn.reference === reference);
+    if (node !== undefined) ownAct.current = { kind: "keep", node, root: tree };
+  }, []);
+  const noteEdit = useCallback((row: string, words: string) => {
+    // A row key names one node (`rowKeyOf`), so a note already held for this row holds that
+    // row's node.
+    const noted = ownAct.current;
+    const id =
+      noted?.kind === "edit" && noted.row === row
+        ? noted.id
+        : body.current?.querySelector<HTMLElement>(rowSelectorOf(row))?.dataset.nodeId;
+    if (id === undefined) return;
+    ownAct.current = { id, kind: "edit", root: drawnRoot.current, row, words };
+  }, []);
   const { edit, editing, stopEditing } = useNodeEditing({
     artifacts,
     container: body,
@@ -1077,19 +1079,22 @@ export function IssueTree({
   // too where it drops the row of the node they last acted on themselves (`ownAct`). Two acts are
   // noted, each with the node it acts on and the tree drawn as it is noted. Keep notes its
   // decision's node as its write lands, before its answer is drawn (`own-act.ts`): Keep on a
-  // decision only the frontier unfolded folds its branch shut once that answer is drawn. The row's
-  // editor notes the edited row's node at each edit of the reader's that changes the document
-  // (`useNodeEditing.ts`'s `onOwnEdit`): the edit comes back as the document's blocks read again,
-  // never as a write, and one that takes a filter's words out of the row drops it then. The note
-  // lasts until the first render whose tree draws that node otherwise, or not at all. A tree that
-  // draws the node as it was noted keeps the note, so another read that lands first - a comment, a
-  // read mark - leaves it for the act's own read. The node is compared by its own fields, its
-  // children and their count left out, so a reply someone else adds under it changes nothing.
-  // While the reader still edits the row an edit was noted in (`editing`), a tree that draws the
-  // node changed keeps the note too, moved to that tree and that node: a save lands between two of
-  // their keys, so the read that draws the first edit comes before the one that drops the row.
-  // Once the editing has ended, the first tree that draws the node changed or not at all ends the
-  // note. A drop of the node's row uses the note up. A write's landing alone tells nothing of
+  // decision only the frontier unfolded folds its branch shut once that answer is drawn. Its note
+  // lasts until the first render whose tree draws that node otherwise. A tree that draws the node
+  // as it was noted keeps the note, so another read that lands first - a comment, a read mark -
+  // leaves it for the Keep's own read. The node is compared by its own fields, its children and
+  // their count left out, so a reply someone else adds under it changes nothing. The row's editor
+  // notes the edited row's node at each edit of the reader's that changes the document, a
+  // heading's as a paragraph's (`useNodeEditing.ts`'s `onOwnEdit`), with the words the edit left
+  // in the row's block: the edit comes back as the document's blocks read again, never as a
+  // write, and one that takes a filter's words out of the row drops it then. Its note lasts while
+  // each tree drawn after the edit draws the node with other words (`drawnWords`, by the rule the
+  // edit's own are read by, `editWords`): a save lands between two of the reader's keys, so the
+  // read that draws an earlier edit comes before the one that drops the row. The first tree that
+  // draws the words the edit left ends the note, whether the reader still edits the row or not:
+  // the edit's own read has come and kept the row, so a drop after it - a version a collaborator
+  // wrote, another session's change - is not the reader's. A tree that draws the node nowhere ends
+  // either note, and a drop of the node's row uses it up. A write's landing alone tells nothing of
   // this tree: the page's store of writes is the app's one store (`write-store.ts`), and a pin or
   // a write on another issue lands there too. The loss is theirs too
   // where a write of theirs from the line at the foot put the focus on the row with its landing,
@@ -1165,7 +1170,8 @@ export function IssueTree({
     ) {
       const landed = landedOn.current;
       const read = root !== held.root && locationKey === held.locationKey;
-      const acted = ownAct.current !== undefined && ownAct.current.node.id === held.node;
+      const own = ownAct.current;
+      const acted = own !== undefined && (own.kind === "keep" ? own.node.id : own.id) === held.node;
       if (acted) ownAct.current = undefined;
       const caused =
         !read ||
@@ -1182,19 +1188,17 @@ export function IssueTree({
         setFocusedNode(undefined);
       }
     }
-    // The note of the reader's act lasts while each tree drawn draws its node as it was noted
-    // (`sameOwnFields`), and is held to the last such tree, so a render of it compares nothing;
-    // while the reader still edits the row an edit was noted in, it moves to each tree that draws
-    // the node at all (above).
+    // A Keep's note lasts while each tree drawn draws its node as it was noted (`sameOwnFields`),
+    // and an edit's while each tree drawn after the edit draws its node with other words than the
+    // edit left (`drawnWords`). Either is held to the last such tree, so a render of it compares
+    // nothing (above).
     const noted = ownAct.current;
     if (noted !== undefined && noted.root !== root) {
-      const now = pathTo(root, noted.node.id)?.at(-1);
-      if (now !== undefined && noted.row !== undefined && noted.row === editingRow) {
-        ownAct.current = { ...noted, node: now, root };
-      } else {
-        ownAct.current =
-          now !== undefined && sameOwnFields(noted.node, now) ? { ...noted, root } : undefined;
-      }
+      const now = pathTo(root, noted.kind === "keep" ? noted.node.id : noted.id)?.at(-1);
+      const lasts =
+        now !== undefined &&
+        (noted.kind === "keep" ? sameOwnFields(noted.node, now) : drawnWords(now) !== noted.words);
+      ownAct.current = lasts ? { ...noted, root } : undefined;
     }
     const holder = focusedRowIn(tree);
     const focusedKey = holder?.dataset.rowKey;

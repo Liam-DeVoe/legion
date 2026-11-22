@@ -11799,9 +11799,13 @@ async function dropStatement(view: {
 
 /** Enter on the statement's row with the document's own editor drawing `blocks` (`LiveEditor`),
  *  once the caret is in the statement: answers the tree, the editor's editable and view, and the
- *  room. */
-async function caretInLiveStatement(user: UserEvent, blocks: readonly LiveBlock[] = liveBlocks()) {
-  const room = liveRoom();
+ *  room. A `room` that already holds the document is drawn as it holds it, and `blocks` go
+ *  unread. */
+async function caretInLiveStatement(
+  user: UserEvent,
+  blocks: readonly LiveBlock[] = liveBlocks(),
+  room: LiveRoom = liveRoom()
+) {
   const { editable, view } = await enterStatement(user, (onEditor) => (
     <LiveEditor blocks={blocks} onEditor={onEditor} room={room} />
   ));
@@ -11818,16 +11822,75 @@ async function caretInLiveStatement(user: UserEvent, blocks: readonly LiveBlock[
   return { editable, editor, room, view };
 }
 
+/** The tree `enterStatement` drew, as a read answers it once a comment has arrived after the
+ *  statement: the statement drawn with `words`, and with `tree`, the server's reading of them,
+ *  where it is given; or no statement at all where `words` is undefined, as a read that drops
+ *  its row draws it. */
+function statementRead(words?: string, tree?: DisplayTree): TreeNode {
+  const first = node({ id: "comment-1", text: "The first words.", type: "comment" });
+  const arrived = node({ id: "comment-3", text: "A comment that arrived.", type: "comment" });
+  const statement =
+    words === undefined
+      ? []
+      : [
+          node({
+            id: "spec#b-r1",
+            text: words,
+            ...(tree === undefined ? {} : { tree }),
+            type: "requirement",
+          }),
+        ];
+  return node({ children: [first, ...statement, arrived], id: KEY, type: "issue" });
+}
+
+/** The statement's words in `room` edited by a collaborator: `length` of them from `from` typed
+ *  over with `words`, which y-prosemirror draws in the row's editor. */
+function collaboratorEdits(room: LiveRoom, from: number, length: number, words: string): void {
+  act(() => {
+    room.server.transact(() => {
+      const statement = room.server.getXmlFragment("prosemirror").get(1);
+      const text = statement instanceof Y.XmlElement ? statement.get(0) : undefined;
+      if (!(text instanceof Y.XmlText)) throw new Error("the room holds no statement's words");
+      text.delete(from, length);
+      text.insert(from, words);
+    });
+  });
+}
+
+/** Checks that the read that dropped the statement's row, which held the focus, `when` the
+ *  reader did what the case names, ended any editing of the row and left the focus on the page's
+ *  body. */
+async function expectDropLeftBody(
+  view: { readonly edited: readonly (string | undefined)[] },
+  when: string
+): Promise<void> {
+  await waitFor(() =>
+    expect(view.edited.at(-1), "the editing of the row the read dropped went on").toBeUndefined()
+  );
+  // The frame the editing's end asks for comes.
+  await nextFrame();
+  expect(
+    document.body,
+    `a read that dropped the statement's row ${when} took the focus off the page's body`
+  ).toHaveFocus();
+}
+
 // The reader's own edit of a row in its editor is collaborative: it never passes through the
 // page's store of writes, and comes back as the document's blocks read again. Under a filter by
 // words, an edit that takes those words out of the row drops it from the filter's view once that
 // read draws the tree. Here the filter's view is the tree the read draws without the statement,
 // after another read that drew the statement as it was. The drop is the reader's own doing, so
-// the row now in the statement's place takes the focus.
-test("the reader's edit that takes the focused row out of their filter by words hands the focus to the row now in its place once a read drops the row", async () => {
+// the row now in the statement's place takes the focus. A heading's edit is the reader's too:
+// Milkdown writes the heading's `id` from its new words in a transaction kept out of the undo
+// history before the editor's hold hears of the edit (`holdEditsToBlock`), and a decision's row
+// is such a heading.
+test.each([
+  ["a paragraph", paragraph("r1", "A statement of the spec.")],
+  ["a heading", heading("r1", 2, "A statement of the spec.")],
+] as const)("the reader's edit that takes the focused row, %s, out of their filter by words hands the focus to the row now in its place once a read drops the row", async (_kind, statement) => {
   setViewport(1440);
   const user = userEvent.setup();
-  const { editable, editor, view } = await caretInLiveStatement(user);
+  const { editable, editor, view } = await caretInLiveStatement(user, liveBlocks(statement));
   const before = blocksOf(editor);
   const words = wordsOf(editable, "r1");
   // The filter's word, `statement`, typed over.
@@ -11850,8 +11913,8 @@ test("the reader's edit that takes the focused row out of their filter by words 
 
 // A save of the reader's lands between two of their keys: the read that draws their first edit,
 // the row still in their filter by words, comes before the read that drops the row after their
-// second. The reader still edits the row when the first read comes, so it keeps the note of their
-// edit, and the second read's drop hands the focus to the row now in the statement's place.
+// second. The first read draws other words than the second edit left, so it keeps the note of
+// that edit, and the second read's drop hands the focus to the row now in the statement's place.
 test("the reader's two edits, a read of the first between them, then the read that drops the row hand the focus to the row now in its place", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -11966,6 +12029,257 @@ test("the heading id the editor writes after a collaborator's edit notes nothing
   expect(
     document.body,
     "a read that dropped the row being edited after the editor wrote a heading's id took the focus off the page's body"
+  ).toHaveFocus();
+});
+
+// The read that draws the reader's edit spends the edit's note: the edit's own read has come and
+// kept the row. Under a filter by words, the reader types one key in the statement, and the read
+// that draws that key keeps the row in the filter. A collaborator's edit then takes the filter's
+// word out of the statement, and the read that drops the row is another session's, so the focus
+// stays on the page's body.
+test("a collaborator's edit after the read that drew the reader's own key, then a read that drops the row being edited, leaves the focus on the page's body", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, editor, room, view } = await caretInLiveStatement(user);
+  const before = blocksOf(editor);
+  // One key, at the end of the word before the full stop: the editor holds it as a run of its
+  // own, under the reader's authorship mark, which the words the read draws do not hold.
+  await select(wordsOf(editable, "r1"), "A statement of the spec".length);
+  typeInEditor(editor, "s");
+  expect(blocksOf(editor), "the reader's key did not go in").toEqual(
+    withWords(before, "r1", "A statement of the specs.")
+  );
+  await act(async () => view.reread(statementRead("A statement of the specs.")));
+  expect(
+    rowsFor(view.container, "spec#b-r1"),
+    "the read of the reader's key dropped the row"
+  ).toHaveLength(1);
+
+  // The filter's word, `statement`, typed over.
+  collaboratorEdits(room, 2, 9, "rule");
+  expect(blocksOf(editor), "the collaborator's edit did not apply").toEqual(
+    withWords(before, "r1", "A rule of the specs.")
+  );
+  await act(async () => view.reread(statementRead()));
+  expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
+  await expectDropLeftBody(
+    view,
+    "after a collaborator's edit that followed the read of the reader's key"
+  );
+});
+
+/** Escape in the statement's editor: the editing ends, and the statement's row holds the focus
+ *  once the frame after Escape has come. */
+async function escapeToStatement(
+  user: UserEvent,
+  view: { readonly container: HTMLElement; readonly edited: readonly (string | undefined)[] }
+): Promise<void> {
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(view.edited.at(-1), "Escape did not end the editing").toBeUndefined());
+  await nextFrame();
+  expect(focusedRow(view.container), "Escape did not give the statement's row the focus").toBe(
+    "spec#b-r1"
+  );
+}
+
+// Once the editing has ended, an edit's note lasts no longer than the read that draws the words
+// the edit left. Here that read comes while the reader still edits the statement, then they press
+// Escape, and three reads that draw the statement as it is come - a comment's, a read mark's -
+// before another session's read drops the row the focus is back on: the focus stays on the
+// page's body, as with no edit at all.
+test("the reader's edit, the read that draws it, Escape and three other reads leave a read that then drops the focused row another session's", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, editor, view } = await caretInLiveStatement(user);
+  await select(wordsOf(editable, "r1"), 2);
+  typeInEditor(editor, "new ");
+  await act(async () => view.reread(statementRead("A new statement of the spec.")));
+  await escapeToStatement(user, view);
+
+  for (let read = 0; read < 3; read += 1) {
+    await act(async () => view.reread(statementRead("A new statement of the spec.")));
+  }
+  expect(
+    focusedRow(view.container),
+    "a read that drew the statement as it is took the focus off its row"
+  ).toBe("spec#b-r1");
+  await act(async () => view.reread(statementRead()));
+  expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
+  await expectDropLeftBody(view, "after the reader's edit, its read, Escape and three other reads");
+});
+
+// An edit the reader takes back leaves the words as they were, so no tree ever draws the node
+// changed, and the reads after it draw the words the last edit left: the first of them spends
+// the edit's note. The reader types X, deletes it and presses Escape, two reads come, and then
+// another session's read drops the row: the focus stays on the page's body.
+test("the reader's key taken back, Escape and later reads leave a read that then drops the focused row another session's", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, editor, view } = await caretInLiveStatement(user);
+  const before = blocksOf(editor);
+  await select(wordsOf(editable, "r1"), 2);
+  typeInEditor(editor, "X");
+  // The letter deleted, as the editor reads back the browser's Backspace.
+  act(() => {
+    const { from } = editor.state.selection;
+    editor.dispatch(editor.state.tr.delete(from - 1, from));
+  });
+  expect(blocksOf(editor), "the reader's key was not taken back").toEqual(before);
+  await escapeToStatement(user, view);
+
+  for (let read = 0; read < 2; read += 1) {
+    await act(async () => view.reread(statementRead("A statement of the spec.")));
+  }
+  await act(async () => view.reread(statementRead()));
+  expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
+  await expectDropLeftBody(view, "after the reader's key taken back, Escape and two other reads");
+});
+
+// The words the reader's edit left and the words a read draws the statement with are read by one
+// rule (`own-act.ts`'s `editWords`), so they compare equal for a statement that holds a link and
+// a `dispatch://` reference: the editor holds both as the document stores them, and the read
+// carries the server's reading of the statement, both kept, beside its words with both left out.
+// The read that draws the reader's edit spends its note, and the read that drops the row after a
+// collaborator's edit is another session's.
+test("the read that draws the reader's edit of a statement holding a link and a reference spends the edit's note", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const room = liveRoom();
+    const stored = `A statement of the spec, see the guide and dispatch://${KEY}.`;
+    const held = room.server.getXmlFragment("prosemirror");
+    held.insert(0, liveBlocks(paragraph("r1", stored)).map(roomBlock));
+    const statement = held.get(1);
+    const words = statement instanceof Y.XmlElement ? statement.get(0) : undefined;
+    if (!(words instanceof Y.XmlText)) throw new Error("the room holds no statement's words");
+    words.format(stored.indexOf("the guide"), "the guide".length, {
+      link: { href: "https://example.com/guide" },
+    });
+    const { editable, editor, view } = await caretInLiveStatement(user, liveBlocks(), room);
+    expect(
+      editable.querySelector('[data-block-id="r1"] a')?.textContent,
+      "the editor drew no link in the statement"
+    ).toBe("the guide");
+
+    // The edit keeps the filter's word, `statement`.
+    await select(wordsOf(editable, "r1"), 2);
+    typeInEditor(editor, "new ");
+    await act(async () =>
+      view.reread(
+        statementRead(
+          "A new statement of the spec, see and",
+          readingOf(
+            `A new statement of the spec, see [the guide](https://example.com/guide) and dispatch://${KEY}.`
+          )
+        )
+      )
+    );
+    expect(
+      rowsFor(view.container, "spec#b-r1"),
+      "the read of the reader's edit dropped the row"
+    ).toHaveLength(1);
+
+    // The filter's word typed over, after the reader's `new `.
+    collaboratorEdits(room, 6, 9, "rule");
+    await act(async () => view.reread(statementRead()));
+    expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
+    await expectDropLeftBody(
+      view,
+      "after a collaborator's edit that followed the read of the reader's edit of words beside a link and a reference"
+    );
+  } finally {
+    names.mockRestore();
+  }
+});
+
+// A decision's row edits the decision's `## ` heading, and a read draws the decision by the
+// reading of its whole section, which opens with that heading (`own-act.ts`'s `drawnWords`): the
+// read that draws the heading's new words spends the edit's note, though the section holds more
+// words under the heading. A collaborator's edit of the heading then takes the filter's word out,
+// and the read that drops the row is another session's.
+test("the read that draws the reader's edit of a decision's heading spends the edit's note", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const room = liveRoom();
+  // One list for every drawing of the editor, which the editor is made again for each new one of.
+  const blocks = [heading("d1", 2, "Keep it"), paragraph("d2", "Keep the model pure.")];
+  const first = node({ id: "comment-1", text: "The first words.", type: "comment" });
+  const arrived = node({ id: "comment-3", text: "A comment that arrived.", type: "comment" });
+  // The issue as a read draws it, the decision's heading reading `title`, or with no decision.
+  const read = (title?: string) => {
+    const section = `## ${title}\n\nKeep the model pure.`;
+    const decided =
+      title === undefined
+        ? []
+        : [
+            node({
+              id: "decisions#b-d1",
+              text: section,
+              tree: readingOf(section),
+              type: "decision",
+            }),
+          ];
+    return node({ children: [first, ...decided, arrived], id: KEY, type: "issue" });
+  };
+  const view = renderTree(read("Keep it"), {
+    artifacts: [decisionsDocument],
+    editor: (onEditor) => <LiveEditor blocks={blocks} onEditor={onEditor} room={room} />,
+  });
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  await user.keyboard("j");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("decisions#b-d1"));
+  await user.keyboard("{Enter}");
+  const editable = await waitFor(
+    () => {
+      const found = rowsFor(view.container, "decisions#b-d1")[0]?.querySelector<HTMLElement>(
+        '[contenteditable="true"]'
+      );
+      if (found === null || found === undefined)
+        throw new Error("the decision's row took no editor");
+      expect(found, "Enter did not put the caret in the decision's heading").toHaveFocus();
+      expect(caretBlock(), "Enter did not put the caret in the decision's heading").toBe("d1");
+      return found;
+    },
+    { timeout: 10_000 }
+  );
+  const editor = room.editor?.view;
+  if (editor === undefined) throw new Error("the decision's row took no editor");
+
+  // The edit keeps the filter's word, `Keep`.
+  await select(wordsOf(editable, "d1"), "Keep it".length);
+  typeInEditor(editor, " all");
+  expect(editor.state.doc.firstChild?.textContent, "the reader's edit did not go in").toBe(
+    "Keep it all"
+  );
+  await act(async () => view.reread(read("Keep it all")));
+  expect(
+    rowsFor(view.container, "decisions#b-d1"),
+    "the read of the reader's edit dropped the row"
+  ).toHaveLength(1);
+
+  // The filter's word typed over.
+  act(() => {
+    room.server.transact(() => {
+      const above = room.server.getXmlFragment("prosemirror").get(0);
+      const words = above instanceof Y.XmlElement ? above.get(0) : undefined;
+      if (!(words instanceof Y.XmlText)) throw new Error("the room holds no heading's words");
+      words.delete(0, 4);
+      words.insert(0, "Hold");
+    });
+  });
+  await act(async () => view.reread(read()));
+  expect(rowsFor(view.container, "decisions#b-d1"), "the read did not drop the decision").toEqual(
+    []
+  );
+  await waitFor(() =>
+    expect(view.edited.at(-1), "the editing of the row the read dropped went on").toBeUndefined()
+  );
+  // The frame the editing's end asks for comes.
+  await nextFrame();
+  expect(
+    document.body,
+    "a read that dropped the decision's row after a collaborator's edit that followed the read of the reader's edit took the focus off the page's body"
   ).toHaveFocus();
 });
 

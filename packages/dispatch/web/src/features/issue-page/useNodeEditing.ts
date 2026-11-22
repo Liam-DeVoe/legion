@@ -196,10 +196,12 @@ export function useNodeEditing({
   /** Tells the page which document a row is editing, so it draws that document's one editor and
    *  hands it to the row. */
   onEditing: OnEditing;
-  /** Called with the key of the row being edited at each edit of its editor's own that changes
-   *  the document - the reader's typing, never a collaborator's (`holdEditsToBlock`'s
-   *  `onOwnEdit`) - so the tree reads a read that then drops the row as the reader's. */
-  onOwnEdit: (row: string) => void;
+  /** Called at each edit of the row's editor's own that changes the document - the reader's
+   *  typing in a heading as in a paragraph, never a collaborator's (`holdEditsToBlock`'s
+   *  `onOwnEdit`) - with the key of the row being edited and the words the edit left in the
+   *  row's block, so the tree reads a read that drops the row before one draws those words as
+   *  the reader's. */
+  onOwnEdit: (row: string, words: string) => void;
   /** What a key reports when the node it was pressed on has no text to put a caret in, or its
    *  editor could not open. */
   onReport: (report: string) => void;
@@ -276,9 +278,9 @@ export function useNodeEditing({
         hold.current = "on";
         holdChanged.current?.();
       },
-      () => {
+      (words) => {
         const { onOwnEdit: heard, row } = ownEdit.current;
-        if (row !== undefined) heard(row);
+        if (row !== undefined) heard(row, words);
       }
     );
   }, []);
