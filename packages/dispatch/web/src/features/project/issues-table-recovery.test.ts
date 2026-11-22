@@ -84,39 +84,28 @@ function browserLocks(): LockManager {
   } as unknown as LockManager;
 }
 
-/** `locks` with the page's `localStorage` as tabs in two processes share it: a write reaches the
- *  store, where every tab reads it, only once a lock is let go. That is the latest a browser
- *  delivers a write, since the tab a lock goes to next reads every write the tab that let it go
- *  made before. The real `setItem` is put back when the test ends. */
-function laggingStore(locks: LockManager): LockManager {
-  const pending = new Map<string, string>();
+/** Holds back every write to the page's `localStorage` until the test calls the function this
+ *  answers, which makes the writes and puts the real `setItem` back. Each tab of a browser keeps
+ *  its own copy of the store, and a write of one tab reaches another tab's copy at no fixed time,
+ *  in no fixed order with the locks. While the writes are held, no read finds them, whatever lock
+ *  the reading tab holds. The real `setItem` is also put back when the test ends. */
+function holdWrites(): () => void {
+  const held = new Map<string, string>();
   const write = localStorage.setItem;
-  const flush = () => {
-    for (const [key, value] of pending) write(key, value);
-    pending.clear();
-  };
   // happy-dom's `localStorage` is a Proxy, and a method defined on it is the one every read finds.
   const descriptor = { configurable: true, writable: true };
+  const restore = () =>
+    Object.defineProperty(localStorage, "setItem", { ...descriptor, value: write });
   Object.defineProperty(localStorage, "setItem", {
     ...descriptor,
-    value: (key: string, value: string) => pending.set(key, value),
+    value: (key: string, value: string) => held.set(key, value),
   });
-  undraws.push(() => {
-    pending.clear();
-    Object.defineProperty(localStorage, "setItem", { ...descriptor, value: write });
-  });
-  const request = (name: string, first: unknown, second?: unknown) => {
-    const options = (typeof first === "function" ? {} : first) as LockOptions;
-    const granted = (typeof first === "function" ? first : second) as LockGrantedCallback<unknown>;
-    return locks.request(name, options, async (lock) => {
-      try {
-        return await granted(lock);
-      } finally {
-        flush();
-      }
-    });
+  undraws.push(restore);
+  return () => {
+    restore();
+    for (const [key, value] of held) write(key, value);
+    held.clear();
   };
-  return { query: () => locks.query(), request } as unknown as LockManager;
 }
 
 const OTHER_TAB_ACTION =
@@ -153,19 +142,20 @@ test("a second tab's bulk action is refused while the first tab's record is live
   expect(second.current.action).toEqual(record);
 });
 
-// R14, with the architect's decision: a tab reads the store and keeps its record under one lock
-// for the listing. Two tabs run in two processes, so without that lock both can read the store
-// before either write reaches it, and both begin. Here a write reaches the store only once a
-// lock is let go, and two tabs begin at once: the second waits for the listing's lock, reads the
-// first tab's record, and is refused.
+// R14, with the architect's decision: two tabs that begin at once on one listing never both
+// begin. The store cannot decide it, since a tab's write reaches another tab's copy of the store
+// at no fixed time, in no fixed order with the locks. Here no write reaches the store until both
+// tabs have their answer. The second tab finds the first tab's record lock held in the lock
+// manager, which the tabs share, and is refused.
 test("of two tabs that begin at once on one listing, the second is refused and the first's record stays", async () => {
   const client = new QueryClient();
   undraws.push(() => client.clear());
-  const locks = laggingStore(browserLocks());
+  const locks = browserLocks();
   const first = tableIn("tab-one", client, locks);
   const second = tableIn("tab-two", client, locks);
   const { promise: moving, resolve: stop } = Promise.withResolvers<void>();
   undraws.push(stop);
+  const deliver = holdWrites();
   const moved: (string | undefined)[] = [];
   let refused: Promise<Begun<void>> | undefined;
   act(() => {
@@ -183,6 +173,9 @@ test("of two tabs that begin at once on one listing, the second is refused and t
   });
   expect(answer).toEqual({ kind: "refused", text: MOVING_ACTION });
   expect(moved).toEqual(["tab-one"]);
+  // The second tab was refused before the first tab's record reached the store.
+  expect(readTableAction("CORE")).toBeUndefined();
+  deliver();
   const record = readTableAction("CORE");
   expect(record?.tab).toBe("tab-one");
   expect(record?.keys).toEqual(["CORE-1", "CORE-2"]);

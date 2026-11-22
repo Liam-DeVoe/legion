@@ -90,16 +90,20 @@ const OWN_ACTION = "Finish or Dismiss the interrupted action before starting ano
  *  which no tab can finish or dismiss until that move stops. */
 const MOVING_ACTION = "Another tab is still moving these issues. Wait until that move is complete.";
 
-/** The Web Lock a tab holds for as long as it runs the move a record names: Start next, or a
- *  Finish of it. The browser lets the lock go when the move ends, and when the tab closes or
- *  crashes, so a stored record whose lock no tab holds is a move a tab left behind. */
-function actionLockName(id: string): string {
-  return `dispatch-table-action:${id}`;
+/** The Web Lock a tab holds for as long as it runs the move of the record `id` of the listing
+ *  `project`: Start next, or a Finish of it. The browser lets the lock go when the move ends, and
+ *  when the tab closes or crashes, so a stored record whose lock no tab holds is a move a tab left
+ *  behind. The name holds the listing's storage key, so `begin` finds every move that runs on a
+ *  listing in the lock manager. A record's id holds no colon (`newSendKey`), so the part of a
+ *  name up to its last colon is `actionLockName(project, "")`, and names the listing. */
+function actionLockName(project: string, id: string): string {
+  return `dispatch-table-action:${tableStorageKey(project)}:${id}`;
 }
 
-/** The Web Lock a tab holds while it reads whether a bulk action may begin on the listing
- *  `project` and keeps the action's record (`begin`). It is named for the listing's storage key,
- *  so a tab that takes it after another tab reads the record that tab kept, and is refused. */
+/** The Web Lock a tab holds while it decides whether a bulk action may begin on the listing
+ *  `project` (`begin`): it reads which record locks the browser holds, and takes the lock of its
+ *  new record and keeps the record where nothing refuses it. So no two tabs decide at once for
+ *  one listing. */
 function beginLockName(project: string): string {
   return `dispatch-table-begin:${tableStorageKey(project)}`;
 }
@@ -113,15 +117,18 @@ export type Begun<T> =
  * The record of the bulk action a reload can interrupt, kept in the browser so any tab can finish
  * or discard it. One record is kept for a listing, whichever tab began it. So a bulk action is
  * refused while a record is in the store, and the window's `storage` event brings this table
- * another tab's record and its end at once (D12). A tab reads the store and keeps its record
- * under the listing's lock (`beginLockName`), so two tabs that begin at once never both keep
- * one. The tab that runs a record's move holds the record's lock (`actionLockName`) for as long
- * as the move runs, and a record whose lock no tab holds is one a tab left behind
- * (`isLeftBehind`). Only then does a tab offer to Finish or Dismiss it, so no tab ends a move
- * that is still running. A browser with no lock manager has neither lock, and so neither
- * guarantee. A record left behind is finished or discarded in any tab, and its writes keep their
- * send keys. `tab` names this tab for a test that draws two tabs in one window. Without it the
- * tab's own id is read. `locks` is the browser's lock manager, which a test gives as its own.
+ * another tab's record and its end at once (D12). The tab that runs a record's move holds the
+ * record's lock (`actionLockName`) for as long as the move runs. A tab decides to begin under the
+ * listing's lock (`beginLockName`), and is refused while another record lock of the listing is
+ * held, so two tabs that begin at once never both begin. The store cannot decide that: each tab
+ * keeps its own copy, and a write reaches another tab's copy at no fixed time, in no fixed order
+ * with the locks. The lock manager is one for the whole browser. A record whose lock no tab holds
+ * is one a tab left behind (`isLeftBehind`). Only then does a tab offer to Finish or Dismiss it,
+ * so no tab ends a move that is still running. A browser with no lock manager has neither lock,
+ * and so neither guarantee. A record left behind is finished or discarded in any tab, and its
+ * writes keep their send keys. `tab` names this tab for a test that draws two tabs in one window.
+ * Without it the tab's own id is read. `locks` is the browser's lock manager, which a test gives
+ * as its own.
  */
 export function useTableRecovery(
   project: string,
@@ -157,7 +164,7 @@ export function useTableRecovery(
       waiting.current = undefined;
       if (record === undefined || locks === undefined) return;
       const { id } = record;
-      const name = actionLockName(id);
+      const name = actionLockName(project, id);
       const wait = new AbortController();
       waiting.current = wait;
       const free = () => {
@@ -178,7 +185,7 @@ export function useTableRecovery(
           // The wait was called off: the record in hand changed, or the table went.
         });
     },
-    [locks, setUnheld]
+    [locks, project, setUnheld]
   );
   const remember = useCallback(
     (next: TableAction | undefined) => {
@@ -320,14 +327,17 @@ export function useTableRecovery(
     current,
     active,
     refusal,
-    /** Begins a bulk action. This tab takes the lock of a new record first, which no other tab
-     *  asks for, and under it the listing's lock (`beginLockName`). Under both it reads
-     *  `refusal`, and keeps the record only where nothing refuses it. Then it lets the listing's
-     *  lock go, and runs `move` on the record while the record's lock is held. So of two tabs
-     *  that begin at once, the second reads the first's record and is refused: a record is never
-     *  written over another tab's. A tab that reads the record finds its lock held from the
-     *  start, so no tab offers to end the move while it runs. A browser with no lock manager runs
-     *  the same steps with no lock. */
+    /** Begins a bulk action. Under the listing's lock (`beginLockName`) this tab reads the lock
+     *  manager, and refuses while a tab holds the lock of a record of this listing: that tab runs
+     *  its move, or a Finish of one, whatever this tab's copy of the store says. Where none is
+     *  held, it takes the lock of the new record and reads the store too (`refusal`), for a
+     *  record left behind and for this tab's own. It keeps the record only where nothing refuses
+     *  it, and then lets the listing's lock go. `move` runs on the record while the record's lock
+     *  is held. So of two tabs that begin at once, the second finds the first's lock held and is
+     *  refused, also where the first's record has not reached its store. A tab that reads the
+     *  record finds its lock held from the start, so no tab offers to end the move while it runs.
+     *  A browser with no lock manager reads the store alone, so there two tabs that begin at once
+     *  can both begin. */
     begin: async <T>(
       record: Omit<TableAction, "id" | "project" | "tab" | "writes" | "startedAt">,
       move: (record: TableAction) => Promise<T>
@@ -353,9 +363,25 @@ export function useTableRecovery(
           ? { kind: "refused", text: kept }
           : { kind: "begun", moved: await move(kept) };
       if (locks === undefined) return run(keep());
-      return await locks.request(actionLockName(id), async () =>
-        run(await locks.request(beginLockName(project), keep))
-      );
+      const taken = await locks.request(beginLockName(project), async () => {
+        // This tab asks for its own record's lock only after this read, so a lock of the listing
+        // held here is another record's.
+        const { held } = await locks.query();
+        const ofListing = actionLockName(project, "");
+        if (held?.some(({ name }) => name?.slice(0, name.lastIndexOf(":") + 1) === ofListing))
+          return undefined;
+        const kept = Promise.withResolvers<void>();
+        const moved = locks.request(actionLockName(project, id), () => {
+          const value = keep();
+          kept.resolve();
+          return run(value);
+        });
+        await Promise.race([kept.promise, moved]);
+        // Answered inside an object: a promise answered as it is would hold the listing's lock
+        // until the move ends.
+        return { moved };
+      });
+      return taken === undefined ? { kind: "refused", text: MOVING_ACTION } : await taken.moved;
     },
     /** Runs `move`, a Finish of the record `id` left behind, while this tab holds its lock. The
      *  record is stamped as taken up now, so every other tab hears of it (`storage`) and offers
@@ -376,7 +402,7 @@ export function useTableRecovery(
       };
       return locks === undefined
         ? run(true)
-        : await locks.request(actionLockName(id), { ifAvailable: true }, (lock) =>
+        : await locks.request(actionLockName(project, id), { ifAvailable: true }, (lock) =>
             run(lock !== null)
           );
     },
@@ -454,7 +480,7 @@ export function useTableRecovery(
       }
       setUnheld(undefined);
       void locks
-        .request(actionLockName(held.id), { ifAvailable: true }, (lock) => {
+        .request(actionLockName(project, held.id), { ifAvailable: true }, (lock) => {
           const stored = readTableAction(project);
           if (lock !== null && stored?.id === held.id) remember(undefined);
           else adopt(stored);
