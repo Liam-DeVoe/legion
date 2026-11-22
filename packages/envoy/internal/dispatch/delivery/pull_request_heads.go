@@ -53,11 +53,17 @@ import (
 // PullRequestHead is one pull request's current head, as pull_request_heads stores it, and the
 // one shape every writer of that row fills in (UpsertPullRequestHead).
 type PullRequestHead struct {
-	Repo              string
-	Number            int
-	HeadSHA           string
-	HeadRef           string
-	BaseRef           string
+	Repo    string
+	Number  int
+	HeadSHA string
+	HeadRef string
+	BaseRef string
+	// BaseSHA is the commit the base branch was at when the writer read the pull request
+	// (GitHub's base.sha), "" where the writer read none, which stores null: "not known". The
+	// check states settler's read of a pull request's commits is an answer about one head and one
+	// base revision, and applies only where the row still names the revisions its claim read
+	// (pull_request_former_heads_snapshot, migration 20261122071001).
+	BaseSHA           string
 	State             string
 	IssueKey          *string
 	AttributionSource string
@@ -416,13 +422,14 @@ func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (b
 			repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
 			title, url, event_at, checked_at, attribution_rule,
 			attribution_title_keys, attribution_cited_issues, attribution_branch_keys,
-			attribution_commit_keys, head_in_repo
+			attribution_commit_keys, head_in_repo, base_sha
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $14, $15, $16, $17, $18, $19)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $14, $15, $16, $17, $18, $19, nullif($20, ''))
 		on conflict (repo, number) do update set
 			head_sha = excluded.head_sha,
 			head_ref = excluded.head_ref,
 			base_ref = excluded.base_ref,
+			base_sha = excluded.base_sha,
 			state = excluded.state,
 			issue_key = case when $13::boolean
 				then excluded.issue_key else pull_request_heads.issue_key end,
@@ -451,7 +458,7 @@ func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (b
 		head.Repo, head.Number, head.HeadSHA, head.HeadRef, head.BaseRef, head.State,
 		head.IssueKey, head.AttributionSource, head.Title, head.URL, head.EventAt, head.CheckedAt,
 		head.AttributionComplete, AttributionRuleVersion,
-		inputs.titleKeys, inputs.citedIssues, inputs.branchKeys, inputs.commitKeys, inputs.headInRepo,
+		inputs.titleKeys, inputs.citedIssues, inputs.branchKeys, inputs.commitKeys, inputs.headInRepo, head.BaseSHA,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%w: store the head of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
@@ -529,6 +536,17 @@ func storedInputsOf(head PullRequestHead) storedInputs {
 // The write comes before the delete, so a failure between them leaves two rows rather than
 // none: the next pass is handed the old row's key again and re-keys it again, while losing the
 // row would leave the pull request unknown until another event arrived.
+//
+// The delete carries the heads the pull request left while open under the old name, and the old
+// row's head where it is another than the canonical row's, to the canonical name, where that row
+// is open: they are heads of the same pull request, which the check states settler keeps computing
+// while it stays open. The delete's own trigger records it (pull_request_former_heads_keep,
+// migration 20261122071001) with the canonical row it reads open, taking no lock beyond the old
+// row the delete holds, and marks the canonical row's issue owed; the settler applies the record
+// in the order of the pull request's writes (pull_request_former_heads_fold), so a head write to
+// either row and a close of the canonical one keep their effect on the carry whichever commits
+// first, and a delete the release before this one makes, which carries nothing itself, carries
+// them too.
 func upsertHeadUnderCanonicalName(
 	ctx context.Context, pool *store.Pool, broker *events.Broker, head PullRequestHead, storedUnder string,
 ) error {
@@ -538,9 +556,7 @@ func upsertHeadUnderCanonicalName(
 	if strings.EqualFold(storedUnder, head.Repo) {
 		return nil
 	}
-	if _, err := pool.Exec(ctx, `
-		delete from pull_request_heads where repo = $1 and number = $2
-	`, storedUnder, head.Number); err != nil {
+	if _, err := pool.Exec(ctx, `delete from pull_request_heads where repo = $1 and number = $2`, storedUnder, head.Number); err != nil {
 		return fmt.Errorf("drop the head of %s#%d, now %s#%d: %w", storedUnder, head.Number, head.Repo, head.Number, err)
 	}
 	return nil
@@ -1073,7 +1089,8 @@ func attributeHead(ctx context.Context, pool *store.Pool, client *githubapp.Clie
 func headRow(repoFull string, payload pullRequestPayload, attributed headAttributionResult, checkedAt *time.Time) PullRequestHead {
 	return attributed.stored(PullRequestHead{
 		Repo: repoFull, Number: payload.Number, HeadSHA: payload.Head.SHA, HeadRef: payload.Head.Ref,
-		BaseRef: payload.Base.Ref, State: PullRequestHeadState(payload.State, payload.Merged || payload.MergedAt != nil),
+		BaseRef: payload.Base.Ref, BaseSHA: payload.Base.SHA,
+		State:    PullRequestHeadState(payload.State, payload.Merged || payload.MergedAt != nil),
 		IssueKey: attributed.issueKey, AttributionSource: attributed.source,
 		AttributionComplete: attributed.complete, Title: payload.Title, URL: payload.HTMLURL,
 		EventAt: payload.UpdatedAt, CheckedAt: checkedAt, MergeCommitSHA: mergeCommitOf(payload),
@@ -1293,6 +1310,13 @@ func ReadThroughCommitPulls(
 // it is rather than clearing it on the way through — on a merge, which nothing but that arm of
 // the reconcile ever revisits, clearing it would be for good.
 //
+// The envelope carries the commit the base branch was at (`base_sha`), which the row stores with
+// the branch's name (PullRequestHead.BaseSHA): the base branch can move with no change of its
+// name, and the check states settler's read of which commits are the pull request's own is about
+// one base revision. An envelope that does not name it, one a publisher older than this field
+// made, stores the revision as not known, which a read claimed before refuses as it refuses a
+// changed revision.
+//
 // The envelope's own `repo` comes from outside — the topic a publisher built — so it is
 // canonicalised before anything is read or written (refs.CanonicalRepo), and no row is ever
 // written under a name a repository was renamed away from. It is also what the head is held to:
@@ -1337,7 +1361,8 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 	}
 	return attributed.messages, upsertHeadUnderCanonicalName(ctx, in.pool, in.events, attributed.stored(PullRequestHead{
 		Repo: repoFull, Number: number, HeadSHA: payload["head_sha"], HeadRef: payload["head_ref"],
-		BaseRef: payload["base_ref"], State: PullRequestHeadState(payload["action"], payload["merged"] == "true"),
+		BaseRef: payload["base_ref"], BaseSHA: payload["base_sha"],
+		State:    PullRequestHeadState(payload["action"], payload["merged"] == "true"),
 		IssueKey: attributed.issueKey, AttributionSource: attributed.source,
 		AttributionComplete: attributed.complete, Title: payload["title"], URL: payload["url"],
 		EventAt: envelopeTime(payload["updated_at"]), CheckedAt: checkedAt,

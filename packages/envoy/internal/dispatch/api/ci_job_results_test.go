@@ -7,6 +7,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -75,6 +76,184 @@ type ciJobGitHub struct {
 	// with the asking request's context, before GitHub answers, and holds that request for as
 	// long as it runs (holdCommitReads).
 	commitRead func(ctx context.Context, sha string)
+	// pullCommits is the commits GitHub lists for each pull request, by number, a page of per_page
+	// at a time and at most pullCommitsListed of them, as GitHub lists them; a pull request it
+	// holds none for is 404. pullCommitsStatus, when set, answers every such read with that status
+	// instead, and pullCommitReads counts the reads of each pull request's commits, a page each.
+	// pullCommitsHold, when set for a number, holds the next read of that pull request's commits
+	// until it is released (holdPullCommitsOnce). pullCommitsAnswered queues, for a number, holds
+	// of the next reads of its commits, one for each read in turn, that each read its answer when it
+	// reaches GitHub and send it only once released (holdPullCommitsAnswer), as GitHub's answer is
+	// sent while the reader is held after it. pullCommitsPageFails answers the next read of a page
+	// of any pull request's commits with that status once (failPullCommitsPageOnce).
+	pullCommits          map[int][]string
+	pullCommitsStatus    int
+	pullCommitReads      map[int]int
+	pullCommitsHold      map[int]*ciJobHeldRead
+	pullCommitsAnswered  map[int][]*ciJobHeldRead
+	pullCommitsPageFails map[int]int
+	// pulls is GitHub's answer for each pull request itself, by number: its head commit, its base
+	// branch and the commit that branch is at. A pull request it holds none for is 404. pullReads
+	// counts those reads.
+	pulls     map[int]ciJobPull
+	pullReads map[int]int
+	// compares is GitHub's answer for the comparison of two commits or branches, by
+	// "base...head": a status of the comparison, or an HTTP status that fails it. Every other
+	// comparison reads diverged. compareReads counts the reads of each comparison, by the same key.
+	compares     map[string]ciJobCompare
+	compareReads map[string]int
+	// absentCommits is the commits the repository does not hold: GitHub answers a read of one 422
+	// No commit found for SHA. Every other commit is held.
+	absentCommits map[string]bool
+}
+
+// pullCommitsListed is the most commits GitHub lists for one pull request, however many it has.
+const pullCommitsListed = 250
+
+// ciJobPull is GitHub's answer for one pull request: its head commit, its base branch and the
+// commit the base branch is at (base.sha).
+type ciJobPull struct {
+	head, base, baseSHA string
+}
+
+// ciJobBaseSHA is the commit the base branch of a pull request the fake GitHub answers is at,
+// where a test names no other.
+const ciJobBaseSHA = "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+
+// ciJobCompare is GitHub's answer for one comparison: its status (behind, identical, ahead,
+// diverged), or failed, the HTTP status of a read that failed.
+type ciJobCompare struct {
+	status string
+	failed int
+}
+
+// ciJobHeldRead is one read held: entered closes once the read reached GitHub, and the read
+// answers once release closes.
+type ciJobHeldRead struct {
+	entered, release chan struct{}
+}
+
+// setPull has GitHub answer pull request number at head, based on base, whose head is baseSHA.
+func (g *ciJobGitHub) setPull(number int, head, base, baseSHA string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pulls[number] = ciJobPull{head: head, base: base, baseSHA: baseSHA}
+}
+
+// setCompare has GitHub answer answer for the comparison of base and head.
+func (g *ciJobGitHub) setCompare(base, head string, answer ciJobCompare) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.compares[base+"..."+head] = answer
+}
+
+// setAbsentCommit has the repository hold sha no longer.
+func (g *ciJobGitHub) setAbsentCommit(sha string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.absentCommits[sha] = true
+}
+
+// holdPullCommitsOnce holds the next read of pull request number's commits until release is
+// called, and answers entered, which closes once that read reached GitHub. Reads after it answer
+// at once. The test's end releases it.
+func (g *ciJobGitHub) holdPullCommitsOnce(t *testing.T, number int) (entered <-chan struct{}, release func()) {
+	t.Helper()
+	held := &ciJobHeldRead{entered: make(chan struct{}), release: make(chan struct{})}
+	once := sync.OnceFunc(func() { close(held.release) })
+	t.Cleanup(once)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pullCommitsHold[number] = held
+	return held.entered, once
+}
+
+// holdPullCommitsAnswer queues a hold of the next read of pull request number's commits that no
+// earlier hold takes: that read takes GitHub's answer as GitHub lists the commits when the read
+// arrives, closes entered, and sends that answer once release is called. Each call queues one
+// hold, for the read after the one the hold before it takes. The test's end releases it.
+func (g *ciJobGitHub) holdPullCommitsAnswer(t *testing.T, number int) (entered <-chan struct{}, release func()) {
+	t.Helper()
+	held := &ciJobHeldRead{entered: make(chan struct{}), release: make(chan struct{})}
+	once := sync.OnceFunc(func() { close(held.release) })
+	t.Cleanup(once)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pullCommitsAnswered[number] = append(g.pullCommitsAnswered[number], held)
+	return held.entered, once
+}
+
+// failPullCommitsPageOnce answers the next read of page of any pull request's commits with
+// status, once; the read after it answers as GitHub lists the commits.
+func (g *ciJobGitHub) failPullCommitsPageOnce(page, status int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pullCommitsPageFails[page] = status
+}
+
+// pullCommitsPage is GitHub's answer, its status and body, for the read r of a page of pull request
+// number's commits as GitHub lists them now.
+func (g *ciJobGitHub) pullCommitsPage(number int, r *http.Request) (int, []byte) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	page, perPage := 1, 30
+	fmt.Sscan(r.URL.Query().Get("page"), &page)
+	fmt.Sscan(r.URL.Query().Get("per_page"), &perPage)
+	if status, failing := g.pullCommitsPageFails[page]; failing {
+		delete(g.pullCommitsPageFails, page)
+		return status, []byte(`{"message":"Server Error"}`)
+	}
+	shas, listed := g.pullCommits[number]
+	switch {
+	case g.pullCommitsStatus != 0:
+		return g.pullCommitsStatus, []byte(`{"message":"Server Error"}`)
+	case !listed:
+		return http.StatusNotFound, []byte(`{"message":"Not Found"}`)
+	}
+	shas = shas[:min(len(shas), pullCommitsListed)]
+	from := min(max(page-1, 0)*perPage, len(shas))
+	commits := make([]map[string]any, 0, perPage)
+	for _, sha := range shas[from:min(from+perPage, len(shas))] {
+		commits = append(commits, map[string]any{"sha": sha, "commit": map[string]any{"message": "A commit"}})
+	}
+	body, _ := json.Marshal(commits)
+	return http.StatusOK, body
+}
+
+// pullReadsOf is how many times GitHub was asked for pull request number itself.
+func (g *ciJobGitHub) pullReadsOf(number int) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.pullReads[number]
+}
+
+// compareReadsOf is how many times GitHub was asked for the comparison of base and head.
+func (g *ciJobGitHub) compareReadsOf(base, head string) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.compareReads[base+"..."+head]
+}
+
+// setPullCommits has GitHub list shas as the commits of pull request number.
+func (g *ciJobGitHub) setPullCommits(number int, shas ...string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pullCommits[number] = shas
+}
+
+// failPullCommits has GitHub answer every read of a pull request's commits with status, and 0
+// ends it.
+func (g *ciJobGitHub) failPullCommits(status int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pullCommitsStatus = status
+}
+
+// pullCommitReadsOf is how many times GitHub was asked for the commits of pull request number.
+func (g *ciJobGitHub) pullCommitReadsOf(number int) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.pullCommitReads[number]
 }
 
 // ciJobBranchHead is GitHub's answer for one branch's head: the commit it is at, or, where
@@ -169,17 +348,89 @@ func (g *ciJobGitHub) serve(t *testing.T) string {
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}", func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		read := g.commitRead
+		absent := g.absentCommits[r.PathValue("sha")]
 		g.mu.Unlock()
 		if read != nil {
 			read(r.Context(), r.PathValue("sha"))
+		}
+		if absent {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			fmt.Fprintf(w, `{"message":"No commit found for SHA: %s"}`, r.PathValue("sha"))
+			return
 		}
 		fmt.Fprintf(w, `{"sha":%q}`, r.PathValue("sha"))
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/pulls", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `[]`)
 	})
-	mux.HandleFunc("GET /repos/{owner}/{repo}/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(w, `{"status":"diverged"}`)
+	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		var number int
+		fmt.Sscan(r.PathValue("number"), &number)
+		g.pullReads[number]++
+		pull, held := g.pulls[number]
+		if !held {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		repo := r.PathValue("owner") + "/" + r.PathValue("repo")
+		body, _ := json.Marshal(map[string]any{
+			"number": number, "state": "open",
+			"head": map[string]any{"sha": pull.head, "ref": "legion/work", "repo": map[string]any{"full_name": repo}},
+			"base": map[string]any{"ref": pull.base, "sha": pull.baseSHA},
+		})
+		_, _ = w.Write(body)
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, r *http.Request) {
+		var number int
+		fmt.Sscan(r.PathValue("number"), &number)
+		g.mu.Lock()
+		g.pullCommitReads[number]++
+		held := g.pullCommitsHold[number]
+		delete(g.pullCommitsHold, number)
+		var answered *ciJobHeldRead
+		if queue := g.pullCommitsAnswered[number]; len(queue) > 0 {
+			answered, g.pullCommitsAnswered[number] = queue[0], queue[1:]
+		}
+		g.mu.Unlock()
+		if held != nil {
+			close(held.entered)
+			select {
+			case <-held.release:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		status, body := g.pullCommitsPage(number, r)
+		if answered != nil {
+			close(answered.entered)
+			select {
+			case <-answered.release:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		if status != http.StatusOK {
+			w.WriteHeader(status)
+		}
+		_, _ = w.Write(body)
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}/compare/{basehead}", func(w http.ResponseWriter, r *http.Request) {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		g.compareReads[r.PathValue("basehead")]++
+		answer, held := g.compares[r.PathValue("basehead")]
+		switch {
+		case !held:
+			fmt.Fprint(w, `{"status":"diverged"}`)
+		case answer.failed != 0:
+			w.WriteHeader(answer.failed)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+		default:
+			fmt.Fprintf(w, `{"status":%q}`, answer.status)
+		}
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/check-runs", g.listings.serve)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/check-runs/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -213,10 +464,20 @@ type ciJobRig struct {
 func newCIJobRig(t *testing.T) *ciJobRig {
 	t.Helper()
 	github := &ciJobGitHub{
-		checkRuns:   map[int64]specCheckRunAnswer{ciJobCheckRun: {name: ciJobName, headSHA: ciJobCommit}},
-		listings:    newCheckRunsFake(),
-		branches:    map[string]ciJobBranchHead{},
-		branchReads: map[string]int{},
+		checkRuns:            map[int64]specCheckRunAnswer{ciJobCheckRun: {name: ciJobName, headSHA: ciJobCommit}},
+		listings:             newCheckRunsFake(),
+		branches:             map[string]ciJobBranchHead{},
+		branchReads:          map[string]int{},
+		pullCommits:          map[int][]string{},
+		pullCommitReads:      map[int]int{},
+		pullCommitsHold:      map[int]*ciJobHeldRead{},
+		pullCommitsAnswered:  map[int][]*ciJobHeldRead{},
+		pullCommitsPageFails: map[int]int{},
+		pulls:                map[int]ciJobPull{},
+		pullReads:            map[int]int{},
+		compares:             map[string]ciJobCompare{},
+		compareReads:         map[string]int{},
+		absentCommits:        map[string]bool{},
 	}
 	_, pemText := githubapptest.Key(t)
 	rig := &ciJobRig{

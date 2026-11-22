@@ -80,6 +80,54 @@ func TestTheMoveReadsTheStatesAtTheTestedHead(t *testing.T) {
 	}
 }
 
+// The pull request moves from H1 to H2 while the tester tests H1, and the tester's results at H1
+// after the move decide the move. The daemon applies the events Dispatch published in each case,
+// in their order and with their serials, as Envoy's TestAFormerHeadOfAnOpenPullRequestKeepsItsStates
+// wrote them (checkstatetest.AfterAMove), with the pull request on record at H2, and the tester
+// completes naming H1 with its record's serial the last of them, as the handoff's fence gives it.
+// The implementer passed k1 and k2 at H1 before the move, so the tester's fail of k2 at H1 after it
+// makes k2 not known there (unknown for pass_and_fail) and sends the issue back naming k2; passes
+// of k1 and k2 at H1 after the move, where nobody passed before it, send the issue to review.
+// Where Dispatch publishes nothing at a head the pull request has left, the move reads the states
+// of H1 from before the move: the fail case goes to review on the implementer's passes, and the
+// pass case goes back on no result.
+func TestAResultAtTheTestedHeadAfterAMoveDecidesTheMove(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		published string
+		want      phase.Phase
+	}{
+		{"a fail of k2 at H1 after the move", "fail_after_the_move", phase.Implementing},
+		{"passes of k1 and k2 at H1 after the move", "passes_after_the_move", phase.Reviewing},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events := checkstatetest.AfterAMove(t, tc.published)
+			tested, moved := events[0].Head, ""
+			for _, event := range events {
+				if event.Head != tested {
+					moved = event.Head
+					break
+				}
+			}
+			if moved == "" {
+				t.Fatalf("the events %+v never name a head but %s, want the move to a second head", events, tested)
+			}
+			r := newStatesRig(t, phase.Testing)
+			seedPR(t, r.pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: statesRepo, Number: 42, Branch: "legion/LEGION-208",
+				HeadSHA: moved, CheckedHead: moved, Failing: []string{}})
+			for _, event := range events {
+				r.states(event.Head, event.Serial, intake.DispatchCheckState{Check: event.Check, State: event.State, Reason: event.Reason,
+					Roles: event.Roles, CICase: event.CICase, Checks: event.Checks})
+			}
+			r.complete(tested, events[len(events)-1].Serial)
+			assertPhase(t, r.pool, tc.want)
+			if tc.want == phase.Implementing {
+				r.movedBackNaming([]string{"k2: unknown (pass_and_fail)", tested}, "k1:")
+			}
+		})
+	}
+}
+
 // noHeadReason is what the architect's notice says of a tester's completion whose test record
 // named no head.
 const noHeadReason = "the move waits for a tested head: the tester's test record named none, so no check state can decide it; " +

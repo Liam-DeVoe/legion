@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -1322,6 +1323,53 @@ func TestOnePullRequestStoredUnderBothNamesEndsAsOneRow(t *testing.T) {
 	row := readHead(t, ctx, pool, gadgetsRepo, 522)
 	if row.HeadSHA != head || row.IssueKey == nil || *row.IssueKey != issue {
 		t.Fatalf("#522 after the refresh = %+v, want %s at %s: the newer event's facts stand", row, issue, head)
+	}
+}
+
+// The heads a pull request left while it was open under its repository's old name are heads of
+// the same pull request once its row is keyed by the canonical name: after the re-key the
+// canonical row reads them, and the old row's own head, and the old name reads the same one
+// history, since both names stand for one pull request. The check states settler keeps computing
+// a pull request's former heads (pull_request_former_heads), and a tester may have tested one of
+// them.
+func TestReKeyingAPullRequestCarriesTheHeadsItLeft(t *testing.T) {
+	fastPageRetries(t)
+	pool, ctx := deliveryTestPool(t)
+	issue := seedGadgetsIssue(t, ctx, pool, 23)
+	seedRenamedGadgets(t, ctx, pool)
+
+	const left, oldHead, head = "7171717171717171717171717171717171717171", "7272727272727272727272727272727272727272", "7373737373737373737373737373737373737373"
+	earlier := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	stale := time.Now().Add(-10 * time.Minute)
+	for index, sha := range []string{left, oldHead} {
+		at := earlier.Add(time.Duration(index) * time.Minute)
+		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+			Repo: gadgetsOldRepo, Number: 523, HeadSHA: sha,
+			HeadRef: "legion/work", BaseRef: "main", State: "open", EventAt: &at, CheckedAt: &stale,
+		}); err != nil {
+			t.Fatalf("store the head of #523 at %s under the old name: %v", sha, err)
+		}
+	}
+	fake := gadgetsFake(t, 523, issue+": the work", head)
+	client := fake.newTestClient()
+	if written, _, err := ReadThroughCommitPulls(ctx, pool, client, nil, gadgetsRepo, head, time.Now()); err != nil || written != 1 {
+		t.Fatalf("read through %s at %s = %d, %v; want one row written", gadgetsRepo, head, written, err)
+	}
+	if err := RefreshPullRequestHead(ctx, pool, client, nil, gadgetsOldRepo, 523, time.Now()); err != nil {
+		t.Fatalf("refresh the row stored under the old name: %v", err)
+	}
+	if repos := headRepos(t, ctx, pool, 523); len(repos) != 1 || repos[0] != gadgetsRepo {
+		t.Fatalf("#523 is stored under %v after the refresh, want only %s", repos, gadgetsRepo)
+	}
+	formerHeads := func(repo string) []string {
+		t.Helper()
+		return foldedFormerHeadsOf(t, ctx, pool, repo, 523)
+	}
+	if got := formerHeads(gadgetsRepo); !slices.Equal(got, []string{left, oldHead}) {
+		t.Fatalf("#523 under %s left %v, want %v: the head it left and its head under the old name", gadgetsRepo, got, []string{left, oldHead})
+	}
+	if got := formerHeads(gadgetsOldRepo); !slices.Equal(got, []string{left, oldHead}) {
+		t.Fatalf("the old name %s reads the former heads %v of #523, want the canonical name's: one pull request has one history", gadgetsOldRepo, got)
 	}
 }
 

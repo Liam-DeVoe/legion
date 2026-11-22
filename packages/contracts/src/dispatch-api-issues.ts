@@ -367,8 +367,11 @@ export type CheckResultRetractedEventPayload = z.output<
   typeof CheckResultRetractedEventPayloadSchema
 >;
 
-/** `check.state_changed`: the state of one `before_merge` check at one open head, appended on the
- *  **check's** issue by the system actor `dispatch-check-states` each time that state changes.
+/** `check.state_changed`: the state of one `before_merge` check at one head, appended on the
+ *  **check's** issue by the system actor `dispatch-check-states` each time that state changes. The
+ *  head is open, or one an open pull request has left (a former head, which keeps its states while
+ *  that pull request is open, since its tester may have tested it); `pull_requests` names the open
+ *  pull requests at the head, or that were at it.
  *  `checks` is the head's whole set of checks. In the set form `check`, `check_version` and
  *  `state` are null: it tells a head's set of checks where no check's own event tells it (a head
  *  with no check, a check removed). `check_artifact_id` is null where the issue has no

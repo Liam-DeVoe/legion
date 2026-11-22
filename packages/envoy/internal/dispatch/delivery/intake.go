@@ -16,6 +16,7 @@
 package delivery
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -807,18 +808,29 @@ func (in *Intake) handleWorkflowEnvelope(ctx context.Context, settings DeliveryS
 	return true, UpsertRunJobs(ctx, in.pool, repoFull, runID, jobs, JobsComplete(jobs))
 }
 
-// commitMessagePayload is one element of GET /repos/{owner}/{repo}/pulls/{number}/commits,
-// limited to the message field fetchCommitMessages reads (distinct from github_prs.go's
-// commitPayload, which reads the same endpoint's dates instead).
-type commitMessagePayload struct {
+// pullRequestCommitPayload is one element of GET /repos/{owner}/{repo}/pulls/{number}/commits,
+// limited to the two fields its readers read: the commit's sha (PullRequestMembership) and its
+// message (fetchCommitMessages). github_prs.go's commitPayload reads the same endpoint's dates.
+type pullRequestCommitPayload struct {
+	SHA    string `json:"sha"`
 	Commit struct {
 		Message string `json:"message"`
 	} `json:"commit"`
 }
 
-// maxCommitPages bounds fetchCommitMessages' pagination: 500 commits is already an enormous pull
-// request, and a PR beyond that is not worth the API cost of chasing its full history.
+// maxCommitPages bounds the pagination of a pull request's commits: 500 commits is already an
+// enormous pull request, and a PR beyond that is not worth the API cost of chasing its full
+// history. GitHub itself lists at most pullRequestCommitsListed commits of a pull request.
 const maxCommitPages = 5
+
+// pullRequestCommitsPage is how many commits fetchPullRequestCommits asks GitHub for on each page
+// of a pull request's commits, GitHub's own maximum: a page that holds fewer is the last.
+const pullRequestCommitsPage = 100
+
+// pullRequestCommitsListed is the most commits GitHub lists for one pull request, however many it
+// holds (https://docs.github.com/en/rest/pulls/pulls#list-commits-on-a-pull-request): a list of
+// that many says nothing about a commit it leaves out.
+const pullRequestCommitsListed = 250
 
 // fetchCommitMessages reads a pull request's commit messages, in commit order: what its session
 // trailers (sessionTrailers) and its commit-message issue keys (AttributionInputs.CommitKeys) are
@@ -837,32 +849,163 @@ func fetchCommitMessages(ctx context.Context, client *githubapp.Client, owner, r
 // failed one included, so a caller can count what a read cost (reconcileAttributionInputs' call
 // budget).
 func fetchCommitMessagesWithToken(ctx context.Context, client *githubapp.Client, token func() (string, error), owner, repo string, number int) ([]string, int, error) {
+	commits, pages, err := fetchPullRequestCommits(ctx, client, token, owner, repo, number)
 	var messages []string
+	for _, c := range commits {
+		messages = append(messages, c.Commit.Message)
+	}
+	return messages, pages, err
+}
+
+// CommitMembership is what PullRequestMembership could tell about each commit it was asked about:
+// Members are the pull request's own commits, Outside the commits that are not, and Unknown each
+// commit whose answer a read that failed withheld. Complete is whether GitHub's list of the pull
+// request's commits was whole; Pages, PullReads, Compares and CommitReads count the reads the
+// answer cost: the pages of that list, the read of the pull request, the comparisons and the
+// reads of a commit.
+type CommitMembership struct {
+	Members, Outside, Unknown               []string
+	Complete                                bool
+	Pages, PullReads, Compares, CommitReads int
+}
+
+// PullRequestMembership tells, for each of candidates, whether it is a commit of pull request
+// number of repoFull: a commit of the set `git log base..head`, which the head holds and the base
+// branch does not. The check states settler asks it about the candidate former heads of an open
+// pull request (api/check_states.go, verifyFormerHeads).
+//
+// It reads the pull request's list of commits first, pages of pullRequestCommitsPage. A commit
+// the list names is a member. The list is whole only where it ended on a page that was not full
+// and names fewer than pullRequestCommitsListed commits, GitHub's cap; then a commit it does not
+// name is outside. Where the list is not whole, a commit it does not name is decided by GitHub's
+// comparisons, which have no such cap, against the head and the base branch's revision that one
+// read of the pull request names (GET /repos/{owner}/{repo}/pulls/{number}, its head.sha and
+// base.sha), each comparison of the verification against those two commits and never against the
+// base branch's name, which can move between two comparisons: the comparison with the head says
+// whether the head holds the commit (githubapp.Client.CommitOnBranch); a commit the head does not
+// hold is outside, and else the comparison with the base revision decides: held there, outside,
+// since the head holds every commit of its base, such as an earlier merged pull request's head;
+// not held there, a member. A comparison GitHub answers 403 or 404 for says nothing alone, since
+// 404 is also its answer for a commit the repository does not have: the commit is then read
+// (githubapp.Client.HasCommit), and only GitHub's `No commit found for SHA` puts it outside.
+// Each read costs one request but the list's pages, and a commit the list names costs none.
+//
+// Every other failure of a read leaves each commit that read would have decided in Unknown, and
+// the first such failure is the error; the commits other reads decided keep their answers. A
+// failed read of the list or of the pull request, or a read of the pull request that names no
+// base revision, leaves every commit it would have decided unknown.
+func PullRequestMembership(ctx context.Context, client *githubapp.Client, repoFull string, number int, candidates []string) (CommitMembership, error) {
+	var answer CommitMembership
+	owner, repo, err := refs.SplitGitHubRepo(repoFull)
+	if err != nil {
+		answer.Unknown = append(answer.Unknown, candidates...)
+		return answer, err
+	}
+	token := func() (string, error) { return client.RepositoryToken(ctx, owner, repo) }
+	commits, pages, err := fetchPullRequestCommits(ctx, client, token, owner, repo, number)
+	answer.Pages = pages
+	if err != nil {
+		answer.Unknown = append(answer.Unknown, candidates...)
+		return answer, err
+	}
+	listed := make(map[string]bool, len(commits))
+	for _, commit := range commits {
+		listed[commit.SHA] = true
+	}
+	answer.Complete = len(commits) < pullRequestCommitsListed && len(commits) < pages*pullRequestCommitsPage
+	var unlisted []string
+	for _, sha := range candidates {
+		switch {
+		case listed[sha]:
+			answer.Members = append(answer.Members, sha)
+		case answer.Complete:
+			answer.Outside = append(answer.Outside, sha)
+		default:
+			unlisted = append(unlisted, sha)
+		}
+	}
+	if len(unlisted) == 0 {
+		return answer, nil
+	}
+	current, err := token()
+	if err != nil {
+		answer.Unknown = append(answer.Unknown, unlisted...)
+		return answer, fmt.Errorf("%w for %s: %w", ErrTokenMint, repoFull, err)
+	}
+	answer.PullReads++
+	pull, err := fetchPullRequestPayload(ctx, client, current, owner, repo, number)
+	if err != nil {
+		answer.Unknown = append(answer.Unknown, unlisted...)
+		return answer, err
+	}
+	if pull.Head.SHA == "" || pull.Base.SHA == "" {
+		answer.Unknown = append(answer.Unknown, unlisted...)
+		return answer, fmt.Errorf("the read of %s#%d names no head or base revision to compare its commits with", repoFull, number)
+	}
+	var failed error
+	for _, sha := range unlisted {
+		answer.Compares++
+		onHead, err := client.CommitOnBranch(ctx, current, owner, repo, pull.Head.SHA, sha)
+		if err != nil && errors.Is(err, githubapp.ErrRepositoryUnreadable) {
+			answer.CommitReads++
+			if held, heldErr := client.HasCommit(ctx, current, owner, repo, sha); heldErr == nil && !held {
+				answer.Outside = append(answer.Outside, sha)
+				continue
+			}
+		}
+		if err != nil {
+			answer.Unknown = append(answer.Unknown, sha)
+			failed = cmp.Or(failed, fmt.Errorf("compare %s with the head of %s#%d: %w", sha, repoFull, number, err))
+			continue
+		}
+		if !onHead {
+			answer.Outside = append(answer.Outside, sha)
+			continue
+		}
+		answer.Compares++
+		onBase, err := client.CommitOnBranch(ctx, current, owner, repo, pull.Base.SHA, sha)
+		switch {
+		case err != nil:
+			answer.Unknown = append(answer.Unknown, sha)
+			failed = cmp.Or(failed, fmt.Errorf("compare %s with the base revision %s of %s#%d: %w", sha, pull.Base.SHA, repoFull, number, err))
+		case onBase:
+			answer.Outside = append(answer.Outside, sha)
+		default:
+			answer.Members = append(answer.Members, sha)
+		}
+	}
+	return answer, failed
+}
+
+// fetchPullRequestCommits reads a pull request's commits, pages of pullRequestCommitsPage until
+// the first that is not full, at most maxCommitPages, asking token for each page's installation
+// token. It answers the commits of the pages it read and how many pages it asked for, the failed
+// one included.
+func fetchPullRequestCommits(ctx context.Context, client *githubapp.Client, token func() (string, error), owner, repo string, number int) ([]pullRequestCommitPayload, int, error) {
+	var commits []pullRequestCommitPayload
 	for page := 1; page <= maxCommitPages; page++ {
 		current, err := token()
 		if err != nil {
-			return messages, page - 1, fmt.Errorf("mint installation token for %s/%s PR #%d commits page %d: %w", owner, repo, number, page, err)
+			return commits, page - 1, fmt.Errorf("mint installation token for %s/%s PR #%d commits page %d: %w", owner, repo, number, page, err)
 		}
-		commitsPath := fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=100&page=%d", url.PathEscape(owner), url.PathEscape(repo), number, page)
+		commitsPath := fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=%d&page=%d", url.PathEscape(owner), url.PathEscape(repo), number, pullRequestCommitsPage, page)
 		body, status, header, err := readGitHubPage(ctx, client, current, commitsPath)
 		if err != nil {
-			return messages, page, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
+			return commits, page, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
 		}
 		if err := githubapp.CheckResponse(status, header, body); err != nil {
-			return messages, page, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
+			return commits, page, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
 		}
-		var commits []commitMessagePayload
-		if err := json.Unmarshal(body, &commits); err != nil {
-			return messages, page, fmt.Errorf("decode commits of PR #%d page %d: %w", number, page, err)
+		var read []pullRequestCommitPayload
+		if err := json.Unmarshal(body, &read); err != nil {
+			return commits, page, fmt.Errorf("decode commits of PR #%d page %d: %w", number, page, err)
 		}
-		for _, c := range commits {
-			messages = append(messages, c.Commit.Message)
-		}
-		if len(commits) < 100 {
-			return messages, page, nil
+		commits = append(commits, read...)
+		if len(read) < pullRequestCommitsPage {
+			return commits, page, nil
 		}
 	}
-	return messages, maxCommitPages, nil
+	return commits, maxCommitPages, nil
 }
 
 // sessionTrailers is every `Omp-Session:` commit trailer across messages (LEGION-294's rule,

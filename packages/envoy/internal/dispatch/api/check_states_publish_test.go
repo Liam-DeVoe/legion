@@ -1,7 +1,8 @@
 // check_states_publish_test.go holds what the settler publishes (check_states.go): one state of
 // each check at each open head, one check.state_changed event for each change of a state and none
 // where nothing changed, the payload each event carries, the set form of a head with no check, and
-// the state of each head computed for its own repository. The rig is check_states_test.go's.
+// the state of each head computed for its own repository. What it publishes at a head an open pull
+// request has left is check_states_former_heads_test.go's. The rig is check_states_test.go's.
 package api
 
 import (
@@ -197,8 +198,11 @@ func TestEachKindOfChangePublishesTheNewState(t *testing.T) {
 		upsertHead(t, rig, 70, eachHeadH2, rig.issue, "A change")
 		wantEventSet(t, "a push that moves #70 to H2", settleOwed(t, rig),
 			stateWant{"k1", eachHeadH2, "no", "no_result"}, stateWant{"k2", eachHeadH2, "no", "no_result"})
-		if _, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH1, "k1"); held {
-			t.Fatal("the state of k1 at H1, which no pull request heads now, is still published")
+		// H1 is a former head of #70, which is still open, and its tester may have tested H1 while
+		// #70 moved on: the settler keeps H1's states, and publishes nothing new there, since no
+		// state of H1 changed (TestAFormerHeadOfAnOpenPullRequestKeepsItsStates).
+		if _, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH1, "k1"); !held {
+			t.Fatal("the state of k1 at H1, a former head of #70, which is still open, is no longer published")
 		}
 	})
 	t.Run("CI settled through check_states_owe", func(t *testing.T) {
@@ -354,7 +358,7 @@ func TestAHeadOfEachRepositoryTakesItsOwnComputedState(t *testing.T) {
 			ordinary.PassStands = eachSubjectStands(ordinary, comparison{subjects: subjects}, nil)
 			proved := model.CheckBlock{BlockID: "k3", When: docs.CheckWhenBeforeMerge}
 			proved.PassStands = eachSubjectStands(proved, comparison{subjects: subjects, ci: reads}, nil)
-			computed, readFailed, err := checkStatesAtOpenHeads("ACME-1", heads, issueCheckResults{Checks: []model.CheckBlock{ordinary, proved}})
+			computed, readFailed, err := checkStatesAtHeads("ACME-1", heads, nil, issueCheckResults{Checks: []model.CheckBlock{ordinary, proved}})
 			if err != nil {
 				t.Fatalf("compute the states at the two heads: %v", err)
 			}

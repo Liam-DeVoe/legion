@@ -1,11 +1,12 @@
 // check_states_test.go holds the rig and the readers of the tests that hold the check states
 // settler (check_states.go) to its rules: each write that can change the state of a
-// `before_merge` check at an open head marks the check's issue owed in its own transaction, and
-// the settler publishes one check.state_changed event for each change of a state, compared with
-// the state it published last, and none where nothing changed. A test handoff waits until the
-// states its results caused are published. The tests are in check_states_publish_test.go (what is
-// published), check_states_settle_test.go (how a settle starts and runs) and
-// check_states_fence_test.go (the test handoff's wait and the serial).
+// `before_merge` check at an open head, or at a former head of an open pull request, marks the
+// check's issue owed in its own transaction, and the settler publishes one check.state_changed
+// event for each change of a state, compared with the state it published last, and none where
+// nothing changed. A test handoff waits until the states its results caused are published. The
+// tests are in check_states_publish_test.go (what is published), check_states_former_heads_test.go
+// (the former heads of an open pull request), check_states_settle_test.go (how a settle starts and
+// runs) and check_states_fence_test.go (the test handoff's wait and the serial).
 //
 // Each test drives the settler itself: settleOwed runs its pass until no mark is due, so a test
 // reads the events one write caused before it makes the next. The tests of the loop
@@ -27,6 +28,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -323,11 +325,21 @@ func publishedRow(t *testing.T, database *store.Store, issue, repo, head, check 
 	return row, true
 }
 
-// computedSubject is the state a fresh computation gives check at head of the rig's issue: its
-// subject there in answerIssueChecks's answer.
+// computedSubject is the state a fresh computation of the settler's gives check at head of the
+// rig's issue, at an open head or a former one: its subject there in answerIssueChecks's answer,
+// given the issue's former heads apart from its open heads (formerHeadsOf, formerHeadsApart).
 func computedSubject(t *testing.T, rig *checkStatesRig, check, head string) model.PassStandsSubject {
 	t.Helper()
-	answer, _, err := rig.served.answerIssueChecks(store.WithTransactionTracking(t.Context()), rig.issue, noCommitNamed, nil)
+	ctx := store.WithTransactionTracking(t.Context())
+	heads, err := delivery.HeadsAttributedTo(ctx, rig.database.Pool, rig.issue)
+	if err != nil {
+		t.Fatalf("read the heads of %s: %v", rig.issue, err)
+	}
+	former, err := formerHeadsOf(ctx, rig.database.Pool, rig.issue, heads)
+	if err != nil {
+		t.Fatalf("read the former heads of %s: %v", rig.issue, err)
+	}
+	answer, _, err := rig.served.answerIssueChecks(ctx, rig.issue, noCommitNamed, nil, formerHeadsApart(former, heads))
 	if err != nil {
 		t.Fatalf("compute the checks of %s: %v", rig.issue, err)
 	}

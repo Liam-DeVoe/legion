@@ -559,9 +559,13 @@ RULES = {
         (f"{FIX}/capability-redaction-plugin-report.json", "internal/capabilities/capabilities_test.go:236 readFixture")),
     f"{DAEMON}/internal/checkstatetest/checkstatetest.go": reads(
         (f"{FIX}/dispatch-events/check-state-changed.json",
-         "internal/checkstatetest/checkstatetest.go:49 ReadFixture os.ReadFile (runtime.Caller at :45 + "
-         "../../../contracts/fixtures/dispatch-events): each state event the api, daemon and workflow tests "
-         "apply is the payload Envoy's golden writes")),
+         "internal/checkstatetest/checkstatetest.go:95 readDispatchEvents os.ReadFile (runtime.Caller at :91 + "
+         "../../../contracts/fixtures/dispatch-events), called by ReadFixture: each state event the api, daemon "
+         "and workflow tests apply is the payload Envoy's golden writes"),
+        (f"{FIX}/dispatch-events/check-states-after-a-move.json",
+         "internal/checkstatetest/checkstatetest.go:95 readDispatchEvents os.ReadFile, called by AfterAMove: the "
+         "events Envoy's TestAFormerHeadOfAnOpenPullRequestKeepsItsStates writes, which workflow's "
+         "TestAResultAtTheTestedHeadAfterAMoveDecidesTheMove applies")),
     f"{DAEMON}/internal/claim/claim_test.go": reads((f"{FIX}/project-tokens.json", "internal/claim/claim_test.go:196")),
     f"{DAEMON}/internal/classify/fixtures_test.go": reads((f"{FIX}/classification/**", "internal/classify/fixtures_test.go:119,128 (fixtureDirectory :143, runtime.Caller :148)")),
     f"{DAEMON}/internal/config/controller_test.go": reads(("deploy/kubernetes/daemon/controller.yaml.example", "internal/config/controller_test.go:214 LoadController reads it (config.ControllerConfigExample, joined at :213)")),
@@ -857,14 +861,20 @@ RULES = {
         (f"{ENVOY}/scripts/fixtures/github/*", "internal/contracts/normalize_test.go:2078,2711")),
     f"{ENVOY}/internal/contracts/plan_rating_test.go": reads(
         (f"{FIX}/daemon-api/plan-rating-cases.json", "internal/contracts/plan_rating_test.go:21")),
+    f"{ENVOY}/internal/dispatch/api/check_states_former_heads_test.go": reads(
+        (f"{FIX}/dispatch-events/check-states-after-a-move.json",
+         "internal/dispatch/api/check_states_former_heads_test.go:169 os.ReadFile (afterAMoveFixturePath, "
+         "../../../../contracts/fixtures/dispatch-events): TestAFormerHeadOfAnOpenPullRequestKeepsItsStates "
+         "compares the events the settler published with the committed fixture, which :164 writes under "
+         "UPDATE_GOLDEN=1")),
     f"{ENVOY}/internal/dispatch/api/check_states_publish_test.go": reads(
         (CONTRACTS_SRC,
-         "internal/dispatch/api/check_states_publish_test.go:134 runs `bun -e` in ../../../../contracts (:130), importing "
+         "internal/dispatch/api/check_states_publish_test.go:135 runs `bun -e` in ../../../../contracts (:131), importing "
          "./src/index.ts to parse a stored check.state_changed payload with CheckStateChangedEventPayloadSchema"),
         ("packages/contracts/package.json",
-         "internal/dispatch/api/check_states_publish_test.go:134 runs bun in packages/contracts, which reads the package's manifest"),
+         "internal/dispatch/api/check_states_publish_test.go:135 runs bun in packages/contracts, which reads the package's manifest"),
         ("packages/contracts/tsconfig.json",
-         "internal/dispatch/api/check_states_publish_test.go:134 runs bun in packages/contracts, which reads its tsconfig")),
+         "internal/dispatch/api/check_states_publish_test.go:135 runs bun in packages/contracts, which reads its tsconfig")),
     f"{ENVOY}/internal/dispatch/api/check_states_settle_test.go": reads(
         (f"{ENVOY}/cmd/dispatch/main.go",
          "internal/dispatch/api/check_states_settle_test.go:267 parses ../../../cmd/dispatch/main.go for the lease pool's "

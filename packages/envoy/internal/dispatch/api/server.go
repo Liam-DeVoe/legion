@@ -747,7 +747,8 @@ type Background struct {
 	// RunCheckStates is the check states settler's loop (runCheckStates, check_states.go), which
 	// every process runs on its own reservation of the lease pool and its listener hub's wake on
 	// CheckStatesOwedChannel, until ctx ends: it publishes one check.state_changed event for each
-	// change of the state of a `before_merge` check at an open head.
+	// change of the state of a `before_merge` check at an open head, or at a head an open pull
+	// request has left.
 	RunCheckStates func(ctx context.Context, leases duty.Leases, wake <-chan struct{})
 }
 
