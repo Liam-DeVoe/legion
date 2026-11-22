@@ -392,7 +392,7 @@ const CLAUSE_OPENS = String.raw`(?:${SENTENCE_OPENS}|[,—]\s|\b(?:and|or|but|th
  * `you` ("You never re-run a check"), since a bare `you` can be any role, as
  * `REVIEWER_RERUNS_NOTHING` reads it too. `run` is deliberately no lane noun, which is what lets
  * the sentences the change keeps pass: "A merge-group run is never re-run" (merge-gate.md,
- * pr-body.md and the implementer's prompt overlay) and "Where no run at the head holds the failing
+ * pr-body.md and the implementer's prompt overlay) and "If no run at the head holds the failing
  * check, the role re-runs nothing" (red-at-the-head.md). "No role re-runs a group build." passes
  * because a role is no lane, and "it gets no re-run", said of a check that judges the pull request
  * itself, because a re-run is no lane either. The ban lets one limit through, a `for` naming the
@@ -452,38 +452,47 @@ const RERUN_LIMIT = "(?:when|where|once|if|after|past|outside|beyond|unless|unti
  * Two shapes. The reviewer by name (`the reviewer`, `your review`) re-running nothing, unless the
  * ban is limited: its sentence opens with a condition (`when`, `where`, `once`, `if`, `after`,
  * `past`, `outside`, `beyond`, `unless`, `until`), or a `for` follows the `nothing` and no review
- * bot follows that `for` in its sentence. Those limits are the page's own rules, which pass: "When
- * the head's one re-run is spent, the reviewer re-runs nothing and requests changes.", "Past
- * review the reviewer re-runs nothing: it reads the merge …" and "The reviewer re-runs nothing for
- * a check the base does not require." No sentence the trees keep puts its condition after the
- * `nothing`, and a condition there let the retired claim back with the review bot named after the
- * ban, as the class search at 5525e6c7 found, so each of these is refused: "The reviewer re-runs
- * nothing when a review bot is red.", "The reviewer re-runs nothing until the review bot's thread
- * is resolved." and "The reviewer re-runs nothing for a review bot's red." An unlimited one is
- * refused too: "The reviewer re-runs nothing, a required check red at the head included." And
- * any re-runner in a sentence that names a review bot before it, which is the retired claim's own
- * shape, whatever limits it: `the reviewer`, `you`, or the imperative
- * `re-run nothing` that opens its clause (`CLAUSE_OPENS`), so "When a review bot is red, you re-run
- * nothing." and "While the review bot's thread stands, re-run nothing." are refused. A bare `you`
- * with no review bot can be any role, so it passes: the natural way to tell the merger it re-runs
- * nothing is "You re-run nothing: …". So do the sentences that deny the re-run to a role holding
- * no phase: "The merger, the architect in `accepting` and an implementer that runs retro re-run
- * nothing." and "A role that is told of a red whose phase it does not hold re-runs nothing." (both
- * red-at-the-head.md), and "a re-run does not clear that red" (review-threads.md), which names no
- * re-runner at all. The cost is a ban written to the reviewer as a bare `you` with no review bot
- * in its sentence, or under a condition that opens its sentence, which passes too. The other cost
- * is a condition after the `nothing` that limits the ban to a case of the page's, "The reviewer
- * re-runs nothing when the head's one re-run is spent.", which no tree carries and which is
- * refused: it passes with its condition first, as the page writes it. The gap is bounded by
- * `[^.]{0,40}`, so a `the reviewer` of the sentence before a full stop cannot reach across it to
- * the `re-run nothing` of the next, and the review bot and the condition are read in the sentence
- * of the ban. Each is read through a lookbehind, which Bun's JavaScriptCore runs, so a hit names
- * the line of the re-runner, or of the `re-run` where none is named.
+ * bot follows that `for` in its sentence. A review bot is read as `review bot` or `review-bot`, so
+ * "Your review re-runs nothing for a review-bot red." is refused (the class search at 59442ee2).
+ * Those limits are the page's own rules, which pass: "When the head's one re-run is spent, the
+ * reviewer re-runs nothing and requests changes.", "Past review the reviewer re-runs nothing: it
+ * reads the merge …" and "The reviewer re-runs nothing for a check the base does not require." No
+ * sentence the trees keep puts its condition after the `nothing`, and a condition there let the
+ * retired claim back with the review bot named after the ban, as the class search at 5525e6c7
+ * found, so each of these is refused: "The reviewer re-runs nothing when a review bot is red.",
+ * "The reviewer re-runs nothing until the review bot's thread is resolved." and "The reviewer
+ * re-runs nothing for a review bot's red." An unlimited one is refused too: "The reviewer re-runs
+ * nothing, a required check red at the head included." And any re-runner in a sentence that names a
+ * review bot before it, which is the retired claim's own shape, whatever limits it: `the reviewer`,
+ * `you`, or the imperative `re-run nothing` that opens its clause (`CLAUSE_OPENS`), so "When a
+ * review bot is red, you re-run nothing." and "While the review bot's thread stands, re-run
+ * nothing." are refused. A bare `you` with no review bot can be any role, so it passes: the natural
+ * way to tell the merger it re-runs nothing is "You re-run nothing: …". So do the sentences that
+ * deny the re-run to a role holding no phase: "The merger, the architect in `accepting` and an
+ * implementer that runs retro re-run nothing." and "A role that is told of a red whose phase it
+ * does not hold re-runs nothing." (both red-at-the-head.md), and "a re-run does not clear that red"
+ * (review-threads.md), which names no re-runner at all. The cost is a ban written to the reviewer
+ * as a bare `you` with no review bot in its sentence, or under a condition that opens its sentence,
+ * which passes too. The other cost is a condition after the `nothing` that limits the ban to a case
+ * of the page's, "The reviewer re-runs nothing when the head's one re-run is spent.", which no tree
+ * carries and which is refused: it passes with its condition first, as the page writes it. The same
+ * holds for "The reviewer re-runs nothing until the run that holds the failed job has completed."
+ * and "… once the head's one re-run is spent.", and for a `for` whose sentence names a review bot
+ * later, past a comma or a semicolon ("The reviewer re-runs nothing for the approval; a review
+ * bot's red is a finding like any other."): each is refused, and no swept root carries one. A
+ * literal pattern does not close every paraphrase: a ban whose condition opens its sentence passes
+ * with a review bot after it ("When its thread stands, the reviewer re-runs nothing for a review
+ * bot's red."), and so does one that names the bot otherwise ("for a bot's red", "for CodeRabbit's
+ * red"); the review threads reference's words and the reviewer's read of them carry the rest. The
+ * gap is bounded by `[^.]{0,40}`, so a `the reviewer` of the sentence before a full stop cannot
+ * reach across it to the `re-run nothing` of the next, and the review bot and the condition are
+ * read in the sentence of the ban. Each is read through a lookbehind, which Bun's JavaScriptCore
+ * runs, so a hit names the line of the re-runner, or of the `re-run` where none is named.
  */
 const REVIEWER_RERUNS_NOTHING = new RegExp(
   [
-    String.raw`(?<!${SENTENCE_OPENS}${RERUN_LIMIT}\b[^.]*)\b(?:the reviewer|your review)\b[^.]{0,40}?\bre-?runs?\s+(?:nothing|none)\b(?!\s+for\b(?![^.]*\breview\s+bot\b))`,
-    String.raw`(?<=\breview\s+bot\b[^.]*)(?:\b(?:the reviewer|you)\b[^.]{0,40}?\bre-?runs?|(?<=${CLAUSE_OPENS})re-?run)\s+(?:nothing|none)\b`,
+    String.raw`(?<!${SENTENCE_OPENS}${RERUN_LIMIT}\b[^.]*)\b(?:the reviewer|your review)\b[^.]{0,40}?\bre-?runs?\s+(?:nothing|none)\b(?!\s+for\b(?![^.]*\breview[\s-]+bot\b))`,
+    String.raw`(?<=\breview[\s-]+bot\b[^.]*)(?:\b(?:the reviewer|you)\b[^.]{0,40}?\bre-?runs?|(?<=${CLAUSE_OPENS})re-?run)\s+(?:nothing|none)\b`,
   ].join("|"),
   "i"
 );
@@ -702,17 +711,24 @@ const AN_UNREPORTED_RED_WAITS = new RegExp(
  * case (the page's `A_FAILED_JOB_IS_NEVER_THAT_CASE`).
  *
  * The shape is the absence from the set (`that`, `the` or `this` set, `counted` or not) with a
- * re-run within twenty characters after it, which is a trigger with nothing to limit it. So the
- * sentence that replaced it passes, since the job's state stands between the two: "A required
- * check absent from the counted set, or `completed` as `cancelled` there, whose job in a
- * `pull_request` run of the head was cancelled or never ran: re-run that run's failed and
+ * re-run within twenty characters after it and no negation between the two (`never`, `not`, `no`,
+ * `none`, `nothing`, `neither`, `nor`, or a word ending in `n't`), which is a trigger with nothing
+ * to limit it. So a sentence that withholds the re-run passes: "A check absent from the counted set
+ * is never re-run on that absence alone.", "… is not re-run while its run is in progress." and "…
+ * gets no re-run until a `pull_request` run of the head holds its job." (the class search at
+ * 59442ee2). So does the sentence that replaced it, since the job's state stands between the two:
+ * "A required check absent from the counted set, or `completed` as `cancelled` there, whose job in
+ * a `pull_request` run of the head was cancelled or never ran: re-run that run's failed and
  * cancelled jobs, once". So do the page's other absences, "may find the failing check pending,
  * queued, in progress or absent" and "with every check it holds `completed` and that one absent",
- * and the architect's notice, "is absent from that list rather than named as missing". The cost
- * is a re-run written before the absence ("Re-run a check absent from that set."), which passes.
+ * and the architect's notice, "is absent from that list rather than named as missing". A literal
+ * pattern does not close every paraphrase: "missing from that set", "absent from the rollup", "not
+ * in that set", "the pull request's counted set", and a re-run written before the absence or more
+ * than twenty characters after it all pass; the reviewer's prompt part's words, pinned in
+ * roles_test.go, carry the rest.
  */
 const ABSENCE_FROM_THE_SET_IS_RERUN =
-  /\babsent\s+from\s+(?:that|the|this)\s+(?:counted\s+)?set\b(?=[^.]{0,20}?\bre-?run\b)/i;
+  /\babsent\s+from\s+(?:that|the|this)\s+(?:counted\s+)?set\b(?=(?:(?!\b(?:never|not|no|none|nothing|neither|nor)\b|n't\b)[^.]){0,20}?\bre-?run\b)/i;
 
 /** The twelve rules INFRA-1303 retired, in the order they are written above. */
 const RETIRED_RERUN_PROHIBITIONS = [
@@ -950,16 +966,33 @@ const THE_TESTER_SENDS_A_CI_FINDING =
  * no pass from the implementer, a pass a `ci_check` check never has (Dispatch refuses any role's
  * result for one, `409 CHECK_PROVED_BY_CI`). The architect's gap review of 2026-11-22 found it
  * there after the tester came to read no CI. The shape is a read (`that read`, `the read`, `this
- * read`, `your read`) that shows a derived result, so the sentences that keep a `ci_check` check
- * CI's pass: "A check carrying `ci_check` is CI's (`skill://legion-worker/references/ci-checks.md`):
- * you do not read its derived result, run it or record it, and it is never an entry of your
- * `failures`." (the tester's role part) and "It neither reads nor records a `ci_check` check's
- * derived result" (ci-checks.md). So does the architect's "whenever that read shows no claim at
- * all", which shows no derived result. The cost is the same words said to the reviewer as `your
- * read`, which a reword that names the reviewer's read passes.
+ * read`, `your read`) that shows a derived result, in a sentence said to the tester: `your read`,
+ * or a sentence that says `you` or names the tester, or one that names no other role, since in a
+ * role part a read no role is named for is the reader's own. So the reviewer's read passes: "Before
+ * it approves, the reviewer reads each `ci_check` check: the read shows its one derived result."
+ * (the class search at 59442ee2). So do the sentences that keep a `ci_check` check CI's: "A check
+ * carrying `ci_check` is CI's (`skill://legion-worker/references/ci-checks.md`): you do not read
+ * its derived result, run it or record it, and it is never an entry of your `failures`." (the
+ * tester's role part) and "It neither reads nor records a `ci_check` check's derived result"
+ * (ci-checks.md). So does the architect's "whenever that read shows no claim at all", which shows
+ * no derived result. A literal pattern does not close every paraphrase: "that read also shows",
+ * "the check's one derived result", "gives", "single" and "the `dispatch results` read" pass; the
+ * tester's role part's words, pinned in roles_test.go, carry the rest.
  */
-const THE_TESTERS_READ_SHOWS_A_DERIVED_RESULT =
-  /\b(?:that|the|this|your)\s+read\s+shows\s+(?:its|the|a|each)\s+(?:one\s+)?derived\s+results?\b/i;
+const THE_TESTERS_READ_SHOWS_A_DERIVED_RESULT = (() => {
+  const read = String.raw`\s+read\s+shows\s+(?:its|the|a|each)\s+(?:one\s+)?derived\s+results?\b`;
+  const tester = String.raw`\b(?:you|yours?|testers?)\b`;
+  const otherRole = String.raw`\b(?:reviewer|implementer|architect|merger|planner|controller)s?\b`;
+  return new RegExp(
+    [
+      String.raw`\byour${read}`,
+      String.raw`(?<=${tester}[^.]*)\b(?:that|the|this)${read}`,
+      String.raw`\b(?:that|the|this)${read}(?=[^.]*${tester})`,
+      String.raw`(?<!${otherRole}[^.]*)\b(?:that|the|this)${read}(?![^.]*${otherRole})`,
+    ].join("|"),
+    "i"
+  );
+})();
 
 /** The tester's eight retired shapes, in the order they are written above. */
 const RETIRED_TESTER_CI_READS = [
@@ -1234,13 +1267,15 @@ const NO_RED_IS_READ_AT_ONCE =
  * the change's only when its own output names the pull request's own field. The reading before
  * said such a check "is the change's, and it gets no re-run" whatever failed it, so a title check
  * that GitHub's API limit failed was read as the change's red, which costs the lap this page saves.
- * The field read "(its title, body or labels)" until the architect's gap review of 2026-11-22: the
- * title check (.github/scripts/check-pr-text.sh) also reads the branch name and the commit
- * messages, and reports a hit there as `branch:` or `commits:`, so a red it gave for either was
- * read as no field's and re-run.
+ * The field read "(its title, body or labels)" until the architect's gap review of 2026-11-22, and
+ * "(its title, body, labels, branch name or commit messages)" until the architect's reading of
+ * 05:39Z that day: the title check (.github/scripts/check-pr-text.sh) also reads the branch name
+ * and each commit's message, author name and email, and committer name and email, and reports a
+ * hit there as `branch:` or `commits:`, so a red it gave for one of them was read as no field's and
+ * re-run.
  */
 const A_PULL_REQUEST_CHECK_IS_THE_CHANGES_ON_ITS_FIELD =
-  "is the change's when its own output names the pull request's own field (its title, body, labels, branch name or commit messages) as the cause, and it gets no re-run; a failure at a fetch, a limit or a runner in that check is read by the fourth reading, like any other failure in no test.";
+  "is the change's when its own output names the pull request's own field (its title, body, labels, branch name or commits: their messages, authors and committers) as the cause, and it gets no re-run; a failure at a fetch, a limit or a runner in that check is read by the fourth reading, like any other failure in no test.";
 
 /**
  * The reviewer's spend-free re-run on the page, and the sentence that keeps a failed job out of

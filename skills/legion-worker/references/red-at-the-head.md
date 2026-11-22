@@ -72,10 +72,11 @@ Four readings decide it:
 
 1. A check that judges the pull request itself rather than its code, such as the title check, is the
    change's when its own output names the pull request's own field (its title, body, labels, branch
-   name or commit messages) as the cause, and it gets no re-run; a failure at a fetch, a limit or a
-   runner in that check is read by the fourth reading, like any other failure in no test. The one
-   exception is a check whose own output names a comment or a review as the cause. No role may edit
-   a comment or a review, so the role tells the architect, and that red is re-run by nobody.
+   name or commits: their messages, authors and committers) as the cause, and it gets no re-run; a
+   failure at a fetch, a limit or a runner in that check is read by the fourth reading, like any
+   other failure in no test. The one exception is a check whose own output names a comment or a
+   review as the cause. No role may edit a comment or a review, so the role tells the architect, and
+   that red is re-run by nobody.
 2. An aggregate check is resolved to the lane that failed it. That lane is judged in its place.
 3. A failing test is the change's when its own package is one the pull request changes: the Go
    package for a Go test, the directory of the test file for a Bun or a Playwright suite. A run of
@@ -229,8 +230,7 @@ The settlement wakes the role in that session, and one read of the head's checks
 - Red again: the reviewer requests changes and names the check. The implementer records the red,
   tells the architect, and completes its phase, naming the check; the reviewer judges the red in
   its round.
-- Where no run at the head holds the failing check, the role re-runs nothing and tells the
-  architect.
+- If no run at the head holds the failing check, the role re-runs nothing and tells the architect.
 
 ## When the cause is another tree's, so no re-run clears it
 

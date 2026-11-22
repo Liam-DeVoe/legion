@@ -89,7 +89,7 @@ function reported(
 }
 
 // Each retired sentence in the words of the file that carried it, the text around it shortened,
-// and the line its pattern's first word stands on. The last sixteen rows are the shapes no file
+// and the line its pattern's first word stands on. The last eighteen rows are the shapes no file
 // carried, in the words a reword would bring them back in. Every row is found by its own pattern
 // alone, so a row whose pattern is taken out of the guard reports nothing and fails.
 const retired: readonly (readonly [source: string, page: readonly string[], line: number])[] = [
@@ -482,6 +482,27 @@ const retired: readonly (readonly [source: string, page: readonly string[], line
     ],
     2,
   ],
+  // Two shapes one step from a retired one, the first refused all along and the second let through
+  // until the class search at 59442ee2: the reviewer's old trigger with `rerun`, and the review-bot
+  // ban with the bot written `review-bot`.
+  [
+    'reviewer.md\'s old trigger with "rerun", "absent from that set: rerun that run\'s failed and cancelled jobs"',
+    [
+      "One `queued` or `in_progress`: wait. One `completed` as `cancelled`, or",
+      "absent from that",
+      "set: rerun that run's failed and cancelled jobs, once, then wait.",
+    ],
+    2,
+  ],
+  [
+    'a review-bot named after the ban, "Your review re-runs nothing for a review-bot red."',
+    [
+      "The reviewer reads the head's checks on GitHub before it approves.",
+      "Your review re-runs",
+      "nothing for a review-bot red.",
+    ],
+    2,
+  ],
 ];
 
 test.each(retired)("%s is reported at the line it starts on", (_source, page, line) => {
@@ -496,7 +517,9 @@ test.each(retired)("%s is reported at the line it starts on", (_source, page, li
 // plausibly say, which the lane and reviewer patterns refused until INFRA-1303's review round 3,
 // and the last thirteen, the rules of this change's own page and prompts said of a role, the
 // changelog fragment's own sentence and a measurement's note, which the lane, reviewer, wait,
-// choice and approval patterns refused until the class search at b6cb4b99.
+// choice and approval patterns refused until the class search at b6cb4b99, and three after them, a
+// check absent from the counted set whose re-run is withheld, which the absence pattern refused
+// until the class search at 59442ee2.
 const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
   [
     'merge-gate.md\'s "A merge-group run is never re-run"',
@@ -523,12 +546,12 @@ const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
     ],
   ],
   [
-    'red-at-the-head.md\'s "Where no run at the head holds the failing check, the role re-runs nothing"',
+    'red-at-the-head.md\'s "If no run at the head holds the failing check, the role re-runs nothing"',
     [
       "- Red again: the reviewer requests changes and names the check. The implementer records the red,",
       "  tells the architect, and completes its phase, naming the check; the reviewer judges the red in",
       "  its round.",
-      "- Where no run at the head holds the failing check, the role re-runs",
+      "- If no run at the head holds the failing check, the role re-runs",
       "  nothing and tells the architect.",
     ],
   ],
@@ -894,6 +917,27 @@ const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
     'the daemon\'s page, "The daemon never re-runs a job on its own."',
     ["The daemon names every check GitHub reported. The daemon never re-runs a", "job on its own."],
   ],
+  [
+    'a check absent from the counted set, "is never re-run on that absence alone"',
+    [
+      "The counted set can lag behind a push. A check absent from the counted set is never",
+      "re-run on that absence alone.",
+    ],
+  ],
+  [
+    'a check absent from the counted set, "is not re-run while its run is in progress"',
+    [
+      "The counted set can lag behind a push. A required check absent from the counted set is not",
+      "re-run while its run is in progress.",
+    ],
+  ],
+  [
+    'a check absent from that set, "gets no re-run until a `pull_request` run of the head holds its job"',
+    [
+      "The counted set can lag behind a push. A check absent from that set gets no",
+      "re-run until a `pull_request` run of the head holds its job.",
+    ],
+  ],
 ];
 
 test.each(kept)("%s is not reported", (_source, page) => {
@@ -1248,6 +1292,15 @@ const retiredTesterReads: readonly (readonly [
     ],
     2,
   ],
+  [
+    'a reword of the tester\'s read said to it, "that read shows its derived result, which you record in `failures`"',
+    [
+      "Read the issue's checks with `dispatch results --issue <issue>`.",
+      "A check carrying `ci_check` is CI's: that read shows its",
+      "derived result, which you record in `failures`.",
+    ],
+    2,
+  ],
 ];
 
 test.each(retiredTesterReads)("%s is reported at the line it starts on", (_source, page, line) => {
@@ -1256,10 +1309,11 @@ test.each(retiredTesterReads)("%s is reported at the line it starts on", (_sourc
 
 // Each sentence the trees keep beside the tester's retired ones, which a pattern too wide would
 // refuse: the sentences that replaced them, the reviewer's own read and wait, and the sentences that
-// keep a `ci_check` check CI's. The last seventeen are sentences a docs page, a runbook or a
+// keep a `ci_check` check CI's. The last eighteen are sentences a docs page, a runbook or a
 // tester's page could plausibly say, which no tree carries: the tester patterns refused the first
 // seven until the class search at INFRA-1303's merge head, the next seven until the one at
-// 5c710625, and the last three until the one at b6cb4b99.
+// 5c710625, the next three until the one at b6cb4b99, and the last one, the reviewer's read of a
+// derived result, until the one at 59442ee2.
 const keptBesideTesterReads: readonly (readonly [source: string, page: readonly string[]])[] = [
   [
     'tester.md\'s "Let CI do its job"',
@@ -1514,6 +1568,13 @@ const keptBesideTesterReads: readonly (readonly [source: string, page: readonly 
     [
       "The tester opens the app's CI page. The tester notes the red",
       "check the dashboard shows when the app's CI page loads.",
+    ],
+  ],
+  [
+    'the reviewer\'s read, "the read shows its one derived result"',
+    [
+      "Before it approves, the reviewer reads each `ci_check` check: the read",
+      "shows its one derived result.",
     ],
   ],
 ];
