@@ -1381,7 +1381,9 @@ func (s *server) insertSessionReply(
 	// thread's parties, under the message it answers, in one batch with the row, which names the
 	// node in its insert; what that write states waits for the message.answered event below. The
 	// failure point between the two is decided here and queued between them
-	// (failpoint.DirectReply).
+	// (failpoint.DirectReply). The reply's blocks, the mentions each holds and its own references
+	// were planned above the route's locks; their statements follow the row in the same batch,
+	// where the index of a reply this route wrote has always run, right after its row.
 	fails := failpoint.Planned(ctx, failpoint.DirectReply)
 	nodeKind, nodeAddress := stored.rowNode()
 	var reply model.Message
@@ -1398,7 +1400,7 @@ func (s *server) insertSessionReply(
 			reply, err = scanMessage(row)
 			return err
 		})
-		return nil
+		return plan.write(b)
 	}); err != nil {
 		return model.Message{}, model.Event{}, err
 	}
@@ -1408,12 +1410,6 @@ func (s *server) insertSessionReply(
 	replyParent := messageReplyParentOf(parent)
 	if plan.block != nil {
 		replyParent.ReplyBody = messageReplyPreview(plan.block.excerpt)
-	}
-	// The reply's blocks, the mentions each holds and its own references were planned above the
-	// route's locks; their statements run here as one batch of their own, where the index of a
-	// reply this route wrote has always run.
-	if err := store.RunWrite(ctx, tx, plan.write); err != nil {
-		return model.Message{}, model.Event{}, err
 	}
 	thread, err := replyParent.thread(ctx, tx)
 	if err != nil {

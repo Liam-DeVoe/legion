@@ -47,8 +47,8 @@ func TestEveryMoveOfWhoAnAskWaitsOnTakesTheStoreLockOrder(t *testing.T) {
 const (
 	// moveLockStatement is inboxwrite.QueueMoveWaiting's lock of the asks rows a move may move.
 	moveLockStatement = "select a.id::text from asks a where a.id in ("
-	// moveTuplesStatement is the head of the move's statements after its lock, the read of the
-	// nodes reserved for their author and the person nodes and tuples it appends.
+	// moveTuplesStatement is the head of the move's one statement after its lock, which appends
+	// the person nodes and tuples and reads, as its own query, the nodes reserved for their author.
 	moveTuplesStatement = "with held as ( select a.id::text as ask"
 	// askedOfWriteStatement is putAskAskedOf's write of the ask's asked_of.
 	askedOfWriteStatement = "update asks set asked_of = $2"

@@ -37,6 +37,10 @@ type Ask struct {
 	// opened is the ask's own create event, ask.opened, and answered the ask.answered event of the
 	// older answer it holds, each graphstore.NoEvent where it owes nothing or the log holds none.
 	opened, answered int64
+	// members are the members of the ask's thread (readMembers), read beside the ask where its
+	// writer asked for them (ReadAskAndMembers), membersRead whether it did.
+	members     []member
+	membersRead bool
 }
 
 // askEventTypes is the type list of the partial index events_ask_payload_id (migration 0030),
@@ -54,9 +58,25 @@ const askEventTypes = `'ask.opened', 'ask.answered', 'ask.resolved', 'ask.edited
 // nothing it reads moves before the answer is written, and the answer's own update takes the row
 // in the write phase (asks.Settled.Queue).
 func ReadAsk(ctx context.Context, tx pgx.Tx, askID string) (Ask, error) {
+	return readAsk(ctx, tx, askID, false)
+}
+
+// ReadAskAndMembers is ReadAsk with the members of the ask's thread read in the same statement
+// (membersColumn), under the same owner lock, for an answer writer whose read phase writes
+// nothing between this read and the record it plans (PlanRecord), which then reads no members of
+// its own (Answered).
+func ReadAskAndMembers(ctx context.Context, tx pgx.Tx, askID string) (Ask, error) {
+	return readAsk(ctx, tx, askID, true)
+}
+
+func readAsk(ctx context.Context, tx pgx.Tx, askID string, withMembers bool) (Ask, error) {
 	ask := Ask{id: askID}
-	var author, answer, nodeMadeBy []byte
+	var author, answer, nodeMadeBy, members []byte
 	var opened, answered *int64
+	membersRead := `null::jsonb`
+	if withMembers {
+		membersRead = membersColumn(`$2::text`, `a.id::text`)
+	}
 	if err := tx.QueryRow(ctx, `
 		select a.issue_key, a.artifact_id::text, coalesce(i.project_key, ar.project_key, ''),
 		       a.author, a.created_at, a.state, a.answer,
@@ -74,14 +94,22 @@ func ReadAsk(ctx context.Context, tx pgx.Tx, askID string) (Ask, error) {
 		           where e.type in (`+askEventTypes+`) and e.type = 'ask.answered' and e.payload->>'id' = a.id::text
 		             and (e.payload->'answer'->>'at')::timestamptz = (a.answer->>'at')::timestamptz
 		           order by e.id limit 1
-		       ) end
+		       ) end,
+		       `+membersRead+`
 		from asks a`+asks.AskedOfPersonJoins+`
 		left join graph_nodes n on n.kind = $2 and n.id = a.id::text
 		where a.id = $1::uuid
 	`, askID, graphstore.KindAsk).Scan(&ask.issueKey, &ask.artifactID, &ask.project,
 		&author, &ask.createdAt, &ask.state, &answer, &ask.createOwed, &ask.answerOwed, &ask.waitingOn,
-		&nodeMadeBy, &opened, &answered); err != nil {
+		&nodeMadeBy, &opened, &answered, &members); err != nil {
 		return Ask{}, fmt.Errorf("read ask %s before its answer: %w", askID, err)
+	}
+	if withMembers {
+		var err error
+		if ask.members, err = decodeMembers(members); err != nil {
+			return Ask{}, fmt.Errorf("read the members of ask %s's thread: %w", askID, err)
+		}
+		ask.membersRead = true
 	}
 	if err := json.Unmarshal(author, &ask.author); err != nil {
 		return Ask{}, fmt.Errorf("decode the author of ask %s: %w", askID, err)

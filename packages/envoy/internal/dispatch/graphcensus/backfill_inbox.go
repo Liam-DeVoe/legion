@@ -535,26 +535,143 @@ func commentPointersPass() inboxPass {
 		batch: `select c.id::text ` + commentPointersOwed + ` and c.id > $1::uuid order by c.id limit $2`,
 		start: []string{zeroUUID},
 		write: func(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWrote, error) {
-			return writeCommentPointers(ctx, tx, column(keys, 0))
+			return writeOwnedCommentPointers(ctx, tx, column(keys, 0))
 		},
 		remaining: commentPointersOwed,
 	}
 }
 
-// writeCommentPointers takes the owner rows of ids, then reads again and locks the comments rows of
-// ids still owed, and states them.
-func writeCommentPointers(ctx context.Context, tx pgx.Tx, ids []string) (inboxWrote, error) {
+// writeOwnedCommentPointers takes the owner rows of ids, then states the comments of ids still
+// owed (writeCommentPointers), each under the event the log holds of it.
+func writeOwnedCommentPointers(ctx context.Context, tx pgx.Tx, ids []string) (inboxWrote, error) {
 	if err := lockOwnersOf(ctx, tx, commentOwners, ids); err != nil {
 		return inboxWrote{}, err
+	}
+	return writeCommentPointers(ctx, tx, ids, nil)
+}
+
+// HoldCommentCatchUp takes, in the block-index tick's read phase, the locks the tick's catch-up of
+// the comments ids takes (CatchUpComments) beyond the owner lock of each that the tick already took
+// (refs.LockCommentOwners): the owner of each as the backfill's passes read it (commentOwners),
+// which is that same owner for every comment whose owner never moved, and, shared, the owner of the
+// project whose default the waiting person of each ask the backfill owes that those comments'
+// threads hang from falls through to (inboxwrite.HoldDefault), as the ask pass takes it before it
+// reads that person (writeAsksOwed). Every lock of the catch-up is so taken before the tick writes
+// anything, in the writers' order - the owner, then the project - and each take of one of them after
+// the tick's write batch is a take the transaction holds already, which returns at once.
+func HoldCommentCatchUp(ctx context.Context, tx pgx.Tx, ids []string) error {
+	if err := lockOwnersOf(ctx, tx, commentOwners, ids); err != nil {
+		return err
+	}
+	rows, err := tx.Query(ctx, `
+		select distinct k.issue_key, k.artifact_id::text `+asksOwed+`
+		  and k.id in (select c.ask_id from comments c where c.id = any($1::uuid[]))
+		order by 1, 2
+	`, ids)
+	if err != nil {
+		return fmt.Errorf("read the owners of the asks a batch of comments hangs from: %w", err)
+	}
+	type owner struct{ issue, artifact *string }
+	var owners []owner
+	var issue, artifact *string
+	if _, err := pgx.ForEachRow(rows, []any{&issue, &artifact}, func() error {
+		owners = append(owners, owner{issue, artifact})
+		return nil
+	}); err != nil {
+		return fmt.Errorf("read the owners of the asks a batch of comments hangs from: %w", err)
+	}
+	for _, held := range owners {
+		if err := inboxwrite.HoldDefault(ctx, tx, held.issue, held.artifact); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CatchUpComments is the rest of the backfill's write for the comments the block-index tick read
+// off the events after its cursor (docs' readEventsAfterCursor), run by the tick in its own
+// transaction once its write batch has given each comment of written its node (refs.CommentWrite)
+// and before it commits. named is every comment those events name whose row named no node when the
+// tick read them, written those of them the batch gave their node, and causes, beside each of
+// written, the event that stored it, the cause the batch stated its node under.
+//
+// It runs the backfill's own write functions over the rows of those comments each pass still
+// owes, in the order the backfill runs the passes (inboxPasses), so a comment an older build wrote
+// after the backfill takes from the tick what the backfill gives one it read: the pointers of each
+// of written, what it owed its thread and its tuples_stored, under the event beside it
+// (writeCommentPointers); threads_recorded on each of named past the store's bound
+// (pastBoundComments); the blocks of each of written, their links and its citations (the comment's
+// item passes); and then the user_threads rows of every thread those comments are in, each stated
+// and marked above every delivery the passes before it stated (writeUserThreads). Each pass reads
+// again, under the locks it takes, which of those rows it still owes, as it does in the backfill,
+// and leaves every other alone. The caller holds every owner and project lock those passes take
+// (refs.LockCommentOwners, HoldCommentCatchUp), so each of their takes returns at once.
+func CatchUpComments(ctx context.Context, tx pgx.Tx, named, written []string, causes []int64) error {
+	if _, err := writeCommentPointers(ctx, tx, written, causes); err != nil {
+		return err
+	}
+	comment := inboxItemKinds[0] // the comment's item tables
+	for _, pass := range []struct {
+		owed  string
+		ids   []string
+		width int
+		write func(context.Context, pgx.Tx, [][]string) (inboxWrote, error)
+	}{
+		{`select c.id::text ` + pastBoundComments.owed + ` and c.id = any($1::uuid[]) order by c.id`,
+			named, 1, pastBoundComments.markRecorded},
+		{`select b.comment_id::text, b.block_id ` + comment.blocksOwed() + ` and b.comment_id = any($1::uuid[])
+			order by b.comment_id, b.block_id`, written, 2, comment.writeBlocks},
+		{`select r.comment_id::text, r.block_id, r.to_kind, r.to_id, r.kind ` + comment.linksOwed() + `
+			and r.comment_id = any($1::uuid[]) order by r.comment_id, r.block_id, r.to_kind, r.to_id, r.kind`,
+			written, 5, comment.writeLinks},
+		{`select r.from_id, r.to_kind, r.to_id ` + comment.citationsOwed() + ` and r.from_id = any($1::text[])
+			order by r.from_id, r.to_kind, r.to_id`, written, 3, comment.writeCitations},
+		{`select u.thread_id::text, u.login ` + userThreadsOwed + `
+			and u.thread_id in (select coalesce(c.ask_id, c.reply_to, c.id) from comments c where c.id = any($1::uuid[]))
+			order by u.thread_id, u.login`, named, 2, writeUserThreads},
+	} {
+		rows, err := tx.Query(ctx, pass.owed, pass.ids)
+		if err != nil {
+			return fmt.Errorf("read what the comments the events name still owe: %w", err)
+		}
+		keys, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) ([]string, error) {
+			key := make([]string, pass.width)
+			targets := make([]any, len(key))
+			for index := range key {
+				targets[index] = &key[index]
+			}
+			return key, row.Scan(targets...)
+		})
+		if err != nil {
+			return fmt.Errorf("read what the comments the events name still owe: %w", err)
+		}
+		if len(keys) == 0 {
+			continue
+		}
+		if _, err := pass.write(ctx, tx, keys); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeCommentPointers reads again and locks the comments rows of ids still owed, and states them,
+// under the owner locks its caller holds. Each is stated under the event beside it in causes, and,
+// where causes is nil, under the event the log holds of it (commentEventOf).
+func writeCommentPointers(ctx context.Context, tx pgx.Tx, ids []string, causes []int64) (inboxWrote, error) {
+	event, args := commentEventOf("c"), []any{ids}
+	if causes != nil {
+		event = `(select named.cause from unnest($1::uuid[], $2::bigint[]) as named (id, cause) where named.id = c.id)`
+		args = append(args, causes)
 	}
 	rows, err := tx.Query(ctx, `
 		select c.id::text, c.author, c.created_at, coalesce(c.reply_to::text, ''), coalesce(c.ask_id::text, ''),
 		       coalesce(c.answers::text, ''), coalesce(c.replies_to_block, ''), c.issue_key, c.artifact_id::text,
-		       `+commentEventOf("c")+`
+		       `+event+`
 		`+commentPointersOwed+` and c.id = any($1::uuid[])
 		order by c.id
 		for no key update of c
-	`, ids)
+	`, args...)
 	if err != nil {
 		return inboxWrote{}, fmt.Errorf("read the comments whose pointers are no tuples: %w", err)
 	}
@@ -678,22 +795,26 @@ var pastBoundMessages = pastBoundTable{
 // unmarked for good, the one row no pass takes, and the triggers would never go.
 func pastBoundRowsPass(table pastBoundTable) inboxPass {
 	return inboxPass{
-		kind:  table.kind,
-		batch: `select ` + table.alias + `.id::text ` + table.owed + ` and ` + table.alias + `.id > $1::uuid order by ` + table.alias + `.id limit $2`,
-		start: []string{zeroUUID},
-		write: func(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWrote, error) {
-			ids := column(keys, 0)
-			if err := lockOwnersOf(ctx, tx, table.owners, ids); err != nil {
-				return inboxWrote{}, err
-			}
-			tag, err := tx.Exec(ctx, table.mark, ids)
-			if err != nil {
-				return inboxWrote{}, fmt.Errorf("mark a batch of %s past the store's bound recorded: %w", table.table, err)
-			}
-			return inboxWrote{rows: tag.RowsAffected()}, nil
-		},
+		kind:      table.kind,
+		batch:     `select ` + table.alias + `.id::text ` + table.owed + ` and ` + table.alias + `.id > $1::uuid order by ` + table.alias + `.id limit $2`,
+		start:     []string{zeroUUID},
+		write:     table.markRecorded,
 		remaining: table.owed,
 	}
+}
+
+// markRecorded takes the owner rows of the rows of table the keys name, then marks those of them
+// still owed recorded (pastBoundRowsPass).
+func (table pastBoundTable) markRecorded(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWrote, error) {
+	ids := column(keys, 0)
+	if err := lockOwnersOf(ctx, tx, table.owners, ids); err != nil {
+		return inboxWrote{}, err
+	}
+	tag, err := tx.Exec(ctx, table.mark, ids)
+	if err != nil {
+		return inboxWrote{}, fmt.Errorf("mark a batch of %s past the store's bound recorded: %w", table.table, err)
+	}
+	return inboxWrote{rows: tag.RowsAffected()}, nil
 }
 
 // --- an item's blocks, their links and its citations ----------------------------------------------

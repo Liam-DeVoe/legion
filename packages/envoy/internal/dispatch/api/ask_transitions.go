@@ -626,9 +626,12 @@ func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Le
 	default:
 		return model.Ask{}, inboxwrite.Ask{}, errorf(http.StatusInternalServerError, "ASK_STATE_INVALID", "ask has an invalid state")
 	}
+	// An answer reads the members of the ask's thread with the ask itself
+	// (inboxwrite.ReadAskAndMembers): nothing of its read phase writes before its record is
+	// planned, so the record reads them no second time.
 	var before inboxwrite.Ask
 	if transition.Inbox == inboxwrite.Replies {
-		if before, err = inboxwrite.ReadAsk(ctx, tx, id); err != nil {
+		if before, err = inboxwrite.ReadAskAndMembers(ctx, tx, id); err != nil {
 			return model.Ask{}, inboxwrite.Ask{}, err
 		}
 	}

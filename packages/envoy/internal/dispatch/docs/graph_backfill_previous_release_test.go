@@ -369,8 +369,18 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // node's cause: the statement reads the same event id, only through events' primary key, so it
 // moves no row in or out of what a pass owes, and no build of rule 1 has shipped. With the old
 // text of LatestEventID the statements give the digest recorded before.
+//
+// It was re-recorded a third time when graphstore's causeOf, through which the store write of
+// refs.CommentWrite.Queue writes each cause it appends - a tuple's source_event and
+// legacy_source_seq, and the cause of each base attribute it states - came to read the latest
+// event's id in a scalar subquery of its own, `(select (select currval(...)))`, which Postgres runs
+// once per statement rather than once per row. The case arm it sits in is taken only for a cause of
+// graphstore.LatestEvent, which no fact of a comment write carries - each carries the event that
+// stored its comment - and where it is taken it reads the same id: it moves no row in or out of
+// what a pass owes, and no build of rule 1 has shipped. With the old text of causeOf the statements
+// give the digest recorded before.
 var markingStatementDigests = map[int]string{
-	1: "646218ee6bbd08e2be3542bf8d02a30c9d934a0191338816fcbb043054ee3c2e",
+	1: "679c10edd4212c062277fcac31826bc8d371b27ebddd3e898f63e38675302f64",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks

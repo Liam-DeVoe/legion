@@ -414,13 +414,10 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// The transaction's now(), read before the first write so it holds no transaction id: the
-	// moment the event below is appended at, and the person node a mark makes is made at.
+	// The transaction's now(), the moment the person node a mark makes is made at: every statement
+	// below that stores a mark answers it beside that mark, so no statement of its own reads it,
+	// and a write that stores no mark needs none.
 	var at time.Time
-	if err := tx.QueryRow(r.Context(), `select now()`).Scan(&at); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	// A Clear, a read mark or a pin is announced whenever it is given; replies read by id only
 	// when one of them gets a row (below).
 	announce := clearedBefore != nil || readThrough != nil || input.Pinned != nil
@@ -445,8 +442,8 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 			values ($1, $2, least($3::timestamptz, now()), case when $4::boolean then least($3::timestamptz, now()) end)
 			on conflict (login, session_id) do update
 				set cleared_before = excluded.cleared_before, tuples_stored_at = excluded.tuples_stored_at
-			returning cleared_before
-		`, actor.ID, sessionID, *clearedBefore, sessionFits).Scan(&cleared); err != nil {
+			returning cleared_before, now()
+		`, actor.ID, sessionID, *clearedBefore, sessionFits).Scan(&cleared, &at); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -466,8 +463,8 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 				read_through = greatest(user_agent_read.read_through, excluded.read_through),
 				tuples_stored_at = case when $4::boolean then greatest(user_agent_read.read_through, excluded.read_through) end
 			where user_agent_read.read_through < excluded.read_through or user_agent_read.tuples_stored_at is null
-			returning read_through
-		`, model.CanonicalLogin(actor.ID), sessionID, *readThrough, sessionFits).Scan(&read)
+			returning read_through, now()
+		`, model.CanonicalLogin(actor.ID), sessionID, *readThrough, sessionFits).Scan(&read, &at)
 		switch {
 		case err == nil:
 			marks = append(marks, personMark(actor, graphstore.TupleReadThrough, graphstore.KindSession, sessionID, read, true, graphstore.NoEvent))
@@ -544,7 +541,6 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		}
 		read, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.Tuple, error) {
 			var reply string
-			var at time.Time
 			err := row.Scan(&reply, &at)
 			return personMark(actor, graphstore.TupleReplyRead, graphstore.KindMessage, reply, at, true, graphstore.NoEvent), err
 		})
@@ -571,6 +567,11 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
+		}
+		// Each retraction the prune answers is dated at the moment of its delete, the
+		// transaction's now(), which is the moment its person's node is made at too.
+		for _, retracted := range pruned[sessionID] {
+			at = retracted.At
 		}
 		marks = append(marks, pruned[sessionID]...)
 	}

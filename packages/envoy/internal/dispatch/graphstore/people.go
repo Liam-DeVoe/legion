@@ -66,51 +66,114 @@ func SessionPageID(session string) string { return KindSession + "/" + session }
 // no page of its own, the role's page being its page, and a session that claimed none carries the
 // page SessionPageID names. The publisher reads it before it writes a session's page
 // (outbox.sessionsInARole) and a message to a session reads it for the page the message hangs
-// from (AgentPage), so the two cannot hang one session's things from two pages. Each read is the
-// current read of a relation (CurrentIn, CurrentOut).
+// from (AgentPage), so the two cannot hang one session's things from two pages. It is
+// ClaimedRoles of the one session.
 func ClaimedRole(ctx context.Context, q Queryer, session string) (role string, claimed bool, err error) {
-	held, err := CurrentIn(ctx, q, KindSession, session, []string{TupleHeldBy})
+	roles, err := ClaimedRoles(ctx, q, []string{session})
 	if err != nil {
 		return "", false, err
 	}
-	for _, claim := range held {
-		if claim.FromKind == KindRole {
-			return claim.FromID, true, nil
-		}
+	role, claimed = roles[session]
+	return role, claimed, nil
+}
+
+// ClaimedRoles is ClaimedRole of each of sessions, in one statement: the role each claimed, by
+// session, and no entry for a session that claimed none. Each relation is read as the current
+// read of it reads it (CurrentIn for the held_by into the session, CurrentOut for its part_of),
+// and of several roles the first in id order, as those reads answer them.
+func ClaimedRoles(ctx context.Context, q Queryer, sessions []string) (map[string]string, error) {
+	roles := make(map[string]string, len(sessions))
+	if len(sessions) == 0 {
+		return roles, nil
 	}
-	parts, err := CurrentOut(ctx, q, KindSession, session, []string{TuplePartOf})
+	rows, err := q.Query(ctx, `
+		select s.session, coalesce(held.role, part.role)
+		from unnest($1::text[]) as s(session)
+		left join lateral (
+			select current.from_id as role from (
+				`+CurrentTupleRead(`t.kind, t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
+		`t.to_kind = '`+KindSession+`' and t.to_id = s.session and t.to_kind <> '`+KindValue+`' and t.kind = '`+TupleHeldBy+`'`)+`
+			) current
+			where current.asserted and current.from_kind = '`+KindRole+`'
+			order by current.from_id
+			limit 1
+		) held on true
+		left join lateral (
+			select current.to_id as role from (
+				`+CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.asserted`,
+		`t.from_kind = '`+KindSession+`' and t.from_id = s.session and t.to_kind <> '`+KindValue+`' and t.kind = '`+TuplePartOf+`'`)+`
+			) current
+			where current.asserted and current.to_kind = '`+KindRole+`'
+			order by current.to_id
+			limit 1
+		) part on true
+		where coalesce(held.role, part.role) is not null
+	`, sessions)
 	if err != nil {
-		return "", false, err
+		return nil, fmt.Errorf("read the roles %d session claimed: %w", len(sessions), err)
 	}
-	for _, part := range parts {
-		if part.ToKind == KindRole {
-			return part.ToID, true, nil
+	defer rows.Close()
+	for rows.Next() {
+		var session, role string
+		if err := rows.Scan(&session, &role); err != nil {
+			return nil, fmt.Errorf("read the role a session claimed: %w", err)
 		}
+		roles[session] = role
 	}
-	return "", false, nil
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the roles %d session claimed: %w", len(sessions), err)
+	}
+	return roles, nil
 }
 
 // AgentPage is the page the store gives the agent a message's target routes to (`role:<topic>`
 // or `session:<id>`): a role's own page, and for a session the page of the role it claimed or,
 // where it claimed none, its own (ClaimedRole). ok is false for a target that names no node the
-// store can key (routeNode) and for a page id past the store's address bound.
+// store can key (routeNode) and for a page id past the store's address bound. It is AgentPages of
+// the one target.
 func AgentPage(ctx context.Context, q Queryer, target string) (page string, ok bool, err error) {
-	route, routed := routeNode(target)
-	if !routed {
-		return "", false, nil
+	pages, err := AgentPages(ctx, q, []string{target})
+	if err != nil {
+		return "", false, err
 	}
-	page = RolePageID(route.ID)
-	if route.Kind == KindSession {
-		role, claimed, err := ClaimedRole(ctx, q, route.ID)
-		if err != nil {
-			return "", false, fmt.Errorf("read the role session %s claimed: %w", route.ID, err)
+	page, ok = pages[target]
+	return page, ok, nil
+}
+
+// AgentPages is AgentPage of each of targets, with every session among them read in one statement
+// (ClaimedRoles), and none for targets that name no session: the page of each target, by target,
+// and no entry for a target AgentPage answers no page.
+func AgentPages(ctx context.Context, q Queryer, targets []string) (map[string]string, error) {
+	routes := make(map[string]model.Route, len(targets))
+	var sessions []string
+	for _, target := range targets {
+		route, routed := routeNode(target)
+		if !routed {
+			continue
 		}
-		page = SessionPageID(route.ID)
-		if claimed {
-			page = RolePageID(role)
+		routes[target] = route
+		if route.Kind == KindSession {
+			sessions = append(sessions, route.ID)
 		}
 	}
-	return page, AddressFits(page), nil
+	roles, err := ClaimedRoles(ctx, q, sessions)
+	if err != nil {
+		return nil, fmt.Errorf("read the roles of the sessions %s route to: %w", strings.Join(sessions, ", "), err)
+	}
+	pages := make(map[string]string, len(routes))
+	for target, route := range routes {
+		page := RolePageID(route.ID)
+		if route.Kind == KindSession {
+			page = SessionPageID(route.ID)
+			if role, claimed := roles[route.ID]; claimed {
+				page = RolePageID(role)
+			}
+		}
+		if AddressFits(page) {
+			pages[target] = page
+		}
+	}
+	return pages, nil
 }
 
 // PersonNode, SessionNode, RoleNode and PageNode are the four nodes this store holds of people

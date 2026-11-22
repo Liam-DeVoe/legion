@@ -381,20 +381,20 @@ type itemRefRow struct {
 
 // ReadItemIndex reads what q holds of comment, message or ask itemID's block index: its state
 // row, the blocks it holds and their mentions, the mentions read with the predicate the
-// reconciling delete visits them by, and the item's scope, the node the store holds of it
-// (ReadItemScope), with where the store places each of its block nodes now. An item no
-// block-aware build indexed holds no block and no block mention - the index writes them in the
-// transaction that marks the state indexed, and a state row goes only with its item - and so does
-// one whose row q does not hold yet, the item whose insert the calling transaction has queued,
-// whose scope its caller hands over instead (Scoped, WrittenItem). None of these reads takes a
-// lock: the caller holds the item's owner lock, and the index's write phase takes the state row
-// (queueStateLock).
+// reconciling delete visits them by, and the item's scope, the node the store holds of it, read
+// beside its state row (readItemState), with where the store places each of its block nodes now,
+// read beside its block rows (storedItemBlocks). An item no block-aware build indexed holds no
+// block and no block mention - the index writes them in the transaction that marks the state
+// indexed, and a state row goes only with its item - and so does one whose row q does not hold
+// yet, the item whose insert the calling transaction has queued, whose scope its caller hands over
+// instead (Scoped, WrittenItem). None of these reads takes a lock: the caller holds the item's
+// owner lock, and the index's write phase takes the state row (queueStateLock).
 func ReadItemIndex(ctx context.Context, q Queryer, kind ItemKind, itemID string) (ItemIndex, error) {
 	tables, err := kind.tables()
 	if err != nil {
 		return ItemIndex{}, err
 	}
-	state, exists, err := readItemState(ctx, q, kind, tables, itemID)
+	state, scope, exists, err := readItemState(ctx, q, kind, tables, itemID)
 	if err != nil {
 		return ItemIndex{}, err
 	}
@@ -402,9 +402,7 @@ func ReadItemIndex(ctx context.Context, q Queryer, kind ItemKind, itemID string)
 	if !exists {
 		return index, nil
 	}
-	if index.scope, err = ReadItemScope(ctx, q, kind, itemID); err != nil {
-		return ItemIndex{}, err
-	}
+	index.scope = scope
 	if !state.indexed {
 		if index.scope.held {
 			if index.firstRefs, err = itemRefRows(ctx, q, kind, itemID); err != nil {
@@ -413,16 +411,11 @@ func ReadItemIndex(ctx context.Context, q Queryer, kind ItemKind, itemID string)
 		}
 		return index, nil
 	}
-	if index.stored, index.rows, err = storedItemBlocks(ctx, q, kind, tables, itemID); err != nil {
+	if index.stored, index.rows, err = storedItemBlocks(ctx, q, kind, tables, itemID, index.scope.held); err != nil {
 		return ItemIndex{}, err
 	}
 	if index.held, index.own, index.ownRead, index.mentioned, err = heldItemBlockLinks(ctx, q, kind, tables, itemID); err != nil {
 		return ItemIndex{}, err
-	}
-	if index.scope.held && len(index.rows) > 0 {
-		if err := readItemBlockPlaces(ctx, q, kind, itemID, index.rows); err != nil {
-			return ItemIndex{}, err
-		}
 	}
 	return index, nil
 }
@@ -534,7 +527,7 @@ func PlanItemIndex(
 // before the rows that name them, since each row's foreign key is checked in the statement that
 // writes it, and a node already there keeps its made_at and made_by. Each block that is a node
 // once the revision is written is placed in the item by a part_of, which is stated only where the
-// store does not place it there now (readItemBlockPlaces), so a revision that only moved its
+// store does not place it there now (storedItemBlocks), so a revision that only moved its
 // blocks states nothing; a removed block keeps its part_of, which its node's state and its row's
 // lost position each take out of graph_edges. Each link is a tuple out of its block's node,
 // asserted with the row the reconciliation inserts and retracted with a row it deletes that named
@@ -1036,36 +1029,44 @@ type itemState struct {
 // item with no state row, one no block-aware build indexed, and one whose insert the calling
 // transaction has queued, read as never indexed; exists is false for the last, whose row q does
 // not hold.
-func readItemState(ctx context.Context, q Queryer, kind ItemKind, tables itemTables, itemID string) (itemState, bool, error) {
+func readItemState(ctx context.Context, q Queryer, kind ItemKind, tables itemTables, itemID string) (itemState, ItemScope, bool, error) {
 	state := itemState{nextBlock: 1}
 	var sum *string
+	var node graphstore.HeldNode
+	// The item's node (ReadItemScope), read in the same statement off the key it is read by.
+	held := `
+		left join graph_nodes n on n.kind = $2 and n.id = $3`
 	var err error
 	if tables.revisions() {
 		err = q.QueryRow(ctx, `
 			select coalesce(s.revision, 0), coalesce(s.next_block, 1), s.body_sha256,
-			       i.edited_at is not null
-			from `+tables.items+` i left join `+tables.state+` s on s.`+tables.item+` = i.id
+			       i.edited_at is not null, `+graphstore.HeldNodeColumns("n")+`
+			from `+tables.items+` i left join `+tables.state+` s on s.`+tables.item+` = i.id`+held+`
 			where i.id = $1::uuid
-		`, itemID).Scan(&state.revision, &state.nextBlock, &sum, &state.edited)
+		`, itemID, string(kind), itemID).Scan(append([]any{&state.revision, &state.nextBlock, &sum, &state.edited}, node.Targets()...)...)
 		state.indexed = state.revision > 0
 	} else {
 		err = q.QueryRow(ctx, `
-			select s.body_sha256
-			from `+tables.items+` i left join `+tables.state+` s on s.`+tables.item+` = i.id
+			select s.body_sha256, `+graphstore.HeldNodeColumns("n")+`
+			from `+tables.items+` i left join `+tables.state+` s on s.`+tables.item+` = i.id`+held+`
 			where i.id = $1::uuid
-		`, itemID).Scan(&sum)
+		`, itemID, string(kind), itemID).Scan(append([]any{&sum}, node.Targets()...)...)
 		state.indexed = sum != nil
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
-		return itemState{nextBlock: 1}, false, nil
+		return itemState{nextBlock: 1}, ItemScope{}, false, nil
 	}
 	if err != nil {
-		return itemState{}, false, fmt.Errorf("read the block state of %s %s: %w", kind, itemID, err)
+		return itemState{}, ItemScope{}, false, fmt.Errorf("read the block state of %s %s: %w", kind, itemID, err)
 	}
 	if sum != nil {
 		state.bodySHA256 = *sum
 	}
-	return state, true, nil
+	scope := ItemScope{}
+	if scope.node, scope.held, err = node.Node(); err != nil {
+		return itemState{}, ItemScope{}, false, fmt.Errorf("read the node of %s %s: %w", kind, itemID, err)
+	}
+	return state, scope, true, nil
 }
 
 // heldItemBlockLinks is the block mentions the item's blocks hold, read with the predicate the
@@ -1150,46 +1151,6 @@ func itemRefRows(ctx context.Context, q Queryer, kind ItemKind, itemID string) (
 	return cited, nil
 }
 
-// readItemBlockPlaces reads where the store places the item's block nodes now, for every block
-// row the item holds, and marks each row the store places in the item (storedItemBlock.placed):
-// each is read the way the store reads a current relation (graphstore.CurrentTupleRead), in one
-// statement for every block rather than one per block. The read binds both ends of the relation
-// and its kind: a plan that knows the bound values keys all five columns in graph_tuples_current,
-// part_of being no delivered_to, which that index leaves out, and a generic plan, to which a bound
-// kind proves nothing of that predicate, keys graph_tuples_as_of_out on the blocks' addresses and
-// the kind. A block id no row holds is new, and no node of it is placed.
-func readItemBlockPlaces(ctx context.Context, q Queryer, kind ItemKind, itemID string, rows map[string]storedItemBlock) error {
-	addresses := make([]string, 0, len(rows))
-	for id := range rows {
-		addresses = append(addresses, itemBlockNodeAddress(kind, itemID, id))
-	}
-	read, err := q.Query(ctx, `
-		select held.from_id from (
-			`+graphstore.CurrentTupleRead(`t.from_id`, `t.from_id, t.asserted`,
-		`t.to_kind = $1 and t.to_id = $2 and t.kind = $3 and t.from_kind = $4 and t.from_id = any($5)`)+`
-		) held
-		where held.asserted
-	`, string(kind), itemID, graphstore.TuplePartOf, BlockNodeKind, addresses)
-	if err != nil {
-		return fmt.Errorf("read where the store places the blocks of %s %s: %w", kind, itemID, err)
-	}
-	placed, err := pgx.CollectRows(read, pgx.RowTo[string])
-	if err != nil {
-		return fmt.Errorf("read where the store places the blocks of %s %s: %w", kind, itemID, err)
-	}
-	for _, address := range placed {
-		_, _, blockID, ok := ParseItemBlockNode(address)
-		if !ok {
-			continue
-		}
-		if row, held := rows[blockID]; held {
-			row.placed = true
-			rows[blockID] = row
-		}
-	}
-	return nil
-}
-
 // queueStateLock queues the item's state row, the first statements of the index's write phase:
 // its insert when it has none, then the row `for no key update`, which the reconciliation takes
 // as well (IndexOwedItemBlocks), so the index of one item is written by one transaction at a
@@ -1217,21 +1178,30 @@ func (i ItemIndexing) queueStateLock(b *store.WriteBatch) {
 // were, and only migration 20261116150000's trigger has that update name no node, so whatever
 // write leaves a row current under a gone node, this read keeps it from being answered by neither
 // arm for good.
-func storedItemBlocks(ctx context.Context, q Queryer, kind ItemKind, tables itemTables, itemID string) ([]itemblocks.Stored, map[string]storedItemBlock, error) {
+func storedItemBlocks(ctx context.Context, q Queryer, kind ItemKind, tables itemTables, itemID string, scoped bool) ([]itemblocks.Stored, map[string]storedItemBlock, error) {
 	// Only a kind whose blocks record a maker has the column; kind is this package's own
 	// constant, never caller input.
 	maker := "null::jsonb"
 	if tables.makers {
 		maker = "b.made_by"
 	}
+	// For an item whose node the store holds (scoped), where the store places each row's block
+	// node now (storedItemBlock.placed): the newest part_of tuple from the block's node into the
+	// item, read the way the store reads a current relation (graphstore.CurrentTupleRead), with
+	// both ends of the relation and its kind bound, one probe of the block's address per row.
 	rows, err := q.Query(ctx, `
 		select b.block_id, b.type, b.text_sha256, coalesce(b.position, -1), b.excerpt, b.created_at,
-		       b.node_kind is not null and not (b.position is not null and n.state = $2), `+maker+`
+		       b.node_kind is not null and not (b.position is not null and n.state = $2), `+maker+`,
+		       $3::boolean and coalesce((
+		           `+graphstore.CurrentTupleRead(`t.from_id`, `t.asserted`,
+		`t.to_kind = $4 and t.to_id = $5 and t.kind = $6 and t.from_kind = $7 and t.from_id = $8 || b.block_id`)+`
+		       ), false)
 		from `+tables.blocks+` b
 		left join graph_nodes n on n.kind = b.node_kind and n.id = b.node_address
 		where b.`+tables.item+` = $1::uuid
 		order by b.position nulls last, b.removed_at desc, length(b.block_id), b.block_id
-	`, itemID, graphstore.StateGone)
+	`, itemID, graphstore.StateGone, scoped, string(kind), itemID, graphstore.TuplePartOf, BlockNodeKind,
+		itemBlockNodeAddress(kind, itemID, ""))
 	if err != nil {
 		return nil, nil, fmt.Errorf("read the blocks of %s %s: %w", kind, itemID, err)
 	}
@@ -1242,7 +1212,7 @@ func storedItemBlocks(ctx context.Context, q Queryer, kind ItemKind, tables item
 		var block itemblocks.Stored
 		var row storedItemBlock
 		var madeBy []byte
-		if err := rows.Scan(&block.ID, &block.Type, &block.Hash, &block.Position, &row.excerpt, &row.createdAt, &row.named, &madeBy); err != nil {
+		if err := rows.Scan(&block.ID, &block.Type, &block.Hash, &block.Position, &row.excerpt, &row.createdAt, &row.named, &madeBy, &row.placed); err != nil {
 			return nil, nil, fmt.Errorf("scan a block of %s %s: %w", kind, itemID, err)
 		}
 		if madeBy != nil {
@@ -1263,7 +1233,8 @@ func storedItemBlocks(ctx context.Context, q Queryer, kind ItemKind, tables item
 // was first written, which is the moment its part_of is dated by, as the old arm of graph_edges
 // dates it, whether the row names a node the store answers it by, which an older build's row
 // does not (storedItemBlocks), the maker it records, nil where the item's own author made it, and
-// whether the store places its node in the item now (readItemBlockPlaces).
+// whether the store places its node in the item now, which an item the store holds no node of reads
+// as false (storedItemBlocks).
 type storedItemBlock struct {
 	current   bool
 	excerpt   string
@@ -1392,6 +1363,10 @@ func (i ItemIndexing) queueBlocks(b *store.WriteBatch) error {
 	for _, id := range i.removed {
 		textIDs, texts = append(textIDs, id), append(texts, nil)
 	}
+	// A comment's text rows leave transaction_started_at to its default, the start of this
+	// transaction, which the keyword fill compares with a comment.created event's created_at to
+	// tell revision 1 the comment's own transaction wrote (textversions' firstRevisionBody); the
+	// update of a text on a conflict keeps it.
 	b.Queue(fmt.Sprintf("record the block texts of revision %d of %s %s", revision, kind, itemID), `
 		insert into `+tables.texts+` (`+tables.item+`, block_id, revision, text)
 		select $1::uuid, t.id, $2, t.text from unnest($3::text[], $4::text[]) as t (id, text)
@@ -1748,7 +1723,7 @@ func itemWindowText(ctx context.Context, tx pgx.Tx, kind ItemKind, tables itemTa
 // where they do not pair - another count of blocks, or a block whose hash moved - which says the
 // rows were written from another reading of the text than this one.
 func currentItemBlockIDs(ctx context.Context, tx pgx.Tx, kind ItemKind, tables itemTables, itemID string, blocks []itemblocks.Block) ([]string, bool, error) {
-	stored, _, err := storedItemBlocks(ctx, tx, kind, tables, itemID)
+	stored, _, err := storedItemBlocks(ctx, tx, kind, tables, itemID, false)
 	if err != nil {
 		return nil, false, err
 	}

@@ -133,7 +133,8 @@ var markVersionedDocuments = `
 // readEventsAfterCursor is the first step of every block-index tick: it reads the events after its
 // build's cursor, marks owed a block index, with this build's own mark, every document they name
 // that this build's store has not stated at its version (markVersionedDocuments), gives every
-// comment they name whose row names no node its node and its tuples (refs.CommentWrite), records
+// comment they name whose row names no node its node and its tuples (refs.CommentWrite) and then
+// the rest of the backfill's write for those comments (graphcensus.CatchUpComments), records
 // in the cursor's row whether this build owes the object pass, and counts in tick what it read,
 // marked and wrote, and whether another build serves.
 //
@@ -182,22 +183,37 @@ var markVersionedDocuments = `
 // the comments the events name whose row names no node; then the owner locks of those comments
 // alone (refs.LockCommentOwners), the lock every writer of a comments row takes, and those
 // comments' rows under them (refs.CommentsNamingNoNode), which decides again under the locks, so a
-// comment another writer gave its node between the two reads is left alone. A comment whose row
-// already names its node, as the row of a comment this build writes does, costs the tick no
-// owner lock: every tick reads the event of each comment written since its cursor, and locking the
-// owner of each would have every tick wait for, and hold up, the writers of every issue a recent
-// comment was written on. The batch then takes its locks in the store's order: the cursor row
-// first, which only block-index ticks write; then the marking statement's document_block_versions
-// rows `for no key update`, in ascending artifact_id order; then the comments' node rows, in
-// ascending (kind, id) in one store write, their tuples, and their comments rows. A writer under
-// the revision fence takes a document's document_block_versions row before any node it writes
-// (the fifth invariant on api's markInboxReadThreads), and a settlement takes its document's row
-// and then the node of the session that follows an ask it opens (lockSettlementFence,
-// causedByEvent): a tick that wrote a comment's author's node first and then waited for that
-// document's row would hold what the settlement waits for, while the settlement held what the
-// tick waits for. A tick that fails moves nothing and the next reads the same events again; a
-// document already marked keeps its mark and its time. A document marked here is listed by the
-// owed documents this same tick reads next, and drained by it when its batch has room.
+// comment another writer gave its node between the two reads is left alone; then the rest of the
+// locks the catch-up of those comments takes (graphcensus.HoldCommentCatchUp), so it takes none
+// after the batch. A comment whose row already names its node, as the row of a comment this build
+// writes does, costs the tick no owner lock: every tick reads the event of each comment written
+// since its cursor, and locking the owner of each would have every tick wait for, and hold up, the
+// writers of every issue a recent comment was written on. The batch then takes its locks in the
+// store's order: the cursor row first, which only block-index ticks write; then the marking
+// statement's document_block_versions rows `for no key update`, in ascending artifact_id order;
+// then the comments' node rows, in ascending (kind, id) in one store write, their tuples, and their
+// comments rows. A writer under the revision fence takes a document's document_block_versions row
+// before any node it writes (the fifth invariant on api's markInboxReadThreads), and a settlement
+// takes its document's row and then the node of the session that follows an ask it opens
+// (lockSettlementFence, causedByEvent): a tick that wrote a comment's author's node first and then
+// waited for that document's row would hold what the settlement waits for, while the settlement
+// held what the tick waits for. A tick that fails moves nothing and the next reads the same events
+// again; a document already marked keeps its mark and its time. A document marked here is listed
+// by the owed documents this same tick reads next, and drained by it when its batch has room.
+//
+// Then, once that batch has run and before the commit, the comments the events name take the rest
+// of what the backfill gives a comments row an older build wrote, through the backfill's own write
+// functions, in the order its passes run (graphcensus.CatchUpComments): each comment the batch gave
+// its node its pointers, what it owed its thread and its tuples_stored, under the event that stored
+// it; each one past the store's bound its threads_recorded; each comment the batch gave its node its
+// body's blocks, their links and its citations; and then the user_threads rows of every thread
+// those comments are in, stated and marked above every delivery the steps before stated. It reads
+// the comment's thread off the pointer tuples it appends, and who wrote in that thread before it
+// off the authored_by tuples the batch appended, so it runs after the batch rather than in it. It
+// takes the item rows and the user_threads rows it writes `for no key update` before it writes
+// them, and every owner and project lock it takes is one the read phase took. So the tick gives a
+// comment written after the backfill, and the rows written with it, what the backfill gives one it
+// read, with no second backfill.
 //
 // It answers, as owed, the time since which this build owes the object pass
 // (writeObjectNodesAnotherBuildWrote), nil where it owes none. The tick owes the pass while a
@@ -270,9 +286,9 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 	var marked int64
 	var named []string
 	var commented refs.CommentWrite
+	var comments []string
 	if safe > *cursor {
 		var last *int64
-		var comments []string
 		var causes []int64
 		if err := tx.QueryRow(queued, readEventPage, *cursor, safe, blockIndexEventPage).Scan(
 			&read, &last, &named, &comments, &causes,
@@ -292,6 +308,9 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 				return false, nil, err
 			}
 			if commented, err = refs.CommentsNamingNoNode(queued, tx, comments, causes); err != nil {
+				return false, nil, err
+			}
+			if err := graphcensus.HoldCommentCatchUp(queued, tx, comments); err != nil {
 				return false, nil, err
 			}
 		}
@@ -338,6 +357,14 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 	}
 	if err := ledger.runQueue(ctx, nil); err != nil {
 		return false, nil, fmt.Errorf("write what the events after the cursor name: %w", err)
+	}
+	// The rest of the backfill's write for the comments the events name, which reads what the
+	// batch appended and so follows it.
+	if len(comments) > 0 {
+		ids, caused := commented.Written()
+		if err := graphcensus.CatchUpComments(ctx, tx, comments, ids, caused); err != nil {
+			return false, nil, fmt.Errorf("catch up the comments the events after the cursor name: %w", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, nil, fmt.Errorf("commit what the events after the cursor name: %w", err)

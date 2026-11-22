@@ -316,8 +316,9 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// An issue left to nobody hands its asks to that default, which the move below delivers them
 	// to, so the project's owner lock is taken shared first (inboxwrite.HoldProjectDefault), after
 	// the issue's own and before the read: a move of the default either committed before this
-	// read or waits for this write. Beside the default the same statement reads the transaction's
-	// now(), the moment the assignee's event is appended at, which the move's tuples are dated at.
+	// read or waits for this write. The transaction's now(), the moment the assignee's event is
+	// appended at, which the move's tuples are dated at, is answered by the issue's update below
+	// (movedAt), which every assignee move runs, so no statement of its own reads it.
 	var projectDefault string
 	var movedAt time.Time
 	if assigneeProvided {
@@ -327,11 +328,13 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if err := tx.QueryRow(r.Context(), `
-			select coalesce((select default_assignee from projects where key = $1 and $2), ''), now()
-		`, before.Project, (before.Assignee == nil) != (assignee == nil)).Scan(&projectDefault, &movedAt); err != nil {
-			s.writeHandlerError(w, err)
-			return
+		if (before.Assignee == nil) != (assignee == nil) {
+			if err := tx.QueryRow(r.Context(), `
+				select coalesce((select default_assignee from projects where key = $1), '')
+			`, before.Project).Scan(&projectDefault); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
 		}
 	}
 	// Closing an issue releases whatever claim it held: the work is finished, so nobody is
@@ -452,10 +455,12 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		excluded: askIDs(closingAsks.asks),
 		opened:   askIDs(reopened.asks),
 	})
-	// The write phase: the statements from here on run back to back.
+	// The write phase: the statements from here on run back to back. The update answers the
+	// transaction's now(), the moment an assignee move's tuples are dated at (movedAt).
 	if changed {
 		sets = append(sets, "updated_at = "+issueUpdatedNow)
-		if _, err := tx.Exec(r.Context(), `update issues set `+strings.Join(sets, ", ")+` where key = $1`, args...); err != nil {
+		err := tx.QueryRow(r.Context(), `update issues set `+strings.Join(sets, ", ")+` where key = $1 returning now()`, args...).Scan(&movedAt)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			s.writeHandlerError(w, err)
 			return
 		}
