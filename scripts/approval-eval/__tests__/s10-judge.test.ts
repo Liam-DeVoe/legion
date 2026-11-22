@@ -192,8 +192,14 @@ async function registration(): Promise<Registration> {
   return { reads: [{ reference: REFERENCE, run }], ended: null };
 }
 
-/** The bound of the row that runs the Python suite and fills `scratch` with what it judged. */
-const FILL_MS = 180_000;
+/** How long the Python suite below may run before the row calls it hung and kills it. A hang guard,
+ *  not a verdict: the row's verdict is the suite's exit, and the guard only names a suite that never
+ *  ends. The suite took 9 to 27 s idle, 67 to 75 s at a load of 950 and over 180 s at a load of 700
+ *  on a dev box, so a guard far above that, and under CI's 30-minute job, still names it. */
+const SUITE_HANG_MS = 15 * 60_000;
+/** The bound of the row that runs that suite and fills `scratch`: its hang guard and a minute for
+ *  the rest of the row. */
+const FILL_MS = SUITE_HANG_MS + 60_000;
 
 beforeAll(async () => {
   scratch = await mkdtemp(join(tmpdir(), "s10-judge-"));
@@ -231,7 +237,8 @@ describe("s10_judge.py and the modules beside it", () => {
       });
       await writeFile(join(inputs, "admission.json"), JSON.stringify(admission), "utf8");
       const keep = join(scratch, "judged-by-python");
-      const run = Bun.spawnSync(
+      const started = Date.now();
+      const suite = Bun.spawn(
         [
           "python3",
           "-m",
@@ -253,11 +260,38 @@ describe("s10_judge.py and the modules beside it", () => {
           },
           stdout: "pipe",
           stderr: "pipe",
+          timeout: SUITE_HANG_MS,
+          killSignal: "SIGKILL",
         }
       );
-      const report = run.stderr.toString();
-      if (run.exitCode !== 0) console.error(report);
-      expect(run.exitCode).toBe(0);
+      const exit = suite.exited.then((code) => ({
+        code,
+        seconds: Math.round((Date.now() - started) / 1000),
+      }));
+      const reads = Promise.all([
+        new Response(suite.stderr).text(),
+        new Response(suite.stdout).text(),
+      ]);
+      // A process the suite left behind can hold its pipes open after it ends; the row reads them
+      // for 10 s past the suite's exit, not for as long as that process lives.
+      const read = await Promise.race([
+        reads,
+        exit.then(() => Bun.sleep(10_000)).then(() => undefined),
+      ]);
+      const { code: exitCode, seconds } = await exit;
+      if (suite.signalCode !== null) {
+        throw new Error(
+          `python3 -m unittest of s10_judge_test.py did not end: its hang guard killed it (${suite.signalCode}) after ${seconds} s of ${SUITE_HANG_MS / 1000} s`
+        );
+      }
+      if (read === undefined) {
+        throw new Error(
+          `python3 -m unittest of s10_judge_test.py exited ${exitCode} after ${seconds} s, and a process it left still held its output 10 s later`
+        );
+      }
+      const [report] = read;
+      if (exitCode !== 0) console.error(report);
+      expect(exitCode).toBe(0);
       expect(report).toMatch(/^Ran [1-9]\d* tests/m);
       expect(report).not.toMatch(/skipped/);
 
