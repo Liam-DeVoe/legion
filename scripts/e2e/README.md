@@ -392,10 +392,12 @@ Each item below names a script, then what it proves.
 
 - `agents.sh`
 
-  one key of an owner's plan is one agent in one session across roles, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with two issues whose owners give their plans:
+  one key of an owner's plan is one agent in one session across roles, and one role at two steps of a task is one agent in one session, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with four issues whose owners give their plans:
   `implementer:a tester:a reviewer` runs steps 1 and 2 in one agent and one session, the tester's step and the retro each a relaunch of the implementer's claim that resumes its session, and step 3 in another;
   `dispatch steps --issue <KEY>`, run as a person with their personal token, prints the same agents the records name;
-  the control, `implementer:a tester reviewer`, runs step 2 in an agent and a session of its own.
+  the control, `implementer:a tester reviewer`, runs step 2 in an agent and a session of its own;
+  `implementer:a reviewer implementer:a` runs steps 1 and 3 in one agent and one session, through a failed review that returns the task to step 1, and step 3's task names the reports of steps 1 and 2;
+  its control, `implementer:a reviewer implementer`, is refused.
   No GitHub, no cluster
 
 - `step-records-read.sh`
@@ -5115,7 +5117,7 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
   [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/agents.sh     # → "agents e2e: PASS in <n>s", exit 0
 ```
 
-The live proof that one key of an owner's plan is one agent in one session across roles, run before the change merges.
+The live proof that one key of an owner's plan is one agent in one session across roles, and that one role at two steps of a task is one agent in one session, run before the change merges.
 It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
 `LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`handoff-records.sh`](#handoff-recordssh), the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`.
 The script starts no database, and the broker is the run's own.
@@ -5131,10 +5133,10 @@ before them the script refuses a host with no `bun` or no `node_modules`, and ex
 | `proof` | the steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
 Nothing of the key's path is stood in for.
-The driver starts Dispatch as `handoff-records.sh`'s driver does (`startHandoffDispatch`), on a database of its own with NATS off, creates a project of the run's own (`OS<6 hex>`), maps `acme/widgets` to it, and creates two issues, each in progress with the `legion` label and a spec.
+The driver starts Dispatch as `handoff-records.sh`'s driver does (`startHandoffDispatch`), on a database of its own with NATS off, creates a project of the run's own (`OS<6 hex>`), maps `acme/widgets` to it, and creates four issues, each in progress with the `legion` label and a spec.
 It seeds each issue in the daemon's store at `admitted` with no design gate, and boots the whole daemon through `run`, the function `legion start` calls, with `dispatch_url` at that server.
-Each issue's architect writes its plan on the issue and gives it to Legion (`POST /legion/v1/plans/register`), a person approves the spec, and the architect registers it as the gate (`POST /legion/v1/gates/register`).
-The issue then walks as the package's whole-daemon test of a key walks it (`walkOneKey`, `internal/daemon/agents_test.go`):
+Each issue's architect writes its plan on the issue and gives it to Legion (`POST /legion/v1/plans/register`); for each plan Legion takes, a person approves the spec, and the architect registers it as the gate (`POST /legion/v1/gates/register`).
+That issue then walks as the package's whole-daemon tests walk it (`walkOneKey` and `walkRoleTwice`, `internal/daemon/agents_test.go`):
 each role over the daemon's worker stream and its own routes, and each relaunch of a claim on another role met by its pane registering again in the session its claim recorded (`relaunchedAs`), as the plugin does.
 The reader is the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.ts steps --issue <KEY>`), run as a person's own shell runs it, with the personal token Dispatch minted for the person who set the project up.
 
@@ -5142,6 +5144,8 @@ The reader is the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.t
 | :--- | :--- | :--- |
 | `one-key-two-roles` | the plan `implementer:a tester:a reviewer`; the implementer's completion; the tester's step, a relaunch of `…-implementer` with the role tester that resumes its session file, its task naming `Step 1 (implementer:a) reported:`; a person's approving review; the retro, a relaunch of `…-implementer` with its first role; GitHub's merge | the step records of steps 1 and 2 naming the agent `…-implementer` and one session, and step 3 `…-reviewer` in a session of its own; `dispatch steps --issue <KEY>` printing those same agents |
 | `control-no-key-on-step-2` | the plan `implementer:a tester reviewer`, walked the same way, with `…-implementer` launched once | step 2's record naming `…-tester` in a session of its own, and `dispatch steps` printing it |
+| `role-two-times` | the plan `implementer:a reviewer implementer:a`; the implementer's completion; the reviewer's report and a person's review requesting changes; the implementer's task of step 1 again, in its session; the reviewer's report and a person's approving review; step 3's task, in the same session, naming `Step 1 (implementer:a) reported:` and `Step 2 (reviewer) reported:`; the retro; GitHub's merge, with `…-implementer` launched once | the step records of each run of steps 1 and 3 naming `…-implementer` and one session, and of step 2 `…-reviewer` in another; `dispatch steps --issue <KEY>` printing those same agents |
+| `control-no-key-on-step-3` | the plan `implementer:a reviewer implementer` given to `POST /legion/v1/plans/register` | `409 PLAN_REFUSED` naming task `a` with the one reason that step 3 needs an agent of its own beside the agent of step 1, both starting with the role implementer; no plan rows for the issue |
 
 What the proof stands in for lies outside the key:
 the broker is a native `nats-server`; GitHub's REST API is the driver's stand-in for the one pull request;
