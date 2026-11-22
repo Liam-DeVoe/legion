@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/clitest"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // legionBuildDir is where legionBuild puts the binary: a directory TestMain makes and removes.
@@ -23,10 +24,14 @@ var legionBuildDir string
 
 // legionBuild builds this package's `legion` once for the whole test binary and answers its
 // path: the binary a caller runs, with no test code linked in, which is what clitest and the
-// invocation table drive. Every test that runs it only runs it, so one build serves them all.
+// invocation table drive. Every test that runs it only runs it, so one build serves them all. It
+// links leakguardtest.NoCurl as its guards' curl (leakguardtest.NoCurlLinked), as TestMain gives
+// this binary's own: the built binary reads no LEGION_CMD_TEST_CURL, and without the link its
+// guards would run the system's /usr/bin/curl, with a token of the test's bundle, wherever a
+// stand-in gh is stopped by the guard's bound on its REST read (INFRA-3904).
 var legionBuild = sync.OnceValues(func() (string, error) {
 	binary := filepath.Join(legionBuildDir, "legion")
-	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
+	if out, err := exec.Command("go", "build", "-ldflags", leakguardtest.NoCurlLinked, "-o", binary, ".").CombinedOutput(); err != nil {
 		return "", fmt.Errorf("go build: %v\n%s", err, out)
 	}
 	return binary, nil
@@ -234,6 +239,13 @@ func TestPassThroughCommandsParseNoFlags(t *testing.T) {
 	t.Run("gh", func(t *testing.T) {
 		// A pod's gh (packages/daemon/docker/gh's shape) runs `legion gh`, which runs the real gh
 		// (LEGION_GH_PATH), here a stand-in that prints its arguments.
+		//
+		// The guard's reads of acme/widgets stay on this machine. When the guard's bound stops
+		// its REST read through the stand-in gh, as a loaded machine can make it, the guard reads
+		// through curl, and then with ls-remote. The built legion has no curl (legionBuild), and a
+		// stand-in git answers the ls-remote. A guard that reads through curl first asks `gh auth
+		// git-credential get` for the token, and `legion gh` writes each such request to its call
+		// log. So the row reads that the log holds none.
 		root, defaultDir := gitCredentialBundle(t)
 		help, err := filepath.Abs(ghHelpDir)
 		if err != nil {
@@ -243,8 +255,13 @@ func TestPassThroughCommandsParseNoFlags(t *testing.T) {
 		if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"printf '%s\\n' \"$*\"\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		wrappers := t.TempDir()
+		wrappers, state := t.TempDir(), t.TempDir()
 		if err := os.WriteFile(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+legion+"' gh \"$@\"\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		lsRemote := "#!/bin/sh\nfor a; do if [ \"$a\" = ls-remote ]; then printf '%s\\tHEAD\\n' " + strings.Repeat("1", 40) + "; exit 0; fi; done\n" +
+			"exec " + shellprefix.Literal(fixturegit.CompiledGit(t)) + " \"$@\"\n"
+		if err := os.WriteFile(filepath.Join(wrappers, "git"), []byte(lsRemote), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		args := []string{"pr", "view", "1", "--json", "state", "-R", "acme/widgets"}
@@ -253,7 +270,7 @@ func TestPassThroughCommandsParseNoFlags(t *testing.T) {
 		cmd.Env = []string{
 			"PATH=" + wrappers + ":" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull,
 			"LEGION_GH_PATH=" + stub, "GH_CONFIG_DIR=" + defaultDir, "LEGION_GH_OWNERS_DIR=" + root,
-			"PUBLIC_LEAK_CHECK=" + leakguardtest.Write(t, t.TempDir(), ghCheckPasses),
+			"PUBLIC_LEAK_CHECK=" + leakguardtest.Write(t, t.TempDir(), ghCheckPasses), "XDG_STATE_HOME=" + state,
 		}
 		out, err := cmd.Output()
 		if err != nil {
@@ -261,6 +278,15 @@ func TestPassThroughCommandsParseNoFlags(t *testing.T) {
 		}
 		if got, want := string(out), strings.Join(args, " ")+"\n"; got != want {
 			t.Fatalf("the real gh received %q, want %q", got, want)
+		}
+		log := readRecord(t, filepath.Join(state, "legion-gh", "calls.log"))
+		if !strings.Contains(log, ` repository="acme/widgets" `) {
+			t.Fatalf("legion gh's call log holds no line of the call, so it cannot show a token request either: %q", log)
+		}
+		for line := range strings.Lines(log) {
+			if strings.Contains(line, ` path="auth git-credential" `) {
+				t.Fatalf("the built legion's guard asked `gh auth git-credential get` for a token (%q), which it asks for only to read through curl: the built legion has no curl (legionBuild)", strings.TrimSpace(line))
+			}
 		}
 	})
 }
