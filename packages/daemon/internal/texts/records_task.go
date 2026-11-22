@@ -483,3 +483,182 @@ type ControllerStartRecord struct{}
 func (ControllerStartRecord) Kept() []string {
 	return []string{ControllerStartMessage}
 }
+
+// The audiences of news of an approved design (DesignNewsRecord.Audience): the session that holds
+// the issue's phase, told what changed for that issue, and the tree root's architect, told of the
+// whole tree in one summary.
+const (
+	NewsToHolder        = "holder"
+	NewsToRootArchitect = "root_architect"
+)
+
+// The words of what one item of news says changed (DesignNewsItem.Changes).
+const (
+	// NewsChangesListed is a pair whose changed sections and blocks the rows of sections and blocks
+	// that name the item list.
+	NewsChangesListed = "listed"
+	// NewsChangesNoneNamed is a pair Dispatch read and named no changed section or block of.
+	NewsChangesNoneNamed = "none_named"
+	// NewsChangesUnavailable is a pair Dispatch could not answer for, so nothing names what
+	// changed; the item's reason block says why.
+	NewsChangesUnavailable = "unavailable"
+	// NewsChangesSameText is a new version that holds the same text as the version taken.
+	NewsChangesSameText = "same_text"
+	// NewsChangesDecisionBlocksOnly is a new version that differs from the version taken only in
+	// decision blocks.
+	NewsChangesDecisionBlocksOnly = "decision_blocks_only"
+	// NewsChangesNoPair is an item with no earlier version to compare with: none was approved
+	// before it (taken 0), or the version taken could not be read (taken null, its reason block
+	// saying why).
+	NewsChangesNoPair = "no_pair"
+)
+
+// The units of a document that a section row of news names (DesignNewsSection.Unit): a `##`
+// section, or a run of the text outside every section, by where it stands: before the first
+// section, after the `##` section directly before it, or nowhere Dispatch names.
+const (
+	NewsUnitSection            = "section"
+	NewsUnitBeforeFirstSection = "before_first_section"
+	NewsUnitAfterSection       = "after_section"
+	NewsUnitOutsideSections    = "outside_sections"
+)
+
+// NewsBlockOther is the type a block row of news gives a block whose type the daemon does not
+// name (DesignNewsBlock.Type), whose type as the document gives it goes in its other_type block.
+const NewsBlockOther = "other"
+
+// What a member of a tree is told of an approved version, in its root architect's summary
+// (DesignNewsMember.Told): a task tells it now; the news waits until its holder takes the task it
+// already holds; the next start of its phase carries it; the root architect answers it itself;
+// nothing; or nothing yet.
+const (
+	NewsToldNow           = "now"
+	NewsToldWhenTaskTaken = "when_task_taken"
+	NewsToldAtNextStart   = "at_next_start"
+	NewsToldByYou         = "by_you"
+	NewsToldNothing       = "nothing"
+	NewsToldNothingYet    = "not_yet"
+)
+
+// Why a member of a tree is told nothing, or nothing yet (DesignNewsMember.Why): no version it is
+// owed changes its work; only the root's checks changed; its phase already took the approved
+// version; it has not started; it waits on a person; it is stopped in held; its work is done; its
+// status takes it out of the workflow; its pull request has merged; or the gate closed again
+// before the summary was sent.
+const (
+	NewsWhyWorkUnchanged  = "work_unchanged"
+	NewsWhyRootChecksOnly = "root_checks_only"
+	NewsWhyAlreadyTaken   = "already_taken"
+	NewsWhyNotStarted     = "not_started"
+	NewsWhyWaitsOnPerson  = "waits_on_person"
+	NewsWhyStopped        = "stopped"
+	NewsWhyDone           = "done"
+	NewsWhyOutOfWorkflow  = "out_of_workflow"
+	NewsWhyMerged         = "merged"
+	NewsWhyGateClosed     = "gate_closed"
+)
+
+// DesignNewsRecord is the news of an approved design that a task carries to one audience
+// (workflow's RenderNews): a task of its own, or the record after a start's own record, joined to
+// it as InFront joins a note to a task. A task can carry several, one for each audience it speaks
+// to. dispatch://INFRA-175's R2, R3 and R5 have it name the changed sections and checks of each
+// document, and, for the root's architect, each issue of the tree with what changed for it; the
+// readers' prompts give the answers its Design 7 names.
+//
+// The issue it speaks of and its tree, its audience (a NewsTo word) and, for the holder, the
+// phase the reader holds the issue in. Where the gate's opening is owed to the audience, the gate
+// as it stands at the send, with the fields a gate-moved message gives (GateMovedRecord): open or
+// closed (Gate, a Gate word), the step, the step's document as a dispatch:// link, the artifact,
+// the version, and what the gate does to a merge (Merge, a Merge word); none where it is not owed.
+//
+// Each item is one step's approved version (Items), each section and each block that changed is a
+// row naming the index of its item in Items (Sections, Blocks), and, in the root architect's
+// summary, each member of the tree is a row (Members) and each item a member is owed a row naming
+// the member and the index of its item (Owed). Dispatch's reason, a section's heading, a block's id
+// and a type the daemon does not name are another author's words, each in a block of its row.
+type DesignNewsRecord struct {
+	TaskHead
+	Tree         string              `json:"tree"`
+	Audience     string              `json:"audience"`
+	Phase        string              `json:"phase,omitempty"`
+	Gate         string              `json:"gate,omitempty"`
+	GateStep     string              `json:"gate_step,omitempty"`
+	GateDocument string              `json:"gate_document,omitempty"`
+	GateArtifact string              `json:"gate_artifact,omitempty"`
+	GateVersion  int                 `json:"gate_version,omitempty"`
+	Merge        string              `json:"merge,omitempty"`
+	Items        []DesignNewsItem    `json:"items,omitempty"`
+	Sections     []DesignNewsSection `json:"sections,omitempty"`
+	Blocks       []DesignNewsBlock   `json:"blocks,omitempty"`
+	Members      []DesignNewsMember  `json:"members,omitempty"`
+	Owed         []DesignNewsOwed    `json:"owed,omitempty"`
+}
+
+// DesignNewsItem is one step's approved version as news names it: the step, its document as a
+// dispatch:// link (or the bare artifact reference, ArtifactReference, where the gate row of the
+// step holds another document), the artifact, the version a person approved now, and the version
+// the audience took (Taken): 0 where no version was approved before it, and null where the review
+// history could not say which version the audience took, its reason in the reason block. In the
+// root architect's summary, Yours says whether that version is the one the architect took, and
+// not the one each issue owed the item took. Changes is what the item says changed (a
+// NewsChanges word).
+type DesignNewsItem struct {
+	Step     string `json:"step"`
+	Document string `json:"document"`
+	Artifact string `json:"artifact"`
+	Version  int    `json:"version"`
+	Taken    *int   `json:"taken"`
+	Yours    *bool  `json:"yours,omitempty"`
+	Changes  string `json:"changes"`
+	Reason   *Words `json:"reason"`
+}
+
+// DesignNewsSection is one top-level unit of a document that changed, as Dispatch names it: the
+// index of its item in Items, the unit (a NewsUnit word), its place among the sections of its
+// heading counted from 1 (Nth, 0 for a run outside every section), how it changed (Dispatch's
+// word: changed, added, removed or moved), and, for a run after a section, that section's place
+// among the sections of its heading (AfterNth, 0 otherwise). The section's heading, and the
+// heading of the section a run follows, go in blocks; an empty heading draws none.
+type DesignNewsSection struct {
+	Item         int    `json:"item"`
+	Unit         string `json:"unit"`
+	Nth          int    `json:"nth"`
+	Change       string `json:"change"`
+	AfterNth     int    `json:"after_nth"`
+	Heading      *Words `json:"heading"`
+	AfterHeading *Words `json:"after_heading"`
+}
+
+// DesignNewsBlock is one typed block of a document that changed: the index of its item in Items,
+// its type (requirement, check, plan_task, callout, or NewsBlockOther), and how it changed
+// (Dispatch's word). Its id goes in the id block, and a type the daemon does not name in the
+// other_type block.
+type DesignNewsBlock struct {
+	Item      int    `json:"item"`
+	Type      string `json:"type"`
+	Change    string `json:"change"`
+	ID        *Words `json:"id"`
+	OtherType *Words `json:"other_type"`
+}
+
+// DesignNewsMember is one member of a tree in its root architect's summary: its key, its phase,
+// how it is told (a NewsTold word) and, where it is told nothing or nothing yet, why (a NewsWhy
+// word, empty otherwise), the role that holds its phase where a task tells it (empty for a member
+// told nothing, and where its phase names no role), and, for a member in accepting that an
+// architect other than the tree root's holds, the issue whose architect that is (ArchitectOf: the
+// member itself, or an issue above it; empty otherwise).
+type DesignNewsMember struct {
+	Issue       string `json:"issue"`
+	Phase       string `json:"phase"`
+	Told        string `json:"told"`
+	Why         string `json:"why"`
+	Holder      string `json:"holder"`
+	ArchitectOf string `json:"architect_of"`
+}
+
+// DesignNewsOwed is one item a member of a tree is owed, in its root architect's summary: the
+// member's key and the index of the item in Items.
+type DesignNewsOwed struct {
+	Issue string `json:"issue"`
+	Item  int    `json:"item"`
+}

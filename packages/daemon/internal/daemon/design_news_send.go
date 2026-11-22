@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -28,7 +29,7 @@ import (
 // here again, from the record as one read transaction finds it, by the one render
 // (workflow.RenderNews):
 //
-//   - the gate sentence is said of the tree root's gate rows as they stand now, so a task composed
+//   - the gate's fields are said of the tree root's gate rows as they stand now, so a task composed
 //     while the gate stood open and sent after a later version closed it says closed;
 //   - an item stands while the gate's row of its step still holds the document it names, approved
 //     at its To (classify.DesignApprovalStands), and the told row of its audience still holds a
@@ -74,17 +75,17 @@ import (
 //   - the root architect's summary of a tree that lingers is dropped whole: linger holds every
 //     member where it stood, record.OwedNews owes such a tree nothing, and nothing goes to it.
 //
-// The task text is the start's own text (record.DeliveryNews.Task), a blank line, and the news,
-// rendered by the one render every task of news goes through (renderNews). A phase start whose
-// news is all dropped is sent as its own text alone, carrying no news; a task queued for its news
-// alone (supervise.Delivery.NewsOnly) with nothing left to say — no item standing, and no opening
-// owed while the gate stands open — answers "", which the machine retires rather than sends. A task
-// whose news all stands as it is carried is answered with the bytes it carries, so a send of a task
-// the record has not moved under writes nothing; one whose items the send dropped, re-keyed or told
-// by another state than they carry, or whose openings it dropped, took on, numbered anew or said
-// closed, is answered with its news encoded again, so any later send reads what this send told, and
-// so does the copy this prompt's acknowledgement records (supervise.Delivery.Carried), which is
-// what the confirmation of this prompt's turn credits.
+// The task text is the start's own text (record.DeliveryNews.Task), then the news record of each
+// audience it speaks to, rendered by the one render every task of news goes through (renderNews).
+// A phase start whose news is all dropped is sent as its own text alone, carrying no news; a task
+// queued for its news alone (supervise.Delivery.NewsOnly) with nothing left to say — no item
+// standing, and no opening owed while the gate stands open — answers "", which the machine
+// retires rather than sends. A task whose news all stands as it is carried is answered with the
+// bytes it carries, so a send of a task the record has not moved under writes nothing; one whose
+// items the send dropped, re-keyed or told by another state than they carry, or whose openings it
+// dropped, took on, numbered anew or said closed, is answered with its news encoded again, so any
+// later send reads what this send told, and so does the copy this prompt's acknowledgement records
+// (supervise.Delivery.Carried), which is what the confirmation of this prompt's turn credits.
 //
 // An item dropped from the text and the delivery queues one design_changes row for its tree
 // (record.QueueDesignNews) where a reconcile has something to send it: the item no longer stands,
@@ -141,20 +142,25 @@ type renderedNews struct {
 // held task (rootTask, through designNews). So the news a delivery carries is computed from the
 // text it sends, by the function that renders that text, and nothing keeps a news field beside a
 // text it did not render. It reads carried as the record stands in the caller's transaction, for
-// the claim whose token is reader (readNewsAtSend), and answers the text — carried's own Task, a
-// blank line, then the news — and exactly the news that text names: none where nothing stands;
-// encoded, the bytes carried was decoded from, where it keeps carried as it was; and carried
-// encoded again otherwise. A start has no bytes to keep, and passes nil. A narrowing passes the
-// news it encoded again under the narrowed text (narrowedNews, through designNews), so news it
-// keeps as it was is answered as those bytes, under that text.
+// the claim whose token is reader (readNewsAtSend), and answers the text — carried's own Task, then
+// the news record of each audience, each joined to what stands before it (followedBy) — and
+// exactly the news that text names: none where nothing stands; encoded, the bytes carried was
+// decoded from, where it keeps carried as it was; and carried encoded again otherwise. A start has
+// no bytes to keep, and passes nil. A narrowing passes the news it encoded again under the
+// narrowed text (narrowedNews, through designNews), so news it keeps as it was is answered as
+// those bytes, under that text.
 //
 // A reviewer's task that ends with the daemon's two sentences of its review round says so by a
 // fact (roundNamed: record.SuperviseRequest.RoundNamed at a start, supervise.Delivery.RoundNamed at
 // a send), and those two stay the last two of the text the reviewer is sent, which is where its
-// prompt reads them: the text is carried's Task cut before them (reviewround.Split), a blank line,
-// the news, and then the two sentences joined as they stood, on a line of their own where the task
-// wrote them so (reviewround.Ending), the task's one line among them. A task that does not end
-// with them as Sentences or Ending writes them is rendered whole, as any other.
+// prompt reads them: the text is carried's Task cut before them (reviewround.Split), the news
+// records, and then the two sentences. Where news records follow the task's own text, the two go
+// on a line of their own after the last record, whichever form the task gave them (a task an
+// earlier release stored ends with Sentences after a space), so the closing line of a record's
+// last block stands alone, as a reader of the block needs it. Where none follows, they stay joined
+// as they stood, on a line of their own where the task wrote them so (reviewround.Ending), the
+// task's one line among them. A task that does not end with them as Sentences or Ending writes
+// them is rendered whole, as any other.
 func renderNews(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, reader claim.Token,
 	carried record.DeliveryNews, encoded []byte, roundNamed bool, now func() time.Time) (renderedNews, error) {
 	sent, err := readNewsAtSend(ctx, tx, records, steps, reader, carried, now)
@@ -167,8 +173,12 @@ func renderNews(ctx context.Context, tx pgx.Tx, records record.Store, steps []re
 			body, round = cut, sentences
 		}
 	}
-	text := paragraphs(body, sent.text)
-	if text != "" && round != "" && !strings.HasPrefix(round, "\n") && !strings.HasPrefix(round, " ") {
+	text := followedBy(body, sent.records...)
+	switch {
+	case text == "" || round == "":
+	case text != body:
+		round = "\n" + strings.TrimLeft(round, " \n")
+	case !strings.HasPrefix(round, "\n") && !strings.HasPrefix(round, " "):
 		round = "\n" + round
 	}
 	rendered := renderedNews{task: text + round, says: sent.says, dropped: sent.dropped}
@@ -185,19 +195,19 @@ func renderNews(ctx context.Context, tx pgx.Tx, records record.Store, steps []re
 	return rendered, nil
 }
 
-// newsAtSend is what a delivery's news says at its send: the text that follows the start's own
-// (text), what of the news still stands (kept, which keeps the start's own text), whether any of
-// it is worth a task of its own (says): an item that stands, or an opening owed while the gate
-// stands open, whether it keeps the news otherwise than it was carried (rewritten: an item
-// re-keyed to the version its told row holds now, marked with another run (inRun), or with its
-// unread review history taken on or let go, carriedChange, or an opening the delivery did not
-// carry, one it carried and no longer tells, one it carries under another opening number or
-// another run, or one it now says is closed), and the tree of each item it dropped that a
-// reconcile can still send (dropped), each once, whose reconcile the send queues: not the tree of
-// an item dropped because the record does not hold its issue or its tree, or because it is to the
-// architect of a lingering tree (readNewsAtSend).
+// newsAtSend is what a delivery's news says at its send: the news record of each audience it
+// speaks to, which follow the start's own text (records), what of the news still stands (kept,
+// which keeps the start's own text), whether any of it is worth a task of its own (says): an item
+// that stands, or an opening owed while the gate stands open, whether it keeps the news otherwise
+// than it was carried (rewritten: an item re-keyed to the version its told row holds now, marked
+// with another run (inRun), or with its unread review history taken on or let go, carriedChange,
+// or an opening the delivery did not carry, one it carried and no longer tells, one it carries
+// under another opening number or another run, or one it now says is closed), and the tree of each
+// item it dropped that a reconcile can still send (dropped), each once, whose reconcile the send
+// queues: not the tree of an item dropped because the record does not hold its issue or its tree,
+// or because it is to the architect of a lingering tree (readNewsAtSend).
 type newsAtSend struct {
-	text      string
+	records   []string
 	kept      record.DeliveryNews
 	says      bool
 	rewritten bool
@@ -342,7 +352,6 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 	}
 	sent := newsAtSend{kept: record.DeliveryNews{Task: carried.Task}}
 	keep := map[int]bool{}
-	var texts []string
 	for _, heard := range listened {
 		news := workflow.News{Audience: heard.listener.audience, Tree: heard.issue.Tree, Issue: heard.issue.Key,
 			Phase: heard.issue.Phase, Steps: steps, Gates: heard.tree.gates, OpeningOwed: heard.opening != nil}
@@ -366,7 +375,7 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 			continue
 		}
 		sent.says = sent.says || len(news.Items) > 0 || (heard.opening != nil && !heard.opening.Closed)
-		texts = append(texts, workflow.RenderNews(news))
+		sent.records = append(sent.records, workflow.RenderNews(news))
 	}
 	for i, item := range items {
 		if keep[i] {
@@ -383,7 +392,6 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 			}
 		}
 	}
-	sent.text = paragraphs(texts...)
 	return sent, nil
 }
 
@@ -688,14 +696,21 @@ func boolOrder(b bool) int {
 	return 0
 }
 
-// paragraphs is each non-empty text in turn, a blank line between each two: the start's own text
-// and the news after it, or the news of each audience a delivery speaks to.
-func paragraphs(texts ...string) string {
-	said := make([]string, 0, len(texts))
-	for _, text := range texts {
-		if text != "" {
-			said = append(said, text)
+// followedBy is text with each of records after it, the start's own text and the news record of
+// each audience a delivery speaks to, each record joined to all that stands before it as
+// texts.InFront joins a note to a task: a blank line between the two, and the record's blocks of
+// another author's words drawn again under tags chosen against all that stands before it, which
+// can hold another author's words too, so nothing before a block opens or closes its tag. An
+// empty text, or an empty record, is no part.
+func followedBy(text string, records ...string) string {
+	for _, rec := range records {
+		switch {
+		case rec == "":
+		case text == "":
+			text = rec
+		default:
+			text = texts.InFront([]string{text}, rec)
 		}
 	}
-	return strings.Join(said, "\n\n")
+	return text
 }

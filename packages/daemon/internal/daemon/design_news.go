@@ -591,11 +591,11 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 }
 
 // startNews is what a start carries of news of the approved design (newsForStart): the task it
-// delivers — the start's own text, a blank line, then the news — the news itself as the delivery
-// carries it (record.DeliveryNews, encoded; nil where nothing is attached), whether the news says
-// anything a task of its own is worth (newsAtSend.says), and whether the task ends with the
-// daemon's two sentences of a reviewer's review round (roundNamed, which the delivery carries as
-// supervise.RequestDeliver.RoundNamed).
+// delivers — the start's own text, then the news record of each audience (followedBy) — the news
+// itself as the delivery carries it (record.DeliveryNews, encoded; nil where nothing is attached),
+// whether the news says anything a task of its own is worth (newsAtSend.says), and whether the
+// task ends with the daemon's two sentences of a reviewer's review round (roundNamed, which the
+// delivery carries as supervise.RequestDeliver.RoundNamed).
 type startNews struct {
 	task       string
 	news       []byte
@@ -614,8 +614,8 @@ type startNews struct {
 // with its review history unread carries that history's reason and time
 // (record.DeliveryNewsItem.HistoryUnread), so every later send of the task tells it as attached,
 // whatever a reconcile does before then (carriedChange). The task is the start's own text
-// (record.DeliveryNews.Task), a blank line, then the news; a start that carries nothing delivers
-// its own text.
+// (record.DeliveryNews.Task), then the news records; a start that carries nothing delivers its own
+// text.
 //
 // A start of the reviewer queued for news alone carries no task, so the workflow's queue named
 // no round on it. Where it carries news, its task is named here, in the same read: the daemon's

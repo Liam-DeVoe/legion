@@ -187,12 +187,16 @@ func drawBlocks(before []string, blocks []block) []string {
 // InFront is parts and then text, each joined to the next by a blank line: the notes a start puts
 // in front of a task (supervise's Delivery.message), and the task. A part can hold words that are
 // not the daemon's: a process's cause quotes the runtime's, and those can carry a tail of the
-// role's own log, a task's own lines among it. So text's blocks (drawnBlocks) are drawn again,
-// each with its attributes and its words as they were, under the tag blockTags gives it against
+// role's own log, a task's own lines among it. So every block of text (drawnBlocks) is drawn
+// again, with its attributes and its words as they were, under the tag blockTags gives it against
 // the whole of what is sent: the parts, the lines of text outside its blocks and the words of every
-// block. Nothing in front of a block then opens or closes its tag, as nothing does in the task
-// alone (Render). Each block keeps the tag Render gave it wherever the parts hold none of those
-// tags, and the parts and a text with no block are joined as they are.
+// block. A task can be several records, each joined to the one before by a blank line (the
+// daemon's followedBy: a start's own record, then the news record of each audience), and the
+// blocks of every record are drawn again together, so nothing in front of any block opens or
+// closes its tag, as nothing does in the task alone (Render). Each block of a text of one record
+// keeps the tag Render gave it wherever the parts hold none of those tags, and the parts and a text
+// with no block are joined as they are. A card, which the TypeScript readers draw again by this
+// rule (testdata/in-front.json), is one record.
 func InFront(parts []string, text string) string {
 	if len(parts) == 0 {
 		return text
@@ -202,22 +206,28 @@ func InFront(parts []string, text string) string {
 	if len(found) == 0 {
 		return front + text
 	}
-	head, tail := text[:found[0].start], text[found[len(found)-1].end:]
+	// The text outside the blocks: ahead of the first, between one record's run and the next (the
+	// next record's fields), and after the last. Two blocks of one run stand a new line apart,
+	// which holds no tag.
 	before := make([]string, 0, len(parts)+2)
-	before = append(append(before, parts...), head, tail)
+	before = append(before, parts...)
 	blocks := make([]block, len(found))
+	from := 0
 	for i, d := range found {
+		if between := text[from:d.start]; between != "\n" {
+			before = append(before, between)
+		}
 		blocks[i] = block{name: d.name(), words: Words{Text: d.words}}
+		from = d.end
 	}
+	before = append(before, text[from:])
 	tags := blockTags(before, blocks)
 	var b strings.Builder
 	b.Grow(len(front) + len(text) + 8*len(found))
 	b.WriteString(front)
-	b.WriteString(head)
+	from = 0
 	for i, d := range found {
-		if i > 0 {
-			b.WriteByte('\n')
-		}
+		b.WriteString(text[from:d.start])
 		// The block as drawBlock draws it, its opening tag's attributes as that tag wrote them.
 		b.WriteString("<")
 		b.WriteString(tags[i])
@@ -227,8 +237,9 @@ func InFront(parts []string, text string) string {
 		b.WriteString("\n</")
 		b.WriteString(tags[i])
 		b.WriteString(">")
+		from = d.end
 	}
-	b.WriteString(tail)
+	b.WriteString(text[from:])
 	return b.String()
 }
 
@@ -257,45 +268,59 @@ func (d drawnBlock) name() string {
 	return d.tag
 }
 
-// drawnBlocks is the blocks of text, a text Render drew, in their order. No line of a drawn text
-// ahead of its blocks starts with <, since a field is a TOON line and the lead and the kept
-// sentences are the daemon's own, so its first such line opens its first block. A block closes on
-// the first line after its opening that is its closing tag, since no words of a block hold that
-// tag (blockTags), and the next block opens on the line after. The run ends at the first line that
-// opens no block. It is empty where the first line that starts with < opens none, or opens a block
-// that never closes, as in a text Render did not draw, such as an operator's task, which InFront
-// then joins as it is. One pass over text.
+// drawnBlocks is the blocks of text, in their order: a text Render drew, or several such records,
+// each joined to the one before by a blank line (the daemon's followedBy, through InFront). No line
+// of a record ahead of its blocks starts with <, since a field is a TOON line and the lead and the
+// kept sentences are the daemon's own, so a record's first such line opens its first block. A
+// block closes on the first line after its opening that is its closing tag, since no words of a
+// block hold that tag (blockTags), and the next block opens on the line after. A record's run of
+// blocks ends at the first line that opens no block. Render ends a record with its last block, so
+// where that line is blank the next record starts after it, and its first line that starts with <
+// opens its first block in turn; a record with no block has no such line, and the search goes on
+// into the record after it. The blocks end at a run that ends on any other line (a reviewer's
+// round line after the last record, reviewround.Ending, or a line of a text Render did not draw),
+// and at a record whose first line that starts with < opens no block, or opens one that never
+// closes: what follows stays as it is. So they are empty where the first line that starts with <
+// opens none, as in a text Render did not draw, such as an operator's task, which InFront then
+// joins as it is. One pass over text.
 func drawnBlocks(text string) []drawnBlock {
-	at := 0
-	if !strings.HasPrefix(text, "<") {
-		line := strings.Index(text, "\n<")
-		if line < 0 {
-			return nil
-		}
-		at = line + 1
-	}
 	var blocks []drawnBlock
-	for at < len(text) && text[at] == '<' {
-		opened := strings.IndexByte(text[at:], '\n')
-		if opened < 0 {
+	for record := 0; record < len(text); {
+		at := record
+		if text[at] != '<' {
+			line := strings.Index(text[at:], "\n<")
+			if line < 0 {
+				break
+			}
+			at += line + 1
+		}
+		ran := -1
+		for at < len(text) && text[at] == '<' {
+			opened := strings.IndexByte(text[at:], '\n')
+			if opened < 0 {
+				break
+			}
+			match := drawnOpening.FindStringSubmatch(text[at : at+opened])
+			if match == nil {
+				break
+			}
+			wordsAt := at + opened + 1
+			closing := "\n</" + match[1] + ">"
+			closed := strings.Index(text[wordsAt:], closing)
+			if closed < 0 {
+				break
+			}
+			end := wordsAt + closed + len(closing)
+			if end < len(text) && text[end] != '\n' {
+				break
+			}
+			blocks = append(blocks, drawnBlock{start: at, end: end, tag: match[1], attributes: match[2], words: text[wordsAt : wordsAt+closed]})
+			at, ran = end+1, end
+		}
+		if ran < 0 || !strings.HasPrefix(text[ran:], "\n\n") {
 			break
 		}
-		match := drawnOpening.FindStringSubmatch(text[at : at+opened])
-		if match == nil {
-			break
-		}
-		wordsAt := at + opened + 1
-		closing := "\n</" + match[1] + ">"
-		closed := strings.Index(text[wordsAt:], closing)
-		if closed < 0 {
-			break
-		}
-		end := wordsAt + closed + len(closing)
-		if end < len(text) && text[end] != '\n' {
-			break
-		}
-		blocks = append(blocks, drawnBlock{start: at, end: end, tag: match[1], attributes: match[2], words: text[wordsAt : wordsAt+closed]})
-		at = end + 1
+		record = ran + 2
 	}
 	return blocks
 }

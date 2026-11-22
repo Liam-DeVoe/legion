@@ -99,6 +99,43 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"armed_for"}},
 	{kind: texts.PodWake, from: "workflow/wake.go:WakeTask at c7e1cbd5 (what stopped the session: an idle release or a project's pause)",
 		keys: []string{"stopped_by"}},
+	{kind: texts.DesignNews, from: "workflow/design_news.go:RenderNews at b537812f (the tree; the issue a holder holds, or the tree's root for its architect)",
+		keys: []string{"issue", "tree"}},
+	{kind: texts.DesignNews, variants: []string{"holder", "planner", "accepting", "history-unread", "changes-unavailable", "gate-open", "gate-closed"},
+		from: "workflow/design_news.go:holderNews at b537812f (The approved design of <tree> changed for <issue>, which you hold in <phase>:, " +
+			"and each item: The <step> document (<artifact>): version <to>, since version <from>, which your phase last took)",
+		keys: []string{"phase", "items[0].step", "items[0].artifact", "items[0].version", "items[0].taken"}},
+	{kind: texts.DesignNews, variants: []string{"holder"}, from: "workflow/design_news.go:sectionsLine, sectionName, headingName, blockLines, " +
+		"blockKind at b537812f (each changed section by its heading and place, and each changed block by its id and type)",
+		keys: []string{"sections[1].heading", "sections[2].after_heading", "sections[3].heading", "sections[3].nth", "sections[5].unit",
+			"blocks[0].id", "blocks[2].other_type", "blocks[3].id"}},
+	{kind: texts.DesignNews, variants: []string{"planner"}, from: "workflow/design_news.go:sinceWords, changeLines at b537812f " +
+		"(the first version a person approved; your phase took none before it, and Dispatch named no changed section or block of it)",
+		keys: []string{"items[0].taken", "items[0].changes", "items[1].changes"}},
+	{kind: texts.DesignNews, variants: []string{"accepting"}, from: "workflow/design_news.go:nothingChanged at b537812f " +
+		"(Version <to> of its <step> document (<artifact>) holds the same text as version <from>)",
+		keys: []string{"items[1].taken", "items[1].changes"}},
+	{kind: texts.DesignNews, variants: []string{"gate-open"}, from: "workflow/design_news.go:nothingChanged at b537812f " +
+		"(Nothing your issue holds changed since version <from>, which your phase took. Version <to> of its <step> document (<artifact>) " +
+		"differs from it only in decision blocks)",
+		keys: []string{"items[0].taken", "items[0].changes"}},
+	{kind: texts.DesignNews, variants: []string{"history-unread"}, from: "workflow/design_news.go:sinceWords, couldNotRead at b537812f " +
+		"(since a version the daemon could not read, and the reason the version your phase last took could not be read)",
+		keys: []string{"items[0].taken", "items[0].changes", "items[0].reason"}},
+	{kind: texts.DesignNews, variants: []string{"changes-unavailable"}, from: "workflow/design_news.go:couldNotRead at b537812f " +
+		"(The change list could not be read, with the reason)",
+		keys: []string{"items[0].changes", "items[0].reason"}},
+	{kind: texts.DesignNews, variants: []string{"summary", "summary-gate-closed"}, from: "workflow/design_news.go:architectNews, memberWords " +
+		"at b537812f (each pair once, the architect's own marked, and each issue of the tree with its phase and what it is told)",
+		keys: []string{"items[0].step", "items[0].artifact", "items[0].version", "items[0].taken", "members[1].issue", "members[1].told"}},
+	{kind: texts.DesignNews, variants: []string{"summary"}, from: "workflow/design_news.go:architectNews, memberWords at b537812f " +
+		"(which you last took; a task tells its implementer now; the architect of <issue>; owed version <to> of the <step> document)",
+		keys: []string{"items[0].yours", "items[2].yours", "members[0].why", "members[1].holder", "members[5].architect_of",
+			"members[6].architect_of", "members[14].why", "owed[0].issue", "owed[0].item"}},
+	{kind: texts.DesignNews, variants: []string{"summary-gate-closed", "gate-open", "gate-closed"}, from: "workflow/design_news.go:gateAtSend " +
+		"at b537812f (The design gate of <tree> opened: a person approved version <n> of its <step> document (<id>), or closed: version <n> " +
+		"of its <step> document (<id>) is with its reviewer, and what that does to a merge)",
+		keys: []string{"gate", "gate_step", "gate_artifact", "gate_version", "merge"}, links: []string{"gate_document"}},
 	{kind: texts.RelaunchNote, from: "supervise/relaunch.go:relaunchSentence (the cause)",
 		keys: []string{"cause"}},
 	{kind: texts.AbandonedSessionNote, from: "supervise/delivery.go:abandonedTask (the session, why)",

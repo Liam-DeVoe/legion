@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -245,16 +246,19 @@ func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) 
 
 // A Verification document its architect registered as criteria beside a deployment of spec alone
 // holds the tree as the spec does, so the catch-up states it as a step of its own, after the
-// spec and gated as the spec is. A root that registered none is told the spec alone, as before.
+// spec and gated as the spec is, each naming its document by its dispatch:// link. A root that
+// registered none is told the spec alone, as before.
 func TestACatchUpStatesARegisteredVerificationDocumentAsAGatedStep(t *testing.T) {
-	spec := record.CatchUpGate{Step: record.DesignStepSpec, Gated: true, Artifact: "artifact-1", Version: 4, Approved: 4, Open: true}
+	spec := record.CatchUpGate{Step: record.DesignStepSpec, Gated: true, Document: "dispatch://LEGION-1/spec", Artifact: "artifact-1",
+		Version: 4, Approved: 4, Open: true}
 	for _, tc := range []struct {
 		name     string
 		criteria bool
 		want     []record.CatchUpGate
 	}{
 		{name: "a criteria row registered", criteria: true, want: []record.CatchUpGate{spec,
-			{Step: record.DesignStepCriteria, Gated: true, Artifact: "artifact-1-verification", Version: 2}}},
+			{Step: record.DesignStepCriteria, Gated: true, Document: "dispatch://LEGION-1/artifact/" + dispatch.VerificationSlug,
+				Artifact: "artifact-1-verification", Version: 2}}},
 		{name: "no criteria row", want: []record.CatchUpGate{spec}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

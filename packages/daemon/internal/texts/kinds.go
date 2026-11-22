@@ -15,6 +15,7 @@ const (
 	KeptDecisions   Kind = "kept-decisions"
 	PodWake         Kind = "pod-wake"
 	ControllerStart Kind = "controller-start"
+	DesignNews      Kind = "design-news"
 )
 
 // The parts that a start puts before a task. Each is a task too.
@@ -99,6 +100,7 @@ var list = []Entry{
 	{Kind: KeptDecisions, Form: Task, Record: KeptDecisionsRecord{}, Readers: toArchitect},
 	{Kind: PodWake, Form: Task, Record: PodWakeRecord{}, Readers: toPodRoles},
 	{Kind: ControllerStart, Form: Task, Record: ControllerStartRecord{}, Readers: toController},
+	{Kind: DesignNews, Form: Task, Record: DesignNewsRecord{}, Readers: toPodRoles},
 
 	{Kind: RelaunchNote, Form: Task, Record: RelaunchNoteRecord{}, Readers: toEveryRole},
 	{Kind: CutTurnNote, Form: Task, Record: CutTurnNoteRecord{}, Readers: toEveryRole},

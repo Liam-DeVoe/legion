@@ -2909,6 +2909,9 @@ This release adds fields to the payloads that its outbox queues:
 
 - A gate-moved message of an opening carries `unchanged_since`, the version of the step's document its reader took, where nothing that reader holds changed since that version.
 
+- News of an approved design is a task of the kind `design-news`, with the keys `tree`, `audience`, `phase`, `gate`, `gate_step`, `gate_document`, `gate_artifact`, `gate_version`, `merge`, `items` (`step`, `document`, `artifact`, `version`, `taken`, `yours`, `changes`), `sections` (`item`, `unit`, `nth`, `change`, `after_nth`), `blocks` (`item`, `type`, `change`), `members` (`issue`, `phase`, `told`, `why`, `holder`, `architect_of`) and `owed` (`issue`, `item`), and the blocks `reason`, `heading`, `after_heading`, `id` and `other_type`.
+  It travels as the text of a task, which no release decodes, so it adds no key that an earlier release refuses.
+
 - A review-stuck notice of a head GitHub will not merge carries that head's checks, names each check GitHub skipped under `skipped`, and says once under `each_skipped_check` that a skipped check ran nothing on that head.
 
 - A message-refused notice carries `words`, which names its first line (`begins`) with that line's author, the time its write was queued and, where the words go on past that line's head, `rest`, and, where that line opened with the daemon's sentence of a backward move or of a close, `refused_move` or `refused_close`.

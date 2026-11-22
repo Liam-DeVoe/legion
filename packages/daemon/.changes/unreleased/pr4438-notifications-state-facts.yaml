@@ -114,8 +114,14 @@ body: |-
   for it stays owed to it, so the resume launches it for that message, a `low` one included.
   A design gate's opening tells a reader owed no news of the approved design the version of the
   step's document it took, since which nothing it holds changed, as a field of its gate-moved
-  message (`unchanged_since`), and a news task that carries the opening, or that says a later
-  version closed the gate again, leads with that message's record.
+  message (`unchanged_since`). News of an approved design is a `design-news` record of its own
+  kind, a task of its own or the record after a start's own record: the tree, the issue and the
+  phase its holder holds it in, or each member of the tree with how it is told for the root's
+  architect; each document's version and the version its reader took, with each changed section
+  and block as a row; Dispatch's reason, a heading, a block id and a type the daemon does not name
+  in blocks of their own; and, where the opening is owed, the gate's fields as a gate-moved
+  message gives them, said of the gate at the send. The readers' prompts give the steps the news
+  text gave: each answer, reading a first version whole, and the command that prints a version.
   A notice is published with its kind's urgency, and a `low` text wakes no released pod. Of the
   role messages to a role whose pod is released, only
   a `low` one is left unpublished; a `med` one, such as a design gate's move, is published and wakes

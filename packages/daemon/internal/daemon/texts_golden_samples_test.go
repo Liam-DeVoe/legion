@@ -438,6 +438,7 @@ func (b *goldenBuild) tasks(r goldenRendering) {
 	b.architectStarts(r)
 	b.keptDecisions(r)
 	b.podWakes(r)
+	b.designNews(r)
 
 	// controller-start: the controller's first prompt, word for word.
 	b.taskText(r, texts.ControllerStart, "start", claim.RoleController, "", ControllerStartMessage, map[string]string{})
