@@ -186,13 +186,13 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 		{Token: token("LEGION-101", claim.RoleImplementer), Project: "legion", Tree: "LEGION-100", Issue: "LEGION-101",
 			Role: claim.RoleImplementer, State: supervise.StateFailed},
 	}
-	// The workers of the issues past their review, and the one the park suspended. The three
-	// of the running tree are a claim at work, a second at work and a third resting between
-	// its turns (supervise.StateIdle, one of the four states record's measure counts as no
-	// work under way), which is the pair of shapes the last arm must answer alike: the daemon
-	// will prompt an idle worker, and the set above is where a claim nothing will wake is
-	// named. The suspended worker of LEGION-711 is in no stranded set either, and for the
-	// reason the judgement itself gives: it refuses a tree that does not run
+	// The workers of the issues in accepting, retro and merging, and the one the park
+	// suspended. The three of the running tree are a claim at work, a second at work and a
+	// third resting between its turns (supervise.StateIdle, one of the four states record's
+	// measure counts as no work under way), which is the pair of shapes the last arm must
+	// answer alike: the daemon will prompt an idle worker, and the set above is where a claim
+	// nothing will wake is named. The suspended worker of LEGION-711 is in no stranded set
+	// either, and for the reason the judgement itself gives: it refuses a tree that does not run
 	// (workflow.Stranded, over record.TreeRuns), so a park strands nothing and every answer
 	// about that tree is the last arm's.
 	claims := append([]supervise.Claim{
