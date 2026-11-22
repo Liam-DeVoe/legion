@@ -873,3 +873,52 @@ func TestTheSentencesTheReadersOfTheNewestHeadShowedFalseSayWhatTheDaemonDoes(t 
 		})
 	}
 }
+
+// The fifth round's readers showed five more sentences false. In `accepting` no worker holds the
+// phase, so the reviewer of a merge forward tells a phase's worker only in `retro` or `merging`;
+// the architect accepts no head whose code it reads red, which a re-run of a flaky check is not;
+// only the implementer fixes a defect, and the other roles send it to the implementer; a
+// production-check look comes to the implementer as a task that names no phase; the completion
+// reads the handoff's `head`; and nothing refuses a plan handoff without `requiredSkills` (no code
+// reads that field). Each part is read alone, by its name. This shows the text is loaded, never
+// that an agent follows it.
+func TestTheSentencesTheFifthRoundsReadersShowedFalseSayWhatTheDaemonDoes(t *testing.T) {
+	for _, tc := range []struct {
+		part       string
+		read       func(*testing.T) string
+		want, gone []string
+	}{
+		{
+			"go/architect-common.md", func(t *testing.T) string { return goPart(t, "architect-common.md") },
+			[]string{
+				"to tell you and, in `retro` or `merging`, the phase's worker what it decided",
+				"So does your own read before you accept: you accept no head whose code you read red, and send it back with `request_backward_move`.",
+			},
+			[]string{"to tell you and the phase's worker what it decided", "a red head is one you send back"},
+		},
+		{
+			"go/implementer.md", func(t *testing.T) string { return goPart(t, "implementer.md") },
+			[]string{"every task it sends for them names one", "the look of a production check still yours, below, comes as a task that names no phase"},
+			[]string{"and every task it sends names one"},
+		},
+		{
+			"go/worker-common.md", func(t *testing.T) string { return goPart(t, "worker-common.md") },
+			[]string{"nothing checks the body's shape beyond its being a JSON object and the `head` the completion reads"},
+			[]string{"beyond its being a JSON object —"},
+		},
+		{
+			"roles/mechanics/headless.md", func(t *testing.T) string { return rolePart(t, "mechanics/headless.md") },
+			[]string{"the implementer fixes it, and any other role sends it to the implementer with its evidence"},
+			[]string{"Fix a clear defect in code this tree touches or depends on in this tree's own pull request"},
+		},
+		{
+			"roles/core/planner.md", func(t *testing.T) string { return rolePart(t, "core/planner.md") },
+			[]string{"nothing refuses a handoff that leaves one out, so check them before you record it"},
+			[]string{"the plan handoff is refused otherwise"},
+		},
+	} {
+		t.Run(tc.part, func(t *testing.T) {
+			holdsAndRetires(t, tc.part, tc.read(t), tc.want, tc.gone)
+		})
+	}
+}
