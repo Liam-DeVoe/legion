@@ -16,10 +16,11 @@ import (
 // names, so she sees PRIV through the group and PUB as a public project. A restricted member sees
 // neither: a group admits only full members, and a public project is seen only by full members.
 // Both of her sessions read PRIV's issue under a broker-issued token naming PRIV, which ties each
-// to her and records nothing else. Then the sign-in rule restricts her: in one row at her next
-// Google sign-in (SignInSubject), in the other at the hourly confirmation (ConfirmSubject). In the
-// same transaction each of her sessions keeps PRIV and PUB as projects it reached
-// (session_reached_projects), so:
+// to her and records nothing else. Then the people store writes her row restricted: in one row by
+// SignInSubject, in the other by ConfirmSubject. No sign-in rule makes that write now (Google's
+// sign-in and its hourly confirmation name every account they admit a full member), so the test
+// makes it through the store, whose bookkeeping for it this pins. In the same transaction each of
+// her sessions keeps PRIV and PUB as projects it reached (session_reached_projects), so:
 //
 //   - alice, an open viewer PRIV's list does not name, gets the no-responder verdict for both
 //     sessions;

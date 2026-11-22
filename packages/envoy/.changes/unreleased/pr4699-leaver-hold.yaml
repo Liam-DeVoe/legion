@@ -4,10 +4,7 @@ body: |-
   ends the person's browser sessions, and it
   forgets the refresh token and records a hold when Google answers `invalid_grant`, when the
   refreshed sign-in names another address or Google account, and when the rule no longer admits
-  the refreshed sign-in. The one exception is a restricted member whom the rule refuses because
-  the account is not in the domain, no project's access list names it, or its address is on a
-  domain the Workspace owns: that end keeps the refresh token for membership checks, marks the
-  person signed out and holds nobody. From then on a held person's personal tokens and every
+  the refreshed sign-in. From then on a held person's personal tokens and every
   broker credential that names them are refused until they sign in to Dispatch again. A hold
   revokes nothing: after the sign-in each credential still within its own lifetime works again
   within 40 seconds, with no new token, machine login or approval. While Google cannot be reached,

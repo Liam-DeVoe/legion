@@ -346,10 +346,10 @@ approval. When someone reports `MEMBERSHIP_HELD`, tell them to sign in to Dispat
 Every refusal of the refresh holds: Google refusing the refresh token (`invalid_grant`, whatever
 Google's reason), a refreshed sign-in that names another Google account or another address, one
 whose email Google has not verified, and one the rule no longer admits, such as one of your people
-whose `hd` is no longer the domain. A person from outside the domain whom the access lists no
-longer admit ([People from outside the domain](#people-from-outside-the-domain)) is not held:
-their tokens follow the lists at each use, and Dispatch keeps their refresh token, so Google's
-later refusal still holds them.
+whose `hd` is no longer the domain. A person from outside the domain signs in with a passkey, not
+with Google ([People from outside the domain](#people-from-outside-the-domain)), so no refresh of
+theirs is refused and none of them is held this way: their tokens follow the access lists at each
+use.
 
 While Google cannot be reached, nobody is held for 24 hours after their last confirmation; after
 that, a person whose refresh still fails is held until a refresh confirms them, and works again
@@ -360,7 +360,7 @@ held until the person signs in again, or the key is back and Google confirms the
 Dispatch checks everyone who has a stored refresh token about once an hour, whether or not they
 use Dispatch: its maintenance, once a minute on one server, refreshes up to 20 of the tokens whose
 last confirmation or attempt is more than an hour old, and logs
-`dispatch: membership pass confirmed=<n> held=<n> kept=<n> unasked=<n> forgotten=<n>` for each
+`dispatch: membership pass confirmed=<n> held=<n> unasked=<n> forgotten=<n>` for each
 run that checked one. A request with an agent token whose owner was confirmed more than an hour
 ago refreshes in that request too, which can add up to 2 seconds to it.
 

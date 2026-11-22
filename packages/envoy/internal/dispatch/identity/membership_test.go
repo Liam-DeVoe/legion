@@ -514,50 +514,32 @@ func TestDomainMembershipWhoseRefreshFailsAfterAnotherAccountSignedInLeavesThatA
 	}
 }
 
-// A restricted member's Google sign-in that an earlier build admitted from outside the domain ends
-// at its next hourly confirmation under OutsideRule, whatever a list names: the refreshed account
-// is of no Workspace, so the rule refuses it (ErrNotInDomain) without reading the lists, and every
-// session ends. The restricted member is not held: the row keeps its refresh token for membership
-// checks, reads signed out, and records the end's time as its confirmation (endModeFor's EndKeep),
-// and the session's next request is told why it ended. The log line is the rule's own words, that
-// the confirmation no longer admits the person, with the reason, and nothing of a membership of the
-// domain, which this person never had.
-func TestOutsideRuleEndsAGoogleSignInOfARestrictedMemberAtTheHourlyConfirmation(t *testing.T) {
+// Under PasskeyRule, the rule a deployment with passkey sign-in runs, a full member's refresh that
+// Google refuses ends in OutsideRule.End, which PasskeyRule embeds: the person is held, the lists
+// are not asked, and the log line is that rule's own words with the reason, and nothing of a
+// membership of the domain.
+//
+// Control: delete OutsideRule.End, so DomainRule.End answers: the test fails on the log line.
+func TestPasskeyRuleEndsARefusedFullMemberInItsOwnWords(t *testing.T) {
 	var logs bytes.Buffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
 	rig := newDomainMembershipRig(t)
-	rig.issuer.UpdateGrants(func(claims map[string]any) { delete(claims, "hd") })
-	rig.people.mu.Lock()
-	person := rig.people.people[memberEmail]
-	person.Kind = model.MemberRestricted
-	rig.people.people[memberEmail] = person
-	rig.people.mu.Unlock()
-	lister := &stubLister{listed: map[string]bool{memberEmail: true}}
-	rig.membership.Rule = OutsideRule{DomainRule: DomainRule{Domain: memberDomain}, People: lister}
-	signedIn, _ := rig.people.get(memberEmail)
+	lister := &stubLister{}
+	rig.membership.Rule = PasskeyRule{OutsideRule: OutsideRule{DomainRule: DomainRule{Domain: memberDomain}, People: lister}}
+	rig.issuer.RevokeGrants()
 	rig.now = rig.now.Add(2 * time.Hour)
-	if outcome, err := rig.membership.ConfirmFor(context.Background(), memberEmail); !errors.Is(err, ErrNoIdentity) || outcome != RefreshKept {
-		t.Fatalf("Confirm past the hour of a Google account of no Workspace: outcome %d, err = %v; want RefreshKept and ErrNoIdentity", outcome, err)
+	if outcome, err := rig.membership.ConfirmFor(context.Background(), memberEmail); !errors.Is(err, ErrNoIdentity) || outcome != RefreshHeld {
+		t.Fatalf("Confirm past the hour of a full member Google refuses: outcome %d, err = %v; want RefreshHeld and ErrNoIdentity", outcome, err)
 	}
 	if asked := lister.calls(); len(asked) != 0 {
-		t.Fatalf("the lister was asked %q at a Google refresh, want no call", asked)
+		t.Errorf("the lister was asked %q at a Google refresh, want no call", asked)
 	}
-	if generation := rig.sessions.generation(memberEmail); generation != 1 {
-		t.Fatalf("session generation after the end = %d, want 1 (every cookie revoked)", generation)
-	}
-	kept, _ := rig.people.get(memberEmail)
-	if kept.RefreshToken != signedIn.RefreshToken || !kept.SignedOut || kept.Held || !kept.ConfirmedAt.Equal(rig.now) {
-		t.Fatalf("the ended row = %#v, want its refresh token kept, signed out, not held, and confirmed at the end's time %s", kept, rig.now)
-	}
-	login := CookieIdentity{SigningKey: testSigningKey, Sessions: rig.sessions, Membership: rig.membership}
-	var told *SignedOut
-	if _, err := login.Login(cookieRequest(t, memberEmail, 0)); !errors.As(err, &told) || told.Reason != SignedOutWorkspaceAddress {
-		t.Fatalf("the ended session's next request: err = %v, want SignedOut with reason %s (the address is on the Workspace's domain)", err, SignedOutWorkspaceAddress)
+	if ended, _ := rig.people.get(memberEmail); !ended.Held || ended.RefreshToken != "" || ended.Kind != model.MemberFull {
+		t.Errorf("the ended row = %#v, want a full member's, held, with no refresh token", ended)
 	}
 	logged := logs.String()
 	if !strings.Contains(logged, "sign-in ended: the hourly confirmation no longer admits the person") ||
-		!strings.Contains(logged, "not in the domain that may use Dispatch") ||
-		strings.Contains(logged, "membership of the domain") {
-		t.Errorf("the end's log line = %q, want it to say the confirmation no longer admits the person, with the reason, and nothing of a membership of the domain", logged)
+		!strings.Contains(logged, "invalid_grant") || strings.Contains(logged, "membership of the domain") {
+		t.Errorf("the end's log line = %q, want the rule's own words with the invalid_grant reason, and nothing of a membership of the domain", logged)
 	}
 }

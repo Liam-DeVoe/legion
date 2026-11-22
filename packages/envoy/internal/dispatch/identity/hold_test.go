@@ -17,14 +17,11 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
-// The people of the hold tests: ada, a full member of example.com; erin, a full member of the
-// example.com Workspace whose address is on a domain the Workspace does not own; dana, a restricted
-// member whose address is on no domain the Workspace owns and whom a project's list names, signed in
-// with Google by an earlier build (signInLegacyRestricted): no rule of this one admits her account.
+// The people of the hold tests: ada, a full member of example.com; and erin, a full member of the
+// example.com Workspace whose address is on a domain the Workspace does not own.
 const (
 	adaEmail    = "ada@example.com"
 	erinEmail   = "erin@other.example"
-	danaEmail   = "dana@outside.example"
 	holdDomain  = "example.com"
 	holdSubject = "g-ada"
 )
@@ -38,11 +35,6 @@ func adaClaims() map[string]any {
 // Workspace at an address on other.example.
 func erinClaims() map[string]any {
 	return map[string]any{"sub": "g-erin", "email": erinEmail, "email_verified": true, "hd": holdDomain}
-}
-
-// danaClaims is a Google ID token's claims for dana, a verified account of no Workspace.
-func danaClaims() map[string]any {
-	return map[string]any{"sub": "g-dana", "email": danaEmail, "email_verified": true}
 }
 
 // holdRig is the real people store on a database of its own, a fake Google whose code flow signs
@@ -100,24 +92,6 @@ func (r *holdRig) signIn(claims map[string]any) string {
 	return person.Email
 }
 
-// signInLegacyRestricted records claims' Google account as a restricted member's sign-in, with the
-// refresh token the fake Google issued and a session, as an earlier build's Google outside sign-in
-// left such a row: no rule of this build admits a Google account outside the Workspace (OutsideRule's
-// Person is DomainRule's), so only the store writes one.
-func (r *holdRig) signInLegacyRestricted(claims map[string]any) string {
-	r.t.Helper()
-	ctx := context.Background()
-	session := r.exchange(claims)
-	email := model.CanonicalLogin(session.Claims.Email)
-	if err := r.people.SignInSubject(ctx, email, session.Claims.Subject, session.RefreshToken, "", model.MemberRestricted); err != nil {
-		r.t.Fatalf("record the earlier build's restricted sign-in: %v", err)
-	}
-	if _, err := r.sessions.EnsureSession(ctx, email); err != nil {
-		r.t.Fatal(err)
-	}
-	return email
-}
-
 // exchange runs claims through the fake Google's code flow and answers the session it issued.
 func (r *holdRig) exchange(claims map[string]any) oidc.Session {
 	r.t.Helper()
@@ -135,12 +109,11 @@ func (r *holdRig) exchange(claims map[string]any) oidc.Session {
 	return session
 }
 
-// set makes l answer listed for email, and err for every question, from now on.
-func (l *stubLister) set(email string, listed bool, err error) {
+// set makes l answer listed for email from now on.
+func (l *stubLister) set(email string, listed bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.listed = map[string]bool{email: listed}
-	l.err = err
 }
 
 // confirmedAgo dates email's confirmation age back, on the database's clock.
@@ -235,31 +208,23 @@ func waitForFlight(t *testing.T, m *Membership, email string, within time.Durati
 
 // TestHoldTriggerRefusals (c-trigger): each refusal of a refresh, against the real people store.
 // These hold the person: invalid_grant; a refreshed ID token naming another Google account; one
-// naming another address, a restricted member's new address included; one with no subject, no
-// email, or an email Google has not verified; and, for a full member's row, one outside the
-// Workspace domain, under OutsideRule too, whatever a project's list names: Google signs in no
-// account outside the Workspace (OutsideRule's Person is DomainRule's), so a former member is held,
-// never confirmed as a restricted member. These hold nobody: a row with no recorded Google account,
-// whose token is forgotten; for a restricted member's row (a Google sign-in an earlier build
-// recorded, signInLegacyRestricted), the rule's ErrNotInDomain, whose token is kept, whose row reads
-// signed out, and whose confirmation is set to the end's time, whatever the lists answer, since no
-// Google refresh reads them; and any refusal under the sign-in pool's rule. No row's refresh asks the
-// lists.
+// naming another address; one with no subject, no email, or an email Google has not verified; and
+// one outside the Workspace domain, under OutsideRule too, whatever a project's list names: Google
+// signs in no account outside the Workspace (OutsideRule's Person is DomainRule's), so a former
+// member is held, never confirmed as a restricted member. These hold nobody: a row with no
+// recorded Google account, and any refusal under the sign-in pool's rule. Every end forgets the
+// token, leaves the row not signed out and a full member's, and advances the session generation,
+// and no row's refresh asks the lists.
 //
-// Controls: set the hold on every end (endModeFor answering EndHold, and the sign-in pool's End
-// passing its mode on): the test fails naming the row with no recorded Google account and dana's
-// refusals. Make EndKeep leave confirmed_at as it was: it fails naming the kept row's
-// confirmation.
+// Controls: make endMode answer auth.EndForget under a Google rule: the test fails naming every
+// row that holds. Give OutsideRule a Person that asks its lister once before DomainRule's: it
+// fails naming the former member's row, on the lists' question.
 func TestHoldTriggerRefusals(t *testing.T) {
 	outside := func(lister *stubLister) SignInRule {
 		return OutsideRule{DomainRule: DomainRule{Domain: holdDomain}, People: lister}
 	}
 	domain := func(*stubLister) SignInRule { return DomainRule{Domain: holdDomain} }
 	group := func(*stubLister) SignInRule { return GroupRule{Group: memberGroup} }
-	const (
-		forgotten = "forgotten"
-		kept      = "kept"
-	)
 	for _, tc := range []struct {
 		name string
 		rule func(*stubLister) SignInRule
@@ -267,47 +232,37 @@ func TestHoldTriggerRefusals(t *testing.T) {
 		// the refresh.
 		signIn func(r *holdRig, lister *stubLister) string
 		change func(r *holdRig, lister *stubLister)
-		// The refresh's outcome and its error, and what the row then holds.
-		outcome   RefreshOutcome
-		err       error
-		held      bool
-		token     string
-		signedOut bool
-		kind      model.MemberKind
+		// The refresh's outcome, and whether the row then records a hold.
+		outcome RefreshOutcome
+		held    bool
 	}{
 		{name: "invalid_grant", rule: domain, signIn: signInAda,
 			change:  func(r *holdRig, _ *stubLister) { r.issuer.RevokeGrants() },
-			outcome: RefreshHeld, err: ErrNoIdentity, held: true, token: forgotten, kind: model.MemberFull},
+			outcome: RefreshHeld, held: true},
 		{name: "a refreshed token naming another Google account", rule: domain, signIn: signInAda,
 			change:  updateClaims(func(c map[string]any) { c["sub"] = "g-someone-else" }),
-			outcome: RefreshHeld, err: ErrNoIdentity, held: true, token: forgotten, kind: model.MemberFull},
+			outcome: RefreshHeld, held: true},
 		{name: "a refreshed token naming another address", rule: domain, signIn: signInAda,
 			change:  updateClaims(func(c map[string]any) { c["email"] = "someone@example.com" }),
-			outcome: RefreshHeld, err: ErrNoIdentity, held: true, token: forgotten, kind: model.MemberFull},
-		{name: "a restricted member's new address that no list names", rule: outside, signIn: signInDana,
-			change:  updateClaims(func(c map[string]any) { c["email"] = "dana.new@outside.example" }),
-			outcome: RefreshHeld, err: ErrNoIdentity, held: true, token: forgotten, kind: model.MemberRestricted},
+			outcome: RefreshHeld, held: true},
 		{name: "a refreshed token with no subject", rule: domain, signIn: signInAda,
 			change:  updateClaims(func(c map[string]any) { delete(c, "sub") }),
-			outcome: RefreshHeld, err: ErrNoIdentity, held: true, token: forgotten, kind: model.MemberFull},
+			outcome: RefreshHeld, held: true},
 		{name: "a refreshed token with no email", rule: domain, signIn: signInAda,
 			change:  updateClaims(func(c map[string]any) { delete(c, "email") }),
-			outcome: RefreshHeld, err: ErrNoIdentity, held: true, token: forgotten, kind: model.MemberFull},
+			outcome: RefreshHeld, held: true},
 		{name: "a refreshed token whose email Google has not verified", rule: domain, signIn: signInAda,
 			change:  updateClaims(func(c map[string]any) { c["email_verified"] = false }),
-			outcome: RefreshHeld, err: ErrNoIdentity, held: true, token: forgotten, kind: model.MemberFull},
+			outcome: RefreshHeld, held: true},
 		{name: "a full member's refreshed token outside the Workspace domain", rule: domain, signIn: signInAda,
 			change:  updateClaims(func(c map[string]any) { c["hd"] = "elsewhere.example" }),
-			outcome: RefreshHeld, err: ErrNoIdentity, held: true, token: forgotten, kind: model.MemberFull},
-		{name: "a full member's refreshed token outside the Workspace domain, under OutsideRule", rule: outside, signIn: signInErin,
-			change:  updateClaims(func(c map[string]any) { c["hd"] = "elsewhere.example" }),
-			outcome: RefreshHeld, err: ErrNoIdentity, held: true, token: forgotten, kind: model.MemberFull},
+			outcome: RefreshHeld, held: true},
 		{name: "a former member whom a project's list names, under OutsideRule", rule: outside, signIn: signInErin,
 			change: func(r *holdRig, lister *stubLister) {
-				lister.set(erinEmail, true, nil)
+				lister.set(erinEmail, true)
 				updateClaims(func(c map[string]any) { c["hd"] = "elsewhere.example" })(r, lister)
 			},
-			outcome: RefreshHeld, err: ErrNoIdentity, held: true, token: forgotten, kind: model.MemberFull},
+			outcome: RefreshHeld, held: true},
 		{name: "a row with no recorded Google account", rule: domain,
 			signIn: func(r *holdRig, _ *stubLister) string {
 				if err := r.people.SignIn(context.Background(), adaEmail, "refresh-no-account"); err != nil {
@@ -315,31 +270,17 @@ func TestHoldTriggerRefusals(t *testing.T) {
 				}
 				return adaEmail
 			},
-			outcome: RefreshForgot, err: ErrNoIdentity, token: forgotten, kind: model.MemberFull},
-		{name: "dana's refusal once no list names her (ErrNotInDomain, the lists unread)", rule: outside, signIn: signInDana,
-			change:  func(_ *holdRig, lister *stubLister) { lister.set(danaEmail, false, nil) },
-			outcome: RefreshKept, err: ErrNoIdentity, token: kept, signedOut: true, kind: model.MemberRestricted},
-		{name: "dana's refusal at an address the Workspace owns (ErrNotInDomain, the lists unread)", rule: outside, signIn: signInDana,
-			change: func(r *holdRig, lister *stubLister) {
-				r.membership.Rule = OutsideRule{DomainRule: DomainRule{Domain: holdDomain}, People: lister, WorkspaceDomains: []string{"outside.example"}}
-			},
-			outcome: RefreshKept, err: ErrNoIdentity, token: kept, signedOut: true, kind: model.MemberRestricted},
-		{name: "dana's refusal under the domain rule (ErrNotInDomain)", rule: outside, signIn: signInDana,
-			change:  func(r *holdRig, _ *stubLister) { r.membership.Rule = DomainRule{Domain: holdDomain} },
-			outcome: RefreshKept, err: ErrNoIdentity, token: kept, signedOut: true, kind: model.MemberRestricted},
+			outcome: RefreshForgot},
 		{name: "the sign-in pool's invalid_grant", rule: group, signIn: signInPoolMember,
 			change:  func(r *holdRig, _ *stubLister) { r.issuer.RevokeGrants() },
-			outcome: RefreshForgot, err: ErrNoIdentity, token: forgotten, kind: model.MemberFull},
+			outcome: RefreshForgot},
 		{name: "the sign-in pool's refusal of a person outside the group", rule: group, signIn: signInPoolMember,
 			change:  updateClaims(func(c map[string]any) { c["cognito:groups"] = []string{"other-group"} }),
-			outcome: RefreshForgot, err: ErrNoIdentity, token: forgotten, kind: model.MemberFull},
-		{name: "dana's refusal while the access lists cannot be read (ErrNotInDomain, the lists unread)", rule: outside, signIn: signInDana,
-			change:  func(_ *holdRig, lister *stubLister) { lister.set(danaEmail, true, errors.New("the database is down")) },
-			outcome: RefreshKept, err: ErrNoIdentity, token: kept, signedOut: true, kind: model.MemberRestricted},
+			outcome: RefreshForgot},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			lister := &stubLister{listed: map[string]bool{danaEmail: true}}
+			lister := &stubLister{}
 			r := newHoldRig(t, tc.rule(lister))
 			email := tc.signIn(r, lister)
 			if tc.change != nil {
@@ -347,11 +288,9 @@ func TestHoldTriggerRefusals(t *testing.T) {
 			}
 			r.confirmedAgo(email, 2*time.Hour)
 			generation := r.generation(email)
-			begun := r.databaseNow()
 			outcome, err := r.membership.ConfirmFor(ctx, email)
-			ended := r.databaseNow()
-			if outcome != tc.outcome || (tc.err == nil) != (err == nil) || (tc.err != nil && !errors.Is(err, tc.err)) {
-				t.Fatalf("%s: ConfirmFor = %d, %v; want %d, %v", tc.name, outcome, err, tc.outcome, tc.err)
+			if outcome != tc.outcome || !errors.Is(err, ErrNoIdentity) {
+				t.Fatalf("%s: ConfirmFor = %d, %v; want %d, %v", tc.name, outcome, err, tc.outcome, ErrNoIdentity)
 			}
 			if asked := lister.calls(); len(asked) != 0 {
 				t.Errorf("%s: the refresh asked the lists about %q; want no question, Google's refresh reads no list", tc.name, asked)
@@ -360,22 +299,16 @@ func TestHoldTriggerRefusals(t *testing.T) {
 			if (row.HeldSince != nil) != tc.held {
 				t.Errorf("%s: held_since = %v, want held %t", tc.name, row.HeldSince, tc.held)
 			}
-			if (row.RefreshToken == nil) != (tc.token == forgotten) {
-				t.Errorf("%s: refresh token stored %t, want it %s", tc.name, row.RefreshToken != nil, tc.token)
+			if row.RefreshToken != nil {
+				t.Errorf("%s: a refresh token is stored, want it forgotten", tc.name)
 			}
-			if (row.SignedOutAt != nil) != tc.signedOut {
-				t.Errorf("%s: signed_out_at = %v, want signed out %t", tc.name, row.SignedOutAt, tc.signedOut)
+			if row.SignedOutAt != nil {
+				t.Errorf("%s: signed_out_at = %v, want the row not signed out", tc.name, row.SignedOutAt)
 			}
-			if row.Kind != string(tc.kind) {
-				t.Errorf("%s: member_kind = %s, want %s", tc.name, row.Kind, tc.kind)
+			if row.Kind != string(model.MemberFull) {
+				t.Errorf("%s: member_kind = %s, want %s", tc.name, row.Kind, model.MemberFull)
 			}
-			if tc.outcome == RefreshKept {
-				if row.ConfirmedAt == nil || row.SignedOutAt == nil || !row.ConfirmedAt.Equal(*row.SignedOutAt) ||
-					row.ConfirmedAt.Before(begun) || row.ConfirmedAt.After(ended) {
-					t.Errorf("%s: the kept row's confirmation = %v (signed out at %v), want the end's time, between %s and %s", tc.name, row.ConfirmedAt, row.SignedOutAt, begun, ended)
-				}
-			}
-			if tc.outcome != RefreshConfirmed && r.generation(email) != generation+1 {
+			if r.generation(email) != generation+1 {
 				t.Errorf("%s: the end left the session generation at %d, want %d", tc.name, r.generation(email), generation+1)
 			}
 			if standing, err := r.membership.Standing(ctx, email); err != nil || standing.Held != tc.held || standing.ByGrace {
@@ -387,7 +320,6 @@ func TestHoldTriggerRefusals(t *testing.T) {
 
 func signInAda(r *holdRig, _ *stubLister) string  { return r.signIn(adaClaims()) }
 func signInErin(r *holdRig, _ *stubLister) string { return r.signIn(erinClaims()) }
-func signInDana(r *holdRig, _ *stubLister) string { return r.signInLegacyRestricted(danaClaims()) }
 
 func signInPoolMember(r *holdRig, _ *stubLister) string {
 	return r.signIn(memberClaims(memberGroup))

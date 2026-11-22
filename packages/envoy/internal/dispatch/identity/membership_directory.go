@@ -61,7 +61,7 @@ func (m *Membership) directoryStanding(ctx context.Context, email string, read a
 	if !found || read.DirectoryHeld || directoryFresh(read) {
 		return byDeadline(read), nil
 	}
-	if paused, ok := m.unavailable.Load(email); ok && time.Since(paused.(unavailableOutcome).at) < unavailablePause {
+	if paused, ok := m.unavailable.Load(email); ok && time.Since(paused.(time.Time)) < unavailablePause {
 		return byDeadline(read), nil
 	}
 	if started, ok := m.started.Load(email); ok && time.Since(started.(time.Time)) > standingWait {
@@ -152,7 +152,7 @@ func (m *Membership) checkDirectory(ctx context.Context, email string) (outcome 
 	defer func() {
 		m.started.Delete(email)
 		if outcome == RefreshFailed {
-			m.unavailable.Store(email, unavailableOutcome{at: time.Now(), err: err})
+			m.unavailable.Store(email, time.Now())
 		} else {
 			m.unavailable.Delete(email)
 		}

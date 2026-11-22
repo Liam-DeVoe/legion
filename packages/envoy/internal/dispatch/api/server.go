@@ -1234,10 +1234,11 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 // membership the sign-in issuer no longer confirms, a revoked token), or, where compareGrants
 // holds, its credential now lists other projects or holds other scopes than when the connection
 // opened (sameCredentialGrant), or the person it acts for is now restricted where they were not,
-// or no longer restricted where they were (memberKindPerson, personRestricted: the hourly
-// confirmation restricted a member whose account left the Workspace, or admitted a restricted one
-// as full), it cancels the connection's context, on which the document server and the live socket
-// close the socket (1008). The page opens a new one under what the credential holds now, so a
+// or no longer restricted where they were (memberKindPerson, personRestricted: a Workspace
+// member's Google sign-in took back an address a restricted member held, or the people store wrote
+// restricted over a full member's row, which no sign-in rule does now), it cancels the
+// connection's context, on which the document server and the live socket close the socket (1008).
+// The page opens a new one under what the credential holds now, so a
 // token narrowed to fewer projects, or a person restricted to the projects that name them, reads
 // nothing more of the ones it lost: the live socket's subscriptions read their reader again only
 // at an event that can move what it sees (movesSight) or an access announcement (the delivery
