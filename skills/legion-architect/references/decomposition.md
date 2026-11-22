@@ -1,6 +1,6 @@
 # Decomposing a tree
 
-Read this before you read a child's handoff, create or adopt children, review a child's spec, split work across repositories, record a wait on outside work, or attach architecture components.
+Read this before you read a child's handoff, create, adopt or review children, split work across repositories, record a wait, or attach architecture components.
 
 ## Reading the tree
 
@@ -20,7 +20,7 @@ A refused release writes nothing: release the rest again without the child it na
 
 - `ISSUE_NOT_OWNED`: the issue is another architect's; send the move to the architect above you.
 
-- `CHILD_UNDER_ACCEPTED_PARENT`: an ancestor is already accepted.
+- `CHILD_UNDER_ACCEPTED_PARENT`: an ancestor is in `retro` or `merging`.
   Take it back with `request_backward_move`, or release once it has closed.
 
 ## Creating children
@@ -56,11 +56,11 @@ A refused release writes nothing: release the rest again without the child it na
 
 - Pass no `--assignee` unless a person names one: the default keeps the tree's questions in one Inbox.
 
-- As a child's own architect, in the turn you file its children, send one `envoy_publish` to the agent that holds its plan: its planner where its task names one, else its implementer, at `notifications.role.<token>` (the token is below).
+- As a child's own architect, in the turn you file its children, send one `envoy_publish` to the agent that holds its plan: its planner where its task names one, else its first step's agent unless that step is yours, at `notifications.role.<token>`.
   The message names each child you filed, with its key and repository, and says that the plan now covers only this issue's own part and the join with those children's work.
-  Send it even when you also stop the task or give a later plan: that agent keeps its session and what it read of the whole issue.
+  Send it even when you also stop the task or give a later plan: that agent keeps what it read of the whole issue.
 
-- Every child names the running system its criteria are proven on (the command, service or page its implementer proves them on and a tester step drives) and the repository skill that drives it;
+- Every child names the running system its criteria are proven on (the command, service or page its implementation step proves them on and a tester step drives, where it has them) and the repository skill that drives it;
   building a missing path is this tree's work.
 
 - Where the project has architecture components, give each child a `check` for the update of `.dispatch/architecture/<id>.md` of each component its pull request changes.
@@ -107,7 +107,7 @@ Legion starts the issue once its blockers close.
 
 ## A root with no code of its own
 
-When every change lands through children, the root's implementer opens its pull request on an empty commit.
+When every change lands through children, the agent of the root's implementation step, where it has one, opens its pull request on an empty commit.
 Plan no code for the root, and create no child only to give it a commit.
 
 ## Architecture components
@@ -117,8 +117,8 @@ A project's components are the `.dispatch/architecture/` files Dispatch imports 
 - They exist: attach the root before you decompose, so every child inherits them:
   `dispatch issue-update --issue <root> --components-json '{"mode":"explicit","ids":[…]}'`.
 
-- They do not: the root's first pull request writes `.dispatch/architecture/<id>.md` for each planned component (front matter `title`, `parent`, `depends_on`, `external`;
+- They do not: the root's pull request (else a child's) writes `.dispatch/architecture/<id>.md` for each planned component (front matter `title`, `parent`, `depends_on`, `external`;
   no `paths`) in the repository that holds it, with an id no other source uses.
-  Leave the root on `inherit` until it merges (an earlier attach answers `400 COMPONENTS_INPUT`), then run `dispatch architecture-sync --project <KEY>` and attach.
+  Leave the root on `inherit` until that pull request merges (an earlier attach answers `400 COMPONENTS_INPUT`), then run `dispatch architecture-sync --project <KEY>` and attach.
 
 - Give a child its own `--components-json` only for a narrower set, and `{"mode":"none","reason":"…"}` when it changes no code a component describes.

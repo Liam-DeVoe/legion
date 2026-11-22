@@ -706,6 +706,7 @@ test("the architect's skill routes its own steps to the reference that names own
   expect([
     ...lacks("legion-architect/SKILL.md", [
       /key is `owner` is yours[^.;]*references\/own-steps\.md`/,
+      /`acceptance` whose key is not `owner` is another agent's[^.;]*; you sign off nothing for it/,
     ]),
     ...lacks("legion-architect/references/own-steps.md", [
       /no such step, or that step's key is `owner`, it is yours/,
@@ -925,7 +926,8 @@ test("each duty a role skill routes to a reference stands in that reference", ()
       /dependencies as `skill:\/\/legion-architect\/references\/decomposition\.md`/,
     ]),
     ...lacks("legion-architect/references/decomposition.md", [
-      /running system[^.;]*implementer proves them on and a tester step drives/,
+      /running system[^.;]*implementation step proves them on and a tester step drives, where it has them/,
+      /agent of the root's implementation step, where it has one, opens its pull request/,
       /wait on a sibling or on an issue outside this tree[^.;]*`skill:\/\/dispatch`, "Choosing what to work on"/,
     ]),
     ...lacks("legion-worker/SKILL.md", [
