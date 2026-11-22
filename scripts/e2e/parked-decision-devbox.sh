@@ -737,7 +737,7 @@ until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | gre
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Parked decision proof $project" '{key:$key,name:$name}')" >/dev/null
-dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project,default:true}')" >/dev/null
+dispatch_human PUT "projects/$project/default-repository" "$(jq -cn --arg repo "$repo" '{repo:$repo}')" >/dev/null
 (cd "$root" && bun install --frozen-lockfile >/dev/null)
 # The pinned Oh My Pi, installed and held to .omp-pin.sha256 (lib/pinned-omp.sh) before anything
 # runs it: the plugin installs below, then the daemon's boot probes and panes and the controller.

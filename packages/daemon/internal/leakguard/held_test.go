@@ -39,6 +39,51 @@ func TestAPushThatAddsNoCommitReadsNoCommit(t *testing.T) {
 	}
 }
 
+// A push that fast-forwards a branch far behind the destination's main reads only the commits
+// of its own. The destination holds the branch at an old main, and the push is that branch based
+// on today's main, so every main commit between the two tips stands between the branch's old tip
+// and its new one; each is on the destination's main already, which the destination lists to the
+// read of what it holds (Guard.advertised), so the push publishes nothing of it. One of those main
+// commits has an author a rule refuses, as main's own commits once refused the push of a branch the
+// destination held at a main of weeks before. The control is a commit of the push's own with that
+// same author: it is refused, and the report names it and nothing of main's.
+func TestAPushOverTheDestinationsMainReadsOnlyItsOwnCommits(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	remote, repo := filepath.Join(root, "remote.git"), filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitBare(remote, "main")...)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	// refused is the fixture's git with an author a rule refuses.
+	refused := fixture.With("GIT_AUTHOR_EMAIL=builder@" + theHost)
+	const branch = "refs/heads/legion/LEGION-1"
+	old := commitFiles(t, fixture, repo, map[string]string{"README.md": "one\n"}, "the main the branch was cut from")
+	// The destination holds main and the branch, both at that old main.
+	fixture.Run(repo, "git", "remote", "add", "origin", remote)
+	fixture.Run(repo, "git", "push", "--quiet", "origin", "main", "main:"+branch)
+	// Main moves on at the destination. The first of those commits has an author a rule refuses.
+	commitFiles(t, refused, repo, map[string]string{"README.md": "one\ntwo\n"}, "a main commit")
+	commitFiles(t, fixture, repo, map[string]string{"README.md": "one\ntwo\nthree\n"}, "a later main commit")
+	fixture.Run(repo, "git", "push", "--quiet", "origin", "main")
+	// The branch is based on today's main, and the destination still holds it at the old one.
+	fixture.Run(repo, "git", "checkout", "--quiet", "-b", "legion/LEGION-1", "origin/main")
+	// The push is made to the destination by its path, the URL whose refs the read of what it holds
+	// lists (Guard.advertised).
+	push := func(t *testing.T, head string) error {
+		t.Helper()
+		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+		return guard.Push(bound(t), PushRequest{
+			Dir:     repo,
+			Remote:  "origin",
+			URL:     remote,
+			Updates: []Update{{LocalRef: branch, LocalSHA: head, RemoteRef: branch, RemoteSHA: old}},
+		})
+	}
+	own := commitFiles(t, fixture, repo, map[string]string{"work.md": "a line of the branch's own\n"}, "the branch's own commit")
+	wantRefused(t, push(t, own), nil)
+	named := commitFiles(t, refused, repo, map[string]string{"work.md": "a line of the branch's own\nand another\n"}, "a second commit of the branch's own")
+	wantRefused(t, push(t, named), []string{"commit " + short(named) + " author: " + theClass})
+}
+
 // The read of what the destination holds fetches nothing. In a partial clone, as an issue pod's
 // fork clones are (--filter=blob:none), git fetches an object the clone lacks from the promisor
 // remote the moment anything asks for it. The read of the destination's refs asks for every

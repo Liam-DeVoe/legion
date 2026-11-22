@@ -903,7 +903,7 @@ test.skipIf(skip)(
 // the registration envoy.ts's `session_start` awaits, with the relay subject already open (it is
 // opened before the registration that asks for the consumer), so both cards reach pi-envoy inside
 // the host's startup. The two `get_state` reads are preconditions about the host, not pi-envoy's
-// decision: the pinned build (18.18.6-sami.20261119-162325) answers at once a command that starts
+// decision: the pinned build (18.18.6-sami.20261122-091943) answers at once a command that starts
 // no turn while its startup runs, and holds one that starts a turn or changes the session until
 // startup ends (`rpc-mode.ts` `waitsForStartup`), so neither read waits for the startup or for the
 // wake's turn.
