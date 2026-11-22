@@ -130,16 +130,16 @@ func holdEventWriterTransactionID(t *testing.T, database *store.Store) (release 
 // Their sockets set no deadline for the test client's pong (liveNoPongDeadline): a socket waits two
 // heartbeats for its page's pong in production (serveLiveSocket), which these tests leave as it is,
 // but the test client answers each ping on a goroutine a loaded machine can put off past any number
-// of heartbeats, and the socket then ends with no close frame (1006) and fails a row whose verdict
-// is the event feed's, not the page's liveness (dispatch://INFRA-3904).
+// of heartbeats, and the socket then ends with no close frame (1006) for the machine's speed
+// (dispatch://INFRA-3904). What the pong deadline guarded for these rows, a read loop that keeps
+// reading while the horizon is held, the stays-alive row checks by a frame the read loop must
+// answer (awaitReadLoopAnswers).
 const liveHorizonHeartbeat = time.Second
 
-// awaitHeartbeat waits for client's next frame, which must be a heartbeat: the socket is open and
-// alive, and nothing of the subscription has arrived, since one still waiting for its relay
-// subscription is owed nothing yet, its events_start included. The heartbeat is the server's own
-// work, so the wait for it is the run's (testwait.Receive): it gives up 30 s before the test
-// binary's deadline, not at a span a loaded machine could outlast.
-func awaitHeartbeat(t *testing.T, client *socketClient, while string) {
+// nextSocketArrival is client's next frame, or the end of its socket, waited for until the run's
+// deadline (testwait.Receive): it gives up 30 s before the test binary's deadline, naming what, not
+// at a span a loaded machine could outlast.
+func nextSocketArrival(t *testing.T, client *socketClient, what string) socketArrival {
 	t.Helper()
 	next := make(chan socketArrival, 1)
 	go func() {
@@ -156,12 +156,50 @@ func awaitHeartbeat(t *testing.T, client *socketClient, while string) {
 			}
 		}
 	}()
-	arrived := testwait.Receive(t, "a heartbeat "+while, next)
+	return testwait.Receive(t, what, next)
+}
+
+// awaitHeartbeat waits for client's next frame, which must be a heartbeat: the socket is open and
+// alive, and nothing of the subscription has arrived, since one still waiting for its relay
+// subscription is owed nothing yet, its events_start included. The heartbeat is the server's own
+// work, so the wait for it is the run's (nextSocketArrival).
+func awaitHeartbeat(t *testing.T, client *socketClient, while string) {
+	t.Helper()
+	arrived := nextSocketArrival(t, client, "a heartbeat "+while)
 	if arrived.ended {
 		t.Fatalf("the socket ended (%v) waiting for a heartbeat %s", arrived.err, while)
 	}
 	if _, beat := decodeSocketFrame(t, arrived.data).(LiveHeartbeat); !beat {
 		t.Fatalf("the socket sent %.200s %s, want nothing but its heartbeat", arrived.data, while)
+	}
+}
+
+// awaitReadLoopAnswers sends client's socket a subscribe of a view kind no socket serves, which its
+// read loop refuses itself, at once (INVALID_FRAME), and waits for that refusal, letting heartbeats
+// through: the read loop is reading. A socket whose read loop a subscription's start held, waiting
+// on the horizon, reads no pong either, and loses its page once the hold outlasts two heartbeats;
+// it sends no refusal until the hold ends, and the wait for it, the run's (nextSocketArrival),
+// fails by name. Any other frame fails at once: nothing else is owed while the horizon is held.
+func awaitReadLoopAnswers(t *testing.T, client *socketClient, while string) {
+	t.Helper()
+	const probe = "read-loop-probe"
+	client.sendText(t, []byte(`{"type":"subscribe","sub":"`+probe+`","view":{"kind":"forecast"}}`))
+	for {
+		arrived := nextSocketArrival(t, client, "the read loop's refusal of a view no socket serves "+while)
+		if arrived.ended {
+			t.Fatalf("the socket ended (%v) waiting for its read loop's refusal %s", arrived.err, while)
+		}
+		switch frame := decodeSocketFrame(t, arrived.data).(type) {
+		case LiveHeartbeat:
+			continue
+		case LiveError:
+			if frame.Sub != probe || frame.Code != "INVALID_FRAME" {
+				t.Fatalf("the socket sent %.200s %s, want the read loop's INVALID_FRAME for %s", arrived.data, while, probe)
+			}
+			return
+		default:
+			t.Fatalf("the socket sent %.200s %s, want the read loop's INVALID_FRAME for %s", arrived.data, while, probe)
+		}
 	}
 }
 
@@ -247,9 +285,10 @@ func TestAColdSubscriptionIsSentAnIdStillOpenWhenItSubscribed(t *testing.T) {
 // for every transaction that holds a transaction id anywhere on the Postgres instance: another
 // database's job, another package's test. A subscription's events_start waits with it -- it names
 // the point the relay hands over at -- but the page's socket is its own: it stays open and
-// heartbeats while that wait lasts, as does one made meanwhile, so no page is dropped for a
-// transaction it has nothing to do with. Once the holder ends, each is sent its events_start, whose
-// replay is complete for a since of the log as it stands, and the event committed during the hold.
+// heartbeats while that wait lasts, and its read loop keeps reading, so its page's pongs keep it,
+// as does one made meanwhile, and no page is dropped for a transaction it has nothing to do with.
+// Once the holder ends, each is sent its events_start, whose replay is complete for a since of the
+// log as it stands, and the event committed during the hold.
 func TestAnEventsSubscriptionStaysAliveWhileTheHorizonIsHeld(t *testing.T) {
 	horizontest.UntilTheDeadline(t)
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: liveHorizonHeartbeat, liveNoPongDeadline: true}, nil)
@@ -263,6 +302,8 @@ func TestAnEventsSubscriptionStaysAliveWhileTheHorizonIsHeld(t *testing.T) {
 	second := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, second, "events", &since)
 	awaitHeartbeat(t, second, "while the first subscription waits on the held horizon")
+	awaitReadLoopAnswers(t, first, "while the horizon is held")
+	awaitReadLoopAnswers(t, second, "while the horizon is held")
 
 	renameIssue(t, rig.handler, issue.Key, "Renamed while the horizon is held")
 	committed := eventHead(t, rig.database)
@@ -482,11 +523,12 @@ func eventsTuplesBefore(t *testing.T, database *store.Store) int64 {
 }
 
 // eventsTuplesAfter is the count after the start, every backend's reads included. It ends every
-// other client backend of this database but one that holds a transaction id (a test's open writer,
-// which reads no events), and waits until none of them holds a process slot or a pg_stat_activity
-// row any more: pg_terminate_backend answers false for a pid no backend holds, and a backend whose
-// slot is gone has run its statistics' shutdown hook. It reads the counters on a connection of its
-// own, which has read no events.
+// other client backend of this database and waits until none of them holds a process slot or a
+// pg_stat_activity row any more: pg_terminate_backend answers false for a pid no backend holds, and
+// a backend whose slot is gone has run its statistics' shutdown hook. A backend inside a writing
+// transaction is ended too, so none of its reads goes uncounted; each caller releases its own
+// writer before the count. It reads the counters on a connection of its own, which has read no
+// events.
 //
 // Every pooled connection to those backends is dead from then on, and the servers' shutdown still
 // uses their pools. So database must come from pingingStore, whose pools, and every pool opened
@@ -504,7 +546,6 @@ func eventsTuplesAfter(t *testing.T, database *store.Store) int64 {
 	if err := conn.QueryRow(ctx, `
 		select coalesce(array_agg(pid), '{}') from pg_stat_activity
 		where datname = current_database() and backend_type = 'client backend' and pid <> pg_backend_pid()
-			and pid not in (select pid from pg_locks where locktype = 'transactionid' and mode = 'ExclusiveLock')
 	`).Scan(&others); err != nil {
 		t.Fatalf("list the other connections of the database: %v", err)
 	}
