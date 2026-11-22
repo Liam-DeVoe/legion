@@ -142,8 +142,7 @@ Before deciding the acceptance, have `goal-red-team` read the issue's goal, ever
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
 each `unmet` finding there.
 Then accept with `sign_off`, which moves the child to retro, or send it back with
-`request_backward_move` (`issue`, `to` the phase of an earlier step of the task: `implementing`,
-or `testing` where the task has a tester step, and `reason`).
+`request_backward_move` (`issue`, `to` the phase of an earlier step of the task, and `reason`).
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
 `dispatch results --issue <issue>` shows. A result one of its children recorded against one of

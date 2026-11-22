@@ -1,6 +1,7 @@
 package prompts
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -291,7 +292,7 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		"in the order of the steps of",
 		"holds your step `acceptance:owner`",
 		"A task with no `acceptance:owner` step has no `accepting`",
-		"the phase of an earlier step of the task: `implementing`, or `testing` where the task has a tester step",
+		"`to` the phase of an earlier step of the task, and `reason`",
 		"is a gap that a tester step and a reviewer step name and neither refuses",
 		"goes back to the implementer, or to the earlier step its completion names",
 	}
@@ -311,6 +312,7 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		"is mandatory after your acceptance",
 		"Your last act is `sign_off` of this child in `accepting`",
 		"a parent only on an approved head",
+		"`implementing`, or `testing` where the task has a tester step",
 	}
 	for _, tc := range []struct {
 		part string
@@ -440,6 +442,31 @@ func TestAMoveBackGoesToAnyEarlierStepInTheGoParts(t *testing.T) {
 	} {
 		t.Run(tc.part, func(t *testing.T) {
 			holdsAndRetires(t, "go/"+tc.part, goPart(t, tc.part), tc.want, tc.gone)
+		})
+	}
+}
+
+// The architect's role parts say what its daemon parts say of a move back: it goes to the phase of
+// any earlier step of the task. Each role part is read alone, and the composition of each
+// architect is read whole and folded, since the old clause in a role part is cut by a line break
+// and Compose joins the daemon parts to it. This shows the text is loaded, never that an architect
+// follows it.
+func TestAMoveBackGoesToAnyEarlierStepInTheRoleParts(t *testing.T) {
+	moveBack := "send it back with `request_backward_move` (`issue`, `to` the phase of an earlier step of the task, and `reason`)"
+	retired := "`implementing`, or `testing` where the task has a tester step"
+	for _, part := range []string{"architect.md", "architect-root.md"} {
+		t.Run(part, func(t *testing.T) {
+			holdsAndRetires(t, "roles/"+part, rolePart(t, part), []string{moveBack}, []string{retired})
+		})
+	}
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, isRoot := range []bool{true, false} {
+		t.Run(fmt.Sprintf("composed, root %t", isRoot), func(t *testing.T) {
+			holdsAndRetires(t, fmt.Sprintf("the composed architect prompt (root %t)", isRoot),
+				composedText(t, composer, claim.RoleArchitect, isRoot), nil, []string{retired})
 		})
 	}
 }
