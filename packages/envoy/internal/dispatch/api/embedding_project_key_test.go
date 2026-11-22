@@ -275,7 +275,7 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 	// The holder dies: its pass ends without labelling anything and its pool closes, which is
 	// the session the lease belongs to going with the process (duty.Exclusive).
 	releaseHolder()
-	if !<-held {
+	if !testwait.Receive(t, "the dying holder's pass to return once the test released it", held) {
 		t.Fatal("the other process never held the lease, so the tries above were free to label and this test proves nothing")
 	}
 	testwait.Returns(t, "every connection of the dying holder's pool to come back, so the pool closes", dying.Pool.Close)

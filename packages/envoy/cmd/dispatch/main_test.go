@@ -1249,6 +1249,17 @@ func TestHealthzAnswersWhilePostgresStopsAnswering(t *testing.T) {
 	fake := clocktest.New(began)
 	server := httptest.NewServer(healthzHandlerOn(fake, database, nil, nil, nil, "", nil, issuers{}, nil))
 	defer server.Close()
+	// The handler holds the database probe on the bound it arms on fake, which only a move of fake
+	// ends. The deferred server.Close waits for the handler, and deferred calls run last first, so
+	// this one ends the probe before that Close, by moving fake past every bound armed on it: a row
+	// that fails before its own move below fails by name rather than wait in that Close to the
+	// shared wait's end.
+	defer fake.SetWhen(func(_ time.Time, armed []time.Time) (time.Time, bool) {
+		if len(armed) == 0 {
+			return time.Time{}, false
+		}
+		return armed[len(armed)-1], true
+	})
 	// The shared pool's own round trip is the control: the link works right up to the outage.
 	if _, err := database.Pool.Exec(context.Background(), "select 1"); err != nil {
 		t.Fatalf("query through the proxy before the outage: %v", err)

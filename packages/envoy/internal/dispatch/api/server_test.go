@@ -428,13 +428,13 @@ func awaitArmedAt(t *testing.T, fake *clocktest.Fake, what string, at time.Time)
 
 // documentSettleReach is how far ahead of a document service's fake clock (docs.Deps.Clock) a
 // deadline may stand for awaitSettledOn to move the clock to it, as time passing would. The
-// service arms a room's settlement its settle delay ahead - 20 ms for newTestServer's, 50 ms for
-// the held-write fixture's - and a settlement that stops short, or that writes the document, arms
-// the next one as far again. Its other timers stand further ahead: a room query's wait for the
-// other processes' answers 500 ms (roomQueryWait), which the reach leaves out, and a mark's wait
-// and the compaction queue's checks a second at the least. A service whose settle delay is past
-// the reach (an hour) settles nothing in awaitSettledOn, as it settled nothing on the real clock
-// within its test.
+// service arms a room's settlement its settle delay ahead - 20 ms for newTestServer's and the
+// answer-survives fixture's (answerSurvivesSettle), 50 ms for the held-write fixture's - and a
+// settlement that stops short, or that writes the document, arms the next one as far again. Its
+// other timers stand further ahead: a room query's wait for the other processes' answers 500 ms
+// (roomQueryWait), which the reach leaves out, and a mark's wait and the compaction queue's checks
+// a second at the least. A service whose settle delay is past the reach (an hour) settles nothing
+// in awaitSettledOn, as it settled nothing on the real clock within its test.
 const documentSettleReach = 500 * time.Millisecond
 
 // settleReading is what one reading of awaitSettledOn saw: what its read answered, and how far

@@ -1037,9 +1037,10 @@ func (rig *contractRig) dismissThroughDispatch(t *testing.T, recordID, login str
 // deadline with no sweep run: the approver's inbox holds both, the live one pending and first, the
 // overdue one expired with its deadline. Dispatch's approve and deny of the overdue one are still
 // the broker's 403 DECIDE_ON_BROKER_PAGE. After the broker's sweep ends the overdue request the
-// inbox still holds both, as they were. Another person's dismissal is refused whatever their
-// browser's body names; the approver's dismissal answers 200, and the inbox then holds the live
-// request alone.
+// inbox still holds both, as they were, and a sweep a microsecond before the live request's own
+// deadline expires nothing more. Another person's dismissal is refused whatever their browser's
+// body names; the approver's dismissal answers 200, and the inbox then holds the live request
+// alone.
 func TestContractExpiredSecretRequestStaysInTheInboxUntilDismissed(t *testing.T) {
 	rig := newContractRig(t)
 	late := rig.createPendingAgentSecretRecord(t, "needed before its deadline", "DEEL_API_KEY")
@@ -1077,6 +1078,13 @@ func TestContractExpiredSecretRequestStaysInTheInboxUntilDismissed(t *testing.T)
 		t.Fatalf("the broker's sweep = %d, %v; want the overdue request alone expired", n, err)
 	}
 	rig.inboxFor(t, contractApprover, both...)
+	// A sweep a microsecond before the live request's own deadline, the latest moment it is not
+	// yet due at, expires nothing more: a sweep that ended a request before its deadline ends the
+	// live one here, where the sweep above, an hour and PendingTTL before that deadline, reaches
+	// it only once it ends requests that much early.
+	if n, err := rig.requestMachine.ExpirePending(context.Background(), due.Add(-time.Microsecond)); err != nil || n != 0 {
+		t.Fatalf("the broker's sweep a microsecond before the live request's deadline %s = %d, %v; want nothing more expired", due, n, err)
+	}
 
 	refused := dispatchRequest(t, rig.Dispatch, http.MethodPost, "/api/v1/credential-requests/"+late.RecordID+"/dismiss",
 		map[string]any{"approver": contractApprover}, contractOther)
@@ -1094,8 +1102,9 @@ func TestContractExpiredSecretRequestStaysInTheInboxUntilDismissed(t *testing.T)
 // the broker's device authorization. The approver's inbox holds both, the live one pending and
 // first, the overdue one expired with its machine and its deadline and no page. Dispatch's approve
 // and deny of the overdue one, with its own code, are the broker's 409 RECORD_TERMINAL and write
-// nothing. After the broker's machine-login sweep records it expired, the inbox still holds both;
-// the approver's dismissal answers 200, and the inbox then holds the live login alone.
+// nothing. After the broker's machine-login sweep records it expired, the inbox still holds both,
+// and after a sweep a microsecond before the live login's own deadline it still does; the
+// approver's dismissal answers 200, and the inbox then holds the live login alone.
 func TestContractExpiredMachineLoginStaysInTheInboxUntilDismissed(t *testing.T) {
 	rig := newContractRig(t)
 	const expiredCode = "BCDF-GHJK"
@@ -1142,6 +1151,14 @@ func TestContractExpiredMachineLoginStaysInTheInboxUntilDismissed(t *testing.T) 
 	if err := rig.brokerStore.Pool.QueryRow(context.Background(),
 		`select count(*) from credential_request_events where record_id=$1 and event='expired'`, expired).Scan(&swept); err != nil || swept != 1 {
 		t.Fatalf("the sweep wrote %d expired events for the overdue login (%v), want one", swept, err)
+	}
+	rig.inboxFor(t, contractApprover, both...)
+	// A sweep a microsecond before the live login's own deadline, the latest moment it is not yet
+	// due at, expires nothing more, so the inbox still reads it pending: a sweep that ended a login
+	// before its deadline ends the live one here, where the sweep above, an hour and PendingTTL
+	// before that deadline, reaches it only once it ends logins that much early.
+	if err := rig.machineLogins.ExpirePending(context.Background(), due.Add(-time.Microsecond)); err != nil {
+		t.Fatalf("the broker's machine-login sweep a microsecond before the live login's deadline %s: %v", due, err)
 	}
 	rig.inboxFor(t, contractApprover, both...)
 

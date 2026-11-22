@@ -41,17 +41,11 @@ const answerSurvivesComposedOpener = `:::ask{urgency="med" multiple="false"}`
 // (docs.Deps.Settle): its room settles that long after a write, on the fixture's clock.
 const answerSurvivesSettle = 20 * time.Millisecond
 
-// answerSurvivesSettleReach is how far ahead of the fixture's clock a deadline may stand for the
-// fixture to move the clock to it, as time passing would (answerSurvivesFixture.await): the
-// document service arms its room's settlement answerSurvivesSettle ahead, and a settlement that
-// writes the document (the state it records on each ask block's opener) arms the next one.
-const answerSurvivesSettleReach = 500 * time.Millisecond
-
 // answerSurvivesQuietBound is how far ahead of the fixture's clock no timer may stand once await
-// has come to rest (requireNoSettlementArmed): a settlement armed past answerSurvivesSettleReach,
-// which await does not run, would come after the case measured. The only other timers the
-// document service arms in these cases are the compaction queue's checks, a second ahead at the
-// least (compactBackoff) and two minutes for a room's first (compactFirstCheck).
+// has come to rest (requireNoSettlementArmed): a settlement armed past documentSettleReach, which
+// await does not run, would come after the case measured. The only other timers the document
+// service arms in these cases are the compaction queue's checks, a second ahead at the least
+// (compactBackoff) and two minutes for a room's first (compactFirstCheck).
 const answerSurvivesQuietBound = time.Second
 
 // An agent that composes a document's body again writes each ask it holds from the question
@@ -237,23 +231,16 @@ func (f answerSurvivesFixture) upload(t *testing.T, content string) {
 }
 
 // await waits until holds is true of what the issue and its document read and the document service
-// has no settlement armed within answerSurvivesSettleReach, and answers that state, so a case waits
-// for its settlements rather than for a duration. Time passes for the document service only as
-// this moves settles: at each reading, while a deadline stands armed on settles within
-// answerSurvivesSettleReach, it moves settles to the first, which runs the settlement armed for
-// then. A settlement that never reaches holds fails the case with everything the wait read.
+// has no settlement armed within documentSettleReach, and answers that state, so a case waits for
+// its settlements rather than for a duration (awaitSettledOn, which moves settles through each
+// settlement armed within that reach as time passing would). A settlement that never reaches holds
+// fails the case with everything the wait read.
 func (f answerSurvivesFixture) await(t *testing.T, what string, holds func(answerSurvivesState) bool) answerSurvivesState {
 	t.Helper()
-	return testwait.Until(t, "the server to show "+what+", with no settlement left within reach", func() (answerSurvivesState, bool) {
+	return awaitSettledOn(t, "the server to show "+what, func() (answerSurvivesState, bool) {
 		state := f.measure(t)
-		_, moved := f.settles.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
-			if len(armed) == 0 || armed[0].Sub(now) >= answerSurvivesSettleReach {
-				return time.Time{}, false
-			}
-			return armed[0], true
-		})
-		return state, !moved && holds(state)
-	})
+		return state, holds(state)
+	}, f.settles)
 }
 
 // requireNoSettlementArmed fails the case when a deadline within answerSurvivesQuietBound stands

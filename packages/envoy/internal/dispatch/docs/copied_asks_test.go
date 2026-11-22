@@ -1416,14 +1416,15 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 				reconciled, proceed := make(chan struct{}), make(chan struct{})
 				// The settlement waits in its hook on proceed, holding the copy lock, until the row
 				// lets it go; a row that fails before the release lets it go in its cleanup, which runs
-				// before the service's Shutdown. The hook holds the first settlement of the copy alone:
-				// on a row that failed it is still installed when the shutdown settles the copy again.
+				// before the service's Shutdown. The hook counts each settlement of the copy that
+				// reaches it and holds the first alone: on a row that failed it is still installed when
+				// the shutdown settles the copy again. Once the first has returned the count must be
+				// one, so a second settlement of the copy while the hook is installed fails the row.
 				letSettlementGo := sync.OnceFunc(func() { close(proceed) })
 				t.Cleanup(letSettlementGo)
-				var holding atomic.Bool
-				holding.Store(true)
+				var reconciles atomic.Int32
 				service.afterSettleReconcile = func(room string) {
-					if room == copied && holding.CompareAndSwap(true, false) {
+					if room == copied && reconciles.Add(1) == 1 {
 						close(reconciled)
 						<-proceed
 					}
@@ -1436,6 +1437,9 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 				letSettlementGo()
 				awaitDone(t, "the copy's settlement", settled)
 				service.afterSettleReconcile = nil
+				if n := reconciles.Load(); n != 1 {
+					t.Fatalf("%d settlements of the copy reached the reconcile hook while it was installed, want the one it held", n)
+				}
 				awaitDone(t, "the answer", answered)
 				// The settlement read the source before the answer, so the copy shows it open and owes
 				// the settlement the answer marked.
