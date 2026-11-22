@@ -606,7 +606,8 @@ var stateNarrowings = []stateNarrowing{
 		left: leftDeploymentRoles,
 		dropped: "the phase step (served as implementing), the issues' stepRole and startWaitsForPod, and the " +
 			"stranded claims, waiting wakes and pause stops of a deployment's roles"},
-	{contract: strandedTokenContract, state: withoutStrandedTokens, dropped: "the stranded claims' token"},
+	{contract: strandedTokenContract, state: withoutStrandedTokens, issue: withoutClaimTokens,
+		dropped: "the stranded claims' token, the claim views' token and the issues' otherClaims"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -1522,6 +1523,23 @@ func withoutStrandedTokens(state State) (State, bool) {
 	}
 	state.StrandedClaims = stranded
 	return state, true
+}
+
+// withoutClaimTokens is the issue whose claim views carry no `token` and which carries no
+// `otherClaims`, the two keys strandedTokenContract added to an issue: two claims of one issue can
+// hold one role, so the state names each claim by its token and lists the claims its `architect`
+// and `workers` do not show, and a plugin below the contract reads a claim view and an issue as
+// strict objects. An issue that carries neither is returned as it is (withEachClaimView copies
+// only what it changes).
+func withoutClaimTokens(issue Issue) (Issue, bool) {
+	issue, moved := withEachClaimView(issue, func(view ClaimView) ClaimView {
+		view.Token = ""
+		return view
+	})
+	if issue.OtherClaims != nil {
+		issue.OtherClaims, moved = nil, true
+	}
+	return issue, moved
 }
 
 // withoutUnadmittedWaitAnswer is the issue whose wait carries no `answeredAt` and no

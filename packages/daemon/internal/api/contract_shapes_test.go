@@ -360,7 +360,10 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // starts again at its first value, so the thirteen issues carry every value of every list. Each
 // issue's architect carries a failure, a pending cause and a held task, as a worker does. No
 // other body carries them on an architect, so without this body no record describes those keys
-// at their architect paths, and the value comparison reads no value there. Each issue also carries
+// at their architect paths, and the value comparison reads no value there. Each issue also lists
+// one other claim (`otherClaims`, contract 222) with a failure, a pending cause and a held task,
+// in state i of a claim view's states, so the thirteen carry every value of the five fields at
+// their `otherClaims` paths, every one of which arrived at 222 with the key. Each issue also carries
 // a merge wait with every key of one, whose `mergeState` and `toldState` take value i of the
 // merge states, so the thirteen issues carry all eight words at both key paths. The project's
 // pause waits on the stop of one claim of each role, so `paused.waitsOn.*.role` carries every role,
@@ -428,6 +431,18 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 			},
 		}
 	}
+	// otherClaim is issue i's other claim of the implementer's role: the claim view claimView
+	// builds, with its token, in state i of the claim view's states, its update state, causes and
+	// held task's phase further along their lists than the worker's.
+	stateWords := []supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching,
+		supervise.StateShimConnected, supervise.StateRegistered, supervise.StateReady, supervise.StateWorking,
+		supervise.StateIdle, supervise.StateSuspended, supervise.StateFailed, supervise.StateRetired}
+	otherClaim := func(i int, key string) ClaimView {
+		view := claimView("ses_other_"+key, updateWords[(i+2)%len(updateWords)], i+5, phaseWords[(i+2)%len(phaseWords)])
+		view.Token = claim.Token("legion-values-" + strings.ToLower(key) + "-tester")
+		view.State = string(stateWords[i%len(stateWords)])
+		return view
+	}
 	notSlot := false
 	issues := make(map[string]Issue, len(phaseWords))
 	keys := make([]string, 0, len(phaseWords))
@@ -454,6 +469,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 			Workers: map[claim.Role]PhaseView{
 				claim.RoleImplementer: {Claim: claimView("ses_implementer_"+key, updateWords[(i+1)%len(updateWords)], i+3, heldFrom)},
 			},
+			OtherClaims: []OtherClaimView{{Role: claim.RoleImplementer, Claim: otherClaim(i, key)}},
 			PullRequest: &PullRequestView{
 				Repo: "acme/widgets", Number: 2000 + i, Head: "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29", State: "open",
 				MergeState: string(mergeWords[i%len(mergeWords)]),

@@ -298,6 +298,12 @@ function stateSummary(state: LegionState): string {
       const claim = issue.workers?.[role]?.claim;
       if (claim !== undefined) claims.push([role, claim]);
     }
+    // Each other claim of the issue, with the role it holds (contract 222): two claims of one
+    // issue can hold one role, and `workers` shows one of them, so the other is listed after the
+    // workers and marked as another claim of its role.
+    for (const other of issue.otherClaims ?? []) {
+      claims.push([`${other.role} (another claim)`, other.claim]);
+    }
     for (const [role, claim] of claims) {
       // A working claim whose last turn began hours ago is wedged; an idle claim's end is when
       // it last did anything, and a dash is a turn the daemon recorded none of.

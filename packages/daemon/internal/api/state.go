@@ -760,10 +760,17 @@ type Issue struct {
 	Architect *ClaimView `json:"architect,omitempty"`
 	// Workers is keyed by the role that holds the claim; the vocabulary of a claim belongs to
 	// `internal/claim`, which the runtime, the worker stream, and the supervisor all speak
-	// without importing this package.
-	Workers     map[claim.Role]PhaseView `json:"workers"`
-	PullRequest *PullRequestView         `json:"pullRequest,omitempty"`
-	DesignGate  *GateView                `json:"designGate,omitempty"`
+	// without importing this package. A role's entry is the claim of the worker on its step where
+	// a phases row names one, and otherwise a claim of that role.
+	Workers map[claim.Role]PhaseView `json:"workers"`
+	// OtherClaims is every claim of the issue that neither `architect` nor `workers` shows, each
+	// with the role it holds, in token order, and absent where there is none (contract 222). Two
+	// claims of one issue can hold one role — the agent of a key on a step of another role,
+	// beside that role's own claim of an earlier version of the plan — and `workers` holds one
+	// entry per role, so a reader finds the other one here, by its token (ClaimView.Token).
+	OtherClaims []OtherClaimView `json:"otherClaims,omitempty"`
+	PullRequest *PullRequestView `json:"pullRequest,omitempty"`
+	DesignGate  *GateView        `json:"designGate,omitempty"`
 	// GatedSteps is the deployment's design gate as this issue stands in it: one entry for each
 	// step the deployment gates, in the order it gates them (contract 55). It is absent, as the
 	// gate itself is, for an issue that is not its tree's root, for a deployment that gates no
@@ -956,6 +963,9 @@ func (i Issue) MarshalJSON() ([]byte, error) {
 // begun a turn, or made a call the daemon's stream saw — carries that step too (StepView), and a
 // claim the daemon holds a failure record for carries why it failed (ClaimFailureView).
 type ClaimView struct {
+	// Token is the claim's token (contract 222): two claims of one issue can hold one role, so the
+	// issue and the role under which a view stands do not name the claim, and this does.
+	Token        claim.Token           `json:"token,omitempty"`
 	Session      string                `json:"session"`
 	State        string                `json:"state"`
 	Locator      *runtime.Locator      `json:"locator,omitempty"`
@@ -1129,6 +1139,7 @@ func PendingTaskViewOf(d *supervise.Delivery) *PendingTaskView {
 // caller sets it beside this.
 func ClaimViewOf(c supervise.Claim) ClaimView {
 	return ClaimView{
+		Token:             c.Token,
 		Session:           c.Session,
 		State:             string(c.State),
 		Locator:           c.Locator,
@@ -1234,6 +1245,13 @@ func CapabilityReportViewOf(report capabilities.Report) *CapabilityReportView {
 		}
 	}
 	return view
+}
+
+// OtherClaimView is one claim of an issue that neither the issue's `architect` nor its `workers`
+// shows (Issue.OtherClaims): the role the claim holds and the claim itself, which names its token.
+type OtherClaimView struct {
+	Role  claim.Role `json:"role"`
+	Claim ClaimView  `json:"claim"`
 }
 
 // PhaseView is one phase worker's claim, the handoff of its current phase — the commit its

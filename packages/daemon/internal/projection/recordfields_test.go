@@ -314,6 +314,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		servedKeys(t, "supervise.Claim", document, api.ClaimRecordFields, []string{"updateState"}, wire(t, state.Issues[root]))
 
 		want := wire(t, map[string]any{
+			"token":             current.Token,
 			"session":           current.Session,
 			"state":             string(current.State),
 			"locator":           current.Locator,

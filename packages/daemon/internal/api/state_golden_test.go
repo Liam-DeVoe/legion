@@ -365,6 +365,7 @@ func populatedState(t *testing.T) State {
 				Repo:          "acme/widgets",
 				DefaultBranch: "main",
 				Architect: &ClaimView{
+					Token:   "legion-legion-legion-208-architect",
 					Session: "ses_architect_208",
 					State:   "ready",
 					Locator: &runtime.Locator{
@@ -498,6 +499,11 @@ func populatedState(t *testing.T) State {
 				GivenEntry:       4,
 				EntryQueuedAt:    &entryQueued,
 				EntryConfirmedAt: &entryConfirmed,
+				// The reviewer's own claim of an earlier version of the plan, beside the claim
+				// of the agent of a key that works the reviewer's step: a claim `workers` does
+				// not show, listed with its role and found by its token (contract 222).
+				OtherClaims: []OtherClaimView{{Role: claim.RoleReviewer,
+					Claim: ClaimView{Token: "legion-legion-legion-208-reviewer", Session: "ses_reviewer_208_v1", State: "suspended"}}},
 				PullRequest: &PullRequestView{
 					Repo:   "acme/widgets",
 					Number: 1247,

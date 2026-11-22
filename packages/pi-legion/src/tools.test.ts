@@ -2238,6 +2238,32 @@ test("read_state's summary lists the claim of a role of the deployment under its
   ]);
 });
 
+// Contract 222: two claims of one issue can hold one role, and `workers` shows one of them, so the
+// summary lists each of the issue's `otherClaims` after the workers, with its role, its state and
+// both turn times, and marks it as another claim of that role.
+test("read_state's summary lists another claim of a role after the workers of its issue", async () => {
+  const state = stateOf92Issues(1);
+  const running = state.issues["INFRA-100"];
+  const tester = running?.workers?.tester?.claim;
+  if (running === undefined || tester === undefined) {
+    throw new Error("INFRA-100 lacks its tester");
+  }
+  running.otherClaims = [{ role: "tester", claim: { ...tester, state: "suspended" } }];
+  const { daemon } = recordingDaemon({ state });
+  const summary = await controllerTool(daemon, []).execute(
+    "",
+    { op: "read_state" },
+    undefined,
+    undefined,
+    context("ses_controller")
+  );
+  const text = summary.content[0]?.type === "text" ? summary.content[0].text : "";
+  const under = text.split("\n").filter((line) => line.startsWith("  "));
+  expect(under.at(-1)).toBe(
+    `  tester (another claim) suspended ${tester.lastTurnStart ?? "-"} ${tester.lastTurnEnd ?? "-"}`
+  );
+});
+
 // R6: a role reads which plugin build its own process runs. The build is the manifest of the
 // module this process loaded: `tools.ts` imports `../package.json` and takes `pluginBuildOf` of
 // it, never the image's copy at `/opt/legion/pi-legion`, which a relaunch never updates. For this

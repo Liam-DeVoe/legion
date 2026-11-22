@@ -266,11 +266,14 @@ const legionPendingTaskView = z.object({
   lastSendError: nonEmptyString.optional(),
 });
 
-/** `api.ClaimView` — `session` is empty until the claim's agent registers one, `locator` is
- * absent while no process runs (queued, suspended, failed, retired), `capabilities` is absent
- * until a session of the claim reports on `claims/ready` (the controller's never does), and
- * `failure` is absent for a claim the daemon holds no cause and sentence for. */
+/** `api.ClaimView` — `token` names the claim (contract 222: two claims of one issue can hold one
+ * role, so the issue and the role do not name a claim), `session` is empty until the claim's
+ * agent registers one, `locator` is absent while no process runs (queued, suspended, failed,
+ * retired), `capabilities` is absent until a session of the claim reports on `claims/ready` (the
+ * controller's never does), and `failure` is absent for a claim the daemon holds no cause and
+ * sentence for. */
 const legionClaimView = z.object({
+  token: nonEmptyString.optional(),
   session: z.string().optional(),
   state: z.enum(LEGION_CLAIM_STATES),
   locator: legionLocator.optional(),
@@ -790,6 +793,10 @@ const legionIssue = z.object({
   ancestry: z.array(issueKey).optional(),
   architect: legionClaimView.optional(),
   workers: z.partialRecord(z.string(), legionPhaseView).optional(),
+  /** `api.Issue.OtherClaims` — each claim of the issue that neither `architect` nor `workers`
+   * shows, with the role it holds (contract 222): the other claim of a role a keyed agent works the
+   * step of, found by its token. */
+  otherClaims: z.array(z.object({ role: stepRole, claim: legionClaimView })).optional(),
   pullRequest: legionPullRequestView.optional(),
   designGate: legionGateView.optional(),
   /** The deployment's design gate as this issue stands in it, one entry for each step the
@@ -2203,7 +2210,8 @@ export const LegionTaskStopRequest = z.strictObject({
  * and, at `step`, the issue's `stepRole`, `phase-reminder.ts` and
  * `pi-legion/src/stall-evidence.ts` read the architect's claim state, and the controller's
  * `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status, hold reason, slot,
- * design gate, and the state and both turn times of the architect's claim and of every worker's.
+ * design gate, and the state and both turn times of the architect's claim, of every worker's and
+ * of each other claim of the issue with its role (`otherClaims`, contract 222).
  * The record route and the state's `issues{}` answer the same node, so the read set below names
  * these paths at both, `LegionIssueRecordResponse` as they stand and `LegionStateResponse` under
  * the state's prefix. They are written once here because the two entries must say the same thing.
@@ -2226,6 +2234,12 @@ const ISSUE_RECORD_READS = [
   "workers{}.claim.state",
   "workers{}.claim.lastTurnStart",
   "workers{}.claim.lastTurnEnd",
+  "otherClaims",
+  "otherClaims[].role",
+  "otherClaims[].claim",
+  "otherClaims[].claim.state",
+  "otherClaims[].claim.lastTurnStart",
+  "otherClaims[].claim.lastTurnEnd",
   "check",
   "check.role",
   "check.looks",

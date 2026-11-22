@@ -410,12 +410,19 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 				Workers: map[claim.Role]api.PhaseView{},
 			}
 		}
-		if current.Role == claim.RoleArchitect {
-			if view.Architect == nil {
-				view.Architect = &claimView
-			}
-		} else if _, known := view.Workers[current.Role]; !known {
+		// A claim no entry shows yet takes its role's place (the architect, or a worker of a role
+		// no phases row named a live claim for); one whose role's place is taken by another claim
+		// is listed under otherClaims with its role, since two claims of one issue can hold one
+		// role and the state names every claim of the issue by its token.
+		_, workerShown := view.Workers[current.Role]
+		switch {
+		case current.Role == claim.RoleArchitect && view.Architect == nil:
+			view.Architect = &claimView
+		case current.Role != claim.RoleArchitect && !workerShown:
 			view.Workers[current.Role] = api.PhaseView{Claim: claimView}
+		case !showsClaim(view, current.Token):
+			view.OtherClaims = append(view.OtherClaims, api.OtherClaimView{Role: current.Role, Claim: claimView})
+			slices.SortFunc(view.OtherClaims, func(a, b api.OtherClaimView) int { return cmp.Compare(a.Claim.Token, b.Claim.Token) })
 		}
 		projected.Issues[current.Issue] = view
 	}
@@ -832,4 +839,18 @@ func waitingOn(w record.Awaiting) *api.WaitingOnView {
 		view.AnsweredAt, view.AnsweredBy = &answeredAt, w.AnsweredBy
 	}
 	return view
+}
+
+// showsClaim is whether the issue's view already shows the claim token: as its architect or as
+// the claim of one of its workers.
+func showsClaim(view api.Issue, token claim.Token) bool {
+	if view.Architect != nil && view.Architect.Token == token {
+		return true
+	}
+	for _, worker := range view.Workers {
+		if worker.Claim.Token == token {
+			return true
+		}
+	}
+	return false
 }
