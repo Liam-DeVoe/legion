@@ -62,9 +62,9 @@ type Config struct {
 	// (Check).
 	Prefix func(logical string) string
 	// Fixed is the name the family gave logical before this package, which the cutover's convert
-	// replaces: s-<session id> for a session. A record may name it only as an open operation's old
-	// name, the consumer convert replaces or deletes. Prefix(logical) when nil, as for a durable,
-	// whose fixed name is its logical one.
+	// replaces: s-<session id> for a session, the logical name for a durable. A record may name it
+	// only as an open operation's old name, the consumer convert replaces or deletes. Required, as
+	// Prefix is: a creator takes both from its family's Naming (FamilyNaming).
 	Fixed func(logical string) string
 	// Metadata is the metadata every consumer of logical carries, which the family's CreateFunc
 	// writes: a consumer a record of logical names is logical's only when its own metadata holds
@@ -167,8 +167,12 @@ type Names struct {
 	cfg Config
 }
 
-// New is Names over cfg.
+// New is Names over cfg. A cfg with no Prefix or no Fixed is a program's error, so New panics on it
+// before any call reads a name.
 func New(cfg Config) *Names {
+	if cfg.Prefix == nil || cfg.Fixed == nil {
+		panic("consumernames: New needs Config.Prefix and Config.Fixed, its family's Naming")
+	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}

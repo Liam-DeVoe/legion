@@ -7,7 +7,8 @@ import (
 
 // Naming is how a family names the consumers of a logical name: Prefix(logical) begins each of its
 // fresh names (Prefix(logical)~<nuid>), and Fixed(logical) is the name the family gave logical
-// before this package, which the cutover's convert replaces (Prefix(logical) when nil). Each
+// before this package, which the cutover's convert replaces. Every Naming the table gives sets
+// both. Each
 // creator builds its Config's Prefix and Fixed from its family's Naming (FamilyNaming), and
 // CheckFamily judges a record by the same, so the creators and an operator's reader, which may not
 // import the creators' packages, hold one table of the families' names.
@@ -36,16 +37,18 @@ func SessionNaming() Naming {
 // the listener's own: its fresh names are <durable>~<nuid>, and its fixed name the durable's name.
 // A key DurableKey did not make has no durable (CheckDurableKey refuses it first).
 func DurableNaming() Naming {
-	return Naming{Prefix: func(key string) string {
+	durable := func(key string) string {
 		durable, _ := durableOfKey(key)
 		return durable
-	}}
+	}
+	return Naming{Prefix: durable, Fixed: durable}
 }
 
 // LogicalNaming is the naming of a durable whose logical name is its own, Dispatch's and the
 // daemons': its fresh names are <logical>~<nuid>, and its fixed name the logical name.
 func LogicalNaming() Naming {
-	return Naming{Prefix: func(logical string) string { return logical }}
+	logical := func(logical string) string { return logical }
+	return Naming{Prefix: logical, Fixed: logical}
 }
 
 // FamilyNaming is the naming of logical's consumers in the store of family: in the session family's
@@ -81,10 +84,10 @@ func CheckFamily(family, logical string, record Record) error {
 	return (&Names{cfg: Config{Prefix: naming.Prefix, Fixed: naming.Fixed}}).Check(logical, record)
 }
 
-// Naming is n's own naming (Config.Prefix, and Config.Fixed or its default), which a test of a
-// family's creator holds equal to the family's (FamilyNaming).
+// Naming is n's own naming (Config.Prefix and Config.Fixed), which a test of a family's creator
+// holds equal to the family's (FamilyNaming).
 func (n *Names) Naming() Naming {
-	return Naming{Prefix: n.cfg.Prefix, Fixed: n.fixed}
+	return Naming{Prefix: n.cfg.Prefix, Fixed: n.cfg.Fixed}
 }
 
 // durableOfKey is the durable whose key DurableKey made key, and false for a key it did not.

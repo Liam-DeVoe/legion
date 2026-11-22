@@ -17,10 +17,7 @@ import (
 
 // fixed is logical's fixed name (Config.Fixed).
 func (n *Names) fixed(logical string) string {
-	if n.cfg.Fixed != nil {
-		return n.cfg.Fixed(logical)
-	}
-	return n.cfg.Prefix(logical)
+	return n.cfg.Fixed(logical)
 }
 
 // freshOf reports whether name is a fresh name of logical: Prefix(logical), '~', and a NUID's

@@ -85,3 +85,28 @@ func TestCheckDurableKeyTakesOnlyAKeyDurableKeyMade(t *testing.T) {
 		}
 	}
 }
+
+// Every family's naming carries its fixed name, so a reader in another module reads it from the
+// table and never calls a nil func or copies a default: the session's is s-<id>, a durable's and
+// Dispatch's and a daemon's the logical name, the names their creators use. Before, Fixed was nil
+// for the durable, Dispatch and daemon families, and only Names.fixed knew that nil meant the
+// prefix.
+func TestEveryFamilysNamingCarriesItsFixedName(t *testing.T) {
+	durable := DurableKey("listener-m a")
+	for _, c := range []struct{ family, logical, fixed string }{
+		{SessionFamily, "ses-A", "s-ses-A"},
+		{SessionFamily, durable, "listener-m a"},
+		{DispatchFamily, "delivery-events", "delivery-events"},
+		{"daemon/p", "legion-go-p-wake", "legion-go-p-wake"},
+	} {
+		naming, err := FamilyNaming(c.family, c.logical)
+		switch {
+		case err != nil:
+			t.Errorf("FamilyNaming(%s, %s) = %v", c.family, c.logical, err)
+		case naming.Fixed == nil:
+			t.Errorf("FamilyNaming(%s, %s).Fixed is nil; want %q", c.family, c.logical, c.fixed)
+		case naming.Fixed(c.logical) != c.fixed:
+			t.Errorf("FamilyNaming(%s, %s).Fixed = %q, want %q", c.family, c.logical, naming.Fixed(c.logical), c.fixed)
+		}
+	}
+}

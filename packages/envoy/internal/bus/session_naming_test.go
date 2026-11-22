@@ -18,16 +18,11 @@ func TestTheSessionCreatorNamesAsTheFamilyTable(t *testing.T) {
 	_, consumers, _ := freshSessionConsumersOnStream(t)
 	names := consumers.fresh.names
 	creator, table := names.Naming(), consumernames.SessionNaming()
-	// A table entry with no fixed rule names the prefix as the fixed name (Config.Fixed's default).
-	tableFixed := table.Fixed
-	if tableFixed == nil {
-		tableFixed = table.Prefix
-	}
 	for _, id := range []string{"ses-A", "ses_x9"} {
 		if got, want := creator.Prefix(id), table.Prefix(id); got != want {
 			t.Errorf("the session creator's prefix of %s is %q, the table's %q", id, got, want)
 		}
-		if got, want := creator.Fixed(id), tableFixed(id); got != want {
+		if got, want := creator.Fixed(id), table.Fixed(id); got != want {
 			t.Errorf("the session creator's fixed name of %s is %q, the table's %q", id, got, want)
 		}
 	}

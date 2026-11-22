@@ -20,8 +20,8 @@ func TestTheDurableCreatorNamesAsTheFamilyTable(t *testing.T) {
 	if got, want := creator.Prefix(key), table.Prefix(key); got != want || got != r.durable {
 		t.Errorf("the durable creator's prefix of %s is %q, the table's %q; want both %q", key, got, want, r.durable)
 	}
-	if got, want := creator.Fixed(key), r.durable; got != want {
-		t.Errorf("the durable creator's fixed name of %s is %q, want the durable's own %q", key, got, want)
+	if got, want := creator.Fixed(key), table.Fixed(key); got != want || got != r.durable {
+		t.Errorf("the durable creator's fixed name of %s is %q, the table's %q; want both the durable's own %q", key, got, want, r.durable)
 	}
 	reserved := time.Unix(1_700_000_000, 0)
 	for _, c := range []struct {
