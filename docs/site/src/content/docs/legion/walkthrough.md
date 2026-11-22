@@ -53,17 +53,18 @@ approved and the architect has accepted.
 ## 5. The pull request
 
 The pull request's body follows Legion's template: the outcome, why, the change, how it was
-proven, what is not proven, and after the merge the production check your project asks for. Legion's reviewer approves it
-as the review App. In Dispatch, the issue's header links the pull request.
+proven, what is not proven, and after the merge the production check your project asks for. Legion's reviewer posts its
+findings on it as a `COMMENT` review and sends its verdict to the daemon. In Dispatch, the issue's header links the pull request.
 
 ![The issue header with the pull request Legion opened, linked as #42.](/legion/media/legion/pull-request.png)
 
 ## 6. The acceptance
 
-When the reviewer approves, the architect reads the evidence (the tester's handoff, each check of
-the issue with its latest result, the approval of the head) and accepts the change with a comment on the
+When the reviewer sends `approve`, the architect reads the evidence (the tester's handoff, each check of
+the issue with its latest result, the reviewer's verdict at the head) and accepts the change with a comment on the
 issue, which moves it to `retro`; a change that falls short goes back to the implementer or the
-tester instead. Retro runs next.
+tester instead. The acceptance is the architect's own `approve` at that head, and the daemon writes
+the required check `legion-verdict` from the two verdicts and the check results there. Retro runs next.
 
 ## 7. The merge
 

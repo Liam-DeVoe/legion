@@ -712,7 +712,7 @@ test("an implementer and tester task gives the reviewer's body lines and bot thr
       /no reviewer step[^.;]*implementer lists unresolved bot threads[^.;]*retro/,
     ]),
     ...lacks("legion-worker/SKILL.md", [
-      /no reviewer step[^.;]*no Legion verdict/,
+      /no reviewer step[^.;]*no reviewer's verdict is awaited[^.;]*no review step `legion-verdict` reads `failure`/,
       /without `acceptance:owner`[^.;]*last step starts retro/,
     ]),
   ]).toEqual([]);

@@ -1495,13 +1495,14 @@ These arrive as messages on the Dispatch issue:
   wake that brought its pod back included, and the daemon holds each completion to the entry its
   claim serves: a completion of an entry raised since is taken only at the head the record holds
   and only where no move back raised that entry, and any other is refused (`HANDOFF_STALE_ENTRY`)
-  and moves nothing. A `COMMENT` review, a person's review and a verdict the reviewer sends past
-  review with `review_verdict` leave the commit where it stands. A new generation clears the
-  commit, so its first round reads the whole change.
+  and moves nothing. A `COMMENT` review, a person's review and a verdict that a review step's
+  agent, the reviewer or the owner, sends past review with `review_verdict` leave the commit where
+  it stands. A new generation clears the commit, so its first round reads the whole change.
 - **The merger merges nothing.** It merges nothing while the head conflicts with its base, which
   GitHub can neither merge nor start pull-request CI for: the daemon asks the implementer to merge
-  the base forward while the issue stays in `merging`, asks the reviewer for its verdict on the new
-  head, and the merger merges the new head once `legion-verdict` at it is `success`. And it enqueues nothing on a merge-queue base whose
+  the base forward while the issue stays in `merging`, asks the agent of each review step that has
+  passed for its verdict on the new head, and the merger merges the new head once `legion-verdict`
+  at it is `success`. And it enqueues nothing on a merge-queue base whose
   `squash_merge_commit_message` still joins the branch's commit messages, since the enqueue can
   carry no message of its own: it tells the architect, and only a person can change that
   repository setting to `PR_BODY` or `BLANK`. A merge GitHub refuses is the merger's to decide
@@ -1510,6 +1511,17 @@ These arrive as messages on the Dispatch issue:
   request a person already merged needs nothing: the daemon reads that merge and closes the
   issue — or, for a root whose tree still runs, once the last other issue of that tree is done or
   parked.
+- **The merger reports `legion-verdict: failure (no independent review)`.** Every testing and
+  review step of the task passed at the head, and no review step whose verdict there is `approve`
+  was run by an agent whose claim wrote none of the change. A claim wrote part of the change when
+  it ran an implementation step of the task, or when a commit of the change names one of its
+  sessions in its `Omp-Session` trailer, read against the sessions the daemon records for that
+  claim; where the daemon cannot read those commits or sessions, it counts no review as
+  independent, and the run's summary says so. A task whose plan has no review step ends here too.
+  No push or move back cures it: the merger merges nothing, sends nothing back and tells the
+  task's owner, quoting the run's summary, and the owner asks a person. Only a person can merge
+  that head. The run is the daemon's own check run on the head:
+  `gh api 'repos/<owner>/<repo>/commits/<head>/check-runs?check_name=legion-verdict' --jq '.check_runs[] | [.conclusion, .output.title, .output.summary]'`.
 - **An implementer's completion refused `HANDOFF_NO_PULL_REQUEST`.** The implementer's completion
   of implementing reads GitHub, as the implement App, for the open pull request on the issue's
   branch, `legion/<KEY>`: the issue moves to testing only on an open pull request, or one the
@@ -1597,8 +1609,11 @@ names both heads. A completion of the phase the issue stands in that names a hea
 forward replaced, the head an earlier merge forward replaced included, or that names no head once
 a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is
 made again at the new head; a completion of a phase the issue has already left is recorded as
-before. Past review, where the task has a reviewer step, the reviewer is asked for its verdict on
-the new head, which it sends with `review_verdict`, and so it is on every other push past review.
+before. Past review, the agent of each review step of the task that has passed, the reviewer and
+the owner at `acceptance:owner`, is asked for its verdict on the new head, which it sends with
+`review_verdict` (the owner naming `issue`), and so it is on every other push past review: the
+daemon logs `workflow: the head moved past review; a review step's agent is asked for its
+verdict` for each, and `workflow: recorded a review step's verdict past review` for each verdict.
 A red check sends nothing back from anywhere.
 
 The pull request's state as the daemon sees it:

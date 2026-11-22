@@ -92,7 +92,7 @@ A retro that cannot write the body: `skill://legion-architect/references/accepta
 
 In `accepting`, which only a task naming `acceptance:owner` enters, no worker runs:
 read, against the goal, every check and requirement in `skill://legion-architect/references/acceptance.md`, "Accepting". The reviewer's verdict
-is its completion's, not a review on GitHub.
+is its completion's, not a review on GitHub; your `sign_off` is your own `approve` at the pull request's head, so read that head first.
 
 Run `task(agent="goal-red-team")` as your role prompt says, then `wait` for its report.
 Accept only when a pass stands for every `before_merge` check at the last step's head, every requirement has a check, and none is unmet or read narrower than written:

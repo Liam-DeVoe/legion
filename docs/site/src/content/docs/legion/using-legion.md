@@ -125,11 +125,16 @@ template, and the later phases fill in their own lines:
   checklist named for each kind of path: after the approval, the retro recomputes it for the whole
   change, the way those instructions say.
 
-Legion's reviewer posts its review as the review App. A review from anyone with write access to the
-repository, submitted on GitHub while the issue is in `needs_review`, counts the same way:
-**Request changes** sends the work back to the implementer with your comments, and an approval of
-the head can end the round. A review from an account without write access decides nothing, since
-any GitHub account can review a public repository's pull request, and a plain comment moves
+Legion's reviewer posts its findings as a `COMMENT` review, which decides nothing, and sends its
+verdict, `approve` or `changes`, to the daemon. The architect's acceptance is the issue's second
+review step. The daemon writes the required check `legion-verdict` from those verdicts and the
+issue's check results at the head, and writes `success` only where at least one approving review
+was made by an agent that wrote none of the change. Your own review counts one way: **Request
+changes**, submitted on GitHub from an account with write access to the repository, refuses the
+head it names, and in `needs_review` it sends the work back to the implementer with your comments.
+Your approval of an issue's pull request decides nothing beyond lifting your own earlier request
+for changes. A review from an account without write access decides nothing, since any GitHub
+account can review a public repository's pull request, and a plain comment moves
 nothing. Legion's handoffs are records on the Dispatch issue, never commits, so the pull request's
 file list shows only the change and the merge brings no handoff onto the default branch.
 
@@ -144,7 +149,9 @@ pull request instead.
 
 The repository's branch protection and code-owner rules decide when it lands: a review
 only you can give is waited for. Legion turns auto-merge on nowhere, approves no pull request on
-your behalf and changes nobody's right to merge.
+your behalf and changes nobody's right to merge. Where the base requires `legion-verdict` and that
+check reads `failure` for want of an independent review, the merger merges nothing and the
+architect asks you, since only a person can merge that head.
 
 The merge closes the issue: it moves to `done` the moment GitHub reports the pull request merged.
 A root with work still running beneath it is the exception: its merge is recorded and the issue
