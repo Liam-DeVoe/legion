@@ -8,7 +8,7 @@
 // the session; and two processes that trade at once spend one refresh token once, since the
 // broker revokes a login whose rotated refresh token is presented again past its grace.
 
-import { expect, spyOn, test } from "bun:test";
+import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import {
   chmodSync,
   mkdirSync,
@@ -33,6 +33,13 @@ const { broker, laptopEnvironment, loginFile, tempDir } = deviceLoginStandIns("d
 /** The directory of each child script a row has Bun run: Bun loads no module from a path that
  *  holds a `?`. */
 const moduleDir = temporaryDirectories("device-login-child", { root: moduleRoot() });
+
+// Each row's verdict is what the command printed and kept, and the rows with no bound of their own
+// below wait on no clock. Their bound is a hang guard, not a verdict: they ran 15 ms to 2 s, and
+// 6.7 s in a load stall on a dev box, past Bun's 5 s default, so the guard is far above that and
+// still names a row that never ends ("this test timed out after 60000ms"). It holds for this file
+// alone.
+setDefaultTimeout(60_000);
 
 const PERSON = "ada@example.com";
 
