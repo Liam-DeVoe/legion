@@ -66,14 +66,16 @@ the right column is showing. Below that width, and in the Inbox drawer, they act
 | `1` – `9` | Pick option 1–9 of the selected ask |
 | `o` | Open the row's issue, document or thread |
 | `y` | Copy the selected row's reference |
-| `x` | Tick or untick the selected ask, for a snooze of several at once |
+| `x` | Tick or untick the selected row, for a snooze or a dismiss of several at once |
+| `Shift+X` | Tick or untick every row from the last row you ticked or unticked without the shift key to the selected row, as a shift-click on its checkbox does |
+| `Shift+J` / `Shift+K` | Next / previous row, with that range carried to it; with no row to run from, they only move |
 | `h` | Snooze the selected ask, or every ticked ask |
 | `f` | Move the focus to the **Search asks** box above the list |
 | `Escape` | From the search box, to the selected row, or the first row where none is selected; from the right column, back to the row `l` was pressed on, else the row it is showing; then back to the row, then off it; from the bulk snooze menu, back to the list; with no row focused, drop every tick |
 
-`Enter`, `1` – `9`, `x` and `h` are an open question's: a thread row has no options, no answer
-box and no snooze, so they do nothing on one. An agent-message row has no `dispatch://`
-reference, so `y` does nothing on one either.
+`Enter`, `1` – `9` and `h` are an open question's: a thread row has no options, no answer box and
+no snooze, so they do nothing on one. An agent-message row has no `dispatch://` reference, so `y`
+does nothing on one either.
 
 ## Project
 

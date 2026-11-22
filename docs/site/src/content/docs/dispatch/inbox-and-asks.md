@@ -230,6 +230,19 @@ with the same four choices and **Clear selection**. If the server refuses some o
 says how many and why, and those rows stay ticked. Press `Escape` with no row focused to drop
 every tick.
 
+To tick many rows at once, tick one row's checkbox and then shift-click another's: every row the
+list draws between the two takes the clicked row's new state, ticked or unticked, asks and
+threads alike. The range runs from the last row you ticked or unticked without the shift key,
+in the order the list draws its rows now, so a folded band, rows behind **Show more** and rows a
+filter or the search hides are not in it; in the **Dismissed** view it runs over every row the
+view has loaded. A second shift-click from the same row gives its own range, and the rows of the
+first it leaves out go back to how they stood. After **Select all** or **Clear selection** the
+next shift-click ticks or unticks its own row alone, which the range then runs from. From the
+keyboard, `Shift+X` takes the same range to the row the right column is showing (to the focused
+row where there is no second column, and in the Inbox drawer), and `Shift+J` and `Shift+K` move
+to the next or previous row and take it there; with no row to run from, they only move. A
+shift-click selects no text on the page.
+
 ## Replies and agent messages
 
 Two kinds of row in the Inbox are threads rather than questions:

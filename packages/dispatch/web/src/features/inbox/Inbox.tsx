@@ -283,8 +283,9 @@ interface InboxRowProps {
   /** Whether the reader has marked this row for a bulk action. */
   marked: boolean;
   /** Marks or unmarks this row, by its own `rowId`; `x` and the row's own checkbox are the two
-   *  ways in. */
-  onMark: (id: string) => void;
+   *  ways in. `range` is a shift-click on the checkbox, which takes the range from the anchor to
+   *  this row (`useInboxSelection`'s `markRange`). */
+  onMark: (id: string, range: boolean) => void;
   /** Set on the held row - one the server dropped or moved to another band that stays where
    *  the reader last saw it while they are still on it; called when their focus or pointer
    *  leaves it. */
@@ -297,7 +298,7 @@ interface InboxRowProps {
 
 /** The row's own checkbox, the pointer's way to the mark `x` makes. Every row takes one: with
  *  rows marked the bulk bar offers **Snooze** for the asks among them and **Dismiss** for the
- *  threads. */
+ *  threads. A shift-click takes the range from the anchor to this row. */
 function MarkCheckbox({
   id,
   marked,
@@ -307,14 +308,26 @@ function MarkCheckbox({
   id: string;
   marked: boolean;
   name: string;
-  onMark: (id: string) => void;
+  onMark: (id: string, range: boolean) => void;
 }): ReactNode {
   return (
     <input
       aria-label={`Select ${name}`}
       checked={marked}
       className={`size-4 shrink-0 ${checkboxAccent}`}
-      onChange={() => onMark(id)}
+      // React fires a checkbox's change from the browser's click on it, so the event under it is
+      // that click, with its shift key: the pointer's, and the space bar's where the engine
+      // passes it (Chromium does, Firefox does not).
+      onChange={(event) =>
+        onMark(id, event.nativeEvent instanceof MouseEvent && event.nativeEvent.shiftKey)
+      }
+      // A shift-press would select the page's text from the last click to this one. Its default
+      // action also focuses the checkbox, so with it prevented the checkbox takes the focus here.
+      onPointerDown={(event) => {
+        if (!event.shiftKey) return;
+        event.preventDefault();
+        event.currentTarget.focus({ preventScroll: true });
+      }}
       type="checkbox"
     />
   );
@@ -331,7 +344,7 @@ function ThreadMarkCheckbox({
   thread,
 }: {
   marked: boolean;
-  onMark: (id: string) => void;
+  onMark: (id: string, range: boolean) => void;
   row: InboxListRow;
   thread: MyReplyRow;
 }): ReactNode {
@@ -1276,6 +1289,7 @@ function InboxBody({
     dismissRows,
     dismissWrite,
     lastMarked,
+    markRange,
     marked,
     onMark,
     selectAll,
@@ -1289,9 +1303,24 @@ function InboxBody({
     candidates,
     drawnIds,
     filters,
+    // The rows a range runs over, read at the click: the rows the list draws, in its order, less
+    // a row it holds in place after the server dropped it (`heldRow`), which is in no range. The
+    // Dismissed view's range runs over every row it has loaded, in its order.
+    order: () =>
+      showDismissed
+        ? shown.map((row) => rowId(row))
+        : presented.current.flatMap(({ row }) => (byId.has(rowId(row)) ? [rowId(row)] : [])),
     rows: byId,
     showDismissed,
   });
+  // What a row's checkbox does: a click marks or unmarks its row, a shift-click takes the range.
+  const markRow = useCallback(
+    (id: string, range: boolean) => {
+      if (range) markRange(id, true);
+      else onMark(id);
+    },
+    [markRange, onMark]
+  );
   const paneSelection = usePaneSelection({
     bulkSnoozing: bulkSnoozing.size,
     candidates,
@@ -1497,6 +1526,14 @@ function InboxBody({
       paneFocus.current = null;
     }
     stepInMode(delta);
+  };
+  /** `j` or `k` with the range carried from the anchor to the row the step reaches. It sets no
+   *  anchor: with none the list draws, the step only moves. The step moves the selection or the
+   *  focus at once, so the row it reached is read from there rather than from this render. */
+  const moveInRange = (delta: 1 | -1) => {
+    move(delta);
+    const id = paneShown ? paneSelection.selectedNow.current : focusedRow()?.dataset.inboxRow;
+    if (id !== undefined && byId.has(id)) markRange(id, false);
   };
   /** What the keys act on, for the bindings' labels: the row the column is showing, or the row
    *  holding the focus. */
@@ -1753,6 +1790,35 @@ function InboxBody({
         const id = markableRow();
         if (id !== undefined) onMark(id);
       },
+      when: () => markableRow() !== undefined,
+    },
+    {
+      // The range from the anchor to the row in hand, as a shift-click on its checkbox takes it.
+      // It walks the list with the row in hand as `x` does, so it is no palette row either.
+      id: "select-range",
+      keys: "Shift+X",
+      label: `Select or deselect the rows from the last one marked or unmarked without Shift to the ${acted} row`,
+      palette: false,
+      run: () => {
+        const id = markableRow();
+        if (id !== undefined) markRange(id, true);
+      },
+      when: () => markableRow() !== undefined,
+    },
+    {
+      id: "next-in-range",
+      keys: "Shift+J",
+      label: "Next row, taking the range to it",
+      palette: false,
+      run: () => moveInRange(1),
+      when: () => markableRow() !== undefined,
+    },
+    {
+      id: "previous-in-range",
+      keys: "Shift+K",
+      label: "Previous row, taking the range to it",
+      palette: false,
+      run: () => moveInRange(-1),
       when: () => markableRow() !== undefined,
     },
     {
@@ -2321,6 +2387,15 @@ function InboxBody({
   else if (bulkSnoozing.size !== 0) barState = `Snoozing ${bulkSnoozing.size}…`;
   else if (allRows) barState = "Every row selected";
   else barState = `${selectedCount} selected`;
+  // What a screen reader hears of the selection, a range's included: the count, in words of its
+  // own rather than the bar's "N selected", from a region the page draws before the first mark,
+  // so the first change is heard. `sr-only`, so it moves no pixel.
+  const spokenCount = bulkBarShown ? selectedCount : 0;
+  const selectionStatus = (
+    <p className="sr-only" data-inbox-selection-count="" role="status">
+      {spokenCount === 0 ? null : `${spokenCount} ${spokenCount === 1 ? "row" : "rows"} selected`}
+    </p>
+  );
   const selectionBar = (
     <SelectionBar
       barRef={bulkBarRef}
@@ -2476,6 +2551,7 @@ function InboxBody({
       {/* Every Snooze this list draws - a row's, and the column head's - is held while the
             bar's own Snooze write is out over its ask (`SnoozeControl`). */}
       <BulkSnoozingContext value={bulkSnoozing}>
+        {selectionStatus}
         {/* Outside the layout box above, because it is `fixed`: the bar is drawn over the list
               rather than in it, so the first mark moves no row. */}
         {selectionBar}
@@ -2603,7 +2679,7 @@ function InboxBody({
     const shared = {
       group: bandKey,
       marked: marked.has(id),
-      onMark,
+      onMark: markRow,
       onRelease,
       ordinal: row.kind === "ask" ? ordinals.get(row.ask.id) : undefined,
       row,

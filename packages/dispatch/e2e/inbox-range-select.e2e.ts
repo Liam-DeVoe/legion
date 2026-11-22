@@ -1,0 +1,885 @@
+import { setLiveSessions } from "./agents";
+import { createAsk, createIssue, createProject, patchIssue } from "./api";
+import { openDisplayMenu, openFilterPanel } from "./filters";
+import { drawer } from "./inbox-drawer";
+import { inboxList, READING_PANE_WIDTH, selectedRow } from "./inbox-pane";
+import {
+  asSession,
+  replyRowId,
+  seedBulkReplyThreads,
+  seedCommentThread,
+  THREAD_SESSION,
+} from "./inbox-threads";
+import { expandedState } from "./settled";
+import { type BrowserContext, expect, type Locator, type Page, type Request, test } from "./test";
+import { asUser } from "./users";
+
+/**
+ * A shift-click on a row's checkbox selects a range: the clicked row, the anchor and every row
+ * the list draws between them (R4). The anchor is the row marked or unmarked last without the
+ * shift key. `Shift+X`, `Shift+J` and `Shift+K` make the same range from the keyboard. One press
+ * of the bar acts on the whole range, a screen reader hears its count, and the bar's focus
+ * return still reads the row the person marked last.
+ *
+ * Everything here is made up: this repository is public, so nothing names a real person, host or
+ * project.
+ */
+
+/** The route one press of Dismiss or of Move to Inbox posts to. */
+const DISMISS_PATH = "/api/v1/me/inbox/dismiss";
+
+/** The route one ask's snooze is written to. */
+const SNOOZE_PATH = /^\/api\/v1\/me\/asks\/([^/]+)\/snooze$/;
+
+/** The Inbox, 900 pixels tall, by default at a width that draws the reading column. */
+async function inboxPage(
+  context: BrowserContext,
+  address = "/",
+  width = READING_PANE_WIDTH
+): Promise<Page> {
+  const page = await context.newPage();
+  await page.setViewportSize({ height: 900, width });
+  await page.goto(address);
+  return page;
+}
+
+/** Every row the list draws. */
+function rows(page: Page): Locator {
+  return inboxList(page).locator("[data-inbox-row]");
+}
+
+/** One row, by the id its `data-inbox-row` names. */
+function row(page: Page, id: string): Locator {
+  return inboxList(page).locator(`[data-inbox-row="${id}"]`);
+}
+
+/** A row's own checkbox. */
+function mark(page: Page, id: string): Locator {
+  return row(page, id).getByRole("checkbox");
+}
+
+/** The ids of the rows the list draws, in the order it draws them. */
+function drawnIds(page: Page): Promise<string[]> {
+  return rows(page).evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute("data-inbox-row") ?? "")
+  );
+}
+
+/** The ids of the drawn rows whose checkbox is ticked, in the order the list draws them. */
+function markedIds(page: Page): Promise<string[]> {
+  return rows(page).evaluateAll((nodes) =>
+    nodes
+      .filter((node) => node.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked)
+      .map((node) => node.getAttribute("data-inbox-row") ?? "")
+  );
+}
+
+/** The selection bar. */
+function bar(page: Page): Locator {
+  return page.getByRole("toolbar", { name: "Selected rows" });
+}
+
+/** Reads the bar counting `count` rows, in its own words. */
+async function expectCount(page: Page, count: number): Promise<void> {
+  await expect(bar(page).getByText(`${count} selected`, { exact: true })).toBeVisible();
+}
+
+/** Every band heading the list draws, top to bottom, with its count. */
+function bandHeadings(page: Page): Promise<string[]> {
+  return inboxList(page)
+    .locator("h2 button")
+    .evaluateAll((nodes) => nodes.map((node) => (node.textContent ?? "").trim()));
+}
+
+/** Every `POST` to the dismiss route the page makes from here on. */
+function watchDismisses(page: Page): Request[] {
+  const posted: Request[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === DISMISS_PATH) {
+      posted.push(request);
+    }
+  });
+  return posted;
+}
+
+/** The thread ids the next press of Dismiss or of Move to Inbox names, once it is sent. */
+async function namedByPress(page: Page, press: () => Promise<void>): Promise<string[]> {
+  const sent = page.waitForRequest(
+    (request) => request.method() === "POST" && new URL(request.url()).pathname === DISMISS_PATH
+  );
+  await press();
+  const request = await sent;
+  // The answer is read before the next step, so the list has taken the press's write.
+  await (await request.response())?.finished();
+  const body: { threads?: string[] } = request.postDataJSON();
+  return body.threads ?? [];
+}
+
+/** Picks one choice of the View menu's Show section and shuts the menu again. */
+async function chooseShow(page: Page, label: string): Promise<void> {
+  const menu = await openDisplayMenu(page);
+  const trigger = page.getByRole("button", { exact: true, name: "View" });
+  await menu.getByRole("group", { name: "Show" }).getByRole("radio", { name: label }).click();
+  if ((await expandedState("the View menu", trigger)) === "open") await trigger.click();
+  await expect(menu).toHaveCount(0);
+}
+
+/** Selects a row as the pointer does: one click on its own time. */
+async function selectRow(page: Page, id: string): Promise<void> {
+  await row(page, id).locator("time").first().click();
+  await expect(row(page, id)).toHaveAttribute("data-inbox-selected", "true");
+}
+
+/** One frame and one task on, by when the page has drawn what it last read and its focus
+ *  rescue has placed the focus. */
+function frameAndTask(page: Page): Promise<void> {
+  return page.evaluate(() => {
+    const done = Promise.withResolvers<void>();
+    requestAnimationFrame(() => setTimeout(done.resolve, 0));
+    return done.promise;
+  });
+}
+
+/** The element holding the focus, named for a failure: the body, or its tag, its accessible
+ *  name and the row it is in. */
+function focusHolder(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || active === document.body) return "the page's body";
+    const name = (active.getAttribute("aria-label") ?? active.textContent ?? "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 80);
+    const inRow = active.closest("[data-inbox-row]")?.getAttribute("data-inbox-row") ?? "no row";
+    return `<${active.tagName.toLowerCase()}> name="${name}" in ${inRow}`;
+  });
+}
+
+/** Whether `target` holds the focus. */
+function holdsFocus(target: Locator): Promise<boolean> {
+  return target.evaluate((node) => node === document.activeElement);
+}
+
+/** The window's scroll position and the list column's, which scrolls in itself beside the
+ *  reading column. */
+function scrollPositions(page: Page): Promise<{ list: number; window: number }> {
+  return inboxList(page).evaluate((list) => ({ list: list.scrollTop, window: window.scrollY }));
+}
+
+/** Whether row `id`'s checkbox lies wholly inside the list column's visible box. */
+function markInSight(page: Page, id: string): Promise<boolean> {
+  return mark(page, id).evaluate((box) => {
+    const list = box.closest('[data-testid="inbox-list"]');
+    if (list === null) return false;
+    const seen = list.getBoundingClientRect();
+    const drawn = box.getBoundingClientRect();
+    return drawn.top >= seen.top && drawn.bottom <= seen.bottom;
+  });
+}
+
+/** Presses Tab from where the focus is until `target` holds it. */
+async function tabTo(page: Page, target: Locator, what: string): Promise<void> {
+  // Each read follows a key press whose focus move the browser makes before the press resolves,
+  // and the line after the loop reads the focus again and fails with its holder.
+  for (let pressed = 0; pressed < 80 && !(await holdsFocus(target)); pressed += 1) {
+    await page.keyboard.press("Tab");
+  }
+  expect(
+    await holdsFocus(target),
+    `Tab reaches ${what}; the focus is on ${await focusHolder(page)}`
+  ).toBe(true);
+}
+
+/** Moves the selection to the row at `to` among `ids` with `j` and `k`, from the row it is on. */
+async function selectWithKeys(page: Page, ids: readonly string[], to: number): Promise<void> {
+  // Each caller reads this once the selection stands on one row, and nothing moves it before
+  // the keys below.
+  const from = ids.indexOf((await selectedRow(page).getAttribute("data-inbox-row")) ?? "");
+  for (let at = from; at !== to; at += to > from ? 1 : -1) {
+    await page.keyboard.press(to > from ? "j" : "k");
+  }
+  await expect(row(page, ids[to] ?? "")).toHaveAttribute("data-inbox-selected", "true");
+}
+
+test("a shift-click selects the drawn rows between two checkboxes", async ({ browser }) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const lease = await createIssue({ project: "CORE", title: "Lease handover" });
+  await patchIssue(lease.key, { priority: 1 });
+  const mirror = await createIssue({ project: "CORE", title: "Mirror retries" });
+  await patchIssue(mirror.key, { priority: 2 });
+  // The two bands' threads interleave in time, so the order the list draws them in, band by
+  // band, is not the order of the rows sorted by their last reply.
+  await seedBulkReplyThreads({ count: 3, issueKey: lease.key, prefix: "Lease" });
+  await seedBulkReplyThreads({ count: 3, issueKey: mirror.key, olderThan: 1, prefix: "Mirror" });
+  // Three asks with one thread row among them, in a third band.
+  const canary = await createIssue({ project: "CORE", title: "Canary rollout" });
+  await patchIssue(canary.key, { priority: 3 });
+  const asks = [
+    (await createAsk(canary.key, { question: "Ship the canary today?" }, asSession())).id,
+  ];
+  const amid = replyRowId(await seedCommentThread(canary.key, "Who holds the pager?", "I do."));
+  asks.push((await createAsk(canary.key, { question: "Widen it tomorrow?" }, asSession())).id);
+  asks.push((await createAsk(canary.key, { question: "Roll it back?" }, asSession())).id);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await inboxPage(alice);
+    const dismisses = watchDismisses(page);
+    await expect(rows(page)).toHaveCount(10);
+    expect(await bandHeadings(page)).toEqual(["P1 (3)", "P2 (3)", "P3 (4)"]);
+    const drawn = await drawnIds(page);
+
+    // From the second row of the first band to the second row of the second band: the run is
+    // the rows the list draws between them, in its order.
+    const run = drawn.slice(1, 5);
+    await mark(page, drawn[1] ?? "").click();
+    await expectCount(page, 1);
+    await mark(page, drawn[4] ?? "").click({ modifiers: ["Shift"] });
+    await expectCount(page, run.length);
+    expect(await markedIds(page)).toEqual(run);
+
+    // One press of Dismiss is one request naming exactly the run, and the run leaves the list.
+    const named = await namedByPress(page, () =>
+      bar(page).getByRole("button", { name: "Dismiss selected threads" }).click()
+    );
+    expect([...named].sort()).toEqual([...run].sort());
+    expect(dismisses).toHaveLength(1);
+    await expect(rows(page)).toHaveCount(drawn.length - run.length);
+    expect(await drawnIds(page)).toEqual(drawn.filter((id) => !run.includes(id)));
+
+    // Over the third band's asks and the thread among them, one press of Snooze writes one
+    // snooze for each ask of the run, and none for the thread.
+    const band = drawn.slice(6);
+    expect(band).toEqual([asks[2], asks[1], amid, asks[0]]);
+    const snoozed: string[] = [];
+    page.on("request", (request) => {
+      const ask = SNOOZE_PATH.exec(new URL(request.url()).pathname)?.[1];
+      if (request.method() === "PUT" && ask !== undefined) snoozed.push(ask);
+    });
+    await mark(page, band[0] ?? "").click();
+    await mark(page, band[3] ?? "").click({ modifiers: ["Shift"] });
+    await expectCount(page, band.length);
+    expect(await markedIds(page)).toEqual(band);
+    await bar(page)
+      .getByRole("combobox", { name: "Snooze selected asks" })
+      .selectOption({ label: "Tomorrow" });
+    // The asks move into the folded Later band once their writes land, and the thread, which
+    // no snooze took, stays marked.
+    for (const ask of asks) await expect(row(page, ask)).toHaveCount(0);
+    await expectCount(page, 1);
+    expect([...snoozed].sort()).toEqual([...asks].sort());
+    expect(dismisses).toHaveLength(1);
+    await bar(page).getByRole("button", { name: "Clear selection" }).click();
+
+    // In the Dismissed view a range runs over the rows it has loaded, and one press of Move to
+    // Inbox names exactly those, which leave the view and stand in the Inbox again.
+    await chooseShow(page, "Dismissed");
+    await expect(page).toHaveURL(/show=dismissed/);
+    await expect(rows(page)).toHaveCount(run.length);
+    const loaded = await drawnIds(page);
+    const back = loaded.slice(0, 3);
+    await mark(page, loaded[0] ?? "").click();
+    await mark(page, loaded[2] ?? "").click({ modifiers: ["Shift"] });
+    await expectCount(page, back.length);
+    expect(await markedIds(page)).toEqual(back);
+    const restored = await namedByPress(page, () =>
+      bar(page).getByRole("button", { name: "Move to Inbox selected threads" }).click()
+    );
+    expect([...restored].sort()).toEqual([...back].sort());
+    expect(dismisses).toHaveLength(2);
+    await expect(rows(page)).toHaveCount(loaded.length - back.length);
+    await chooseShow(page, "Inbox");
+    for (const id of back) await expect(row(page, id)).toBeVisible();
+  } finally {
+    await alice.close();
+  }
+});
+
+test("the anchor of a range is the row marked last without the shift key", async ({ browser }) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const mirror = await createIssue({ project: "CORE", title: "Mirror retries" });
+  await patchIssue(mirror.key, { priority: 2 });
+  const backup = await createIssue({ project: "CORE", title: "Backup window" });
+  await patchIssue(backup.key, { priority: 3 });
+  await seedBulkReplyThreads({ count: 8, issueKey: mirror.key, prefix: "Mirror" });
+  await seedBulkReplyThreads({ count: 6, issueKey: backup.key, olderThan: 20, prefix: "Backup" });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await inboxPage(alice);
+    await expect(rows(page)).toHaveCount(14);
+    const drawn = await drawnIds(page);
+    /** Row `n` of the list, counted from 1. */
+    const at = (n: number) => drawn[n - 1] ?? "";
+    const rowsFrom = (first: number, last: number) => drawn.slice(first - 1, last);
+    const clear = () => bar(page).getByRole("button", { name: "Clear selection" }).click();
+
+    // First pass, with no other row marked: from an anchor on row 2, a shift-click on row 9 and
+    // then one on row 5. The second gives the range of its own click alone.
+    await mark(page, at(2)).click();
+    await mark(page, at(9)).click({ modifiers: ["Shift"] });
+    await expectCount(page, 8);
+    await mark(page, at(5)).click({ modifiers: ["Shift"] });
+    await expectCount(page, 4);
+    expect(await markedIds(page)).toEqual(rowsFrom(2, 5));
+    await clear();
+
+    // Second pass: row 12 marked with `x` before the anchor is set on row 2. It is outside both
+    // runs, so it stays selected.
+    await selectRow(page, at(12));
+    await page.keyboard.press("x");
+    await expectCount(page, 1);
+    await mark(page, at(2)).click();
+    await mark(page, at(9)).click({ modifiers: ["Shift"] });
+    await expectCount(page, 9);
+    await mark(page, at(5)).click({ modifiers: ["Shift"] });
+    await expectCount(page, 5);
+    expect(await markedIds(page)).toEqual([...rowsFrom(2, 5), at(12)]);
+
+    // A shift-click on a selected row takes the whole run out of the selection: row 12 was
+    // marked at the anchor, so the run from row 2 to it is unmarked.
+    await mark(page, at(12)).click({ modifiers: ["Shift"] });
+    await expect(bar(page)).toHaveCount(0);
+    expect(await markedIds(page)).toEqual([]);
+
+    // A row marked with `x` is the anchor of the shift-click that follows.
+    await selectRow(page, at(6));
+    await page.keyboard.press("x");
+    await mark(page, at(8)).click({ modifiers: ["Shift"] });
+    await expectCount(page, 3);
+    expect(await markedIds(page)).toEqual(rowsFrom(6, 8));
+    // So is a row unmarked with its checkbox: from row 7, the run to row 4 is marked, and row 8,
+    // marked at that anchor, stays.
+    await mark(page, at(7)).click();
+    await expectCount(page, 2);
+    await mark(page, at(4)).click({ modifiers: ["Shift"] });
+    await expectCount(page, 5);
+    expect(await markedIds(page)).toEqual(rowsFrom(4, 8));
+
+    // After Clear selection the first shift-click marks its own row alone.
+    await clear();
+    await mark(page, at(9)).click({ modifiers: ["Shift"] });
+    await expectCount(page, 1);
+    expect(await markedIds(page)).toEqual([at(9)]);
+
+    // After Select all the first shift-click unmarks its own row alone, and that row is the next
+    // anchor: from it, the run to row 6, marked at that anchor, is unmarked.
+    await bar(page).getByRole("button", { name: "Select all" }).click();
+    await expect(bar(page)).toContainText("Every row selected");
+    expect(await markedIds(page)).toEqual(drawn);
+    await mark(page, at(3)).click({ modifiers: ["Shift"] });
+    await expectCount(page, drawn.length - 1);
+    expect(await markedIds(page)).toEqual(drawn.filter((id) => id !== at(3)));
+    await mark(page, at(6)).click({ modifiers: ["Shift"] });
+    await expectCount(page, drawn.length - 4);
+    expect(await markedIds(page)).toEqual(drawn.filter((id) => !rowsFrom(3, 6).includes(id)));
+    await clear();
+
+    // A filter that hides the anchor: a shift-click then marks its own row alone, which is the
+    // next anchor, and the page shows no error.
+    await mark(page, at(3)).click();
+    await openFilterPanel(page);
+    await page.getByRole("button", { name: "Filter by priority" }).click();
+    await page
+      .getByRole("listbox", { name: "Priority options" })
+      .getByRole("option", { name: /^P3\b/ })
+      .click();
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog", { name: "Filter" })).toHaveCount(0);
+    await expect(rows(page)).toHaveCount(6);
+    const filtered = await drawnIds(page);
+    expect(filtered.length).toBeGreaterThan(1);
+    expect(filtered.length).toBeLessThan(drawn.length);
+    expect(filtered).not.toContain(at(3));
+    await mark(page, filtered[1] ?? "").click({ modifiers: ["Shift"] });
+    await expectCount(page, 1);
+    await mark(page, filtered[3] ?? "").click({ modifiers: ["Shift"] });
+    await expectCount(page, 3);
+    expect(await markedIds(page)).toEqual(filtered.slice(1, 4));
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    await page.getByRole("button", { name: "Clear filters" }).click();
+    await expect(rows(page)).toHaveCount(drawn.length);
+    await clear();
+
+    // A thread arrives between a click and a shift-click. It is the newest of the second band,
+    // so the list draws it inside the run, and the run takes it.
+    await mark(page, at(7)).click();
+    const arrived = replyRowId(
+      await seedCommentThread(backup.key, "Backup root new", "Backup reply new")
+    );
+    await expect(rows(page)).toHaveCount(drawn.length + 1);
+    const withArrival = await drawnIds(page);
+    expect(withArrival.indexOf(arrived)).toBe(withArrival.indexOf(at(8)) + 1);
+    await mark(page, at(10)).click({ modifiers: ["Shift"] });
+    const counted = [at(7), at(8), arrived, at(9), at(10)];
+    await expectCount(page, counted.length);
+    expect(await markedIds(page)).toEqual(counted);
+    const named = await namedByPress(page, () =>
+      bar(page).getByRole("button", { name: "Dismiss selected threads" }).click()
+    );
+    expect([...named].sort()).toEqual([...counted].sort());
+    await expect(rows(page)).toHaveCount(withArrival.length - counted.length);
+
+    // A row the list holds in place under the pointer after the server dropped it: another tab
+    // dismisses it. It is drawn, and the range from the anchor to the row in hand leaves it out.
+    const left = await drawnIds(page);
+    const [anchor, , held, , hand] = left;
+    if (anchor === undefined || held === undefined || hand === undefined) {
+      throw new Error(`the list draws too few rows: ${left.join(", ")}`);
+    }
+    await mark(page, held).click();
+    await mark(page, anchor).click();
+    await expectCount(page, 2);
+    await selectRow(page, hand);
+    // Escape takes the focus off the row, so the hand the list holds a row under is the pointer.
+    await page.keyboard.press("Escape");
+    await expect(page.locator("body")).toBeFocused();
+    await row(page, held).locator("time").first().hover();
+    const other = await inboxPage(alice);
+    await selectRow(other, held);
+    await other.locator(`[data-inbox-dismiss="${held}"]`).first().click();
+    await expect(row(other, held)).toHaveCount(0);
+    await other.close();
+    // The page has read the list again once the held row's own mark has gone from the bar.
+    await expectCount(page, 1);
+    await expect(row(page, held)).toBeVisible();
+    await page.keyboard.press("Shift+X");
+    const run = left.slice(0, 5).filter((id) => id !== held);
+    await expectCount(page, run.length);
+    expect(await markedIds(page)).toEqual(run);
+    await expect(row(page, held)).toBeVisible();
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): 300 threads seeded in one statement and drawn by five presses of Show more, then
+// three more bands seeded and read again, one of them closed over an ask whose snooze is held.
+test("one Dismiss over a range of 300 rows is one request", async ({ browser }) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const mirror = await createIssue({ project: "CORE", title: "Mirror retries" });
+  await patchIssue(mirror.key, { priority: 2 });
+  await seedBulkReplyThreads({ count: 300, issueKey: mirror.key, prefix: "Mirror" });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await inboxPage(alice);
+    const dismisses = watchDismisses(page);
+    await expect(rows(page)).toHaveCount(50);
+    for (let shown = 100; shown <= 300; shown += 50) {
+      await page.locator('[data-inbox-show-more="P2"]').click();
+      await expect(rows(page)).toHaveCount(shown);
+    }
+    expect(await bandHeadings(page)).toEqual(["P2 (300)"]);
+    const drawn = await drawnIds(page);
+    await mark(page, drawn[0] ?? "").click();
+    await mark(page, drawn[299] ?? "").click({ modifiers: ["Shift"] });
+    await expectCount(page, 300);
+    const named = await namedByPress(page, () =>
+      bar(page).getByRole("button", { name: "Dismiss selected threads" }).click()
+    );
+    expect(named).toHaveLength(300);
+    expect([...named].sort()).toEqual([...drawn].sort());
+    await expect(rows(page)).toHaveCount(0);
+    expect(dismisses).toHaveLength(1);
+
+    // Three bands: one wider than a page, one closed over an ask whose snooze is in flight, and
+    // one drawn whole. A run across them counts the rows the list draws and no other.
+    const lease = await createIssue({ project: "CORE", title: "Lease handover" });
+    await patchIssue(lease.key, { priority: 1 });
+    await seedBulkReplyThreads({ count: 60, issueKey: lease.key, prefix: "Lease" });
+    const ask = (await createAsk(mirror.key, { question: "Hold the mirror?" }, asSession())).id;
+    await seedBulkReplyThreads({ count: 3, issueKey: mirror.key, olderThan: 700, prefix: "Late" });
+    const backup = await createIssue({ project: "CORE", title: "Backup window" });
+    await patchIssue(backup.key, { priority: 3 });
+    await seedBulkReplyThreads({ count: 4, issueKey: backup.key, prefix: "Backup" });
+    await page.reload();
+    await expect(rows(page)).toHaveCount(50 + 4 + 4);
+    // The ask's snooze is held for the rest of the test, so it stays in flight.
+    await page.route("**/api/v1/me/asks/*/snooze", () => undefined);
+    await selectRow(page, ask);
+    await page.locator("[data-inbox-snooze]").first().selectOption({ label: "Tomorrow" });
+    await inboxList(page)
+      .getByRole("button", { name: /^P2 \(/ })
+      .click();
+    expect(await bandHeadings(page)).toEqual(["P1 (60)", "P2 (4)", "P3 (4)"]);
+    await expect(rows(page)).toHaveCount(50 + 1 + 4);
+    await expect(row(page, ask)).toBeVisible();
+    const across = await drawnIds(page);
+    await mark(page, across[0] ?? "").click();
+    await mark(page, across.at(-1) ?? "").click({ modifiers: ["Shift"] });
+    await expectCount(page, across.length);
+    expect(await markedIds(page)).toEqual(across);
+    expect(across).toContain(ask);
+    // The rows the run did not draw were not taken into it: the ten behind P1's Show more and
+    // the three the closed P2 band hid are drawn unticked once shown, and the bar's count holds.
+    await page.locator('[data-inbox-show-more="P1"]').click();
+    await expect(rows(page)).toHaveCount(across.length + 10);
+    await inboxList(page)
+      .getByRole("button", { name: /^P2 \(/ })
+      .click();
+    await expect(rows(page)).toHaveCount(across.length + 10 + 3);
+    expect(await markedIds(page)).toEqual(across);
+    await expectCount(page, across.length);
+  } finally {
+    await alice.close();
+  }
+});
+
+test("the keyboard makes the same range from the anchor", async ({ browser }) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const mirror = await createIssue({ project: "CORE", title: "Mirror retries" });
+  await patchIssue(mirror.key, { priority: 2 });
+  await seedBulkReplyThreads({ count: 10, issueKey: mirror.key, prefix: "Mirror" });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await inboxPage(alice);
+    await expect(rows(page)).toHaveCount(10);
+    const drawn = await drawnIds(page);
+    await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", drawn[0] ?? "");
+    // The spoken count is in the page before the first mark.
+    const spoken = page.locator("[data-inbox-selection-count]");
+    await expect(spoken).toHaveCount(1);
+    await expect(spoken).toHaveAttribute("role", "status");
+    await expect(spoken).toHaveText("");
+    // The pointer leaves the list, and the keymap takes the keys from the body.
+    await page.mouse.move(0, 0);
+    await page.locator("body").focus();
+
+    // `x` on the second row and `Shift+X` on the seventh: the run between them.
+    await selectWithKeys(page, drawn, 1);
+    await page.keyboard.press("x");
+    await selectWithKeys(page, drawn, 6);
+    await page.keyboard.press("Shift+X");
+    await expectCount(page, 6);
+    expect(await markedIds(page)).toEqual(drawn.slice(1, 7));
+    await expect(spoken).toHaveText("6 rows selected");
+    await expect(page.getByText("6 selected", { exact: true })).toHaveCount(1);
+
+    // From the same anchor, `Shift+J` three times takes the run to the fourth row with the hand,
+    // and `Shift+K` once back to the third.
+    await selectWithKeys(page, drawn, 1);
+    for (let pressed = 0; pressed < 3; pressed += 1) await page.keyboard.press("Shift+J");
+    await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", drawn[4] ?? "");
+    await expectCount(page, 4);
+    expect(await markedIds(page)).toEqual(drawn.slice(1, 5));
+    await page.keyboard.press("Shift+K");
+    await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", drawn[3] ?? "");
+    await expectCount(page, 3);
+    expect(await markedIds(page)).toEqual(drawn.slice(1, 4));
+    await expect(spoken).toHaveText("3 rows selected");
+
+    // The help lists the three keys, and the palette offers none of them, as it does not offer
+    // `x`, while it does offer the Inbox's `f`.
+    await page.locator("body").focus();
+    await page.keyboard.press("?");
+    const help = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+    const inbox = help.getByRole("region", { name: "Inbox" });
+    for (const [label, key] of [
+      [
+        "Select or deselect the rows from the last one marked or unmarked without Shift to the selected row",
+        "Shift+X",
+      ],
+      ["Next row, taking the range to it", "Shift+J"],
+      ["Previous row, taking the range to it", "Shift+K"],
+    ] as const) {
+      await expect(
+        inbox.getByRole("listitem").filter({ hasText: label }).locator("kbd")
+      ).toHaveText([key]);
+    }
+    await page.keyboard.press("Escape");
+    await expect(help).toHaveCount(0);
+    await page.locator("body").focus();
+    await page.keyboard.press("Control+k");
+    const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
+      name: "Actions",
+    });
+    await expect(actions).toBeVisible();
+    await expect(actions.getByRole("option", { name: "Search asks" })).toHaveCount(1);
+    for (const label of [
+      "Select or deselect the selected row",
+      "Select or deselect the rows from the last one marked or unmarked without Shift to the selected row",
+      "Next row, taking the range to it",
+      "Previous row, taking the range to it",
+    ]) {
+      await expect(actions.getByRole("option", { name: label })).toHaveCount(0);
+    }
+    await page.keyboard.press("Escape");
+    await bar(page).getByRole("button", { name: "Clear selection" }).click();
+    await expect(spoken).toHaveText("");
+
+    // With no anchor, as after Clear selection, `Shift+J` only moves the hand: it ticks no row
+    // and sets no anchor, so the shift-click after it ticks its own row alone.
+    await page.locator("body").focus();
+    await page.keyboard.press("Shift+J");
+    await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", drawn[4] ?? "");
+    await expect(bar(page)).toHaveCount(0);
+    expect(await markedIds(page)).toEqual([]);
+    await mark(page, drawn[7] ?? "").click({ modifiers: ["Shift"] });
+    await expectCount(page, 1);
+    expect(await markedIds(page)).toEqual([drawn[7]]);
+    await bar(page).getByRole("button", { name: "Clear selection" }).click();
+    await expect(bar(page)).toHaveCount(0);
+
+    // This engine passes the shift key to the click the space bar makes: the space bar on one
+    // checkbox and the shift key with it on a later one make the same run.
+    await mark(page, drawn[1] ?? "").focus();
+    await page.keyboard.press("Space");
+    await expectCount(page, 1);
+    await mark(page, drawn[6] ?? "").focus();
+    await page.keyboard.press("Shift+Space");
+    await expectCount(page, 6);
+    expect(await markedIds(page)).toEqual(drawn.slice(1, 7));
+  } finally {
+    await alice.close();
+  }
+});
+
+test("a shift-click selects no text and keeps the focus on its checkbox", async ({ browser }) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const mirror = await createIssue({ project: "CORE", title: "Mirror retries" });
+  await patchIssue(mirror.key, { priority: 2 });
+  await seedBulkReplyThreads({ count: 12, issueKey: mirror.key, prefix: "Mirror" });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    // Below the column's width each row is a card, whose title is plain text: on a short row
+    // the title is a link, which a drag carries rather than selects.
+    const page = await inboxPage(alice, "/", READING_PANE_WIDTH - 256);
+    await expect(rows(page)).toHaveCount(12);
+    const drawn = await drawnIds(page);
+    const selectedText = () => page.evaluate(() => window.getSelection()?.toString() ?? "");
+
+    // A click and a shift-click ten rows apart: both landed, and no text is selected.
+    await mark(page, drawn[0] ?? "").click();
+    await mark(page, drawn[10] ?? "").click({ modifiers: ["Shift"] });
+    await expectCount(page, 11);
+    expect(await selectedText(), "the page's selected text").toBe("");
+    expect(
+      await holdsFocus(mark(page, drawn[10] ?? "")),
+      `the shift-clicked checkbox holds the focus; the focus is on ${await focusHolder(page)}`
+    ).toBe(true);
+
+    // A drag across one row's text still selects it: the root's words the card quotes.
+    const words = row(page, drawn[2] ?? "")
+      .getByRole("paragraph")
+      .filter({ hasText: /^Mirror root \d+$/ });
+    // The count of eleven above waited for the list's rows, and nothing moves this card before
+    // the drag.
+    const box = await words.boundingBox();
+    if (box === null) throw new Error("the row's quoted words are not drawn");
+    await page.mouse.move(box.x + 1, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width - 1, box.y + box.height / 2, { steps: 5 });
+    await page.mouse.up();
+    expect(await selectedText()).toMatch(/Mirror root/);
+  } finally {
+    await alice.close();
+  }
+});
+
+test("a range Dismiss hands the focus to a row that stays", async ({ browser }) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const mirror = await createIssue({ project: "CORE", title: "Mirror retries" });
+  await patchIssue(mirror.key, { priority: 2 });
+  await seedBulkReplyThreads({ count: 12, issueKey: mirror.key, prefix: "Mirror" });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await inboxPage(alice);
+    await expect(rows(page)).toHaveCount(12);
+    // The count above waited for all twelve rows, and nothing moves them before the keys do.
+    const drawn = await drawnIds(page);
+    await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", drawn[0] ?? "");
+    await page.mouse.move(0, 0);
+    await page.locator("body").focus();
+
+    // The keyboard alone: `x` on row 3, `Shift+X` on row 8, the focus into the bar, and Enter
+    // on Dismiss.
+    await selectWithKeys(page, drawn, 2);
+    await page.keyboard.press("x");
+    await selectWithKeys(page, drawn, 7);
+    await page.keyboard.press("Shift+X");
+    await expectCount(page, 6);
+    const dismiss = bar(page).getByRole("button", { name: "Dismiss selected threads" });
+    await tabTo(page, dismiss, "the bar's Dismiss");
+    const before = await scrollPositions(page);
+    await page.keyboard.press("Enter");
+    for (const id of drawn.slice(2, 8)) await expect(row(page, id)).toHaveCount(0);
+
+    // The row now at the place of row 3, the row marked last, is row 9, and it is in sight: the
+    // focus is on its checkbox, and nothing scrolled.
+    await frameAndTask(page);
+    const place = drawn[8] ?? "";
+    expect(await drawnIds(page)).toEqual([...drawn.slice(0, 2), ...drawn.slice(8)]);
+    expect(await markInSight(page, place), "row 9 is in the list's visible box").toBe(true);
+    expect(
+      await holdsFocus(mark(page, place)),
+      `the focus is on row 9's checkbox; it is on ${await focusHolder(page)}`
+    ).toBe(true);
+    expect(await scrollPositions(page)).toEqual(before);
+
+    // Two rows marked, and a second tab dismisses one of them while the focus is on its
+    // checkbox. The person did not cause that loss: the bar's count drops by one, the row stays
+    // drawn in its place, held under the person's hand, with the focus still on its checkbox,
+    // and nothing scrolls.
+    const [kept, gone] = [drawn[9] ?? "", drawn[10] ?? ""];
+    await mark(page, kept).click();
+    await mark(page, gone).click();
+    await expectCount(page, 2);
+    await expect(mark(page, gone)).toBeFocused();
+    const standing = await drawnIds(page);
+    const still = await scrollPositions(page);
+    const other = await inboxPage(alice);
+    await selectRow(other, gone);
+    await other.locator(`[data-inbox-dismiss="${gone}"]`).first().click();
+    await expect(row(other, gone)).toHaveCount(0);
+    await other.close();
+    await expectCount(page, 1);
+    await frameAndTask(page);
+    expect(await drawnIds(page), "the held row is drawn in its place").toEqual(standing);
+    expect(
+      await holdsFocus(mark(page, gone)),
+      `the focus stays on the held row's checkbox; it is on ${await focusHolder(page)}`
+    ).toBe(true);
+    expect(await scrollPositions(page)).toEqual(still);
+  } finally {
+    await alice.close();
+  }
+});
+
+test("the drawer makes the same range by click and by key", async ({ browser }) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const mirror = await createIssue({ project: "CORE", title: "Mirror retries" });
+  await patchIssue(mirror.key, { priority: 2 });
+  await seedBulkReplyThreads({ count: 8, issueKey: mirror.key, prefix: "Mirror" });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize({ height: 900, width: READING_PANE_WIDTH });
+    await page.goto("/agents");
+    await expect(page.getByRole("heading", { name: "Agents" })).toBeVisible();
+    await page.locator("body").focus();
+    await page.keyboard.press("i");
+    const peek = drawer(page);
+    const listed = inboxList(peek).locator("[data-inbox-row]");
+    await expect(listed).toHaveCount(8);
+    const drawn = await listed.evaluateAll((nodes) =>
+      nodes.map((node) => node.getAttribute("data-inbox-row") ?? "")
+    );
+    const box = (id: string) => peek.locator(`[data-inbox-row="${id}"]`).getByRole("checkbox");
+    const ticked = () =>
+      listed.evaluateAll((nodes) =>
+        nodes
+          .filter((node) => node.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked)
+          .map((node) => node.getAttribute("data-inbox-row") ?? "")
+      );
+    const peekBar = peek.getByRole("toolbar", { name: "Selected rows" });
+
+    // By click: the second row, then the fifth with the shift key.
+    await box(drawn[1] ?? "").click();
+    await box(drawn[4] ?? "").click({ modifiers: ["Shift"] });
+    await expect(peekBar.getByText("4 selected", { exact: true })).toBeVisible();
+    expect(await ticked()).toEqual(drawn.slice(1, 5));
+    await peekBar.getByRole("button", { name: "Clear selection" }).click();
+    await expect(peekBar).toHaveCount(0);
+
+    // By key, on the focused row, as the drawer's keys act: `x` on the second row, `Shift+X` on
+    // the fourth, then `Shift+J` to the fifth.
+    await peek.locator(`[data-inbox-row="${drawn[1]}"]`).focus();
+    await page.keyboard.press("x");
+    await page.keyboard.press("j");
+    await page.keyboard.press("j");
+    await expect(peek.locator(`[data-inbox-row="${drawn[3]}"]`)).toBeFocused();
+    await page.keyboard.press("Shift+X");
+    await expect(peekBar.getByText("3 selected", { exact: true })).toBeVisible();
+    await page.keyboard.press("Shift+J");
+    await expect(peek.locator(`[data-inbox-row="${drawn[4]}"]`)).toBeFocused();
+    await expect(peekBar.getByText("4 selected", { exact: true })).toBeVisible();
+    expect(await ticked()).toEqual(drawn.slice(1, 5));
+  } finally {
+    await alice.close();
+  }
+});
+
+test("the bar's return keeps the row marked last, or takes the first row in sight with no mark", async ({
+  browser,
+}) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const mirror = await createIssue({ project: "CORE", title: "Mirror retries" });
+  await patchIssue(mirror.key, { priority: 2 });
+  await seedBulkReplyThreads({ count: 40, issueKey: mirror.key, prefix: "Mirror" });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await inboxPage(alice);
+    await expect(rows(page)).toHaveCount(40);
+    const drawn = await drawnIds(page);
+    const list = inboxList(page);
+
+    // A mark on row 2, then a range taken to row 30 far below it: Clear selection hands the
+    // focus to row 2's checkbox, the row marked last, and brings it into view.
+    await mark(page, drawn[1] ?? "").click();
+    await mark(page, drawn[29] ?? "").click({ modifiers: ["Shift"] });
+    await expectCount(page, 29);
+    expect(await markInSight(page, drawn[1] ?? ""), "row 2 is out of sight").toBe(false);
+    await bar(page).getByRole("button", { name: "Clear selection" }).click();
+    await expect(bar(page)).toHaveCount(0);
+    await frameAndTask(page);
+    expect(
+      await holdsFocus(mark(page, drawn[1] ?? "")),
+      `the focus is on row 2's checkbox; it is on ${await focusHolder(page)}`
+    ).toBe(true);
+    expect(await markInSight(page, drawn[1] ?? ""), "row 2 is in sight").toBe(true);
+
+    // A page with no row marked yet: the first mark is a shift-click with no anchor, which
+    // marks no row as the one marked last. Select all, then Clear selection, hands the focus to
+    // the first row in sight, with no scroll.
+    await page.reload();
+    await expect(rows(page)).toHaveCount(40);
+    await list.evaluate((node) => {
+      node.scrollTop = 600;
+    });
+    await frameAndTask(page);
+    await mark(page, drawn[25] ?? "").click({ modifiers: ["Shift"] });
+    await expectCount(page, 1);
+    await bar(page).getByRole("button", { name: "Select all" }).click();
+    await expect(bar(page)).toContainText("Every row selected");
+    const before = await scrollPositions(page);
+    const firstInSight = await list.evaluate((node) => {
+      const seen = node.getBoundingClientRect();
+      for (const each of node.querySelectorAll("[data-inbox-row]")) {
+        const box = each.querySelector('input[type="checkbox"]')?.getBoundingClientRect();
+        if (box !== undefined && box.top >= seen.top && box.bottom <= seen.bottom) {
+          return each.getAttribute("data-inbox-row") ?? "";
+        }
+      }
+      return "";
+    });
+    expect(
+      drawn.indexOf(firstInSight),
+      "the first row in sight is below the list's top"
+    ).toBeGreaterThan(0);
+    await bar(page).getByRole("button", { name: "Clear selection" }).click();
+    await expect(bar(page)).toHaveCount(0);
+    await frameAndTask(page);
+    expect(
+      await holdsFocus(mark(page, firstInSight)),
+      `the focus is on the first row in sight; it is on ${await focusHolder(page)}`
+    ).toBe(true);
+    expect(await scrollPositions(page)).toEqual(before);
+  } finally {
+    await alice.close();
+  }
+});

@@ -5753,6 +5753,105 @@ test("the keys act on the selected row and the pane: Enter, 1-9, x, h and Escape
   }
 });
 
+test("the Inbox's range and compose keys", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+    inboxIssue("ask-c", "CORE-3", "Which owner?"),
+  ];
+  const listOpenAsks = mockInboxReads(rows);
+  const getAsk = mockAskReads(rows);
+  const rangeKeys = (scope: string) =>
+    appKeymap
+      .describe()
+      .filter(
+        (entry) =>
+          entry.scope === scope &&
+          ["select-range", "next-in-range", "previous-in-range"].includes(entry.id)
+      )
+      .map((entry) => [entry.id, entry.keys]);
+  const page = renderInbox();
+  try {
+    await screen.findByText("Which owner?");
+    // The page registers the three keys in its own scope, where the help lists them.
+    expect(rangeKeys("inbox")).toEqual([
+      ["select-range", ["Shift+X"]],
+      ["next-in-range", ["Shift+J"]],
+      ["previous-in-range", ["Shift+K"]],
+    ]);
+
+    // Below the column's width the keys act on the focused row, and no row holds the focus: each
+    // of the three marks nothing, moves no hand and sets no anchor.
+    expect(document.activeElement).toBe(document.body);
+    await user.keyboard("{Shift>}X{/Shift}{Shift>}J{/Shift}{Shift>}K{/Shift}");
+    expect(document.activeElement).toBe(document.body);
+    expect(screen.queryByRole("toolbar", { name: "Selected rows" })).not.toBeInTheDocument();
+    expect(
+      screen.getAllByRole("checkbox").filter((box) => (box as HTMLInputElement).checked)
+    ).toEqual([]);
+    // With no anchor, a shift-click marks its own row alone.
+    await user.keyboard("{Shift>}");
+    await user.click(within(shortRow("ask-c")).getByRole("checkbox"));
+    await user.keyboard("{/Shift}");
+    await screen.findByText("1 selected");
+    expect(
+      screen
+        .getAllByRole("checkbox")
+        .filter((box) => (box as HTMLInputElement).checked)
+        .map((box) => box.closest("[data-inbox-row]")?.getAttribute("data-inbox-row"))
+    ).toEqual(["ask-c"]);
+
+    // With a row in hand, `x` and the three range keys apply, and the palette, which reads the
+    // Inbox's scope (it offers `f`), offers none of the four.
+    shortRow("ask-a").focus();
+    const rangeAndMark = ["select", "select-range", "next-in-range", "previous-in-range"];
+    expect(
+      appKeymap
+        .describe()
+        .filter((entry) => entry.scope === "inbox" && rangeAndMark.includes(entry.id))
+        .map((entry) => [entry.id, entry.enabled])
+    ).toEqual([
+      ["select", true],
+      ["select-range", true],
+      ["next-in-range", true],
+      ["previous-in-range", true],
+    ]);
+    const offered = appKeymap
+      .actions()
+      .filter((action) => action.scope === "inbox")
+      .map((action) => action.id);
+    expect(offered).toContain("search");
+    expect(offered.filter((id) => rangeAndMark.includes(id))).toEqual([]);
+  } finally {
+    page.unmount();
+  }
+
+  // The drawer registers the same three in its dialog scope.
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const drawer = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <Inbox filter={{}} keymapScope={DIALOG_SCOPE} onFilterChange={() => {}} pane={false} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await screen.findByText("Which owner?");
+    expect(rangeKeys(DIALOG_SCOPE)).toEqual([
+      ["select-range", ["Shift+X"]],
+      ["next-in-range", ["Shift+J"]],
+      ["previous-in-range", ["Shift+K"]],
+    ]);
+  } finally {
+    drawer.unmount();
+    getAsk.mockRestore();
+    listOpenAsks.mockRestore();
+  }
+});
+
 test("l reads the column, and Escape returns the focus to the row l was pressed on", async () => {
   const user = userEvent.setup();
   const narrow = widenToReadingPane();

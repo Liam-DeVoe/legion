@@ -166,6 +166,8 @@ export const realStackReasons: Record<string, string> = {
     "every row draws the document in its live room; another session's edit, a reply and an event committed elsewhere must reach the open page, and a resumed socket's gap must refresh the reads it holds; an approval row reads the version the server names latest against the approval it is marked against",
   "inbox-quoted-range.e2e.ts":
     "the pane draws each document from its live room with the comment's mark lit in it, and the anchor the server orphans when another session deletes the quoted words is what the pane falls back to",
+  "inbox-range-select.e2e.ts":
+    "each range ends in a dismiss, a restore or a snooze the server takes and the list reads again; a thread arrives live inside a run, and another tab's dismiss reaches the open page",
   "inbox-read-state.e2e.ts": "reading writes the read mark and the row is re-read",
   "inbox-reading-pane.e2e.ts":
     "the answer is a write; approval is the server's computation; the withdrawal is the server's",

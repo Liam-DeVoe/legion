@@ -13,6 +13,7 @@ import { useMarkedKeys } from "../../hooks/useMarkedKeys";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import type { InboxFilters } from "./grouping";
 import { type InboxListRow, rowId } from "./list-row";
+import { rangeOf } from "./selection-range";
 import { type AskSnoozeFailure, useAskSnoozeMany } from "./useAskSnooze";
 import {
   dismissRow,
@@ -57,6 +58,42 @@ function snoozeStoppedText(stopped: number, of: number): string | undefined {
   });
 }
 
+/** Where the next range runs from: the anchor, the row the reader last marked or unmarked
+ *  without the shift key, by its checkbox or by `x`; the marks as they stood just after that
+ *  mark; and the run the last range took from it. */
+interface RangeStart {
+  readonly anchor: string | null;
+  readonly atAnchor: ReadonlySet<string>;
+  readonly last: readonly string[];
+}
+
+/** No anchor, as Select all and Clear selection leave the list. */
+const NO_ANCHOR: RangeStart = { anchor: null, atAnchor: new Set(), last: [] };
+
+/** `marked` with the run `run` taken from an anchor whose marks were `atAnchor`: each row of the
+ *  run marked, or unmarked where `marking` is false, and each row of the last run (`last`) that
+ *  this run does not hold back as it stood at the anchor, which unmarks a row that arrived since.
+ *  Every other row keeps its mark. */
+function withRange(
+  marked: ReadonlySet<string>,
+  run: readonly string[],
+  marking: boolean,
+  { atAnchor, last }: RangeStart
+): ReadonlySet<string> {
+  const next = new Set(marked);
+  const inRun = new Set(run);
+  for (const id of last) {
+    if (inRun.has(id)) continue;
+    if (atAnchor.has(id)) next.add(id);
+    else next.delete(id);
+  }
+  for (const id of run) {
+    if (marking) next.add(id);
+    else next.delete(id);
+  }
+  return next;
+}
+
 /** The selection of one Inbox list, and the two presses it feeds. */
 export interface InboxSelection {
   /** Whether the reader pressed **Select all**, which takes in every row the narrowing matches,
@@ -83,10 +120,19 @@ export interface InboxSelection {
   /** The one dismiss write this list shares, for what it is doing and what it was refused. */
   readonly dismissWrite: InboxDismiss;
   /** The row the reader marked last, by `rowId`, or null before their first mark: the row whose
-   *  checkbox takes the focus when the bar goes with it (`SelectionBar`'s `returnFocus`). */
+   *  checkbox takes the focus when the bar goes with it (`SelectionBar`'s `returnFocus`). A range
+   *  never moves it. */
   readonly lastMarked: () => string | null;
   /** Every row the reader has marked, by `rowId`, a folded one's included. */
   readonly marked: ReadonlySet<string>;
+  /** The range from the anchor to row `id`, every row of it taking the state `id` moves to: a
+   *  shift-click on its checkbox, and `Shift+X`, `Shift+J` and `Shift+K` on it. Where the list
+   *  does not draw the anchor, or there is none, `startsAnchor` decides: a shift-click and
+   *  `Shift+X` mark or unmark that row alone, which becomes the anchor; `Shift+J` and `Shift+K`,
+   *  which set no anchor, change nothing. */
+  readonly markRange: (id: string, startsAnchor: boolean) => void;
+  /** A mark or an unmark of row `id` without the shift key, by its checkbox or by `x`, which
+   *  makes it the anchor of the next range. */
   readonly onMark: (id: string) => void;
   readonly selectAll: () => void;
   /** The marked asks the view is drawing, which is what **Snooze** defers. */
@@ -123,6 +169,7 @@ export function useInboxSelection({
   candidates,
   drawnIds,
   filters,
+  order,
   rows,
   showDismissed,
 }: {
@@ -138,6 +185,9 @@ export function useInboxSelection({
   readonly drawnIds: ReadonlySet<string>;
   /** The list's own five fields, which a press under the narrowing sends. */
   readonly filters: InboxFilters;
+  /** The rows a range runs over, by `rowId`, in the order the list draws them at the moment it
+   *  is asked: what a shift-click and the range keys read. */
+  readonly order: () => readonly string[];
   /** Every row the narrowing matches, by `rowId`, in the order the list holds them. */
   readonly rows: ReadonlyMap<string, InboxListRow>;
   /** Whether the list is showing what the reader dismissed, where a press puts rows back. */
@@ -174,7 +224,11 @@ export function useInboxSelection({
       for (const id of ids) pressedHere.current.delete(id);
     },
   });
+  // Where the next range runs from. Select all and Clear selection leave no anchor, so the
+  // next shift-click marks or unmarks its own row alone and becomes the anchor.
+  const range = useRef<RangeStart>(NO_ANCHOR);
   const clearSelection = useCallback(() => {
+    range.current = NO_ANCHOR;
     setMarked(new Set());
     setAllRows(false);
     setSnoozeRefusal(undefined);
@@ -183,14 +237,48 @@ export function useInboxSelection({
   // unmarked while `onMark` stays as stable as `useMarkedKeys` makes it.
   const markedNow = useRef(marked);
   markedNow.current = marked;
+  // The order as this render reads it, so `markRange` stays stable too.
+  const orderNow = useRef(order);
+  orderNow.current = order;
   const lastMarkedId = useRef<string | null>(null);
-  const onMark = useCallback(
+  // A mark or an unmark of one row, which becomes the anchor, with the marks as they stand
+  // after it. Any change to the marks ends Select all.
+  const markAlone = useCallback(
     (id: string) => {
-      if (!markedNow.current.has(id)) lastMarkedId.current = id;
+      const atAnchor = new Set(markedNow.current);
+      if (atAnchor.has(id)) atAnchor.delete(id);
+      else atAnchor.add(id);
+      range.current = { anchor: id, atAnchor, last: [] };
       setAllRows(false);
       toggleMark(id);
     },
     [toggleMark]
+  );
+  const onMark = useCallback(
+    (id: string) => {
+      if (!markedNow.current.has(id)) lastMarkedId.current = id;
+      markAlone(id);
+    },
+    [markAlone]
+  );
+  // The state the range takes is read from the marks at the anchor, not from the marks now, so a
+  // second shift-click from one anchor reads as a first one does. It writes the marks directly
+  // and never through `onMark`, so the row marked last stays the one the reader marked.
+  const markRange = useCallback(
+    (id: string, startsAnchor: boolean) => {
+      const start = range.current;
+      const drawn = orderNow.current();
+      if (start.anchor === null || !drawn.includes(start.anchor)) {
+        if (startsAnchor) markAlone(id);
+        return;
+      }
+      const run = rangeOf(drawn, start.anchor, id);
+      const marking = !start.atAnchor.has(id);
+      range.current = { ...start, last: run };
+      setAllRows(false);
+      setMarked((current) => withRange(current, run, marking, start));
+    },
+    [markAlone, setMarked]
   );
   /** The marks the bar counts: the rows this view is drawing. */
   const selected = [...marked].filter((id) => drawnIds.has(id));
@@ -263,9 +351,11 @@ export function useInboxSelection({
     dismissRows,
     dismissWrite,
     lastMarked: () => lastMarkedId.current,
+    markRange,
     marked,
     onMark,
     selectAll: () => {
+      range.current = NO_ANCHOR;
       setMarked(new Set(rows.keys()));
       setAllRows(true);
     },
