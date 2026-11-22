@@ -25,7 +25,7 @@ import (
 type fakeSource struct {
 	state    State
 	claims   []supervise.Claim
-	observed ObservedState
+	observed State
 	err      error
 }
 
@@ -36,9 +36,9 @@ func (f fakeSource) State(_ context.Context, _ pgx.Tx) (State, []supervise.Claim
 	return f.state, f.claims, nil
 }
 
-func (f fakeSource) ObservedState(_ context.Context, _ pgx.Tx) (ObservedState, []supervise.Claim, error) {
+func (f fakeSource) ObservedState(_ context.Context, _ pgx.Tx) (State, []supervise.Claim, error) {
 	if f.err != nil {
-		return ObservedState{}, nil, f.err
+		return State{}, nil, f.err
 	}
 	return f.observed, f.claims, nil
 }

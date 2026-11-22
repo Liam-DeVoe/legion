@@ -698,28 +698,39 @@ func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]Phase
 	return phases, nil
 }
 
-// AllPhases is every phases row the store holds, by issue, in one statement: each issue's rows are
-// the rows Phases answers for that issue, with the same columns, the same scan and the same order
-// (by role). An issue with no row has no entry, which reads as the empty list Phases answers for it.
-// The statement reads the whole table, as Issues reads every issue: the state route lists every
-// issue the store holds (projection.Project), and one statement for all of them replaces one
-// statement for each.
-func (s *Postgres) AllPhases(ctx context.Context, tx pgx.Tx) (map[string][]PhaseRow, error) {
-	rows, err := tx.Query(ctx, `select `+phaseColumns+` from phases order by issue, role`)
+// listedPhaseColumns is the columns of a phases row that AllPhases reads, in scanListedPhase's
+// order: the columns the state route reads of a row (projection.Project, projection.Observe).
+const listedPhaseColumns = `issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, backward_moves, decision, entry`
+
+// AllPhases is the phases rows of project's issues, by issue, in one statement. Each issue's rows
+// are the rows Phases answers for that issue, in the same order (by role), with the columns the
+// state route reads (listedPhaseColumns): the issue, the role, the claim, the handoff commit, the
+// pass, the handoff record and its version, the rounds, the counts of the moves back, the review
+// decision and the entry. Every other field of a row is zero. An issue with no row has no entry,
+// which reads as the empty list Phases answers for it. The state route reads it in place of one
+// statement for each issue it lists.
+//
+// The database is shared by every project's daemon, and a row is keyed by an issue, so the
+// project of a row is the project of the issue record it is keyed by: the statement keeps the
+// rows whose issue is a record of project, as Assignments does, and reads no row of another
+// project's issue.
+func (s *Postgres) AllPhases(ctx context.Context, tx pgx.Tx, project string) (map[string][]PhaseRow, error) {
+	rows, err := tx.Query(ctx, `select `+listedPhaseColumns+` from phases
+		where issue in (select key from issues where project = $1) order by issue, role`, project)
 	if err != nil {
-		return nil, fmt.Errorf("list the phases of every issue: %w", err)
+		return nil, fmt.Errorf("list the phases of the issues of %s: %w", project, err)
 	}
 	defer rows.Close()
 	phases := map[string][]PhaseRow{}
 	for rows.Next() {
-		phase, err := scanPhase(rows)
+		phase, err := scanListedPhase(rows)
 		if err != nil {
-			return nil, fmt.Errorf("list the phases of every issue: %w", err)
+			return nil, fmt.Errorf("list the phases of the issues of %s: %w", project, err)
 		}
 		phases[phase.Issue] = append(phases[phase.Issue], phase)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list the phases of every issue: %w", err)
+		return nil, fmt.Errorf("list the phases of the issues of %s: %w", project, err)
 	}
 	return phases, nil
 }
@@ -820,30 +831,72 @@ func scanPhase(row scanner) (PhaseRow, error) {
 		phase.EntryRaisedAt = raisedAt.UTC()
 	}
 	phase.CompletedAt = phase.CompletedAt.UTC()
-	if decision != nil {
-		phase.Decision = &ReviewDecision{}
-		if err := json.Unmarshal(decision, phase.Decision); err != nil {
-			return PhaseRow{}, fmt.Errorf("decode the review decision: %w", err)
-		}
+	var err error
+	if phase.Decision, err = decodeDecision(decision); err != nil {
+		return PhaseRow{}, err
 	}
-	// A row that counted no backward move reads as a nil map and never as an empty one: the
-	// column holds the empty object for it, and a scanned row of a phase nothing went back from
-	// is then equal to the PhaseRow a caller builds for it. The empty object is what nearly every
-	// row holds, and this scan runs on every phase row of every state read, so those bytes answer
-	// the nil map without a decode of their own, as the decision column above answers nil without
-	// one. Any other bytes, a null among them, still go through json.Unmarshal and still answer
-	// its error.
-	if !bytes.Equal(backwardMoves, []byte("{}")) {
-		moves := map[string]int{}
-		if err := json.Unmarshal(backwardMoves, &moves); err != nil {
-			return PhaseRow{}, fmt.Errorf("decode the backward move counts: %w", err)
-		}
-		if len(moves) > 0 {
-			phase.BackwardMoves = moves
-		}
+	if phase.BackwardMoves, err = decodeBackwardMoves(backwardMoves); err != nil {
+		return PhaseRow{}, err
 	}
 	phase.Role, phase.Claim = claim.Role(role), claim.Token(token)
 	return phase, nil
+}
+
+// scanListedPhase is scanPhase for a row read with listedPhaseColumns (AllPhases): the same scan of
+// each column it reads, and the zero value in every field of a column it does not read.
+func scanListedPhase(row scanner) (PhaseRow, error) {
+	var phase PhaseRow
+	var role, token string
+	var decision, backwardMoves []byte
+	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.Pass, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds,
+		&backwardMoves, &decision, &phase.Entry); err != nil {
+		return PhaseRow{}, err
+	}
+	var err error
+	if phase.Decision, err = decodeDecision(decision); err != nil {
+		return PhaseRow{}, err
+	}
+	if phase.BackwardMoves, err = decodeBackwardMoves(backwardMoves); err != nil {
+		return PhaseRow{}, err
+	}
+	phase.Role, phase.Claim = claim.Role(role), claim.Token(token)
+	return phase, nil
+}
+
+// decodeDecision is a phases row's decision column as the row holds it: nil for a null column,
+// which is a row no review has decided.
+func decodeDecision(column []byte) (*ReviewDecision, error) {
+	if column == nil {
+		return nil, nil
+	}
+	decision := &ReviewDecision{}
+	if err := json.Unmarshal(column, decision); err != nil {
+		return nil, fmt.Errorf("decode the review decision: %w", err)
+	}
+	return decision, nil
+}
+
+// decodeBackwardMoves is a phases row's backward_moves column as the row holds it.
+//
+// A row that counted no backward move reads as a nil map and never as an empty one: the
+// column holds the empty object for it, and a scanned row of a phase nothing went back from
+// is then equal to the PhaseRow a caller builds for it. The empty object is what nearly every
+// row holds, and this decode runs on every phase row of every state read, so those bytes answer
+// the nil map without a decode of their own, as the decision column answers nil without
+// one. Any other bytes, a null among them, still go through json.Unmarshal and still answer
+// its error.
+func decodeBackwardMoves(column []byte) (map[string]int, error) {
+	if bytes.Equal(column, []byte("{}")) {
+		return nil, nil
+	}
+	moves := map[string]int{}
+	if err := json.Unmarshal(column, &moves); err != nil {
+		return nil, fmt.Errorf("decode the backward move counts: %w", err)
+	}
+	if len(moves) == 0 {
+		return nil, nil
+	}
+	return moves, nil
 }
 
 const pullRequestColumns = `issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,

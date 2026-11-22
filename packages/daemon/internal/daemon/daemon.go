@@ -3587,44 +3587,45 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	return state, claims, nil
 }
 
-// ObservedState is the observed view of the project's state through tx, and the project's claims
-// it read through tx to build it (api.StateSource): the daemon block and the settings State serves,
-// and the admission block and the issues projection.Observe builds, all read in tx's one snapshot,
-// so the view's stateSeq is the sequence of the newest state event its issues and its admission
-// block hold, as the full state's is. The route reads the caller's plugin contract from the claims,
-// as it does for State, so the view and the contract it is cut to come from one snapshot. It reads
-// only what the view needs: the schema version, the boots, the state publication and the project's
-// claims here, and in projection.Observe the issues, every phase row in one statement, the slots
-// and what the admission judgement reads. It makes no read for any one issue, and it judges nothing
-// the view does not serve: no stranded claims, no stalled architects, no paced wakes.
-func (s *source) ObservedState(ctx context.Context, tx pgx.Tx) (api.ObservedState, []supervise.Claim, error) {
+// ObservedState is the part of the project's state that the observed view reads, through tx, and
+// the project's claims it read through tx to build it (api.StateSource): the daemon block and the
+// settings State serves, and the admission block and the issues projection.Observe builds, all
+// read in tx's one snapshot, so the view's stateSeq is the sequence of the newest state event its
+// issues and its admission block hold, as the full state's is. The route reads the caller's plugin
+// contract from the claims, as it does for State, so the view and the contract it is cut to come
+// from one snapshot. It reads only what the view needs: the schema version, the boots, the state
+// publication and the project's claims here, and in projection.Observe the issues, the project's
+// phase rows in one statement, the slots and what the admission judgement reads. It makes no read
+// for any one issue, and it judges nothing the view does not serve: no stranded claims, no stalled
+// architects, no paced wakes.
+func (s *source) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
 	version, err := s.store.SchemaVersionTx(ctx, tx)
 	if err != nil {
-		return api.ObservedState{}, nil, err
+		return api.State{}, nil, err
 	}
 	boots, firstBootAt, err := s.store.BootsTx(ctx, tx, s.project)
 	if err != nil {
-		return api.ObservedState{}, nil, err
+		return api.State{}, nil, err
 	}
 	published, err := s.records.StatePublication(ctx, tx, s.project)
 	if err != nil {
-		return api.ObservedState{}, nil, err
+		return api.State{}, nil, err
 	}
 	claims, err := s.store.ClaimsTx(ctx, tx)
 	if err != nil {
-		return api.ObservedState{}, nil, err
+		return api.State{}, nil, err
 	}
 	claims = ofProject(claims, s.projectToken)
 	now := time.Now().UTC()
 	if s.now != nil {
 		now = s.now().UTC()
 	}
-	observed, err := projection.Observe(ctx, projection.Inputs{
+	observed, err := projection.Observe(ctx, projection.ObservedInputs{
 		Tx: tx, Store: projectRecords{Store: s.records, project: s.project}, Project: s.project,
 		Cap: s.admissionCap, Steps: s.gatedSteps, Claims: claims, Now: now,
 	})
 	if err != nil {
-		return api.ObservedState{}, nil, err
+		return api.State{}, nil, err
 	}
 	observed.Daemon = s.daemonInfo(version, boots, firstBootAt, published)
 	observed.Settings = s.settings

@@ -28,8 +28,8 @@ func (s *settingState) State(ctx context.Context, tx pgx.Tx) (api.State, []super
 	return api.State{}, nil, s.read(ctx, tx)
 }
 
-func (s *settingState) ObservedState(ctx context.Context, tx pgx.Tx) (api.ObservedState, []supervise.Claim, error) {
-	return api.ObservedState{}, nil, s.read(ctx, tx)
+func (s *settingState) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
+	return api.State{}, nil, s.read(ctx, tx)
 }
 
 // read reads the statement bound tx runs under and the backend it runs on.

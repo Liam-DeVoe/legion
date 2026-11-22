@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -825,22 +824,22 @@ func (s *server) projectState(w http.ResponseWriter, r *http.Request) (State, []
 	return state, claims, true
 }
 
-// observedState is the observed view of the project's state (ObservedState,
-// StateSource.ObservedState), read as projectState reads the whole state: in one snapshot of its
+// observedState is the part of the project's state that the observed view reads
+// (StateSource.ObservedState), read as projectState reads the whole state: in one snapshot of its
 // own (readSnapshot), under the same bound, statement timeout and rollback. The claims are the
 // snapshot's own, which the caller's contract is read from, as they are for the whole state. It
 // reads no consumers' lag, which is no part of what Dispatch observes.
-func (s *server) observedState(w http.ResponseWriter, r *http.Request) (ObservedState, []supervise.Claim, bool) {
+func (s *server) observedState(w http.ResponseWriter, r *http.Request) (State, []supervise.Claim, bool) {
 	reading, cancel := context.WithTimeout(r.Context(), s.stateBound)
 	defer cancel()
-	var observed ObservedState
+	var observed State
 	var claims []supervise.Claim
 	read := func(tx pgx.Tx) (err error) {
 		observed, claims, err = s.state.ObservedState(reading, tx)
 		return err
 	}
 	if !s.readSnapshot(w, r, reading, "api: observed state source failed", read) {
-		return ObservedState{}, nil, false
+		return State{}, nil, false
 	}
 	return observed, claims, true
 }
@@ -915,16 +914,12 @@ func (s *server) readSnapshot(w http.ResponseWriter, r *http.Request, reading co
 
 // stateRoute answers the whole state, or with `?view=observed` the observed view, which is what
 // Dispatch reads (ObservedState). Each is read in its own snapshot (projectState, observedState)
-// and served through the one writer at the caller's contract: the observed view is narrowed by the
-// whole state's own bands and strips, so at every contract its members are the whole state's
-// (shaping.go's observedFor). Any other `view` is refused before a transaction begins
-// (observedViewAsked).
+// and served through the one writer at the caller's contract: the observed view is the whole
+// state's members read through observedOf after the whole state's own bands and strips, so at
+// every contract its members are the whole state's (shaping.go's observedFor). A request with any
+// other `view` gets the whole state, and the daemon logs a warning for it (observedViewAsked).
 func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
-	observed, ok := s.observedViewAsked(w, r)
-	if !ok {
-		return
-	}
-	if observed {
+	if s.observedViewAsked(r) {
 		view, claims, ok := s.observedState(w, r)
 		if !ok {
 			return
@@ -943,22 +938,23 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 // (ObservedState).
 const observedView = "observed"
 
-// observedViewAsked is whether r asks the state route for the observed view, and false with ok when
-// it asks for the whole state, which a request with no `view` parameter does. A `view` of any other
-// value, an empty one or a second one among them, is answered 400 INVALID_VIEW here, naming the
-// value and the one view the route serves, and ok is false: the route then reads nothing.
-func (s *server) observedViewAsked(w http.ResponseWriter, r *http.Request) (observed, ok bool) {
+// observedViewAsked is whether r asks the state route for the observed view: a request with the one
+// `view` value observedView does. A request with no `view` parameter asks for the whole state. A
+// request with any other `view` (another value, an empty value, or two values) also gets the whole
+// state, as a daemon without the view serves it. For that request the daemon logs one warning
+// that names the values it was given and the one view the route serves, because a later version
+// may refuse such a request.
+func (s *server) observedViewAsked(r *http.Request) bool {
 	views, asked := r.URL.Query()["view"]
 	if !asked {
-		return false, true
+		return false
 	}
 	if len(views) == 1 && views[0] == observedView {
-		return true, true
+		return true
 	}
-	s.writeFailure(w, r, http.StatusBadRequest, "INVALID_VIEW", fmt.Sprintf(
-		"view %q is no view of the state: the one view this route serves is %q, and a request with no view gets the whole state",
-		strings.Join(views, ","), observedView))
-	return false, false
+	s.log.Warn("api: the request names no view of the state, so it gets the whole state; a later version may refuse such a request",
+		"views", views, "onlyView", observedView, "caller", r.RemoteAddr)
+	return false
 }
 
 // statementBound is bound as PostgreSQL's statement_timeout takes it: whole milliseconds, and

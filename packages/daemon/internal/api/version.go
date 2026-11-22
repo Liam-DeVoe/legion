@@ -3048,15 +3048,16 @@ package api
 // state. It carries the whole state's daemon block, its `settings` and its `admission` block,
 // unfiltered and in the same order, and `issues`, every issue the whole state lists with only its
 // `key`, `phase`, `tree`, `slot.index`, `waitingOn`, `architect.state` and
-// `workers.<role>.claim.state`, each absent where the whole state's is absent. The view is an
-// answer of its own (answers.go's AnswerObservedState), which arrived at this contract, and it is
-// served at the caller's contract by the whole state's own bands and value strips (shaping.go's
-// observedFor), so at every contract this daemon serves, each member of the view is the whole
-// state's member at that contract: a caller below 207 reads no `stateSeq`, `stateId` or
-// `stateRun` in either body, and a caller below 51 no `admission.trees` and no issue's `tree`. The
-// route answers any other `view` 400 INVALID_VIEW, and a request with no `view` gets the whole
-// state, whose body does not change. `packages/contracts/src/legion-api.ts` reads the view as
-// LegionObservedStateResponse.
+// `workers.<role>.claim.state`, each absent where the whole state's is absent. The view is
+// shaping.go's answer AnswerObservedState, which is no row of Answers, and observedFor shapes it:
+// it is served at the caller's contract by the whole state's own bands and value strips, so at
+// every contract this daemon serves, each member of the view is the whole state's member at that
+// contract: a caller below 207 reads no `stateSeq`, `stateId` or `stateRun` in either body, and a
+// caller below 51 no `admission.trees` and no issue's `tree`. A request with no `view` gets the
+// whole state, whose body does not change. A request with any other `view` gets the whole state
+// too, and the daemon logs a warning that names the values given and the one view the route
+// serves, because a later version may refuse such a request.
+// `packages/contracts/src/legion-api.ts` reads the view as LegionObservedStateResponse.
 // (This change first took 166, the lowest number above main's 152 that no open pull request
 // declared, as `.github/scripts/check-daemon-api-contract.sh` read it on 2026-11-18: 153 #4115,
 // 154 #3659, 155 #4273, 156 #4065, 157 #3993, 158 #4251, #4259, #4261, #4269 and #4290, 159 #4175,

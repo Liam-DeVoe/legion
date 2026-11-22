@@ -1882,11 +1882,13 @@ type Store interface {
 	// the newest claim Dispatch showed.
 	DispatchClaim(ctx context.Context, tx pgx.Tx, key string) (string, error)
 	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error)
-	// AllPhases is every phases row the store holds, by issue, read in one statement: each issue's
-	// rows are what Phases answers for it, in the same order, and an issue with no row has no entry.
-	// The state route reads it in place of a Phases read for each issue it lists
-	// (projection.Project, projection.Observe).
-	AllPhases(ctx context.Context, tx pgx.Tx) (map[string][]PhaseRow, error)
+	// AllPhases is the phases rows of project's issues, by issue, read in one statement: each
+	// issue's rows are what Phases answers for it, in the same order, with only the columns the
+	// state route reads (Postgres.AllPhases names them; every other field is zero), and an issue
+	// with no row has no entry. A row of another project's issue is not read. The state route
+	// reads it in place of a Phases read for each issue it lists (projection.Project,
+	// projection.Observe).
+	AllPhases(ctx context.Context, tx pgx.Tx, project string) (map[string][]PhaseRow, error)
 	// PhaseEntries is the entry each phases row of issues names, the moment that entry was raised
 	// and whether its task is one to send as written (PhaseRow.Entry, PhaseRow.EntryRaisedAt,
 	// PhaseRow.EntryVerbatim), by issue and role, read in one statement. Admission's sweep weighs

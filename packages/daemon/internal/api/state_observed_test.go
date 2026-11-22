@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +23,7 @@ import (
 // transaction, and whether the route had bound that transaction's statements before the read ran.
 // Its observed read answers observed, or err.
 type observingSource struct {
-	observed ObservedState
+	observed State
 	err      error
 	// fullReads counts the reads of the whole state, which an observed request makes none of.
 	fullReads int
@@ -37,7 +38,7 @@ func (s *observingSource) State(context.Context, pgx.Tx) (State, []supervise.Cla
 	return State{}, nil, nil
 }
 
-func (s *observingSource) ObservedState(_ context.Context, tx pgx.Tx) (ObservedState, []supervise.Claim, error) {
+func (s *observingSource) ObservedState(_ context.Context, tx pgx.Tx) (State, []supervise.Claim, error) {
 	s.tx, _ = tx.(*fakeTx)
 	if s.tx != nil {
 		s.bounded = s.tx.bounded
@@ -45,10 +46,31 @@ func (s *observingSource) ObservedState(_ context.Context, tx pgx.Tx) (ObservedS
 	return s.observed, nil, s.err
 }
 
-// observedFixture is an observed view with one issue of each shape the view carries: a root at
-// work holding a slot, with its architect and one worker, and an issue the workflow does not
-// record, which an operator's claim lists with nothing but its phase and that claim.
-func observedFixture() ObservedState {
+// observedFixture is the part of a state an observed read answers, with one issue of each shape the
+// view carries: a root at work holding a slot, with its architect and one worker, and an issue the
+// workflow does not record, which an operator's claim lists with nothing but its phase and that
+// claim. It also holds members the observed read answers and the view does not carry: the slot's
+// admission time, the worker's counts and the claims' sessions.
+func observedFixture() State {
+	seq := int64(41)
+	return State{
+		Daemon: DaemonInfo{Project: "LEGION", SchemaVersion: 20261119184200, Boots: 3,
+			FirstBootAt: time.Date(2026, 11, 18, 16, 0, 0, 0, time.UTC), StartedAt: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC),
+			StateSeq: &seq, StateID: "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47", StateRun: "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"},
+		Admission: Admission{Cap: 2, Active: []string{"LEGION-1"}, Waiting: []string{}, Trees: []string{"LEGION-1"}},
+		Issues: map[string]Issue{
+			"LEGION-1": {Key: "LEGION-1", Phase: phase.Implementing, Tree: "LEGION-1",
+				Slot:      &SlotView{Index: 0, AdmittedAt: time.Date(2026, 11, 20, 9, 30, 0, 0, time.UTC)},
+				Architect: &ClaimView{State: string(supervise.StateIdle), Session: "ses_architect_1"},
+				Workers: map[claim.Role]PhaseView{claim.RoleImplementer: {
+					Claim: ClaimView{State: string(supervise.StateWorking), Session: "ses_implementer_1"}, Pass: 2, Rounds: 1}}},
+			"LEGION-7": {Key: "LEGION-7", Phase: Unrecorded, Architect: &ClaimView{State: string(supervise.StateLaunching)}},
+		},
+	}
+}
+
+// observedViewFixture is the observed view of observedFixture, as the route writes it.
+func observedViewFixture() ObservedState {
 	seq := int64(41)
 	return ObservedState{
 		Daemon: DaemonInfo{Project: "LEGION", SchemaVersion: 20261119184200, Boots: 3,
@@ -66,8 +88,9 @@ func observedFixture() ObservedState {
 
 // `GET /legion/v1/state?view=observed` is served from the source's observed read, and from it
 // alone: in a repeatable-read, read-only transaction whose statements the route has bound before
-// the read runs, committed before the body is written, and with the body the source built, byte
-// for byte, which carries none of the whole state's other keys.
+// the read runs, committed before the body is written, and with the observed view of what the
+// source read, byte for byte, which carries none of the whole state's other keys and none of the
+// other members of an issue.
 func TestTheStateRouteServesTheObservedViewFromTheSourcesObservedRead(t *testing.T) {
 	src := &observingSource{observed: observedFixture()}
 	txs := &fakeStateTransactions{tx: &fakeTx{}}
@@ -95,7 +118,7 @@ func TestTheStateRouteServesTheObservedViewFromTheSourcesObservedRead(t *testing
 	if !txs.tx.committed {
 		t.Fatal("the observed view's transaction was not committed")
 	}
-	want, err := json.Marshal(src.observed)
+	want, err := json.Marshal(observedViewFixture())
 	if err != nil {
 		t.Fatalf("encode the observed view: %v", err)
 	}
@@ -118,31 +141,73 @@ func TestTheStateRouteServesTheObservedViewFromTheSourcesObservedRead(t *testing
 	}
 }
 
-// Any `view` but `observed` is refused 400 before a transaction begins, and the refusal names the
-// value and the one view the route serves. A request with no `view` is the whole state.
-func TestTheStateRouteRefusesAnyOtherView(t *testing.T) {
-	for _, tc := range []struct{ query, named string }{
-		{"view=full", `"full"`},
-		{"view=", `""`},
-		{"view=Observed", `"Observed"`},
-		{"view=observed&view=full", `"observed,full"`},
-	} {
-		t.Run(tc.query, func(t *testing.T) {
-			src := &observingSource{}
-			txs := &fakeStateTransactions{tx: &fakeTx{}}
-			message := refused(t, serveWithTransactions(t, src, txs, http.MethodGet, "/legion/v1/state?"+tc.query), http.StatusBadRequest, "INVALID_VIEW")
-			if !strings.Contains(message, "view "+tc.named) || !strings.Contains(message, `"observed"`) {
-				t.Fatalf("the refusal says %q, want it to name the view %s and the one view %q", message, tc.named, "observed")
+// Any `view` but `observed` gets the whole state, as a request with no `view` does, and the daemon
+// logs one warning for it that names the values given and the one view the route serves, and says
+// that a later version may refuse such a request. A request with no `view` and a request for the
+// observed view log no such warning.
+func TestTheStateRouteServesTheWholeStateForAnyOtherView(t *testing.T) {
+	serveLogged := func(t *testing.T, query string) (*httptest.ResponseRecorder, *observingSource, []map[string]any) {
+		t.Helper()
+		var logged strings.Builder
+		src := &observingSource{observed: observedFixture()}
+		server := NewServer("127.0.0.1", 8437, Options{State: src, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}},
+			Log: slog.New(slog.NewJSONHandler(&logged, nil))})
+		recorder := httptest.NewRecorder()
+		server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/legion/v1/state"+query, nil))
+		var warnings []map[string]any
+		for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
+			if line == "" {
+				continue
 			}
-			if txs.opts != (pgx.TxOptions{}) || src.fullReads != 0 || src.tx != nil {
-				t.Fatalf("a refused view began a transaction (%#v) or read the state (whole %d times, observed %t)", txs.opts, src.fullReads, src.tx != nil)
+			var record map[string]any
+			if err := json.Unmarshal([]byte(line), &record); err != nil {
+				t.Fatalf("decode log line %s: %v", line, err)
 			}
-		})
+			if record["level"] == "WARN" {
+				warnings = append(warnings, record)
+			}
+		}
+		return recorder, src, warnings
 	}
 
-	src := &observingSource{}
-	if recorder := serve(t, src, http.MethodGet, "/legion/v1/state"); recorder.Code != http.StatusOK || src.fullReads != 1 || src.tx != nil {
-		t.Fatalf("a request with no view = %d, whole reads %d, observed read %t; want 200 from one read of the whole state", recorder.Code, src.fullReads, src.tx != nil)
+	whole, wholeSource, wholeWarnings := serveLogged(t, "")
+	if whole.Code != http.StatusOK || wholeSource.fullReads != 1 || wholeSource.tx != nil || len(wholeWarnings) != 0 {
+		t.Fatalf("a request with no view = %d, whole reads %d, observed read %t, warnings %v; want 200 from one read of the whole state and no warning",
+			whole.Code, wholeSource.fullReads, wholeSource.tx != nil, wholeWarnings)
+	}
+	if _, observedSource, warnings := serveLogged(t, "?view=observed"); observedSource.tx == nil || len(warnings) != 0 {
+		t.Fatalf("a request for the observed view read it %t and logged %v, want it read and no warning", observedSource.tx != nil, warnings)
+	}
+
+	for _, tc := range []struct {
+		query string
+		views []any
+	}{
+		{"view=full", []any{"full"}},
+		{"view=", []any{""}},
+		{"view=Observed", []any{"Observed"}},
+		{"view=observed&view=full", []any{"observed", "full"}},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			recorder, src, warnings := serveLogged(t, "?"+tc.query)
+			if recorder.Code != http.StatusOK || src.fullReads != 1 || src.tx != nil {
+				t.Fatalf("view %s = %d, whole reads %d, observed read %t; want 200 from one read of the whole state",
+					tc.query, recorder.Code, src.fullReads, src.tx != nil)
+			}
+			if got, want := recorder.Body.String(), whole.Body.String(); got != want {
+				t.Fatalf("view %s served %s, want the whole state a request with no view gets: %s", tc.query, got, want)
+			}
+			if len(warnings) != 1 {
+				t.Fatalf("view %s logged %d warnings %v, want one", tc.query, len(warnings), warnings)
+			}
+			warning := warnings[0]
+			message, _ := warning["msg"].(string)
+			if !strings.Contains(message, "whole state") || !strings.Contains(message, "a later version may refuse") ||
+				!reflect.DeepEqual(warning["views"], tc.views) || warning["onlyView"] != "observed" {
+				t.Fatalf("view %s logged %v, want a warning that the whole state was served, naming the views %v and the one view %q, and that a later version may refuse such a request",
+					tc.query, warning, tc.views, "observed")
+			}
+		})
 	}
 }
 

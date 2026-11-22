@@ -86,8 +86,9 @@ func (s projectionStore) HeldRows(context.Context, pgx.Tx, string, string, time.
 }
 
 // AllPhases is every issue's phases rows, by issue, as the real store answers them in one
-// statement (record.Postgres.AllPhases).
-func (s projectionStore) AllPhases(context.Context, pgx.Tx) (map[string][]record.PhaseRow, error) {
+// statement for the project's issues (record.Postgres.AllPhases). Every issue of this store is
+// the project's.
+func (s projectionStore) AllPhases(context.Context, pgx.Tx, string) (map[string][]record.PhaseRow, error) {
 	return s.phases, nil
 }
 

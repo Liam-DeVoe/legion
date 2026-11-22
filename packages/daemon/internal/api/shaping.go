@@ -267,7 +267,7 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		}
 		return shapeIssue(issue, restore, strip, nil), took
 	case AnswerObservedState:
-		observed, isObserved := body.(ObservedState)
+		observed, isObserved := body.(State)
 		if !isObserved {
 			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
 		}
@@ -465,47 +465,21 @@ func shapeIssue(issue Issue, restore, strip int, took *tookOff) Issue {
 	return issue
 }
 
-// observedFor is the observed view's row of shapeAnswer (AnswerObservedState): observed as a
-// caller at restore and strip reads it, narrowed by the very bands and value strips stateFor
-// applies to the whole state. The view is read as the part of a whole state it is (stateOfObserved),
-// shaped by stateFor, and read back (observedOf), so at every contract each member of the view is
-// the whole state's member at that contract, and a band a later contract adds to a member the
-// view carries reaches the view with no line here. The whole state's mark (ContractView) is no
-// member of the view and is left out with the rest of the whole state's keys.
+// observedFor is the observed view's row of shapeAnswer (AnswerObservedState): the observed view
+// of state, the part of a whole state the observed read answers (StateSource.ObservedState), as a
+// caller at restore and strip reads it. The state is shaped by the very bands and value strips
+// stateFor applies to the whole state and then read as the observed view (observedOf), so at every
+// contract each member of the view is the whole state's member at that contract, and a band a
+// later contract adds to a member the view carries reaches the view with no line here. The whole
+// state's mark (ContractView) is no member of the view and is left out with the rest of the whole
+// state's keys.
 //
-// A caller at this daemon's own contract is served the view the source answered, with no copy
-// made of it: stateFor applies no band to it, and no value strip takes anything from it. That is
-// every read Dispatch makes, since it states no contract and asks from no pod. The shaping
-// records nothing in the log, where recordShaping writes the whole state's lines alone.
-func observedFor(observed ObservedState, restore, strip int) ObservedState {
-	if restore >= DaemonAPIVersion && strip >= DaemonAPIVersion {
-		return observed
-	}
-	return observedOf(stateFor(stateOfObserved(observed), restore, strip, nil))
-}
-
-// stateOfObserved is observed as the part of a whole state it is: its daemon block, its settings,
-// its admission block, and each issue with the members the view carries, its slot holding its
-// index alone and each claim view its state alone. observedOf reads it back to the same view.
-func stateOfObserved(observed ObservedState) State {
-	issues := make(map[string]Issue, len(observed.Issues))
-	for key, view := range observed.Issues {
-		issue := Issue{Key: view.Key, Phase: view.Phase, Tree: view.Tree, WaitingOn: view.WaitingOn}
-		if view.Slot != nil {
-			issue.Slot = &SlotView{Index: view.Slot.Index}
-		}
-		if view.Architect != nil {
-			issue.Architect = &ClaimView{State: view.Architect.State}
-		}
-		if len(view.Workers) > 0 {
-			issue.Workers = make(map[claim.Role]PhaseView, len(view.Workers))
-			for role, worker := range view.Workers {
-				issue.Workers[role] = PhaseView{Claim: ClaimView{State: worker.Claim.State}}
-			}
-		}
-		issues[key] = issue
-	}
-	return State{Daemon: observed.Daemon, Settings: observed.Settings, Admission: observed.Admission, Issues: issues}
+// A caller at this daemon's own contract takes no band and no value strip, and stateFor copies no
+// issue map for it. That is every read Dispatch makes, since it states no contract and asks from
+// no pod. The shaping records nothing in the log, where recordShaping writes the whole state's
+// lines alone.
+func observedFor(state State, restore, strip int) ObservedState {
+	return observedOf(stateFor(state, restore, strip, nil))
 }
 
 // narrowedTheState is the message of the line the daemon writes for each band it serves the
@@ -1035,10 +1009,11 @@ const repositoriesLiveContract = 202
 // state with a strict schema and would refuse the whole body for a key it does not name, and one
 // built after strips the keys instead, so the strip is what keeps them from a caller that did not
 // ask for them rather than what keeps such a caller reading at all. The same contract added the
-// observed view of the state route (AnswerObservedState), which carries the same daemon block and
-// is narrowed by the same band (observedFor). repositoriesLiveContract stands below it with no row
-// of stateNarrowings between the two, so a caller at or above repositoriesLiveContract and below
-// this contract is served `repositories.live` and none of the three keys.
+// observed view of the state route, shaping.go's answer AnswerObservedState, which is no row of
+// Answers: it carries the same daemon block, and observedFor narrows it by the same band.
+// repositoriesLiveContract stands below it with no row of stateNarrowings between the two, so a
+// caller at or above repositoriesLiveContract and below this contract is served
+// `repositories.live` and none of the three keys.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys arrived at stays where it is.
@@ -1809,7 +1784,8 @@ const answerUnparsed AnswerID = "unparsed"
 // Answers, which is the plugin's table alone: no plugin parses the view, and pi-shared's census of
 // that table holds every row to a parse site of the plugin's client. It is shaped all the same,
 // unlike answerUnparsed: a caller below a contract reads no member of the view that the whole
-// state does not serve it at that contract (observedFor).
+// state does not serve it at that contract. The route writes it the State that the observed read
+// answers (StateSource.ObservedState), and observedFor shapes that State to the view.
 const AnswerObservedState AnswerID = "observed-state"
 
 // answerWritten is told the pattern of the route and the id of the answer of every body this

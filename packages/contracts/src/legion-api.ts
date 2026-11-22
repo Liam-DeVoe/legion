@@ -1388,8 +1388,9 @@ const legionObservedIssue = z.object({
  * issue's place in the line is its index in `admission.waiting` plus one. `issues` lists every
  * issue the full state lists. The daemon serves the view at the caller's contract with the full
  * state's own rule, so at each contract every member is the member the full state serves there:
- * a caller below 207 gets no `stateSeq`, `stateId` or `stateRun` in either answer. The route
- * answers any other `view` 400 (`INVALID_VIEW`). */
+ * a caller below 207 gets no `stateSeq`, `stateId` or `stateRun` in either answer. A request with
+ * any other `view` gets the full state, and the daemon logs a warning for it, because a later
+ * version may refuse such a request. */
 export const LegionObservedStateResponse = z.object({
   daemon: daemonInfo,
   settings: legionSettings,

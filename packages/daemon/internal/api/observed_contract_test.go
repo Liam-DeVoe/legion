@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // observedContracts is every contract the observed view is asked at below: each contract of
@@ -56,6 +58,31 @@ func observedMembers(t *testing.T, body []byte) map[string]any {
 	}
 }
 
+// observedPart is state with only the members the observed view carries: its daemon block, its
+// settings, its admission block, and each issue's key, phase, tree, wait, slot index, architect's
+// claim state and each worker's claim state. It is the narrowest State an observed read can answer
+// (StateSource.ObservedState), so a view served from it is read from those members and nothing else.
+func observedPart(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, whole := range state.Issues {
+		issue := Issue{Key: whole.Key, Phase: whole.Phase, Tree: whole.Tree, WaitingOn: whole.WaitingOn}
+		if whole.Slot != nil {
+			issue.Slot = &SlotView{Index: whole.Slot.Index}
+		}
+		if whole.Architect != nil {
+			issue.Architect = &ClaimView{State: whole.Architect.State}
+		}
+		if len(whole.Workers) > 0 {
+			issue.Workers = make(map[claim.Role]PhaseView, len(whole.Workers))
+			for role, worker := range whole.Workers {
+				issue.Workers[role] = PhaseView{Claim: ClaimView{State: worker.Claim.State}}
+			}
+		}
+		issues[key] = issue
+	}
+	return State{Daemon: state.Daemon, Settings: state.Settings, Admission: state.Admission, Issues: issues}
+}
+
 // The observed view follows the whole state's rule (version.go's 207, shaping.go's observedFor):
 // at every contract this daemon answers, the view's daemon block, settings, admission block and
 // each issue's observed members are the whole state's at that same contract, whether the caller
@@ -65,9 +92,9 @@ func observedMembers(t *testing.T, body []byte) map[string]any {
 // and a caller below heldContract no `admission.held`.
 //
 // Each state fixture of the shape gate (stateFixtures) is served by one daemon whose observed read
-// answers that state's observed view (observedOf), and both routes are asked by the same caller at
-// the same contract. The whole body is the reference: its members are read from its own JSON
-// (observedMembers), not from the view's Go value.
+// answers the part of that state the view carries (observedPart), and both routes are asked by the
+// same caller at the same contract. The whole body is the reference: its members are read from its
+// own JSON (observedMembers), not from the view's Go value.
 func TestTheObservedViewIsTheWholeStatesMembersAtEveryContract(t *testing.T) {
 	// The narrowings the comparison passes through, so a run that met none of them proves nothing
 	// of the rule: a body below stateSeqContract without `stateSeq` and one at it with the key, and a
@@ -83,7 +110,7 @@ func TestTheObservedViewIsTheWholeStatesMembersAtEveryContract(t *testing.T) {
 				}
 				claims := caller.claims(contract)
 				options := stateOptions(state, claims)
-				options.State = fakeSource{state: state, observed: observedOf(state), claims: claims}
+				options.State = fakeSource{state: state, observed: observedPart(state), claims: claims}
 				handler := NewServer("127.0.0.1", 8437, options).Handler
 
 				want := observedMembers(t, caller.askedBody(t, handler, "/legion/v1/state", contract))

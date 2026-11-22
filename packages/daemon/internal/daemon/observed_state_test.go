@@ -291,9 +291,10 @@ func (r *observedRig) readOnly(t *testing.T, read func(ctx context.Context, tx p
 // Every read of all issues the state route makes in place of a read for each issue answers each
 // issue what that issue's own read answers it, on a store holding an issue in every phase, an
 // issue for every word of admission.held, and phases rows of several roles: AllPhases beside
-// Phases, row for row and in order, PullRequestsOf beside PullRequest and Gates beside GatesOf. An
-// issue with no row is absent from the bulk answer, which reads as the empty answer its own read
-// gives. The seed is held to its own claim first, so the comparison runs over what it says.
+// Phases, row for row, in order and in each column AllPhases reads (listedPhases), PullRequestsOf
+// beside PullRequest and Gates beside GatesOf. An issue with no row is absent from the bulk answer,
+// which reads as the empty answer its own read gives. The seed is held to its own claim first, so
+// the comparison runs over what it says.
 func TestTheBulkReadsAnswerEachIssueWhatItsOwnReadAnswers(t *testing.T) {
 	r := newObservedRig(t)
 	r.readOnly(t, func(ctx context.Context, tx pgx.Tx) {
@@ -329,9 +330,9 @@ func TestTheBulkReadsAnswerEachIssueWhatItsOwnReadAnswers(t *testing.T) {
 		// Every key the seed records, a Dispatch issue the daemon does not record, and a key
 		// nothing names.
 		keys := append(slices.Clone(r.keys), "LEGION-900", "LEGION-404")
-		phases, err := r.scoped.AllPhases(ctx, tx)
+		phases, err := r.scoped.AllPhases(ctx, tx, "LEGION")
 		if err != nil {
-			t.Fatalf("read every phases row: %v", err)
+			t.Fatalf("read the project's phases rows: %v", err)
 		}
 		pullRequests, err := r.scoped.PullRequestsOf(ctx, tx, keys)
 		if err != nil {
@@ -352,7 +353,7 @@ func TestTheBulkReadsAnswerEachIssueWhatItsOwnReadAnswers(t *testing.T) {
 				if listed {
 					t.Errorf("%s: AllPhases lists %#v, Phases answers none", key, bulk)
 				}
-			} else if withRows++; !reflect.DeepEqual(bulk, own) {
+			} else if withRows++; !reflect.DeepEqual(bulk, listedPhases(own)) {
 				t.Errorf("%s: AllPhases answers %#v, Phases answers %#v", key, bulk, own)
 			}
 
@@ -393,6 +394,19 @@ func TestTheBulkReadsAnswerEachIssueWhatItsOwnReadAnswers(t *testing.T) {
 	})
 }
 
+// listedPhases is rows with only the columns AllPhases reads (record.Postgres.AllPhases): the
+// issue, the role, the claim, the handoff commit, the pass, the handoff record and its version,
+// the rounds, the counts of the moves back, the review decision and the entry.
+func listedPhases(rows []record.PhaseRow) []record.PhaseRow {
+	listed := make([]record.PhaseRow, len(rows))
+	for i, row := range rows {
+		listed[i] = record.PhaseRow{Issue: row.Issue, Role: row.Role, Claim: row.Claim, HandoffCommit: row.HandoffCommit,
+			Pass: row.Pass, HandoffRecord: row.HandoffRecord, HandoffVersion: row.HandoffVersion, Rounds: row.Rounds,
+			BackwardMoves: row.BackwardMoves, Decision: row.Decision, Entry: row.Entry}
+	}
+	return listed
+}
+
 // The observed view (`?view=observed`, source.ObservedState) is the part of the full state
 // (source.State) Dispatch observes, read in one snapshot over the seeded store: both list the same
 // issues; each issue's key, phase, tree, slot index, wait, architect's claim state and each worker
@@ -403,7 +417,7 @@ func TestTheBulkReadsAnswerEachIssueWhatItsOwnReadAnswers(t *testing.T) {
 func TestTheObservedViewIsTheFullStatesObservedPart(t *testing.T) {
 	r := newObservedRig(t)
 	var full api.State
-	var observed api.ObservedState
+	var observed api.State
 	var fullClaims, observedClaims []supervise.Claim
 	r.readOnly(t, func(ctx context.Context, tx pgx.Tx) {
 		var err error

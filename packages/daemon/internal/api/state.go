@@ -1911,17 +1911,11 @@ type ObservedWorker struct {
 	Claim ObservedClaim `json:"claim"`
 }
 
-// ObservedClaimOf is c as the observed view shows it: the state its full view serves
-// (ClaimViewOf), so the two views cannot give one claim two states.
-func ObservedClaimOf(c supervise.Claim) ObservedClaim {
-	return ObservedClaim{State: ClaimViewOf(c).State}
-}
-
 // observedOf is state's observed view, issue for issue: each member Dispatch observes, as the full
 // view serves it, and the full view's daemon block, settings and admission block. It is the one
-// reading of which members of the full view the observed view carries: the observed view's shaping
-// reads a narrowed full view back through it (shaping.go's observedFor), and the observed view's
-// golden is written through it (TestStateGolden).
+// reading of which members of the full view the observed view carries: the route serves the
+// observed view through it (shaping.go's observedFor), and the observed view's golden is written
+// through it (TestStateGolden).
 func observedOf(state State) ObservedState {
 	observed := ObservedState{Daemon: state.Daemon, Settings: state.Settings, Admission: state.Admission,
 		Issues: make(map[string]ObservedIssue, len(state.Issues))}
@@ -1982,13 +1976,19 @@ func ClaimWakes(wakes []WakeWaiting) map[claim.Token]WakeView {
 // partial snapshot. State answers the project's claims beside the state, the ones it read through
 // that transaction to build the claim views, so the route decides what the caller's plugin reads
 // (shaping.go's stateFor) from the claims of the snapshot it serves, rather than reading the
-// table a second time at another moment. ObservedState answers the observed view (ObservedState)
-// through the same transaction, and reads only what that view needs; it answers the project's
-// claims beside it for the same reason, so the view is cut to the caller's contract
-// (shaping.go's observedFor) from the claims of the snapshot it serves.
+// table a second time at another moment.
+//
+// ObservedState answers, through the same transaction, the part of the state that the observed
+// view reads (observedOf), and reads only what that part needs: the daemon block, the settings,
+// the admission block, and each issue the full state lists with its key, phase, tree, wait, slot,
+// `architect` and `workers` as the full state holds them, except that each claim view is the view
+// ClaimViewOf builds, with no update state, wake or capabilities. Every other member of an issue
+// is left empty. The route serves the observed view of that State (shaping.go's observedFor). It
+// answers the project's claims beside it for the same reason as State, so the view is cut to the
+// caller's contract from the claims of the snapshot it serves.
 type StateSource interface {
 	State(ctx context.Context, tx pgx.Tx) (State, []supervise.Claim, error)
-	ObservedState(ctx context.Context, tx pgx.Tx) (ObservedState, []supervise.Claim, error)
+	ObservedState(ctx context.Context, tx pgx.Tx) (State, []supervise.Claim, error)
 }
 
 // StateTransactions begins the one snapshot transaction every state response reads through.

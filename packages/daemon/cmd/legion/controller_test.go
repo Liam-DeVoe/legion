@@ -214,9 +214,10 @@ func (f fixedStateSource) State(context.Context, pgx.Tx) (api.State, []supervise
 	return api.State{Repositories: api.RepositoriesView{Live: live}}, nil, nil
 }
 
-// ObservedState answers the empty observed view: `legion controller start` reads the whole state.
-func (fixedStateSource) ObservedState(context.Context, pgx.Tx) (api.ObservedState, []supervise.Claim, error) {
-	return api.ObservedState{}, nil, nil
+// ObservedState answers the empty state for the observed view: `legion controller start` reads the
+// whole state.
+func (fixedStateSource) ObservedState(context.Context, pgx.Tx) (api.State, []supervise.Claim, error) {
+	return api.State{}, nil, nil
 }
 
 // newControllerDaemonWithOptions is the daemon's HTTP surface as `legion controller start` and
