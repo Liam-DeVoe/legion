@@ -1071,7 +1071,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // onBasis is every gated step that stands open on an ancestor's approval when the gate opens
 // (basisStepsOf), none for a close. No person approved the root's version of such a step
 // (dispatch://INFRA-3320, R2), so the opening then says which approval each such step stands on,
-// and never that a person approved it: gateOpenedOnBasis writes the opening either way.
+// and never that a person approved it: gateOpenedMessage writes the opening either way.
 //
 // No phase is moved and no turn is interrupted: the gate holds the merger's start while it is
 // closed (the daemon's supervise row) and releases it at the opening, and every other worker
@@ -1159,7 +1159,7 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 		return err
 	}
 	owed := record.OwedNews(facts)
-	opened := gateOpenedOnBasis(root.Tree, step, document, version, onBasis)
+	opened := gateOpenedMessage(root.Tree, step, document, version, onBasis)
 	messages, byNews := 0, 0
 	for _, to := range addressed {
 		audience := record.AudienceHolder
@@ -1202,26 +1202,28 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	return nil
 }
 
-// gateOpenedOnBasis is the message of an opening of tree's standing gate at the approval of version
-// of step's document, and the one place that chooses its words for both of its senders: the role
+// gateOpenedMessage is the message of an opening of tree's standing gate at the approval of
+// version of step's document, and the one writer of its words for both of its senders: the role
 // message at the opening (tellGateMoved) and the news task that carries the opening in its place
-// (RenderNews, gateAtSend). Where onBasis, the gated steps that stand open on an ancestor's
-// approval, is empty, the message is gateOpenedSentence. Otherwise it keeps the two parts of every
-// opening that roles/merger.md quotes as the release of a merge: `The design gate of <tree>
-// opened:` and `every step the deployment gates now stands open`. Where the step whose move opened
-// the gate stands on a person's approval, that approval is named first, as a person's opening
-// names it. Then each step on a basis is named with the ancestor's approval it stands on, and with
-// the root's version that no person approved.
-func gateOpenedOnBasis(tree string, step record.DesignStep, document string, version int, onBasis []record.DesignGate) string {
-	if len(onBasis) == 0 {
-		return gateOpenedSentence(tree, step, document, version)
-	}
+// (RenderNews, gateAtSend). onBasis is the gated steps that stand open on an ancestor's approval.
+// Every opening keeps the two parts that roles/merger.md quotes as the release of a merge: `The
+// design gate of <tree> opened:` and `every step the deployment gates now stands open`. Where the
+// step whose move opened the gate stands on a person's approval, that approval is named first, as
+// the person's clause. Where onBasis is empty, that clause is the whole cause of the opening, and
+// the message says the design worked to is the approved one. Otherwise each step on a basis is
+// named after it with the ancestor's approval it stands on, and with the root's version that no
+// person approved.
+func gateOpenedMessage(tree string, step record.DesignStep, document string, version int, onBasis []record.DesignGate) string {
 	var body strings.Builder
 	fmt.Fprintf(&body, "The design gate of %s opened: ", tree)
 	if !slices.ContainsFunc(onBasis, func(gate record.DesignGate) bool { return gate.Step.OrSpec() == step }) {
 		fmt.Fprintf(&body, "a person approved version %d of its %s document (%s), and ", version, step, document)
 	}
-	body.WriteString("every step the deployment gates now stands open. A merge the closed gate held is released.")
+	body.WriteString("every step the deployment gates now stands open")
+	if len(onBasis) == 0 {
+		body.WriteString(", so the design you are working to is the approved one")
+	}
+	body.WriteString(". A merge the closed gate held is released.")
 	for _, gate := range onBasis {
 		body.WriteString(" " + basisSentence(gate))
 	}
@@ -1231,7 +1233,7 @@ func gateOpenedOnBasis(tree string, step record.DesignStep, document string, ver
 // basisSentence is what every text that names a step standing open on an ancestor's approval
 // (record.DesignGate.OnBasis) says of it: the ancestor's approval it stands on (basisApproval), and
 // that no person approved the root's version of its document. The opened message
-// (gateOpenedOnBasis) and the news of a version that stands approved on a basis (RenderNews,
+// (gateOpenedMessage) and the news of a version that stands approved on a basis (RenderNews,
 // basisWords) say it in these words.
 func basisSentence(gate record.DesignGate) string {
 	return fmt.Sprintf("The %s step stands open on an ancestor's approval: %s. No person approved version %d of its %s document (%s).",
@@ -1319,7 +1321,7 @@ type openingWay struct {
 // row, or the root architect's own row) is told the opening by the task that carries that news,
 // which leads with the opened sentence (RenderNews), so it is sent no role message beside it: for a
 // merger owed news, that task is its one delivery of the opening, and nothing else of the opening
-// reaches it. Every other holder is sent the opened role message (opened, gateOpenedOnBasis) with
+// reaches it. Every other holder is sent the opened role message (opened, gateOpenedMessage) with
 // one clause more: that nothing its issue holds changed since the version of step's document its
 // phase took (nothingChangedSince), or, for the architect, that nothing the tree holds changed
 // since the version it took. The clause is said only where the record shows it. For a member, that
@@ -1359,20 +1361,8 @@ func nothingChangedSince(took int) string {
 	return fmt.Sprintf("Nothing your issue holds changed since version %d, which your phase took.", took)
 }
 
-// gateOpenedSentence is the sentence that tells a phase holder the design gate of tree opened at a
-// person's approval of version of step's document, where no gated step stands open on an
-// ancestor's approval. Its one caller is gateOpenedOnBasis, which chooses between it and the
-// words of an opening on a basis for both senders of the opening. The merger's prompt quotes its
-// opening words as what releases a merge (prompts/roles/merger.md), so both must say them the same
-// way.
-func gateOpenedSentence(tree string, step record.DesignStep, document string, version int) string {
-	return fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
-		"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
-		"A merge the closed gate held is released.", tree, version, step, document)
-}
-
 // gateClosedSentence is the sentence that tells a phase holder the design gate of tree closed at
-// version of step's document, now with its reviewer. Its two senders are gateOpenedOnBasis's: the
+// version of step's document, now with its reviewer. Its two senders are gateOpenedMessage's: the
 // role message at the close, and a news task composed while the gate stood open and sent after a
 // later version closed it (RenderNews), which says closed rather than an opening that no longer
 // stands. The merger's prompt quotes its opening words as what holds a merge.

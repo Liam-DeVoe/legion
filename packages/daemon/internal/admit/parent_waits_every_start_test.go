@@ -898,7 +898,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 			t.Fatalf("merge-forward messages queued = %+v, want the implementer's ask alone: the tester's hold was delivered", queued)
 		}
 		inTx(t, pool, func(tx pgx.Tx) {
-			_, _, left, err := workflow.MergeForwardAt(context.Background(), record.NewStore(), tx, spParent, queued[0].Step, queued[0].Head)
+			_, _, left, err := workflow.MergeForwardAt(context.Background(), record.NewStore(), tx, spParent, queued[0].Role, queued[0].Step, queued[0].Head)
 			if err != nil || left != "the record holds no merge forward" {
 				t.Fatalf("the queued ask to the implementer is left %q (%v), want it undelivered: the record holds no merge forward", left, err)
 			}
@@ -931,6 +931,44 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		}
 		pwToldR10(t, pwPayloads[record.PhaseEnded](t, pool, spParent), claim.RoleImplementer, phase.Implementing, wait.Reason,
 			&record.DroppedMergeForward{Head: "head-42", Base: "main"})
+	})
+
+	// R10's message about a dropped merge forward goes to the role the record's ask names
+	// (record.MergeForward.Asked), and not to the implementer by assumption. A merger's ask made in
+	// merging stays in the record when the merger moves the issue back to testing, and the pass
+	// that stops the tester once the architect releases the parent's child drops it: the merger is
+	// sent one role message on its own role topic that names it, the implementer is sent nothing,
+	// and the tester is told in the R10 message to write and push nothing more, since the merger
+	// may be merging in the workspace they share.
+	t.Run("a pass that drops a merge forward asked of the merger tells the merger on its role topic", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := pwAdmission(t, 2)
+		pwMidPhase(t, pool, spParent, phase.Testing, supervise.StateIdle, "")
+		asked := pwAsked(phase.Merging, false)
+		asked.Role, asked.Why = claim.RoleMerger, record.ConflictMergeNext
+		pwSeedForward(t, pool, asked)
+
+		pwApplied(t, pool, admission, "dispatch", "released", intake.DispatchIssue{Key: spChild, ResolvedRepo: "acme/widgets", Seq: 1,
+			Type: "issue.updated", Status: "todo", Title: spChild, Parent: spParent, Rank: spChild, HandedOver: true})
+
+		wait := pwHeld(t, pool, spParent, phase.Testing, "the admission pass stopped the tester's testing phase", spChild+" (todo)")
+		if left := pwForwardOf(t, pool); left != nil {
+			t.Fatalf("the merge forward of %s = %+v, want it dropped by the move", spParent, left)
+		}
+		dropped := record.DroppedMergeForward{Head: "head-42", Base: "main", Role: claim.RoleMerger}
+		merger := string(pwRoleToken(t, spParent, claim.RoleMerger))
+		want := []record.RoleMessage{{Role: merger, Body: pwDroppedBody(spParent, dropped)}}
+		if told := pwPayloads[record.RoleMessage](t, pool, spParent); !reflect.DeepEqual(told, want) {
+			t.Fatalf("role messages = %+v, want only %+v: the merger's role topic is told of the merge forward asked of it", told, want)
+		}
+		ended := pwPayloads[record.PhaseEnded](t, pool, spParent)
+		if len(ended) != 1 || ended[0].Role != claim.RoleTester || ended[0].Reason != wait.Reason || !reflect.DeepEqual(ended[0].MergeForward, &dropped) {
+			t.Fatalf("phase-ended messages = %+v, want one to the tester naming the dropped merge forward %+v", ended, dropped)
+		}
+		writeNothing := "Write and push nothing more, because the merger may be merging in the workspace you share: put what you found on the Dispatch issue, and do no more work on testing."
+		if message := ended[0].Message(spParent); !strings.Contains(message, writeNothing) || strings.Contains(message, "Commit and push") {
+			t.Fatalf("the tester was told %q, want %q in it and no %q", message, writeNothing, "Commit and push")
+		}
 	})
 
 	// The request for changes that reaches the cap counts its round as today, and the cap's

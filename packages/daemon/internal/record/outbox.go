@@ -103,11 +103,12 @@ const (
 // issue on that role's own topic: the end of a parent's phase that its open children stopped, which
 // goes to that phase's worker (phase_ended), a hook's words, which go to a phase worker
 // (hook_prompt), the message that tells the merger its pull request left the merge queue
-// (merge_queue_removal), the messages of a merge forward, which go to the implementer and to the
-// worker of the phase the issue stays in (merge_forward), and an update round's ask, which goes to
-// any role whose process runs in the issue's pod, its architect included (update_ask). It also runs
-// the two reads of GitHub that come before a message: the read before a merge-queue removal's
-// message (merge_queue_read), and the second read of a head a first read found conflicting, whose
+// (merge_queue_removal), the messages of a merge forward, which go to the role asked to merge
+// (MergeForwardAsker) and to the worker of the phase the issue stays in (merge_forward), and an
+// update round's ask, which goes to any role whose process runs in the issue's pod, its architect
+// included (update_ask). It also runs the two reads of GitHub that come before a message: the read
+// before a merge-queue removal's message (merge_queue_read), and the second read of a head a first
+// read found conflicting, whose
 // confirmation is what writes a merge forward's messages (conflict_confirm). It is a lane of its
 // own because the board lane's architect notices are ordered among themselves and one of them waits
 // for as long as its architect holds no role (the daemon's errNoticeWaits): a worker told that its
@@ -1733,33 +1734,44 @@ type PhaseEnded struct {
 }
 
 // DroppedMergeForward is a merge forward a move into awaiting_children dropped before it landed
-// (PhaseEnded.MergeForward): Head is the head the merge forward was asked of, and Base the base
-// branch it was to merge forward onto that head.
+// (PhaseEnded.MergeForward): Head is the head the merge forward was asked of, Base the base branch
+// it was to merge forward onto that head, and Role the role it was asked of where that is another
+// role than the implementer, empty for the implementer, as the record's ask that names no role is
+// the implementer's (MergeForward.Asked).
 type DroppedMergeForward struct {
-	Head string `json:"head"`
-	Base string `json:"base"`
+	Head string     `json:"head"`
+	Base string     `json:"base"`
+	Role claim.Role `json:"role,omitempty"`
+}
+
+// Asked is the role d was asked of: Role, or the implementer where Role is empty.
+func (d DroppedMergeForward) Asked() claim.Role {
+	if d.Role == "" {
+		return claim.RoleImplementer
+	}
+	return d.Role
 }
 
 // childrenFinished is when a waiting parent's next task comes, in every message of a move into
 // awaiting_children (PhaseEnded.Message, DroppedMergeForward.RoleMessageBody).
 const childrenFinished = "The daemon gives the issue its next task once its children are finished."
 
-// RoleMessageBody is the body of the role message (RoleMessage) the implementer of issue is sent
-// when a move into awaiting_children that ends no phase of the implementer's drops d (workflow's
-// awaitChildren): the issue waits on its open children, d named with the implementer's rule for
-// it (told), and when the issue's next task comes.
+// RoleMessageBody is the body of the role message (RoleMessage) the role d was asked of (Asked) is
+// sent when a move into awaiting_children that ends no phase of that role's drops d (workflow's
+// awaitChildren): the issue waits on its open children, d named with that role's rule for it
+// (told), and when the issue's next task comes.
 func (d DroppedMergeForward) RoleMessageBody(issue string) string {
 	return fmt.Sprintf("%s: the issue moved into %s, where it waits on its open Dispatch children. %s %s",
 		issue, phase.AwaitingChildren, d.told(issue), childrenFinished)
 }
 
-// told is what the implementer of issue is told of d, in its phase-ended message
+// told is what the role d was asked of is told of d, in its phase-ended message
 // (PhaseEnded.Message) or in its role message (RoleMessageBody), as dispatch://INFRA-3320 R10
-// rules it: d named, with its base and its head; an implementer that has begun the merge finishes
-// it, pushes it and does nothing more, and one that has not begun it begins none; and the daemon
-// does not ask for it again, so the implementer merges the base forward in a later task only once
-// GitHub reads the pull request CONFLICTING, since the tester's merge with the base finds a
-// conflict that is still there and fails its round.
+// rules it for the implementer: d named, with its base and its head; a role that has begun the
+// merge finishes it, pushes it and does nothing more, and one that has not begun it begins none;
+// and the daemon does not ask for it again, so the role merges the base forward in a later task
+// only once GitHub reads the pull request CONFLICTING, since the tester's merge with the base finds
+// a conflict that is still there and fails its round.
 func (d DroppedMergeForward) told(issue string) string {
 	return fmt.Sprintf("The daemon dropped the merge forward of %[2]s onto head %[3]s that it asked of you for %[1]s:"+
 		" if you have begun that merge, finish it, push it and do nothing more; if you have not begun it, begin none."+
@@ -1777,19 +1789,20 @@ func (PhaseEnded) OutboxKind() OutboxKind { return OutboxKindPhaseEnded }
 //
 //   - where the move dropped no merge forward that had not landed, the worker commits and pushes
 //     what it has and does no more work on the phase, whatever its role;
-//   - where it dropped one and the worker is the implementer, the same, with the dropped merge
-//     forward named and the implementer's rule for it (DroppedMergeForward.told);
+//   - where it dropped one and the worker is the role it was asked of (DroppedMergeForward.Asked),
+//     the same, with the dropped merge forward named and that role's rule for it
+//     (DroppedMergeForward.told);
 //   - where it dropped one and the worker is another, it writes and pushes nothing more, since
-//     the implementer may be merging in the workspace the roles share, and puts what it found on
-//     the Dispatch issue.
+//     the role the merge forward was asked of may be merging in the workspace the roles share,
+//     and puts what it found on the Dispatch issue.
 func (p PhaseEnded) Message(issue string) string {
 	work := fmt.Sprintf("Commit and push what you have to the issue's branch, and do no more work on %s.", p.From)
 	if dropped := p.MergeForward; dropped != nil {
-		if p.Role == claim.RoleImplementer {
+		if p.Role == dropped.Asked() {
 			work += " " + dropped.told(issue)
 		} else {
-			work = fmt.Sprintf("Write and push nothing more, because the implementer may be merging in the workspace you share:"+
-				" put what you found on the Dispatch issue, and do no more work on %s.", p.From)
+			work = fmt.Sprintf("Write and push nothing more, because the %s may be merging in the workspace you share:"+
+				" put what you found on the Dispatch issue, and do no more work on %s.", dropped.Asked(), p.From)
 		}
 	}
 	return fmt.Sprintf("%s: the daemon ended your %s phase, and the issue is in %s now: it waits on its open Dispatch children, and no task of yours follows."+
@@ -2010,7 +2023,8 @@ func (ConflictConfirm) OutboxKind() OutboxKind { return OutboxKindConflictConfir
 type MergeForwardStep string
 
 const (
-	// MergeForwardAsk asks the implementer to merge the base forward onto the head and push.
+	// MergeForwardAsk asks the role the daemon asks (MergeForwardAsker), the implementer before
+	// merging and the merger in merging, to merge the base forward onto the head and push.
 	MergeForwardAsk MergeForwardStep = "ask"
 	// MergeForwardHold tells the worker of the phase the issue stays in, when that is the
 	// tester, the reviewer or the merger, to stop writing the workspace while the merge runs.
@@ -2023,11 +2037,15 @@ const (
 )
 
 // mergeForwardRoles is the roles each step of a merge forward may go to: the ask to the
-// implementer, whose merge it is; the hold and the landed to a worker of the phase the issue
-// stays in that is neither the implementer, whom the ask tells, nor the architect, whom the
-// checks-red notice tells; and the review to the reviewer.
+// implementer or the merger, whose merge it is (MergeForwardAsker, which only in merging names
+// the merger); the hold to a worker of the phase the issue stays in that is neither the role
+// asked, whom the ask tells, nor the architect, whom the checks-red notice tells; the landed to the
+// worker of that phase, the merger included, which in merging made the merge and learns from it
+// to merge only once the reviewer approved the new head; and the review to the reviewer. The hold
+// still lists the merger, which a daemon before cybermonklabs/legion#4979 held in merging while it
+// asked the implementer, so a row that daemon queued is still read after the upgrade.
 var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
-	MergeForwardAsk:    {claim.RoleImplementer},
+	MergeForwardAsk:    {claim.RoleImplementer, claim.RoleMerger},
 	MergeForwardHold:   {claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
 	MergeForwardLanded: {claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
 	MergeForwardReview: {claim.RoleReviewer},
@@ -2042,9 +2060,10 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 
 // MergeForwardMessage is one message of a merge forward (PullRequest.MergeForward,
 // dispatch://INFRA-4374 R1) to one role of the issue, on that role's own Envoy topic. The daemon
-// acts on a confirmed conflict without moving the issue out of its phase: it asks the implementer
-// to merge Base forward onto Head in the issue workspace and push (MergeForwardAsk), and tells the
-// worker of the phase the issue stays in to stop writing that workspace while the merge runs
+// acts on a confirmed conflict without moving the issue out of its phase: it asks the implementer,
+// or in merging the merger (MergeForwardAsker, cybermonklabs/legion#4979), to merge Base forward onto
+// Head in the issue workspace and push (MergeForwardAsk), and tells the worker of the phase the
+// issue stays in, where that is another role, to stop writing that workspace while the merge runs
 // (MergeForwardHold). Once a new head lands it tells that worker so (MergeForwardLanded), and asks
 // the reviewer of an issue past its review to read the merge (MergeForwardReview).
 //
@@ -2093,11 +2112,14 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // plain, one instruction to a sentence, because an agent reads them (ASD-STE100).
 //
 // The ask names the pull request, the head, the base and the phase the issue stays in, gives why
-// the daemon acted, and tells the implementer to merge the base forward in the issue workspace,
-// the one workspace every role of the issue shares, as the worker skill's conflicts reference
-// says, after the working-copy check of its foreign-path reference, and to push the issue branch,
-// with no handoff and no completion for the merge. In implementing it also says that the
-// implementer's own assignment and its completion stand: the act starts no phase entry there.
+// the daemon acted, and tells the role asked (the implementer, or in merging the merger) to merge
+// the base forward in the issue workspace, the one workspace every role of the issue shares, as
+// the worker skill's conflicts reference says, after the working-copy check of its foreign-path
+// reference, and to push the issue branch, with no handoff and no completion for the merge. In
+// implementing it also says that the implementer's own assignment and its completion stand: the
+// act starts no phase entry there. To the merger it also says that the merge is its own to
+// resolve and that the reviewer is asked to approve the head it pushes (cybermonklabs/legion#4979);
+// the landed, which comes when that matters, is what holds its merge to that approval.
 //
 // The hold gives why the daemon acted, and tells the worker that the implementer is asked to merge
 // the head forward in the workspace they share and that the issue stays in its phase, to stop
@@ -2106,10 +2128,11 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // its session and its turn's jobs, that it is told the new head when it lands, and that a result
 // it recorded at the old head stays a result of the old head.
 //
-// The landed names both heads and how to read what changed: `git diff` from the old head to the
-// new, and, for a merge of the base, `git show --remerge-diff` for how the merge resolved the
-// conflict and `git diff --stat` against the merge's first parent for the files the base brought
-// in. Then the worker goes on at the new head. To the merger in merging it also says to merge the
+// The landed names both heads and how to read what changed (readMerge): for a merge of the base,
+// `git show --remerge-diff` for how the merge resolved the conflict and `git diff --stat` against
+// the merge's first parent for the files the base brought in, and for any other new head `git
+// diff` from the old head to the new. Then the worker goes on at the new head. To the merger in
+// merging it also says to merge the
 // pull request or put it in the merge queue at the new head only once the reviewer's approval of
 // that head is on the pull request: in merging the landing asks the reviewer for that review, and
 // the merger's task says the same (workflow's task). The review names both heads and the phase,
@@ -2123,15 +2146,19 @@ func (p MergeForwardMessage) Message(issue, repo string) string {
 	switch p.Step {
 	case MergeForwardAsk:
 		own := ""
-		if p.Phase == phase.Implementing {
+		switch {
+		case p.Phase == phase.Implementing:
 			own = " Your own assignment in implementing stands, and so does its completion."
+		case p.Role == claim.RoleMerger:
+			own = " The merge and its conflict are yours to resolve, as your role says." +
+				" When your merge lands, the daemon asks the reviewer to read it and approve the new head."
 		}
 		return fmt.Sprintf("%s: %s at head %s conflicts with its base branch %s, and a second read of GitHub confirmed it."+
 			" The issue stays in %s. %s"+
 			" Merge %s forward in the issue workspace, $LEGION_WORKSPACE. Every role of the issue shares that one workspace."+
 			" First do the working-copy check of skill://legion-worker/references/foreign-path.md."+
 			" Then merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch."+
-			" Write no handoff and make no completion for this merge.%s",
+			" Write no handoff and make no completion for this forward merge.%s",
 			issue, pull, p.Head, p.Base, p.Phase, mergeForwardReason(p.Why, p.Base), p.Base, own)
 	case MergeForwardHold:
 		merger := ""
@@ -2154,12 +2181,12 @@ func (p MergeForwardMessage) Message(issue, repo string) string {
 			" The issue stays in %s. Read what changed since the old head: %s Then go on with your work at the new head.%s",
 			issue, p.Base, pull, p.Head, p.Landed, p.Phase, p.readMerge(), merge)
 	default: // MergeForwardReview, the one step left: validateOutboxPayload admits no other.
-		tell := "the architect, on its role topic"
+		tell := "the architect, on its role topic,"
 		switch p.Phase {
 		case phase.Retro:
-			tell = "the architect and the implementer, each on its own role topic"
+			tell = "the architect and the implementer, each on its own role topic,"
 		case phase.Merging:
-			tell = "the architect and the merger, each on its own role topic"
+			tell = "the architect and the merger, each on its own role topic,"
 		}
 		return fmt.Sprintf("%s: the merge of %s forward landed on %s, and the issue stands in %s. The old head is %s, and the new head is %s."+
 			" Read what the merge changed since the old head: %s"+
@@ -2170,13 +2197,14 @@ func (p MergeForwardMessage) Message(issue, repo string) string {
 }
 
 // readMerge is how the landed and the review tell their role to read what a landed merge forward
-// changed (Message): `git diff` from the old head to the new, and, for a merge of the base,
-// `git show --remerge-diff` and `git diff --stat` against the merge's first parent.
+// changed (Message): for a merge of the base, `git show --remerge-diff` for how the merge resolved
+// the conflict, which is what the reviewer reads (cybermonklabs/legion#4979), and `git diff --stat`
+// against the merge's first parent for the files the base brought in; for any other new head,
+// `git diff` from the old head to the new, whose diff holds the base's own changes too.
 func (p MergeForwardMessage) readMerge() string {
-	return fmt.Sprintf("run `git diff %s %s`."+
-		" For a merge of the base, `git show --remerge-diff %s` shows how the merge resolved the conflict,"+
-		" and `git diff --stat %s^1 %s` lists the files the base brought in.",
-		p.Head, p.Landed, p.Landed, p.Landed, p.Landed)
+	return fmt.Sprintf("for a merge of the base, `git show --remerge-diff %s` shows how the merge resolved the conflict,"+
+		" and `git diff --stat %s^1 %s` lists the files the base brought in; for any other new head, run `git diff %s %s`.",
+		p.Landed, p.Landed, p.Landed, p.Head, p.Landed)
 }
 
 // retryBackoffDoublings is how many times a row's backoff doubles before it stops at
@@ -2752,10 +2780,16 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a merge-forward message is an ask, a hold, a landed or a review; %q is none of them", value.Step)
 		}
 		if !MergeForwardReaches(value.Step, value.Role) {
-			return fmt.Errorf("a merge-forward ask goes to the implementer, a hold or a landed to the tester, the reviewer or the merger, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
+			return fmt.Errorf("a merge-forward ask goes to the implementer or the merger, a hold or a landed to the tester, the reviewer or the merger, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
 		}
 		if value.Head == "" || value.Base == "" || value.Phase == "" || value.PullRequest < 1 {
 			return fmt.Errorf("a merge-forward message names the head, the base branch, the phase the issue stays in and the pull request; it names %q, %q, %q and #%d", value.Head, value.Base, value.Phase, value.PullRequest)
+		}
+		// The merger is asked only where MergeForwardAsker names it, in merging. The implementer's ask
+		// is valid in every phase, so a row a daemon before cybermonklabs/legion#4979 queued past the
+		// review still reads.
+		if value.Step == MergeForwardAsk && value.Role == claim.RoleMerger && MergeForwardAsker(value.Phase) != claim.RoleMerger {
+			return fmt.Errorf("a merge-forward ask goes to the merger only while the issue stands in merging; this one names %q", value.Phase)
 		}
 		landing := value.Step == MergeForwardLanded || value.Step == MergeForwardReview
 		if landing != (value.Landed != "") {

@@ -447,15 +447,15 @@ func writeGateAsk(task *strings.Builder, steps []record.DesignStep, again string
 // (record.TreeSteps: the deployment's steps, in its order, and a Verification document the root
 // registered beside a deployment that gates the spec alone): whether the root has registered the
 // step, at which document version, and what opened that version or what a person has said of it.
-// It reads record.RequiredSteps rather than the gated list, so a deployment that gates no step
-// still reports the one registration that opens its gate; under that deployment no person
-// approves anything, so no clause of it names one. A step open on an ancestor's approval
-// (record.DesignGate.OnBasis) names that approval (basisApproval) and that no person approved the
-// root's version, never that a person approved it (dispatch://INFRA-3320, R2). A changes request
-// below the registered version is an answer to a document the architect has moved past, which
-// leaves the current version unanswered.
+// It reads the steps the gate holds the tree's work on (record.TreeGate.Required) rather than the
+// gated list, so a deployment that gates no step still reports the one registration that opens
+// its gate; under that deployment no person approves anything, so no clause of it names one. A
+// step open on an ancestor's approval (record.DesignGate.OnBasis) names that approval
+// (basisApproval) and that no person approved the root's version, never that a person approved it
+// (dispatch://INFRA-3320, R2). A changes request below the registered version is an answer to a
+// document the architect has moved past, which leaves the current version unanswered.
 func gateStanding(gate record.TreeGate) string {
-	steps := record.RequiredSteps(record.TreeSteps(gate.Steps, gate.Rows))
+	steps := gate.Required()
 	said := make([]string, 0, len(steps))
 	for _, step := range steps {
 		row, registered := gate.Rows[step]
