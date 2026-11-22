@@ -28,10 +28,11 @@ import (
 const approvalWait = "only once the reviewer's approval of"
 
 // plannedConflictIssue is seedConflictIssue on a run with plan rows: the owner's plan whose steps
-// are steps, with task a running at the place of at (its retro or its merge).
-func plannedConflictIssue(t *testing.T, at phase.Phase, steps ...string) *pgxpool.Pool {
+// are steps, with task a running at the place of at (its retro or its merge), and pr as the record
+// holds the pull request.
+func plannedConflictIssue(t *testing.T, at phase.Phase, pr record.PullRequest, steps ...string) *pgxpool.Pool {
 	t.Helper()
-	pool := seedConflictIssue(t, at, "retro", settledGreen("lint"))
+	pool := seedConflictIssue(t, at, "retro", pr)
 	seedStepsPlan(t, pool, "LEGION-208", 1, steps...)
 	place := record.TaskPlace{Kind: record.PlaceRetro}
 	if at == phase.Merging {
@@ -64,7 +65,7 @@ func TestAMergeForwardAsksTheReviewerOnlyOfATaskWithAReviewerStep(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Run("the merger in merging", func(t *testing.T) {
-				pool := plannedConflictIssue(t, phase.Merging, tc.steps...)
+				pool := plannedConflictIssue(t, phase.Merging, settledGreen("lint"), tc.steps...)
 				confirmsConflict(t, pool, requiresCI)
 				asked := len(mergeForwardMessages(t, pool))
 				landsMergeForward(t, pool)
@@ -91,8 +92,14 @@ func TestAMergeForwardAsksTheReviewerOnlyOfATaskWithAReviewerStep(t *testing.T) 
 				}
 			})
 
+			// Past the review a conflict waits for the merger (cybermonklabs/legion#4979), so a merge
+			// forward lands in retro only where the implementer was asked before the review, while a
+			// required check had no green result, and its merge lands once the issue is in retro.
 			t.Run("a merger entering merging after the landing", func(t *testing.T) {
-				pool := plannedConflictIssue(t, phase.Retro, tc.steps...)
+				pr := settledGreen("lint")
+				pr.MergeForward = &record.MergeForward{Head: conflictHead, Base: "main", Role: claim.RoleImplementer, Phase: phase.Reviewing,
+					Why: record.ConflictCheckNotGreen, AskedAt: firstConflictRead}
+				pool := plannedConflictIssue(t, phase.Retro, pr, tc.steps...)
 				confirmsConflict(t, pool, requiresCI)
 				asked := len(mergeForwardMessages(t, pool))
 				landsMergeForward(t, pool)

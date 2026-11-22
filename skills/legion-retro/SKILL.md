@@ -39,8 +39,11 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
      Send a name that no run answers (`absent`) to the architect as a finding, since the check's words are wrong, and the same for a check whose `run` is a whole test suite.
      Neither that run nor that finding moves the issue back.
 
+   - A `ci_check` check whose derived result is a fail is the merger's: the change is accepted, and the merger decides at the merge whether the base or the change broke it.
+     Name it in your retro message and complete.
+
    - Any other check with no pass standing, or a check with no `ci_check` whose only evidence is a unit suite:
-     `request_backward_move` with `to: implementing` for the implementer's result or a `ci_check` check, or, where the task has a tester step, `to: testing` for the tester's result;
+     `request_backward_move` with `to: implementing` for the implementer's result, or, where the task has a tester step, `to: testing` for the tester's result;
      name the check's block id in the reason.
 
    - With no reviewer step, list the unresolved bot threads and answer the ones you find, as `skill://legion-worker/references/review-threads.md` says.
