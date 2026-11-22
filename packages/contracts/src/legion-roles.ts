@@ -18,8 +18,9 @@ export const LEGION_ROLES = [
 
 export type LegionRole = (typeof LEGION_ROLES)[number];
 
-/** The role of a phase worker's claim: one of Legion's six, or a role the deployment defines in its
- * settings' `roles` (contract 221), a name of the step grammar (`isStepRole`). */
+/** The role of a phase worker's claim: one of Legion's six, a role the deployment defines in its
+ * settings' `roles` (contract 221), or a role the plan of its issue defines in a `plan_role` block,
+ * a name of the step grammar (`isStepRole`). */
 export type LegionStepRole = LegionRole | string;
 
 /** The design-gate steps a Legion deployment can gate, each naming one document of a root issue
@@ -70,8 +71,9 @@ export function isLegionRole(role: string): role is LegionRole {
   return LEGION_ROLES.some((candidate) => candidate === role);
 }
 
-/** Whether a claim of an issue can be on `role`: each of Legion's six, and each role a deployment
- * defines, a name of `^[a-z][a-z0-9-]{0,31}$`. The controller is none: its claim holds no issue.
+/** Whether a claim of an issue can be on `role`: each of Legion's six, each role a deployment
+ * defines and each role an issue's plan defines, a name of `^[a-z][a-z0-9-]{0,31}$`. The
+ * controller is none: its claim holds no issue.
  * The one definition of a role of the step grammar; the Go daemon's `claim.IsRole` is its twin. */
 export function isStepRole(role: string): role is LegionStepRole {
   return role !== "controller" && STEP_ROLE.test(role);

@@ -51,10 +51,11 @@ export const LegionInstant = timestamp.regex(
 );
 
 /** `api.Phase` — the state an admitted issue sits in, in the transition table's own order. Not
- * the role working it: `workers` is keyed by role, each of `LEGION_ROLES` or a role of the
- * deployment. `awaiting_person` is a root that keeps its admission slot while its architect waits
- * on a person's answer (`waitingOn` on the issue record). `step` runs each step of a role the
- * deployment defines, which the issue names in `stepRole` (contract 221). `accepting` is the
+ * the role working it: `workers` is keyed by role, each of `LEGION_ROLES`, a role of the
+ * deployment or a role of the issue's plan. `awaiting_person` is a root that keeps its admission
+ * slot while its architect waits on a person's answer (`waitingOn` on the issue record). `step`
+ * runs each step of a role the deployment or the issue's plan defines, which the issue names in
+ * `stepRole` (contract 221). `accepting` is the
  * architect's acceptance between the reviewer's approval and retro: no worker runs it. The merger
  * merges in `merging`, and the daemon closes the issue when it reads that merge (`done`); the
  * production check after the close is no phase (`check` on the issue record). */
@@ -742,7 +743,7 @@ const legionIssue = z.object({
   key: nonEmptyString.optional(),
   generation: z.number().int().nonnegative().optional(),
   phase: z.enum(LEGION_PHASES),
-  /** The role of the deployment that works the issue's running step, where the issue stands at
+  /** The role of the deployment or of the issue's plan that works the issue's running step, where the issue stands at
    * `step` or its hold took it out of `step` (contract 221): no phase names such a role, so the
    * phase alone does not say who works the issue. Absent at every other phase, whose role the
    * phase names, and from every issue of the body the route serves a caller before 221, which is
