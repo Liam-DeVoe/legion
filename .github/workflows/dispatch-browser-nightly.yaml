@@ -106,12 +106,16 @@ jobs:
         run: bun run build:dispatch
         working-directory: packages/contracts
       - name: Check the quarantine against 14 days of flaky rows
-        # 213 x 1.15 = 245 s -> 5 min.
+        # 104 x 1.15 = 120 s of work, the longest REST reader's on 2026-11-21 and 22 (job
+        # 137021330193 of run 44961580846), and 180 s for GitHub's rate limit -> 5 min.
         timeout-minutes: 5
         run: bun e2e/tools/quarantine-check.ts
         working-directory: packages/dispatch
         env:
           GH_TOKEN: ${{ github.token }}
+          # 300 - 104 x 1.15 = 180 s: the step's limit less its work, all of which may follow a
+          # refusal of its first read. The derivation is in the job's `# why:` section.
+          GH_READ_WAIT_CAP_SECONDS: 180
   # The guard on the stubbed layer's recordings (dispatch://INFRA-1407's R3). A recording is a
   # snapshot of a server that keeps moving: this re-records every stubbed row against the real
   # harness and fails when a route no longer answers as its recording holds.

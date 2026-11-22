@@ -80,7 +80,18 @@ cat > "$work/bin/gh" <<GH
 # stand-in \`timeout\` answers itself calls no gh, so each such attempt before this one moves
 # the attempt a \`kill-wrapper.<n>\` reaches one further on: the same drift the stand-in
 # \`timeout\`'s own head describes for \`stderr.<n>\`. No case in this file writes both.
+#
+# \`gh api rate_limit --jq <filter>\`, which gh-read.sh's ladder asks where a refusal names
+# GitHub's rate limit, is answered apart: recorded under \`rate-calls\`, not \`calls\`, so a
+# case's count of reads stays the count of the jobs read's attempts, and answered with the filter
+# run over \`rate_limit.json\`, which the case writes with \`rate_limit\` below.
 set -euo pipefail
+if [ "\${1:-} \${2:-}" = "api rate_limit" ]; then
+  rate_calls=\$(find "$work/rate-calls" -maxdepth 1 -type f | wc -l)
+  printf '%s\n' "\$*" > "$work/rate-calls/call.\$rate_calls"
+  jq -r "\$4" "$work/rate_limit.json"
+  exit 0
+fi
 calls=\$(find "$work/calls" -maxdepth 1 -type f | wc -l)
 printf '%s\n' "\$*" > "$work/calls/call.\$calls"
 if [ -f "$work/kill-wrapper.\$calls" ]; then
@@ -330,29 +341,53 @@ happy_page() {
 # fixture <refused calls> [<stderr of a refused call>]: a fresh call log and no out-file, a
 # stand-in that refuses that many calls and then answers, and the happy page for the answer. It
 # also puts the ladder's wait back to 0, so a case that does not ask for one waits not at all
-# and the three that do set `retry_seconds` themselves after calling it. Any per-call `stderr.<n>`
-# an earlier case wrote goes with it, so one case's faults never answer another's call, and so
-# do the stand-in `timeout`'s per-call `stub-timeout.<n>` files and its own call log, and the
-# stand-in gh's per-call `kill-wrapper.<n>` files, and the stand-in `sleep`'s call log.
+# and the cases that do set `retry_seconds` themselves after calling it, and the cap on the
+# ladder's rate-limit waits back to the script's own, which the cases about those waits set
+# themselves in `wait_cap`. Any per-call `stderr.<n>` an earlier case wrote goes with it, so one
+# case's faults never answer another's call, and so do the stand-in `timeout`'s per-call
+# `stub-timeout.<n>` files and its own call log, and the stand-in gh's per-call
+# `kill-wrapper.<n>` files and its rate-limit answer and calls, and the stand-in `sleep`'s call
+# log.
 fixture() {
-  rm -rf "$work/calls" "$work/out.json" "$work/timeout-calls" "$work/sleep-calls"
-  rm -f "$work"/stderr.* "$work"/stub-timeout.* "$work"/kill-wrapper.*
-  mkdir -p "$work/calls" "$work/timeout-calls" "$work/sleep-calls"
+  rm -rf "$work/calls" "$work/out.json" "$work/timeout-calls" "$work/sleep-calls" \
+    "$work/rate-calls"
+  rm -f "$work"/stderr.* "$work"/stub-timeout.* "$work"/kill-wrapper.* "$work/rate_limit.json"
+  mkdir -p "$work/calls" "$work/timeout-calls" "$work/sleep-calls" "$work/rate-calls"
   printf '%s\n' "${1:-0}" > "$work/refuse"
   printf '%s\n' "${2:-HTTP 502}" > "$work/stderr"
   retry_seconds=0
+  wait_cap=""
   happy_page
 }
 
 # drive <argument>...: the real script with the stand-in first on PATH. Sets `out` to its
 # combined output and `status` to its exit code. Not a subshell, so both survive the call.
+# `wait_cap` empty leaves GH_READ_WAIT_CAP_SECONDS empty, and the script then sets its own.
 drive() {
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
-    GITHUB_RUN_ATTEMPT=$run_attempt GH_RETRY_SECONDS=$retry_seconds "$read_script" "$@" 2>&1)
+    GITHUB_RUN_ATTEMPT=$run_attempt GH_RETRY_SECONDS=$retry_seconds \
+    GH_READ_WAIT_CAP_SECONDS=$wait_cap "$read_script" "$@" 2>&1)
   status=$?
   set -e
 }
+
+# rate_limit <remaining> <seconds>: the answer the stand-in gives `gh api rate_limit`, REST's core
+# limit with that many calls left and its reset that many seconds from now; sets `reset` to it.
+rate_limit() {
+  reset=$(($(date +%s) + $2))
+  jq -n --argjson remaining "$1" --argjson reset "$reset" \
+    '{resources: {core: {limit: 15000, remaining: $remaining, reset: $reset, used: 15000}}}' \
+    > "$work/rate_limit.json"
+}
+
+# The words gh printed for the refusal of job 137064876909 of run 44974625499 at 02:21:17Z on
+# 2026-11-22, the jobs read this file's rate-limit cases stand in for.
+rate_limited='gh: API rate limit exceeded for installation. If you reach out to GitHub Support for help, please include the request ID D038:399AB0:7766CC9:17C1DDFF:6B02519D and timestamp 2026-11-22 02:21:17 UTC. For more on scraping GitHub and how it may affect your rights, please review our Terms of Service (https://docs.github.com/en/site-policy/github-terms/github-terms-of-service) (HTTP 403)'
+
+rate_calls() { find "$work/rate-calls" -maxdepth 1 -type f | wc -l | tr -d ' '; }
+ladder_lines() { grep -c '^gh_read: ' <<<"$out" || true; }
+ladder_line() { grep '^gh_read: ' <<<"$out" || true; }
 
 calls() { find "$work/calls" -maxdepth 1 -type f | wc -l | tr -d ' '; }
 args() { cat "$work/calls/call.0"; }
@@ -815,6 +850,96 @@ no|4     fcntl(0, F_SETFD, FD_CLOEXEC)     = 0
 no|4     <... futex resumed>) = -1 ETIMEDOUT (Connection timed out)
 no|3662081 <... clock_nanosleep resumed>0x7fff1f4bea20) = 0
 TRACE
+
+echo "case: GitHub's rate limit, its reset 2 s ahead, is waited out and the read answers"
+# The shape of the 2026-11-21 and 2026-11-22 refusals: gh printing `API rate limit exceeded for
+# installation ... (HTTP 403)` and nothing else, its headers being on no stream the script reads.
+# The ladder reads the reset from `gh api rate_limit` and waits until 3 s past it, through the
+# stand-in `sleep`, so the case reads the wait asked for and does not wait it out.
+fixture 1 "$rate_limited"
+rate_limit 0 2
+drive jobs "$work/out.json"
+until=$(date -u -d "@$((reset + 3))" +%Y-%m-%dT%H:%M:%SZ)
+check "exits 0" "$(is "$status" 0)"
+check "asked twice" "$(is "$(calls)" 2)"
+check "read the rate limit once, between them" "$(is "$(rate_calls)" 1)"
+check "through gh's own filter over REST's core limit" \
+  "$(contains "$(cat "$work/rate-calls/call.0")" '^api rate_limit --jq .resources.core')"
+check "writes the attempt that answered" "$(is "$(entries)" 8)"
+check "prints no ::error:: line" "$(is "$(errors)" 0)"
+check "prints one line of the ladder's own" "$(is "$(ladder_lines)" 1)"
+check "naming the header it read" \
+  "$(contains "$(ladder_line)" "reads x-ratelimit-remaining 0 and x-ratelimit-reset $reset,")"
+check "the time it waits until, in UTC, 3 s past that reset" \
+  "$(contains "$(ladder_line)" "until $until, 3 s past that reset")"
+check "and the cap, the script's own 145 s" "$(contains "$(ladder_line)" 'the cap is 145 s')"
+wait_asked=$(sed -n 's/.* so the ladder waits \([0-9]*\) s,.*/\1/p' <<<"$(ladder_line)")
+check "and the wait it names is the one it asked of sleep" "$(is "$(sleeps)" "$wait_asked")"
+check "which is no more than the 2 s and the 3 s past them" \
+  "$( [ "$wait_asked" -ge 1 ] && [ "$wait_asked" -le 5 ] && echo true || echo false)"
+
+echo "case: GitHub's rate limit whose reset is past the cap fails at once, naming the refusal"
+fixture 3 "$rate_limited"
+rate_limit 0 600
+wait_cap=60
+drive jobs "$work/out.json"
+check "fails the step" "$(is "$status" 1)"
+check "writes no out-file" "$(is "$(wrote_out_file)" no)"
+check "asked once" "$(is "$(calls)" 1)"
+check "read the rate limit once" "$(is "$(rate_calls)" 1)"
+check "and waited for nothing" "$(is "$(sleeps)" "")"
+check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "which names the refusal" \
+  "$(contains "$(error_line)" 'attempt 1, which decided the failure, answered HTTP 403')"
+check "and the one attempt made" "$(contains "$(error_line)" 'the ladder made 1 attempts')"
+check "and the ladder's line says the reset was past the cap" \
+  "$(contains "$(ladder_line)" "x-ratelimit-reset $reset .* is [0-9]* s away, past the cap of 60 s")"
+
+echo "case: a 403 that names no rate limit fails at once, without a wait"
+# A permission refusal: gh's words hold no rate limit, so the ladder neither reads the rate limit
+# nor asks again, where at cap 0 it would have asked twice more for the same answer.
+fixture 3 "gh: Resource not accessible by integration (HTTP 403)"
+retry_seconds=1
+drive jobs "$work/out.json"
+check "fails the step" "$(is "$status" 1)"
+check "asked once" "$(is "$(calls)" 1)"
+check "read no rate limit" "$(is "$(rate_calls)" 0)"
+check "and waited for nothing" "$(is "$(sleeps)" "")"
+check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "which names the refusal" \
+  "$(contains "$(error_line)" 'attempt 1, which decided the failure, answered HTTP 403')"
+check "and the ladder's line says it does not ask again" \
+  "$(contains "$(ladder_line)" 'HTTP 403 and named no rate limit, .* does not ask again$')"
+
+echo "case: a secondary rate limit, which leaves calls in the limit, keeps the ladder's waits"
+# gh shows no retry-after, so the ladder has no time of GitHub's to wait for: it says so and
+# takes its own 1 s and 2 s, as at cap 0.
+fixture 3 "gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 403)"
+rate_limit 4200 1800
+retry_seconds=1
+drive jobs "$work/out.json"
+check "fails the step" "$(is "$status" 1)"
+check "asked three times" "$(is "$(calls)" 3)"
+check "reading the rate limit after each" "$(is "$(rate_calls)" 3)"
+check "and waited the ladder's 1 s and 2 s" "$(is "$(sleeps)" "1|2")"
+check "saying why each time" \
+  "$(is "$(grep -c "x-ratelimit-remaining '4200', not 0: a secondary limit" <<<"$out" || true)" 3)"
+
+echo "case: at cap 0 the ladder is the one it was: a rate limit is asked three times, 1 s and 2 s apart"
+# GH_READ_WAIT_CAP_SECONDS=0 is what every other caller of gh-read.sh runs, and what this read
+# ran before the cap: no rate-limit read, no line of the ladder's own, three attempts.
+fixture 3 "$rate_limited"
+rate_limit 0 2
+retry_seconds=1
+wait_cap=0
+drive jobs "$work/out.json"
+check "fails the step" "$(is "$status" 1)"
+check "asked three times" "$(is "$(calls)" 3)"
+check "read no rate limit" "$(is "$(rate_calls)" 0)"
+check "and waited 1 s and then 2 s" "$(is "$(sleeps)" "1|2")"
+check "prints no line of the ladder's own" "$(is "$(ladder_lines)" 0)"
+check "and the ::error:: line it printed before" \
+  "$(contains "$(error_line)" 'attempt 3, which decided the failure, answered HTTP 403; the ladder made 3 attempts')"
 
 echo "case: blobs-refused names the download step that failed and nothing beyond it"
 # What this job knows of a refused blob download is which step failed and on which attempt.

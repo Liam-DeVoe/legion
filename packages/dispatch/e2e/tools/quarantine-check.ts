@@ -23,25 +23,32 @@
  *  The runs it reads are the scheduled runs of the nightly and the merge-group runs of ci.yaml,
  *  and no other: a pull request's head can carry its own defect. What it reads of each is the
  *  `dispatch-browser flaky row` notices of its merge job (the "Reading two" step of
- *  .github/workflows/dispatch-browser.yaml's merge job prints one per flaky row), through the
- *  check runs API: the run listing (`actions: read`), the merge job's check runs in the run's
- *  check suite and their annotations (`checks: read`). For a row flaky in two runs it also reads
- *  a listing of its file in this checkout and the file's blame, one GraphQL request per file,
- *  which it sends itself with the job's token, through the client and the retry ladder of its
- *  REST reads; a refused blame fails the check, naming the file. For each fix it reads GitHub's
- *  compare of the checkout with the fix's commit.
+ *  .github/workflows/dispatch-browser.yaml's merge job prints one per flaky row): the run listing
+ *  through REST (`actions: read`), a day of a workflow a call, and the merge job's check runs in
+ *  each run's check suite with their annotations (`checks: read`) through GraphQL, 100 suites a
+ *  call and a call more for any page beyond the first (`readSuites`). For a row flaky in two runs
+ *  it also reads a listing of its file in this checkout and the file's blame, one GraphQL request
+ *  per file. It sends every request itself with the job's token, through one client and its retry
+ *  ladder (`gitHub`); a refused blame fails the check, naming the file. For each fix it reads
+ *  GitHub's compare of the checkout with the fix's commit.
  *
- *  Those reads are the adapter's, below `readHistory`, and they decide nothing; `flakyRows`,
+ *  Those reads are the adapter's, below `report`, and they decide nothing; `flakyRows`,
  *  `rowLines`, `lastChange`, `decide` and `report` are pure over what was read and the moment
- *  given them, which is how `e2e/__tests__/quarantine-check.test.ts` drives them, and it drives
- *  `blame` against a stand-in for GitHub's answer. Only the command line reads the clock.
+ *  given them, which is how `e2e/__tests__/quarantine-check.test.ts` drives them. It drives
+ *  `blame` against a stand-in for GitHub's answer, and `gitHub` and `readHistory` against a local
+ *  stand-in for GitHub's API. Only the command line, and `gitHub`'s wait for a rate limit, read
+ *  the clock.
  *
  *  Environment: GITHUB_REPOSITORY (`owner/name`), GH_TOKEN or GITHUB_TOKEN, GITHUB_SHA (the
- *  commit checked out; `main` when unset), GITHUB_API_URL (https://api.github.com when unset)
- *  and, where it is set, GITHUB_STEP_SUMMARY, which the summary is appended to as well as
- *  printed. It writes nothing to GitHub. A read GitHub refuses three times exits 1 too, and says
- *  it is a failed read rather than a finding. Usage errors exit 2. From a workstation, with gh
- *  signed in, in a checkout of the commit GITHUB_SHA names:
+ *  commit checked out; `main` when unset), GITHUB_API_URL (https://api.github.com when unset),
+ *  GH_READ_WAIT_CAP_SECONDS (0 when unset: how long, all its waits together, the reading may wait
+ *  for GitHub's rate limit, which the nightly's step sets from its own budget) and, where it is
+ *  set, GITHUB_STEP_SUMMARY, which the summary is appended to as well as printed. It writes
+ *  nothing to GitHub. A read GitHub refuses - three times, or once with a 403 that names no rate
+ *  limit, or with a rate limit whose time is past that cap - exits 1 too, and says it is a failed
+ *  read rather than a finding. Its last line on stderr gives the REST and GraphQL calls it made,
+ *  the GraphQL points they cost, and what the token has left of each budget. Usage errors exit 2.
+ *  From a workstation, with gh signed in, in a checkout of the commit GITHUB_SHA names:
  *
  *    GITHUB_REPOSITORY=cybermonklabs/legion GH_TOKEN="$(gh auth token)" GITHUB_SHA=<sha> \
  *      bun e2e/tools/quarantine-check.ts
@@ -419,61 +426,214 @@ export function report(
 }
 
 /** The reads `readHistory` and the rest make, and what they cost. */
-interface GitHub {
+export interface GitHub {
   /** Every page of `path`, the list of each page taken from `key` of its body (or the body itself
    *  where it is a list), with the `total_count` the last page gave. */
   everyPage<Item>(path: string, key: string): Promise<{ items: Item[]; total: number }>;
   /** The body of `path`, or `undefined` where GitHub has no such thing (404 or 422). */
   one(path: string): Promise<unknown>;
   /** The body GitHub's GraphQL endpoint answers `query` with, on the same ladder. */
-  graphql(query: string, variables: Record<string, string>): Promise<unknown>;
-  /** The calls made so far, retries included, and the rate limit's remaining calls last read. */
-  spent(): { calls: number; remaining: string | null };
+  graphql(query: string, variables: Record<string, unknown>): Promise<unknown>;
+  /** The calls made so far, retries included, REST's and GraphQL's apart; the points GraphQL's
+   *  answers gave as their `rateLimit { cost }`, summed; and what each budget had left, as the
+   *  last REST answer's `x-ratelimit-remaining` and the last GraphQL answer's
+   *  `rateLimit { remaining }` gave it. */
+  spent(): {
+    calls: number;
+    graphqlCalls: number;
+    graphqlCost: number;
+    graphqlRemaining: number | null;
+    remaining: string | null;
+  };
 }
 
-/** The GitHub REST API at `api`, read with `token`: one call is three attempts at most, 10 s and
- *  then 20 s apart, each bounded at 30 s, the ladder `.github/scripts/gh-read.sh` gives the
- *  scripts beside it, since GitHub refuses a call now and then (a 502, a secondary rate limit)
- *  and one refusal must decide nothing. A call refused three times throws, naming the call. */
-function gitHub(api: string, token: string): GitHub {
+/** How long a wait for a primary rate limit runs past the reset GitHub names, in seconds: the
+ *  reset is a whole second of GitHub's clock, which the runner's may stand behind. */
+const resetMarginSeconds = 3;
+
+const failedRead =
+  "This is a failed read of the runs and not a finding: the quarantine was not checked.";
+
+/** The time GitHub's answer says it may be asked again, and the header that says it: `retry-after`
+ *  seconds from now where it is present (a secondary limit's), or else `resetMarginSeconds` past
+ *  `x-ratelimit-reset` where `x-ratelimit-remaining` is 0 (a primary limit's, REST's or
+ *  GraphQL's, which `x-ratelimit-resource` names). Never sooner than a second from now, so an
+ *  answer whose reset has already passed is not asked again in a tight loop. `undefined` where
+ *  the answer says neither. */
+function rateLimitWait(headers: Headers): { at: number; header: string } | undefined {
+  const soonest = Date.now() + 1000;
+  const retryAfter = headers.get("retry-after");
+  if (retryAfter !== null && /^\d+$/.test(retryAfter)) {
+    return {
+      at: Math.max(soonest, Date.now() + Number(retryAfter) * 1000),
+      header: `retry-after: ${retryAfter}`,
+    };
+  }
+  const reset = headers.get("x-ratelimit-reset");
+  if (headers.get("x-ratelimit-remaining") === "0" && reset !== null && /^\d+$/.test(reset)) {
+    const resource = headers.get("x-ratelimit-resource");
+    return {
+      at: Math.max(soonest, (Number(reset) + resetMarginSeconds) * 1000),
+      header:
+        `x-ratelimit-reset: ${reset} (x-ratelimit-remaining: 0` +
+        `${resource === null ? "" : `, x-ratelimit-resource: ${resource}`}), plus ` +
+        `${resetMarginSeconds} s`,
+    };
+  }
+  return undefined;
+}
+
+/** One attempt's outcome: GitHub's answer, or what refused it - `what` as the line before a wait
+ *  names it, `wait` where the refusal is GitHub's rate limit and says when to ask again, and
+ *  `final` where it is one that a second asking is refused the same way. */
+type Attempt =
+  | { readonly body: unknown; readonly next: string | undefined }
+  | {
+      readonly refusal: string;
+      readonly what?: string;
+      readonly wait?: { readonly at: number; readonly header: string };
+      readonly final?: boolean;
+    };
+
+/** The GitHub API at `api`, read with `token`. A call is three attempts at most, 10 s and then
+ *  20 s apart, each bounded at 30 s - the ladder `.github/scripts/gh-read.sh` gives the scripts
+ *  beside it, since GitHub refuses a call now and then (a 502, a dropped connection) and one
+ *  refusal must decide nothing - except where GitHub's answer says more:
+ *
+ *  - A 403 or 429 with `retry-after`, or with `x-ratelimit-remaining: 0` and `x-ratelimit-reset`,
+ *    is GitHub's rate limit, secondary or primary, REST's or GraphQL's; so is GraphQL's primary
+ *    limit, which answers 200 with a `RATE_LIMITED` error and those two headers. The call waits
+ *    for the time GitHub names (`rateLimitWait`), printing one line through `log` before it, and
+ *    asks again; that wait takes none of the three attempts. `waitCapSeconds` bounds this
+ *    client's waits together, time two calls spend waiting at once counted once: a wait that
+ *    would pass it is not made, and the call throws, naming the refusal and the reset past the
+ *    cap. Its default, 0, waits for nothing.
+ *  - A 403 that carries neither header, such as a permission refusal, and a `RATE_LIMITED` error
+ *    that names no time, throw at once: asking again is refused the same way.
+ *
+ *  A call refused three times otherwise throws, naming the call. */
+export function gitHub(
+  api: string,
+  token: string,
+  {
+    waitCapSeconds = 0,
+    log = (line: string) => console.error(line),
+  }: { waitCapSeconds?: number; log?: (line: string) => void } = {}
+): GitHub {
   let calls = 0;
+  let graphqlCalls = 0;
+  let graphqlCost = 0;
+  let graphqlRemaining: number | null = null;
   let remaining: string | null = null;
+  // The time spent waiting for the rate limit so far, and when the latest of those waits ends.
+  let waited = 0;
+  let waitedUntil = 0;
+  async function attempt(url: string, post: unknown): Promise<Attempt> {
+    let response: Response;
+    let body: unknown;
+    try {
+      response = await fetch(url, {
+        body: post === undefined ? undefined : JSON.stringify(post),
+        method: post === undefined ? "GET" : "POST",
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${token}`,
+          "x-github-api-version": "2022-11-28",
+        },
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (response.headers.get("x-ratelimit-resource") !== "graphql") {
+        remaining = response.headers.get("x-ratelimit-remaining") ?? remaining;
+      }
+      if (response.status === 404 || response.status === 422) {
+        return { body: undefined, next: undefined };
+      }
+      if (!response.ok) {
+        const refusal = `HTTP ${response.status}: ${(await response.text()).slice(0, 200)}`;
+        if (response.status !== 403 && response.status !== 429) return { refusal };
+        return {
+          final: response.status === 403,
+          refusal,
+          wait: rateLimitWait(response.headers),
+          what: `HTTP ${response.status}`,
+        };
+      }
+      body = await response.json();
+    } catch (error) {
+      return { refusal: error instanceof Error ? error.message : String(error) };
+    }
+    if (post !== undefined) {
+      const { data, errors } = (body ?? {}) as {
+        data?: { rateLimit?: { cost?: unknown; remaining?: unknown } } | null;
+        errors?: unknown;
+      };
+      const limited = Array.isArray(errors)
+        ? (errors as { type?: unknown; message?: unknown }[]).find(
+            (error) => error?.type === "RATE_LIMITED"
+          )
+        : undefined;
+      if (limited !== undefined) {
+        return {
+          final: true,
+          refusal: `HTTP 200 with GraphQL's RATE_LIMITED error: ${String(limited.message).slice(0, 200)}`,
+          wait: rateLimitWait(response.headers),
+          what: "GraphQL's RATE_LIMITED error",
+        };
+      }
+      if (typeof data?.rateLimit?.cost === "number") graphqlCost += data.rateLimit.cost;
+      if (typeof data?.rateLimit?.remaining === "number") {
+        graphqlRemaining = data.rateLimit.remaining;
+      }
+    }
+    const next = /<([^>]+)>;\s*rel="next"/.exec(response.headers.get("link") ?? "")?.[1];
+    return { body, next };
+  }
   async function page(
     url: string,
     post?: unknown
   ): Promise<{ body: unknown; next: string | undefined }> {
-    let last = "";
-    for (const attempt of [1, 2, 3]) {
-      calls += 1;
-      try {
-        const response = await fetch(url, {
-          body: post === undefined ? undefined : JSON.stringify(post),
-          method: post === undefined ? "GET" : "POST",
-          headers: {
-            accept: "application/vnd.github+json",
-            authorization: `Bearer ${token}`,
-            "x-github-api-version": "2022-11-28",
-          },
-          signal: AbortSignal.timeout(30_000),
-        });
-        remaining = response.headers.get("x-ratelimit-remaining") ?? remaining;
-        if (response.ok) {
-          const next = /<([^>]+)>;\s*rel="next"/.exec(response.headers.get("link") ?? "")?.[1];
-          return { body: await response.json(), next };
+    let refusals = 0;
+    for (;;) {
+      if (post === undefined) calls += 1;
+      else graphqlCalls += 1;
+      const answer = await attempt(url, post);
+      if (!("refusal" in answer)) return answer;
+      if (answer.wait !== undefined) {
+        const added = Math.max(0, answer.wait.at - Math.max(Date.now(), waitedUntil));
+        const until = new Date(answer.wait.at).toISOString();
+        if (waited + added > waitCapSeconds * 1000) {
+          throw new Error(
+            `GitHub refused ${url} with ${answer.refusal}, and the time its rate limit names, ` +
+              `${until} by its ${answer.wait.header}, is past the cap of ${waitCapSeconds} s on ` +
+              `this reading's waits (${Math.round(waited / 1000)} s of it spent), so it was not ` +
+              `waited for. ${failedRead}`
+          );
         }
-        if (response.status === 404 || response.status === 422) {
-          return { body: undefined, next: undefined };
-        }
-        last = `HTTP ${response.status}: ${(await response.text()).slice(0, 200)}`;
-      } catch (error) {
-        last = error instanceof Error ? error.message : String(error);
+        waited += added;
+        waitedUntil = Math.max(waitedUntil, answer.wait.at);
+        log(
+          `quarantine-check: GitHub refused ${url} with ${answer.what}, so it waits until ` +
+            `${until}, by its ${answer.wait.header}, and asks again. The cap on this reading's ` +
+            `waits is ${waitCapSeconds} s, ${Math.round(waited / 1000)} s of it spent with this wait.`
+        );
+        await Bun.sleep(Math.max(0, answer.wait.at - Date.now()));
+        continue;
       }
-      if (attempt < 3) await Bun.sleep(attempt * 10_000);
+      if (answer.final) {
+        throw new Error(
+          `GitHub refused ${url} with ${answer.refusal}, which names no time it may be asked ` +
+            `again (no retry-after, and x-ratelimit-remaining not 0), so it was not asked again. ` +
+            failedRead
+        );
+      }
+      refusals += 1;
+      if (refusals === 3) {
+        throw new Error(
+          `GitHub refused ${url} three times, the last with ${answer.refusal}. ${failedRead}`
+        );
+      }
+      await Bun.sleep(refusals * 10_000);
     }
-    throw new Error(
-      `GitHub refused ${url} three times, the last with ${last}. This is a failed read of the ` +
-        "runs and not a finding: the quarantine was not checked."
-    );
   }
   async function everyPage<Item>(
     path: string,
@@ -496,12 +656,12 @@ function gitHub(api: string, token: string): GitHub {
     everyPage,
     graphql: async (query, variables) => (await page(`${api}/graphql`, { query, variables })).body,
     one: async (path) => (await page(`${api}${path}`)).body,
-    spent: () => ({ calls, remaining }),
+    spent: () => ({ calls, graphqlCalls, graphqlCost, graphqlRemaining, remaining }),
   };
 }
 
 interface ListedRun {
-  readonly check_suite_id: number;
+  readonly check_suite_node_id: string;
   readonly created_at: string;
   readonly event: string;
   readonly html_url: string;
@@ -528,13 +688,192 @@ async function inTurn<Item, Result>(
   return results;
 }
 
+/** How many check suites one GraphQL call reads, `nodes(ids:)`'s own limit; how many check runs
+ *  it reads of each suite; and how many notices of each check run. A suite holding more check
+ *  runs, or a check run more notices, is read on, a page a call, until GitHub says there is no
+ *  next page. */
+export const suitesPerCall = 100;
+export const checkRunsPerPage = 10;
+export const annotationsPerPage = 50;
+
+/** One page of a GraphQL connection. */
+interface GraphPage<Node> {
+  readonly pageInfo: { readonly hasNextPage: boolean; readonly endCursor: string | null };
+  readonly nodes: readonly Node[];
+}
+
+/** One notice of a check run, as GraphQL's `CheckAnnotation` gives it. */
+interface Note {
+  readonly title: string | null;
+  readonly message: string;
+}
+
+/** A check run and a page of its notices. */
+interface CheckRunPage {
+  readonly id: string;
+  readonly annotations: GraphPage<Note>;
+}
+
+/** A check suite and a page of its merge job's check runs. */
+interface SuitePage {
+  readonly id: string;
+  readonly checkRuns: GraphPage<CheckRunPage>;
+}
+
+function isPageOf<Node>(
+  value: unknown,
+  isNode: (node: unknown) => node is Node
+): value is GraphPage<Node> {
+  const page = value as {
+    nodes?: unknown;
+    pageInfo?: { hasNextPage?: unknown; endCursor?: unknown };
+  };
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Array.isArray(page.nodes) &&
+    page.nodes.every(isNode) &&
+    typeof page.pageInfo?.hasNextPage === "boolean" &&
+    (page.pageInfo.endCursor === null || typeof page.pageInfo.endCursor === "string")
+  );
+}
+
+function isNote(node: unknown): node is Note {
+  const note = node as { title?: unknown; message?: unknown } | null;
+  return (
+    typeof note?.message === "string" && (note.title === null || typeof note.title === "string")
+  );
+}
+
+function isCheckRunPage(node: unknown): node is CheckRunPage {
+  const run = node as { id?: unknown; annotations?: unknown } | null;
+  return typeof run?.id === "string" && isPageOf(run.annotations, isNote);
+}
+
+function isSuitePage(node: unknown): node is SuitePage {
+  const suite = node as { id?: unknown; checkRuns?: unknown } | null;
+  return typeof suite?.id === "string" && isPageOf(suite.checkRuns, isCheckRunPage);
+}
+
+const rateLimitField = "rateLimit { cost remaining resetAt }";
+const notesFields = "pageInfo { hasNextPage endCursor } nodes { title message }";
+const checkRunsFields =
+  "pageInfo { hasNextPage endCursor } nodes { id " +
+  `annotations(first: ${annotationsPerPage}) { ${notesFields} } }`;
+const checkRunsFilter = "filterBy: { checkName: $checkName, checkType: ALL }";
+const suitesQuery =
+  `query($ids: [ID!]!, $checkName: String!) { ${rateLimitField} nodes(ids: $ids) { ` +
+  `... on CheckSuite { id checkRuns(first: ${checkRunsPerPage}, ${checkRunsFilter}) { ` +
+  `${checkRunsFields} } } } }`;
+const moreCheckRunsQuery =
+  `query($id: ID!, $checkName: String!, $after: String!) { ${rateLimitField} node(id: $id) { ` +
+  `... on CheckSuite { id checkRuns(first: ${checkRunsPerPage}, after: $after, ` +
+  `${checkRunsFilter}) { ${checkRunsFields} } } } }`;
+const moreNotesQuery =
+  `query($id: ID!, $after: String!) { ${rateLimitField} node(id: $id) { ... on CheckRun { id ` +
+  `annotations(first: ${annotationsPerPage}, after: $after) { ${notesFields} } } } }`;
+
+/** The `data` GitHub's GraphQL endpoint answers `query` with, or a throw naming `what` where it
+ *  answers errors or no data at all: a read that answered part of what was asked is not read
+ *  as though it answered the whole. */
+async function graphqlData(
+  github: Pick<GitHub, "graphql">,
+  query: string,
+  variables: Record<string, unknown>,
+  what: string
+): Promise<{ node?: unknown; nodes?: unknown }> {
+  const answer = (await github.graphql(query, variables)) as
+    | { data?: { node?: unknown; nodes?: unknown } | null; errors?: unknown }
+    | undefined;
+  if (answer?.data == null || answer.errors !== undefined) {
+    throw new Error(
+      `GitHub's GraphQL answered no ${what} (${JSON.stringify(answer?.errors ?? answer ?? null).slice(0, 200)}). ` +
+        failedRead
+    );
+  }
+  return answer.data;
+}
+
+/** The notices of each check run named `checkName` in each suite of `ids` (at most
+ *  `suitesPerCall`), by suite, each check run's in GitHub's order and the check runs in theirs:
+ *  one GraphQL call for them all, and one call more for each further page of a suite's check runs
+ *  or of a check run's notices. A suite GitHub does not answer, or answers in a shape this does
+ *  not know, throws, naming it. */
+async function readSuites(
+  github: Pick<GitHub, "graphql">,
+  ids: readonly string[],
+  checkName: string
+): Promise<Map<string, Note[][]>> {
+  const shape = (what: string) =>
+    new Error(
+      `GitHub's GraphQL answered ${what} in a shape this reader does not know. ${failedRead}`
+    );
+  const { nodes } = await graphqlData(
+    github,
+    suitesQuery,
+    { checkName, ids },
+    `check runs of ${ids.length} check suites`
+  );
+  if (!Array.isArray(nodes) || nodes.length !== ids.length) {
+    throw shape(`the check runs of ${ids.length} check suites`);
+  }
+  const suites = new Map<string, Note[][]>();
+  for (const [index, node] of nodes.entries()) {
+    const id = ids[index];
+    if (node === null) throw new Error(`GitHub has no check suite ${id}. ${failedRead}`);
+    if (!isSuitePage(node) || node.id !== id) throw shape(`check suite ${id}`);
+    const checkRuns = [...node.checkRuns.nodes];
+    let { pageInfo } = node.checkRuns;
+    while (pageInfo.hasNextPage) {
+      const more = await graphqlData(
+        github,
+        moreCheckRunsQuery,
+        { after: pageInfo.endCursor, checkName, id },
+        `check runs of check suite ${id}`
+      );
+      if (!isSuitePage(more.node)) throw shape(`the check runs of check suite ${id}`);
+      checkRuns.push(...more.node.checkRuns.nodes);
+      pageInfo = more.node.checkRuns.pageInfo;
+    }
+    const notes: Note[][] = [];
+    for (const checkRun of checkRuns) {
+      const runNotes = [...checkRun.annotations.nodes];
+      let notesInfo = checkRun.annotations.pageInfo;
+      while (notesInfo.hasNextPage) {
+        const more = await graphqlData(
+          github,
+          moreNotesQuery,
+          { after: notesInfo.endCursor, id: checkRun.id },
+          `notices of check run ${checkRun.id}`
+        );
+        if (!isCheckRunPage(more.node)) throw shape(`the notices of check run ${checkRun.id}`);
+        runNotes.push(...more.node.annotations.nodes);
+        notesInfo = more.node.annotations.pageInfo;
+      }
+      notes.push(runNotes);
+    }
+    suites.set(id, notes);
+  }
+  return suites;
+}
+
 /** The readings of every run of `countedRuns` created in the `windowDays` days before `now`
  *  that has completed. A filtered run listing answers at most 1,000 runs (GitHub's REST
  *  reference, "List workflow runs for a workflow"), and ci.yaml makes more merge-group runs than
  *  that in 14 days, so the window is read a day at a time, and a day that holds more is refused
  *  rather than read short. The days of both workflows are listed `inTurn`, and each workflow's
- *  runs are then taken a day at a time, oldest first, which is the order its readings keep. */
-async function readHistory(github: GitHub, repository: string, now: Date): Promise<RunReading[]> {
+ *  runs are then taken a day at a time, oldest first, which is the order its readings keep.
+ *
+ *  Each run's merge jobs are read from its check suite through GraphQL, `suitesPerCall` suites a
+ *  call (`readSuites`), rather than with a REST call for the suite's check runs and another for
+ *  each check run's notices: a whole check cost 1,794 REST calls for 1,166 runs that way (job
+ *  137061958838 of run 44974729436, 2026-11-22), where this function alone read 1,195 runs in 34
+ *  REST calls and 13 GraphQL calls costing 132 points (from this issue's pod, 2026-11-22 03:15Z). */
+export async function readHistory(
+  github: GitHub,
+  repository: string,
+  now: Date
+): Promise<RunReading[]> {
   const slices = countedRuns.flatMap((counted) =>
     Array.from({ length: windowDays }, (_, index) => ({ counted, day: windowDays - index }))
   );
@@ -561,22 +900,26 @@ async function readHistory(github: GitHub, repository: string, now: Date): Promi
       if (slice.counted !== counted) return;
       for (const run of listed[index]) runs.set(run.id, run);
     });
-    const read = await inTurn([...runs.values()], 4, async (run): Promise<RunReading> => {
-      const { items: checkRuns } = await github.everyPage<{
-        id: number;
-        output: { annotations_count: number };
-      }>(
-        `/repos/${repository}/check-suites/${run.check_suite_id}/check-runs` +
-          `?check_name=${encodeURIComponent(counted.mergeJob)}&filter=all&per_page=100`,
-        "check_runs"
-      );
+    const ordered = [...runs.values()];
+    const batches = Array.from({ length: Math.ceil(ordered.length / suitesPerCall) }, (_, index) =>
+      ordered.slice(index * suitesPerCall, (index + 1) * suitesPerCall)
+    );
+    const suites = new Map(
+      (
+        await inTurn(batches, 4, (batch) =>
+          readSuites(
+            github,
+            batch.map((run) => run.check_suite_node_id),
+            counted.mergeJob
+          )
+        )
+      ).flatMap((read) => [...read])
+    );
+    for (const run of ordered) {
       const flakyMessages: string[] = [];
       let unread = 0;
-      for (const checkRun of checkRuns.filter((check) => check.output.annotations_count > 0)) {
-        const { items: notes } = await github.everyPage<{ message: string; title: string | null }>(
-          `/repos/${repository}/check-runs/${checkRun.id}/annotations?per_page=100`,
-          "annotations"
-        );
+      // A check run with no notices adds nothing: no row, and a flake rate of 0.
+      for (const notes of suites.get(run.check_suite_node_id) ?? []) {
         const rows = notes
           .filter((note) => note.title === flakyRowTitle)
           .map((note) => note.message);
@@ -585,16 +928,15 @@ async function readHistory(github: GitHub, repository: string, now: Date): Promi
         flakyMessages.push(...rows);
         unread += Math.max(0, flaky - rows.length);
       }
-      return {
+      readings.push({
         createdAt: run.created_at,
         event: run.event,
         flakyRows: flakyMessages,
         id: run.id,
         unread,
         url: run.html_url,
-      };
-    });
-    readings.push(...read);
+      });
+    }
   }
   return readings;
 }
@@ -634,8 +976,8 @@ function rowsWithLines(report: { readonly suites?: readonly ListingNode[] }): {
   return { fileRows, lines };
 }
 
-/** The blame of `path` at `expression`: one GraphQL call, `Commit.blame`, on the REST reads'
- *  ladder. A refused call, or an answer that holds no blame - a 404 or a 422 is no answer at
+/** The blame of `path` at `expression`: one GraphQL call, `Commit.blame`, on the ladder of the
+ *  other reads. A refused call, or an answer that holds no blame - a 404 or a 422 is no answer at
  *  all - throws, naming the file: the rows of a file whose blame is unread cannot be read as they
  *  stand, and nothing stands in for it. */
 export async function blame(
@@ -647,6 +989,7 @@ export async function blame(
   const [owner, name] = repository.split("/");
   const query =
     "query($owner: String!, $name: String!, $expression: String!, $path: String!) { " +
+    `${rateLimitField} ` +
     "repository(owner: $owner, name: $name) { object(expression: $expression) { ... on Commit { " +
     "blame(path: $path) { ranges { startingLine endingLine commit { oid committedDate } } } } } } }";
   let answer: unknown;
@@ -749,9 +1092,16 @@ async function readFixes(
 if (import.meta.main) {
   const repository = process.env.GITHUB_REPOSITORY ?? "";
   const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || "";
-  if (process.argv.length > 2 || !/^[^/\s]+\/[^/\s]+$/.test(repository) || token === "") {
+  const cap = process.env.GH_READ_WAIT_CAP_SECONDS || "0";
+  if (
+    process.argv.length > 2 ||
+    !/^[^/\s]+\/[^/\s]+$/.test(repository) ||
+    token === "" ||
+    !/^\d+$/.test(cap)
+  ) {
     console.error(
-      "usage: GITHUB_REPOSITORY=<owner>/<name> GH_TOKEN=<token> bun e2e/tools/quarantine-check.ts\n" +
+      "usage: GITHUB_REPOSITORY=<owner>/<name> GH_TOKEN=<token> [GH_READ_WAIT_CAP_SECONDS=<s>] " +
+        "bun e2e/tools/quarantine-check.ts\n" +
         "  reads the merge jobs' flaky-row notices of the last 14 days and the quarantine's dates"
     );
     process.exit(2);
@@ -759,7 +1109,9 @@ if (import.meta.main) {
   const now = new Date();
   const started = performance.now();
   const expression = process.env.GITHUB_SHA || "main";
-  const github = gitHub(process.env.GITHUB_API_URL ?? "https://api.github.com", token);
+  const github = gitHub(process.env.GITHUB_API_URL ?? "https://api.github.com", token, {
+    waitCapSeconds: Number(cap),
+  });
   let decision: Decision;
   try {
     // The fixes depend on neither the history nor the blames, so they are read beside the first.
@@ -782,11 +1134,13 @@ if (import.meta.main) {
     appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${summary.join("\n")}\n`);
   }
   for (const annotation of annotations) console.log(annotation);
-  const { calls, remaining } = github.spent();
+  const spent = github.spent();
   console.error(
-    `read ${decision.counted.length} runs in ${calls} REST calls and ` +
-      `${Math.round(performance.now() - started)} ms at ${expression}; ` +
-      `the token has ${remaining ?? "an unknown number of"} REST calls left this hour`
+    `read ${decision.counted.length} runs in ${spent.calls} REST calls and ` +
+      `${spent.graphqlCalls} GraphQL calls costing ${spent.graphqlCost} points, and ` +
+      `${Math.round(performance.now() - started)} ms at ${expression}; the token has ` +
+      `${spent.remaining ?? "an unknown number of"} REST calls and ` +
+      `${spent.graphqlRemaining ?? "an unknown number of"} GraphQL points left this hour`
   );
   process.exit(failed ? 1 : 0);
 }

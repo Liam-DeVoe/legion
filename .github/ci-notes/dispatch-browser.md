@@ -1339,11 +1339,26 @@ setup-bun 1 s, Post checkout 1 s, Complete job 1 s.
 
 One step carries a budget of its own: "Reading one, the rows", which calls
 .github/scripts/dispatch-browser-run-reads.sh and so waits on gh-read.sh's ladder. The
-ladder bounds that wait rather than measuring it - three attempts, each bounded by
-`timeout 30`, with waits of 10 s and 20 s between them, which is 120 s at most - and a
+ladder bounds its waits for a refused read rather than measuring them - three attempts, each
+bounded by `timeout 30`, with waits of 10 s and 20 s between them, which is 120 s at most - and a
 bound takes no 15 per cent. The step's own work has a measured maximum of 4 s, and
 4 x 1.15 = 4.6 s, so 120 + 4.6 = 124.6 s, at the next whole minute above, is the 3 min
 that step carries. The rule's two-minute floor does not bind.
+
+GitHub's rate limit is the one refusal the ladder waits out for longer, and the 3 min is what
+bounds that wait. Twice the jobs read was refused `API rate limit exceeded for installation` on
+all three attempts and failed the job on a read that would have answered minutes later: job
+136922567868 of run 44926842882 at 17:22Z on 2026-11-21, and job 137064876909 of pull request
+run 44974625499 at 02:21Z on 2026-11-22. The read now runs gh_read with
+GH_READ_WAIT_CAP_SECONDS set, so a refusal that names the rate limit is followed by a read of
+`gh api rate_limit`, and where that shows no call left, the ladder waits until 3 s past its
+reset and asks again. gh-read.sh's head says why the reset is read that way. The cap is the
+step's 180 s less the work left in the step after a wait: the attempt the wait is followed by,
+which `timeout 30` bounds, and the step's own work, 4.6 s as above. Its own work was 2.6 s in
+job 137066953032 of run 44974729436 on 2026-11-22: the step started at 02:30:00.76Z and the
+next one at 02:30:03.35Z. So 180 - 30 - 4.6 = 145.4 s, and the cap is 145 s. A reset further
+off than that fails the step as before, after one attempt, with a line naming the reset and the
+cap. A 403 that names no rate limit fails it at once.
 
 So by the rule in this file's head the job's budget is the sum of its step budgets, that
 one step's 180 s, plus the measured maximum of every step without one: 40 s less reading

@@ -707,7 +707,9 @@ jobs:
       # why: .github/ci-notes/dispatch-browser.md#why-each-reading-goes-to-the-step-summary-and-to-the-log
       - name: Reading one, the rows
         if: always()
-        # 120 + 4 x 1.15 = 124.6 s -> 3 min.
+        # 120 + 4 x 1.15 = 124.6 s -> 3 min, and the jobs read's wait for GitHub's rate limit is
+        # capped from it: 180 - 30 (the attempt after the wait) - 4 x 1.15 = 145 s, the cap
+        # .github/scripts/dispatch-browser-run-reads.sh sets.
         timeout-minutes: 3
         env:
           GH_TOKEN: ${{ github.token }}
