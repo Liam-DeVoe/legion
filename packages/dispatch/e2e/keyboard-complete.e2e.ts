@@ -1764,6 +1764,48 @@ test("k-link-click: in the spec the reader edits, a plain click opens each link,
   ).toBe(before);
 });
 
+// SLOW(>=2s): the spec and a project document each opened twice, two new pages loaded, and two
+// moves in place.
+test("k-link-click: in the spec the reader edits and in a project document, a plain click on a link opens it after a Ctrl+click on that link opened it in a new tab", async ({
+  context,
+  page,
+}) => {
+  const seed = await seedLinkSpec();
+  const runbook = await createProjectDocument("CORE", {
+    content: `# Replay runbook\n\nSee [the other issue](dispatch://${seed.other.key}) for the handover.\n`,
+    name: "replay-runbook.md",
+  });
+  await page.setViewportSize(WIDE);
+  for (const [view, path] of [
+    ["the editable spec", `/issues/${seed.issueKey}/spec`],
+    ["the project document", `/projects/CORE/documents/${runbook.artifact.slug}`],
+  ] as const) {
+    const step = (text: string) => `k-link-click: in ${view}, ${text}`;
+    await page.goto(path);
+    await expect(page.getByRole("status", { name: "connected" })).toHaveText("connected");
+    const link = documentEditor(page).getByRole("link", { exact: true, name: "the other issue" });
+    await expect(link, step("the document draws the dispatch:// link")).toBeVisible();
+    // A Ctrl+click opens the link in a new tab; the editor may select around the link as it does.
+    expect(
+      await openedAddress(
+        context,
+        () => link.click({ modifiers: ["ControlOrMeta"] }),
+        step("a Ctrl+click on the dispatch:// link")
+      ),
+      step("a Ctrl+click on the dispatch:// link opens a new page at the other issue")
+    ).toMatch(new RegExp(`/issues/${seed.other.key}(/|$)`));
+    // R1: a primary click with no modifier key on a link opens it, whatever the reader pressed
+    // before.
+    await markDocument(page);
+    await link.click();
+    await expect(
+      page,
+      step("a plain click on the link after the Ctrl+click moves the page to the other issue")
+    ).toHaveURL(new RegExp(`/issues/${seed.other.key}(/|$)`));
+    expect(await reloaded(page), step("the plain click loads no new document")).toBe(false);
+  }
+});
+
 for (const view of ["the past version", "the reading pane", "the comment"] as const) {
   // SLOW(>=2s): the view opened twice, a new page loaded and two moves to the other issue.
   test(`k-link-click: in ${view}, a plain click opens each link`, async ({ context, page }) => {
