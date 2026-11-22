@@ -2,17 +2,16 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
-import { primarySpec } from "../../../api/issue-cache";
+import { primarySpec, roleDocument } from "../../../api/issue-cache";
 import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { CheckBlock } from "../../../api/types";
 import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
+import { blocksKey, useOutlineReads } from "../outline-reads";
 import { presetView } from "../presets";
-import type { SlotProps } from "../slot-props";
-import type { TreeBlocksRead } from "../tree-read/tree-read";
-import { useIssueTree } from "../useIssueTree";
+import { type TreeBlocksRead, useTreeRead } from "../tree-read/tree-read";
 import {
   type FailedRead,
   queryTyped,
@@ -20,14 +19,20 @@ import {
   type VerificationRead,
   type VerificationReads,
 } from "../verification-filter/VerificationFilterBody";
+import { useTellsAddressDrawn } from "./refused-reads";
+import type { ViewSlotProps } from "./stage";
 
 /** Filled by INFRA-1196 part V, "The Verification view". */
-export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
+export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotProps): ReactNode {
   // The Verification view: the issue's one tree as the Verification view leaves it, each statement
   // with the checks that serve it and each check beside its newest result.
   const { hash, search } = useLocation();
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
-  const { blocksOf, root } = useIssueTree(issue);
+  // The tree, the line of each read it is built from that stands refused, and whether every one
+  // of those reads has settled (`useOutlineReads`), each under the key and with the freshness the
+  // tree reads it by, so they cost no request of their own.
+  const { readsSettled, refused, root } = useOutlineReads(issue);
+  const { blocksOf } = useTreeRead(issue);
   const { checks, reads } = useVerificationReads(issue.key, blocksOf("verification"));
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the view holds no row for still draws it, as the outline resolves
@@ -45,11 +50,30 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
     () => (typed ? presetView(root, "verification", "", named).root : undefined),
     [named, root, typed]
   );
+  // Whether the view draws a row of the node the address names, which the stage is told by the
+  // rule for refused reads (`useTellsAddressDrawn`). The view draws a line of its own for the
+  // coverage read, the results read and the tree read, which holds the Verification document's
+  // blocks and the statements, whether or not the results read holds a check
+  // (`useVerificationReads`). Where the view may tell, the body says whether
+  // it draws the node, with the reader's chip applied (`addressed`, one value while the node and
+  // the call stay the same): a statement, a check under a statement it draws, a check that serves
+  // none or a row of its own, but under a chip only that state's statements and their checks, and
+  // under a statement no node that is no check, such as a plan task that serves it. It tells it
+  // before the browser paints, so where the reads were held as the view was drawn, as on Back to
+  // its address, the table is never painted in the outline's place.
+  const tells = useTellsAddressDrawn(
+    refused,
+    readsSettled,
+    ["coverage", "results", blocksKey(roleDocument(issue, "verification")?.id ?? "")],
+    onAddressDrawn
+  );
+  const addressed = useMemo(() => ({ named, tell: onAddressDrawn }), [named, onAddressDrawn]);
   return (
     <NoTooltips>
       {/* The stage's column, which the body draws its own measure in. */}
       <div className="flex w-full min-w-0 flex-col">
         <VerificationFilterBody
+          {...(tells ? { addressed } : {})}
           checks={checks}
           context={view.context}
           reads={reads}

@@ -6,7 +6,7 @@ import type { IssueDetails, MessageRead } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import type { IssueTreeReads, TreeNode } from "./issue-tree";
-import { STATE_LINES } from "./page-words";
+import { ANSWER_LINES, STATE_LINES } from "./page-words";
 import { useTreeRead } from "./tree-read/tree-read";
 import {
   issueAsksQuery,
@@ -83,6 +83,11 @@ export interface OutlineReads {
    *  first focus waits on, since until then a read still out can draw rows above the row it would
    *  land on, and a failed read answers too, where `readsHeld` would wait for ever. */
   readonly readsSettled: boolean;
+  /** The lines a view tells the stage by (`slots/refused-reads.ts`'s `useTellsAddressDrawn`):
+   *  `failed`, and while the tree read stands refused (`TreeRead.failed`) the tree read's own
+   *  line, under the one key every document's blocks stand on (`blocksKey`). The outline draws
+   *  that line itself (`TreeReadFailed`) and never among `failed`, so it is here alone. */
+  readonly refused: readonly FailedRead[];
   /** The whole tree (`useIssueTree`). */
   readonly root: TreeNode;
 }
@@ -90,6 +95,17 @@ export interface OutlineReads {
 /** No read stands failed: the same empty list on every render, so the tree's lines and its
  *  opening, which read it, see one value; the tree's own where the page gives it none. */
 export const NO_FAILED_READS: readonly FailedRead[] = [];
+
+/** The key of the tree read's line: the one read behind every document's blocks, whose refusal
+ *  draws one line (`tree-read/view-read.tsx`'s `TreeReadFailed`). */
+const TREE_READ_LINE = "tree";
+
+/** The key the line of a read rows come from is drawn under (`FailedRead.key`). */
+export type ReadKey = ReturnType<typeof sixReads>[number]["line"] | typeof TREE_READ_LINE;
+
+/** The key the line of the blocks read of the document `id` is drawn under: every document's
+ *  blocks are the tree read's, so it is the tree read's line for every document. */
+export const blocksKey = (_id: string): ReadKey => TREE_READ_LINE;
 
 /** The six reads the tree's nodes other than the issue's children and the documents' blocks come
  *  from, in the order they are given, each under the key and with the freshness `useIssueTree`
@@ -249,12 +265,34 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
     () => (own.failed.length + names.length === 0 ? NO_FAILED_READS : [...own.failed, ...names]),
     [names, own.failed]
   );
+  // The tree read's line while the read stands refused, which `TreeReadFailed` draws over the
+  // outline: rows come from it, and its Retry reads the tree again (`OutlineReads.refused`).
+  const { errorUpdateCount, failed: treeFailed, isFetching, refetch } = tree;
+  const refused = useMemo(
+    (): readonly FailedRead[] =>
+      treeFailed
+        ? [
+            ...failed,
+            {
+              bringsQuestions: false,
+              failure: errorUpdateCount,
+              key: TREE_READ_LINE,
+              message: ANSWER_LINES.outline_unreadable,
+              placesRows: true,
+              retry: () => void refetch(),
+              retrying: isFetching,
+            },
+          ]
+        : failed,
+    [errorUpdateCount, failed, isFetching, refetch, treeFailed]
+  );
   return {
     failed,
     namesHeld,
     reads: own.reads,
     readsHeld: own.reads.held && blocksHeld,
     readsSettled: own.settled && !tree.pending,
+    refused,
     root,
   };
 }

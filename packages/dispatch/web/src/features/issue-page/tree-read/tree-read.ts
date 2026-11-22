@@ -237,6 +237,9 @@ export interface TreeRead {
    *  blocks here and costs no request of its own; the same value for a role until the answer or
    *  the read's state changes. */
   readonly blocksOf: (role: TreeFilter) => TreeBlocksRead;
+  /** How many times the read has been refused (TanStack Query's `errorUpdateCount`), which keys
+   *  the alert of the line a refusal draws. */
+  readonly errorUpdateCount: number;
   /** Whether the read was refused with no answer held, its retries spent, and holds none yet:
    *  from that refusal until a read answers, the reads asked again in between included, whoever
    *  asked them - the reader's Retry, an event, the live feed coming back, a focus while the
@@ -245,6 +248,8 @@ export interface TreeRead {
    *  A refetch that fails over a held answer is no such failure, since the page still draws what
    *  it holds. */
   readonly failed: boolean;
+  /** Whether the read runs, a first read or again (TanStack Query's `isFetching`). */
+  readonly isFetching: boolean;
   /** Whether the read holds no answer and has not settled since its last read began: its first
    *  read is out, or a read asked again after a refusal is, while `failed` holds too. It is what
    *  holds back a read that waits on every other read of the page, as the batched name read does
@@ -295,11 +300,13 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
       blocksHeld: answer !== undefined,
       blocksRead: isSuccess,
       blocksOf,
+      errorUpdateCount,
       failed: answer === undefined && errorUpdateCount > 0,
+      isFetching,
       pending: isPending,
       refetch,
     }),
-    [answer, blocksOf, errorUpdateCount, isPending, isSuccess, refetch]
+    [answer, blocksOf, errorUpdateCount, isFetching, isPending, isSuccess, refetch]
   );
 }
 

@@ -672,9 +672,6 @@ export const ANSWER_LINES = freeze({
    *  read, and when they could not be (`HistoryHandoff.tsx`). */
   loading_handoff: "Loading handoff…",
   handoff_unreadable: "Could not load the handoff.",
-  /** What the Spec filter says over its columns when the decisions could not be read, so the
-   *  column beside each statement cannot say what shaped it. */
-  decisions_unreadable: "Could not load the decisions.",
   /** What the outline says when the issue's tree could not be read before it first answered,
    *  so it holds no row to draw. */
   outline_unreadable: "Could not load the outline.",
@@ -685,6 +682,10 @@ export const ANSWER_LINES = freeze({
   /** What a decision's Change form says when Dispatch refused its send, whatever the server
    *  answered: the reader's words stay in the field, to send again (`DecisionActions.tsx`). */
   change_not_sent: "Could not send the change.",
+  /** What Left on a row of the Decisions list says, and so does the key that zooms out, since
+   *  the list has no level above its rows: the outline's own report for those keys speaks of
+   *  the whole issue, which the list is not (`decisions-filter/DecisionsFilterBody.tsx`). */
+  no_level_above: "This list has no level above this row.",
   /** What a control says while its own write is out: Dispatch has not answered, so none of
    *  these says the thing is done. */
   saving_close: "Closing…",
