@@ -22,7 +22,7 @@ import type { NodeType } from "../web/src/features/issue-page/page-words";
 import { mergeTreePages } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { baseUrlOf, getIssueCoverage, getIssueResults, userHeaders } from "./api";
 import { issuePage } from "./issue-page";
-import type { Gate, TreeAnswerWatch } from "./issue-page-t";
+import type { Gate, TreeAnswerWatch } from "./issue-page-t-tree";
 
 /**
  * What the rows of `e2e/issue-page-w.e2e.ts` write and read, and what any other row that needs

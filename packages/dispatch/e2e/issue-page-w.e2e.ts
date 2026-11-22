@@ -37,7 +37,7 @@ import {
   type TreeAnswerWatch,
   treeAnswerOf,
   treeReadGate,
-} from "./issue-page-t";
+} from "./issue-page-t-tree";
 import {
   drawnIdOf,
   findingGate,
