@@ -4092,12 +4092,17 @@ the hub exporter's `nats_stream_consumer_count` (prometheus-nats-exporter's `-js
 alerts" in `docs/nats-hub.md`). That series is each server's own count, of the consumers with a copy
 on it, while the cap counts every consumer once across the cluster: a consumer with fewer copies
 than the stream, such as one created with `Replicas: 1`, adds to some copies' counts and not others,
-so the fullest copy can stay far below the cap's count. The sum over the copies never does, since
-every consumer has at least one copy. The reference deployment's `envoy-cluster/hubalerts.go`
-declares the policy `hub-stream-consumers` on that sum: `sum by (stream_name)
-(nats_stream_consumer_count{stream_name="ENVOY_NOTIFICATIONS"}) > 19200`, 80 % of the cap. It opens
-no later than 19200 consumers whatever their replicas, and at about 6400 with every consumer at the
-stream's three copies.
+so the fullest copy can stay far below the cap's count. The sum over the copies does not, since
+every consumer has at least one copy, as long as every copy's series is scraped: a server that stays
+down past the lookback loses its series, and the consumers whose only copy is there count nowhere,
+which the deployment's alert on the hub's pods covers. Each server's series is taken once, as its
+max by `server_name`, since a leader election, a restart or a change of replicas starts a new series
+for the same copy and Cloud Monitoring keeps no staleness, so the old one answers until its
+lookback ends. The reference deployment's `envoy-cluster/hubalerts.go` declares the policy
+`hub-stream-consumers` on that sum: `sum by (stream_name) (max by (stream_name, server_name)
+(nats_stream_consumer_count{stream_name="ENVOY_NOTIFICATIONS"})) > 19200`, 80 % of the cap. It
+opens no later than 19200 consumers whatever their replicas, while every copy is scraped, and at
+about 6400 with every consumer at the stream's three copies.
 
 `DispatchPermissions(machineID)` is the grant of Dispatch's one NATS user, shared by
 `envoy-dispatch` and the listener beside it. It adds to the base entries of
