@@ -3282,15 +3282,17 @@ test("a node's words keep the bare address its line reads", () => {
 // A caller that names each reference itself reads words in which no address is written short,
 // or it finds no address left to name: the line of a reading keeps a bare address as written,
 // and the words of a stored text's reading keep each bare address and each autolink's URL as
-// written, its marks gone.
+// written, its marks gone. The name the store projects from that reading writes each address as
+// its target's short form, as a name reads no other name.
 test("the raw words of a reading and of a stored text keep each address as written", () => {
   const reading = "Do it as dispatch://CORE-2 says.";
   const task = nodeOf(planTasks([reading], true), blockNodeId("plan-md", "t1"));
   expect(task?.tree).toBeDefined();
   expect(task === undefined ? "" : nodeLineOf(task)).toBe(reading);
-  const stored = "Do it as **dispatch://CORE-2** says, see <dispatch://CORE-3>.";
-  expect(wordsOf(storedReading(stored))).toBe(
-    "Do it as dispatch://CORE-2 says, see dispatch://CORE-3."
+  const tree = storedReading("Do it as **dispatch://CORE-2** says, see <dispatch://CORE-3>.");
+  expect(wordsOf(tree)).toBe("Do it as dispatch://CORE-2 says, see dispatch://CORE-3.");
+  expect(projectedNames(new Map([["stored", { tree }]])).get("stored")).toBe(
+    "Do it as CORE-2 says, see CORE-3."
   );
 });
 

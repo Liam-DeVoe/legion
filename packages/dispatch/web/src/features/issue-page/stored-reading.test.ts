@@ -97,9 +97,9 @@ function plainLine(stored: string): { name: string; words: string } {
 }
 
 // A stored text reads to the words the server's reading of it holds: what markdown reads
-// literally stays and its marks go. A bare address is the words its author wrote, as written,
-// while the name projected from the reading writes it as its target's short form, as a name reads
-// no other name; an address in a code span stays as written in both.
+// literally stays and its marks go. A bare address, and an autolink's, is the words its author
+// wrote, as written, while the name projected from the reading writes it as its target's short
+// form, as a name reads no other name; an address in a code span stays as written in both.
 test("a stored text read to plain words keeps what markdown reads literally and drops its marks", () => {
   for (const [stored, words, name = words] of [
     // A backslash before punctuation is that character, never a mark nor a sentence's end.
@@ -117,8 +117,16 @@ test("a stored text read to plain words keeps what markdown reads literally and 
     ["![diagram](shot.png)", ""],
     ["[the plan](https://example.com/plan)", "the plan"],
     ["<https://example.com/a_b*c*>", "https://example.com/a_b*c*"],
+    // A link by reference links its words to its label's definition, so one whose words are its
+    // own address names it as an autolink does.
+    ["[dispatch://CORE-4][core]\n\n[core]: dispatch://CORE-4", "dispatch://CORE-4", "CORE-4"],
     // An escaped mark after an address is the character it escapes, so it trails the address as
     // a sentence's end.
+    [
+      "see dispatch://CORE-2 and <dispatch://CORE-3>",
+      "see dispatch://CORE-2 and dispatch://CORE-3",
+      "see CORE-2 and CORE-3",
+    ],
     ["see dispatch://CORE-2\\.", "see dispatch://CORE-2.", "see CORE-2."],
     ["Run `dispatch read dispatch://CORE-2` now", "Run dispatch read dispatch://CORE-2 now"],
     [
