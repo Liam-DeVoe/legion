@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,10 +22,15 @@ import (
 // one whose bucket never opened, which only wakes the retry and arms it (armRepairWithin) and
 // answers nil. The test holds repairMu as the retry's attempt would.
 //
-// The run is over before Rewatch is called: its context is cancelled, so the move's answer is
-// context.Canceled, which nothing but that run's end gives. A wait for the lock bounded some other
-// way, by a request's own timeout (bus.RequestTimeout) for one, would answer
-// context.DeadlineExceeded instead.
+// Each case runs twice. In the first the run is over before Rewatch is called: its context is
+// cancelled, so the move's answer is context.Canceled, which nothing but that run's end gives. A
+// wait for the lock bounded some other way, by a request's own timeout (bus.RequestTimeout) for
+// one, would answer context.DeadlineExceeded instead. In the second the run ends while Rewatch
+// waits for the lock: the row cancels the run once Rewatch has asked its context for Done, which
+// it does only when it finds the lock held and waits for it (ctxlock.Mutex.LockContext), so a
+// Rewatch that checked the run once and then waited on the lock alone (Lock) never asks, and the
+// row ends at the test binary's deadline by name. The retry's lock is held until the row's
+// cleanup, after Rewatch has answered.
 func TestTheHooksMoveDoesNotWaitOutTheRetrysAttempt(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -79,32 +85,62 @@ func TestTheHooksMoveDoesNotWaitOutTheRetrysAttempt(t *testing.T) {
 			returns: nil,
 		},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			known, conn := tc.open(t)
-			known.repairMu.Lock()
-			var unlocked bool
-			unlock := func() {
-				if !unlocked {
-					unlocked = true
-					known.repairMu.Unlock()
+		for _, ending := range []struct {
+			name string
+			// whileWaiting ends the run once Rewatch waits for the lock, rather than before the call.
+			whileWaiting bool
+		}{
+			{name: "the run over before the call"},
+			{name: "the run ending while Rewatch waits for the lock", whileWaiting: true},
+		} {
+			t.Run(tc.name+"/"+ending.name, func(t *testing.T) {
+				known, conn := tc.open(t)
+				known.repairMu.Lock()
+				var unlocked bool
+				unlock := func() {
+					if !unlocked {
+						unlocked = true
+						known.repairMu.Unlock()
+					}
 				}
-			}
-			// Registered after the store's StopWatch, so it runs first.
-			t.Cleanup(unlock)
+				// Registered after the store's StopWatch, so it runs first.
+				t.Cleanup(unlock)
 
-			run, end := context.WithCancel(context.Background())
-			end()
-			started := time.Now()
-			rewatched := make(chan error, 1)
-			go func() { rewatched <- known.Rewatch(run, conn) }()
-			// The test holds repairMu until its cleanup, so a Rewatch that waited for the lock the
-			// retry's attempt holds never answers: its answer, however late a loaded machine gives it,
-			// is the claim (testwait.Receive).
-			err := testwait.Receive(t, "Rewatch to return with the retry's lock held", rewatched)
-			if !errors.Is(err, tc.returns) {
-				t.Fatalf("Rewatch returned %v after %s, want %v", err, time.Since(started), tc.returns)
-			}
-			t.Logf("Rewatch returned %v %s after it began, with the retry's lock held", err, time.Since(started))
-		})
+				base, end := context.WithCancel(context.Background())
+				defer end()
+				run := &askedContext{Context: base, asked: make(chan struct{})}
+				if !ending.whileWaiting {
+					end()
+				}
+				started := time.Now()
+				rewatched := make(chan error, 1)
+				go func() { rewatched <- known.Rewatch(run, conn) }()
+				if ending.whileWaiting {
+					testwait.Receive(t, "Rewatch to wait for the retry's lock under its run's context", run.asked)
+					end()
+				}
+				// The test holds repairMu until its cleanup, so a Rewatch that waited for the lock the
+				// retry's attempt holds never answers: its answer, however late a loaded machine gives
+				// it, is the claim (testwait.Receive).
+				err := testwait.Receive(t, "Rewatch to return with the retry's lock held", rewatched)
+				if !errors.Is(err, tc.returns) {
+					t.Fatalf("Rewatch returned %v after %s, want %v", err, time.Since(started), tc.returns)
+				}
+				t.Logf("Rewatch returned %v %s after it began, with the retry's lock held", err, time.Since(started))
+			})
+		}
 	}
+}
+
+// askedContext is a context that tells the test, by closing asked, when its Done channel is first
+// asked for.
+type askedContext struct {
+	context.Context
+	asked chan struct{}
+	once  sync.Once
+}
+
+func (c *askedContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.asked) })
+	return c.Context.Done()
 }
