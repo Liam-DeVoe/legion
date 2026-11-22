@@ -250,8 +250,7 @@ function Columns({
     noMark,
     layoutColumns,
     sorting,
-    undefined,
-    tab?.hasLegion
+    tab === null ? { kind: "embedded" } : { kind: "tab", hasLegion: tab.hasLegion }
   );
   const [openFilter, setOpenFilter] = useState<string>();
   const model = useDataTable<Item>({

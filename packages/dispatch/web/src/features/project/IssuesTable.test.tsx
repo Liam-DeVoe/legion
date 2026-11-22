@@ -30,8 +30,9 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
-import { CLOSE_ITEMS_AGAIN_MS, type IssueListing } from "./issues-table-data";
+import { type AdvancesListing, CLOSE_ITEMS_AGAIN_MS } from "./issues-table-data";
 import { ALL_ROWS, ISSUE_TABLE_COLUMNS, tableStorageKey } from "./issues-table-model";
+import { ListingTable } from "./ListingTable";
 
 function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
@@ -108,9 +109,10 @@ afterEach(() => {
  *  that stands for the shell's navigation; `sortApplied` says whether the server applies a page
  *  read's `sort` and names it in the answer, which a server older than `sort` does not;
  *  `retries` reads a failed read again as the app's shared policy does (`queryRetry`), with no
- *  wait between the reads. `props` is what a caller other than the project page passes: a
- *  listing of its own, the priorities' titles and the prefix its view is written under. `daemon`
- *  is the project's Legion daemon setting, none by default. */
+ *  wait between the reads. With no `props` the List is CORE's Issues tab, as the project page
+ *  draws it; `props` draws the table a priority page draws instead (`ListingTable`): its listing,
+ *  the priorities' titles and the prefix its view is written under. `daemon` is the project's
+ *  Legion daemon setting, none by default. */
 function table(
   issues: IssueSummary[],
   search = "",
@@ -127,11 +129,13 @@ function table(
     retries?: boolean;
     sortApplied?: () => boolean;
   } = {},
-  props: {
-    listing?: IssueListing;
-    priorityTitles?: ReadonlyMap<string, string>;
-    stateKey?: string;
-  } = {},
+  props:
+    | {
+        listing: AdvancesListing;
+        priorityTitles?: ReadonlyMap<string, string>;
+        stateKey: string;
+      }
+    | { listing?: undefined } = {},
   daemon: Promise<LegionSetting | null> = Promise.resolve(null)
 ) {
   // The listing route as the server answers it: `open` leaves the closed rows out, `status`
@@ -189,7 +193,8 @@ function table(
     defaultOptions: { queries: retries ? { retry: queryRetry, retryDelay: 0 } : { retry: false } },
   });
   client.setQueryData(["whoami"], { event_head: "0", login: "alice", kind: "user" });
-  const list = <IssuesTable listing={{ project: "CORE" }} {...props} />;
+  const list =
+    props.listing === undefined ? <IssuesTable project="CORE" /> : <ListingTable {...props} />;
   const view = render(
     <MemoryRouter initialEntries={[`/projects/CORE/issues${search}`]}>
       <QueryClientProvider client={client}>
@@ -1783,6 +1788,52 @@ test("Start next writes the store once for the whole batch", async () => {
   expect(records.length).toBe(2);
 });
 
+// The bulk action runs above the table of the open view: a press on another view draws a new
+// table, and a Start next the old one began goes on until every selected issue has moved.
+test("a press on Done while Start next writes does not stop it, and every selected issue moves", async () => {
+  const user = userEvent.setup();
+  const first = Promise.withResolvers<void>();
+  const sent: string[] = [];
+  const send = spyOn(api, "send").mockImplementation(async (request) => {
+    sent.push(request.path);
+    if (sent.length === 1) await first.promise;
+    return savedIssue(request.path.slice(request.path.lastIndexOf("/") + 1)) as never;
+  });
+  restores.push(() => send.mockRestore());
+  const { client } = table([
+    issue("CORE-1", { labels: ["legion"], rank: "a" }),
+    issue("CORE-2", { labels: ["legion"], rank: "b" }),
+    issue("CORE-3", { labels: ["legion"], rank: "c" }),
+    issue("CORE-4", { labels: ["legion"], rank: "d" }),
+    issue("CORE-5", { status: "done", closed_at: "2026-11-10T10:00:00Z" }),
+  ]);
+  for (const key of ["CORE-2", "CORE-3", "CORE-4"])
+    await user.click(await screen.findByRole("checkbox", { name: `Select ${key}` }));
+  await user.click(
+    within(screen.getByRole("toolbar")).getByRole("button", { name: /^Start next$/ })
+  );
+  await waitFor(() => expect(sent).toHaveLength(1));
+  await user.click(screen.getByRole("tab", { name: /^Done/ }));
+  await screen.findByRole("row", { name: "CORE-5 Work CORE-5" });
+  first.resolve();
+  await waitFor(() =>
+    expect([...sent].sort()).toEqual([
+      "/api/v1/issues/CORE-2",
+      "/api/v1/issues/CORE-3",
+      "/api/v1/issues/CORE-4",
+    ])
+  );
+  await waitFor(() =>
+    expect(
+      within(screen.getByRole("region", { name: "Project issues" })).getByRole("status").textContent
+    ).toBe("3 issues now start next.")
+  );
+  expect(writesOf(client).rows()).toEqual([]);
+  expect(JSON.parse(localStorage.getItem("dispatch.project-table.CORE") ?? "{}").action).toBe(
+    undefined
+  );
+});
+
 // O8: a record a tab left behind a day ago is not this reader's unfinished work.
 test("an action record older than a day is gone, and a new action may begin", async () => {
   const user = userEvent.setup();
@@ -1961,9 +2012,11 @@ test("a scoped table lists the issues the server answers for the priority, over 
   expect(localStorage.getItem("dispatch.project-table.priority:PRI-7")).toBeNull();
 });
 
-test("a stateKey puts the table's own view under its prefix, and none keeps the bare keys", async () => {
+test("a listing table's stateKey puts its own view under its prefix, and the Issues tab keeps the bare keys", async () => {
   const user = userEvent.setup();
-  const { view } = table([issue("CORE-1", { title: "Sextant" })], "", undefined, {
+  const advances = [{ id: "ship-it", inherited: false }];
+  const { view } = table([issue("CORE-1", { title: "Sextant", advances })], "", undefined, {
+    listing: { advances: "ship-it" },
     stateKey: "advances",
   });
   await user.type(await screen.findByRole("searchbox", { name: "Search issues" }), "sextant");
@@ -1972,7 +2025,7 @@ test("a stateKey puts the table's own view under its prefix, and none keeps the 
   );
   expect(screen.getByTestId("route-search").textContent).not.toContain("&q=");
   view.unmount();
-  // The project page passes no stateKey, so the address it publishes is the bare one.
+  // The Issues tab takes no prefix, so the address it publishes is the bare one.
   table([issue("CORE-2", { title: "Astrolabe" })]);
   await user.type(await screen.findByRole("searchbox", { name: "Search issues" }), "astrolabe");
   await waitFor(() =>
@@ -3019,6 +3072,50 @@ test.each([
   const restored = await screen.findByRole("tab", { name: "Busy, 5 issues" });
   expect(restored).toHaveAttribute("aria-selected", "true");
   expect(restored.querySelector("[data-view-changed]")).toBeNull();
+});
+
+/** The chips of the control row, by their names, in the order they are drawn. */
+const rowChips = () =>
+  screen
+    .queryAllByRole("button", { name: /^Remove .* filter$/ })
+    .map((chip) => chip.getAttribute("aria-label"));
+
+// One chip rule for the table and the Board (`viewChips`): a saved view's own filter is no
+// narrowing of the reader's, so neither layout draws a chip for it, and no chip's press can take
+// it away. A narrowing the reader adds on top of the view is one chip in both.
+test.each([
+  ["Status", "status=todo"],
+  ["Priority", "f.priority=0"],
+])("a saved view's own %s filter draws no chip in the table or on the Board, and a narrowing added on top draws one in both", async (_name, filter) => {
+  const user = userEvent.setup();
+  const query = `${filter}&cols=key,title,status,priority&layout=table`;
+  keepSavedViews([{ name: "Mine", query }]);
+  table(
+    [
+      issue("CORE-1", { status: "todo", priority: 0, open_asks: 1 }),
+      issue("CORE-2", { status: "todo", priority: 1 }),
+      issue("CORE-3", { status: "in_progress", priority: 0 }),
+    ],
+    `?${query}`
+  );
+  expect(await screen.findByRole("tab", { name: "Mine, 2 issues" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  expect(rowChips()).toEqual([]);
+  await user.click(screen.getByRole("button", { name: "Filters · 0" }));
+  await user.click(screen.getByRole("button", { name: "Needs you" }));
+  expect(await screen.findByRole("tab", { name: "Mine, 1 issue, changed" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  expect(rowChips()).toEqual(["Remove Needs you filter"]);
+  await user.keyboard("{Escape}");
+
+  await user.click(screen.getByRole("button", { name: "Board" }));
+  await screen.findByRole("region", { name: "Project board" });
+  expect(screen.getByRole("tab", { name: /^Mine/ })).toHaveAttribute("aria-selected", "true");
+  expect(rowChips()).toEqual(["Remove Needs you filter"]);
 });
 
 // R6: Done draws no bar and keeps no room for one, and the Board draws none in either grouping.

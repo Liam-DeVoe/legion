@@ -14,8 +14,8 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { IssuesTable } from "../project/IssuesTable";
 import { selectIssues } from "../project/issues-table-model";
+import { ListingTable } from "../project/ListingTable";
 import { buildProjectPath } from "../refs/routes";
 import { useKeymapScope } from "../shell/keymap";
 import { InPlaceField } from "./InPlaceField";
@@ -198,7 +198,7 @@ export function PriorityPage(): ReactNode {
                 ))}
             </p>
           )}
-          <IssuesTable listing={{ advances: id }} priorityTitles={titles} stateKey={WORK_PREFIX} />
+          <ListingTable listing={{ advances: id }} priorityTitles={titles} stateKey={WORK_PREFIX} />
         </section>
       </div>
       <PriorityMargin id={id} />

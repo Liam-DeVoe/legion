@@ -680,9 +680,10 @@ export const COLUMNS: readonly ColumnSpec[] = [
     size: 284,
     min: 284,
     // On a phone its header stacks its name over its Share and Hours control and its filter
-    // (`STACKED_HEADERS` in `IssuesTable.tsx`), so it holds the wider of those two lines: not the
-    // label with its sort mark (118 px) but the control (94 px with 44 px buttons), a 4 px gap
-    // and the 44 px filter button, with the cell's 16 px of padding from `md` (12 px below it).
+    // (`STACKED_HEADERS` in `issues-table-frame.tsx`), so it holds the wider of those two lines:
+    // not the label with its sort mark (118 px) but the control (94 px with 44 px buttons), a 4
+    // px gap and the 44 px filter button, with the cell's 16 px of padding from `md` (12 px below
+    // it).
     compactMin: 158,
     boardFed: true,
     facts: true,
@@ -814,7 +815,8 @@ const EMBEDDED_MINIMUMS: Readonly<Partial<Record<string, number>>> = Object.from
  * within 85% of the box, Key at its phone width and Title taking what is left down to its phone
  * minimum, so an edge of the next column shows the table scrolls sideways. Every saved
  * `dispatch.project-table.<key>` record was written for these columns, whether its key is a
- * project or the one key every table scoped to a priority shares (`IssuesTable`).
+ * project or the one key every table scoped to a priority shares (`SCOPED_LAYOUT_KEY` in
+ * `ListingTable.tsx`).
  */
 export const ISSUE_TABLE_COLUMNS: LayoutColumns = {
   ids: EMBEDDED_IDS,
@@ -848,9 +850,10 @@ const viewLayouts = new Map<string, LayoutColumns>();
  * and Title) stay within 60% of a box 640 px wide or wider, Title narrowing first until the
  * reader drags its width (R10): a Title the reader dragged is drawn at that width, and scrolls
  * with the table where it would take the pins past their share. On a phone Select and Key stay
- * pinned, and Title, which `IssuesTable` draws right after them, fills the rest of the box down
- * to its phone minimum. Held per set of columns and button size, since the stored layout is
- * read again whenever the rules' identity changes.
+ * pinned, and Title, which the Issues tab draws right after them (`phoneOrder` in
+ * `issues-tab-layout.ts`), fills the rest of the box down to its phone minimum. Held per set of
+ * columns and button size, since the stored layout is read again whenever the rules' identity
+ * changes.
  */
 export function viewLayoutColumns(shown: readonly string[], touch: boolean): LayoutColumns {
   const name = `${shown.join(",")}|${touch}`;

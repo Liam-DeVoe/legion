@@ -36,17 +36,42 @@ interface ResumableAction {
   resume: (record: TableAction, current: readonly IssueSummary[]) => Promise<void>;
 }
 
-export function useIssueTableActions({
-  listing,
-  issues,
-  items,
-  clearSelection,
-}: {
-  listing: IssueListing;
-  issues: readonly IssueSummary[];
-  items: readonly Item[];
-  clearSelection: () => void;
-}) {
+/** What a bulk action is pressed over, read at the press: the issues the table lists, their
+ *  rows, and the way to clear the table's selection once the action has moved what it named. A
+ *  table drawn again since the press (another view of the Issues tab) has a selection of its
+ *  own, which the action leaves as it is. */
+export interface ActionRows {
+  readonly issues: readonly IssueSummary[];
+  readonly items: readonly Item[];
+  readonly clearSelection: () => void;
+}
+
+/** A table's bulk actions and what they say. */
+export interface IssueTableActions {
+  /** An action is out: its controls are held until the list read again has drawn its change. */
+  readonly busy: boolean;
+  readonly notice: Notice | undefined;
+  /** The issues the last action moved, which their rows mark. */
+  readonly moved: ReadonlySet<string>;
+  /** The record of an action a tab left behind, which this tab offers to Finish or Dismiss. */
+  readonly interrupted: TableAction | undefined;
+  readonly interruptedDescription: string | undefined;
+  /** The action waiting on the reader's yes. */
+  readonly confirming: Confirmation | undefined;
+  readonly cancelConfirming: () => void;
+  readonly confirmed: () => void;
+  readonly finish: (clearSelection: () => void) => void;
+  readonly dismiss: () => void;
+  readonly startNext: (keys: readonly string[], rows: ActionRows, confirmFirst?: boolean) => void;
+}
+
+/**
+ * The bulk actions of a table of `listing` and the record that lets a reload finish one. The
+ * caller runs this above the views its table draws, so an action runs on across a change of view
+ * and stops only when the caller goes: the reader leaves the page or its Issues tab, or closes
+ * the browser tab.
+ */
+export function useIssueTableActions(listing: IssueListing): IssueTableActions {
   const client = useQueryClient();
   const writes = useWrites();
   const [busy, setBusy] = useState(false);
@@ -99,7 +124,13 @@ export function useIssueTableActions({
       );
     }
   };
-  const perform = async (said: string, action: () => Promise<readonly string[] | undefined>) => {
+  /** Runs `action`, which says `said` once it answers what it changed, and then clears the
+   *  selection it was pressed over (`clearSelection`). */
+  const perform = async (
+    said: string,
+    action: () => Promise<readonly string[] | undefined>,
+    clearSelection: () => void
+  ) => {
     setBusy(true);
     setNotice(undefined);
     setMoved(new Set());
@@ -139,9 +170,11 @@ export function useIssueTableActions({
       setBusy(false);
     }
   };
-  const titleOf = (key: string) => issues.find((issue) => issue.key === key)?.title ?? key;
-  const named = (keys: readonly string[]) =>
-    keys.length === 1 ? `${keys[0]} “${titleOf(keys[0] ?? "")}”` : `${keys.length} issues`;
+  const named = (keys: readonly string[], issues: readonly IssueSummary[]) => {
+    if (keys.length !== 1) return `${keys.length} issues`;
+    const key = keys[0] ?? "";
+    return `${key} “${issues.find((issue) => issue.key === key)?.title ?? key}”`;
+  };
   /** Whether a bulk action may begin. Where it may not, the notice says why: another tab's move
    *  or this tab's own interrupted action is still in the store (`useTableRecovery`). */
   const canBegin = () => {
@@ -151,10 +184,12 @@ export function useIssueTableActions({
     return false;
   };
   /** The rank writes of a start-next action, sent in order, stopping the moment the action is
-   *  no longer the one in hand: the table went, or, in a browser with no lock manager, another
-   *  tab dismissed it. One loop and one guard serve the first attempt and the resume; `failure`
-   *  is how the attempt names what did not move. The answer says whether the action is still
-   *  the one in hand when the last write landed. */
+   *  no longer the one in hand: the part of the page that runs it went (the reader left its page
+   *  or its Issues tab, or closed the browser tab), or, in a browser with no lock manager,
+   *  another tab dismissed it. A change of view of the Issues tab does not stop it. One loop and
+   *  one guard serve the first attempt and the resume; `failure` is how the attempt names what
+   *  did not move. The answer says whether the action is still the one in hand when the last
+   *  write landed. */
   const runStartNext = async (
     record: TableAction,
     current: readonly Item[],
@@ -186,16 +221,16 @@ export function useIssueTableActions({
   /** Sends a start-next action for queued issues already checked by `startNext`. The controls are
    *  held (`perform`) from the press, before the begin waits for the record's lock, so the focus
    *  moves as the press's doing when the action changes the rows. */
-  const runQueued = (queued: readonly string[]) => {
+  const runQueued = (queued: readonly string[], { issues, items, clearSelection }: ActionRows) => {
     if (!startNextWrites(items, queued).length) {
       setNotice({
         kind: "success",
-        text: `${named(queued)} already ${queued.length === 1 ? "starts" : "start"} next.`,
+        text: `${named(queued, issues)} already ${queued.length === 1 ? "starts" : "start"} next.`,
       });
       return;
     }
     void perform(
-      `${named(queued)} now ${queued.length === 1 ? "starts" : "start"} next.`,
+      `${named(queued, issues)} now ${queued.length === 1 ? "starts" : "start"} next.`,
       async () => {
         // Refused here too: another tab can begin a move while the confirm is open.
         const begun = await recovery.begin({ kind: "startNext", keys: queued }, async (record) => {
@@ -211,20 +246,21 @@ export function useIssueTableActions({
         });
         if (begun.kind === "refused") throw new Error(begun.text);
         return begun.moved ? queued : undefined;
-      }
+      },
+      clearSelection
     );
   };
   /**
-   * Starts `keys` next. Start next keeps its own set, the Todo issues labelled `legion` in rank
-   * order, and each issue of that set among `keys` moves ahead of the others (`startNextWrites`).
-   * A selection with none of the set is refused with a text that names the set. The reader is
-   * asked first where some selected issues are outside the set, with how many stay where they
-   * are, and where the selection holds rows off the page (`confirmFirst`: `Select all N
-   * matching`), since each issue is one write.
+   * Starts `keys` next, of `rows`, what the table lists at the press. Start next keeps its own
+   * set, the Todo issues labelled `legion` in rank order, and each issue of that set among `keys`
+   * moves ahead of the others (`startNextWrites`). A selection with none of the set is refused
+   * with a text that names the set. The reader is asked first where some selected issues are
+   * outside the set, with how many stay where they are, and where the selection holds rows off
+   * the page (`confirmFirst`: `Select all N matching`), since each issue is one write.
    */
-  const startNext = (keys: readonly string[], confirmFirst = false) => {
+  const startNext = (keys: readonly string[], rows: ActionRows, confirmFirst = false) => {
     if (!canBegin()) return;
-    const queued = queuedInOrder(items, keys);
+    const queued = queuedInOrder(rows.items, keys);
     if (!queued.length) {
       setNotice({ kind: "error", text: "Start next moves only Todo issues labelled legion." });
       return;
@@ -242,11 +278,11 @@ export function useIssueTableActions({
         title: "Start these next?",
         body: `${moves} Dispatch sends one change for each issue.${stays}`,
         confirmLabel: "Start next",
-        run: () => runQueued(queued),
+        run: () => runQueued(queued, rows),
       });
       return;
     }
-    runQueued(queued);
+    runQueued(queued, rows);
   };
 
   const kinds: Record<TableAction["kind"], ResumableAction> = {
@@ -262,23 +298,27 @@ export function useIssueTableActions({
     },
   };
   /** Finishes the record left behind, while this tab holds its lock (`recovery.resume`): no
-   *  other tab runs that move meanwhile, and none offers to end it. */
-  const finish = () => {
+   *  other tab runs that move meanwhile, and none offers to end it. Once it has, the selection
+   *  of the table it was pressed on is cleared (`clearSelection`). */
+  const finish = (clearSelection: () => void) => {
     const interrupted = recovery.current.current;
     if (!interrupted) return;
-    void perform("Finished the interrupted action.", () =>
-      recovery.resume(interrupted.id, async () => {
-        await recovery.settle(interrupted);
-        if (!recovery.active(interrupted.id)) return undefined;
-        const record = recovery.current.current;
-        if (!record) return undefined;
-        const current = await listOpen();
-        if (!recovery.active(record.id)) return undefined;
-        await kinds[record.kind].resume(record, current);
-        if (!recovery.active(record.id)) return undefined;
-        recovery.end();
-        return record.keys;
-      })
+    void perform(
+      "Finished the interrupted action.",
+      () =>
+        recovery.resume(interrupted.id, async () => {
+          await recovery.settle(interrupted);
+          if (!recovery.active(interrupted.id)) return undefined;
+          const record = recovery.current.current;
+          if (!record) return undefined;
+          const current = await listOpen();
+          if (!recovery.active(record.id)) return undefined;
+          await kinds[record.kind].resume(record, current);
+          if (!recovery.active(record.id)) return undefined;
+          recovery.end();
+          return record.keys;
+        }),
+      clearSelection
     );
   };
   // Offered only where no tab runs its move: a move another tab still runs is that tab's.

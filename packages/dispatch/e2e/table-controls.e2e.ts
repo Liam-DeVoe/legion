@@ -1095,7 +1095,7 @@ test("the selection bar gone from the keyboard hands the focus to the row marked
     }
 
     // The project List binds no Escape to clearing its selection (`issues-table-page.tsx`,
-    // `IssuesTable.tsx`, `components/table-keys.ts`), so its bar goes by its button alone.
+    // `issues-table-state.ts`, `components/table-keys.ts`), so its bar goes by its button alone.
     where = `project List at ${size.width}x${size.height}`;
     await openSurface(page, "project List", scene);
     const issueRows = page.locator("[data-issue-row]");

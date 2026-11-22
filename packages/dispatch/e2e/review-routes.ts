@@ -317,9 +317,10 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // locator is a row the seed wrote - the first priority of the order, the active issue that
     // advances none, and the parked issue that advances one - and together they say the
     // priorities table and both fault lists have their rows rather than their empty words. Each
-    // fault list is the Issues table, named by the label the page passes it with " table"
-    // after it (`features/project/IssuesTable.tsx`). The three issues are
-    // `e2e/review-seed.ts`'s, so a change to that corpus fails this row rather than a baseline.
+    // fault list is the listing table, named by the label the page passes it with " table"
+    // after it (`features/project/ListingTable.tsx`, drawn by `issues-table-frame.tsx`). The
+    // three issues are `e2e/review-seed.ts`'s, so a change to that corpus fails this row rather
+    // than a baseline.
     ready: (page) => [
       page.getByRole("table", { name: "Priorities table" }).getByRole("row", { name: /^P1 / }),
       page

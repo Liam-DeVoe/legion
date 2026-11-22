@@ -149,9 +149,9 @@ export async function seedMeasuredAcme(page: Page): Promise<FakeLegionDaemon> {
 
 /** Waits until a page of ACME seeded by `seedMeasuredAcme` has drawn the board's first snapshot,
  *  whose header carries the failed read as the alert under the tabs. Until then the view's first
- *  draw is not whole (`viewKey` in `IssuesTable.tsx`): the snapshot's commit starts the table
- *  at its top again (`useDataTable`) and the anchor holds nothing through it, so a row measures
- *  where things draw only after this. */
+ *  draw is not whole (`viewKey` in `web/src/features/project/issues-tab-reads.ts`): the
+ *  snapshot's commit starts the table at its top again (`useDataTable`) and the anchor holds
+ *  nothing through it, so a row measures where things draw only after this. */
 export async function boardDrawn(page: Page): Promise<void> {
   await expect(
     page.getByRole("alert").filter({ hasText: "The last read of the Legion daemon failed" })

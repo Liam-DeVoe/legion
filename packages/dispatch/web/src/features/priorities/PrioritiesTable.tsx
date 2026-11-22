@@ -11,8 +11,8 @@ import type { PagerOptions } from "../../components/Pager";
 import { useTableLayout } from "../../components/table-layout";
 import { useAddressUpdate, useTableAddress } from "../../lib/page-address";
 import { textMutedOnSurfaceMuted, textSecondaryOnCanvas } from "../../theme/classes";
-import { IssuesTable } from "../project/IssuesTable";
 import { ALL_ROWS, PAGE_SIZES } from "../project/issues-table-model";
+import { ListingTable } from "../project/ListingTable";
 import { NewPriority } from "./NewPriority";
 import { usePriorityColumns } from "./priorities-columns";
 import {
@@ -310,7 +310,7 @@ export function PrioritiesTable({
           <h3 className={`text-sm font-semibold ${textSecondaryOnCanvas}`}>
             Work advancing {open.order} {open.priority.title}
           </h3>
-          <IssuesTable
+          <ListingTable
             listing={{ advances: open.priority.id }}
             moveFrom="row"
             priorityTitles={titles}

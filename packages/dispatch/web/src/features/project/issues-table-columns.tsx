@@ -55,7 +55,7 @@ import {
   PhaseHoursModeControl,
   usePhaseHoursMode,
 } from "./issues-phase-hours";
-import type { IssueListing } from "./issues-table-data";
+import type { AdvancesListing } from "./issues-table-data";
 import {
   type ColumnFilterSpec,
   type ColumnId,
@@ -704,11 +704,11 @@ const embeddedRenderings = (
 export type ListingColumnId = "project" | "advances" | "moved" | "reason";
 
 /**
- * The listing columns a table of `listing` has, `titled` when its caller gives each priority's
- * title:
+ * The listing columns a table of `listing`, the work of every project that advances a priority,
+ * has, `titled` when its caller gives each priority's title:
  *
- * - Project, on a listing of no project (an `advances` listing, the work of every project); a
- *   project's own table would name that one project on every row.
+ * - Project, always: the listing stands on no project, and a row names the one it is in. The
+ *   Issues tab, one project's own table, has none of these columns (`viewLayoutColumns`).
  * - Advances, where the titles are given: a title is the only name a reader knows a priority by,
  *   and without them the column could name each priority only by its id.
  * - Moved there, on a listing that asks for the move (`moved`): no other listing is answered with
@@ -716,12 +716,11 @@ export type ListingColumnId = "project" | "advances" | "moved" | "reason";
  * - Reason, on that same listing and no other: why the work was moved there. Nothing records a
  *   reason yet, and every cell says so, naming the work that records one (R6).
  */
-export function listingColumns(listing: IssueListing, titled: boolean): ListingColumnId[] {
-  const scoped = "advances" in listing;
+export function listingColumns(listing: AdvancesListing, titled: boolean): ListingColumnId[] {
   return [
-    ...(scoped ? (["project"] as const) : []),
+    "project",
     ...(titled ? (["advances"] as const) : []),
-    ...(scoped && listing.moved === true ? (["moved", "reason"] as const) : []),
+    ...(listing.moved === true ? (["moved", "reason"] as const) : []),
   ];
 }
 
@@ -859,16 +858,24 @@ export function issueTableLayout(
   return layout;
 }
 
+/** Which table the columns are drawn for: a table another page draws over a listing of its own
+ *  (`embedded`), which draws today's cells at today's widths, or the Issues tab's own (`tab`),
+ *  whose board-fed columns are neither in the Columns menu nor in Group by in a project with no
+ *  Legion daemon (`hasLegion`). */
+export type IssueTableMode =
+  | { readonly kind: "embedded" }
+  | { readonly kind: "tab"; readonly hasLegion: boolean };
+
 /**
  * The columns of `layout`, in its order: the registry's (`viewLayoutColumns` on the Issues tab,
  * `issueTableLayout` elsewhere), and a scoped table's listing columns after Title. `onMark` is
  * told the row a row's own checkbox marks; it is a dependency of the columns, so a caller hands a
  * stable one, as it does `layout` and `priorityTitles`. A column starts at the layout's width and
- * goes no narrower than its minimum there (`compact`: a phone's). `hasLegion` is set on the
- * Issues tab's own table, and a table without it draws today's cells. Time per phase's mode is
- * the reader's (`usePhaseHoursMode`), and a switch of it draws the columns anew. A column whose
- * cells can be empty reads the direction it is sorted in from `sorting` (`emptyLast`), through a
- * ref set at each draw, so a change of sort draws no column anew.
+ * goes no narrower than its minimum there (`compact`: a phone's). `mode` says which table they
+ * are drawn for. Time per phase's mode is the reader's (`usePhaseHoursMode`), and a switch of it
+ * draws the columns anew. A column whose cells can be empty reads the direction it is sorted in
+ * from `sorting` (`emptyLast`), through a ref set at each draw, so a change of sort draws no
+ * column anew.
  */
 export function useIssueTableColumns(
   userState: UserState | undefined,
@@ -878,30 +885,28 @@ export function useIssueTableColumns(
   layout: LayoutColumns,
   /** The sorting state the table is given, which the table sorts its rows by. */
   sorting: SortingState,
+  mode: IssueTableMode,
   /** Each priority's title by its id, which the Advances column names a priority by; one this
    *  map does not hold, a priority deleted since it was read, is named by its id. */
-  priorityTitles?: ReadonlyMap<string, string>,
-  /** Whether the project has a Legion daemon, on the Issues tab's own table: with none, the
-   *  columns the board route feeds are neither in the Columns menu nor in Group by. Unset on a
-   *  table another page draws, which keeps today's cells. */
-  hasLegion?: boolean
+  priorityTitles?: ReadonlyMap<string, string>
 ): ColumnDef<Item>[] {
   const [phaseMode, setPhaseMode] = usePhaseHoursMode();
   const sorted = useRef(sorting);
   sorted.current = sorting;
+  const embedded = mode.kind === "embedded";
+  // A board-fed column of a project with no Legion daemon has nothing to draw.
+  const noLegion = mode.kind === "tab" && !mode.hasLegion;
   return useMemo<ColumnDef<Item>[]>(() => {
     const descending = (id: string) => sorted.current.find((sort) => sort.id === id)?.desc === true;
     const rendering = renderings(userState, onMark, phaseMode, setPhaseMode, descending);
     const titleOf = (id: string) => priorityTitles?.get(id) ?? id;
-    const embedded = hasLegion === undefined;
     const embeddedRendering = embedded ? embeddedRenderings(descending) : undefined;
     const registered = layout.ids.flatMap((id): ColumnDef<Item>[] => {
       const column = columnSpec.get(id);
       if (column === undefined) return [];
       const filter = column.filter;
       const picks = filter?.kind === "picks" ? filter : undefined;
-      // A board-fed column of a project with no Legion daemon has nothing to draw.
-      const unfed = hasLegion === false && isBoardFedColumn(column.id);
+      const unfed = noLegion && isBoardFedColumn(column.id);
       // Today's Queue filter names its values as they are, Queued and Not queued.
       const show =
         filter?.kind === "range"
@@ -957,5 +962,15 @@ export function useIssueTableColumns(
     // Beside the title, which is what a reader reads a row of every project's issues by.
     const after = registered.findIndex(({ id }) => id === "title") + 1;
     return [...registered.slice(0, after), ...listing, ...registered.slice(after)];
-  }, [userState, compact, onMark, layout, priorityTitles, hasLegion, phaseMode, setPhaseMode]);
+  }, [
+    userState,
+    compact,
+    onMark,
+    layout,
+    priorityTitles,
+    embedded,
+    noLegion,
+    phaseMode,
+    setPhaseMode,
+  ]);
 }

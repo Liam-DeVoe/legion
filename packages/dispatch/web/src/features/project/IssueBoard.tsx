@@ -749,8 +749,8 @@ export function IssueBoard({
   rows: readonly Item[];
   userState: UserState | undefined;
   /** Names the view the reader picked: its address, its lanes and its Icebox, and whether its
-   *  first draw is whole (`IssueTableBody`). A change of it is the reader's own move, which the
-   *  anchor leaves alone, as a table does (`useDataTable`). */
+   *  first draw is whole (`viewKey` of `useTabReads`, `issues-tab-reads.ts`). A change of it is
+   *  the reader's own move, which the anchor leaves alone, as a table does (`useDataTable`). */
   viewKey: string;
 }): ReactNode {
   const { error, move } = useBoardMoves(project);

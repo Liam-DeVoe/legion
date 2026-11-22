@@ -4,23 +4,18 @@ import { Chip } from "../../components/Chip";
 import { ColumnsMenu } from "../../components/ColumnsMenu";
 import { ControlRow } from "../../components/ControlRow";
 import { DisplayMenu } from "../../components/DisplayMenu";
-import {
-  columnFilterChip,
-  columnFilterPicks,
-  type FilterChip,
-  filterChips,
-} from "../../components/filter-chips";
+import { type FilterChip, filterChips } from "../../components/filter-chips";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import { SearchBox } from "../../components/SearchBox";
 import { SelectionBar } from "../../components/SelectionBar";
 import { StepButton } from "../../components/StepButton";
 import { useAddressUpdate } from "../../lib/page-address";
 import { borderDefault, issueStatusScale, surfaceMutedBg } from "../../theme/classes";
-import { openIssueStatuses, statusLabel } from "./board-model";
+import { statusLabel } from "./board-model";
 import { IssueFlagChips, NarrowingList, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
-import { sameSet } from "./issues-filter-picks";
 import { countStatuses, statusSegments } from "./issues-table-bar";
+import { type OwnNarrowings, viewChips } from "./issues-table-chips";
 import {
   COLUMNS,
   defaultView,
@@ -83,18 +78,19 @@ type ToolbarPanel = "flags" | "view";
 
 /**
  * The one row the List's controls sit in: the search box, the trigger over the three flags that
- * narrow no column of the table, the chips of every narrowing that is on - the issues a link
- * names (`only=`), the flags, and every column's filter - **Clear filters** (which the row
- * draws), the page's own controls (the columns menu where the page gives none), and the display
- * menu, named Group by for the grouping it holds (INFRA-3135, R1 and R3). A column's filter is
- * set on that column's header, where `ColumnFilter` draws it, and its chip is drawn here as
- * well, so a column the reader hid keeps its narrowing in sight.
+ * narrow no column of the table, the chips of every narrowing that differs from the view's own -
+ * the issues a link names (`only=`) first, then the chips of `viewChips`, which the Board draws
+ * too - **Clear filters** (which the row draws), the page's own controls (the columns menu where
+ * the page gives none), and the display menu, named Group by for the grouping it holds
+ * (INFRA-3135, R1 and R3). A column's filter is set on that column's header, where
+ * `ColumnFilter` draws it, and its chip is drawn here as well, whether its column is shown or
+ * hidden, so a column the reader hid keeps its narrowing in sight.
  */
 export function IssueTableToolbar({
   clear,
   controls,
   narrowings,
-  ownStatuses,
+  own,
   searchRef,
   selection,
   stateKey,
@@ -110,9 +106,9 @@ export function IssueTableToolbar({
   /** The narrowings an address carries that are no column and no flag (`exclude_tree`): each a
    *  chip of the row and a line of the Filters panel, with its remove. */
   narrowings: readonly FilterChip[];
-  /** The statuses the view lists by itself, which draw no chip and which taking the Status
-   *  chip off goes back to: the open statuses where unset. */
-  ownStatuses?: readonly string[];
+  /** What the open view narrows by of itself, which draws no chip and which a chip's press goes
+   *  back to (`viewChips`). */
+  own: OwnNarrowings;
   /** The search box, which the selection bar hands the focus to when no row is left for it. */
   searchRef: RefObject<HTMLInputElement | null>;
   /** The chip of the issues a link names, which the row draws first among its chips. */
@@ -143,59 +139,12 @@ export function IssueTableToolbar({
     const next = on ? [...rest, UNCLAIMED_FACET] : rest;
     claim?.setFilterValue(next.length === 0 ? undefined : next);
   };
-  // The three narrowings that are no column of this table, and so the ones the row's own
-  // trigger holds.
-  const flagged = [
-    { label: "Needs you", on: flags.needsYou, remove: () => flags.setNeedsYou(false) },
-    { label: "Unread", on: flags.unread, remove: () => flags.setUnread(false) },
-    { label: "Unclaimed", on: unclaimed, remove: () => setUnclaimed(false) },
-  ].filter(({ on }) => on);
-  // Every column filter that is on, a chip of the row whether its column is shown or hidden:
-  // a column the reader hid with the columns menu keeps its filter, and its chip is then the one
-  // place it shows. Three columns are the List's own. Status opens on the open statuses, which a
-  // link leaves out and Clear filters goes back to, so that pick is no chip, and taking a Status
-  // chip off goes back to it rather than asking for every closed issue in the project. Claimed
-  // by's "Nobody or lapsed" is the Unclaimed flag's chip already, so the column's chip names its
-  // other picks, and taking it off leaves that one on. Labels is the project's own `?label=`,
-  // which the Board reads too (`useIssueFilters`), so one of its values is one chip under the
-  // name both views give it, `Label: <value>`, rather than a second chip in other words for the
-  // narrowing the Board already names.
-  const columned = table.getAllLeafColumns().flatMap((column) => {
-    const picks = columnFilterPicks(column.getFilterValue());
-    if (column.id === "status") {
-      const own: readonly string[] = ownStatuses ?? openIssueStatuses;
-      const isOwn = sameSet(own, picks);
-      return picks.length === 0 || isOwn
-        ? []
-        : [columnFilterChip(column, picks, () => column.setFilterValue([...own]))];
-    }
-    if (column.id === "claim") {
-      const named = picks.filter((value) => value !== UNCLAIMED_FACET);
-      return named.length === 0
-        ? []
-        : [
-            columnFilterChip(column, named, () =>
-              column.setFilterValue(unclaimed ? [UNCLAIMED_FACET] : undefined)
-            ),
-          ];
-    }
-    if (column.id === "labels") {
-      return picks.map((value) => ({
-        key: `label:${value}`,
-        label: `Label: ${value}`,
-        remove: () => {
-          const kept = picks.filter((one) => one !== value);
-          column.setFilterValue(kept.length === 0 ? undefined : kept);
-        },
-      }));
-    }
-    return picks.length === 0 ? [] : [columnFilterChip(column, picks)];
-  });
+  const viewed = viewChips({ columns: table.getAllLeafColumns(), flags, narrowings, own });
   // Exactly the scope it has always had: the table's own filters and search, and the two flags
   // the write below takes out of the address.
   const narrowed = filters.length > 0 || search !== "" || flags.needsYou || flags.unread;
   const chips = filterChips(
-    [...(selection === undefined ? [] : [selection]), ...flagged, ...narrowings, ...columned],
+    [...(selection === undefined ? [] : [selection]), ...viewed],
     "compact"
   );
   const clearFilters = () =>
@@ -275,7 +224,7 @@ export function IssueTableToolbar({
         size="compact"
         trigger={
           <PanelTrigger
-            count={flagged.length + narrowings.length + columned.length}
+            count={viewed.length}
             label="Filters"
             onOpenChange={(open) => setOpenPanel(open ? "flags" : undefined)}
             open={openPanel === "flags"}

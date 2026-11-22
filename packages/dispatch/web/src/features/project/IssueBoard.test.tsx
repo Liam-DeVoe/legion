@@ -164,10 +164,10 @@ function board(
           <Route />
           {rescued ? (
             <RescuedMain>
-              <IssuesTable listing={{ project: "CORE" }} />
+              <IssuesTable project="CORE" />
             </RescuedMain>
           ) : (
-            <IssuesTable listing={{ project: "CORE" }} />
+            <IssuesTable project="CORE" />
           )}
         </KeymapProvider>
       </QueryClientProvider>

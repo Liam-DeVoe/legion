@@ -187,7 +187,7 @@ export function ProjectPage(): ReactNode {
       >
         {activeTab === "issues" ? (
           // The Issues tab's views, in the table or the Board, with their controls.
-          <IssuesTable key={route.project} listing={{ project: route.project }} />
+          <IssuesTable key={route.project} project={route.project} />
         ) : null}
       </div>
       <div

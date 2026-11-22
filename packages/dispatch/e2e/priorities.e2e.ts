@@ -28,9 +28,9 @@ import { asUser } from "./users";
 
 const PRIORITIES_PATH = "/priorities";
 
-/** The two fault tables, by the names the Issues table gives them: the `label` each fault list of
- *  `PrioritiesPage.tsx` passes, which `features/project/IssuesTable.tsx` names its table by with
- *  " table" after it. */
+/** The two fault tables, by the names the listing table gives them: the `label` each fault list
+ *  of `PrioritiesPage.tsx` passes to `features/project/ListingTable.tsx`, whose table
+ *  `issues-table-frame.tsx` names by it with " table" after it. */
 const NO_PRIORITY_TABLE = "Issues active under no priority table";
 const PARKED_TABLE = "Priority issues in backlog or icebox table";
 

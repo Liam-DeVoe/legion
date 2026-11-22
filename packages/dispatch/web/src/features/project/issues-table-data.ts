@@ -19,19 +19,19 @@ import { itemsWindows, type LegionFacts, listedDoneRows } from "./issues-legion"
 import { buildItems, type LegionReads, type ReadStatus } from "./issues-table-model";
 
 /**
- * What a table lists. A project's table lists that project's issues; a scoped table lists the
- * issues that advance one priority, where `advances` is the priority node's id and the server
- * narrows the listing by it (`GET /api/v1/issues?advances=<id>`). A priority belongs to no
- * project, so a scoped table lists the work of every project and stands on none of them: it
- * can make no write that names a project, and it offers none (`issues-table-actions.ts`).
+ * What a table lists. A project's table, its Issues tab, lists that project's issues; a scoped
+ * table lists the issues that advance one priority (`AdvancesListing`). A priority belongs to no
+ * project, so a scoped table lists the work of every project and stands on none of them: it can
+ * make no write that names a project, and it offers none (`issues-table-actions.ts`).
  */
 export type IssueListing = { readonly project: string } | AdvancesListing;
 
 /**
  * The issues of every project the server narrows by what they advance: one priority's id, or
  * `none` for the work that advances no live priority and `any` for the work that advances one.
- * `statuses`, where it is set, is the whole of what the listing holds - the issues standing in
- * one of those statuses, which is how the priorities page asks for each of its two faults (see
+ * The server narrows the listing by it (`GET /api/v1/issues?advances=<id>`). `statuses`, where
+ * it is set, is the whole of what the listing holds - the issues standing in one of those
+ * statuses, which is how the priorities page asks for each of its two faults (see
  * `answeredWhole` for when its open read is every row of it). `moved` asks for the time each row
  * standing in backlog or icebox was moved there and who moved it.
  */
@@ -45,15 +45,14 @@ export type AdvancesListing = {
  * Whether a listing's one open read (`open: true`) answers every row its table can show, so the
  * table never reads the closed issues beside it: a listing that names its statuses, every one of
  * them open. A listing whose statuses include `done` holds closed issues the open read leaves
- * out, and a listing that names no status holds every closed issue it has: an advances listing
- * reads its whole listing once the reader lets closed issues through, and a project's reads its
- * done issues (`DoneRead`).
+ * out, and a listing that names no status holds every closed issue it has: its table reads its
+ * whole listing once the reader lets closed issues through.
  */
-export function answeredWhole(listing: IssueListing): boolean {
+export function answeredWhole(listing: AdvancesListing): boolean {
   return (
-    "advances" in listing &&
-    listing.statuses !== undefined &&
-    listing.statuses.every((status) => (openIssueStatuses as readonly string[]).includes(status))
+    listing.statuses?.every((status) =>
+      (openIssueStatuses as readonly string[]).includes(status)
+    ) === true
   );
 }
 
@@ -64,12 +63,26 @@ export const listingName = (listing: IssueListing): string =>
     ? listing.project
     : [`advances:${listing.advances}`, ...(listing.statuses ?? [])].join(":");
 
+/** Which listings a view reads by the picks of its Status filter (the spec's Loading section):
+ *  the open listing unless it picks Done alone, and the done issues where it picks Done or no
+ *  status. */
+export function listingsOf(statusPicks: readonly string[]): {
+  readonly open: boolean;
+  readonly done: boolean;
+} {
+  return {
+    open: statusPicks.length === 0 || statusPicks.some((status) => status !== "done"),
+    done: statusPicks.length === 0 || statusPicks.includes("done"),
+  };
+}
+
 /**
- * Which done issues a view reads (the spec's Loading section): one page of them in their close
- * order, newest first (`page`), while the view is sorted by Closed and narrowed by nothing but a
- * Closed window; else every done issue the window holds (`all`), which the browser sorts,
- * narrows and pages. `window` is the view's Closed window, none for every done issue. `nowMs` is
- * the clock the caller holds, which the items of a read of every done row run to.
+ * Which done issues a view of the Issues tab reads (the spec's Loading section): one page of
+ * them in their close order, newest first (`page`), while the view is sorted by Closed and
+ * narrowed by nothing but a Closed window; else every done issue the window holds (`all`), which
+ * the browser sorts, narrows and pages. `window` is the view's Closed window, none for every done
+ * issue. `nowMs` is the clock the caller holds, which the items of a read of every done row run
+ * to.
  */
 export type DoneRead =
   | {
@@ -80,14 +93,13 @@ export type DoneRead =
     }
   | { readonly kind: "all"; readonly window: ClosedWindow | undefined; readonly nowMs: number };
 
-/** What a table reads beside its listing's open issues. */
-export interface ListingReads {
+/** What a view of the Issues tab reads beside the project's open issues. */
+export interface ProjectReads {
   /** The view lists open issues: the open listing is read. A view that lists only done issues
    *  reads no open row. */
   readonly open: boolean;
-  /** The done issues the view lists, or undefined for a view that lists none. A listing of no
-   *  project reads its whole listing instead, whatever the read names. The caller holds one
-   *  object per read (a memo), since the rows and their facts are derived from it. */
+  /** The done issues the view lists, or undefined for a view that lists none. The caller holds
+   *  one object per read (a memo), since the rows and their facts are derived from it. */
   readonly done: DoneRead | undefined;
   /** The project has a Legion daemon: its board is read, and the items of the done rows the
    *  board's map does not hold once the board has answered. */
@@ -103,46 +115,33 @@ const NO_FACTS: Readonly<Record<string, LegionFacts>> = {};
 export const CLOSE_ITEMS_AGAIN_MS = 60_000;
 
 /**
- * One listing's issues as the table shows them.
- *
- * A project's listing: the open listing once, unless the view lists only done issues, and the
- * done issues the view lists (`DoneRead`), never the full listing. The open rows come first,
- * then the done ones, as the listing's own order has them. A Done read with a window none of
- * whose rows carries `closed_at` lists none of them (`listedDoneRows`), and a page read whose
- * answer does not name its sort fails (`UnsortedPageError`). In a project with a Legion daemon
- * the board is read, and the facts of the listed done rows its map does not hold come from the
- * items of `legion-work-time` over their close days, read once the board has answered; items of
- * rows the view does not list are dropped.
- *
- * A listing that advances a priority: its open read, and its whole listing once the reader lets
- * closed issues through. Two reads, never three: the open read stops once the whole one has
- * answered, so a live event refetches one listing.
+ * A project's issues as a view of its Issues tab shows them: the open listing once, unless the
+ * view lists only done issues, and the done issues the view lists (`DoneRead`), never the full
+ * listing. The open rows come first, then the done ones, as the listing's own order has them. A
+ * Done read with a window none of whose rows carries `closed_at` lists none of them
+ * (`listedDoneRows`), and a page read whose answer does not name its sort fails
+ * (`UnsortedPageError`). In a project with a Legion daemon the board is read, and the facts of
+ * the listed done rows its map does not hold come from the items of `legion-work-time` over
+ * their close days, read once the board has answered; items of rows the view does not list are
+ * dropped.
  */
-export function useIssueTableItems(
-  listing: IssueListing,
+export function useProjectTableItems(
+  project: string,
   {
     reads,
     registry,
     viewer,
-  }: { reads: ListingReads; registry: AgentRegistry; viewer?: string | undefined }
+  }: { reads: ProjectReads; registry: AgentRegistry; viewer?: string | undefined }
 ) {
   const text = useAgentText();
-  const project = "project" in listing ? listing.project : undefined;
   const done = reads.done;
-  // A project's view that reads its done rows a page at a time.
-  const paged = project !== undefined && done?.kind === "page";
-  // A project with a Legion daemon: its board is read, and the items of its done rows.
-  const legion = project !== undefined && reads.legion;
-  // Scoped, the listing is the priority's own, which names no project: a priority belongs to
-  // none, so the work under it is every project's. A listing its open read answers whole never
-  // asks for this one (`answeredWhole`, which `IssuesTable` reads).
-  const everyIssue = useQuery({
-    ...("project" in listing
-      ? projectDoneIssuesQuery(listing.project, done?.window)
-      : advancesIssuesQuery(listing)),
-    enabled: done !== undefined && (project === undefined || done.kind === "all"),
+  // A view that reads its done rows a page at a time.
+  const paged = done?.kind === "page";
+  const everyDone = useQuery({
+    ...projectDoneIssuesQuery(project, done?.window),
+    enabled: done?.kind === "all",
   });
-  const pageRead = projectDonePageQuery(project ?? "", {
+  const pageRead = projectDonePageQuery(project, {
     offset: done?.kind === "page" ? done.offset : 0,
     size: done?.kind === "page" ? done.size : 0,
     window: done?.window,
@@ -159,55 +158,42 @@ export function useIssueTableItems(
         : undefined,
     enabled: paged,
   });
-  const doneRead = paged ? donePage : everyIssue;
+  const doneRead = paged ? donePage : everyDone;
   const doneLoaded = done !== undefined && doneRead.data !== undefined;
-  const scopedWhole = project === undefined && doneLoaded;
-  const openIssues = useQuery({
-    ...("project" in listing
-      ? projectIssuesQuery(listing.project, true)
-      : advancesIssuesQuery(listing, true)),
-    enabled: project === undefined ? !scopedWhole : reads.open,
-  });
-  const board = useQuery({
-    ...legionBoardQuery(project ?? ""),
-    enabled: legion,
-  });
+  const openIssues = useQuery({ ...projectIssuesQuery(project, true), enabled: reads.open });
+  const board = useQuery({ ...legionBoardQuery(project), enabled: reads.legion });
 
-  const openRows = project === undefined || reads.open ? openIssues.data : NO_ISSUES;
+  const openRows = reads.open ? openIssues.data : NO_ISSUES;
   const readRows = paged
     ? donePage.data === undefined
       ? undefined
       : (donePage.data.issues ?? NO_ISSUES)
-    : everyIssue.data;
+    : everyDone.data;
   const doneRows = useMemo(
     () =>
-      project === undefined || done === undefined || readRows === undefined
+      done === undefined || readRows === undefined
         ? NO_ISSUES
         : listedDoneRows(readRows, done.window !== undefined),
-    [project, done, readRows]
+    [done, readRows]
   );
   const all = useMemo(() => {
-    if (project === undefined) return (scopedWhole ? everyIssue.data : openIssues.data) ?? [];
     const open = openRows ?? NO_ISSUES;
     if (doneRows.length === 0) return open;
     const keys = new Set(open.map((issue) => issue.key));
     return [...open, ...doneRows.filter((issue) => !keys.has(issue.key))];
-  }, [project, scopedWhole, everyIssue.data, openIssues.data, openRows, doneRows]);
+  }, [openRows, doneRows]);
 
   // The items: the close days of the listed done rows the board's map does not hold, from the
   // oldest such close to the newest on a page, and to now for a read of every done row.
   const windows = useMemo(
     () =>
-      !legion || done === undefined || board.data === undefined
+      !reads.legion || done === undefined || board.data === undefined
         ? []
         : itemsWindows(doneRows, board.data, done.kind === "all" ? done.nowMs : undefined),
-    [legion, done, board.data, doneRows]
+    [reads.legion, done, board.data, doneRows]
   );
-  const itemsRead = legion && board.data !== undefined && windows.length > 0;
-  const items = useQuery({
-    ...legionItemsQuery(project ?? "", windows),
-    enabled: itemsRead,
-  });
+  const itemsRead = reads.legion && board.data !== undefined && windows.length > 0;
+  const items = useQuery({ ...legionItemsQuery(project, windows), enabled: itemsRead });
   const listedItems = useMemo(() => {
     if (items.data === undefined) return undefined;
     const listed = new Set(doneRows.map((issue) => issue.key));
@@ -219,20 +205,20 @@ export function useIssueTableItems(
   let itemsStatus: ReadStatus = "success";
   if (itemsRead) {
     if (items.data === undefined) itemsStatus = items.status;
-  } else if (board.data === undefined && legion && done !== undefined) {
+  } else if (board.data === undefined && reads.legion && done !== undefined) {
     itemsStatus = board.status === "error" ? "error" : "pending";
   }
   const legionReads = useMemo<LegionReads | undefined>(
     () =>
-      legion
+      reads.legion
         ? { board: board.data, boardStatus: board.status, items: listedItems, itemsStatus }
         : undefined,
-    [legion, board.data, board.status, listedItems, itemsStatus]
+    [reads.legion, board.data, board.status, listedItems, itemsStatus]
   );
   useDoneFactsCurrent({
     board: board.data,
     doneAt: doneRead.dataUpdatedAt,
-    doneKey: done === undefined || project === undefined ? "" : JSON.stringify(done),
+    doneKey: done === undefined ? "" : JSON.stringify(done),
     doneRows,
     items: itemsRead ? items : undefined,
   });
@@ -250,12 +236,10 @@ export function useIssueTableItems(
       ),
     [all, text, registry, legionReads, viewer]
   );
-  // Scoped, the whole listing once it has answered; else the open read.
-  const issues = scopedWhole ? everyIssue : openIssues;
   const listingError =
     done !== undefined && doneRead.isError
       ? doneRead
-      : (project === undefined || reads.open) && openIssues.isError
+      : reads.open && openIssues.isError
         ? openIssues
         : undefined;
   return {
@@ -266,11 +250,47 @@ export function useIssueTableItems(
     doneRead,
     /** Every done issue the paged read's window holds, where the view reads a page. */
     doneTotal: paged ? donePage.data?.total : undefined,
-    issues,
+    issues: openIssues,
     items,
     itemsStatus,
     listingError,
   };
+}
+
+/**
+ * The issues of a listing that advances a priority, as its table shows them: its open read, and
+ * its whole listing once the reader lets `closed` issues through. Two reads, never three: the
+ * open read stops once the whole one has answered, so a live event refetches one listing. A
+ * listing its open read answers whole never asks for the whole one (`answeredWhole`, which its
+ * table reads). A priority belongs to no project, so the listing is the work of every project.
+ */
+export function useAdvancesTableItems(
+  listing: AdvancesListing,
+  {
+    closed,
+    registry,
+    viewer,
+  }: { closed: boolean; registry: AgentRegistry; viewer?: string | undefined }
+) {
+  const text = useAgentText();
+  const whole = useQuery({ ...advancesIssuesQuery(listing), enabled: closed });
+  const wholeIn = closed && whole.data !== undefined;
+  const open = useQuery({ ...advancesIssuesQuery(listing, true), enabled: !wholeIn });
+  // The whole listing once it has answered; else the open read.
+  const issues = wholeIn ? whole : open;
+  const all = issues.data ?? NO_ISSUES;
+  const allItems = useMemo(
+    () =>
+      buildItems(
+        all,
+        text.label,
+        (issue) => issue.claim === null || claimIsTakeable(issue.claim, registry),
+        { viewer }
+      ),
+    [all, text, registry, viewer]
+  );
+  const listingError = closed && whole.isError ? whole : open.isError ? open : undefined;
+  return { all, allItems, issues, whole, wholeIn, listingError };
 }
 
 /**
