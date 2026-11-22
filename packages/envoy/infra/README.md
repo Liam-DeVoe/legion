@@ -4100,7 +4100,7 @@ max by `server_name`, since a leader election, a restart or a change of replicas
 for the same copy and Cloud Monitoring keeps no staleness, so the old one answers until its
 lookback ends. And only the hub's own exporters count, matched by project, cluster and namespace:
 another NATS deployment in the same metrics scope can serve a stream of the same name. The reference
-deployment's pull request 5890, open now, is to declare the policy `hub-stream-consumers` in its
+deployment's pull request 5890 is to declare the policy `hub-stream-consumers` in its
 `envoy-cluster/hubalerts.go` on that sum, with its own GCP project's id in `<project>`: `sum by
 (stream_name) (max by (stream_name, server_name)
 (nats_stream_consumer_count{project_id="<project>",cluster="dispatch",namespace="envoy",stream_name="ENVOY_NOTIFICATIONS"}))

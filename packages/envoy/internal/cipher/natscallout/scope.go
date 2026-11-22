@@ -73,9 +73,9 @@ import (
 // a held daemon's token can create one durable for each connection it names for a new generation,
 // with no bound here, and every tenant shares ENVOY_NOTIFICATIONS's max_consumers of 24000, at
 // which the listener refuses every new session. So the step also waits until the deployment's
-// alert below that cap, the reference deployment's hub-stream-consumers policy (its pull request
-// 5890, open now; infra/README.md, the generation grant), is applied, with its read quoted where
-// this step is turned on.
+// alert below that cap, the reference deployment's hub-stream-consumers policy (which its pull
+// request 5890 is to declare; infra/README.md, the generation grant), is applied, with its read
+// quoted where this step is turned on.
 //
 // daemon-release-gate.sh is in packages/envoy/scripts; daemon-running-gate.sh comes with the
 // change that lands the daemon that opens its consumers per project. The change that lists daemon

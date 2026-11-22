@@ -8,9 +8,10 @@ body: |-
   its create on its kind's filter, its info, its pull and its acknowledgements. Any other connection
   name adds nothing to the held grant. The grant bounds each connection, not the daemon: a held
   daemon's token can create one such durable per connection name, and the durables outlive their
-  connections, on the stream whose 24000 consumers every tenant shares. The deployment watches
-  ENVOY_NOTIFICATIONS's consumer count with an alert below that cap (`infra/README.md`, the
-  generation grant).
+  connections, on the stream whose 24000 consumers every tenant shares. A deployment must apply an
+  alert on ENVOY_NOTIFICATIONS's consumer count below that cap before it holds a daemon entry to
+  projects (`scopeGrant`'s precondition, `internal/cipher/natscallout/scope.go`); the reference
+  deployment's alert is still to be declared (`infra/README.md`, the generation grant).
 time: 2026-11-22T07:01:09Z
 custom:
     Issue: pr4970
