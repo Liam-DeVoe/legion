@@ -14,6 +14,7 @@ import {
   LegionChildRequest,
   LegionClaimRequest,
   LegionCompactResponse,
+  LegionCompleteStepRequest,
   LegionControllerCredentialResponse,
   LegionControllerGrantRequest,
   LegionControllerRegisterResponse,
@@ -174,6 +175,8 @@ const schemas: Record<string, z.ZodType> = {
   // The owner's plan (contract 211): what register_plan took, and stop_task's empty answer.
   "plan-register.json": LegionPlanRegisterResponse,
   "task-stop.json": LegionEmptyResponse,
+  // The owner's report of a step of its own (contract 227), the empty answer of a fact route.
+  "step-complete.json": LegionEmptyResponse,
   // The project pause (contract 178), each written from what the route itself answers
   // (internal/api's TestPauseRouteGoldens): the pause a pause began, the pause a resume ended
   // with how many held rows it let out, and every refusal. A blank reason is the plain refusal;
@@ -1972,6 +1975,17 @@ test("every request the plugin sends parses and names its required fields", () =
     ],
     ["signoff", LegionSignOffRequest, { grantId: "grant-208", issue: "LEGION-208" }],
     [
+      "step complete",
+      LegionCompleteStepRequest,
+      {
+        grantId: "grant-208",
+        issue: "LEGION-208",
+        step: 1,
+        summary: "The suite passes.",
+        verdict: "pass",
+      },
+    ],
+    [
       "root close",
       LegionRootCloseRequest,
       { grantId: "grant-208", issue: "LEGION-208", reason: "no change" },
@@ -2015,6 +2029,53 @@ test("every request the plugin sends parses and names its required fields", () =
     expect(
       schema.safeParse(missing).success,
       `${name} refuses a missing required field`
+    ).toBeFalse();
+  }
+});
+
+// The owner's report names its grant, its issue, the step by its place and its summary, each
+// required; step 0 is the retro, a place below it names nothing, and what the report adds is a
+// completion's, under its rules: the verdict pass or fail, returnTo with a fail alone, and the
+// rating of the plan with its reason.
+test("the owner's report of its step names its grant, issue, step and summary", () => {
+  const report = {
+    grantId: "grant-208",
+    issue: "LEGION-208",
+    step: 2,
+    summary: "A requirement is unmet.",
+    verdict: "fail",
+    commit: "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    returnTo: 1,
+  };
+  expect(LegionCompleteStepRequest.safeParse(report).success).toBeTrue();
+  for (const field of ["grantId", "issue", "step", "summary"] as const) {
+    const missing: Record<string, unknown> = { ...report };
+    delete missing[field];
+    expect(
+      LegionCompleteStepRequest.safeParse(missing).success,
+      `${field} is required`
+    ).toBeFalse();
+  }
+  const retro = {
+    grantId: "grant-208",
+    issue: "LEGION-208",
+    step: 0,
+    summary: "Retro done.",
+    commit: "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    planRating: 4,
+    planReason: "The plan fit the work.",
+  };
+  expect(LegionCompleteStepRequest.safeParse(retro).success).toBeTrue();
+  for (const refused of [
+    { ...report, step: -1 },
+    { ...report, step: 1.5 },
+    { ...report, verdict: "pending" },
+    { ...report, verdict: "pass" },
+    { ...retro, planReason: undefined },
+  ]) {
+    expect(
+      LegionCompleteStepRequest.safeParse(refused).success,
+      JSON.stringify(refused)
     ).toBeFalse();
   }
 });

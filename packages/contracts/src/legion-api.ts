@@ -2144,6 +2144,39 @@ export const LegionSignOffRequest = z.strictObject({
   issue: nonEmptyString,
 });
 
+/** `api.CompleteStepRequest`, the owner's report of a step of its own (contract 227): a step of
+ * the issue's running task whose key is owner, or that task's retro where the retro is the
+ * owner's. Only the issue's own architect sends it (`NOT_THE_OWNER` for any other grant), and only
+ * for the step that runs now with the owner as its agent (`OWNER_STEP_NOT_RUNNING`, naming where
+ * the task stands and who works that place). `step` names the step by its place in the task, 1 for
+ * its first, and 0 for the retro. The other fields are what a worker's completion of that place
+ * carries (`LegionHandoffCompleteRequest`), under the same names and the same rules: the verdict
+ * `pass` or `fail` of a step that reports one, the commit, the handoff record of a phase that ends
+ * with one, `returnTo` with a fail, and the rating of the plan on the retro. The owner's
+ * acceptance passes as its sign-off and fails as a move back, to `returnTo` or to the task's first
+ * implementation step before it. */
+export const LegionCompleteStepRequest = z
+  .strictObject({
+    grantId: nonEmptyString,
+    issue: nonEmptyString,
+    step: z.number().int().nonnegative(),
+    summary: nonEmptyString,
+    verdict: z.enum(["pass", "fail"]).optional(),
+    commit: nonEmptyString.optional(),
+    handoffId: nonEmptyString.optional(),
+    handoffVersion: z.number().int().positive().optional(),
+    returnTo: z.number().int().positive().optional(),
+    planRating: legionPlanRatingScale(z.number()).optional(),
+    planReason: legionPlanReason.optional(),
+  })
+  .refine(
+    (request) => legionPlanRatingLoneField(request.planRating, request.planReason) === undefined,
+    { message: "planRating and planReason appear together" }
+  )
+  .refine((request) => request.returnTo === undefined || request.verdict === "fail", {
+    message: "returnTo is carried only by a report with the verdict fail",
+  });
+
 /** `api.RootCloseRequest`, a root architect's close of its tree before the tree's first phase starts,
  * with the reason the daemon posts on the issue. */
 export const LegionRootCloseRequest = z.strictObject({

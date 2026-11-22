@@ -598,6 +598,7 @@ function createPi(
       boolean: optional,
       array: () => optional(),
       enum: () => optional(),
+      union: () => optional(),
       unknown: () => optional(),
       discriminatedUnion: () => ({}),
     },

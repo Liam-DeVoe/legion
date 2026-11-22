@@ -3,6 +3,7 @@ import {
   LegionChildRequest,
   LegionClaimRequest,
   LegionCompactResponse,
+  LegionCompleteStepRequest,
   LegionControllerGrantRequest,
   LegionControllerRegisterResponse,
   type LegionControllerRegistration,
@@ -202,6 +203,12 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
   readonly signOff: (
     input: z.input<typeof LegionSignOffRequest>
+  ) => Promise<z.output<typeof LegionEmptyResponse>>;
+  /** The owner's `complete_step` (contract 227): its report of a step of its own issue's running
+   * task whose key is owner, or of that task's retro where the retro is the owner's, held to the
+   * rules of that place's completion. */
+  readonly completeStep: (
+    input: z.input<typeof LegionCompleteStepRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
   readonly rootClose: (
     input: z.input<typeof LegionRootCloseRequest>
@@ -724,6 +731,8 @@ export function createLegionDaemonClient(
       post("/legion/v1/phase/retry", LegionPhaseRetryRequest, LegionEmptyResponse, input),
     signOff: (input) =>
       post("/legion/v1/signoff", LegionSignOffRequest, LegionEmptyResponse, input),
+    completeStep: (input) =>
+      post("/legion/v1/steps/complete", LegionCompleteStepRequest, LegionEmptyResponse, input),
     rootClose: (input) =>
       post("/legion/v1/roots/close", LegionRootCloseRequest, LegionEmptyResponse, input),
     childPark: (input) =>

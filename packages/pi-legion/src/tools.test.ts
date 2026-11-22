@@ -105,6 +105,7 @@ function recordingDaemon(options: {
     "phaseBackward",
     "phaseRetry",
     "signOff",
+    "completeStep",
     "rootClose",
     "childPark",
     "childRerun",
@@ -296,8 +297,22 @@ const SIGN_OFF_TERMS = {
   ],
 } as const;
 
-/** The text of the description after `sign_off`'s. */
-const OMP_LEGION_TOOL_DESCRIPTION_AFTER_SIGN_OFF =
+/** `complete_step`'s part of the description, which follows `sign_off`'s, by its terms: it opens
+ * with the tool's name and its fields, says what `step` names, and names each refusal code its
+ * text gives. */
+const COMPLETE_STEP_TERMS = {
+  opens: "complete_step (issue, step, summary, ",
+  names: [
+    "1 for the first step, 0 for the retro",
+    "owner-step notice",
+    "dispatch handoff-write",
+    "(NOT_THE_OWNER)",
+    "(OWNER_STEP_NOT_RUNNING",
+  ],
+} as const;
+
+/** The text of the description after `complete_step`'s. */
+const OMP_LEGION_TOOL_DESCRIPTION_AFTER_COMPLETE_STEP =
   "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
   "Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer. " +
   "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
@@ -392,24 +407,30 @@ const toolFor = (active: LegionToolSession) =>
     session: () => active,
   });
 
-test("the legion tool's description is the exact text Oh My Pi agents read, for every session, and names stop_task's and sign_off's terms", () => {
+test("the legion tool's description is the exact text Oh My Pi agents read, for every session, and names stop_task's, sign_off's and complete_step's terms", () => {
   for (const active of EVERY_SESSION) {
     const description = toolFor(active).description;
     const before = OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK;
-    const after = OMP_LEGION_TOOL_DESCRIPTION_AFTER_SIGN_OFF;
+    const after = OMP_LEGION_TOOL_DESCRIPTION_AFTER_COMPLETE_STEP;
     expect(description.slice(0, before.length)).toBe(before);
     expect(description.slice(description.length - after.length)).toBe(after);
     const held = description.slice(before.length, description.length - after.length);
     const signOffAt = held.indexOf(SIGN_OFF_TERMS.opens);
     expect(signOffAt).toBeGreaterThan(0);
     const stopTask = held.slice(0, signOffAt);
-    const signOff = held.slice(signOffAt);
+    const completeStepAt = held.indexOf(COMPLETE_STEP_TERMS.opens);
+    expect(completeStepAt).toBeGreaterThan(signOffAt);
+    const signOff = held.slice(signOffAt, completeStepAt);
+    const completeStep = held.slice(completeStepAt);
     expect(stopTask.startsWith(STOP_TASK_TERMS.opens)).toBe(true);
     for (const term of STOP_TASK_TERMS.names) {
       expect(stopTask).toContain(term);
     }
     for (const term of SIGN_OFF_TERMS.names) {
       expect(signOff).toContain(term);
+    }
+    for (const term of COMPLETE_STEP_TERMS.names) {
+      expect(completeStep).toContain(term);
     }
   }
 });
@@ -430,6 +451,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "request_backward_move",
         "retry_or_escalate",
         "sign_off",
+        "complete_step",
         "close_root",
         "park_child",
         "rerun_child",
@@ -454,11 +476,15 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "register_gate's document for the step it registers, and register_plan's plan: its artifact id, slug, or filename, as a dispatch command's --artifact takes it",
     },
     version: { type: "number" },
+    // register_gate's design-gate step, or complete_step's place of a step in the issue's task;
+    // zod renders the whole number's open upper bound as the largest safe integer.
     step: {
-      type: "string",
-      enum: ["decisions", "criteria", "spec"],
+      anyOf: [
+        { type: "string", enum: ["decisions", "criteria", "spec"] },
+        { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+      ],
       description:
-        "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes the registration without it",
+        "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes the registration without it. complete_step's step: the place in your issue's task of the step you report, 1 for its first, or 0 for the task's retro",
     },
     issues: { type: "array", items: { type: "string" } },
     task: {
@@ -1012,6 +1038,210 @@ test("a workflow refusal tells the agent both its code and message", async () =>
     isError: true,
     details: {},
   });
+});
+
+// The owner reports a step of its own with complete_step: the step of its issue's running task
+// whose key is owner, named by its place (0 for the retro), with what that step's role would
+// report. The tool posts exactly the call's fields under the daemon's names, beside the report the
+// place's role would carry (`handoffReport`, of the issue's phase and the role that place runs
+// as), which is empty here; without issue it is refused as sign_off is, posting nothing.
+test("complete_step posts the owner's report of its own step, and refuses a call without issue as sign_off does", async () => {
+  const state = { issues: { "LEGION-208": { key: "LEGION-208", phase: "testing" } } };
+  const { calls, daemon } = recordingDaemon({ state });
+  const asked: Array<readonly [LegionPhase, LegionStepRole]> = [];
+  const tool = createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: () => undefined,
+    onUpdateAnswered: () => undefined,
+    handoffReport: async (phase, role) => {
+      asked.push([phase, role]);
+      return {};
+    },
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => claimSession("architect"),
+  });
+  await expect(
+    tool.execute(
+      "",
+      {
+        op: "complete_step",
+        issue: "LEGION-208",
+        step: 1,
+        summary: "The suite passes.",
+        verdict: "pass",
+      },
+      undefined,
+      undefined,
+      context()
+    )
+  ).resolves.toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
+  expect(asked).toEqual([["testing", "tester"]]);
+  expect(calls.at(-1)).toEqual([
+    "completeStep",
+    {
+      grantId: "grant-208",
+      issue: "LEGION-208",
+      step: 1,
+      summary: "The suite passes.",
+      verdict: "pass",
+    },
+  ]);
+
+  const before = calls.length;
+  for (const [op, parameters] of [
+    ["complete_step", { step: 1, summary: "The suite passes.", verdict: "pass" }],
+    ["sign_off", {}],
+  ] as const) {
+    await expect(
+      tool.execute("", { op, ...parameters }, undefined, undefined, context())
+    ).resolves.toEqual({
+      content: [{ type: "text", text: `${op} requires issue` }],
+      details: {},
+      isError: true,
+    });
+  }
+  expect(calls).toHaveLength(before);
+});
+
+// What the owner's report carries beside the call's own fields is what a completion by the role
+// of the place it reports would carry: the report of the issue's phase and that role, the
+// implementer at the owner's retro, acceptance at its acceptance, and the issue's `stepRole` at a
+// step of a role of the deployment; a phase no step runs in asks for no report, and the daemon
+// says where the task stands. Everything the daemon would refuse for the call's own shape is
+// refused here, posting nothing: another issue than the session's own, a step that is not a whole
+// number of 0 or more, a pending verdict, return_to without fail, and half a rating.
+test("complete_step carries the report of the role its place runs as, and refuses a malformed call before any mint", async () => {
+  const commit = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+  const cases: ReadonlyArray<
+    readonly [
+      Record<string, unknown>,
+      Record<string, unknown>,
+      Record<string, unknown>,
+      readonly [LegionPhase, LegionStepRole] | undefined,
+    ]
+  > = [
+    [
+      { phase: "implementing" },
+      { step: 1, summary: "Built it." },
+      { step: 1, summary: "Built it.", commit, handoffId: "h-1", handoffVersion: 2 },
+      ["implementing", "implementer"],
+    ],
+    [
+      { phase: "retro" },
+      { step: 0, summary: "Retro done.", plan_rating: 4, plan_reason: "The plan fit." },
+      { step: 0, summary: "Retro done.", commit, planRating: 4, planReason: "The plan fit." },
+      ["retro", "implementer"],
+    ],
+    [
+      { phase: "accepting" },
+      { step: 3, summary: "A requirement is unmet.", verdict: "fail", return_to: 1 },
+      { step: 3, summary: "A requirement is unmet.", verdict: "fail", commit, returnTo: 1 },
+      ["accepting", "acceptance"],
+    ],
+    [
+      { phase: "step", stepRole: "checker" },
+      { step: 2, summary: "Checked.", verdict: "pass" },
+      { step: 2, summary: "Checked.", verdict: "pass", commit },
+      ["step", "checker"],
+    ],
+    [
+      { phase: "held" },
+      { step: 2, summary: "Checked." },
+      { step: 2, summary: "Checked." },
+      undefined,
+    ],
+  ];
+  for (const [record, parameters, posted, report] of cases) {
+    const state = { issues: { "LEGION-208": { key: "LEGION-208", ...record } } };
+    const { calls, daemon } = recordingDaemon({ state });
+    const asked: Array<readonly [LegionPhase, LegionStepRole]> = [];
+    const result = await createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: async (phase, role) => {
+        asked.push([phase, role]);
+        return role === "implementer" && phase === "implementing"
+          ? { commit, handoffId: "h-1", handoffVersion: 2 }
+          : { commit };
+      },
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => claimSession("architect"),
+    }).execute(
+      "",
+      { op: "complete_step", issue: "LEGION-208", ...parameters },
+      undefined,
+      undefined,
+      context()
+    );
+    expect(result, JSON.stringify(record)).toEqual({
+      content: [{ type: "text", text: "{}" }],
+      details: {},
+    });
+    expect(asked).toEqual(report === undefined ? [] : [report]);
+    expect(calls.at(-1)).toEqual([
+      "completeStep",
+      { grantId: "grant-208", issue: "LEGION-208", ...posted },
+    ]);
+  }
+
+  const { calls, daemon } = recordingDaemon({
+    state: { issues: { "LEGION-208": { key: "LEGION-208", phase: "testing" } } },
+  });
+  const tool = createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: () => undefined,
+    onUpdateAnswered: () => undefined,
+    handoffReport: noHandoffReport,
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => claimSession("architect", "LEGION-209"),
+  });
+  const call = { op: "complete_step", issue: "LEGION-209", step: 1, summary: "Done." };
+  for (const [parameters, refusal] of [
+    [
+      { issue: "LEGION-208" },
+      "complete_step reports a step of LEGION-209, the issue this session is the architect of; LEGION-208's steps are its own architect's",
+    ],
+    [
+      { step: "spec" },
+      "complete_step's step is a whole number of 0 or more: the place of the step you report in your issue's task, 1 for its first, or 0 for the retro",
+    ],
+    [
+      { step: -1 },
+      "complete_step's step is a whole number of 0 or more: the place of the step you report in your issue's task, 1 for its first, or 0 for the retro",
+    ],
+    [{ verdict: "pending" }, "complete_step's verdict is pass or fail"],
+    [
+      { verdict: "pass", return_to: 1 },
+      "complete_step names return_to without the verdict fail: only the report of a step that failed names the step its task returns to; send it again without return_to",
+    ],
+    [
+      { plan_rating: 3 },
+      "complete_step names plan_rating without plan_reason: send the rating of the plan with one sentence of why, the two together",
+    ],
+    [
+      { plan_reason: "It fit." },
+      "complete_step names plan_reason without plan_rating: send the reason with the rating of the plan, a whole number from 1 to 5, the two together",
+    ],
+    [
+      { note: "x" },
+      'complete_step does not accept field "note"; it takes issue, step, summary, verdict, return_to, plan_rating, plan_reason',
+    ],
+  ] as const) {
+    await expect(
+      tool.execute("", { ...call, ...parameters }, undefined, undefined, context())
+    ).resolves.toEqual({ content: [{ type: "text", text: refusal }], details: {}, isError: true });
+  }
+  expect(calls).toEqual([]);
 });
 
 test("register_gate takes the document reference the Dispatch tools take, and registers its id", async () => {
