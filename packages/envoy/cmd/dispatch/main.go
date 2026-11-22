@@ -1407,12 +1407,25 @@ func agentSecretsURLRefusal(raw string) error {
 }
 
 // gitHubAPIBaseRefusal is why raw, DISPATCH_GITHUB_API_BASE's value, is refused, or nil: one
-// credentialURLRefusal refuses. The GitHub App client builds every request on it and names the
-// request's URL in its own words on a failed call (githubapp's `<method> <target>: …`), password
-// and all, which reaches the 502 of the App installation route, a CI check's detail and the
-// GitHub read record /healthz serves. The server and redeliver-webhooks each read it.
+// credentialURLRefusal refuses, and one that is no absolute http(s) URL with a host, named through
+// redact.URL, as ENVOY_URL's shape refusal is. credentialURLRefusal reads only a value net/url
+// parses as a URL with an authority, so the shape check refuses what it cannot read: a value that
+// does not parse (an unencoded "%" or a space in its password), and one with no "//" after its
+// scheme (`ghuser:<token>@ghe.example/api/v3`, read as the scheme `ghuser` and an opaque rest). The
+// GitHub App client builds every request on the base and names the request's URL in its own
+// words on a failed call (githubapp's `<method> <target>: …`), password and all, which reaches
+// the 502 of the App installation route, a CI check's detail and the GitHub read record /healthz
+// serves. The server and redeliver-webhooks each read it. A base with a path (GitHub Enterprise's
+// `/api/v3`) loads.
 func gitHubAPIBaseRefusal(raw string) error {
-	return credentialURLRefusal("DISPATCH_GITHUB_API_BASE", "the GitHub API's base URL", raw)
+	if err := credentialURLRefusal("DISPATCH_GITHUB_API_BASE", "the GitHub API's base URL", raw); err != nil {
+		return err
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("DISPATCH_GITHUB_API_BASE=%q (expected an absolute http(s) URL with a host)", redact.URL(raw))
+	}
+	return nil
 }
 
 // resolveBootConfig is the server's configuration from what the settings table read (env),

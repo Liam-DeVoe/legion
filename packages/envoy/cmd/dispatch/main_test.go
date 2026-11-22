@@ -1970,29 +1970,24 @@ const devSignInOrigin = "http://127.0.0.1:8799"
 
 // With the flag a loopback client acts as any person it names, and a person can have the App probe
 // and import any repository it is installed on, so an App private key from the environment may
-// sign calls only to a loopback host. The refusal quotes the base through redact.URL: a plain
-// http(s) URL as written, and anything else as redact.NotPrinted. A base with user info, a query
-// or a fragment never reaches it: boot refuses those by the setting alone
-// (TestDispatchsURLSettingsRefuseACredentialByTheSettingAlone). One that does not parse does, and
-// a made-up token written into it prints in no refusal.
+// sign calls only to a loopback host. The refusal quotes the base through redact.URL, which
+// prints a plain http(s) URL as written. A base with user info, a query or a fragment, and one
+// that is no absolute http(s) URL with a host (one that does not parse among them), never reaches
+// it: boot refuses each by the setting alone (TestDispatchsURLSettingsRefuseACredentialByTheSettingAlone,
+// TestGitHubAPIBaseRefusesAValueThatIsNoHTTPURL).
 func TestDevSignInRefusesAnAppKeyThatReachesGitHub(t *testing.T) {
 	withKey := &auth.AppConfig{ClientID: "Iv1.app", PEM: "app private key"}
 	fromEnv := appCredentialSource{}
-	const token = "madeUpGitHubToken0123"
 	// Unset, the App calls https://api.github.com.
 	for base, shown := range map[string]string{
-		"":                                    "",
-		"https://api.github.com":              "https://api.github.com",
-		"http://10.0.0.5:9022":                "http://10.0.0.5:9022",
-		"https://ghe invalid/api/v3/" + token: redact.NotPrinted,
+		"":                               "",
+		"https://api.github.com":         "https://api.github.com",
+		"http://10.0.0.5:9022":           "http://10.0.0.5:9022",
+		"https://ghe.example.com/api/v3": "https://ghe.example.com/api/v3",
 	} {
 		err := devSignInLoadedFence(devSignInBoot(t, map[string]string{"DISPATCH_GITHUB_API_BASE": base}), devSignInOrigin, withKey, fromEnv)
 		if err == nil || !strings.Contains(err.Error(), "DISPATCH_GITHUB_API_BASE="+strconv.Quote(shown)) || !strings.Contains(err.Error(), "DISPATCH_APP_PEM_B64") {
 			t.Errorf("DISPATCH_GITHUB_API_BASE=%q: err = %v, want a refusal naming DISPATCH_GITHUB_API_BASE=%q and DISPATCH_APP_PEM_B64", base, err, shown)
-			continue
-		}
-		if strings.Contains(err.Error(), token[:10]) {
-			t.Errorf("the refusal %q holds part of the token", err)
 		}
 	}
 	// The e2e harness points the App at its fake GitHub on 127.0.0.1 (packages/dispatch/e2e/run-server.sh).
