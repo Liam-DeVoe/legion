@@ -527,12 +527,13 @@ func storedInputsOf(head PullRequestHead) storedInputs {
 // none: the next pass is handed the old row's key again and re-keys it again, while losing the
 // row would leave the pull request unknown until another event arrived.
 //
-// The delete carries the heads the pull request left while open under the old name
-// (pull_request_former_heads, which the delete's trigger drops for the old key), and the old row's
-// head where it is another than the canonical row's, to the canonical name, where that row is
-// open, in the delete's own statement: they are heads of the same pull request, which the check
-// states settler keeps computing while it stays open, and no other write knows the two names are
-// one pull request.
+// The delete carries the heads the pull request left while open under the old name, and the old
+// row's head where it is another than the canonical row's, to the canonical name, where that row
+// is open: they are heads of the same pull request, which the check states settler keeps computing
+// while it stays open. The delete's own trigger does it (pull_request_former_heads_keep, migration
+// 20261122042244), in the delete's transaction with both rows locked, so a head write to either
+// row and a close of the canonical one are ordered with the carry, and a delete the release before
+// this one makes, which carries nothing itself, carries them too.
 func upsertHeadUnderCanonicalName(
 	ctx context.Context, pool *store.Pool, broker *events.Broker, head PullRequestHead, storedUnder string,
 ) error {
@@ -542,22 +543,7 @@ func upsertHeadUnderCanonicalName(
 	if strings.EqualFold(storedUnder, head.Repo) {
 		return nil
 	}
-	if _, err := pool.Exec(ctx, `
-		with canonical as (
-			select head_sha from pull_request_heads where repo = $3 and number = $2 and state = 'open'
-		), carried as (
-			insert into pull_request_former_heads (repo, number, head_sha, left_at)
-			select $3, $2, kept.head_sha, kept.left_at
-			from (
-				select head_sha, left_at from pull_request_former_heads where repo = $1 and number = $2
-				union all
-				select head_sha, now() from pull_request_heads where repo = $1 and number = $2 and state = 'open'
-			) as kept, canonical
-			where kept.head_sha <> canonical.head_sha
-			on conflict (repo, number, head_sha) do nothing
-		)
-		delete from pull_request_heads where repo = $1 and number = $2
-	`, storedUnder, head.Number, head.Repo); err != nil {
+	if _, err := pool.Exec(ctx, `delete from pull_request_heads where repo = $1 and number = $2`, storedUnder, head.Number); err != nil {
 		return fmt.Errorf("drop the head of %s#%d, now %s#%d: %w", storedUnder, head.Number, head.Repo, head.Number, err)
 	}
 	return nil
