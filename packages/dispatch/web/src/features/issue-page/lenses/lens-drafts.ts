@@ -22,7 +22,7 @@ import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
  */
 
 /** One chip that names another node of the tree: a lens, a check or a constraint, and in a fact
- *  line's parts (`LensFacts.factParts`) a lens, a risk, a constraint or a finding. */
+ *  line's parts (`FactParts`) a lens, a risk, a constraint or a finding. */
 export interface LensChip {
   /** The target's `dispatch://` address, as its own row carries it, but a check's id in the tree
    *  read where the read gives the check no address (`TreeDraftContext.referenceOf`). */
@@ -49,30 +49,39 @@ export interface LensPlace {
   readonly id?: string;
 }
 
-/** The lens facts of one node. A list with nothing in it draws no line. */
+/** The lens facts of one node. A list with nothing in it draws no line. A fact line - a risk's
+ *  early warning and prevention, a standard's reference, where a measurement was taken - is held
+ *  once, as `storedFacts` stores it: its words, or, where they name a lens, a risk, a constraint
+ *  or a finding the tree read holds, its parts (`FactParts`), which link each name to that node's
+ *  row. Either way `factText` gives its words. */
 export interface LensFacts {
   /** A lens: its kind's words, as the `lens_kind` node holds them. */
   readonly kind?: string;
   readonly triggeredBy: readonly LensChip[];
   readonly triggered: readonly LensChip[];
-  readonly earlyWarning?: string;
-  readonly prevention?: string;
+  readonly earlyWarning?: string | FactParts;
+  readonly prevention?: string | FactParts;
   readonly preventedBy: readonly LensChip[];
   readonly constrainedBy: readonly LensChip[];
   /** A standard's reference. */
-  readonly reference?: string;
+  readonly reference?: string | FactParts;
   /** Where a measurement was taken. */
-  readonly takenWhere?: string;
-  /** The parts of each fact line whose words name a lens, a risk, a constraint or a finding the
-   *  tree read holds, set only for such a line: its text, and a chip for each name, which links
-   *  that node's row. Joined, a line's parts are its words. */
-  readonly factParts?: Partial<Record<StoredFact, FactParts>>;
+  readonly takenWhere?: string | FactParts;
   /** A lens: every lens of the tree, by its address. */
   readonly lenses?: ReadonlyMap<string, LensPlace>;
 }
 
 /** A fact line's words in parts: plain text, and a chip for each node it names. */
 export type FactParts = readonly (string | LensChip)[];
+
+/** A fact line's words (`LensFacts`), the one rule that joins them: a string is its own words,
+ *  and parts are joined with nothing between them, each string as its text and each chip as its
+ *  `words`, as `LensLines.tsx`'s `FactWords` draws them. */
+export function factText(line: string | FactParts): string {
+  return typeof line === "string"
+    ? line
+    : line.map((part) => (typeof part === "string" ? part : part.words)).join("");
+}
 
 /** A kind's words with their first letter in capitals, as a lens's tag and a chip that names a
  *  lens draw them. A chain entry and a menu item draw the words as the node holds them. */
@@ -89,9 +98,9 @@ export function lensChipWords(kind: string | undefined): Pick<LensChip, "chrome"
     : { chrome: true, words: chipWords(kindWords(NODE_TYPE_NAMES.lens)) };
 }
 
-/** Whether a stored string has words to draw. */
-export function filled(text: string | undefined): text is string {
-  return text !== undefined && text !== "";
+/** Whether a stored string, or a fact line, has words to draw (`factText`). */
+export function filled<Line extends string | FactParts>(line: Line | undefined): line is Line {
+  return line !== undefined && factText(line) !== "";
 }
 
 /** The four kinds `lensDrafts` draws, as the tree names them. */
@@ -160,30 +169,20 @@ export function storedRowWords(node: TreeAnswerNode, type: "lens" | "risk"): str
 }
 
 /** The fact lines of `node`, of kind `type`, whose words one stored attribute holds
- *  (`STORED_WORDS`): each one its rule draws, read by `read`, where its words are not empty. A
- *  line `read` answers in parts has those parts joined as its words, and the parts beside them
- *  (`factParts`). */
+ *  (`STORED_WORDS`): each one its rule draws, as `read` answers it - its words, or its parts where
+ *  it names a node - where its words (`factText`) are not empty. */
 export function storedFacts(
   node: TreeAnswerNode,
   type: LensType,
   read: (markdown: string) => string | FactParts = plainWords
-): Partial<Pick<LensFacts, StoredFact | "factParts">> {
-  const facts: { [fact in StoredFact]?: string } = {};
-  let factParts: { [fact in StoredFact]?: FactParts } | undefined;
+): Partial<Pick<LensFacts, StoredFact>> {
+  const facts: { [fact in StoredFact]?: string | FactParts } = {};
   for (const stored of STORED_WORDS) {
     if (stored.type !== type || stored.drawn?.(node) === false) continue;
     const line = read(node.attributes?.[stored.attribute] ?? "");
-    const words =
-      typeof line === "string"
-        ? line
-        : line.map((part) => (typeof part === "string" ? part : part.words)).join("");
-    if (words === "") continue;
-    facts[stored.fact] = words;
-    if (typeof line === "string") continue;
-    factParts ??= {};
-    factParts[stored.fact] = line;
+    if (factText(line) !== "") facts[stored.fact] = line;
   }
-  return factParts === undefined ? facts : { ...facts, factParts };
+  return facts;
 }
 
 /**

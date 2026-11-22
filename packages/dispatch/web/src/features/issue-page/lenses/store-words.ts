@@ -21,6 +21,7 @@ import {
   constraintRuns,
   constraintWords,
   type FactParts,
+  factText,
   kindOf,
   type LensChip,
   type LensType,
@@ -278,7 +279,7 @@ function nameLine(draft: Draft, runs: DisplayTree[] | undefined): void {
  * those of a string that names nothing its plain words (`plainRuns`), each only where it names
  * one; and each fact line by the rule `lensDrafts` reads them by (`storedFacts`), as `factWords`
  * reads it: its words, which for a line that names nothing are the plain words `lensDrafts`
- * wrote, and its parts where it names a node the index holds, so the line links the names. A
+ * wrote, or its parts where it names a node the index holds, so the line links the names. A
  * node none of whose attributes holds a `dispatch://` span (`cites`) names nothing, so it is
  * left as `lensDrafts` drafted it.
  */
@@ -307,11 +308,12 @@ function nameStored(
 }
 
 /**
- * A fact line's words read from the stored string `raw` with each store address in them named:
- * its plain words (`plainWords`) where it names nothing, and else its named reading's words
- * (`lineRuns`). Where that reading names a node the index holds, the line is answered as its
- * runs instead: each run with a name's link a chip of the node - its store address, the run's
- * words and its read id, so the chip links its row - and every other run its text.
+ * A fact line read from the stored string `raw` with each store address in it named, as
+ * `LensFacts` holds it: its plain words (`plainWords`) where it names nothing, and else its named
+ * reading's words (`lineRuns`), its runs joined (`factText`). Where that reading names a node the
+ * index holds, the line is answered as its runs instead, its parts: each run with a name's link a
+ * chip of the node - its store address, the run's words and its read id, so the chip links its
+ * row - and every other run its text.
  */
 function factWords(raw: string, index: () => StoreIndex): string | FactParts {
   const runs = lineRuns(raw, index, addressesAsShortForms);
@@ -325,7 +327,7 @@ function factWords(raw: string, index: () => StoreIndex): string | FactParts {
       ? text
       : { address, id: named.id, words: text };
   });
-  return parts.some((part) => typeof part !== "string") ? parts : wordsOf(lineOf(runs));
+  return parts.some((part) => typeof part !== "string") ? parts : factText(parts);
 }
 
 /**

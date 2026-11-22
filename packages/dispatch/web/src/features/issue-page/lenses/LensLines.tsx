@@ -21,10 +21,11 @@ export type LineName = keyof typeof LENS_WORDS | "kind" | "reference";
  * - a constraint: a standard's reference, or where a measurement was taken.
  *
  * With `body` the row also draws a lens's kind's words whole, which its tag cuts, and a risk's
- * prevention. Each label is the page's, from `LENS_WORDS`; each stored string is the author's. A
- * fact line that names a lens, a risk, a constraint or a finding the tree read holds draws that
- * name as a link to the node's row, as a chip is drawn (`LensFacts.factParts`). The lines are
- * small and quiet, as the row's parent line is, and the words in them wrap.
+ * prevention. Each label is the page's, from `LENS_WORDS`; each stored string is the author's.
+ * Each fact line is drawn as its one field holds it (`LensFacts`), so a line that names a lens, a
+ * risk, a constraint or a finding the tree read holds draws that name as a link to the node's
+ * row, as a chip is drawn (`FactWords`). The lines are small and quiet, as the row's parent line
+ * is, and the words in them wrap.
  */
 export function LensLines({
   body,
@@ -65,17 +66,14 @@ export function LensLines({
     if (filled(lens.earlyWarning)) {
       lines.push(
         <Line key="early_warning" line="early_warning">
-          <FactWords
-            tabStops={tabStops}
-            words={lens.factParts?.earlyWarning ?? lens.earlyWarning}
-          />
+          <FactWords tabStops={tabStops} words={lens.earlyWarning} />
         </Line>
       );
     }
     if (body && filled(lens.prevention)) {
       lines.push(
         <Line key="prevention" line="prevention">
-          <FactWords tabStops={tabStops} words={lens.factParts?.prevention ?? lens.prevention} />
+          <FactWords tabStops={tabStops} words={lens.prevention} />
         </Line>
       );
     }
@@ -101,13 +99,13 @@ export function LensLines({
     if (filled(lens.reference)) {
       lines.push(
         <Line key="reference" line="reference">
-          <FactWords tabStops={tabStops} words={lens.factParts?.reference ?? lens.reference} />
+          <FactWords tabStops={tabStops} words={lens.reference} />
         </Line>
       );
     } else if (filled(lens.takenWhere)) {
       lines.push(
         <Line key="taken_at" line="taken_at">
-          <FactWords tabStops={tabStops} words={lens.factParts?.takenWhere ?? lens.takenWhere} />
+          <FactWords tabStops={tabStops} words={lens.takenWhere} />
         </Line>
       );
     }
@@ -143,10 +141,11 @@ function Words({ children }: { children: ReactNode }): ReactNode {
   );
 }
 
-/** A fact line's words, drawn as `Words`: its stored string, or, where the line names a node the
- *  tree read holds, its parts (`LensFacts.factParts`), which are the same words: each string as
- *  text, and each chip as a link to that node's row (`NodeLink`), as a line's chips are, but
- *  wrapping inside the line, since a name keeps its author's whole words. */
+/** A fact line, drawn as `Words`, as its one `LensFacts` field holds it: its words, or, where the
+ *  line names a node the tree read holds, its parts (`FactParts`): each string as text, and each
+ *  chip as a link to that node's row (`NodeLink`), as a line's chips are, but wrapping inside the
+ *  line, since a name keeps its author's whole words. Drawn so, the parts read as their words
+ *  (`factText`). */
 function FactWords({
   tabStops,
   words,

@@ -27,7 +27,7 @@ import {
 import { type TreeWords, treeDraftsFrom } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 import { check } from "../verification-filter/verification-fixtures";
-import { kindWords, type LensFacts } from "./lens-drafts";
+import { type FactParts, kindWords, type LensFacts } from "./lens-drafts";
 import { lensReadId } from "./lens-reads";
 
 /**
@@ -214,6 +214,15 @@ function factsOf(row: TreeNode): LensFacts {
   return row.lens;
 }
 
+/** A fact line's words as its row draws them: a string as it stands, and parts joined with
+ *  nothing between them, each string as its text and each chip as its words alone; `""` for a
+ *  line the row does not carry. */
+function lineText(line: string | FactParts | undefined): string {
+  if (line === undefined) return "";
+  if (typeof line === "string") return line;
+  return line.map((part) => (typeof part === "string" ? part : part.words)).join("");
+}
+
 /** The lens facts of a node that carries no chip and no fact of its own. */
 const NO_FACTS = { constrainedBy: [], preventedBy: [], triggered: [], triggeredBy: [] };
 
@@ -388,7 +397,7 @@ test("a lens's, a risk's and a finding's words draw no address of a lens, a risk
     )
   );
   const drawnWords = {
-    earlyWarning: factsOf(rowOf(root, risk)).earlyWarning ?? "",
+    earlyWarning: lineText(factsOf(rowOf(root, risk)).earlyWarning),
     finding: lineWords(rowOf(root, `${lensId}#first`)),
     heading: rowOf(root, risk).text,
     verdict: rowOf(root, lensId).text,
@@ -552,7 +561,7 @@ test("a statement's and an early warning's words read a constraint they cite by 
   );
   const statement = rowOf(root, blockNodeId("spec", "r1"));
 
-  expect([lineWords(statement), factsOf(rowOf(root, "risk-1")).earlyWarning]).toEqual([
+  expect([lineWords(statement), lineText(factsOf(rowOf(root, "risk-1")).earlyWarning)]).toEqual([
     "Answer as RFC 9110 says.",
     "A reply breaks RFC 9110 first.",
   ]);
@@ -561,12 +570,12 @@ test("a statement's and an early warning's words read a constraint they cite by 
   ]);
 });
 
-// A risk's fact lines that name a node the answer holds carry their parts beside their words: the
-// text, and a chip for each name, which holds the node's address, the words the line names it by
-// and its read id, so the line links its row. An early warning's bare address of a constraint is
-// named by the constraint's words, and a prevention's author's link to a lens keeps the author's
-// words. Joined, the parts are the line's words, which stay as they were. A line that cites a node
-// the answer does not hold names it by its kind's word and carries no parts.
+// A risk's fact lines that name a node the answer holds are their parts: the text, and a chip for
+// each name, which holds the node's address, the words the line names it by and its read id, so
+// the line links its row. An early warning's bare address of a constraint is named by the
+// constraint's words, and a prevention's author's link to a lens keeps the author's words. Joined,
+// the parts are the line's words, which stay as they were. A line that cites a node the answer
+// does not hold names it by its kind's word and is its words, with no parts.
 test("a risk's fact lines that name a node the answer holds carry a chip of that node", () => {
   const constraint = "e5000000-0000-4000-8000-000000000005";
   const toConstraint = `dispatch://constraint/${constraint}`;
@@ -598,12 +607,12 @@ test("a risk's fact lines that name a node the answer holds carry a chip of that
   const named = factsOf(rowOf(root, "risk-1"));
   const unheld = factsOf(rowOf(root, "risk-2"));
 
-  expect([named.earlyWarning, named.prevention, unheld.earlyWarning]).toEqual([
+  expect([named.earlyWarning, named.prevention, unheld.earlyWarning].map(lineText)).toEqual([
     "A reply breaks RFC 9110 first.",
     "Run this lens again.",
     "Watch risk closely.",
   ]);
-  expect(named.factParts).toEqual({
+  expect({ earlyWarning: named.earlyWarning, prevention: named.prevention }).toEqual({
     earlyWarning: [
       "A reply breaks ",
       { address: toConstraint, id: constraint, words: "RFC 9110" },
@@ -611,7 +620,7 @@ test("a risk's fact lines that name a node the answer holds carry a chip of that
     ],
     prevention: ["Run ", { address: toLens, id: FIRST, words: "this lens" }, " again."],
   });
-  expect(unheld.factParts).toBeUndefined();
+  expect(typeof unheld.earlyWarning, "a line that names no held node has no parts").toBe("string");
 });
 
 // A risk the answer does not hold has no row to link and no words to read: its address reads as
@@ -1150,7 +1159,7 @@ test("an early warning's author's link whose words carry a mark is one chip", ()
     )
   );
 
-  expect(factsOf(rowOf(root, "risk-1")).factParts?.earlyWarning).toEqual([
+  expect(factsOf(rowOf(root, "risk-1")).earlyWarning).toEqual([
     "A reply breaks ",
     { address: held, id: constraint, words: "the HTTP rule" },
     " first.",
