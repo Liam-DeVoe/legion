@@ -1327,7 +1327,7 @@ func (m *sessionRelays) edgeWithholds(sessionID string, msg bus.SessionMessage) 
 	return edgeFrameVerdict(m.repositories, sessionID, projects, msg.Subject, msg.Data)
 }
 
-// acknowledgeWithheld acknowledges msg, a GitHub event the edge withholds from sessionID for
+// acknowledgeWithheld acknowledges msg, a frame the edge withholds from sessionID for
 // reason, undelivered, counts it and logs it: the consumer holds it no longer, and nothing else is
 // ever sent for it.
 func (m *sessionRelays) acknowledgeWithheld(sessionID string, msg bus.SessionMessage, reason string) {
