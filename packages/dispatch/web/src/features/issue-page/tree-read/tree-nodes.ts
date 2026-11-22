@@ -659,7 +659,7 @@ function draftAsk(
   madeBy(draft, node);
   draft.chips = tupleChips(node, "shaped", context);
   const askId = askIdOf(node, context);
-  if (askId !== undefined) draft.source = stableSourceOf("ask", askId);
+  if (askId !== undefined) draft.source = stableSourceOf(node, "ask", askId);
   if (ask === undefined) {
     draft.state = "open";
     return draft;
@@ -700,7 +700,7 @@ function draftTurn(
   if (node.supertag !== "comment" && node.supertag !== "message") return undefined;
   const draft = draftOf(node, node.supertag, context);
   madeBy(draft, node);
-  draft.source = stableSourceOf(node.supertag, node.id);
+  draft.source = stableSourceOf(node, node.supertag, node.id);
   return draft;
 }
 
@@ -754,7 +754,7 @@ function draftOf(node: TreeAnswerNode, type: NodeType, context: TreeDraftContext
   if (reading !== undefined) {
     draft.tree = reading;
     if (node.document !== undefined) {
-      draft.source = stableSourceOf("artifact", node.document.artifact_id);
+      draft.source = stableSourceOf(node, "artifact", node.document.artifact_id);
     }
   }
   return draft;

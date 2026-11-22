@@ -599,29 +599,30 @@ export function askState(ask: Ask): AskState | undefined {
   return words[token] === undefined ? undefined : (token as AskState);
 }
 
-/** Each record's text source, by its kind and then its id: `textSourceOf`'s, made once, so every
- *  build of the drafts hands a row the source object it handed it before, and the row's words are
- *  not drawn again for a source that only looks new. */
-const sources: { readonly [Kind in TextSource["kind"]]: Map<string, TextSource> } = {
-  artifact: new Map(),
-  ask: new Map(),
-  comment: new Map(),
-  message: new Map(),
-};
+/** Each record's text sources (`textSourceOf`), by the record they were made for and then by
+ *  their kind, since one record can name more than one: an ask block is its ask and a block of
+ *  its document. A re-read whose answer is unchanged keeps each record's object, so every build
+ *  of the drafts hands a row the source object it handed it before, and the row's words are not
+ *  drawn again for a source that only looks new; and a source goes when its record does. */
+const recordSources = new WeakMap<object, Map<TextSource["kind"], TextSource>>();
 
-/** The text source of record `id` of `kind` (`textSourceOf`), the one object `sources` holds; none
- *  where there is no id, as `textSourceOf` answers. */
+/** The text source of record `id` of `kind` (`textSourceOf`) for `record`, the record object the
+ *  caller holds: the one object `recordSources` holds for that record and kind, made again only
+ *  where `id` is not the one it was made with, since the reads an id is found through can change
+ *  while the record stays; none where there is no id, as `textSourceOf` answers. */
 export function stableSourceOf(
+  record: object,
   kind: TextSource["kind"],
   id: string | undefined
 ): TextSource | undefined {
   if (id === undefined) return undefined;
-  const byId = sources[kind];
-  let source = byId.get(id);
-  if (source === undefined) {
-    source = textSourceOf(kind, id);
-    if (source !== undefined) byId.set(id, source);
-  }
+  const byKind = recordSources.get(record);
+  const kept = byKind?.get(kind);
+  if (kept?.id === id) return kept;
+  const source = textSourceOf(kind, id);
+  if (source === undefined) return undefined;
+  if (byKind === undefined) recordSources.set(record, new Map([[kind, source]]));
+  else byKind.set(kind, source);
   return source;
 }
 
@@ -745,7 +746,7 @@ export function addDecisions(
     draft.reference = decision.ref;
     draft.replaced = decision.replaced;
     const own = stableDecisionContent(decision);
-    draft.source = stableSourceOf("artifact", decisionDocumentId(reads.issue, decision));
+    draft.source = stableSourceOf(decision, "artifact", decisionDocumentId(reads.issue, decision));
     draft.text = own.text;
     draft.tree = own.tree;
     // How the decision stands with the reader, drawn as this node's own state word and shape

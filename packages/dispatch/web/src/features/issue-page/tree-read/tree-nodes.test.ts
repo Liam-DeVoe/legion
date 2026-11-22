@@ -438,6 +438,34 @@ test("drawing the same answer twice hands a row the same reading and the same so
   expect(turnAgain?.source).toBe(turn?.source);
 });
 
+// A row's source lives as long as the record it was made for, so nothing holds a source for every
+// record the session ever drew: an answer holding a new record of an id, as a re-read whose record
+// changed does, hands its row a source of its own, never the one made for the record before.
+test("a new record of an id is handed a new source, not the one made for the record before", () => {
+  // Each build draws an answer of its own: the same records, each a new object.
+  const builds = Array.from(
+    { length: 2 },
+    () =>
+      drawn(
+        answer([
+          block("r1", "requirement", KEY, SPEC, 0, {
+            text_tree: typedReading("requirement", { blockId: "r1" }, "The first statement."),
+          }),
+          personsComment("c1", "r1", "2026-11-05T09:00:00Z"),
+        ])
+      ).drafts
+  );
+
+  const [row, again] = builds.map((drafts) => drafts.get(blockNodeId("spec", "r1")));
+  expect(again?.source).toEqual({ id: SPEC.id, kind: "artifact" });
+  expect(again?.source, "a new block is handed the old block's source").not.toBe(row?.source);
+  const [turn, turnAgain] = builds.map((drafts) => drafts.get("c1"));
+  expect(turnAgain?.source).toEqual({ id: "c1", kind: "comment" });
+  expect(turnAgain?.source, "a new comment is handed the old comment's source").not.toBe(
+    turn?.source
+  );
+});
+
 // A node's `author` lists every author of its first version, whoever made it first ahead of the
 // rest, and a row draws one name: a comment two authors wrote draws the first of them, and a
 // message whose list is empty draws none.
