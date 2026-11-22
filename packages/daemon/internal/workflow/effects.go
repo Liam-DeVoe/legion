@@ -454,7 +454,11 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, sent, entry, startMarks{stored: true})
+	agent, err := e.startClaim(issue, w, role)
+	if err != nil {
+		return err
+	}
+	return e.started(ctx, tx, issue, role, agent, sent, entry, startMarks{stored: true})
 }
 
 // reviveArchitect queues the start of the architect of issue, a child, when the store records its
@@ -571,13 +575,18 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, told(at), row.Entry, startMarks{resend: true, freshSession: freshSession})
+	agent, err := e.startClaim(issue, w, role)
+	if err != nil {
+		return err
+	}
+	return e.started(ctx, tx, issue, role, agent, told(at), row.Entry, startMarks{resend: true, freshSession: freshSession})
 }
 
-// SendOwedEntry sends role the work the entry of its phases row names, at that entry, for a claim
-// that is behind it. row is that row, read by the caller: the admission pass weighs the claim
-// against the entry it names and hands it here, so the row the rule was weighed against is the
-// row whose work is sent and the rows are read once (admit's owedEntryRoles).
+// SendOwedEntry sends role the work the entry of its phases row names, at that entry, for agent,
+// a claim that is behind it. row is that row, read by the caller: the admission pass weighs the
+// claim against the entry it names and hands both here, so the row the rule was weighed against is
+// the row whose work is sent, to the claim it was weighed for, and the rows are read once (admit's
+// owedEntryRoles).
 //
 // The row's EntryTask is that work: the text the transition composed and wrote in the same
 // transaction as the number it raised (enter), so it is sent as it stands.
@@ -591,8 +600,8 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // (resumeSlottedWorkers) and sweeps the claims left behind their role's entry: every other way
 // back into a phase is a transition with a task of its own. Its start carries no mark, which is
 // what a sweep's and a ready's start carry; a door that marks its start calls sendOwedEntry.
-func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow) error {
-	return e.sendOwedEntry(ctx, tx, issue, role, row, startMarks{})
+func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, agent claim.Token, row record.PhaseRow) error {
+	return e.sendOwedEntry(ctx, tx, issue, role, agent, row, startMarks{})
 }
 
 // sendOwedEntry is the body SendOwedEntry, the builder of the boot's resume by rule and of the
@@ -615,7 +624,7 @@ func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // sweep alone would otherwise reset a stuck tree's quiet time sixty times an hour, and the
 // measure would never reach the bound on the stop it most needs to see. It is set here, once,
 // rather than by each door, so no door can send an owed entry as news.
-func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow,
+func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, agent claim.Token, row record.PhaseRow,
 	marks startMarks) error {
 	task := row.EntryTask
 	marks.stored = task != ""
@@ -626,7 +635,7 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 		}
 	}
 	marks.reasserts = true
-	return e.started(ctx, tx, issue, role, task, row.Entry, marks)
+	return e.started(ctx, tx, issue, role, agent, task, row.Entry, marks)
 }
 
 // StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
@@ -654,7 +663,11 @@ func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue recor
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, sent, entry, startMarks{resumeTask: true, stored: true})
+	agent, err := e.startClaim(issue, w, role)
+	if err != nil {
+		return err
+	}
+	return e.started(ctx, tx, issue, role, agent, sent, entry, startMarks{resumeTask: true, stored: true})
 }
 
 // PromotedWorkerClaim is the claim StartPromotedWorker's start of role on issue reaches: the
@@ -753,14 +766,36 @@ type startMarks struct {
 // standing below it (repairSilence). A ready worker level with that row is given the phase's
 // resume task instead, and that one start is enqueued directly rather than built here, for the
 // reason StartOrOwe's own comment gives.
-func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, entry int64, marks startMarks) error {
+//
+// agent is the claim the start is queued for (record.SuperviseRequest.Claim), which each caller
+// holds: the claim of the step's agent its entry writes on the role's phases row (startClaim), or
+// the claim a rule weighed against that row. The outbox acts on that claim and fences the start
+// on it (record.StartLeft), so a start the task has left since finishes, or reaches the claim it
+// was queued for, and never the claim the role's row names by then. agent is empty only for an
+// issue whose key names no claims (recordsSteps), whose start the outbox gives its role's worker.
+func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, agent claim.Token, task string, entry int64,
+	marks startMarks) error {
 	move := newsOfTheIssue
 	if marks.reasserts {
 		move = reassertion
 	}
-	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
+	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Claim: agent, Task: task,
 		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
 		RoundNamed: marks.stored && namesTheRound(role), RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, e.now(), move)
+}
+
+// startClaim is the claim a start of role on issue is queued for, read on w, issue's walk: the
+// agent of the step issue stands in (stepToken), which the step's entry writes on the role's
+// phases row (enter), and role's own token where the walk holds no place for where issue stands.
+// An issue whose key names no claims (recordsSteps) has none.
+func (e *Engine) startClaim(issue record.Issue, w Walk, role claim.Role) (claim.Token, error) {
+	if !recordsSteps(issue) {
+		return "", nil
+	}
+	if place, ok := w.placeIn(record.StandsAt(issue)); ok {
+		return e.stepToken(issue, w, place, role)
+	}
+	return stepClaim(issue, issue.Key, role)
 }
 
 // movement says whether a start of a phase worker is news of its issue, which startOrOwe marks
@@ -1033,12 +1068,7 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 	row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack = verbatim, e.now(), movedBack
 	var agent claim.Token
 	if worker && recordsSteps(issue) {
-		if place, ok := w.placeIn(at); ok {
-			agent, err = e.stepToken(issue, *w, place, role)
-		} else {
-			agent, err = stepClaim(issue, issue.Key, role)
-		}
-		if err != nil {
+		if agent, err = e.startClaim(issue, *w, role); err != nil {
 			return 0, "", err
 		}
 		for _, other := range rows {

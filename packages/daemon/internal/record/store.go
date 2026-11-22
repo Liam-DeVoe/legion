@@ -2766,11 +2766,11 @@ func (s *Postgres) EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) e
 // OwedStarts is every pending worker start of project's issues that waits for its issue's
 // admission slot and that no live lease holds, oldest first by the pair the waiting line orders
 // them on (OwedStart), with the write mark of the write that last set each row's payload, the
-// role, phase and generation each row serves and the lease token it still carries. A row a lane
-// holds now is left out: its slot came, so it is neither waiting in the line nor safe for
-// admission's repair to finish. A row whose lease has lapsed is not that — the lane that held
-// it is gone and only a finished delivery removes a row — so it is listed, exactly as the
-// outbox's own due predicate lists it again (outboxUnleasedDue); left out, its issue would
+// role, phase and generation each row serves, the claim it names and the lease token it still
+// carries. A row a lane holds now is left out: its slot came, so it is neither waiting in the
+// line nor safe for admission's repair to finish. A row whose lease has lapsed is not that — the
+// lane that held it is gone and only a finished delivery removes a row — so it is listed, exactly
+// as the outbox's own due predicate lists it again (outboxUnleasedDue); left out, its issue would
 // stand in no part of the line and nothing would ever deliver or repair it.
 //
 // The lapse is judged against the database's own clock, the one moment a read with no caller's
@@ -2778,7 +2778,7 @@ func (s *Postgres) EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) e
 // daemon's clock, which the deployment keeps on the same time.
 func (s *Postgres) OwedStarts(ctx context.Context, tx pgx.Tx, project string) ([]OwedStart, error) {
 	rows, err := tx.Query(ctx, `select issue, created_at, id, write_mark, coalesce(payload->>'role', ''),
-			coalesce(payload->>'phase', ''), coalesce((payload->>'generation')::bigint, 0), lease_token
+			coalesce(payload->>'phase', ''), coalesce((payload->>'generation')::bigint, 0), coalesce(payload->>'claim', ''), lease_token
 		from outbox where kind = $1 and split_part(issue, '-', 1) = $2
 			and payload->>'op' = 'start' and payload->>'needsSlot' = 'true'
 			and (lease_until is null or lease_until <= now())
@@ -2791,7 +2791,7 @@ func (s *Postgres) OwedStarts(ctx context.Context, tx pgx.Tx, project string) ([
 	for rows.Next() {
 		var start OwedStart
 		if err := rows.Scan(&start.Issue, &start.CreatedAt, &start.ID, &start.WriteMark, &start.Role, &start.Phase,
-			&start.Generation, &start.LeaseToken); err != nil {
+			&start.Generation, &start.Claim, &start.LeaseToken); err != nil {
 			return nil, fmt.Errorf("list the starts %s owes its workers: %w", project, err)
 		}
 		owed = append(owed, start)
@@ -3514,13 +3514,15 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 	issues := make([]string, 0, len(keys))
 	seenIssues := make(map[string]struct{}, len(keys))
 	candidates := make(map[roleRunIdentity]claim.Token, len(keys))
+	asked := make(map[claim.Token]roleRunIdentity, len(keys))
 	for _, key := range keys {
 		if _, exists := runs[key.Token]; exists {
 			continue
 		}
 		runs[key.Token] = RoleRun{}
 		tokens = append(tokens, string(key.Token))
-		candidates[roleRunIdentity{issue: key.Issue, role: string(key.Role), generation: strconv.FormatUint(key.Generation, 10)}] = key.Token
+		identity := roleRunIdentity{issue: key.Issue, role: string(key.Role), generation: strconv.FormatUint(key.Generation, 10)}
+		candidates[identity], asked[key.Token] = key.Token, identity
 		if _, seen := seenIssues[key.Issue]; !seen {
 			seenIssues[key.Issue] = struct{}{}
 			issues = append(issues, key.Issue)
@@ -3543,11 +3545,21 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 			rows.Close()
 			return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
 		}
-		// A row that names a claim (SuperviseRequest.Claim) is that claim's alone: a keyed agent
-		// on a step of another role holds the role beside the role's own claim from an earlier
-		// version, and a start that names one is no queued run of the other.
-		token, wanted := candidates[roleRunIdentity{issue: row.Issue, role: role, generation: generation}]
-		if !wanted || (named != "" && named != string(token)) {
+		// A row that names a claim (SuperviseRequest.Claim) is that claim's alone, read as a run
+		// of that claim where keys ask for it at the row's issue, role and generation: every
+		// phase worker's start names the claim it was queued for, and two claims can hold one
+		// role — two agents of a role in one task, or a keyed agent on a step of another role
+		// beside the role's own claim — so a start of one is no queued run of the other, whichever
+		// of them keys ask for that role by. A row that names none, one the release before wrote,
+		// is the run of the claim keys ask for at its identity.
+		identity := roleRunIdentity{issue: row.Issue, role: role, generation: generation}
+		token, wanted := candidates[identity]
+		if named != "" {
+			token = claim.Token(named)
+			at, ok := asked[token]
+			wanted = ok && at == identity
+		}
+		if !wanted {
 			continue
 		}
 		decoded, err := DecodeOutboxPayload(row)

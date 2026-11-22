@@ -115,24 +115,44 @@ func TestAStartOfAnotherStepsRoleFinishesWithoutActing(t *testing.T) {
 	}
 }
 
-// Two claims of one role keep a row of it each, and the fence on a stale start weighs the start
-// against the row of the step the task stands at, never against an entry of another claim. In
-// `implementer:a reviewer:b implementer:b`, key b's start of step 3 at entry 3 waited on its row's
-// backoff while the task went back to step 1, whose row, key a's, was raised last, to entry 2:
-// numbered per claim, 3 reads above 2, and a fence on the number alone ran the start, handing key b
-// step 3's work while the task stands at key a's step 1. The outbox finishes it without acting,
-// since the role's row now names key a: no claim of key b is made and no task reaches it. The
-// control is the same start with the task at step 3 and step 3's row raised last, which starts key
-// b.
-func TestAStartOfAnotherClaimsStepOfItsRoleFinishesWithoutActing(t *testing.T) {
+// A start acts on the claim it was queued for, which every phase worker's start names
+// (record.SuperviseRequest.Claim, workflow's started), and never on the claim the role's row
+// names by the time it runs. In `implementer:a reviewer:b implementer:b`, key b's start of step 3
+// at entry 3 waited on its row's backoff:
+//   - while the task went back to step 1, whose row, key a's, was raised above every row of its
+//     role, to 4: the outbox finishes it without acting, and no claim is made or handed a task;
+//   - while a new generation's clear folded the implementer's rows into the one of no step, at
+//     entry 3: it starts key b, the claim it was queued for, with its task. Before, the start named
+//     no claim and acted on the claim the row now gave the role, its own token, which is key a's.
+//
+// The controls: key b's start with the task at its step 3 starts key b, and a start the release
+// before wrote, which names no claim, starts the claim of the row now: key b's at step 3, and
+// after the clear the role's own token, key a's.
+func TestAStartActsOnTheClaimItWasQueuedFor(t *testing.T) {
 	const key = stepStartKey
+	keyA, keyB := mustClaimToken(t, key, claim.RoleImplementer), mustClaimToken(t, key, claim.RoleReviewer)
+	earlier, later := time.Now().Add(-time.Minute), time.Now()
+	stepOne := func(entry int64, at time.Time) record.PhaseRow {
+		return record.PhaseRow{Issue: key, Role: claim.RoleImplementer, Claim: keyA, Entry: entry,
+			EntryTask: "Implement it. Issue: LEGION-208. Phase: implementing.", EntryRaisedAt: at, StepTask: "a", StepPlace: 1}
+	}
+	stepThree := func(at time.Time) record.PhaseRow {
+		return record.PhaseRow{Issue: key, Role: claim.RoleImplementer, Claim: keyB, Entry: 3,
+			EntryTask: "Implement it again. Issue: LEGION-208. Phase: implementing.", EntryRaisedAt: at, StepTask: "a", StepPlace: 3}
+	}
+	cleared := record.PhaseRow{Issue: key, Role: claim.RoleImplementer, Claim: keyB, Entry: 3, EntryRaisedAt: earlier}
 	for _, tc := range []struct {
 		name   string
 		at     int
-		starts bool
+		rows   []record.PhaseRow
+		named  claim.Token
+		starts claim.Token
 	}{
-		{"key b's start of step 3 with the task back at key a's step 1", 1, false},
-		{"the control: key b's start with the task at its step 3", 3, true},
+		{"key b's start of step 3 with the task back at key a's step 1", 1, []record.PhaseRow{stepOne(4, later), stepThree(earlier)}, keyB, ""},
+		{"key b's start of step 3 after a new generation's clear", 3, []record.PhaseRow{cleared}, keyB, keyB},
+		{"the control: key b's start with the task at its step 3", 3, []record.PhaseRow{stepOne(1, earlier), stepThree(later)}, keyB, keyB},
+		{"a start the release before wrote with the task at step 3", 3, []record.PhaseRow{stepOne(1, earlier), stepThree(later)}, "", keyB},
+		{"a start the release before wrote after the clear", 3, []record.PhaseRow{cleared}, "", keyA},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -143,12 +163,6 @@ func TestAStartOfAnotherClaimsStepOfItsRoleFinishesWithoutActing(t *testing.T) {
 			putOutboxIssue(t, pool, records, issue)
 			openTree(t, pool, "LEGION", issue.Tree)
 			holdSlot(t, pool, issue.Key)
-			keyA, keyB := mustClaimToken(t, key, claim.RoleImplementer), mustClaimToken(t, key, claim.RoleReviewer)
-			earlier, later := time.Now().Add(-time.Minute), time.Now()
-			stepOne, stepThree := later, earlier
-			if tc.at == 3 {
-				stepOne, stepThree = earlier, later
-			}
 			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 				v := record.PlanVersion{Issue: key, Generation: 2, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 					GivenBy: mustClaimToken(t, key, claim.RoleArchitect), GivenAt: time.Now().UTC()}
@@ -164,12 +178,12 @@ func TestAStartOfAnotherClaimsStepOfItsRoleFinishesWithoutActing(t *testing.T) {
 				if err := records.MoveTask(ctx, tx, key, 2, "a", record.TaskPlace{Kind: record.PlaceStep, Position: tc.at}, record.TaskRunning); err != nil {
 					return err
 				}
-				if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleImplementer, Claim: keyA, Entry: 2,
-					EntryTask: "Implement it. Issue: LEGION-208. Phase: implementing.", EntryRaisedAt: stepOne, StepTask: "a", StepPlace: 1}); err != nil {
-					return err
+				for _, row := range tc.rows {
+					if err := records.PutPhase(ctx, tx, row); err != nil {
+						return err
+					}
 				}
-				return records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleImplementer, Claim: keyB, Entry: 3,
-					EntryTask: "Implement it again. Issue: LEGION-208. Phase: implementing.", EntryRaisedAt: stepThree, StepTask: "a", StepPlace: 3})
+				return nil
 			}); err != nil {
 				t.Fatalf("seed the plan of %s at step %d: %v", key, tc.at, err)
 			}
@@ -180,21 +194,26 @@ func TestAStartOfAnotherClaimsStepOfItsRoleFinishesWithoutActing(t *testing.T) {
 					return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
 				},
 			}
-			start := mustOutboxRow(t, key, record.SuperviseRequest{Op: "start", Tree: key, Role: claim.RoleImplementer, Claim: keyB, Generation: 2,
-				Phase: phase.Implementing, Task: "Implement it again. Issue: LEGION-208. Phase: implementing.", Entry: 3}, time.Now())
+			const task = "Implement it again. Issue: LEGION-208. Phase: implementing."
+			start := mustOutboxRow(t, key, record.SuperviseRequest{Op: "start", Tree: key, Role: claim.RoleImplementer, Claim: tc.named, Generation: 2,
+				Phase: phase.Implementing, Task: task, Entry: 3}, time.Now())
 			start.ID = 94
-			execErr := runner.execute(ctx, start)
-			machine, found := sup.Machine(keyB)
-			var pending string
-			if found {
-				machine.Wait()
-				if p := machine.Claim().Pending; p != nil {
-					pending = p.Task
-				}
+			if err := runner.execute(ctx, start); err != nil {
+				t.Fatalf("run key b's start of step 3: %v", err)
 			}
-			if found != tc.starts || execErr != nil {
-				t.Fatalf("key b's start of step 3 with the task at step %d: execute = %v, key b's claim created %t (pending task %q), want no error and created %t",
-					tc.at, execErr, found, pending, tc.starts)
+			for _, token := range []claim.Token{keyA, keyB} {
+				machine, found := sup.Machine(token)
+				var pending string
+				if found {
+					machine.Wait()
+					if p := machine.Claim().Pending; p != nil {
+						pending = p.Task
+					}
+				}
+				if want := token == tc.starts; found != want || (want && pending != task) {
+					t.Fatalf("the start of step 3 naming %q made %s's claim %t with the task %q pending; want it made %t, with step 3's task", tc.named, token,
+						found, pending, want)
+				}
 			}
 		})
 	}

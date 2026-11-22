@@ -463,6 +463,43 @@ func TestAKeyedAgentsStepAfterANewGenerationRisesAboveWhatItsClaimWasGiven(t *te
 	}
 }
 
+// Each start of a phase worker names the claim it was queued for (record.SuperviseRequest.Claim),
+// the claim of the agent of the step the task stands at, so the outbox acts on that claim and a
+// start the task has left since never reaches the claim the role's row names by then. In
+// `implementer:a reviewer:b implementer:b`, step 1's start names key a, step 2's and step 3's key
+// b, and so does the retro's, which the agent of the last implementation step runs; the retry of
+// the held retro names key b again. Before, every start named no claim, and the outbox gave each
+// to the worker the role's row named when the row ran.
+func TestEachStartNamesTheClaimItWasQueuedFor(t *testing.T) {
+	pool := migratedPool(t)
+	engine := textEngine()
+	tickingClock(engine)
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer:b", "implementer:b")
+	keyA, keyB := agentToken(t, "implementer"), agentToken(t, "reviewer")
+	named := func(what string, role claim.Role, want claim.Token) {
+		t.Helper()
+		starts := roleStartsOf(t, pool, root.Key, role)
+		if start := starts[len(starts)-1]; start.Claim != want {
+			t.Fatalf("%s names the claim %q, want %q", what, start.Claim, want)
+		}
+	}
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	named("step 1's start", claim.RoleImplementer, keyA)
+	completesAs(t, pool, engine, claim.RoleImplementer, keyA, "implement", 1)
+	named("step 2's start", claim.RoleReviewer, keyB)
+	completesAs(t, pool, engine, claim.RoleReviewer, keyB, "review", 1)
+	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
+	named("step 3's start", claim.RoleImplementer, keyB)
+	completesAs(t, pool, engine, claim.RoleImplementer, keyB, "implement", 2)
+	named("the retro's start", claim.RoleImplementer, keyB)
+	holdFrom(t, pool, root.Key, phase.Retro)
+	if result := applyFacts(t, pool, engine)("retry-retro", intake.RetryOrEscalate{Issue: root.Key, Decision: intake.RetryDecision}); result.Refusal != nil {
+		t.Fatalf("the retry of the held retro was refused: %+v", result.Refusal)
+	}
+	named("the held retro's retry", claim.RoleImplementer, keyB)
+}
+
 // completesAs is completes under the claim token, the agent's own, as the route names the claim
 // whose grant reported, which the completion writes on the role's row.
 func completesAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, token claim.Token, word string, n int) {
