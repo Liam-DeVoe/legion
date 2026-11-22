@@ -1935,8 +1935,56 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 		}
 		return fmt.Errorf("%w: %s's notice row %d waits behind its row %d", errNoticeWaits, architect, row.ID, earlier)
 	}
+	// An owner's step is told once the owner's slot holds the App of the step's role, so the
+	// owner's gh acts as that App for the whole step (ownerSlotHolds).
+	if payload.Kind == record.OwnerStepNotice {
+		if holds, err := r.ownerSlotHolds(ctx, row, payload, architect); err != nil || !holds {
+			return err
+		}
+	}
 	published := r.publish(ctx, notify.RoleTopicPrefix+string(architect), noticeSummary(payload.Kind, row.Issue), notice, key)
 	return r.noticeAnswered(ctx, row, payload, tree, architect, published)
+}
+
+// ownerSlotHolds is the hold of a notice owner-step, told to owner, the issue's own architect: it
+// answers true once owner's slot holds the gh credential of the App of the step the notice tells
+// (its Role; the architect's own for the retro, whose Role is ""), so the owner's gh never acts as
+// another App in the step. The role whose App the slot holds is runtime.SlotRole over the daemon's
+// ActsAs (ownerActsAs), read from the record now: where it is not the notice's role, the step no
+// longer runs — the issue moved on, or the owner reported it already — and the notice finishes
+// undelivered with one log line (false, nil). Else the runtime writes the slot for that App
+// (runtime.SlotCredentials.WriteSlotCredential) and is asked whether the slot's gh files hold it
+// (SlotHoldsCredential): a wait, and a pod whose launcher cannot say (runtime.ErrAwaitsPodUpdate),
+// hold the row on its backoff as a notice held for its architect still (errNoticeWaits), and any
+// other failure is the row's error. A runtime that holds no slots writes none and holds nothing.
+func (r *outbox) ownerSlotHolds(ctx context.Context, row record.OutboxRow, payload record.Notice, owner claim.Token) (bool, error) {
+	step := payload.Role
+	if step == "" {
+		step = claim.RoleArchitect
+	}
+	role, err := runtime.SlotRole(ctx, ownerActsAs(r.pool, r.records), owner, claim.RoleArchitect)
+	if err != nil {
+		return false, err
+	}
+	if role != step {
+		r.log.Info("outbox owner-step finished undelivered: its step no longer runs", "row", row.ID, "issue", row.Issue,
+			"owner", owner, "role", payload.Role, "phase", payload.Phase, "slot", role)
+		return false, nil
+	}
+	slots, ok := r.supervisor.deps.Runtime.(runtime.SlotCredentials)
+	if !ok {
+		return true, nil
+	}
+	if err := slots.WriteSlotCredential(ctx, owner, role); err != nil {
+		return false, fmt.Errorf("write %s's slot for the App of %s: %w", owner, role, err)
+	}
+	if err := slots.SlotHoldsCredential(ctx, owner, role); err != nil {
+		if errors.Is(err, wait.ErrWaiting) || errors.Is(err, runtime.ErrAwaitsPodUpdate) {
+			return false, fmt.Errorf("%w: %s's notice row %d waits for its slot to hold the App of %s: %w", errNoticeWaits, owner, row.ID, role, err)
+		}
+		return false, fmt.Errorf("ask whether %s's slot holds the App of %s: %w", owner, role, err)
+	}
+	return true, nil
 }
 
 // roleMessage publishes one message to a role's topic, keyed by the row so a retried row is one
@@ -2382,6 +2430,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	// project whatever the issue's generation, phase or tree, as the pause asked it to.
 	if payload.Op == "pause_stop" {
 		return r.pauseStop(ctx, row, payload)
+	}
+	// A slot's credential is written for the App its claim's slot holds as the record stands when
+	// the row runs (slotCredential), whatever the issue's generation, phase or tree.
+	if payload.Op == "slot_credential" {
+		return r.slotCredential(ctx, payload)
 	}
 	issue, err := r.issue(ctx, row.Issue)
 	if err != nil {
@@ -3001,6 +3054,28 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	default:
 		return fmt.Errorf("outbox row %d has unknown supervise operation %q", row.ID, payload.Op)
 	}
+}
+
+// slotCredential runs a supervise row slot_credential, which the end of a step its owner ran
+// queues (workflow's endStep): the slot of the row's claim is written at once for the App of the
+// role runtime.SlotRole answers as the record stands now, over the daemon's ActsAs (ownerActsAs) —
+// the owner's own role once its step has ended, or the step's where another step of the owner's
+// runs already — and waits for nothing: the next owner-step notice holds for its own App
+// (ownerSlotHolds). Each such write reads the record when it runs, so the order of the rows does
+// not change what the slot holds. A runtime that holds no slots has nothing to write.
+func (r *outbox) slotCredential(ctx context.Context, payload record.SuperviseRequest) error {
+	slots, ok := r.supervisor.deps.Runtime.(runtime.SlotCredentials)
+	if !ok {
+		return nil
+	}
+	role, err := runtime.SlotRole(ctx, ownerActsAs(r.pool, r.records), payload.Claim, payload.Role)
+	if err != nil {
+		return err
+	}
+	if err := slots.WriteSlotCredential(ctx, payload.Claim, role); err != nil {
+		return fmt.Errorf("write %s's slot for the App of %s: %w", payload.Claim, role, err)
+	}
+	return nil
 }
 
 // keepsStartTask says whether held still holds a task of this start's phase and run that it will

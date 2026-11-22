@@ -2797,18 +2797,21 @@ The trimmer itself needs no statement either — `runtime.kubernetes.volume_trim
 #### Rolling back below the release whose owner does a step
 
 The release that lets the owner of an issue's task do a step of its own adds one architect notice kind, `owner-step`: a step or a retro whose agent is the owner, told to the issue's own architect with the step's task (`Engine.start` in `workflow/effects.go`).
+It adds one supervise op too, `slot_credential`: the end of a step the owner ran writes the owner's slot back to the owner's own App (`endStep` in `workflow/steps.go`).
 Name it by its contract entry rather than by its number: it is the release whose `packages/daemon/internal/api/version.go` carries the entry of the route `POST /legion/v1/steps/complete`.
-A daemon of any release before it knows no such kind, and it decodes an outbox payload strictly (`validNoticeKinds` in `record/outbox.go`), so an `owner-step` row still queued when that image is pinned can never be decoded.
-Such a row fails `GET /legion/v1/state` for the whole project on every attempt, by the chain the `volume-near-full` row above sets out (`WaitingNotices` in `record/store.go`, `pacedCatchUps` in `daemon/daemon.go`).
+A daemon of any release before it knows neither, and it decodes an outbox payload strictly (`validNoticeKinds` and `validSuperviseOp` in `record/outbox.go`), so an `owner-step` or `slot_credential` row still queued when that image is pinned can never be decoded.
+An `owner-step` row fails `GET /legion/v1/state` for the whole project on every attempt, by the chain the `volume-near-full` row above sets out (`WaitingNotices` in `record/store.go`, `pacedCatchUps` in `daemon/daemon.go`), and a `slot_credential` row fails every read of its role's runs (`RoleRuns` in `record/store.go`), each admission pass of its issue among them.
 
 No migration of that earlier release deletes these rows, so the delete is the operator's.
 Run this with every project's daemon on that database stopped, before the earlier image is pinned, with `<PROJECT>` the key of the project whose daemon rolls back:
 
 ```sql
 delete from outbox where kind = 'notice' and payload->>'kind' = 'owner-step' and split_part(issue, '-', 1) = '<PROJECT>';
+delete from outbox where kind = 'supervise' and payload->>'op' = 'slot_credential' and split_part(issue, '-', 1) = '<PROJECT>';
 ```
 
-Each deleted row is a step or a retro of the owner that its owner is never told of.
+Each deleted `owner-step` row is a step or a retro of the owner that its owner is never told of.
+Each deleted `slot_credential` row is a write the earlier release makes anyway: its refresh writes every slot for its claim's own role's App within a minute.
 
 ### Pinning a release that drops what a running pod still uses
 

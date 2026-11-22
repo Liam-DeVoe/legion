@@ -1088,7 +1088,12 @@ func NoticePerClaim(kind NoticeKind) bool {
 // than starting fresh (supervise's RequestIssueClose); "pause_stop" is a project pause's stop of
 // one live claim (store's Pause), which stops its process and keeps its session, phase and task as
 // an idle release's stop does, and is its own op because it is bound to its pause (Pause below)
-// and does nothing once that pause has ended.
+// and does nothing once that pause has ended; "slot_credential" writes the gh credential of the
+// claim's slot for the App the slot holds as the record stands when the row runs
+// (runtime.SlotRole), which the end of a step its owner ran queues so the owner's slot holds the
+// owner's own App again (workflow's endStep), and stops nothing. A daemon of a release before it
+// refuses the op, and its way back deletes the rows that wait (docs/kubernetes.md, "Rolling back
+// below the release whose owner does a step").
 // There is no plain stop: only a close ends a claim from the workflow, so the op states which.
 type SuperviseOp string
 
@@ -2384,6 +2389,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Op == "start" && value.Role == "" {
 			return fmt.Errorf("supervise start requires role")
 		}
+		if value.Op == "slot_credential" && (value.Claim == "" || value.Role == "") {
+			return fmt.Errorf("a supervise slot_credential names the claim whose slot it writes and that claim's role")
+		}
 		if (value.Op == "tree_close") != (value.Linger != 0) {
 			return fmt.Errorf("a tree close, and only a tree close, names the root generation of its linger")
 		}
@@ -2768,7 +2776,7 @@ func namedClaim(named claim.Token) error {
 
 func validSuperviseOp(op SuperviseOp) bool {
 	switch op {
-	case "start", "suspend", "release", "step_stop", "tree_close", "issue_close", "pause_stop":
+	case "start", "suspend", "release", "step_stop", "tree_close", "issue_close", "pause_stop", "slot_credential":
 		return true
 	default:
 		return false

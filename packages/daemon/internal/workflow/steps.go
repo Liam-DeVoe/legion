@@ -250,15 +250,41 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 // from the daemon's boot (OpenUncountedRuns), which wrote the count and the agent its start would
 // have named, so its end is written the same way. endRun writes it. A phase that runs no step
 // writes nothing, and neither does a record key that is no issue key (recordsSteps).
+//
+// It is the one writer of the end of each step, so it is the one place an owner's slot is given
+// its own App back: where the run it ends is a step of a stored plan that the owner of before's
+// task ran (record.OwnerClaim), it queues a supervise slot_credential of the owner's claim in the
+// same transaction, which writes the owner's slot for the App the record answers when it runs —
+// the owner's own role's, its step having ended (ownerSlotCredential).
 func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, w Walk, site stepSite, end StepEnd) error {
 	step, ok := stepAt(w, before, site)
 	if !ok {
 		return nil
 	}
-	_, err := e.endRun(ctx, tx, before.Key, step.place, end, func(start record.StepStart) record.StepRecord {
+	var agent claim.Token
+	ended, err := e.endRun(ctx, tx, before.Key, step.place, end, func(start record.StepStart) record.StepRecord {
+		agent = claim.Token(start.Agent)
 		return stepWrite(before, step.place, step.role, step.typ, start.Agent, start.Starts)
 	})
-	return err
+	if err != nil || !ended || !w.Stored || step.place.Kind != record.PlaceStep {
+		return err
+	}
+	return e.ownerSlotCredential(ctx, tx, before, agent)
+}
+
+// ownerSlotCredential queues, where agent is the owner of issue's task (record.OwnerClaim), the
+// supervise slot_credential that writes the owner's slot for the App its claim holds as the record
+// stands when the row runs (internal/daemon's slotCredential). While the owner does a step its
+// slot holds the App of that step's role (record.OwnerActsAs), so the end of that step gives it
+// its own App back at once rather than at the next refresh of the slot. Any other agent's slot
+// never held another App, and an issue whose key makes no claim token has no owner's slot.
+func (e *Engine) ownerSlotCredential(ctx context.Context, tx pgx.Tx, issue record.Issue, agent claim.Token) error {
+	owner, err := record.OwnerClaim(issue)
+	if err != nil || agent != owner {
+		return nil
+	}
+	return e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "slot_credential", Tree: issue.Tree, Role: claim.RoleArchitect,
+		Claim: owner, Generation: issue.Generation})
 }
 
 // endRun is the one writer of the end of a run, the run at place on issue, for both of its callers:
