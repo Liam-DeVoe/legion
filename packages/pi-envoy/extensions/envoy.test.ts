@@ -55,6 +55,7 @@ import { sessionDirectory } from "@legion/envoy-client/dispatch-session-director
 import { appendResult, readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
 import { machineID } from "@legion/envoy-client/machine";
 import { NATS_DIAL_PLAN, NATS_DIAL_TOKEN_DROPPED } from "@legion/envoy-client/nats-connection";
+import { TRADE_DEADLINE_MS } from "@legion/envoy-client/nats-credential";
 import {
   renderSessionAnswers,
   sessionAnswersFailureLine,
@@ -17450,8 +17451,11 @@ console.log(JSON.stringify(args));
         // A hang guard, not a bound on work: what can hang is the wait for the refusal
         // (`clock.wait`), which has no bound of turns, because each of its two trades reads the
         // pod's token from disk, real I/O.
-        // MEASUREMENT-PROVISIONAL
-      }, 200_000);
+        // Worst measured cost: 16 495.61 ms over 20 runs at the 96 rung in the Job
+        // infra-1580-krows-k1-bwwd4 of the cluster's `builds` namespace, two CPUs and 8 GiB (177
+        // busy loops, at which row A's runs took 37.7 s against the calibration's 31.2 s),
+        // 2026-11-22T07:36Z to 07:50Z. 120_000 is 7.3 times the worst.
+      }, 120_000);
 
       // The same window on the card branch: the accept moves the host and Dispatch then refuses
       // it, so the delivery is a card and `sendCard` would hand it to the conversation the host
@@ -17644,8 +17648,11 @@ console.log(JSON.stringify(args));
         // A hang guard, not a bound on work: what can hang is the wait for the answer
         // (`clock.wait`), which has no bound of turns, because its trade reads the pod's token
         // from disk, real I/O.
-        // MEASUREMENT-PROVISIONAL
-      }, 200_000);
+        // Worst measured cost: 13 304.07 ms over 20 runs at the 96 rung in the Job
+        // infra-1580-krows-k1-bwwd4 of the cluster's `builds` namespace, two CPUs and 8 GiB (177
+        // busy loops, at which row A's runs took 37.7 s against the calibration's 31.2 s),
+        // 2026-11-22T07:52Z to 08:10Z. 90_000 is 6.8 times the worst.
+      }, 90_000);
     });
 
     // A host without `pi.sendUserInput` would hand a command to the model as words, so the
@@ -22687,8 +22694,11 @@ console.log(JSON.stringify(args));
     // A hang guard, not a bound on work: what can hang is the wait for the start, the follow's
     // reconnect or the switch (`clock.wait`), which has no bound of turns, because the start's
     // and the follow's trades read the pod's token from disk, real I/O.
-    // MEASUREMENT-PROVISIONAL
-  }, 120_000);
+    // Worst measured cost: 9 388.74 ms over 20 runs at the 96 rung in the Job
+    // infra-1580-krows-k4-hvx8t of the cluster's `builds` namespace, two CPUs and 8 GiB (129 busy
+    // loops, at which row A's runs took 31.5 s against the calibration's 31.2 s), 2026-11-22T06:33Z
+    // to 06:40Z. 60_000 is 6.4 times the worst.
+  }, 60_000);
 
   test("the keeper's warning of a refused token reaches the session as a notice, once", async () => {
     // A token the server refuses though it is live is a session that stops receiving, which the
@@ -22888,12 +22898,14 @@ console.log(JSON.stringify(args));
     expect(natsState.controls.get(oldControl)?.active()).toBe(false);
     await fixture.handlers.get("session_shutdown")?.({}, next);
     // A bound on work, not a hang guard: every wait above ends by its own count of turns or steps
-    // (`onPassClock`). Worst measured cost: 19 027.39 ms over 20 runs at the 96 rung in the Job
-    // infra-1580-krows-j4-2w4bc of the cluster's `builds` namespace, two CPUs and 8 GiB (257 busy
-    // loops, at which row A's runs took 53.6 s against the calibration's 31.2 s), 2026-11-21T20:14Z
-    // to 20:31Z; 8 261.56 ms over 20 runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod
-    // of 2026-11-19 18:40Z, 2026-11-21T15:03Z to 15:17Z. 120_000 is 6.3 times the worst.
-  }, 120_000);
+    // (`onPassClock`). Worst measured cost: 20 903.37 ms over 20 runs at the 96 rung in the Job
+    // infra-1580-krows-k4-hvx8t of the cluster's `builds` namespace, two CPUs and 8 GiB (129 busy
+    // loops, at which row A's runs took 31.5 s against the calibration's 31.2 s), 2026-11-22T05:22Z
+    // to 05:31Z; 19 027.39 ms over 20 runs in the Job infra-1580-krows-j4-2w4bc (257 busy loops,
+    // row A at 53.6 s), 2026-11-21T20:14Z to 20:31Z; 8 261.56 ms over 20 runs at 16 busy loops (the
+    // 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T15:03Z to 15:17Z.
+    // 150_000 is 7.2 times the worst.
+  }, 150_000);
 
   test("after a rollback with no event, a viewer of the session left is replayed nothing of the one returned to", async () => {
     // Two sessions of one host: it switches from A to B, B's viewer attaches, and the host then
@@ -22958,36 +22970,79 @@ console.log(JSON.stringify(args));
     const { default: envoyExtension } = await import("./envoy.ts?nats-credential-keeper");
     const fixture = createPi();
     envoyExtension(fixture.pi);
-    await fixture.handlers.get("session_start")?.({}, sessionContext("ses_kept"));
-    const [first] = minted;
-    expect(first).toBeString();
-    expect(natsState.presented[0]).toBe(first);
-    // What the start did is done; from here a reconnect is the keeper's.
-    natsState.timeline.length = 0;
-    const before = natsState.presented.length;
-    // The keeper renews before the two-second token lapses, and the connection reconnects to
-    // present the new one. The wait has no deadline of its own, so the row's limit below is its
-    // hang guard: a wait on the real clock ended at 5 s failed a correct run on a host slow enough
-    // to stretch the trade and the reconnect past it.
-    await until(() => natsState.timeline.includes("reconnect"), "the keeper's reconnect");
-    expect(natsState.timeline).toContain("reconnect");
-    expect(natsState.presented.length).toBeGreaterThan(before);
-    expect(natsState.presented.at(-1)).not.toBe(natsState.presented[before - 1]);
-    await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_kept"));
-    // Stopped, it trades and reconnects no more.
-    const reconnects = natsState.timeline.filter((entry) => entry === "reconnect").length;
-    const traded = minted.length;
-    await Bun.sleep(2_500);
-    expect(natsState.timeline.filter((entry) => entry === "reconnect").length).toBe(reconnects);
-    expect(minted).toHaveLength(traded);
-    // A hang guard, not a bound on work: what can hang is the keeper's reconnect, which `until`
-    // above waits for with no deadline of its own. Worst measured cost: 15 504.87 ms over 20 runs
-    // at the 96 rung in the Job infra-1580-krows-j3-dx2jm of the cluster's `builds` namespace,
-    // two CPUs and 8 GiB (226 busy loops, at which row A's runs took 36.6 s against the
-    // calibration's 31.2 s), 2026-11-21T20:15Z to 20:35Z; 11 803.37 ms over 20 runs at 16 busy
-    // loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T19:53Z to
-    // 20:08Z, and 11 270.14 ms over 20 runs there, 2026-11-21T03:56Z to 04:11Z. 120_000 is 7.7
-    // times the worst.
+    // The keeper renews on a timer of this process, a second after each two-second token lands
+    // (`renewDelay`), and each trade first reads the pod's token from disk (`projectedToken`'s
+    // `readFile`), real I/O that runs off the event loop. On the real clock a trade could outlast
+    // the shutdown and reach the broker after it: a renewal in flight as the keeper stopped, or
+    // the deregistration's own trade, which its credential waits for 500 ms of the shutdown's 1 s
+    // (`SHUTDOWN_DEADLINE_MS`) before the DELETE goes without it. So the host's speed decided the
+    // row, and it runs on the test's clock (`onPassClock`). The clock is held through the start
+    // (`wait`, which no count of turns bounds) but for one move of 1 ms: the start's pass follows
+    // the session (`followNatsCredential`), which with two-second tokens trades and reconnects,
+    // and the stand-in server answers the reconnect on a 0 ms timer, which only a move of the
+    // clock runs, made once the follow's trade is done. All the keeper then waits on is its
+    // timer: the clock moves 100 ms at a time until the keeper's renewal arms its bound, and is
+    // held from that step on, through the renewal's read and the reconnect. The session shuts
+    // down there, the clock still held: the keeper's next renewal is a second away, so none is in
+    // flight, and the deregistration's trade reaches the broker before the shutdown ends. The
+    // clock then moves 10 s, five token lifetimes, 100 ms at a time, each step held on real
+    // turns: a keeper that had not stopped would renew about once a second there. No other timer
+    // matters: the bounds of the start, its follow, each trade, each listener call and the
+    // shutdown end only work that is done by then, and this context's `setInterval` runs no
+    // heartbeat.
+    await onPassClock(async (clock) => {
+      /** The renewals the keeper has begun, each by the bound it arms as its timer ends
+       *  (`TRADE_DEADLINE_MS`). The start's ready and its follow arm theirs before the start ends;
+       *  after it nothing else arms one: the keeper's reconnect presents a live token, so its
+       *  CONNECT starts no trade of its own. */
+      const renewals = () => clock.armed.filter((ms) => ms === TRADE_DEADLINE_MS).length;
+      let started = false;
+      const starting = Promise.resolve(
+        fixture.handlers.get("session_start")?.({}, sessionContext("ses_kept"))
+      ).finally(() => {
+        started = true;
+      });
+      await clock.wait(
+        "the start's follow",
+        () => natsState.timeline.includes("reconnect") || started
+      );
+      await clock.advance(1);
+      await clock.wait("the start", () => started);
+      await starting;
+      const [first] = minted;
+      expect(first).toBeString();
+      expect(natsState.presented[0]).toBe(first);
+      // What the start did is done; from here a reconnect is the keeper's.
+      natsState.timeline.length = 0;
+      const before = natsState.presented.length;
+      // The keeper renews before the two-second token lapses, and the connection reconnects to
+      // present the new one.
+      const begun = renewals();
+      for (let step = 0; step < 20 && renewals() === begun; step += 1) await clock.advance(100);
+      if (renewals() === begun) throw new Error("the keeper began no renewal in the token's 2 s");
+      await clock.wait("the keeper's reconnect", () => natsState.timeline.includes("reconnect"));
+      expect(natsState.timeline).toContain("reconnect");
+      expect(natsState.presented.length).toBeGreaterThan(before);
+      expect(natsState.presented.at(-1)).not.toBe(natsState.presented[before - 1]);
+      let shut = false;
+      const shutting = Promise.resolve(
+        fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_kept"))
+      ).finally(() => {
+        shut = true;
+      });
+      await clock.wait("the shutdown", () => shut);
+      await shutting;
+      // Stopped, it trades and reconnects no more.
+      const reconnects = natsState.timeline.filter((entry) => entry === "reconnect").length;
+      const traded = minted.length;
+      await clock.steps(10_000, 100);
+      expect(natsState.timeline.filter((entry) => entry === "reconnect").length).toBe(reconnects);
+      expect(minted).toHaveLength(traded);
+    });
+    // A hang guard, not a bound on work: what can hang is the wait for the start's follow, the
+    // start, the keeper's reconnect or the shutdown (`clock.wait`), which has no bound of turns,
+    // because each waits on a trade that reads the pod's token from disk, real I/O.
+    // MEASUREMENT-PROVISIONAL
   }, 120_000);
 
   test("rebinds the direct subscription after an in-process session switch", async () => {
@@ -25128,7 +25183,10 @@ describe("consumer delivery", () => {
     // A hang guard, not a bound on work: what can hang is the boot's wait for its first
     // registration (`bootConsumer`'s `until`, on the real clock), which has no bound; every wait
     // on the test's clock ends by its own count of turns (`onPassClock`).
-    // MEASUREMENT-PROVISIONAL
+    // Worst measured cost: 7 978.20 ms over 20 runs at the 96 rung in the Job
+    // infra-1580-krows-k5-kzv8d of the cluster's `builds` namespace, two CPUs and 8 GiB (145 busy
+    // loops, at which row A's runs took 36.0 s against the calibration's 31.2 s), 2026-11-22T06:31Z
+    // to 06:40Z. 60_000 is 7.5 times the worst.
   }, 60_000);
 
   test("a card Escape cleared from the queue between received and done is shown once afterwards, and done only after that write", async () => {
