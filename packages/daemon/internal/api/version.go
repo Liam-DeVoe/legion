@@ -3074,7 +3074,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 219: cybermonklabs/legion#4805 -- the Envoy listener takes no shared bearer, which removes what
+// 223: cybermonklabs/legion#4805 -- the Envoy listener takes no shared bearer, which removes what
 // entry 212 kept for a pod built before the exchange identity and two counts of
 // `dispatchCredential`. The agent's argv: a launch into a kept pod that carries no exchange
 // identity no longer keeps `--resume=<file>` or the credential it had; it waits for that pod's
@@ -3084,16 +3084,17 @@ package api
 // token of `dispatch_token_transition_file`, a key the loader now refuses, and none carries
 // `ENVOY_TOKEN`. The state: `dispatchCredential` loses `transitionLaunches` and
 // `lastTransitionLaunchAt`, and holds `session` and `liveLaunchesWithDispatchToken` alone.
-// dispatchCredentialContract moves from 212 to 219, so a caller below 219 is served the state
+// dispatchCredentialContract moves from 212 to 223, so a caller below 223 is served the state
 // without the key (withoutDispatchCredential): a caller at 212 names the two counts in the shape
 // its record describes, and is served the body 205 describes rather than an object short of them.
-// From this change on, 212's records are 205's under its own number, and 219's are 205's under its
+// From this change on, 212's records are 205's under its own number, and 223's are 205's under its
 // own number with the key paths of `dispatchCredential`, `session` and
 // `liveLaunchesWithDispatchToken` on the state's. No other answer a plugin parses moves.
-// (This change takes 219, the lowest number above the base's 212 that no open pull request
-// declares, as check-daemon-api-contract.sh named it from its reading of every open pull request,
-// which ended at 2026-11-22T00:37:07Z: 213 (#4553), 214 (#4592, #4596), 215 (#4065), 216 (#4173,
-// #4180, #4193, #4251, #4259, #4261, #4269, #4290), 217 (#4273, #4590, #4771) and 218 (#3831) were
-// declared by other pull requests. Read the base's own number and every open pull request again at
-// the next merge rather than from this line.)
-const DaemonAPIVersion = 219
+// (This change takes 223, the number the INFRA Legion controller gave it on 2026-11-22. It had
+// taken 219, which check-daemon-api-contract.sh named from its reading of every open pull request
+// that ended at 2026-11-22T00:37:07Z, and #4611 declared 219 at 01:14:32Z. At 04:36Z the check,
+// run with #4611's head as the base, named 220 as declared by #4930 and 221 as the lowest number
+// no open pull request declares; the controller holds 221 and 222 for two other changes. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+const DaemonAPIVersion = 223

@@ -14,4 +14,6 @@ body: |-
   `localhost` or a loopback address is refused at load, and `legion controller start` refuses one
   too unless the controller's environment names a secrets broker and a machine identity the
   broker client can prove, each identity kind with every variable it reads.
+  `dispatch_token_transition_file` is removed too: a `legion.yaml` that names it is refused at
+  load, and no launch carries the transition token.
 time: 2026-11-21T06:29:21Z

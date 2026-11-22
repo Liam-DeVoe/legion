@@ -1,0 +1,10 @@
+kind: Changed
+custom:
+  Issue: pr4805
+body: |-
+  Daemon API contract 223. `dispatchCredential` holds `session` and
+  `liveLaunchesWithDispatchToken` alone: the transition token is gone, and with it
+  `transitionLaunches` and `lastTransitionLaunchAt`. A caller below 223, 212 among them, is served
+  the state without `dispatchCredential`. The state fixture (`state.json`) carries 223, and so does
+  `version.json`.
+time: 2026-11-22T00:41:06Z

@@ -53,7 +53,7 @@ const ServingFloor = 46
 // than their numbers for the same reason: dispatch://INFRA-4401's change, dispatch://INFRA-3178's and
 // cybermonklabs/legion#4805 each name their constant, and a renumber of any of them moves its
 // constant and this list with it. 212, the contract `dispatchCredential` arrived at, is a number of
-// its own beside them, since the constant moved on to 219, which gave the key the shape it has.
+// its own beside them, since the constant moved on to 223, which gave the key the shape it has.
 var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, 212, dispatchCredentialContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes

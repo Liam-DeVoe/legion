@@ -862,8 +862,8 @@ const shapedAnswersContract = 193
 
 // dispatchCredentialContract is the daemon contract whose `dispatchCredential` this daemon writes:
 // the daemon's own Dispatch credential under dispatch_token_broker and the count of the live
-// launches that carry a Dispatch token (version.go's 219, DispatchCredentialView). The key arrived
-// at 212 with two counts of the transition token beside them, and 219 took those off, so a caller
+// launches that carry a Dispatch token (version.go's 223, DispatchCredentialView). The key arrived
+// at 212 with two counts of the transition token beside them, and 223 took those off, so a caller
 // at 212 names a shape this daemon no longer writes. A caller below this contract is served the
 // state without the key (withoutDispatchCredential, its row of stateNarrowings): one built before
 // sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole body for a
@@ -876,7 +876,7 @@ const shapedAnswersContract = 193
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the key took this shape at stays where it is. It moves only
 // with this change's own number, as the last number of answers.go's SupportedContracts does.
-const dispatchCredentialContract = 219
+const dispatchCredentialContract = 223
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
 // line's `kind` (version.go's 132): a started issue that gave its admission slot back to wait on

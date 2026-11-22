@@ -4,5 +4,7 @@ custom:
 body: |-
   Daemon API contract 212. `LegionStateResponse` takes an optional `dispatchCredential`, which a
   daemon under `dispatch_token_broker` writes. It holds `session`, the session of the daemon's own
-  Dispatch calls, and `liveLaunchesWithDispatchToken`, the live launches whose start carried a
-  Dispatch token. The state fixture (`state.json`) carries it, and `version.json` carries 212.
+  Dispatch calls, `transitionLaunches`, the launches since the daemon's boot that carried the
+  transition token, `lastTransitionLaunchAt`, when the latest of them was sent (`null` before the
+  first), and `liveLaunchesWithDispatchToken`, the live launches whose start carried a Dispatch
+  token. The state fixture (`state.json`) carries it, and `version.json` carries 212.

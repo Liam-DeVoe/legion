@@ -1,0 +1,15 @@
+kind: Changed
+custom:
+  Issue: pr4805
+body: |-
+  This is daemon API contract 223. A launch into a live pod built before the exchange identity no
+  longer keeps the argv and the credential it had: it waits for that pod's update round, since its
+  role would hold no credential for the Envoy listener. So every role the daemon starts runs with
+  `--session-id <id>` or `--resume <id>`, or `--resume=<id>` for a claim that records its session
+  with no file. `dispatchCredential` in `legion state --json` no longer counts the launches that
+  carried the transition token or gives the time of the last: it holds the daemon's session and
+  `liveLaunchesWithDispatchToken` alone. `legion config reference` now says that, since `runtime:
+  kubernetes` requires `exchange_audience`, this release runs only once its worker image and the
+  secrets broker run this release or a later one, only once the worker image's Oh My Pi takes
+  `--session-id`, and only once the broker's `BROKER_POD_REGISTRARS` is set.
+time: 2026-11-22T04:35:30Z
