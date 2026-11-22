@@ -17,7 +17,9 @@
 #
 # It runs with the gcloud, kubectl and agent-secrets sign-ins of the shell it runs in: an identity
 # already held, never a person's administrator credential. It requests no credential, impersonates
-# no one, and writes nothing but its own work directory and --report.
+# no one, and writes nothing but its own work directory and --report. It fetches no Secret's data:
+# it lists a guarded namespace's token Secrets in the API server's Table form, whose rows carry
+# each Secret's name, type, number of data keys and age beside its metadata, and keeps the names.
 #
 # The steps, in order; each prints PASS, a FINDING per principal and right, or UNKNOWN naming why:
 #
@@ -318,8 +320,9 @@
 # ServiceAccount; create and get nodes/proxy cluster-wide, whose kubelet API enters any pod on the
 # node; get, list, watch and create secrets (a Secret of type kubernetes.io/service-account-token
 # naming a ServiceAccount is filled with its token), and on the operator's cluster get, by name, of
-# each token Secret a guarded pair's ServiceAccount lists; and, cluster-wide on every cluster of the
-# pool, create, update
+# each token Secret of a guarded namespace, those a guarded pair's ServiceAccount lists and those the
+# namespace's list of that type names (read in the Table form, no data); and, cluster-wide on every
+# cluster of the pool, create, update
 # and patch of each admissionregistration.k8s.io resource its discovery lists, and the certificate
 # signing chain: a certificate signed for kubernetes.io/kube-apiserver-client authenticates as any
 # user and groups its request names but system:masters, and GKE cannot turn the certificates API
@@ -407,9 +410,10 @@ usage: operator-token-minters.sh [flags]
                              always guarded, as the broker's (--broker-workload) is when it is named;
                              repeatable
   --gsa EMAIL                the Google service account the operator's ServiceAccount acts as
-  --agent-namespace NS|GLOB  a namespace whose ServiceAccounts agents run as; repeatable. Every
-                             ServiceAccount outside the system namespaces is reviewed; these name
-                             the groups reviewed alone, and one must hold a ServiceAccount
+  --agent-namespace NS|GLOB  a namespace whose ServiceAccounts agents run as, or a glob of such
+                             names with * and ?; repeatable. Every ServiceAccount outside the system
+                             namespaces is reviewed; these name the groups reviewed alone, and one
+                             must hold a ServiceAccount
   --broker-account EMAIL     the secrets broker's Google service account, which mints the
                              operator's token for the secret ENVOY_OPERATOR
   --broker-workload NS/NAME  the broker's Kubernetes ServiceAccount, bound to --broker-account
@@ -422,7 +426,8 @@ usage: operator-token-minters.sh [flags]
   --iam-preview FILE         `pulumi preview --json --show-sames` of an IAM program; repeatable
   --analysis-scope organizations/N|folders/N|projects/ID
                              Policy Analyzer's scope (default: the project's top ancestor)
-  --credentials-arg ARG      passed to each `gcloud container clusters get-credentials`; repeatable
+  --credentials-arg ARG      one gcloud flag, --name or --name=value, passed to each
+                             `gcloud container clusters get-credentials`; repeatable
   --report FILE              also write the result as JSON
 USAGE
 }
@@ -433,21 +438,27 @@ usage_error() {
 }
 
 # A run's report is this run's or none: an older one would be read as this run's if the run stopped
-# before writing its own, so it goes before anything, a usage error included, can stop the run.
+# before writing its own, so it goes before anything, a usage error included, can stop the run. A
+# --report this run cannot delete is a usage error naming the flag, never the file.
 for ((arg = 1; arg <= $#; arg++)); do
   case "${!arg}" in
     --report)
       next=$((arg + 1))
-      [ "$next" -gt "$#" ] || rm -f -- "${!next}"
+      [ "$next" -gt "$#" ] || rm -f -- "${!next}" 2>/dev/null || usage_error "--report names a file this run cannot delete"
       ;;
-    --report=*) report_arg="${!arg}" && rm -f -- "${report_arg#--report=}" ;;
+    --report=*)
+      report_arg="${!arg}"
+      rm -f -- "${report_arg#--report=}" 2>/dev/null || usage_error "--report names a file this run cannot delete"
+      ;;
   esac
 done
 PROJECT="" CLUSTER="" LOCATION="" POOL_PROJECT="" NAMESPACE=envoy-operator KSA=envoy-operator GSA="" BROKER="" BROKER_WORKLOAD=""
 SQL_INSTANCE="" DB_SECRET="" BROKER_STATE="" SIGNING_SECRET="" SECRET=ENVOY_OPERATOR ANALYSIS_SCOPE="" REPORT="" FLEET=""
 AGENT_NAMESPACES=() RBAC_RENDERS=() IAM_PREVIEWS=() CREDENTIALS_ARGS=() GUARDED_FLAGS=() RBAC_ONLY_MEMBERS=() SERVICE_AGENTS=()
 # A usage error names the flag, or an argument's place, and never the text given: a value pasted in
-# the wrong place may be a credential.
+# the wrong place may be a credential. Each flag that names a thing is held to that thing's form
+# below, before any step runs, so a value of another form reaches no command line, output line or
+# report; a file flag's file is named by the flag and its place (--rbac-render entry 2).
 total_args=$#
 while [ "$#" -gt 0 ]; do
   place=$((total_args - $# + 1))
@@ -500,6 +511,40 @@ while [ "$#" -gt 0 ]; do
     --service-agent) SERVICE_AGENTS+=("$value") ;;
   esac
 done
+# refuse_form FLAG PATTERN FORM VALUE...: a usage error naming FLAG and the FORM it takes, never the
+# value, unless each VALUE is empty (the flag not given) or of PATTERN's form.
+refuse_form() {
+  local flag="$1" pattern="$2" form="$3" which="its value" value
+  shift 3
+  [ "$#" -le 1 ] || which="one of its values"
+  for value in "$@"; do
+    [ -z "$value" ] || [[ "$value" =~ $pattern ]] || usage_error "$flag is $form; $which is not"
+  done
+}
+# A project ID, as Resource Manager allows it: 6 to 30 lowercase letters, digits and hyphens,
+# starting with a letter, after a domain and a colon for a domain-scoped project.
+project_id='([a-z][-.a-z0-9]*[a-z0-9]:)?[a-z][-a-z0-9]{4,28}[a-z0-9]'
+k8s_label='^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$'
+account_email='^[a-z0-9][-a-z0-9]*@[a-z0-9][-.:a-z0-9]*\.gserviceaccount\.com$'
+refuse_form --project "^$project_id\$" "a Google Cloud project ID" "$PROJECT"
+refuse_form --pool-project "^$project_id\$" "a Google Cloud project ID" "$POOL_PROJECT"
+refuse_form --cluster '^[a-z]([-a-z0-9]{0,38}[a-z0-9])?$' "a GKE cluster name" "$CLUSTER"
+refuse_form --location '^[a-z]+-[a-z]+[0-9]+(-[a-z])?$' "a Google Cloud region or zone" "$LOCATION"
+refuse_form --namespace "$k8s_label" "a Kubernetes namespace name" "$NAMESPACE"
+refuse_form --service-account '^[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?$' "a Kubernetes ServiceAccount name" "$KSA"
+refuse_form --gsa "$account_email" "a Google service account's email" "$GSA"
+refuse_form --broker-account "$account_email" "a Google service account's email" "$BROKER"
+refuse_form --agent-namespace '^[-*?a-z0-9]{1,63}$' "a Kubernetes namespace name, or a glob of one with * and ?" \
+  ${AGENT_NAMESPACES[@]+"${AGENT_NAMESPACES[@]}"}
+refuse_form --sql-instance '^[a-z]([-a-z0-9]{0,96}[a-z0-9])?$' "a Cloud SQL instance name" "$SQL_INSTANCE"
+refuse_form --signing-secret '^[-_A-Za-z0-9]{1,255}$' "a Secret Manager secret ID" "$SIGNING_SECRET"
+# The broker's secret-name rule (internal/cipher/policy/names.go).
+refuse_form --secret '^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$' "a broker secret name, uppercase letters, digits and single underscores starting with a letter" "$SECRET"
+refuse_form --rbac-only-member "$k8s_label" "a fleet membership ID" ${RBAC_ONLY_MEMBERS[@]+"${RBAC_ONLY_MEMBERS[@]}"}
+refuse_form --credentials-arg '^--[a-z][-a-z0-9]*(=[^[:space:]]+)?$' "one gcloud flag, --name or --name=value" \
+  ${CREDENTIALS_ARGS[@]+"${CREDENTIALS_ARGS[@]}"}
+refuse_form --analysis-scope "^(organizations/[0-9]+|folders/[0-9]+|projects/([0-9]+|$project_id))\$" \
+  "organizations/N, folders/N or projects/ID" "$ANALYSIS_SCOPE"
 [ -n "$POOL_PROJECT" ] || POOL_PROJECT="$PROJECT"
 case "$FLEET" in "" | none) ;; *) usage_error "--fleet takes none and nothing else" ;; esac
 # --service-agent allows a Google-managed service agent alone, of the gcp-sa-<product> form: any other
@@ -532,9 +577,8 @@ for pair in ${GUARDED_FLAGS[@]+"${GUARDED_FLAGS[@]}"}; do
   [[ "$pair" =~ $pair_name ]] || usage_error "--guarded is <namespace>/<serviceaccount>, each a Kubernetes name; one of its values is not"
   case " ${GUARDED[*]} " in *" $pair "*) ;; *) GUARDED+=("$pair") ;; esac
 done
-case "$DB_SECRET" in "" | */*) ;; *) usage_error "--db-secret is <namespace>/<name>; its value is not" ;; esac
-case "$BROKER_STATE" in "" | gs://?*) ;; *) usage_error "--broker-state is gs://<bucket>[/<path>]; its value is not" ;; esac
-case "$ANALYSIS_SCOPE" in "" | organizations/?* | folders/?* | projects/?*) ;; *) usage_error "--analysis-scope is organizations/N, folders/N or projects/ID" ;; esac
+refuse_form --db-secret "$pair_name" "<namespace>/<name>, each a Kubernetes name" "$DB_SECRET"
+refuse_form --broker-state '^gs://[a-z0-9][-_.a-z0-9]{1,220}[a-z0-9](/.*)?$' "gs://<bucket>[/<path>]" "$BROKER_STATE"
 command -v jq >/dev/null || usage_error "jq is not on PATH"
 
 RUN_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -573,8 +617,9 @@ if [ -n "$missing" ]; then
   reason="the parts $missing of $LIB cannot be read, so no step runs"
   echo "UNKNOWN run: $reason"
   [ -z "$REPORT" ] ||
-    jq -n --arg run_at "$RUN_AT" --arg reason "$reason" --argjson allowances "$(allowances_json)" \
-      '{run_at: $run_at, findings: [], unknown: [{step: "run", reason: $reason}], allowances: $allowances}' >"$REPORT"
+    { jq -n --arg run_at "$RUN_AT" --arg reason "$reason" --argjson allowances "$(allowances_json)" \
+      '{run_at: $run_at, findings: [], unknown: [{step: "run", reason: $reason}], allowances: $allowances}' >"$REPORT"; } 2>/dev/null ||
+    echo "operator-token-minters: --report cannot be written" >&2
   echo "operator-token-minters: no step ran, 1 unknown: exit 2"
   FINISHED=true
   exit 2

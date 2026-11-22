@@ -35,7 +35,8 @@ unknown() {
 }
 pass() { echo "PASS $1: $2"; }
 # write_report: --report, when it is named, from the findings, the UNKNOWNs so far and the run's
-# allowances (allowances_json, in operator-token-minters.sh).
+# allowances (allowances_json, in operator-token-minters.sh). A report it cannot write is named by
+# its flag, never its file.
 write_report() {
   [ -n "$REPORT" ] || return 0
   printf '%s\n' ${FINDINGS[@]+"${FINDINGS[@]}"} >"$WORK/findings"
@@ -47,7 +48,7 @@ write_report() {
          permissions: ((.[4] // "") | split("\u001f") | map(select(length > 0))), granted_at: (.[5] // "")}],
     unknown: [$unknown | split("\n")[] | select(length > 0) | split("\t") | {step: .[0], reason: .[1]}],
     allowances: $allowances}' >"$WORK/report.json"
-  cp "$WORK/report.json" "$REPORT"
+  cp "$WORK/report.json" "$REPORT" 2>/dev/null || { echo "operator-token-minters: --report cannot be written" >&2; return 1; }
 }
 # crash_report STATUS: on_exit's work for a run that stopped before its end.
 crash_report() {

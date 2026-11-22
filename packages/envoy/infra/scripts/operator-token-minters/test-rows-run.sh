@@ -34,10 +34,13 @@
 #   (cj) --service-agent naming an agent's own Google service account is a usage error, and a run
 #        given --service-agent, --rbac-only-member and --fleet none writes each into --report's
 #        allowances;
-#   (co) a credential pasted as an argument, alone or as the value of a flag whose value the script
-#        checks, is a usage error that names the flag or the argument's place and never its text;
-#   (cp) the list of a guarded namespace's token Secrets asks the API server for their names alone,
-#        so no Secret's data reaches the run's work directory or its output.
+#   (co) a credential pasted alone, as the value of a flag that names a thing, or as a file flag's
+#        file is printed in neither stdout, stderr nor --report: a flag that names a thing refuses
+#        it, naming the flag and never its text, and a file flag's file is named by the flag and
+#        its place;
+#   (cp) the list of a guarded namespace's token Secrets is asked in the API server's Table form,
+#        whose response carries no data field, so no Secret's data reaches the box, the run's work
+#        directory or its output.
 
 # --- (a) People, the system namespaces and the Workload Identity member alone. ---
 if row a; then
@@ -355,32 +358,53 @@ if row cj; then
   passed "(cj) --service-agent refuses an address that is no Google service agent, and every allowance a run is given, --credentials-arg included, is written into --report"
 fi
 
-# --- (co) A usage error names the flag or the argument's place, never the text given: a token pasted
-# in the wrong place, alone or as a checked flag's value, is printed nowhere. ---
+# --- (co) No text given is printed unless it is of its flag's form: a token pasted alone, as the
+# value of a flag that names a thing, or as a file flag's file (--rbac-render, --iam-preview,
+# --report, the last both where it can be written and where it cannot) is in neither stdout, stderr
+# nor --report. A flag that names a thing refuses it, naming the flag and never the text; a file
+# flag's file is named by the flag and its place. Each item runs in a directory of its own, with
+# stdout and stderr apart, and writes --report there. ---
 pasted_canary="eyJhbGciOiJFZERTQSJ9.PASTED-CANARY-5c1e.sig"
 pasted_row() {
+  local own="$temporary_dir/co-$1" args=() full report want want_exit=2 where
   base_world
+  mkdir -p "$own"
+  report="$own/report.json"
   case "$1" in
-    alone)
-      run "$pasted_canary"
-      want_text "operator-token-minters: argument " "a pasted credential alone"
-      ;;
-    unknown-flag) run "--no-such-flag=$pasted_canary" && want_text "operator-token-minters: unknown flag --no-such-flag" "an unknown flag with a pasted value" ;;
-    *) run "--$1" "$pasted_canary" && want_text "operator-token-minters: --$1 " "--$1 given a pasted credential" ;;
+    alone) args=("$pasted_canary") want="operator-token-minters: argument " ;;
+    unknown-flag) args=("--no-such-flag=$pasted_canary") want="operator-token-minters: unknown flag --no-such-flag" ;;
+    rbac-render) args=("--$1" "$pasted_canary") want="UNKNOWN code: RBAC: --rbac-render entry 2 cannot be read" ;;
+    iam-preview) args=("--$1" "$pasted_canary") want="UNKNOWN code: IAM: --iam-preview entry 2 cannot be read" ;;
+    report) report="$own/$pasted_canary" want="operator-token-minters: no finding and nothing unknown: exit 0" want_exit=0 ;;
+    report-unwritable) report="$own/$pasted_canary/report.json" want="operator-token-minters: --report cannot be written" ;;
+    *) args=("--$1" "$pasted_canary") want="operator-token-minters: --$1 " ;;
   esac
-  want_status 2 "a pasted credential ($1)"
-  ! has_prefix "PASTED-CANARY-5c1e" || fail "a usage error ($1) printed the pasted credential"
+  mapfile -t full < <(full_args)
+  status=0
+  (cd "$own" && env PATH="$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$temporary_dir" bash "$check" "${full[@]}" \
+    --report "$report" ${args[@]+"${args[@]}"} >"$own/stdout" 2>"$own/stderr") || status=$?
+  output="$(cat "$own/stdout" "$own/stderr")"
+  for where in stdout stderr; do
+    ! grep -qF -- PASTED-CANARY-5c1e "$own/$where" || fail "a pasted credential ($1) is in $where: $(grep -F -- PASTED-CANARY-5c1e "$own/$where")"
+  done
+  [ ! -f "$report" ] || ! grep -qF -- PASTED-CANARY-5c1e "$report" || fail "a pasted credential ($1) is in --report: $(cat "$report")"
+  want_text "$want" "--$1 given a pasted credential"
+  want_status "$want_exit" "a pasted credential ($1)"
 }
 if row co; then
-  each pasted_row alone unknown-flag fleet service-agent broker-workload guarded db-secret broker-state
-  passed "(co) a credential pasted as an argument, alone or as a checked flag's value, is a usage error naming the flag or the argument's place and never printing it"
+  each pasted_row alone unknown-flag project pool-project cluster location namespace service-account gsa agent-namespace \
+    broker-account broker-workload sql-instance db-secret broker-state signing-secret secret rbac-only-member credentials-arg \
+    analysis-scope fleet service-agent guarded rbac-render iam-preview report report-unwritable
+  passed "(co) a credential pasted alone, as a name flag's value or as a file flag's file is printed in neither stdout, stderr nor --report"
 fi
 
-# --- (cp) The token Secrets are listed by name: no Secret's data is asked for, written to the work
-# directory or printed. The fake kubectl answers a list of Secret objects with each one's data, as a
-# real API server does, records that it was asked, and on each later call looks for that data under
-# the run's work directory; this row runs in a temporary directory of its own, so that look sees
-# this run's work directory alone. ---
+# --- (cp) The token Secrets are listed in the Table form: the API server's response to each list
+# carries no data field, and no Secret's data is written to the work directory or printed. The fake
+# kubectl holds each Secret's data, as a real API server does, answers each list with what the API
+# server sends kubectl for it (the Table for the default output; the Secrets whole, data included,
+# for -o json, -o name and -o jsonpath), records each response, and on each later call looks for
+# that data under the run's work directory; this row runs in a temporary directory of its own, so
+# that look sees this run's work directory alone. ---
 if row cp; then
   base_world
   # One in each guarded namespace: the shell empties a redirect's file before kubectl runs, so the
@@ -394,11 +418,18 @@ if row cp; then
   status=0
   output="$(env PATH="$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$own_tmp" bash "$check" "${cp_args[@]}" 2>&1)" || status=$?
   cp_failures=""
+  responses="$world/clusters/operator-cluster/token-secret-responses"
+  # One list for each guarded namespace, envoy-operator's and secrets-broker's: a row that read no
+  # response would pass with nothing seen.
+  listed="$(if [ -e "$responses" ]; then wc -l <"$responses"; else echo 0; fi)"
+  [ "$listed" -eq 2 ] || cp_failures+="the API server answered $listed lists of token Secrets, not one for each of the 2 guarded namespaces "
+  data_paths="$(if [ -e "$responses" ]; then jq -r 'paths | select(.[-1] == "data") | map(tostring) | join(".")' "$responses" | sort -u | paste -sd ' '; fi)"
+  [ -z "$data_paths" ] || cp_failures+="the API server's response to the list of token Secrets carried a data field: $data_paths "
   [ ! -e "$world/clusters/operator-cluster/secret-data-asked" ] ||
     cp_failures+="the check asked the API server for token Secrets whole, data included: $(tr '\n' ';' <"$world/clusters/operator-cluster/secret-data-asked") "
   [ ! -e "$world/clusters/operator-cluster/secret-data-in-work" ] ||
     cp_failures+="a token Secret's data was in the run's work directory: $(sort -u "$world/clusters/operator-cluster/secret-data-in-work" | sed "s|^$own_tmp/||" | tr '\n' ' ') "
   ! has_prefix "SECRET-DATA-CANARY-7f3a" || cp_failures+="the check printed a token Secret's data "
   [ -z "$cp_failures" ] || fail "$cp_failures"
-  passed "(cp) the token Secrets of a guarded namespace are listed by name: no Secret's data is asked for, kept in the work directory or printed"
+  passed "(cp) the token Secrets of a guarded namespace are listed in the Table form: no response carries a data field, and no Secret's data is kept in the work directory or printed"
 fi

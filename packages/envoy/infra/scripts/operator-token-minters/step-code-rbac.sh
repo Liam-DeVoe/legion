@@ -7,9 +7,11 @@ step="code: RBAC"
 if [ "${#RBAC_RENDERS[@]}" -eq 0 ]; then
   unknown "$step" "no --rbac-render: what the cluster's RBAC program declares is not read"
 else
-  readable=true
+  # Each render is named by its flag and place (--rbac-render entry 2), never its file.
+  readable=true n=0
   for file in "${RBAC_RENDERS[@]}"; do
-    [ -r "$file" ] || { unknown "$step" "the render $file cannot be read"; readable=false; }
+    n=$((n + 1))
+    [ -r "$file" ] && [ ! -d "$file" ] || { unknown "$step" "--rbac-render entry $n cannot be read"; readable=false; }
   done
   if [ "$readable" = true ]; then
     mark
@@ -19,8 +21,9 @@ else
     # each cluster's own, read live from its discovery.
     code_rights="$(with_rights "$(with_rights "$(rights_json db)" "$GUARD_RIGHTS")" "$ADMISSION_CODE_RIGHTS")"
     csr_reset
-    if ! jq -r -n --argjson rights "$code_rights" --argjson named_rights "$code_rights" \
-      --argjson live false -L "$LIB" -f "$LIB/code-rbac.jq" "${RBAC_RENDERS[@]}" >"$WORK/render.rec" 2>"$WORK/render.err"; then
+    # jq reads the renders from its stdin, so an error it prints names no file.
+    if ! cat -- "${RBAC_RENDERS[@]}" | jq -r -n --argjson rights "$code_rights" --argjson named_rights "$code_rights" \
+      --argjson live false -L "$LIB" -f "$LIB/code-rbac.jq" >"$WORK/render.rec" 2>"$WORK/render.err"; then
       unknown "$step" "a render is not JSON: $(first_line "$WORK/render.err")"
     else
       declared=0

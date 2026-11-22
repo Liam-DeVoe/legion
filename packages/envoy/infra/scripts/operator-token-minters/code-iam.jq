@@ -1,5 +1,6 @@
 # operator-token-minters/code-iam.jq: the step "code: IAM" (step-code-iam.sh) reads one preview,
-# `pulumi preview --json --show-sames`, named by $file: a `binding` record per member an IAM
+# `pulumi preview --json --show-sames`, from its stdin, $file being its flag and place (--iam-preview
+# entry 2), never its file: a `binding` record per member an IAM
 # resource grants (the kind and id of what it grants on, a secret's project, the role, the member
 # and the resource's URN), a `role` record per custom role it declares, `unknown` for a value the
 # preview does not know (computed at apply), `unread` for an IAM-like resource type this check does

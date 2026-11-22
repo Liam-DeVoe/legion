@@ -34,17 +34,27 @@ else
   # a get limited to the name, and a Secret of type kubernetes.io/service-account-token holds its
   # ServiceAccount's token. Those a guarded pair's ServiceAccount lists (its `secrets`), and every
   # one the namespace's list of that type holds, whichever ServiceAccount it names; a refused list
-  # is UNKNOWN. The list asks for the Secrets' names alone (a jsonpath of .metadata.name), so no
-  # Secret's data is fetched, written to $WORK or printed: the check requests no credential.
+  # is UNKNOWN. The list fetches no Secret's data: kubectl asks the API server for the server-side
+  # Table form (Accept: application/json;as=Table;v=v1;g=meta.k8s.io) for its default output alone,
+  # whose rows carry each Secret's name, type, number of data keys and age, and beside them the
+  # Secret's metadata alone: kubectl sends no includeObject, and the API server then puts each
+  # object's PartialObjectMetadata in its row (k8s.io/apiserver's endpoints/handlers/response.go,
+  # asTable). With -o name, -o jsonpath or -o json, kubectl asks for plain JSON and gets the
+  # Secrets whole, data included, and picks the names out itself (kubectl's get.go,
+  # transformRequests), and get --raw sends no Accept header that could ask for a
+  # PartialObjectMetadataList; both read with kubectl 1.36.4 against a server that records each
+  # request's Accept header. So the list is that default output with no headers, and the names
+  # are its first column.
   : >"$WORK/token-secrets.tsv"
   jq -r '.items[]? | select(("\(.metadata.namespace)/\(.metadata.name)") as $p | any($ARGS.positional[]; . == $p))
     | .metadata.namespace as $ns | (.secrets // [])[] | [$ns, .name] | @tsv' "$WORK/serviceaccounts.json" --args "${GUARDED[@]}" >>"$WORK/token-secrets.tsv"
   for guarded_ns in $(printf '%s\n' "${GUARDED[@]%%/*}" | sort -u); do
     if ! kubectl --kubeconfig "$KUBE" get secrets -n "$guarded_ns" --field-selector type=kubernetes.io/service-account-token \
-      -o 'jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}' >"$WORK/token-secret-names.txt" 2>"$WORK/token-secrets.err"; then
+      --server-print=true --no-headers >"$WORK/token-secret-rows.txt" 2>"$WORK/token-secrets.err"; then
       unknown "$step" "the API server refused the list of token Secrets in $guarded_ns (it needs list on secrets there, container.secrets.list on GKE), so a token Secret no ServiceAccount lists is not asked by name: $(first_line "$WORK/token-secrets.err")"
-    elif grep -qvE '^([a-z0-9]([-.a-z0-9]*[a-z0-9])?)?$' "$WORK/token-secret-names.txt"; then
-      unknown "$step" "the API server's list of token Secrets in $guarded_ns holds a line that is no Kubernetes name"
+    elif ! awk '{ print $1 }' "$WORK/token-secret-rows.txt" >"$WORK/token-secret-names.txt" ||
+      grep -qvE '^([a-z0-9]([-.a-z0-9]*[a-z0-9])?)?$' "$WORK/token-secret-names.txt"; then
+      unknown "$step" "the API server's list of token Secrets in $guarded_ns holds a row whose first column is no Kubernetes name"
     else
       while IFS= read -r secret_name; do
         [ -z "$secret_name" ] || printf '%s\t%s\n' "$guarded_ns" "$secret_name" >>"$WORK/token-secrets.tsv"

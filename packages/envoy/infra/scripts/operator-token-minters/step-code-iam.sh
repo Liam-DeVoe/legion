@@ -48,13 +48,17 @@ if [ "${#IAM_PREVIEWS[@]}" -eq 0 ]; then
 else
   mark
   : >"$WORK/preview.rec"
+  # Each preview is named by its flag and place (--iam-preview entry 2), never its file, and jq
+  # reads it from its stdin, so an error it prints names no file either.
+  n=0
   for file in "${IAM_PREVIEWS[@]}"; do
-    if [ ! -r "$file" ]; then
-      unknown "$step" "the preview $file cannot be read"
+    n=$((n + 1))
+    if [ ! -r "$file" ] || [ -d "$file" ]; then
+      unknown "$step" "--iam-preview entry $n cannot be read"
       continue
     fi
-    if ! jq -r --arg file "$file" -L "$LIB" -f "$LIB/code-iam.jq" "$file" >>"$WORK/preview.rec" 2>"$WORK/preview.err"; then
-      unknown "$step" "the preview $file is not the JSON pulumi preview --json prints: $(first_line "$WORK/preview.err")"
+    if ! jq -r --arg file "--iam-preview entry $n" -L "$LIB" -f "$LIB/code-iam.jq" <"$file" >>"$WORK/preview.rec" 2>"$WORK/preview.err"; then
+      unknown "$step" "--iam-preview entry $n is not the JSON pulumi preview --json prints: $(first_line "$WORK/preview.err")"
     fi
   done
   # The previews' own custom roles, so a role the code declares is read as the code declares it.
@@ -66,8 +70,8 @@ else
   judged=0
   while IFS="$US" read -r -u 3 what a b c d e f; do
     case "$what" in
-      empty) unknown "$step" "the preview $a lists no resource, so it shows nothing" ;;
-      nosames) unknown "$step" "the preview $a was made without --show-sames, so it leaves out every binding it does not change" ;;
+      empty) unknown "$step" "$a lists no resource, so it shows nothing" ;;
+      nosames) unknown "$step" "$a was made without --show-sames, so it leaves out every binding it does not change" ;;
       unknown) unknown "$step" "$a: the preview does not know its $b (it is computed when the program applies), so what it grants is unknown" ;;
       unread) unknown "$step" "$a: the check does not read $b, which can grant on the resources these checks are about" ;;
       binding)
