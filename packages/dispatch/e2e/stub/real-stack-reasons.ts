@@ -162,6 +162,8 @@ export const realStackReasons: Record<string, string> = {
   "inbox-mark-all.e2e.ts": "mark-all is a server write, including its refusal",
   "inbox-pane-scroll.e2e.ts":
     "every row draws the document in its live room; another session's edit, a reply and an event committed elsewhere must reach the open page, and a resumed socket's gap must refresh the reads it holds; an approval row reads the version the server names latest against the approval it is marked against",
+  "inbox-quoted-range.e2e.ts":
+    "the pane draws each document from its live room with the comment's mark lit in it, and the anchor the server orphans when another session deletes the quoted words is what the pane falls back to",
   "inbox-read-state.e2e.ts": "reading writes the read mark and the row is re-read",
   "inbox-reading-pane.e2e.ts":
     "the answer is a write; approval is the server's computation; the withdrawal is the server's",
@@ -321,7 +323,7 @@ export const realStackReasons: Record<string, string> = {
   "task-items.e2e.ts": "asserts inside the live document editor",
   "text-typed-blocks.e2e.ts": "the live document editor, including typing a new option",
   "threads-order.e2e.ts":
-    "two live documents, each with its own room; the margin sits on the live document",
+    "two live documents, each with its own room; the margin sits on the live document; the reading pane draws the anchored comment thread inside its document's live room, which the stub layer does not serve",
   "threads.e2e.ts":
     "replies, resolve and reopen, edits, retractions and suggestion accepts, all server writes",
   "typed-block-content-rule.e2e.ts": "pastes into the live document editor",

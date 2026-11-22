@@ -158,7 +158,7 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · the column moves to another row, then back`)
   ),
   ...answers(
-    "ThreadPane | ThreadBody | conditional | if (inDocument && anchor !== undefined && !anchor.orphaned && blockId !== null && blockId !== undefined)",
+    "ThreadPane | ThreadBody | conditional | if (inDocument && !anchor.orphaned && blockId !== null && blockId !== undefined)",
     { reason: REASONS[10] }
   ),
   ...answers(
@@ -207,7 +207,7 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · the column moves to another row, then back`)
   ),
   ...answers(
-    "ThreadPane | ThreadBodyPane | early return | if (inDocument && anchor !== undefined && !anchor.orphaned && blockId !== null && blockId !== undefined) return …",
+    "ThreadPane | ThreadBodyPane | early return | if (inDocument && !anchor.orphaned && blockId !== null && blockId !== undefined) return …",
     { reason: REASONS[10] }
   ),
   ...answers(
@@ -226,7 +226,7 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · the column moves to another row, then back`)
   ),
   ...answers(
-    "ThreadPane | ThreadDocumentBody | conditional | if (inDocument && anchor !== undefined && !anchor.orphaned && blockId !== null && blockId !== undefined)",
+    "ThreadPane | ThreadDocumentBody | conditional | if (inDocument && !anchor.orphaned && blockId !== null && blockId !== undefined)",
     { reason: REASONS[10] }
   ),
   ...answers("ThreadPane | ThreadDocumentBody | address prop | thread={row}", {
