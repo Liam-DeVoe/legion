@@ -437,15 +437,28 @@ func TestANakGapReMarkRunsOffTheReceiptCallback(t *testing.T) {
 			close(started)
 			<-release
 		}
+		defer close(release)
 		frameFor(relays, "ses_slow", "TOKENOFTHESLOWSESSIONSFRAME1", "a-gap-mark")
 		otherAcker := frameFor(relays, "ses_other", "TOKENOFTHEOTHERSESSIONFRAME2", "")
 
-		// The slow session's gap-marked frame is nak'd: onReply hands its re-mark to a goroutine.
-		nak(relays, "ses_slow", "TOKENOFTHESLOWSESSIONSFRAME1")
+		// The slow session's gap-marked frame is nak'd on a goroutine of the test's own, so onReply
+		// must hand the re-mark off and return for this call to return at once while the re-mark
+		// blocks. Run synchronously (the revert), onReply blocks here, and the row fails with the
+		// message below rather than hanging the package until the go test timeout.
+		naked := make(chan struct{})
+		go func() {
+			nak(relays, "ses_slow", "TOKENOFTHESLOWSESSIONSFRAME1")
+			close(naked)
+		}()
+		select {
+		case <-naked:
+		case <-time.After(2 * time.Second):
+			t.Fatal("onReply did not return within 2s of a nak carrying a gap mark; it waited on the re-mark instead of running it off the callback")
+		}
 		select {
 		case <-started:
 		case <-time.After(2 * time.Second):
-			t.Fatal("onReply never started the re-mark; it was not run off the callback")
+			t.Fatal("onReply never started the re-mark")
 		}
 		// The re-mark is still blocked. The other session's done is acked at once.
 		done := make(chan struct{})
@@ -461,7 +474,6 @@ func TestANakGapReMarkRunsOffTheReceiptCallback(t *testing.T) {
 		if otherAcker.acks.Load() != 1 {
 			t.Fatalf("the other session's done acked %d times while the re-mark blocked, want 1", otherAcker.acks.Load())
 		}
-		close(release)
 	})
 
 	t.Run("a re-mark runs only for a nak carrying a gap mark", func(t *testing.T) {
@@ -486,4 +498,17 @@ func TestANakGapReMarkRunsOffTheReceiptCallback(t *testing.T) {
 			t.Fatalf("a nak with a gap mark ran the re-mark %d times, want 1", got)
 		}
 	})
+}
+
+// A frame of a session this replica admitted no registration of is held unacknowledged, for the
+// consumer to deliver again once the session registers here, never acknowledged away: edgeWithholds
+// answers frameHold for it (the relay loop's `case frameHold: continue`), not frameDrop (which
+// acknowledges and counts). This row fails if a not-admitted frame is acknowledged instead of held.
+func TestTheRelayHoldsANotAdmittedFrameRatherThanAcknowledgingIt(t *testing.T) {
+	m := &sessionRelays{repositories: &edgeRepositories{}, delivery: &sessionDelivery{}}
+	msg := bus.SessionMessage{Subject: contracts.LegacyAgentSubject("ses_unadmitted"), Data: []byte(`{"topic":"notifications.agent.ses_unadmitted"}`)}
+	if verdict := m.edgeWithholds("ses_unadmitted", msg); verdict.action != frameHold {
+		t.Fatalf("edgeWithholds for a session this replica admitted no registration of = action %d, reason %q; want it held (frameHold, unacknowledged), not acknowledged away",
+			verdict.action, verdict.reason)
+	}
 }
