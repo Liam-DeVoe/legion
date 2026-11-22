@@ -40,10 +40,20 @@ fi
 #   spend-for    seconds: the first route request spends the budget for that long, writing the
 #                epoch it is spent until to spent-until (absent: the budget is whole).
 #   always-spent present: every route is refused, the reset passed or not.
+#   refuse-calls N: the route's first N requests are refused for the spent budget, its reset an
+#                hour after the first refusal, and the rate_limit route reports the budget at 0 from
+#                the first refusal through the Nth: refusals counted, not timed. The count is kept
+#                in refused-calls.
 #   secondary    `<status> <retry-after seconds|none>`: route requests are refused for a secondary
 #                rate limit with that status and that retry-after header (none: no header), the
 #                first one alone, or every one while `secondary-always` is present; the core
-#                budget stays whole.
+#                budget stays whole. Each refusal appends its path to `refused`.
+#   hold-secondary  a token (fresh per case): a request about to take the secondary refusal holds
+#                until a second request has made the same check, 2 s at most.
+#   hold-spend-read  a token (fresh per case): a rate_limit request holds its read of spent-until
+#                until a later request has arrived (10 s at most) and that request's spend has
+#                opened spent-until (1 s at most after it arrived); the spend holds the opened,
+#                empty file until that read is done (2 s at most).
 #   answer       what a route answers once the budget is back: 200 or 404.
 #   body         the body of a 200.
 #   release      present: the release routes answer v1 as a release whose name and body must
@@ -57,7 +67,9 @@ fi
 #                request trace prints as it came, line for line.
 # and appends `<epoch> <method> <path>` to `log` for every request it answers. The server answers
 # each request in a thread of its own, and gh release view and edit send two at once, so the steps
-# that read a state file and then write one (spent-until, secondary-done) run under one lock.
+# that read a state file and then write one (spent-until, secondary-done, refused-calls) run under
+# one lock, and so does the read of spent-until each answer is made from. The two hold knobs make
+# the interleavings that lock rules out certain, so a case can show each part of it is needed.
 cat > "$work/github.py" <<'PY'
 import http.server
 import json
@@ -82,6 +94,11 @@ RELEASE = {"id": 1, "tag_name": "v1", "name": "the draft's name", "body": "the d
 # its request is answered by nothing, and gh reports an EOF, no rate limit, so the helper has
 # nothing to wait for (run 45015045673).
 STATE_LOCK = threading.Lock()
+# What the hold knobs wait on: how many requests have arrived, and per case (the token the case
+# wrote into the knob's file) what the held steps have done.
+EVENTS = threading.Condition()
+arrivals = [0]
+held = {}
 
 
 def read(name, default=""):
@@ -90,6 +107,48 @@ def read(name, default=""):
             return handle.read().strip()
     except FileNotFoundError:
         return default
+
+
+def write(name, value, mode="w"):
+    with open(os.path.join(state, name), mode) as handle:
+        handle.write(value)
+
+
+def knob(name):
+    """This case's state for a hold knob, or None when the case did not set it."""
+    token = read(name)
+    if not token:
+        return None
+    with EVENTS:
+        return held.setdefault((name, token), {"checked": 0, "opened": False, "read": False})
+
+
+def note(hold, key, value=None):
+    """Sets a held step's fact (or adds one to a count, with no value) and wakes every waiter."""
+    with EVENTS:
+        hold[key] = hold[key] + 1 if value is None else value
+        EVENTS.notify_all()
+
+
+def wait_until(predicate, seconds):
+    with EVENTS:
+        EVENTS.wait_for(predicate, timeout=seconds)
+
+
+def read_spent_until(path, mine):
+    """spent-until as a number, read under STATE_LOCK. Under hold-spend-read a rate_limit read first
+    holds until a later request has arrived and opened spent-until for its spend: inside the lock
+    that spend cannot open it, so the hold ends at its cap; outside the lock the read would find the
+    file opened and empty."""
+    hold = knob("hold-spend-read") if path == "/rate_limit" else None
+    if hold is not None:
+        wait_until(lambda: arrivals[0] > mine, 10)
+        wait_until(lambda: hold["opened"], 1)
+    try:
+        return int(read("spent-until", "0"))
+    finally:
+        if hold is not None:
+            note(hold, "read", True)
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -111,16 +170,37 @@ class Handler(http.server.BaseHTTPRequestHandler):
         now = time.time()
         with open(os.path.join(state, "log"), "a") as log:
             log.write(f"{now:.3f} {self.command} {path}\n")
+        with EVENTS:
+            arrivals[0] += 1
+            mine = arrivals[0]
+            EVENTS.notify_all()
         with STATE_LOCK:
             if path != "/rate_limit" and read("spend-for") and not read("spent-until"):
                 with open(os.path.join(state, "spent-until"), "w") as handle:
+                    hold = knob("hold-spend-read")
+                    if hold is not None:
+                        note(hold, "opened", True)
+                        wait_until(lambda: hold["read"], 2)
                     handle.write(str(int(now) + int(read("spend-for"))))
-            spent_until = int(read("spent-until", "0"))
+            spent_until = read_spent_until(path, mine)
+            if read("refuse-calls"):
+                refused = int(read("refused-calls", "0"))
+                if path != "/rate_limit":
+                    refused += 1
+                    write("refused-calls", str(refused))
+                    if refused == 1:
+                        write("refuse-until", str(int(now) + 3600))
+                spent_until = int(read("refuse-until", "0")) if 1 <= refused <= int(read("refuse-calls")) else 0
             secondary = (path != "/rate_limit" and read("secondary") != ""
                          and (not read("secondary-done") or os.path.exists(os.path.join(state, "secondary-always"))))
+            hold = knob("hold-secondary") if path != "/rate_limit" and read("secondary") else None
+            if hold is not None:
+                note(hold, "checked")
+                if secondary:
+                    wait_until(lambda: hold["checked"] >= 2, 2)
             if secondary:
-                with open(os.path.join(state, "secondary-done"), "w") as handle:
-                    handle.write("1")
+                write("secondary-done", "1")
+                write("refused", f"{path}\n", "a")
         spent = now < spent_until or os.path.exists(os.path.join(state, "always-spent"))
         if path == "/rate_limit":
             bucket = {"limit": 15000, "used": 15000 if spent else 0,
@@ -254,11 +334,25 @@ errors() { grep -c '^::error::' <<<"$err" || true; }
 warnings() { grep -c '^::warning::' <<<"$err" || true; }
 at_least() { [ "$1" -ge "$2" ] && echo true || echo false; }
 below() { [ "$1" -lt "$2" ] && echo true || echo false; }
+# refusals: how many requests the stand-in refused for the secondary limit.
+refusals() { [ -f "$work/state/refused" ] && wc -l < "$work/state/refused" | tr -d ' ' || echo 0; }
+# gap_at_least <path> <seconds>: whether the second request for that path came at least that many
+# seconds after the first, by the stand-in's own clock.
+gap_at_least() {
+  awk -v path="$1" -v want="$2" '$3 == path { t[++n] = $1 } END { print (n >= 2 && t[2] - t[1] >= want) ? "true" : "false" }' \
+    "$work/state/log"
+}
+# logged_wait_names <pattern>: whether the helper logged no wait (a host slower than the wait has
+# none left to sleep and logs none, gh-read.sh's header) or exactly one, matching the pattern.
+logged_wait_names() {
+  { [ "$(warnings)" -eq 0 ] || { [ "$(warnings)" -eq 1 ] && grep -q -e "$1" <<<"$err"; }; } && echo true || echo false
+}
 
 echo "case: a spent budget whose reset falls before the job's limit is waited out"
-# 10 s: the refused call and its rate_limit read must both land before the reset, or the helper
-# reads the window as turned over and calls again at once, with no wait to log; a loaded host was
-# seen to take over 3 s for the two. The same holds for each case below that wants the wait logged.
+# The wait's line is logged when the helper sleeps; a host slower than the 10 s window has nothing
+# left to sleep and logs none (gh-read.sh's header). So these rows, and the like rows below, read the
+# wait off the stand-in's clock (the second call comes no sooner than the reset) and read the line
+# only when one was logged.
 github 10
 drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 reset=$(spent_until)
@@ -267,9 +361,8 @@ check "prints the answer of the call it made after the wait" "$(is "$out" '{"tit
 check "calls the route twice: refused, then answered" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
 check "reads the reset from the rate_limit route once" "$(is "$(calls /rate_limit)" 1)"
 check "makes the second call no sooner than the reset" "$(at_least "$(nth_at /repos/o/r/pulls/1 2)" "$reset")"
-check "logs exactly one line about the wait" "$(is "$(warnings)" 1)"
-check "which names the reset" "$(contains "$err" "^::warning::the API budget is spent until $(utc "$reset");")"
-check "and the job's limit it waits within" "$(contains "$err" "within this job's limit at ")"
+check "logs at most one line about the wait, naming the reset and the job's limit" \
+  "$(logged_wait_names "^::warning::the API budget is spent until $(utc "$reset"); waiting [0-9]* s for it, within this job's limit at ")"
 check "and fails nothing" "$(is "$(errors)" 0)"
 check "gh's own words for the refusal stay in the log, once: the answered call printed none" \
   "$(is "$(grep -c 'API rate limit exceeded for installation ID 1' <<<"$err")" 1)"
@@ -315,7 +408,11 @@ echo "case: a step limit alone is a limit"
 github 10
 drive STEP_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 check "waits and passes" "$(is "$status|$out" '0|{"title":"t"}')"
-check "within the step's limit" "$(contains "$err" "within this step's limit at ")"
+check "any wait it logs is held to the step's limit" "$(logged_wait_names "within this step's limit at ")"
+github 60
+drive STEP_TIMEOUT_MINUTES=0 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+check "and binds: a reset past it fails by name, naming the step's limit" \
+  "$(is "$status|$(contains "$err" "past this step's limit at ")" '75|true')"
 
 echo "case: a plain 404 fails as it did before"
 github never 404
@@ -399,7 +496,8 @@ drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset --stderr "$PWD/words" gh api repos
 check "the call after the wait decides" "$(contains "$out" '^status=1$')"
 check "the file holds that call's words" "$(contains "$out" '^gh: Not Found (HTTP 404)$')"
 check "and not the refusal's" "$(is "$(contains "$out" 'rate limit exceeded')" false)"
-check "the wait still reaches the log" "$(contains "$err" '^::warning::the API budget is spent until ')"
+check "the call after the wait came no sooner than the reset" "$(at_least "$(nth_at /repos/o/r/pulls/1 2)" "$(spent_until)")"
+check "and any wait it logged reached the log" "$(logged_wait_names '^::warning::the API budget is spent until ')"
 rm -f "$work/words"
 
 echo "case: gh_read takes its attempt through the wait"
@@ -438,11 +536,10 @@ check "exits 0" "$(is "$status" 0)"
 check "prints the answer of the call after the wait" "$(is "$out" '{"title":"t"}')"
 check "calls the route twice" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
 check "reads no rate limit, since no budget is spent" "$(is "$(calls /rate_limit)" 0)"
-check "waits the 3 s GitHub asked for" \
-  "$(at_least "$(nth_at /repos/o/r/pulls/1 2)" "$(($(nth_at /repos/o/r/pulls/1 1) + 3))")"
-check "logs exactly one line about the wait, naming the retry-after" \
-  "$(is "$(grep -c "^::warning::GitHub's secondary rate limit asks this call to wait 3 s (its retry-after)" <<<"$err")" 1)"
-check "and the job's limit it waits within" "$(contains "$err" "within this job's limit at ")"
+check "waits the 3 s GitHub asked for, and not GitHub's 60 s minimum" \
+  "$(is "$(gap_at_least /repos/o/r/pulls/1 3)|$(gap_at_least /repos/o/r/pulls/1 60)" 'true|false')"
+check "logs at most one line about the wait, naming the retry-after and the job's limit" \
+  "$(logged_wait_names "^::warning::GitHub's secondary rate limit asks this call to wait 3 s (its retry-after), until .*, within this job's limit at ")"
 check "gh's own words for the refusal stay in the log, once" \
   "$(is "$(grep -c 'secondary rate limit.* (HTTP 429)$' <<<"$err")" 1)"
 check "and none of gh's request trace does" "$(is "$(contains "$err" '^\* Request\|^< \|^> ')" false)"
@@ -491,8 +588,8 @@ secondary 403 2
 drive JOB_TIMEOUT_MINUTES=5 -- 'gh_read gh api repos/o/r/pulls/1'
 check "exits 0" "$(is "$status" 0)"
 check "calls the route twice" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
-check "the second call made after the wait, not by the ladder at once" \
-  "$(contains "$err" "^::warning::GitHub's secondary rate limit asks this call to wait 2 s (its retry-after)")"
+check "the second call came the 2 s retry-after after the first: the helper waited, the ladder would not" \
+  "$(gap_at_least /repos/o/r/pulls/1 2)"
 
 # gh release view, edit and upload send a GraphQL lookup and a REST request together, so both are
 # open at once. The helper reads gh's request trace (GH_DEBUG=api) for `gh api` alone, which has
@@ -524,9 +621,26 @@ touch "$work/state/release"
 drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh release view v1 --repo o/r --json name,body -q ".name, .body"'
 check "exits 0" "$(is "$status" 0)"
 check "prints the release on stdout" "$(contains "$out" "^the draft's name$")"
-check "after one wait" "$(is "$(warnings)" 1)"
+check "the second run came no sooner than the reset" "$(at_least "$(nth_at /graphql 2)" "$(spent_until)")"
+check "and logged at most the one wait, naming the reset" "$(logged_wait_names "^::warning::the API budget is spent until $(utc "$(spent_until)");")"
 check "with nothing of the release on stderr" "$(is "$(contains "$err" "the draft's")" false)"
 check "and no line of a trace" "$(is "$(contains "$err" '^\* Request\|^< \|^> \|^{')" false)"
+
+echo "case: gh release view under a secondary rate limit: the stand-in refuses one of its two requests, not both"
+# gh sends the GraphQL lookup and the REST read together, so both requests reach the secondary
+# step at once. The hold-secondary knob holds the first until the second has made the same check:
+# under the lock the second waits, finds the refusal given and is answered; without it both would
+# be refused. Which of the two takes the lock first is the threads' race, so what gh then does is
+# not this case's to fix: when the GraphQL lookup is refused gh reads the release from the REST
+# answer, and when the REST read is refused the helper meets GitHub's 60 s minimum (gh release view
+# leaves no retry-after to read), which a one-minute limit turns into a failure by name at once.
+github never
+touch "$work/state/release"
+secondary 403 3
+date +%s%N > "$work/state/hold-secondary"
+drive JOB_TIMEOUT_MINUTES=1 -- 'gh_wait_reset gh release view v1 --repo o/r --json name,body -q ".name, .body"'
+check "the stand-in refused one request for the secondary limit, not both" "$(is "$(refusals)" 1)"
+check "both requests reached it" "$(is "$(calls /graphql)|$(calls /repos/o/r/releases/tags/v1)" '1|1')"
 
 # A raw answer is printed into gh's request trace as it came, and a line of it can read like gh's
 # own end of a request. The trace of one request runs from its `* Request at` line to its last
@@ -552,32 +666,54 @@ check "and nothing on stderr" "$(is "$err" '')"
 
 echo "case: the wait is measured from after the rate_limit read, not before it"
 # The rate_limit route takes 5 s to answer a reset 3 s after the refusal: the budget is back by the
-# time the answer arrives, so the call goes again at once. A clock read before the probe sleeps the
-# reset's 4 s on top of the probe's 5, so the second call lands 6 s or more after the reset; the row
-# allows 5, room for a loaded host.
+# time the answer arrives, so the call goes again at once and logs no wait. A clock read before the
+# probe would see the reset still ahead and sleep for it, logging the wait.
 github 3
 echo 5 > "$work/state/rate-limit-delay"
 drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
-reset=$(spent_until)
 check "exits 0" "$(is "$status" 0)"
 check "calls the route twice" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
-check "the second call no later than 5 s after the reset" "$(at_least "$((reset + 5))" "$(nth_at /repos/o/r/pulls/1 2)")"
+check "logs no wait: the reset passed while the rate-limit read answered" "$(is "$(warnings)" 0)"
 
 echo "case: gh_read with no limit set keeps its ladder's retries for a rate limit"
 # With no limit the helper cannot wait, and says so; the ladder still makes its later attempts, as
-# it did before the helper, and one lands after a short reset.
-# The attempts come about 8 s and 24 s after the first; the budget is back between 19 and 20 s
-# after it (the stand-in floors its clock). Each refused attempt's rate_limit read must land before
-# the reset, or the helper reads the window as turned over and calls again at once, so the second
-# attempt has 10 s of room for a slow gh on a loaded machine (a read that took over 6 s was seen),
-# and the third lands 4 s after the reset.
-github 20
-drive GH_RETRY_SECONDS=8 -- 'gh_read gh api repos/o/r/pulls/1'
+# it did before the helper. The stand-in refuses the route's first two calls for the spent budget,
+# its reset an hour off, and answers the third: refusals counted, not a reset the attempts must
+# straddle, so a slow host changes nothing.
+github never
+echo 2 > "$work/state/refuse-calls"
+drive -- 'gh_read gh api repos/o/r/pulls/1'
 check "exits 0" "$(is "$status" 0)"
 check "prints the answer" "$(is "$out" '{"title":"t"}')"
 check "after three attempts" "$(is "$(calls /repos/o/r/pulls/1)" 3)"
 check "the two refused ones each named the missing limit" \
   "$(is "$(grep -c 'names no time limit to wait within' <<<"$err")" 2)"
+
+echo "case: a rate-limit read that overlaps the first spend reads the reset whole"
+# The hold-spend-read knob makes a rate_limit read and the first spend's write overlap: the read
+# holds until the spend's request has arrived and opened spent-until, and the spend holds the
+# opened, empty file until the read is done. Under the lock the read comes before the spend can
+# open the file; read outside it, it would find the file empty, raise, and answer nothing (an EOF
+# to gh). The case starts the spend once the stand-in has logged the read, not after a pause.
+github 10
+date +%s%N > "$work/state/hold-spend-read"
+cat > "$work/overlap.sh" <<'SH'
+gh api rate_limit --jq .resources.core.remaining > limit 2> limit.err &
+reader=$!
+for _ in $(seq 600); do
+  grep -q ' /rate_limit$' state/log && break
+  sleep 0.05
+done
+gh api repos/o/r/pulls/1 > /dev/null 2>&1
+echo "spend=$?"
+wait "$reader"
+echo "read=$? limit=$(cat limit)"
+SH
+drive -- 'bash "$PWD/overlap.sh"'
+check "the rate-limit read is answered" "$(contains "$out" '^read=0 limit=[0-9][0-9]*$')"
+check "and the spend's call is refused for the spent budget" "$(contains "$out" '^spend=1$')"
+check "both reached the stand-in" "$(is "$(calls /rate_limit)|$(calls /repos/o/r/pulls/1)" '1|1')"
+rm -f "$work/overlap.sh" "$work/limit" "$work/limit.err"
 
 echo "case: on a GitHub runner, the job's start is read off the real Runner.Worker"
 if [ "${GITHUB_ACTIONS:-}" = true ]; then
