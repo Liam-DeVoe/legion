@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -2500,10 +2501,16 @@ func TestTLSProbeExits75NamingAClientThatNeverAnswersAtAReachedSite(t *testing.T
 // also where the probe's deadline passes while the limit's stop is still under way, since the run
 // records which of the two fired first when it fires: such a run is unavailable too, and never one
 // with no verdict.
+//
+// Every stand-in's limit is counted from its own start (fromTheRunsLogLine): a loaded machine can
+// take longer than the one-second limit to start a shell, and a limit counted from before that
+// would end a run that answers, or the last row's run before its trap was set.
 func TestTLSProbeFailsAClientWhoseLimitPassesAtASiteNoRunReached(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
-	node := shTLSClient("node", t.TempDir(), `[ "$1" != control ] || exec sleep 30; `+tlsAnswers, nodeAnswer)
+	dir := t.TempDir()
+	node := shTLSClient("node", dir, `[ "$1" != control ] || exec sleep 30; `+tlsAnswers, nodeAnswer)
+	node.limitClock = fromTheRunsLogLine(dir)
 	controlsCut := func(context.Context, []string, string, []tlsSite) error {
 		return tlsNoVerdicts{"emSign positive control at " + emSignTLSSite.url + ": the probe's deadline ended it after 0.1s: signal: terminated"}
 	}
@@ -2521,7 +2528,9 @@ func TestTLSProbeFailsAClientWhoseLimitPassesAtASiteNoRunReached(t *testing.T) {
 		t.Errorf("node's control lines = %q, want one run and no second", lines)
 	}
 
-	node = shTLSClient("node", t.TempDir(), `[ "$1" != control ] || exec sleep 30; `+tlsAnswers, nodeAnswer)
+	dir = t.TempDir()
+	node = shTLSClient("node", dir, `[ "$1" != control ] || exec sleep 30; `+tlsAnswers, nodeAnswer)
+	node.limitClock = fromTheRunsLogLine(dir)
 	code, stdout, stderr = probeImageWith(theseTLSClients(node), passingTLSPositiveControls, img.flags()...)
 	detail, ok := bootprobe.NoVerdict(stderr)
 	if code != bootprobe.NoVerdictExit || !ok || !strings.HasPrefix(detail, "node control: its 2s limit ended it after ") || strings.Contains(stderr, "worker TLS probe failed") {
@@ -2533,31 +2542,60 @@ func TestTLSProbeFailsAClientWhoseLimitPassesAtASiteNoRunReached(t *testing.T) {
 
 	// A served copy of a public chain whose own positive control passed is reached too: aws, which
 	// is held to the copies, hangs at the emSign copy, and that run has no verdict, not a failure.
-	vendoredHang := shTLSClient("aws", t.TempDir(), `[ "$1" != "vendored emSign" ] || exec sleep 30; `+tlsAnswers, awsAnswer)
+	dir = t.TempDir()
+	vendoredHang := shTLSClient("aws", dir, `[ "$1" != "vendored emSign" ] || exec sleep 30; `+tlsAnswers, awsAnswer)
 	vendoredHang.applicationSeen = awsResponseSeen
+	vendoredHang.limitClock = fromTheRunsLogLine(dir)
 	code, stdout, stderr = probeImageWith(theseTLSClients(vendoredHang), passingTLSPositiveControls, img.flags()...)
 	detail, ok = bootprobe.NoVerdict(stderr)
 	if code != bootprobe.NoVerdictExit || !ok || !strings.HasPrefix(detail, "aws vendored emSign: its 2s limit ended it after ") || strings.Contains(stderr, "worker TLS probe failed") {
 		t.Fatalf("probe-image with aws hanging at the emSign copy = %d, stdout %q, stderr %q; want exit %d naming that run alone", code, stdout, stderr, bootprobe.NoVerdictExit)
 	}
 
-	dir := t.TempDir()
+	dir = t.TempDir()
 	aws := shTLSClient("aws", dir, tlsSleepsAtEmSign, awsAnswer)
 	aws.applicationSeen = awsResponseSeen
+	aws.limitClock = fromTheRunsLogLine(dir)
 	if _, noVerdict, err := probeTLSClients(context.Background(), []tlsClient{aws}, servedTLSSites(), nil); err == nil || !strings.Contains(err.Error(), "aws cannot verify refusal of the emSign chain: its 1s limit ended it after ") || len(noVerdict) != 0 {
 		t.Errorf("probeTLSClients() with emSign unreached = %v, runs with no verdict %q; want aws's emSign run to fail", err, noVerdict)
 	}
 	node = shTLSClient("node", dir, tlsAnswers, nodeAnswer)
+	node.limitClock = fromTheRunsLogLine(dir)
 	if _, noVerdict, err := probeTLSClients(context.Background(), []tlsClient{node, aws}, servedTLSSites(), nil); err != nil || len(noVerdict) != 1 || !strings.HasPrefix(noVerdict[0], "aws emSign: its 2s limit ended it after ") {
 		t.Errorf("probeTLSClients() with emSign reached by node's refusal = %v, runs with no verdict %q; want aws's emSign run alone with no verdict", err, noVerdict)
 	}
 
-	// A command at the control that answers its limit's SIGTERM, at 1 s, with an exit of its own
-	// 0.6 s later, inside procgroup.StopGrace, while the probe's deadline passes at 1.3 s, 0.3 s
-	// after the limit and 0.3 s before that exit.
-	stopped := shTLSClient("node", t.TempDir(), `trap '/bin/sleep 0.6; exit 1' TERM; /bin/sleep 30 & wait`, nodeAnswer)
-	ctx, cancel := context.WithTimeout(context.Background(), 1300*time.Millisecond)
-	defer cancel()
+	// A command at the control that answers its limit's SIGTERM with an exit of its own, inside
+	// procgroup.StopGrace, after the probe's deadline has passed. The limit's 1 s is counted from
+	// the stand-in's own start; the deadline ends the probe's context once the trap has started;
+	// and the trap exits 1 once it reads, from a pipe, that the deadline has passed. Inside the
+	// grace the trap starts no process and sleeps for no fixed time: one that slept 0.6 s in a
+	// /bin/sleep of its own was SIGKILLed at the grace's end on a loaded machine, which took that
+	// long to start it.
+	dir = t.TempDir()
+	deadlinePassed := filepath.Join(dir, "deadline")
+	if err := syscall.Mkfifo(deadlinePassed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stopped := shTLSClient("node", dir, `trap ': >"$2/trapped"; read -r _ <"$2/deadline"; exit 1' TERM; /bin/sleep 30 & wait`, nodeAnswer)
+	stopped.limitClock = fromTheRunsLogLine(dir)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(context.Canceled)
+	go func() {
+		if !testwait.Holds(tlsStandInStart, testwait.Poll, func() bool {
+			_, err := os.Stat(filepath.Join(dir, "trapped"))
+			return err == nil
+		}) {
+			return
+		}
+		cancel(context.DeadlineExceeded)
+		// The trap opens the pipe right after it marks its start, so this open, which waits for
+		// a reader, returns.
+		if told, err := os.OpenFile(deadlinePassed, os.O_WRONLY, 0); err == nil {
+			_, _ = told.WriteString("passed\n")
+			_ = told.Close()
+		}
+	}()
 	outcome := stopped.probe(ctx, controlTLSSite, tlsRunTerms{})
 	if ctx.Err() == nil {
 		t.Fatalf("the run returned %+v before the probe's deadline; the row needs the deadline to pass while the limit's stop is under way", outcome)
