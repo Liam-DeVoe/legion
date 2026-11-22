@@ -1869,17 +1869,22 @@ test("a second tab leaves a Start next that is still writing to finish, or the f
     await expect(one.locator("[data-issue-row]").first()).toBeVisible();
     for (const key of moved)
       await one.getByRole("checkbox", { exact: true, name: `Select ${key}` }).check();
+    // Every selected row is a Todo issue labelled legion and none is off the page, so Start next
+    // asks no confirm and writes at once.
     await one.getByRole("toolbar").getByRole("button", { exact: true, name: "Start next" }).click();
-    const confirm = one.getByRole("dialog", { name: "Start these next?" });
-    if (await confirm.isVisible())
-      await confirm.getByRole("button", { exact: true, name: "Start next" }).click();
     await writing;
 
     const two = await context.newPage();
     await two.goto(`/projects/${ACME}/issues`);
     await expect(two.locator("[data-issue-row]").first()).toBeVisible();
-    const dismiss = two.getByRole("button", { exact: true, name: "Dismiss" });
-    if ((await dismiss.count()) > 0) await dismiss.first().click();
+    // Tab two decides whether to offer Dismiss once it has asked the browser whether tab one holds
+    // the move's lock, which answers within milliseconds of the rows. A Dismiss it offers is
+    // pressed; none within 3 s is no offer, and the click's timeout is that answer.
+    await two
+      .getByRole("button", { exact: true, name: "Dismiss" })
+      .first()
+      .click({ timeout: 3_000 })
+      .catch(() => undefined);
     release();
 
     const rankOf = async (key: string) => (await getIssue(key)).rank;
