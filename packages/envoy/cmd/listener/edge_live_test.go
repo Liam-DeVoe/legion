@@ -95,7 +95,7 @@ func newEdgeLiveRigWithBuckets(t *testing.T, edge natsgrant.Permissions, buckets
 	rig := &edgeLiveRig{seeds: map[string]string{}, binary: cmdtest.Build(t, "envoy-listener")}
 	users := map[string]natsgrant.Permissions{
 		"edge":     edge,
-		"dispatch": natsgrant.Dispatch("example-dispatch"),
+		"dispatch": natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{}),
 		"shared":   natsgrant.ListenerHost("example-shared"),
 		// The observer stands in for the relay socket's serving replica: it reads the session's
 		// relay subject and answers on whatever reply subject a frame names. At this head the edge's
