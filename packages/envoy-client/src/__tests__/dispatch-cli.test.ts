@@ -1236,7 +1236,7 @@ describe("the dispatch CLI", () => {
     const call = await run(UPLOAD, omp, NOTES);
     expect(call.code).toBe(2);
     expect(call.stdout).toStartWith(
-      'dispatch artifact was not called: 1 problem\n- Dispatch stores this text under another spelling: line 3 reads "* one" and is stored as "- one".'
+      'dispatch artifact was not called: 1 problem\n- Dispatch stores this text under another spelling: line 3 reads the word "*" at character 1, where Dispatch stores the word "-".'
     );
     expect(dry).toEqual(call);
     // The call refused it before its upload, as the dry run did.
@@ -1702,7 +1702,7 @@ describe("the dispatch CLI", () => {
         asked: { path: ROUND_TRIP, body: markdownBody(NOTES) },
         code: 2,
         refusal:
-          'dispatch artifact was not called: 1 problem\n- Dispatch stores this text under another spelling: line 3 reads "* one" and is stored as "- one".',
+          'dispatch artifact was not called: 1 problem\n- Dispatch stores this text under another spelling: line 3 reads the word "*" at character 1, where Dispatch stores the word "-".',
       },
     ];
     for (const { argv, stdin, answer, asked, code, refusal } of cases) {
