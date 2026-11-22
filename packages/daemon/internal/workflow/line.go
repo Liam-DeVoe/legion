@@ -374,11 +374,14 @@ func orderRank(p phase.Phase) int {
 // (WriteIssue, or putIssue for a copy read for one task of a plan of several, which writes the
 // issue in the phase its tasks derive), so a caller that reads the issue after the move reads the
 // steps a fresh read gives: the moved task's step at its new place, with the role and the phase of
-// that place, and none for a task moved to no act, done or left. No move writes a wait of the step
-// it moves to (record.PlanTask.StepWait): the store's move ends any wait the task had, so the moved
-// task's step is a running step at once, and the start that follows the move (Engine.start) writes
-// the wait of a step whose agent does a step of another task. w then stands where the task does,
-// for whatever the caller reads of it after the move. A run with no plan rows has no task to move:
+// that place, and none for a task moved to no act, done or left. A move into running from waiting
+// or stopped is a start of the task: the store writes that its step waits for the join of its
+// needs (record.StepWaitJoin), and the start that follows the move (Engine.start) joins them or ends
+// that wait, and writes the wait of a step whose agent does a step of another task. Every other
+// move ends any wait the task had, so the moved task's step is a running step at once. w then
+// stands where the task does, its wait among it but not the moment the store wrote, which no
+// reader of a walk reads, for whatever the caller reads of it after the move. A run with no plan
+// rows has no task to move:
 // issue.Phase is to, as it always was, and its one running step stands at to
 // (record.RunningOf). A move to where the task already stands writes nothing. The caller clears
 // or keeps issue.Hold itself.
@@ -395,7 +398,11 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 		if err := e.store.MoveTask(ctx, tx, issue.Key, issue.Generation, w.Task, place, state); err != nil {
 			return err
 		}
-		w.Place, w.State, w.Wait, w.WaitSince = place, state, record.StepWaitNone, nil
+		wait := record.StepWaitNone
+		if state == record.TaskRunning && (w.State == record.TaskWaiting || w.State == record.TaskStopped) {
+			wait = record.StepWaitJoin
+		}
+		w.Place, w.State, w.Wait, w.WaitSince = place, state, wait, nil
 	}
 	issue.Phase = to
 	running, err := e.store.RunningSteps(ctx, tx, *issue)

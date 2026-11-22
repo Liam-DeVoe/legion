@@ -401,8 +401,9 @@ func tasksWaitingOn(stored *record.StoredPlan, task string) []string {
 
 // startReady is the one place tasks of a plan of several start, in the caller's transaction: it
 // moves each task that waits and each of whose needs is done, in task id order, to its first step,
-// running (moveTask), gives it its branch (startTaskCopy), writes the issue (putIssue) and starts
-// the step's role through Engine.start, the start of every step. It answers the issue as written. A
+// running (moveTask, which writes that the step waits for its join), writes the issue (putIssue)
+// and starts the step's role through Engine.start, the start of every step, which gives the task
+// its branch and joins its needs (startTaskCopy). It answers the issue as written. A
 // plan of one task, or none, starts nothing here: its one task starts at the gate's opening as
 // before (transition), and so the issue is answered as given. It runs at the first step of the
 // work (gateOpened), at each move of a task to done (transition), at each version of the plan taken
@@ -431,9 +432,6 @@ func (e *Engine) startReady(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 	for _, id := range ready {
 		view, w, err := e.view(ctx, tx, written, id)
 		if err != nil {
-			return record.Issue{}, err
-		}
-		if err := e.startTaskCopy(ctx, tx, view, id); err != nil {
 			return record.Issue{}, err
 		}
 		steps := w.steps()

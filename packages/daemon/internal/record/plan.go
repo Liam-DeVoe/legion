@@ -727,9 +727,12 @@ func (s *Postgres) DeleteTasks(ctx context.Context, tx pgx.Tx, issue string, gen
 // the states stopped and held are refused here. A move takes a stop's reason away, but a move to
 // left (TaskLeft): a stopped task whose issue leaves the workflow keeps why it was stopped, the one
 // record of why it was not done. A move ends a hold's reason and the wait of the step the task
-// stood at, whose start it no longer waits to deliver. A place no task can stand at, a step the
-// task does not have, a task the plan does not hold and a task that left the workflow, which
-// nothing moves again, are refused.
+// stood at, whose start it no longer waits to deliver. A move into running from waiting or stopped
+// is a start of the task, whose step waits for the join of its needs (StepWaitJoin) since this
+// transaction's moment, until the start that follows the move (the workflow's Engine.start) ends
+// that wait or the end of the join does; every other move writes no wait. A place no task can
+// stand at, a step the task does not have, a task the plan does not hold and a task that left the
+// workflow, which nothing moves again, are refused.
 func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, place TaskPlace, state TaskState) error {
 	describe := fmt.Sprintf("move task %s of %s at generation %d to %s %d, %s", task, issue, generation, place.Kind, place.Position, state)
 	switch state {
@@ -746,7 +749,9 @@ func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, genera
 	}
 	tag, err := tx.Exec(ctx, `update plan_tasks set running_kind = $4, position = $5, state = $6,
 		stopped_reason = case when $6 = 'left' then stopped_reason else '' end,
-		hold_reason = '', step_wait = '', step_wait_since = null
+		hold_reason = '',
+		step_wait = case when $6 = 'running' and state in ('waiting', 'stopped') then 'join' else '' end,
+		step_wait_since = case when $6 = 'running' and state in ('waiting', 'stopped') then now() end
 		where issue = $1 and generation = $2 and task = $3 and state <> 'left'
 		and ($4 <> 'step' or exists (select 1 from plan_steps where plan_steps.issue = $1 and plan_steps.generation = $2
 			and plan_steps.task = $3 and plan_steps.position = $5))`,
