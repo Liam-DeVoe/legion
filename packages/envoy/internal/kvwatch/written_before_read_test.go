@@ -150,41 +150,63 @@ func TestAKeyTakenBeforeAReadsStreamReadIsNoEvidenceForIt(t *testing.T) {
 	}
 }
 
-// A write the fence drops is no evidence for a read. After a restore that keeps the stream's
-// creation time and moves its sequence back to 33, a key the copy took at 40 is written again in
-// a read's gap, at 34: the fence drops that write (34 < 40), and the read, whose snapshot holds no
-// record of the key, removes it and its fence, so the restored bucket's record at 34 is taken when
-// the watcher delivers it. Counting the dropped write would mark the key on the fence's 40, keep
-// its value from before the restore, and drop the bucket's own update until its revision passed
-// 40.
+// A write the fence drops is no evidence for a read, through each write site: a write-through
+// (Put), a record read back (Apply) and a delete whose record the cache could not read back
+// (Evict). After a restore that keeps the stream's creation time and moves its sequence back to
+// 33, a key the copy took at 40 is written again in a read's gap, at 34: the fence drops that
+// write (34 < 40), and the read, whose snapshot holds no record of the key, removes it and its
+// fence, so the restored bucket's record at 34 is taken when the watcher delivers it. Counting the
+// dropped write would mark the key on the fence's 40, keep its value from before the restore, and
+// drop the bucket's own update until its revision passed 40.
 func TestAWriteTheFenceDropsIsNoEvidenceForARead(t *testing.T) {
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
-	w := kvwatch.New("test cache", kv, newSeen())
-	copied := kvwatch.NewCopy(kvwatch.Rows[string]{Decode: func(entry kvwatch.Entry) (string, bool, error) {
-		return string(entry.Value), true, nil
-	}})
-	kvwatch.SetStreamReads(w, 1)
-	copied.BeginRead(kvwatch.Read{LastSeq: 30, StreamRead: 1})
-	copied.CompleteRead()
-	if outcome := copied.Put(w, w.Epoch(), "K", "pre-restore", 40); outcome != kvwatch.Applied {
-		t.Fatalf("the write at 40 came to outcome %d, want Applied (%d)", outcome, kvwatch.Applied)
-	}
-	// The restore moves the stream back to 33; the next read's stream read begins, and the write
-	// at 34 lands in its gap.
-	kvwatch.SetStreamReads(w, 2)
-	if outcome := copied.Put(w, w.Epoch(), "K", "post-restore", 34); outcome != kvwatch.Fenced {
-		t.Fatalf("the write at 34 came to outcome %d, want Fenced (%d)", outcome, kvwatch.Fenced)
-	}
-	copied.BeginRead(kvwatch.Read{LastSeq: 33, StreamRead: 2})
-	copied.CompleteRead()
-	if value, kept := copied.Get("K"); kept {
-		t.Fatalf("after the read: K kept as %q, want it removed with its fence", value)
-	}
-	if err := copied.Delivered(kvwatch.Entry{Key: "K", Op: kvwatch.OpPut, Value: []byte("post-restore"), Revision: 34}); err != nil {
-		t.Fatalf("deliver K at 34: %v", err)
-	}
-	if value, _ := copied.Get("K"); value != "post-restore" {
-		t.Fatalf("after the restored bucket's record at 34: K = %q, want %q", value, "post-restore")
+	for _, tc := range []struct {
+		name  string
+		write func(*testing.T, *kvwatch.Copy[string], *kvwatch.Watcher) kvwatch.Outcome
+	}{
+		{name: "Put", write: func(_ *testing.T, copied *kvwatch.Copy[string], w *kvwatch.Watcher) kvwatch.Outcome {
+			return copied.Put(w, w.Epoch(), "K", "post-restore", 34)
+		}},
+		{name: "Apply", write: func(t *testing.T, copied *kvwatch.Copy[string], w *kvwatch.Watcher) kvwatch.Outcome {
+			outcome, err := copied.Apply(w, w.Epoch(), kvwatch.Entry{Key: "K", Op: kvwatch.OpPut, Value: []byte("post-restore"), Revision: 34})
+			if err != nil {
+				t.Fatalf("apply K at 34: %v", err)
+			}
+			return outcome
+		}},
+		{name: "Evict", write: func(_ *testing.T, copied *kvwatch.Copy[string], w *kvwatch.Watcher) kvwatch.Outcome {
+			return copied.Evict(w, w.Epoch(), "K", 34)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := kvwatch.New("test cache", kv, newSeen())
+			copied := kvwatch.NewCopy(kvwatch.Rows[string]{Decode: func(entry kvwatch.Entry) (string, bool, error) {
+				return string(entry.Value), true, nil
+			}})
+			kvwatch.SetStreamReads(w, 1)
+			copied.BeginRead(kvwatch.Read{LastSeq: 30, StreamRead: 1})
+			copied.CompleteRead()
+			if outcome := copied.Put(w, w.Epoch(), "K", "pre-restore", 40); outcome != kvwatch.Applied {
+				t.Fatalf("the write at 40 came to outcome %d, want Applied (%d)", outcome, kvwatch.Applied)
+			}
+			// The restore moves the stream back to 33; the next read's stream read begins, and the
+			// write at 34 lands in its gap.
+			kvwatch.SetStreamReads(w, 2)
+			if outcome := tc.write(t, &copied, w); outcome != kvwatch.Fenced {
+				t.Fatalf("the %s at 34 came to outcome %d, want Fenced (%d)", tc.name, outcome, kvwatch.Fenced)
+			}
+			copied.BeginRead(kvwatch.Read{LastSeq: 33, StreamRead: 2})
+			copied.CompleteRead()
+			if value, kept := copied.Get("K"); kept {
+				t.Fatalf("after the read: K kept as %q, want it removed with its fence", value)
+			}
+			if err := copied.Delivered(kvwatch.Entry{Key: "K", Op: kvwatch.OpPut, Value: []byte("post-restore"), Revision: 34}); err != nil {
+				t.Fatalf("deliver K at 34: %v", err)
+			}
+			if value, _ := copied.Get("K"); value != "post-restore" {
+				t.Fatalf("after the restored bucket's record at 34: K = %q, want %q", value, "post-restore")
+			}
+		})
 	}
 }

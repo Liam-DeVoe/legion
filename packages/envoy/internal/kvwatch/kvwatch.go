@@ -397,7 +397,8 @@ func (w *Watcher) Epoch() uint64 {
 }
 
 // StreamReads is how many reads of the bucket's stream this watcher's watches have begun, each the
-// start of a read: a copy stamps each key it takes with it (Copy.BeginRead).
+// start of a read: a copy stamps with it a key a write site applied in a read's gap, after that
+// read's stream read and before its BeginRead (Copy.stamp).
 func (w *Watcher) StreamReads() uint64 {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
