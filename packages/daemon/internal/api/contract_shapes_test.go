@@ -339,7 +339,7 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 			}}},
 		},
 		LastPause: &last,
-		// A controller the daemon found out of Envoy's reach (contract 222), so the walk reads
+		// A controller the daemon found out of Envoy's reach (contract 226), so the walk reads
 		// the locator's `unreachable` beside the claim views' (populatedState carries those).
 		ControllerLocator: &ControllerLocator{
 			Runtime: "kubernetes", External: true, SessionID: "ses_controller",

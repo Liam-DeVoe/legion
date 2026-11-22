@@ -2637,7 +2637,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
   // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Two bands stand
-  // between 199 and this daemon's contract: the repositories block's at 202, and at 222 the
+  // between 199 and this daemon's contract: the repositories block's at 202, and at 226 the
   // `unreachable` of the claim views and the controller's locator, which the golden carries on one
   // claim. One value strip stands above 199 as well: `caches`, the source of the
   // repository-cache-room row, arrived at contract 213, so that row is served here without its
