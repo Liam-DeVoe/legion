@@ -186,10 +186,12 @@ are in [`consumernames/README.md`](consumernames/README.md).
     `503 consumer_error` naming the marker.
   - At the start, a marker the listener cannot read makes the start wait rather than run fixed
     names unread.
-  - A read the listener's user may not make is no marker, so the gate opens: the listener beside
-    Dispatch holds no read of the bucket in this build. So the session family's convert, which
-    replaces that listener's `listener-<machine id>` too, runs only once that listener's grant
-    reads the bucket; until then a fixed listener there would create the converted name again.
+  - A read the listener's user may not make is no marker, so the gate opens. The listener beside
+    Dispatch is not such a user: Dispatch's grant holds the bucket's message get
+    (`natsgrant.Dispatch`), so after the session family's convert, which replaces that listener's
+    `listener-<machine id>` too, its read says `done` and it stops rather than create the converted
+    name again. The convert therefore runs only once the NATS auth service's release that carries
+    that grant is deployed; on an older grant the refused read would open the gate.
 - **The fresh mode** refuses every session-consumer call until the bucket's sentinel says the
   cutover is done. A registration over lost or unproven selection state is answered
   `503 consumer_error`. A key holding no record of its own is answered naming the key and the
