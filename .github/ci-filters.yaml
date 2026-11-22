@@ -3184,6 +3184,7 @@ envoy_go_postgres16:
   - '!packages/envoy/internal/dispatch/refs/**/*_test.go'
   - '!packages/envoy/internal/dispatch/store/**/*_test.go'
   - '!packages/envoy/internal/dispatch/text/**/*_test.go'
+  - '!packages/envoy/internal/explaintest/**/*_test.go'
   - '!packages/envoy/internal/fold/**/*_test.go'
   - '!packages/envoy/internal/googleidentity/**/*_test.go'
   - '!packages/envoy/internal/kvwatch/**/*_test.go'
