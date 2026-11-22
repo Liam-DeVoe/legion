@@ -6,7 +6,8 @@
  */
 
 import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts";
-import type { Locator, Route } from "@playwright/test";
+import type { APIResponse, Locator, Route } from "@playwright/test";
+import { REQUEST_DEADLINE_MS } from "../web/src/api/client";
 import { CONTROL } from "../web/src/components/control-names";
 import * as theme from "../web/src/theme/classes";
 import {
@@ -8457,6 +8458,360 @@ test("Unfollow and Unsubscribe on an Inbox card's recipients keep the keyboard f
           `${where}: after the write lands the focus is on ${landed.name}, not on a control of the card`
         );
       }
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+/** The record the row below keeps in the page of the project List's offline Take out of epic:
+ *  whether the page has heard that the browser is offline, the animation frames counted from the
+ *  press on, every element a `focusin` reached with the frame it reached it in, and the selection
+ *  bar's going. */
+interface OfflineTakeOut {
+  offline: boolean;
+  frame: number;
+  readonly focusins: { readonly element: Element; readonly frame: number }[];
+  /** Once the bar has left the page: the page's clock and the frame then, what held the focus at
+   *  the end of the task that removed the bar, and what held it at the next animation frame. */
+  going: {
+    readonly at: number;
+    readonly frame: number;
+    readonly atGoing: Element | null;
+    atNextFrame: Element | null;
+    nextFrameSeen: boolean;
+  } | null;
+}
+
+declare global {
+  interface Window {
+    __offlineTakeOut?: OfflineTakeOut;
+  }
+}
+
+// SLOW(>=2s): an epic of 44 issues seeded, and at two widths two of them taken out of it with the
+// browser offline, the 30 s request deadline waited out on the wall clock at each.
+// INFRA-3135, round 24 (the tester's, measured in builds Jobs infra-3135-d-h, -d2-h, -d2h2 and
+// -d-b, -d2-b at 3fce6150 and da0804df, on the wall clock): the project List, narrowed by its
+// Epic filter to one epic of 44 issues, its box scrolled half way; the reader marks two adjacent
+// rows in sight with Space, the upper one last, and presses the bar's Take out of epic with
+// Enter. Both writes land at Dispatch, and the browser goes offline before the page has their
+// answers, so the List's read after them cannot be sent and both rows stay listed. At 3fce6150
+// the bar stays, its action held, until the read's bound runs out at the request deadline
+// (`REQUEST_DEADLINE_MS`), about 30.3 s after the press, and then goes. At 1440x900 that held in
+// 21 of 21 runs: the focus went to the checkbox of the row marked last in Chromium 7 of 7 and in
+// Firefox 6 of 7, but to the pager's Rows per page once in Firefox and 5 times of 7 in WebKit,
+// and it stayed on the body in WebKit twice. Where it reached the checkbox, it did so 5 to 12 ms
+// after the bar went, a frame later, the body holding the focus at that frame, in 12 of 13 runs.
+// At 390x664 the bar held to the deadline in 12 of 21 runs, and each time the checkbox took the
+// focus in the frame the bar went in. In the other 9 the bar went as the writes landed, 0.28 to
+// 0.41 s after the press, with no line saying the List could not be read and both rows still
+// listed, and the focus went to the checkbox 5 times and to Rows per page 4 times, each time
+// with the window scrolled 22 px. At da0804df the bar went as the writes landed in 24 of 24
+// runs: the focus went to the checkbox in Chromium and Firefox 16 of 16 and in WebKit 2 of 8, and
+// to Rows per page in WebKit 6 times, at 390 with the window scrolled 22 px. The architect's
+// round-24 brief: past the deadline the focus goes to the marked row's checkbox, and the bar goes
+// in the same render. The rulings of 2026-11-21 06:0xZ and 09:0xZ: the bar's hand-off goes to a
+// row, never to the body, and scrolls nothing; the pager is no row. The row waits the deadline out
+// on the wall clock, as the row that Save delivery settings keeps the keyboard focus through a
+// save whose re-read the browser cannot send does. The page's own clock, which `focus-landing`'s
+// offline cases run on, fakes `requestAnimationFrame`, on which the rescue's wait of a frame and
+// a task and the bar's frame both rest, and on it WebKit's landing does not show: in builds Job
+// infra-3135-dred-k5lxv at 3fce6150 this row on the page's clock passed 3 of 3 in WebKit, and
+// failed in Chromium and Firefox at 1440 on the frame alone. The row counts the page's animation
+// frames from the press on, as the measurements above did. Without that count it failed in
+// WebKit 1 of 3 (infra-3135-dred2-bnb7t), so WebKit's landing rests on the frames the page draws;
+// with it, it failed at 1440 9 of 9 (infra-3135-dred3-k9mrh): WebKit on Rows per page, Chromium
+// and Firefox on the frame, the checkbox taking the focus a frame after the bar went. Whichever
+// way the bar goes, the row holds the same rule and its message names the way. A focused control
+// taken away with its bar, for which Firefox and WebKit fire no `focusout`: the clause of the
+// `webkit` and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts).
+test("offline, Take out of epic hands the focus to the marked row's checkbox in the render the bar goes, never the body or the pager @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const epic = await createIssue({ project: "CORE", title: "Table epic" });
+  await patchIssue(epic.key, { labels: ["epic"] });
+  for (let index = 0; index < 44; index++) {
+    await createIssue({ parent: epic.key, project: "CORE", title: `Epic row ${index}` });
+  }
+  // The Epic filter on that epic: its value is the epic's key and title, as the column shows them.
+  const view = `/projects/CORE/issues?f.epic=${encodeURIComponent(`${epic.key} · Table epic`)}`;
+  const box = page.getByTestId("issues-table-scroll");
+  const rows = page.locator("[data-issue-row]");
+  const bar = page.getByRole("toolbar", { name: "Selected issues" });
+  const markOf = (key: string) =>
+    page.getByRole("checkbox", { exact: true, name: `Select ${key}` });
+  /** The issues the table draws, top to bottom, and of them those whose checkbox the reader sees:
+   *  inside the window and the table's box, with nothing, such as the sticky head, drawn over its
+   *  centre. */
+  const drawn = () =>
+    page.evaluate(() => {
+      const scroller = document.querySelector('[data-testid="issues-table-scroll"]');
+      const frame = scroller?.getBoundingClientRect();
+      const listed = [...document.querySelectorAll<HTMLElement>("[data-issue-row]")];
+      const topOf = (row: HTMLElement) => row.getBoundingClientRect().top;
+      listed.sort((one, other) => topOf(one) - topOf(other));
+      const seen = (row: HTMLElement) => {
+        const mark = row.querySelector('input[type="checkbox"]');
+        if (mark === null || frame === undefined) return false;
+        const own = mark.getBoundingClientRect();
+        const above = Math.max(0, frame.top);
+        const below = Math.min(window.innerHeight, frame.bottom);
+        if (own.top < above || own.bottom > below) return false;
+        const hit = document.elementFromPoint(own.left + own.width / 2, own.top + own.height / 2);
+        return hit !== null && row.contains(hit);
+      };
+      return {
+        order: listed.map((row) => row.getAttribute("data-issue-row") ?? ""),
+        shown: listed.filter(seen).map((row) => row.getAttribute("data-issue-row") ?? ""),
+      };
+    });
+  /** Where the window and the table's box stand, where the checkbox of issue `marked` stands on
+   *  screen, and what holds the focus: its kind and name, and whether its box is inside the
+   *  window and inside the table's box. */
+  const landing = (marked: string) =>
+    page.evaluate((key) => {
+      const frame = document.querySelector<HTMLElement>('[data-testid="issues-table-scroll"]');
+      const mark = document.querySelector(`[data-issue-row="${key}"] input[type="checkbox"]`);
+      const markTop = mark === null ? null : Math.round(mark.getBoundingClientRect().top);
+      const scrollTop = Math.round(frame?.scrollTop ?? 0);
+      const scrollY = Math.round(window.scrollY);
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement) || focused === document.body) {
+        return { inSight: false, markTop, name: "the body", scrollTop, scrollY };
+      }
+      const own = focused.getBoundingClientRect();
+      const clip = frame?.getBoundingClientRect();
+      const top = Math.max(0, clip?.top ?? 0);
+      const bottom = Math.min(window.innerHeight, clip?.bottom ?? window.innerHeight);
+      const kind =
+        focused instanceof HTMLInputElement ? focused.type : focused.tagName.toLowerCase();
+      const label =
+        focused.getAttribute("aria-label") ||
+        (focused as HTMLInputElement).labels?.[0]?.textContent?.trim() ||
+        (focused.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 40);
+      return {
+        inSight:
+          own.top >= top - 1 &&
+          own.bottom <= bottom + 1 &&
+          own.left >= -1 &&
+          own.right <= window.innerWidth + 1,
+        markTop,
+        name: `${kind} "${label}"`,
+        scrollTop,
+        scrollY,
+      };
+    }, marked);
+  /** The page's record of the press (`OfflineTakeOut`), each element named as `landing` names
+   *  the focus. */
+  const barRecord = () =>
+    page.evaluate(() => {
+      const named = (element: Element | null) => {
+        if (element === null || element === document.body) return "the body";
+        const kind =
+          element instanceof HTMLInputElement ? element.type : element.tagName.toLowerCase();
+        const label =
+          element.getAttribute("aria-label") ||
+          (element as HTMLInputElement).labels?.[0]?.textContent?.trim() ||
+          (element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 40);
+        return `${kind} "${label}"`;
+      };
+      const kept = window.__offlineTakeOut;
+      const going = kept?.going ?? null;
+      return {
+        atGoing: going === null ? null : named(going.atGoing),
+        atNextFrame: going?.nextFrameSeen === true ? named(going.atNextFrame) : null,
+        focusins: (kept?.focusins ?? []).map(
+          (focusin) => `${named(focusin.element)} at frame ${focusin.frame}`
+        ),
+        goneAt: going?.at ?? null,
+        goneFrame: going?.frame ?? null,
+      };
+    });
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    const where = `project List at ${size.width}x${size.height}, two rows taken out of the epic offline`;
+    await page.setViewportSize(size);
+    await page.goto(view);
+    await expect.poll(() => rows.count()).toBeGreaterThanOrEqual(6);
+    // The window brings the table's box to just below the app's 56 px header, so its rows are in
+    // the window at either width, and the box scrolls half way down its rows.
+    await box.evaluate((node) => {
+      window.scrollBy(0, node.getBoundingClientRect().top - 60);
+      node.scrollTop = (node.scrollHeight - node.clientHeight) / 2;
+    });
+    await settledScrollTop(page);
+    await settledScrollTop(box);
+    await expect.poll(async () => (await drawn()).shown.length).toBeGreaterThanOrEqual(3);
+    const { order, shown } = await drawn();
+    // Two adjacent rows in the middle of what the reader sees.
+    const at = order.indexOf(shown[Math.floor(shown.length / 2) - 1] ?? "");
+    expect(
+      at !== -1 && shown.includes(order[at + 1] ?? ""),
+      `${where}: no two adjacent rows in sight mid-list (${shown.join(", ")})`
+    ).toBe(true);
+    const taken = [order[at] as string, order[at + 1] as string];
+    // The upper row is marked last: the row whose checkbox the bar's hand-off is to focus, and
+    // which the List still lists while the browser is offline.
+    const last = taken[0] as string;
+    for (const key of [...taken].reverse()) {
+      await markOf(key).focus();
+      await page.keyboard.press("Space");
+      await expect(markOf(key)).toBeChecked();
+    }
+    await expect(bar).toContainText("2 selected");
+    await bar.getByRole("button", { exact: true, name: "Take out of epic" }).focus();
+    await nextFrames(page);
+    const context = page.context();
+    // The two writes go to Dispatch as the page sends them, and their answers are held until the
+    // browser is offline. A read of the issue list made from the first write on is held with no
+    // answer, so the List's read after the action cannot land while the browser is online.
+    const written = new RegExp(`^/api/v1/issues/(${taken.join("|")})$`);
+    const answers: { response: APIResponse; route: Route }[] = [];
+    const heldReads: Route[] = [];
+    let writing = false;
+    let landed = false;
+    await page.route(
+      (url) => url.pathname === "/api/v1/issues" || written.test(url.pathname),
+      async (route) => {
+        const request = route.request();
+        if (request.method() === "GET" && new URL(request.url()).pathname === "/api/v1/issues") {
+          if (!writing) return route.fallback();
+          heldReads.push(route);
+          return;
+        }
+        if (request.method() !== "PATCH") return route.fallback();
+        writing = true;
+        answers.push({ response: await route.fetch(), route });
+        // The action sends its writes together (`WRITES_IN_FLIGHT`, issues-table-model.ts), so
+        // the second answer is the last one.
+        if (answers.length < taken.length) return;
+        await context.setOffline(true);
+        // The page's query client hears the browser go offline by the `offline` event, and the
+        // record's own listener, added after the app's, hears it after.
+        await page.waitForFunction(() => window.__offlineTakeOut?.offline === true);
+        for (const answer of answers) await answer.route.fulfill({ response: answer.response });
+        landed = true;
+      }
+    );
+    try {
+      await page.evaluate(() => {
+        const kept: OfflineTakeOut = { focusins: [], frame: 0, going: null, offline: false };
+        window.__offlineTakeOut = kept;
+        // The frames the page draws, counted by an animation frame callback in each.
+        const tick = () => {
+          kept.frame += 1;
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+        window.addEventListener("offline", () => {
+          kept.offline = true;
+        });
+        document.addEventListener("focusin", (event) => {
+          if (event.target instanceof Element) {
+            kept.focusins.push({ element: event.target, frame: kept.frame });
+          }
+        });
+        const watcher = new MutationObserver(() => {
+          if (document.querySelector('[role="toolbar"][aria-label="Selected issues"]') !== null)
+            return;
+          watcher.disconnect();
+          const going = {
+            at: Date.now(),
+            atGoing: document.activeElement,
+            atNextFrame: null as Element | null,
+            frame: kept.frame,
+            nextFrameSeen: false,
+          };
+          kept.going = going;
+          // The next frame's callbacks run before it paints: what holds the focus then is what
+          // that frame draws focused.
+          requestAnimationFrame(() => {
+            going.atNextFrame = document.activeElement;
+            going.nextFrameSeen = true;
+          });
+        });
+        watcher.observe(document.body, { childList: true, subtree: true });
+      });
+      // One instant is the point: where the table, the window and the marked row stand just
+      // before the press.
+      const before = await landing(last);
+      // The press's time on the page's clock, against which the bar's going is timed.
+      const pressed = await page.evaluate(() => Date.now());
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(() => landed, { message: `${where}: the two writes never both landed` })
+        .toBe(true);
+      // The row's claim is a span of time: the bar goes at the request deadline, 30 s after the
+      // press, or sooner where the List's read settles first, and the row waits for its going on
+      // the wall clock with room to spare. A bar that never goes is the record's to say, below.
+      await expect(bar)
+        .toHaveCount(0, { timeout: REQUEST_DEADLINE_MS + 15_000 })
+        .catch(() => undefined);
+      // The bar's hand-off runs after the commit that took the bar away, and the page's rescue a
+      // frame and a task after a loss, so both are done after these frames.
+      await nextFrames(page);
+      await nextFrames(page);
+      // The record's next frame after the bar went is what that frame drew focused; wait for
+      // that frame to be noted, or for nothing where the bar never went.
+      await page.waitForFunction(() => {
+        const going = window.__offlineTakeOut?.going;
+        return going == null || going.nextFrameSeen;
+      });
+      // One read once every hand-off has run and the frame after the bar's going was drawn:
+      // nothing else moves the focus or scrolls the page while the browser stays offline.
+      const log = await barRecord();
+      // One read of where the focus rests, taken after the record and in the same still page.
+      const now = await landing(last);
+      const expected = `checkbox "Select ${last}"`;
+      const numbers = `window.scrollY ${before.scrollY} -> ${now.scrollY}, table scrollTop ${before.scrollTop} -> ${now.scrollTop}, the checkbox of ${last} at ${before.markTop} -> ${now.markTop} px`;
+      const way =
+        log.goneAt === null
+          ? "never"
+          : log.goneAt - pressed < REQUEST_DEADLINE_MS
+            ? `as its writes landed, ${log.goneAt - pressed} ms after the press, its read settled with the browser offline`
+            : `at the request deadline, ${log.goneAt - pressed} ms after the press`;
+      const moves = `the focus after the press: ${log.focusins.join(" -> ") || "nowhere"}`;
+      if (log.goneAt === null) {
+        wrong.push(
+          `${where}: the selection bar never went; the focus rests on ${now.name} (${moves})`
+        );
+      } else if (log.atGoing !== expected && log.atNextFrame !== expected) {
+        wrong.push(
+          `${where}: the bar went ${way}, in frame ${log.goneFrame}, with the focus on ${log.atGoing}, and the next frame drew it on ${log.atNextFrame ?? "no frame seen"}, not on ${expected} (${moves})`
+        );
+      }
+      if (now.name !== expected) {
+        wrong.push(
+          `${where}: once the bar went ${way}, the focus rests on ${now.name}, not on ${expected} (${moves}; ${numbers})`
+        );
+      } else if (!now.inSight) {
+        wrong.push(
+          `${where}: once the bar went ${way}, the focus rests on ${expected}, out of sight (${numbers})`
+        );
+      }
+      if (now.scrollY !== before.scrollY) {
+        wrong.push(`${where}: once the bar went ${way}, the window scrolled (${numbers})`);
+      }
+      // The table's box may rise by the height of the line that says the List could not be read,
+      // drawn above it, only while the marked row keeps its place on screen.
+      const markStood =
+        now.markTop !== null &&
+        before.markTop !== null &&
+        Math.abs(now.markTop - before.markTop) <= 1;
+      if (now.scrollTop !== before.scrollTop && !markStood) {
+        wrong.push(`${where}: once the bar went ${way}, the table's box scrolled (${numbers})`);
+      }
+    } finally {
+      await context.setOffline(false);
+      for (const route of heldReads) {
+        await route.abort("internetdisconnected").catch(() => undefined);
+      }
+      await page.unrouteAll({ behavior: "ignoreErrors" });
     }
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
