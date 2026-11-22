@@ -11,6 +11,7 @@ package delivery
 // name sends the late write to a directory no consumer reads.
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -65,35 +66,72 @@ func heldServer(t *testing.T, hub *freshHub) *testnats.Server {
 }
 
 // leadOn makes server lead consumer, on a hub whose consumers have more than one copy: it asks the
-// consumer's leader to step down until server is the one that leads. On one copy there is nothing
-// to move. 2.10.29 takes no preferred leader in a step-down (its request must be empty), so each
-// step down hands the consumer to another replica the server picks, and the row asks again until it
-// picks server. Just after a member's restart a step-down can be answered by a member that does not
-// hold the consumer yet ("consumer not found"); that answer, or none, is asked again, within the
-// same 20 asks.
-func leadOn(t *testing.T, hub *freshHub, consumer string, server *testnats.Server) {
+// consumer's leader to step down until server is the one that leads, and answers why it could not
+// ("" when server leads). On one copy there is nothing to move. 2.10.29 takes no preferred leader
+// in a step-down (its request must be empty), so each step down hands the consumer to another
+// replica the server picks, and the row asks again until it picks server. A replica that is not
+// current cannot be picked, and a member just restarted can lag for a while under load (on 2.10.29
+// at a load average of about 830, 2026-11-21, twenty asks never handed the consumer to it, and
+// 2026-11-22 a restarted replica was still not current 60 s on), so each ask waits until server's
+// replica is current. Just after a restart a step-down can also be answered by a member that does
+// not hold the consumer yet ("consumer not found"); that answer, or none, or a leader that stays,
+// is asked again, within the same 20 asks. A run whose restarted replica cannot be made to lead
+// reads no state that replica's file holds, so it judges nothing: the caller runs again.
+func leadOn(t *testing.T, hub *freshHub, consumer string, server *testnats.Server) string {
 	t.Helper()
 	if hub.replicas < 2 {
-		return
+		return ""
 	}
 	conn, js := hub.admin(t)
 	want := server.Name()
-	leader := func() string {
+	cluster := func() *natsgo.ClusterInfo {
 		info, err := js.ConsumerInfo(bus.Stream, consumer)
-		if err != nil || info.Cluster == nil {
-			return ""
+		if err != nil {
+			return nil
 		}
-		return info.Cluster.Leader
+		return info.Cluster
+	}
+	leader := func() string {
+		if c := cluster(); c != nil {
+			return c.Leader
+		}
+		return ""
+	}
+	current := func() bool {
+		c := cluster()
+		if c == nil {
+			return false
+		}
+		for _, replica := range c.Replicas {
+			if replica.Name == want {
+				return replica.Current && !replica.Offline
+			}
+		}
+		return c.Leader == want
+	}
+	within := func(d time.Duration, ok func() bool) bool {
+		for deadline := time.Now().Add(d); ; time.Sleep(100 * time.Millisecond) {
+			if ok() {
+				return true
+			}
+			if time.Now().After(deadline) {
+				return false
+			}
+		}
 	}
 	var refused string
+	var seen []string
 	for range 20 {
-		var current string
-		waitFor(t, 30*time.Second, func() bool {
-			current = leader()
-			return current != ""
-		}, func() string { return "the consumer " + consumer + " has no leader" })
-		if current == want {
-			return
+		var now string
+		if !within(30*time.Second, func() bool { now = leader(); return now != "" }) {
+			return "the consumer " + consumer + " had no leader for 30 s"
+		}
+		if now == want {
+			return ""
+		}
+		seen = append(seen, now)
+		if !within(60*time.Second, current) {
+			return fmt.Sprintf("the replica of %s on %s was not current 60 s after its restart (leaders seen %v)", consumer, want, seen)
 		}
 		reply, err := conn.Request("$JS.API.CONSUMER.LEADER.STEPDOWN."+bus.Stream+"."+consumer, nil, 10*time.Second)
 		switch {
@@ -106,20 +144,11 @@ func leadOn(t *testing.T, hub *freshHub, consumer string, server *testnats.Serve
 			time.Sleep(time.Second)
 			continue
 		}
-		// A step-down the server answered can still leave the leader in place (on 2.10.29 under
-		// load, 2026-11-21: "kept its leader n2" for 30 s); that is asked again too.
-		deadline := time.Now().Add(15 * time.Second)
-		for time.Now().Before(deadline) {
-			if next := leader(); next != "" && next != current {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-		if next := leader(); next == "" || next == current {
-			refused = "the leader " + current + " stayed after a step-down answered success"
+		if !within(15*time.Second, func() bool { next := leader(); return next != "" && next != now }) {
+			refused = "the leader " + now + " stayed after a step-down answered success"
 		}
 	}
-	t.Fatalf("%s never led the consumer %s in 20 asks (the last refused: %s)", want, consumer, refused)
+	return fmt.Sprintf("%s never led the consumer %s in 20 asks (leaders seen %v; the last refused: %q)", want, consumer, seen, refused)
 }
 
 // restartStore stops and starts server, keeping its store, and waits for the hub to serve again.
@@ -164,11 +193,12 @@ func ackThrough(t *testing.T, sub *natsgo.Subscription, last uint64) *natsgo.Msg
 // nobody acknowledged 21 on it. Control: a same-name re-creation on the same server, under the
 // same holds, comes back from the restart, led by that server, with 21 acknowledged.
 //
-// At R3 the held replica can write the same-name consumer's file again after the late write and
-// before the restart stops it, replacing the late write (on the build before, 3 of 13 runs of
-// delivery-jobs at R3 on 2.15.1, 2026-11-21, came back with ack floor 0). The restart then reads
-// the later write, so such a run judges nothing, on either build (overwritten): it is logged, and
-// the row runs again on a new hub, at most heldWriteAttempts times, and fails if none judged.
+// At R3 a run can judge nothing, on either build, and then the row runs again on a new hub, at
+// most heldWriteAttempts times, and fails if none judged. The held replica can write the
+// same-name consumer's file again after the late write and before the restart stops it, replacing
+// the late write (overwritten; on the build before, 3 of 13 runs of delivery-jobs at R3 on 2.15.1,
+// 2026-11-21, came back with ack floor 0), so the restart reads the later write; or the restarted
+// replica cannot be made to lead (leadOn), so the floor read is another replica's.
 func TestForcedOrderAPredecessorsHeldWriteReachesNoSuccessor(t *testing.T) {
 	for _, topology := range hubTopologies {
 		for _, kind := range durableKinds {
@@ -182,7 +212,7 @@ func TestForcedOrderAPredecessorsHeldWriteReachesNoSuccessor(t *testing.T) {
 						return
 					}
 				}
-				t.Fatalf("none of %d runs judged anything: in each, a later write replaced the late one before the restart", heldWriteAttempts)
+				t.Fatalf("none of %d runs judged anything: each run's \"judged nothing\" line says why", heldWriteAttempts)
 			})
 		}
 	}
@@ -194,7 +224,7 @@ const heldWriteAttempts = 5
 // predecessorsHeldWriteReachesNoSuccessor is one run of the held-write row on a new hub of
 // topology, for kind's durable: its control, then the take-over. It answers whether the run
 // judged: false when the control's or the successor's late write was replaced before the restart
-// (overwritten).
+// (overwritten), or the restarted replica could not be made to lead (leadOn).
 func predecessorsHeldWriteReachesNoSuccessor(t *testing.T, topology hubTopology, kind durableKind) bool {
 	hub, pool := freshRigOn(t, topology, 0)
 	hooks := testnats.Hook(t)
@@ -262,12 +292,17 @@ func predecessorsHeldWriteReachesNoSuccessor(t *testing.T, topology hubTopology,
 	write.Release()
 	lateWrite := hooks.Await(t, testnats.Point("write.done"), testnats.OnServer(server), testnats.Consumer(old), testnats.After(released))
 	restartStore(t, hub, server)
+	unjudged := ""
 	if overwritten(t, hooks, server, lateWrite, successor, mark) {
-		t.Logf("this run judged nothing: the late write reached %s's file, %s, and a later write to that file before the server stopped replaced it", successor, lateWrite.Path)
+		unjudged = fmt.Sprintf("the late write reached %s's file, %s, and a later write to that file before the server stopped replaced it", successor, lateWrite.Path)
+	} else {
+		unjudged = leadOn(t, hub, successor, server)
+	}
+	if unjudged != "" {
+		t.Logf("this run judged nothing: %s", unjudged)
 		process.unblock()
 		return false
 	}
-	leadOn(t, hub, successor, server)
 
 	_, js := hub.admin(t)
 	var info *natsgo.ConsumerInfo
@@ -373,7 +408,8 @@ func holdTheSuccessor(t *testing.T, hub *freshHub, hooks *testnats.Hooks, kind d
 // name, its first write done, the held write released and the store restarted -- and C comes back
 // with 21 acknowledged. It shows the holds reach the order that loses a message, so the
 // treatment's clean result is no blind spot. It answers whether it judged: false when a later write
-// replaced the late one in C's file before the restart (overwritten), as the row's own run can.
+// replaced the late one in C's file before the restart (overwritten), or the restarted server
+// could not be made to lead C (leadOn), as the row's own run can.
 func sameNameRecreationLoses(t *testing.T, hub *freshHub, hooks *testnats.Hooks, kind durableKind) bool {
 	t.Helper()
 	conn, js := hub.admin(t)
@@ -397,6 +433,13 @@ func sameNameRecreationLoses(t *testing.T, hub *freshHub, hooks *testnats.Hooks,
 	if err := js.DeleteConsumer(bus.Stream, name); err != nil {
 		t.Fatalf("delete the control consumer: %v", err)
 	}
+	// On R3 the delete's answer can come before the consumer's removal is applied, and a create of
+	// the same name then is refused as a name in use (2.15.1, 2026-11-22: "consumer name already in
+	// use"), so the create waits until a read answers that there is no such consumer.
+	waitFor(t, 30*time.Second, func() bool {
+		_, err := js.ConsumerInfo(bus.Stream, name)
+		return errors.Is(err, natsgo.ErrConsumerNotFound)
+	}, func() string { return "the control consumer " + name + " is still there 30 s after its delete" })
 	mark := hooks.Mark()
 	again := startingAt(config, sent[20])
 	again.DeliverSubject = natsgo.NewInbox()
@@ -410,14 +453,19 @@ func sameNameRecreationLoses(t *testing.T, hub *freshHub, hooks *testnats.Hooks,
 	restartStore(t, hub, server)
 	// The restart closed the admin's connection, which does not reconnect: read on a new one.
 	_, js = hub.admin(t)
+	unjudged := ""
 	if overwritten(t, hooks, server, lateWrite, name, mark) {
-		t.Logf("control: this run judged nothing: a later write to %s's file, %s, replaced the late write before the server stopped", name, lateWrite.Path)
+		unjudged = fmt.Sprintf("a later write to %s's file, %s, replaced the late write before the server stopped", name, lateWrite.Path)
+	} else {
+		unjudged = leadOn(t, hub, name, server)
+	}
+	if unjudged != "" {
+		t.Logf("control: this run judged nothing: %s", unjudged)
 		if err := js.DeleteConsumer(bus.Stream, name); err != nil {
 			t.Fatalf("delete the control consumer: %v", err)
 		}
 		return false
 	}
-	leadOn(t, hub, name, server)
 	var info *natsgo.ConsumerInfo
 	waitFor(t, 30*time.Second, func() bool {
 		info, err = js.ConsumerInfo(bus.Stream, name)
