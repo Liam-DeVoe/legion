@@ -156,11 +156,11 @@ type RecordedNames map[string]map[string]bool
 // (selection.PGStore.List, its sentinel row aside): Dispatch's when families names dispatch or
 // dispatchDatabaseFile names its store, from the database that file's URL names (openDatabase);
 // and each daemon's that daemonDatabases names, every daemon family of families among them, each
-// read by the census's rule for the daemon stores, at the address its Deployment names
+// read by the census's rule for the daemon stores, at the address its one source names
 // (censusReadDaemonStores, with deployments). A daemon store the rule finds gone has no set, and
 // is answered instead, beside the names. A family families names whose store no flag names, a
 // store it cannot open or whose table is missing, a daemon store the rule leaves unreconciled, a
-// listing of the Deployments it cannot read, and a bucket censusSelectionRecords refuses each fail
+// listing of the sources it cannot read, and a bucket censusSelectionRecords refuses each fail
 // the read, named, and the census is then UNKNOWN and removes nothing.
 func ReadRecordedNames(ctx context.Context, conn *nats.Conn, deployments writerhold.DaemonDeployments, families []string, dispatchDatabaseFile string, daemonDatabases []string) (RecordedNames, []writerhold.GoneStore, error) {
 	if slices.Contains(families, familyDispatch) && dispatchDatabaseFile == "" {
@@ -333,6 +333,45 @@ type censusDaemonRead struct {
 	gone *writerhold.GoneStore
 	// unreconciled is why the rule leaves the store as it is, "" for a store it read or found gone.
 	unreconciled string
+	// retired is true for a store whose one source is a retired project's entry of the retired
+	// projects' ConfigMap (writerhold.RetiredStoresConfigMap), false for one its Deployment names.
+	retired bool
+}
+
+// addressSource names the source of the address the rule read s at, as cleanup --gone and status
+// print it: its Deployment, or, for a retired project, its entry of the retired projects' ConfigMap.
+func (s censusDaemonRead) addressSource() string {
+	if s.retired {
+		return "its entry of " + retiredStoresSource
+	}
+	return "its Deployment"
+}
+
+// retiredStoresSource names the retired projects' ConfigMap as every reader of a daemon store names
+// it (writerhold.RetiredStoresNamespace, writerhold.RetiredStoresConfigMap).
+const retiredStoresSource = "ConfigMap " + writerhold.RetiredStoresNamespace + "/" + writerhold.RetiredStoresConfigMap
+
+// daemonSource names d, one source of a daemon store's address (writerhold.KubeDaemonDeployments),
+// as the readers of the daemon stores name it: "Deployment legion/<name>", or, for a retired
+// project's entry, the retired projects' ConfigMap (retiredStoresSource).
+func daemonSource(d writerhold.DaemonDeployment) string {
+	if d.Retired {
+		return retiredStoresSource
+	}
+	return "Deployment " + writerhold.DaemonNamespace + "/" + d.Name
+}
+
+// daemonSourceField names where d states annotation (writerhold.DaemonStoreDatabaseAnnotation or
+// writerhold.DaemonStoreInstanceAnnotation): that annotation of a Deployment, or the data key
+// <project>.database or <project>.instance of a retired project's entry.
+func daemonSourceField(d writerhold.DaemonDeployment, annotation string) string {
+	if !d.Retired {
+		return "annotation " + annotation
+	}
+	if annotation == writerhold.DaemonStoreInstanceAnnotation {
+		return "key " + d.Name + writerhold.RetiredStoreInstanceSuffix
+	}
+	return "key " + d.Name + writerhold.RetiredStoreDatabaseSuffix
 }
 
 // censusReadDaemonStores reads every daemon store a census names by the census's rule for the
@@ -341,10 +380,11 @@ type censusDaemonRead struct {
 // as consumer-names' --daemon-database takes it (censusNamedProjects); each daemon family of
 // families (daemon/<project key>) must be one of them, and one that is not is unreconciled, since
 // a declared daemon whose store it could not read would read as one with nothing recorded. It
-// lists the daemons' Deployments once (deployments), and reads each store as
+// lists the sources of the stores' addresses once (deployments: the daemons' Deployments and the
+// retired projects' entries, writerhold.KubeDaemonDeployments), and reads each store as
 // censusReadDaemonStore does. It answers the stores in the order of their project keys, and a
 // close of every store it opened, which the caller runs, error or not. A malformed entry, and a
-// listing of the Deployments it cannot read, are its error.
+// listing of the sources it cannot read, are its error.
 func censusReadDaemonStores(ctx context.Context, deployments writerhold.DaemonDeployments, families, daemonDatabases []string) ([]censusDaemonRead, func(), error) {
 	var stores []censusDaemonRead
 	closeStores := func() {
@@ -361,7 +401,7 @@ func censusReadDaemonStores(ctx context.Context, deployments writerhold.DaemonDe
 	var listed []writerhold.DaemonDeployment
 	if len(projects) > 0 {
 		if deployments == nil {
-			return nil, closeStores, errors.New("no reader of the daemons' Deployments, against which each daemon store's address is checked")
+			return nil, closeStores, errors.New("no reader of the daemon stores' addresses (the daemons' Deployments and the retired projects' entries), against which each daemon store's address is checked")
 		}
 		if listed, err = deployments(ctx); err != nil {
 			return nil, closeStores, err
@@ -383,19 +423,21 @@ func censusReadDaemonStores(ctx context.Context, deployments writerhold.DaemonDe
 }
 
 // censusReadDaemonStore reads project's daemon store, its file named by o's --daemon-database
-// entry, only at the address its Deployment names:
+// entry, only at the address its one source names:
 //
-//   - exactly one Deployment of deployments names the project (writerhold.DaemonProjectAnnotation),
-//     and it names the store's database and instance (writerhold.DaemonStoreDatabaseAnnotation,
-//     writerhold.DaemonStoreInstanceAnnotation);
-//   - no other Deployment names that database on that instance (daemonAddressSharers): a store two
-//     daemons' Deployments name is no one daemon's, so its records, its gone answer and its
-//     stream identity would be read as each daemon's;
+//   - exactly one source of deployments names the project (writerhold.DaemonProjectAnnotation): a
+//     Deployment, or, for a project retired after the cutover, its entry of the retired projects'
+//     ConfigMap (writerhold.KubeDaemonDeployments), never both, and it names the store's database
+//     and instance (writerhold.DaemonStoreDatabaseAnnotation, writerhold.DaemonStoreInstanceAnnotation,
+//     an entry's keys <project>.database and <project>.instance);
+//   - no other source names that database on that instance (daemonAddressSharers): a store two
+//     daemons' sources name is no one daemon's, so its records, its gone answer and its stream
+//     identity would be read as each daemon's;
 //   - the URL on the file's first line names that database, and the instance its second line
 //     states, the one the operator's own proxy reaches with that URL, is that instance.
 //
-// A store that fails any is unreconciled, naming why (a shared address names each Deployment and
-// its project), and is not opened. At that address it reads the store's sentinel row
+// A store that fails any is unreconciled, naming why and the source (a shared address names each
+// source and its project), and is not opened. At that address it reads the store's sentinel row
 // (censusReadSentinel): a server that answers SQLSTATE 3D000, the database does not exist, makes
 // the store gone, with that answer. Every other answer leaves it unreconciled, naming why: a server
 // that does not answer, any other SQLSTATE among them (57P01 and 57P03, which a dying server
@@ -417,42 +459,51 @@ func censusReadDaemonStore(ctx context.Context, o options, project string, deplo
 		s.unreconciled = fmt.Sprintf("%s: its first line is no database URL (the URL is not echoed): %v", file.flag, err)
 		return s
 	}
-	var named []writerhold.DaemonDeployment
+	var named, deployed []writerhold.DaemonDeployment
 	for _, d := range deployments {
 		if d.Annotations[writerhold.DaemonProjectAnnotation] == project {
 			named = append(named, d)
+			if !d.Retired {
+				deployed = append(deployed, d)
+			}
 		}
 	}
 	if len(named) != 1 {
-		names := make([]string, len(named))
+		sources := make([]string, len(named))
 		for i, d := range named {
-			names[i] = d.Name
+			sources[i] = daemonSource(d)
 		}
-		s.unreconciled = fmt.Sprintf("%d Deployments of namespace %s name project %s (annotation %s), not one, so no address is the store's: %s",
-			len(named), writerhold.DaemonNamespace, project, writerhold.DaemonProjectAnnotation, cmp.Or(strings.Join(names, ", "), "none"))
+		entry := "does not name it"
+		if len(deployed) < len(named) {
+			entry = "names it"
+		}
+		s.unreconciled = fmt.Sprintf("%d Deployments of namespace %s name project %s (annotation %s), and %s %s (keys %s%s, %s%s): not one source, so no address is the store's: %s",
+			len(deployed), writerhold.DaemonNamespace, project, writerhold.DaemonProjectAnnotation, retiredStoresSource, entry,
+			project, writerhold.RetiredStoreDatabaseSuffix, project, writerhold.RetiredStoreInstanceSuffix, cmp.Or(strings.Join(sources, ", "), "none"))
 		return s
 	}
-	deployment := named[0].Name
+	source := daemonSource(named[0])
 	database := named[0].Annotations[writerhold.DaemonStoreDatabaseAnnotation]
 	instance := named[0].Annotations[writerhold.DaemonStoreInstanceAnnotation]
-	sharers := daemonAddressSharers(deployments, deployment, database, instance)
+	sharers := daemonAddressSharers(deployments, named[0], database, instance)
 	switch {
 	case database == "":
-		s.unreconciled = fmt.Sprintf("Deployment %s/%s has no annotation %s, so the store it reads is unknown", writerhold.DaemonNamespace, deployment, writerhold.DaemonStoreDatabaseAnnotation)
+		s.unreconciled = fmt.Sprintf("%s has no %s, so the store's address is unknown", source, daemonSourceField(named[0], writerhold.DaemonStoreDatabaseAnnotation))
 	case instance == "":
-		s.unreconciled = fmt.Sprintf("Deployment %s/%s has no annotation %s, so the store it reads is unknown", writerhold.DaemonNamespace, deployment, writerhold.DaemonStoreInstanceAnnotation)
+		s.unreconciled = fmt.Sprintf("%s has no %s, so the store's address is unknown", source, daemonSourceField(named[0], writerhold.DaemonStoreInstanceAnnotation))
 	case len(sharers) > 0:
-		s.unreconciled = daemonSharedAddress(project, deployment, database, instance, sharers)
+		s.unreconciled = daemonSharedAddress(project, named[0], database, instance, sharers)
 	case config.ConnConfig.Database != database:
-		s.unreconciled = fmt.Sprintf("%s reaches database %q, and Deployment %s/%s reads database %q", file.flag, config.ConnConfig.Database, writerhold.DaemonNamespace, deployment, database)
+		s.unreconciled = fmt.Sprintf("%s reaches database %q, and %s names database %q", file.flag, config.ConnConfig.Database, source, database)
 	case file.instance == "":
-		s.unreconciled = fmt.Sprintf("%s states no instance on its second line, so it does not show it reaches instance %q, which Deployment %s/%s reads", file.flag, instance, writerhold.DaemonNamespace, deployment)
+		s.unreconciled = fmt.Sprintf("%s states no instance on its second line, so it does not show it reaches instance %q, which %s names", file.flag, instance, source)
 	case file.instance != instance:
-		s.unreconciled = fmt.Sprintf("%s states instance %q, and Deployment %s/%s reads instance %q", file.flag, file.instance, writerhold.DaemonNamespace, deployment, instance)
+		s.unreconciled = fmt.Sprintf("%s states instance %q, and %s names instance %q", file.flag, file.instance, source, instance)
 	}
 	if s.unreconciled != "" {
 		return s
 	}
+	s.retired = named[0].Retired
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		s.unreconciled = fmt.Sprintf("open its database (%s; the URL is not echoed): %v", file.flag, err)
@@ -465,22 +516,23 @@ func censusReadDaemonStore(ctx context.Context, o options, project string, deplo
 	case errors.As(err, &pg) && pg.Code == censusUndefinedDatabase:
 		s.gone = &writerhold.GoneStore{Project: project, Database: database, Instance: instance, StatedInstance: file.instance, Answer: pg.Error()}
 	case errors.Is(err, selection.ErrSentinelFamily):
-		s.unreconciled = fmt.Sprintf("its %s row is another family's sentinel, so the address its Deployment names holds another store: %v", selection.PGSentinelKey(family), err)
+		s.unreconciled = fmt.Sprintf("its %s row is another family's sentinel, so the address %s names holds another store: %v", selection.PGSentinelKey(family), source, err)
 	case err != nil:
 		s.unreconciled = err.Error()
 	}
 	return s
 }
 
-// daemonAddressSharers are the Deployments of deployments, but the one named own, that name the
-// store address database on instance by their annotations (writerhold.DaemonStoreDatabaseAnnotation,
-// writerhold.DaemonStoreInstanceAnnotation): the Deployments of other daemons whose store is the
-// same database. Every daemon's store is its own database, so a shared address is refused by every
-// reader of a daemon store (censusReadDaemonStore, enroll), never read as one daemon's.
-func daemonAddressSharers(deployments []writerhold.DaemonDeployment, own, database, instance string) []writerhold.DaemonDeployment {
+// daemonAddressSharers are the sources of deployments, but own, that name the store address
+// database on instance (writerhold.DaemonStoreDatabaseAnnotation,
+// writerhold.DaemonStoreInstanceAnnotation): the Deployments of other daemons, and the entries of
+// retired projects, whose store is the same database. Every daemon's store is its own database, so
+// a shared address is refused by every reader of a daemon store (censusReadDaemonStore, enroll),
+// never read as one daemon's.
+func daemonAddressSharers(deployments []writerhold.DaemonDeployment, own writerhold.DaemonDeployment, database, instance string) []writerhold.DaemonDeployment {
 	var sharers []writerhold.DaemonDeployment
 	for _, d := range deployments {
-		if d.Name != own && d.Annotations[writerhold.DaemonStoreDatabaseAnnotation] == database &&
+		if (d.Name != own.Name || d.Retired != own.Retired) && d.Annotations[writerhold.DaemonStoreDatabaseAnnotation] == database &&
 			d.Annotations[writerhold.DaemonStoreInstanceAnnotation] == instance {
 			sharers = append(sharers, d)
 		}
@@ -488,15 +540,14 @@ func daemonAddressSharers(deployments []writerhold.DaemonDeployment, own, databa
 	return sharers
 }
 
-// daemonSharedAddress is why a store whose address, database on instance, project's Deployment
-// deployment and each of sharers name is no one daemon's, naming each Deployment and its project.
-func daemonSharedAddress(project, deployment, database, instance string, sharers []writerhold.DaemonDeployment) string {
-	named := []string{fmt.Sprintf("%s/%s (project %s)", writerhold.DaemonNamespace, deployment, project)}
+// daemonSharedAddress is why a store whose address, database on instance, project's source own and
+// each of sharers name is no one daemon's, naming each source (daemonSource) and its project.
+func daemonSharedAddress(project string, own writerhold.DaemonDeployment, database, instance string, sharers []writerhold.DaemonDeployment) string {
+	named := []string{fmt.Sprintf("%s (project %s)", daemonSource(own), project)}
 	for _, d := range sharers {
-		named = append(named, fmt.Sprintf("%s/%s (project %s)", writerhold.DaemonNamespace, d.Name,
-			cmp.Or(d.Annotations[writerhold.DaemonProjectAnnotation], "none")))
+		named = append(named, fmt.Sprintf("%s (project %s)", daemonSource(d), cmp.Or(d.Annotations[writerhold.DaemonProjectAnnotation], "none")))
 	}
-	return fmt.Sprintf("Deployments %s each name database %q on instance %q: a store two daemons share is no one daemon's, so none of them reads it",
+	return fmt.Sprintf("%s each name database %q on instance %q: a store two daemons share is no one daemon's, so none of them reads it",
 		strings.Join(named, " and "), database, instance)
 }
 
@@ -543,7 +594,7 @@ const censusMaxConflicts = 10
 // the operator's grant names), then every daemon store by the census's rule for them
 // (censusReadDaemonStores, with deployments): one for each daemonDatabases entry, <project>=<file>
 // as consumer-names' --daemon-database takes it, each daemon family of families (daemon/<project
-// key>) among them, each read only at the address its Deployment names. It reads every store's
+// key>) among them, each read only at the address its one source names. It reads every store's
 // sentinel row before it writes any, then rewrites each sentinel whose stream_id differs from the
 // stream's identity, every other field kept, with selection.PGStore.WriteSentinel at the revision
 // it read; a refused write (selection.ErrConflict) reads the row again. Its result places each
@@ -557,14 +608,15 @@ const censusMaxConflicts = 10
 // it is left as it is, reconciled with none. A store the rule finds gone, its database answering
 // that it does not exist, is no daemon's, and does not hold back the others. A store the rule
 // leaves unreconciled is named with why: a declared family no entry names, an address that is not
-// its Deployment's or that another daemon's Deployment names too, a file or database it cannot
-// open, a server that does not answer or answers any SQLSTATE but 3D000, a missing table, and a
-// sentinel that does not decode or holds a field this build does not know, which a
-// rewrite would drop. While any is, it writes nothing, and each stale store is unreconciled too,
-// not written. A failed write after others leaves the stores changed so far in the result, and
-// the failed one and each stale store still to write unreconciled. A malformed daemonDatabases
-// entry, a listing of the Deployments it cannot read, and a stream that carries no identity fail
-// the whole call, with nothing written: an empty identity is never written over a recorded one.
+// its source's, that another daemon's source names too, or that no one source names, a file or
+// database it cannot open, a server that does not answer or answers any SQLSTATE but 3D000, a
+// missing table, and a sentinel that does not decode or holds a field this build does not know,
+// which a rewrite would drop. While any is, it writes nothing, and each stale store is
+// unreconciled too, not written. A failed write after others leaves the stores changed so far in
+// the result, and the failed one and each stale store still to write unreconciled. A malformed
+// daemonDatabases entry, a listing of the sources it cannot read, and a stream that carries no
+// identity fail the whole call, with nothing written: an empty identity is never written over a
+// recorded one.
 // The result it answers with an error is the empty one, and carries no promise: it places no
 // store.
 func ReconcileDaemonStreamIDs(ctx context.Context, conn *nats.Conn, deployments writerhold.DaemonDeployments, families, daemonDatabases []string) (writerhold.StreamIDResult, error) {

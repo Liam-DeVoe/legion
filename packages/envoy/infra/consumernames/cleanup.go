@@ -171,17 +171,19 @@ func (r *run) cleanup(ctx context.Context) error {
 // cleanupGone is `consumer-names cleanup --gone <project> --hold <id> [--final]`, a command of the
 // hold's consumer-cleanup workflow (consumerCleanupAdmit, input daemon): it removes the consumers
 // of a Legion daemon whose store is gone, which the census leaves (RecordedFreshNames's gone names),
-// and only then. Under its intent it lists the daemons' Deployments again (writerhold.
-// KubeDaemonDeployments, with the hold's own Kubernetes client) and reads the project's store by
-// the census's rule for the daemon stores (censusReadDaemonStores), at exactly the address the
-// project's Deployment names, from its --daemon-database file: only a server there answering
-// SQLSTATE 3D000, the database does not exist, makes the store gone. Any other reading refuses the
-// run, naming it, before anything is removed: a store that answers, one the rule leaves
-// unreconciled (an address that is not the Deployment's, or that another Deployment names too, a
-// server that does not answer, or answers another SQLSTATE, such as 57P01 or 57P03), and a listing
-// it cannot read. Then, after the held re-read again, it deletes every consumer of the notification
-// stream whose logical name is one of the daemon's (enrollLogicalNames, selection.LogicalOf), in
-// any form, fixed or fresh, naming each, and its done entry names the store and each removal. A
+// and only then. Under its intent it reads the sources of the daemon stores' addresses again
+// (writerhold.KubeDaemonDeployments, with the hold's own Kubernetes client: the daemons'
+// Deployments and the retired projects' entries) and reads the project's store by the census's
+// rule for the daemon stores (censusReadDaemonStores), at exactly the address the project's one
+// source names, its Deployment or, for a project retired after the cutover, its entry, from its
+// --daemon-database file: only a server there answering SQLSTATE 3D000, the database does not
+// exist, makes the store gone. Any other reading refuses the run, naming it, before anything is
+// removed: a store that answers, one the rule leaves unreconciled (an address no one source names,
+// that is not that source's, or that another source names too, a server that does not answer, or
+// answers another SQLSTATE, such as 57P01 or 57P03), and a listing it cannot read. Then, after the
+// held re-read again, it deletes every consumer of the notification stream whose logical name is
+// one of the daemon's (enrollLogicalNames, selection.LogicalOf), in any form, fixed or fresh,
+// naming each, and its done entry names the store and each removal. A
 // delete that fails stops the run, which records each consumer it removed before; every other exit
 // after its intent writes its stop too (admission.stopped), an UNKNOWN's under leftUnknown.
 func (r *run) cleanupGone(ctx context.Context) error {
@@ -200,9 +202,9 @@ func (r *run) cleanupGone(ctx context.Context) error {
 	case store.unreconciled != "":
 		return a.stopped(ctx, fmt.Errorf("--gone %s: %s's store is unreconciled, so nothing shows it is gone, and cleanup removes none of its consumers: %s", project, family, store.unreconciled), true, nothing)
 	case store.gone == nil:
-		return a.stopped(ctx, fmt.Errorf("--gone %s: %s's store answers at the address its Deployment names, so it is not gone, and cleanup removes none of its consumers", project, family), true, nothing)
+		return a.stopped(ctx, fmt.Errorf("--gone %s: %s's store answers at the address %s names, so it is not gone, and cleanup removes none of its consumers", project, family, store.addressSource()), true, nothing)
 	}
-	r.read(family + "'s store, at the address its Deployment names")
+	r.read(family + "'s store, at the address " + store.addressSource() + " names")
 	why := daemonGoneText(*store.gone)
 	nc, _, err := r.conn(ctx)
 	if err != nil {
@@ -248,22 +250,23 @@ func (r *run) cleanupGone(ctx context.Context) error {
 }
 
 // daemonStoreByRule is project's daemon store as the census's rule for the daemon stores reads it
-// (censusReadDaemonStores), at exactly the address the project's Deployment names, which it lists
-// with the hold's own Kubernetes client (writerhold.KubeDaemonDeployments), from the file
-// --daemon-database names: read, gone, or unreconciled and why, for its caller to tell apart; and
-// a close of what it opened, which the caller runs, error or not. A listing it cannot read, or a
-// rule that reads other than one store, is UNKNOWN.
+// (censusReadDaemonStores), at exactly the address the project's one source names, its Deployment
+// or its entry of the retired projects' ConfigMap, which it reads with the hold's own Kubernetes
+// client (writerhold.KubeDaemonDeployments), from the file --daemon-database names: read, gone, or
+// unreconciled and why, for its caller to tell apart; and a close of what it opened, which the
+// caller runs, error or not. A listing it cannot read, or a rule that reads other than one store,
+// is UNKNOWN.
 func (r *run) daemonStoreByRule(ctx context.Context, project string) (censusDaemonRead, func(), error) {
 	family := daemonFamily(project)
 	op, err := r.operatorHub(ctx)
 	if err != nil {
-		return censusDaemonRead{}, func() {}, unknownf(err, "the daemons' Deployments")
+		return censusDaemonRead{}, func() {}, unknownf(err, "the daemon stores' addresses")
 	}
 	file, _ := r.o.daemonDatabase(project)
 	stores, closeStores, err := censusReadDaemonStores(ctx, writerhold.KubeDaemonDeployments(op.Hub.Client), []string{family}, []string{project + "=" + file})
 	switch {
 	case err != nil:
-		return censusDaemonRead{}, closeStores, unknownf(err, "%s's store, at the address its Deployment names", family)
+		return censusDaemonRead{}, closeStores, unknownf(err, "%s's store, at the address its Deployment or its entry of %s names", family, retiredStoresSource)
 	case len(stores) != 1:
 		return censusDaemonRead{}, closeStores, unknownf(nil, "%s's store: the census's rule read %d stores, not one", family, len(stores))
 	}

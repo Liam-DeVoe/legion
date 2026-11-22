@@ -290,7 +290,7 @@ func TestTheStatusReportsAGoneDaemonStore(t *testing.T) {
 	code, stdout, stderr = status(gone, elsewhere)
 	require.Equal(t, 2, code, "a 3D000 the rule does not confirm: %s%s", stdout, stderr)
 	require.Contains(t, stderr, "daemon/ELSEWHERE's store answers SQLSTATE 3D000, and the census's rule does not confirm it gone")
-	require.Contains(t, stderr, "Deployment legion/legion-daemon-elsewhere reads database \"daemon_elsewhere\"")
+	require.Contains(t, stderr, "Deployment legion/legion-daemon-elsewhere names database \"daemon_elsewhere\"")
 	require.Contains(t, stdout, "store daemon/GONE: gone: ", "status went on past the gone store")
 }
 

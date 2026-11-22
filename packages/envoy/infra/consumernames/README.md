@@ -56,14 +56,14 @@ These are `writerhold.HubFlags`, the flags `envoy-infra hold` and `envoy-infra b
 | `--verify-keys K` | none | every command: `BROKER_NATS_HOLD_SIGNING_KEYS`, the keys every row and record is verified under |
 | `--nats URL` | none | every command, once for each of the hub's client URLs |
 | `--signing-key-secret projects/P/secrets/operator-only-envoy-hold-signing` | none | every command but `status` |
-| `--kube-namespace`, `--statefulset`, `--configmap` | `envoy`, `envoy-nats`, `envoy-nats-config` | every held command: the hub's Kubernetes objects, reached through the in-cluster configuration or KUBECONFIG's, beside the Compute API; `cleanup --gone` and `enroll` list the Deployments of namespace `legion` through the same client, and so does `status` for a daemon store whose database answers that it does not exist |
+| `--kube-namespace`, `--statefulset`, `--configmap` | `envoy`, `envoy-nats`, `envoy-nats-config` | every held command: the hub's Kubernetes objects, reached through the in-cluster configuration or KUBECONFIG's, beside the Compute API; `cleanup --gone` and `enroll` read the daemon stores' addresses through the same client (the Deployments of namespace `legion` and the ConfigMap `envoy-operator/envoy-operator-retired-stores`; [The daemon stores' addresses](#the-daemon-stores-addresses)), and so does `status` for a daemon store whose database answers that it does not exist |
 | `--probe-token-file F` | none | `restore --finish`, which refuses to run without it: the hold probe's token |
 
 Their values are the ones `envoy-infra hold` takes. `--minters-report` is accepted, as every
 command of the hold accepts it, and no `consumer-names` command reads it. Below, `<hold flags>`
 stands for `--broker-url`, `--token-file`, `--verify-keys`, `--signing-key-secret` and each
 `--nats`, and the Kubernetes flags where their defaults are not the hub's. `status` takes them all
-and reads no signing key; it reads Kubernetes only to list the daemons' Deployments, for a daemon
+and reads no signing key; it reads Kubernetes only for the daemon stores' addresses, for a daemon
 store whose database answers that it does not exist.
 
 ### The stores' flags
@@ -76,15 +76,16 @@ store whose database answers that it does not exist.
 Each line is read with its surrounding white space cut. A file whose first line is empty is
 refused, naming the flag; the URL is never echoed. Every command opens the URL on the first line.
 Only `envoy-infra streams census` and `cleanup --gone` read the second line, to check the store
-against its daemon's Deployment (below), so a file of one line serves every other command. Below,
-`<store flags>` stands for `--dispatch-database-file` and one `--daemon-database` for each daemon:
+against the one source of its address (below), so a file of one line serves every other command.
+Below, `<store flags>` stands for `--dispatch-database-file` and one `--daemon-database` for each
+daemon:
 
 ```text
 postgres://<operator user>:<password>@127.0.0.1:5432/<database>
 example-project:example-region:example-instance
 ```
 
-### The daemons' Deployments
+### The daemon stores' addresses
 
 Each Legion daemon runs as a Deployment in namespace `legion` that carries three annotations:
 
@@ -94,16 +95,32 @@ Each Legion daemon runs as a Deployment in namespace `legion` that carries three
 | `envoy-infra.consumer-names/store-database` | the name of the daemon's database |
 | `envoy-infra.consumer-names/store-instance` | the connection name of the Cloud SQL instance that holds it |
 
-`envoy-infra streams census` and `cleanup --gone` read a daemon's store only at the address its
-Deployment names, and `status` calls a store gone only at that address. The store is unreconciled,
-and none of them reads it, unless exactly one Deployment names the project, that Deployment
-carries both store annotations, no other Deployment names the same database on the same instance,
-the `--daemon-database` file's URL names that database, and the file's second line is that
-instance. At that address, a server that answers SQLSTATE 3D000 (the database does not exist)
-makes the store gone. Every other answer leaves it unreconciled: a server that does not answer,
-any other SQLSTATE (57P01 and 57P03, which a dying server answers in the seconds after its
-instance is deleted, among them), and a database with no `intake_consumers` table. `enroll` reads
-the Deployments only to refuse a store whose database and instance another Deployment names too.
+A project retired after the cutover runs no Deployment, and its broker cutover row `daemon/P`
+stays. The deployment renders its store's address in the ConfigMap `envoy-operator-retired-stores`
+of namespace `envoy-operator` instead, as two data keys for each retired project P:
+
+| Data key | Value |
+| --- | --- |
+| `P.database` | the name of the retired daemon's database |
+| `P.instance` | the connection name of the Cloud SQL instance that holds it |
+
+A key of neither form makes every reading of the addresses fail, naming the key, and so does a
+read of the ConfigMap that Kubernetes refuses. A ConfigMap that does not exist holds no retired
+project.
+
+`envoy-infra streams census` and `cleanup --gone` read a daemon's store only at the address its one
+source names, and `status` calls a store gone only at that address: the address rule. The store is
+unreconciled, and none of them reads it, unless exactly one source names the project, a Deployment
+or a retired project's entry and never both, that source names both the database and the instance,
+no other source names the same database on the same instance, the `--daemon-database` file's URL
+names that database, and the file's second line is that instance.
+Each refusal names the project and the source: `Deployment legion/<name>` or `ConfigMap
+envoy-operator/envoy-operator-retired-stores`. At that address, a server that answers SQLSTATE
+3D000 (the database does not exist) makes the store gone. Every other answer leaves it
+unreconciled: a server that does not answer, any other SQLSTATE (57P01 and 57P03, which a dying
+server answers in the seconds after its instance is deleted, among them), and a database with no
+`intake_consumers` table. `enroll` reads the sources only to refuse a store whose database and
+instance another source names too.
 
 ### Output and exit codes
 
@@ -136,8 +153,8 @@ consumer on the stream, fixed or fresh, names. It changes nothing. Each Postgres
 flag, and reads its file's first line: a store no flag names makes the reading UNKNOWN, and the
 UNKNOWN line names each such store and its flag (`daemon/P's store: no --daemon-database P=<file>
 names it`), so a first run tells which daemons the next needs. Only for a daemon store whose
-database answers that it does not exist does it read the file's second line and the daemons'
-Deployments in Kubernetes (below). While a hold is set, `envoy-infra hold status --hold ID` prints
+database answers that it does not exist does it read the file's second line and the daemon stores'
+addresses in Kubernetes (below). While a hold is set, `envoy-infra hold status --hold ID` prints
 the row and that hold's journal instead. What `status` reads before a hold can change before
 `convert` runs: `prepare` lists the fixed names again, `create-bucket` makes the bucket, and every
 client runs until `hold set`.
@@ -151,7 +168,7 @@ It prints, in this order:
 | `  N. COMMAND STATE` | each journal entry: the command and `intent`, `done` or `stop` |
 | `cutover F: STATE (hold H, hold_gen N)` | the broker's cutover row of family F, `done` or `rolled_back`, the hold that wrote it, and the `hold_gen` the broker recorded with it |
 | `store F: missing` | F's store does not exist: the bucket, or the family's `intake_consumers` table |
-| `store F: gone: database D on instance I (the operator's file states S): ANSWER` | daemon F's store is gone: its database answers SQLSTATE 3D000 at exactly the address F's Deployment names. No `BLOCKER` line; see below |
+| `store F: gone: database D on instance I (the operator's file states S): ANSWER` | daemon F's store is gone: its database answers SQLSTATE 3D000 at exactly the address F's one source names (its Deployment, or a retired project's entry). No `BLOCKER` line; see below |
 | `store F (WHERE): no sentinel` | the store exists and holds no sentinel |
 | `store F (WHERE): cutover=C boundary=B replay_from=R orphans=[...] hold=H` | the store's sentinel. WHERE is the bucket's stream or `intake_consumers`; `cutover` and `hold` read `-` when empty, `boundary` and `replay_from` `0`, `orphans` `[]` |
 | `store F (WHERE): sentinel UNKNOWN, its value is malformed` | the bucket's sentinel holds a value that is no exact store state; `status` then exits 2 |
@@ -169,15 +186,16 @@ names, a store read that failed and a malformed value do not: it prints every fa
 every `BLOCKER` line, then exits 2 with no `blockers:` line.
 
 A daemon store whose database answers SQLSTATE 3D000 (the database does not exist) is read again
-by the Deployment rule ([The daemons' Deployments](#the-daemons-deployments)), with the
-Deployments listed through the hold's Kubernetes flags. When the server at the Deployment's address
-answers 3D000, `status` prints the store `gone` and goes on, so a broker cutover row that names a
-deleted project no longer keeps every reading UNKNOWN; no command removes that row. Any other
-answer the rule finds (an address that is not the Deployment's, or that another Deployment names
-too, a server that answers otherwise) keeps the store UNKNOWN, naming why: `daemon/P's store
-answers SQLSTATE 3D000, and the census's rule does not confirm it gone: ...`. A gone store's
-consumers stay on the stream until `cleanup --gone P` removes them. An UNKNOWN reading's `BLOCKER`
-lines are each true of the store they name; what it does not show is the stores it could not read.
+by the address rule ([The daemon stores' addresses](#the-daemon-stores-addresses)), with the
+addresses read through the hold's Kubernetes flags. When the server at the address the store's one
+source names answers 3D000, `status` prints the store `gone` and goes on, so a broker cutover row
+that names a deleted project no longer keeps every reading UNKNOWN; no command removes that row.
+Any other answer the rule finds (an address no one source names, that is not that source's, or
+that another source names too, a server that answers otherwise) keeps the store UNKNOWN, naming
+why: `daemon/P's store answers SQLSTATE 3D000, and the census's rule does not confirm it gone:
+...`. A gone store's consumers stay on the stream until `cleanup --gone P` removes them. An UNKNOWN
+reading's `BLOCKER` lines are each true of the store they name; what it does not show is the stores
+it could not read.
 
 ### The `BLOCKER` lines
 
@@ -282,8 +300,8 @@ status --hold ID` and in each command's refusal.
      Postgres sentinel that does not decode, and a daemon store whose database is gone. So before
      `hold prepare`, remove a gone daemon's consumers with `cleanup --gone` in a `consumer-cleanup`
      hold, and give `convert` no flag for it: with no flag and no name of it on the stream, it is
-     none of `convert`'s families. When the Deployment rule leaves that store unreconciled (no
-     single Deployment names the project with both store annotations), `cleanup --gone` removes
+     none of `convert`'s families. When the address rule leaves that store unreconciled (no single
+     source names the project with both its database and its instance), `cleanup --gone` removes
      nothing, and no command of this package removes those consumers.
 
 Then `convert` saves its set, the hold's record of kind `convert` and key `set`: its first change.
@@ -526,7 +544,7 @@ this package gives it three readers:
 - the fresh names the listener, Dispatch and daemon records hold: a `<base>~<nuid>` no record holds
   is a crashed create's orphan, which the census removes and names. `--family dispatch` needs
   `--dispatch-database-file`; each `--family daemon/P` needs `--daemon-database P=F`, read by the
-  Deployment rule. A store it cannot read, or a daemon store left unreconciled, makes the census
+  address rule. A store it cannot read, or a daemon store left unreconciled, makes the census
   UNKNOWN, and it removes nothing. A daemon store gone has its consumers left, each printed `LEFT`;
 - each daemon store's stream identity, written to `ENVOY_NOTIFICATIONS`' identity where it differs,
   with no write while any store is unreconciled. It prints `CHANGED daemon/P: stream_id "old" ->
@@ -590,13 +608,14 @@ retired`. A delete or a write that failed stops it, recording what it deleted.
 ### `cleanup --gone`
 
 `cleanup --gone P --daemon-database P=F --hold ID [--final] <hold flags>`, in a `consumer-cleanup`
-hold, removes the consumers of daemon P whose store is gone, which the census leaves. It lists the
-Deployments again and reads P's store by the Deployment rule: only SQLSTATE 3D000 at exactly the
-address P's Deployment names makes it gone. A store that answers, one left unreconciled, and a
-listing it cannot read each stop it, removing nothing. Then it deletes every consumer of
-`ENVOY_NOTIFICATIONS` whose logical name is one of P's, `legion-go-P-<kind>`, fixed or fresh. It
-prints `cleanup --gone daemon/P: removed ENVOY_NOTIFICATIONS consumer NAME: store gone: <why>` for
-each, then `cleanup --gone daemon/P: N consumers removed; store gone: <why>`.
+hold, removes the consumers of daemon P whose store is gone, which the census leaves. It reads the
+daemon stores' addresses again and reads P's store by the address rule: only SQLSTATE 3D000 at
+exactly the address P's one source names, its Deployment or its retired entry, makes it gone. A
+store that answers, one left unreconciled, and a listing it cannot read each stop it, removing
+nothing. Then it deletes every consumer of `ENVOY_NOTIFICATIONS` whose logical name is one of P's,
+`legion-go-P-<kind>`, fixed or fresh. It prints `cleanup --gone daemon/P: removed
+ENVOY_NOTIFICATIONS consumer NAME: store gone: <why>` for each, then `cleanup --gone daemon/P: N
+consumers removed; store gone: <why>`.
 
 ### `replace`
 
@@ -622,7 +641,8 @@ daemon store made after the cutover converted. It stops, naming what it found, w
 - the store holds a checkpoint (`consumer_positions`) or a selection row, or lacks either table;
 - the store's marker reads `done` or `rolled_back` from another hold, or the broker holds a cutover
   row for `daemon/P` from another hold;
-- a Deployment of P names a database and instance that another Deployment names too;
+- a source of P (its Deployment, or its retired entry) names a database and instance that another
+  source names too;
 - the stream carries no identity, or this hold's marker records another one.
 
 Otherwise, after the held re-read again, it writes the store's marker `cutover` `done` with the hold,

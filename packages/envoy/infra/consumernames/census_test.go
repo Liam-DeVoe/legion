@@ -930,7 +930,7 @@ func TestTheCensusCallsAStoreGoneOnlyAtItsDeploymentsAddress(t *testing.T) {
 		{"a file with no instance line", "",
 			[]writerhold.DaemonDeployment{censusDeployment("GONE", dropped, censusInstance)}, "states no instance on its second line"},
 		{"a Deployment naming another database", censusInstance,
-			[]writerhold.DaemonDeployment{censusDeployment("GONE", "daemon_other", censusInstance)}, `reads database "daemon_other"`},
+			[]writerhold.DaemonDeployment{censusDeployment("GONE", "daemon_other", censusInstance)}, `names database "daemon_other"`},
 		{"no Deployment for the project", censusInstance, nil, "0 Deployments of namespace legion name project GONE"},
 		{"two Deployments for the project", censusInstance,
 			[]writerhold.DaemonDeployment{censusDeployment("GONE", dropped, censusInstance), other}, "2 Deployments of namespace legion name project GONE"},

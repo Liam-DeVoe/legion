@@ -181,7 +181,7 @@ func (r *run) enrollHeld(ctx context.Context, a *admission, project string, p *e
 	if err != nil {
 		return err
 	}
-	r.read("the daemons' Deployments")
+	r.read("the daemon stores' addresses (the daemons' Deployments and the retired projects' entries)")
 	var problems []string
 	if len(findings) > 0 {
 		problems = append(problems, fmt.Sprintf("%s's store is not new: %s", family, strings.Join(findings, "; ")))
@@ -245,19 +245,20 @@ func (r *run) enrollHeld(ctx context.Context, a *admission, project string, p *e
 }
 
 // enrollSharedAddress is why project's store is no one daemon's, "" when nothing says so: each
-// address a Deployment of project names (writerhold.DaemonProjectAnnotation, with its store's
-// database and instance annotations) that another Deployment names too (daemonAddressSharers),
-// naming each Deployment and its project, as the census's rule for the daemon stores refuses such
-// an address (censusReadDaemonStore). The daemons' Deployments are listed with the hold's own
-// Kubernetes client (writerhold.KubeDaemonDeployments); a listing it cannot read is UNKNOWN.
+// address a source of project names (a Deployment by writerhold.DaemonProjectAnnotation, or a
+// retired project's entry, with its store's database and instance) that another source names too
+// (daemonAddressSharers), naming each source and its project, as the census's rule for the daemon
+// stores refuses such an address (censusReadDaemonStore). The sources, the daemons' Deployments and
+// the retired projects' entries, are read with the hold's own Kubernetes client
+// (writerhold.KubeDaemonDeployments); a listing it cannot read is UNKNOWN.
 func (r *run) enrollSharedAddress(ctx context.Context, project string) (string, error) {
 	op, err := r.operatorHub(ctx)
 	if err != nil {
-		return "", unknownf(err, "the daemons' Deployments")
+		return "", unknownf(err, "the daemon stores' addresses")
 	}
 	listed, err := writerhold.KubeDaemonDeployments(op.Hub.Client)(ctx)
 	if err != nil {
-		return "", unknownf(err, "the daemons' Deployments, against which %s's store address is checked", daemonFamily(project))
+		return "", unknownf(err, "the daemon stores' addresses (the daemons' Deployments and the retired projects' entries), against which %s's store address is checked", daemonFamily(project))
 	}
 	var shared []string
 	for _, d := range listed {
@@ -265,8 +266,8 @@ func (r *run) enrollSharedAddress(ctx context.Context, project string) (string, 
 		if d.Annotations[writerhold.DaemonProjectAnnotation] != project || database == "" || instance == "" {
 			continue
 		}
-		if sharers := daemonAddressSharers(listed, d.Name, database, instance); len(sharers) > 0 {
-			shared = append(shared, daemonSharedAddress(project, d.Name, database, instance, sharers))
+		if sharers := daemonAddressSharers(listed, d, database, instance); len(sharers) > 0 {
+			shared = append(shared, daemonSharedAddress(project, d, database, instance, sharers))
 		}
 	}
 	return strings.Join(shared, "; "), nil

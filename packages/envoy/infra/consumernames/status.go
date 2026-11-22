@@ -279,9 +279,10 @@ func (r *run) statusPGFamily(ctx context.Context, family string) (statusFamily, 
 
 // statusGone answers err, the failed first read of family's store, as status reports it: a daemon
 // store whose database answers SQLSTATE 3D000 (censusUndefinedDatabase) is read again by the
-// census's rule for the daemon stores, at exactly the address the daemon's Deployment names
-// (daemonStoreByRule), and is gone, named by daemonGoneText, when the server there answers 3D000;
-// status then goes on, so a broker cutover row naming a deleted project, which no command removes,
+// census's rule for the daemon stores, at exactly the address the daemon's one source names, its
+// Deployment or its entry of the retired projects' ConfigMap (daemonStoreByRule), and is gone,
+// named by daemonGoneText, when the server there answers 3D000; status then goes on, so a broker
+// cutover row naming a deleted project, which no command removes,
 // does not keep every reading UNKNOWN. Anything else the rule reads is an error naming why, and so
 // is any other failure: status stays UNKNOWN on the store.
 func (r *run) statusGone(ctx context.Context, family string, err error) (string, error) {
@@ -300,7 +301,7 @@ func (r *run) statusGone(ctx context.Context, family string, err error) (string,
 	case store.unreconciled != "":
 		return "", fmt.Errorf("%s's store answers SQLSTATE %s, and the census's rule does not confirm it gone: %s (its answer: %v)", family, pg.Code, store.unreconciled, pg)
 	}
-	return "", fmt.Errorf("%s's store answers SQLSTATE %s, and the census's rule does not confirm it gone: it answers at the address its Deployment names (its answer: %v)", family, pg.Code, pg)
+	return "", fmt.Errorf("%s's store answers SQLSTATE %s, and the census's rule does not confirm it gone: it answers at the address %s names (its answer: %v)", family, pg.Code, store.addressSource(), pg)
 }
 
 // statusPrintFamily prints f's store and records, each malformed key as UNKNOWN, and answers its

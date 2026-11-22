@@ -3014,3 +3014,84 @@ func TestHoldCompletionPerWorkflow(t *testing.T) {
 		}
 	})
 }
+
+// TestHoldAHubRestoreReadsARetiredProjectsStoreGone: a hub-restore hold whose restore is proved,
+// with the cutover row of a project retired after the fresh-name cutover present (daemon/RETIRED:
+// no Deployment, its store's address in its entry of ConfigMap
+// envoy-operator/envoy-operator-retired-stores, keys RETIRED.database and RETIRED.instance, its
+// database dropped), reconciles the daemon stores of every cutover row through the one reader of
+// their addresses, writerhold.KubeDaemonDeployments of the hold's own client, with consumernames'
+// writer (ReconcileDaemonStreamIDs): the call hub-restore's abort makes over the cutover rows'
+// daemon families before it releases. Here the census inside the hold makes it, and reads the
+// retired store gone: it prints `GONE daemon/RETIRED: ...`, names gone.daemon/RETIRED in its done
+// entry, which completes the record, and the hold is released. Control: 2b1d598844's reader, which
+// never reads the ConfigMap, leaves daemon/RETIRED unreconciled ("0 Deployments of namespace legion
+// name project RETIRED"), and the census is UNKNOWN.
+func TestHoldAHubRestoreReadsARetiredProjectsStoreGone(t *testing.T) {
+	h := newT7Stack(t)
+	h.seed()
+	h.scene(false, "ses_r1")
+	ctx := context.Background()
+	cutover := h.prepared(holdrecord.WorkflowCutover)
+	code, _, stderr := h.names("prepare", "--hold", cutover)
+	require.Zero(t, code, stderr)
+	h.heldNoSteps(cutover)
+	code, _, stderr = h.names("create-bucket", "--hold", cutover, "--replicas", "3")
+	require.Zero(t, code, stderr)
+	code, _, stderr = h.names("convert", "--hold", cutover)
+	require.Zero(t, code, stderr)
+	h.census(cutover, "session")
+	code, _, _ = h.hold("release", "--hold", cutover)
+	require.Zero(t, code)
+
+	hub := h.prepared(holdrecord.WorkflowHubRestore)
+	h.heldNoSteps(hub)
+	h.disks.Remake(0)
+	code, _, _ = h.hold("prove", "--hold", hub, "--restored", holdtest.Claim(0)+"=pvc-"+holdtest.Pod(0))
+	require.Zero(t, code, "hold prove of the restored claim")
+	h.awaitLeaders()
+	_, err := h.s.Records.PutCutover(ctx, "daemon/RETIRED", selection.CutoverDone, hub)
+	require.NoError(t, err)
+	dropped, file := h.droppedStore("RETIRED")
+	_, err = h.s.Kube.Client.CoreV1().ConfigMaps("envoy-operator").Create(ctx, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "envoy-operator", Name: "envoy-operator-retired-stores"},
+		Data:       map[string]string{"RETIRED.database": dropped, "RETIRED.instance": t7Instance},
+	}, metav1.CreateOptions{})
+	require.NoError(t, err)
+	var families []string
+	for family := range h.cutovers() {
+		families = append(families, family)
+	}
+	slices.Sort(families)
+	require.Contains(t, families, "daemon/RETIRED")
+
+	code, stdout, stderr := h.streams(append(h.censusArgs(hub, families...), "--daemon-database", "RETIRED="+file)...)
+	require.Zero(t, code, "the hub-restore census beside a retired project's store: %s%s", stdout, stderr)
+	gone := "database " + dropped + " on instance " + t7Instance + " (the operator's file states " + t7Instance + "): "
+	require.Contains(t, stdout, "GONE daemon/RETIRED: "+gone)
+	require.True(t, slices.Contains(strings.Split(strings.TrimSpace(stdout), "\n"), "CLEAN"), stdout)
+	done := h.journal(hub).Ops[len(h.journal(hub).Ops)-1]
+	require.Equal(t, writerhold.CommandStreamsCensus+" done", done.Command+" "+done.State)
+	require.True(t, strings.HasPrefix(done.Outputs["gone.daemon/RETIRED"], gone), "%q", done.Outputs["gone.daemon/RETIRED"])
+	require.Contains(t, done.Outputs["gone.daemon/RETIRED"], "SQLSTATE 3D000")
+	require.True(t, h.journal(hub).Complete)
+	code, _, _ = h.hold("release", "--hold", hub)
+	require.Zero(t, code)
+	require.Equal(t, natsgrant.OperatorPhaseReleased, h.row().Phase)
+}
+
+// droppedStore is a daemon store's file as --daemon-database names one for project, whose database
+// no server holds (the server answers SQLSTATE 3D000 for it, as for a database dropped with its
+// project), on the test's Postgres server, with t7Instance on its second line; it answers the
+// database's name and the file.
+func (h *t7Stack) droppedStore(project string) (string, string) {
+	h.t.Helper()
+	config, err := pgxpool.ParseConfig(os.Getenv("BROKER_TEST_DATABASE_URL"))
+	require.NoError(h.t, err)
+	c := config.ConnConfig
+	dropped := "t7rows_dropped_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	url := fmt.Sprintf("postgres://%s:%s@%s/%s?sslmode=disable&connect_timeout=2", c.User, c.Password, net.JoinHostPort(c.Host, strconv.Itoa(int(c.Port))), dropped)
+	file := filepath.Join(h.t.TempDir(), strings.ToLower(project)+".url")
+	require.NoError(h.t, os.WriteFile(file, []byte(url+"\n"+t7Instance+"\n"), 0o600))
+	return dropped, file
+}
