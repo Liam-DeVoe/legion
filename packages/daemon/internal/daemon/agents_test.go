@@ -650,10 +650,11 @@ func (r *stepRecordsRig) runsRecorded(runs []stepRun) []stepRecordRead {
 // `implementer:a tester:a reviewer`, which the release before takes, reaches reviewing on this
 // release; the daemon stops, and the store is taken back to the key that release writes its phases
 // rows by, (issue, role), by the way back the migration's header gives, which keeps each role's one
-// row with the step it ran. This release then boots and migrates the key again, and the reviewer
-// requests changes: the task returns to step 1 in the session of steps 1 and 2, on the implementer's
-// row the release before left at step 1, and walks to done again with the claims of its steps and
-// no other.
+// row with the step it ran, every column as it stood. This release then boots and migrates the key
+// again, which keeps each of those rows whole, and the reviewer requests changes: the task returns
+// to step 1 in the session of steps 1 and 2, on the implementer's row the release before left at
+// step 1, which still names the record step 1's first run wrote, and walks to done again with the
+// claims of its steps and no other.
 func TestAnIssueThatRanBeforeTheStepKeyKeepsItsRows(t *testing.T) {
 	r := newAgentsRig(t)
 	r.givePlan(oneKeyPlan...)
@@ -668,6 +669,10 @@ func TestAnIssueThatRanBeforeTheStepKeyKeepsItsRows(t *testing.T) {
 	r.finish(implementer, "test", testCompletion, phase.Reviewing)
 	r.worker(claim.RoleReviewer)
 	left := r.stepRowsNow()
+	kept := r.carriedOf(claim.RoleImplementer, "a", 1)
+	if kept.lastHandoff == "" {
+		t.Fatalf("the implementer's row of step 1 names no handoff record before the way back, so no read after the return can tell it from a row written new")
+	}
 	r.restartWith(func() {
 		r.rollBackStepKey()
 		if key := r.phasesKey(); key != releaseBeforesPhasesKey {
@@ -680,6 +685,14 @@ func TestAnIssueThatRanBeforeTheStepKeyKeepsItsRows(t *testing.T) {
 	if key := r.phasesKey(); key != thisReleasesPhasesKey {
 		t.Fatalf("the key of phases after this release booted is (%s), want (%s): its Migrate wrote the key again", key, thisReleasesPhasesKey)
 	}
+	// The boot's Migrate keeps every row the release before left, every column as it stood: a row it
+	// lost would be written again by the next write of its step, under the same key and claim, so
+	// the walk below cannot see the loss.
+	if rows := r.stepRowsNow(); !slices.Equal(rows, left) {
+		gone, added := rowsApart(rows, left)
+		t.Fatalf("after this release booted, want each row the release before left as it stood: %q is gone, and %q stands that it did not leave",
+			gone, added)
+	}
 	// The booted daemon runs over a runtime of its own, and each pane outlived the daemon it was
 	// launched by (reboot), so the launches of the claim count from what this runtime has made.
 	launched = len(launchSpecsOf(r.rt, implementer.token))
@@ -689,6 +702,13 @@ func TestAnIssueThatRanBeforeTheStepKeyKeepsItsRows(t *testing.T) {
 	implementer.takeTask()
 	if rows, want := r.stepRowsOf(claim.RoleImplementer), []string{"a 1 " + string(implementer.token)}; !slices.Equal(rows, want) {
 		t.Fatalf("the implementer's rows after the return are %q, want %q: the row the release before left at step 1", rows, want)
+	}
+	// A row of step 1 written new, where the return found none, names no record and holds the
+	// entry the claim's other rows give; the row the release before left still names the record of
+	// step 1's first run, which no start clears, and the return raised its entry.
+	if now := r.carriedOf(claim.RoleImplementer, "a", 1); now.lastHandoff != kept.lastHandoff || now.entry <= kept.entry {
+		t.Fatalf("the implementer's row of step 1 after the return names the record %q at entry %d, want the row the release before left, "+
+			"raised: the record %q and an entry above %d", now.lastHandoff, now.entry, kept.lastHandoff, kept.entry)
 	}
 	r.entryRose(implementer, claim.RoleImplementer, claim.RoleTester)
 	r.finish(implementer, "implement", implementCompletion, phase.Testing)
@@ -705,12 +725,50 @@ func TestAnIssueThatRanBeforeTheStepKeyKeepsItsRows(t *testing.T) {
 	r.holdsClaimsOf(claim.RoleArchitect, claim.RoleImplementer, claim.RoleMerger, claim.RoleReviewer)
 }
 
-// stepRowsNow is each phases row of the walk's issue, `<role> <step task> <step place> <claim>`, in
-// the order of the role, the task and the place.
+// stepRowsNow is each phases row of the walk's issue, `<role> <step task> <step place> <claim>
+// <every other column>`, the last one JSON object, in the order of the role, the task and the
+// place. It reads every column, so a row written again under its key and claim reads apart from
+// the row it stands for: a run of a step writes its entry, the moment it raised it and the record
+// it last named on its row, and a row written new holds none of the ones the lost row held.
 func (r *stepRecordsRig) stepRowsNow() []string {
 	r.t.Helper()
-	return r.storeRows(fmt.Sprintf(`select concat_ws(' ', role, step_task, step_place, claim) from phases where issue = '%s'
+	return r.storeRows(fmt.Sprintf(`select concat_ws(' ', role, step_task, step_place, claim,
+		to_jsonb(p) - array['issue', 'role', 'step_task', 'step_place', 'claim']) from phases p where issue = '%s'
 		order by role, step_task, step_place`, r.key))
+}
+
+// rowsApart is each row of want that rows lacks, and each row of rows that want lacks.
+func rowsApart(rows, want []string) (gone, added []string) {
+	for _, row := range want {
+		if !slices.Contains(rows, row) {
+			gone = append(gone, row)
+		}
+	}
+	for _, row := range rows {
+		if !slices.Contains(want, row) {
+			added = append(added, row)
+		}
+	}
+	return gone, added
+}
+
+// carriedRow is what a phases row carries from one entry of its step to the next: the handoff
+// record its role last named (record.PhaseRow.LastHandoff), which no start clears, and its entry,
+// which each start raises.
+type carriedRow struct {
+	lastHandoff string
+	entry       int64
+}
+
+// carriedOf is what role's row of step place of task carries on the walk's issue now.
+func (r *stepRecordsRig) carriedOf(role claim.Role, task string, place int) carriedRow {
+	r.t.Helper()
+	var row carriedRow
+	if err := r.st.Pool().QueryRow(context.Background(), `select last_handoff, entry from phases where issue = $1 and role = $2
+		and step_task = $3 and step_place = $4`, r.key, string(role), task, place).Scan(&row.lastHandoff, &row.entry); err != nil {
+		r.t.Fatalf("read the %s's row of step %d of task %s on %s: %v", role, place, task, r.key, err)
+	}
+	return row
 }
 
 // stepRowsOf is each phases row of role on the walk's issue, `<step task> <step place> <claim>`, in
