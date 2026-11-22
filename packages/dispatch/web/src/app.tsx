@@ -100,7 +100,7 @@ import { SendStoppedError, stoppedWriteNote } from "./features/writes/keyed-writ
 import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator";
 import { useKeyedWrite, useRefusalOfSubject } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
-import { useFootInset } from "./hooks/useFootInset";
+import { useFootClearance, useFootInset } from "./hooks/useFootInset";
 import {
   backdrop50,
   badgeBlocking,
@@ -665,6 +665,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
 
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);
+  // Where the document scrolls the page, `<main>` is a scroller of the foot
+  // (`hooks/useFootInset.ts` says what that is): its bottom padding lets its last content scroll
+  // clear of the foot's floats.
+  useFootClearance(mainRef, !issueFrame && !fillsViewport);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   // The status corner is the one float of the foot's status layer (`hooks/useFootInset.ts` lists
   // the foot's layers and the elements in each). The hook holds its height and its floor, so the
@@ -1066,7 +1070,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           className={
             issueFrame
               ? `min-h-dvh min-w-0 flex-1 outline-none md:pl-14 ${pagePaperBg}`
-              : `min-w-0 flex-1 p-6 outline-none xl:order-2 ${fillsViewport ? "flex min-h-0 flex-col" : "pb-32 xl:pb-6"} ${mainLayoutClass}`
+              : `min-w-0 flex-1 p-6 outline-none xl:order-2 ${fillsViewport ? "flex min-h-0 flex-col" : "pb-[max(8rem,var(--foot-clearance,0px))] xl:pb-[max(1.5rem,var(--foot-clearance,0px))]"} ${mainLayoutClass}`
           }
           data-shell-layout={issueFrame || fullWidth ? "full-width" : "standard"}
           {...(issueFrame ? { [NO_HOVER_PREVIEW_ATTRIBUTE]: "" } : {})}

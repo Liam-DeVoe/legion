@@ -63,6 +63,41 @@ import { type RefObject, useLayoutEffect } from "react";
  * over the page while it is open, with nothing at the foot beside it; the margin's expanded sheet
  * below `xl`, a modal dialog over the page; and `MultiSelect`'s sticky foot, which sticks to the
  * foot of its own popover, not of the screen.
+ *
+ * A scroller of the foot is a box whose last content passes under the floats at the end of its
+ * scroll. Registering it through `useFootClearance` is what makes it one. It is not a foot
+ * element: it has no band and no float, and nothing keeps clear of it.
+ *
+ * Its foot is the lower edge of its scrollport, as an offset up from the screen's bottom edge:
+ * the lower edge of its own box, clipped to the screen, where it scrolls itself (`overflow-y` of
+ * `auto` or `scroll`), or else the screen's bottom edge, since the document scrolls its content.
+ * Its clearance is how far above its foot the floats at its foot reach, plus 1rem, or 0 where no
+ * float is at its foot (`footClearance`). `publish` writes it as the custom property
+ * `--foot-clearance` on the scroller's own inline style, unset while it holds 0, and the
+ * scroller's classes take it as their bottom padding where it is more than their own
+ * (`pb-[max(<their own>,var(--foot-clearance,0px))]`). So its last content scrolls clear of those
+ * floats, and with no float at its foot its padding is its own.
+ *
+ * The floats at its foot are the floats at or above its foot and wholly below its ceiling: the
+ * lowest lower edge of a page element it holds, at or above its foot. A float lifted above such
+ * an element - Pending changes above the Agents page's broadcast composer at 1280x720 - sits over
+ * content that still scrolls clear of it, and counting it would let the padding move the
+ * element, which moves the float, which moves the padding. Only an element inside the scroller
+ * can be moved by its padding, so a page element outside it caps nothing, and the floats above
+ * it count: for `main`, the margin's collapsed sheet below `xl`; for the live view's transcript,
+ * its composer, the rows under it and `Jump to latest`. Were `Jump to latest` to cap it, the
+ * padding would go as soon as the reader scrolled back from the end, the transcript would end
+ * where they were, and the view would take them back to the end.
+ *
+ * - `main` (`app.tsx`), whose content the document scrolls, on a page that does not fill the
+ *   screen.
+ * - The margin's box (`MarginSheet`): the column from `xl` up, and Details' drawer. Not the sheet
+ *   below `xl`.
+ * - The agent live view's transcript (`AgentThread`), in the view in front.
+ *
+ * A custom property is inherited, so a box whose classes read it, while it holds none of its own,
+ * reads the clearance of a scroller that holds it. Only the transcript of a live view the shell
+ * keeps behind another page, inside `main`, does, and that view is invisible.
  */
 const FOOT_LAYERS = [
   { name: "page", property: "--foot-page-inset" },
@@ -92,6 +127,13 @@ const pageBands = new Map<Element, Band>();
 
 /** The floats of each layer above `page` that have a box. */
 const layerFloats = new Map<FootLayer, Map<Element, Float>>();
+
+/** The foot of each scroller of the foot (`FOOT_LAYERS` says what that is), as an offset up from
+ *  the screen's bottom edge. */
+const scrollerFeet = new Map<HTMLElement, number>();
+
+/** The custom property that holds a scroller's clearance, on its own inline style. */
+const CLEARANCE_PROPERTY = "--foot-clearance";
 
 function floatsOf(layer: FootLayer): Map<Element, Float> {
   const floats = layerFloats.get(layer) ?? new Map<Element, Float>();
@@ -152,30 +194,70 @@ function freeInset(
 }
 
 /**
+ * The clearance of a scroller whose foot is `lo` (`FOOT_LAYERS` says what that is), from the
+ * page bands of the elements it holds (`held`) and the floats' bands (`floats`): `gap` above the
+ * highest upper edge of the floats at its foot, as an offset up from that foot, or 0 where none
+ * is. Its ceiling is the lowest lower edge of a held band at or above its foot, and the floats at
+ * its foot are those at or above its foot and wholly below that ceiling.
+ */
+function footClearance(
+  lo: number,
+  held: readonly Band[],
+  floats: readonly Band[],
+  gap: number
+): number {
+  let ceiling = Number.POSITIVE_INFINITY;
+  for (const band of held) if (band.lo >= lo) ceiling = Math.min(ceiling, band.lo);
+  let clearance = 0;
+  for (const band of floats) {
+    if (band.lo >= lo && band.hi <= ceiling) clearance = Math.max(clearance, band.hi - lo + gap);
+  }
+  return clearance;
+}
+
+/** Writes `pixels` to `property` in `style` as `${pixels}px`, or removes the property while
+ *  `pixels` is 0, and leaves a property that already holds that alone. */
+function writePixels(style: CSSStyleDeclaration, property: string, pixels: number): void {
+  const value = pixels === 0 ? "" : `${pixels}px`;
+  if (style.getPropertyValue(property) === value) return;
+  if (value === "") style.removeProperty(property);
+  else style.setProperty(property, value);
+}
+
+/**
  * Publishes every layer's property, from the bottom up (`FOOT_LAYERS` says what each holds). The
  * obstacles start as the page bands. For each layer that has a property, it chooses that property
  * for the floats of the layer above (`freeInset`), writes it, and adds those floats' bands at that
- * property to the obstacles of the layers higher up. The gap is 1rem.
+ * property to the obstacles of the layers higher up. Then it writes each scroller's clearance
+ * (`footClearance`), from the page bands of the elements the scroller holds and the bands of
+ * every float at the properties it has just chosen. The gap is 1rem.
  *
  * It measures nothing. A published property moves the floats that read it, but the hook places a
- * float's band from that property, not from where the float is. No page element reads a property,
- * so a published property moves none.
+ * float's band from that property, not from where the float is. No page element reads a layer's
+ * property, so a published one moves none. A clearance pads its scroller, which can move a page
+ * element the scroller holds: that is why a scroller has a ceiling (`FOOT_LAYERS`).
  */
 function publish(): void {
   const style = document.documentElement.style;
   const gap = remPixels();
   const screen = window.innerHeight;
   const obstacles = [...pageBands.values()];
+  const floatBands: Band[] = [];
   for (const [index, { property }] of FOOT_LAYERS.entries()) {
     if (property === null) break;
     const floats = [...floatsOf(FOOT_LAYERS[index + 1].name).values()];
     const inset = freeInset(floats, obstacles, gap, screen);
-    const value = inset === 0 ? "" : `${inset}px`;
-    if (style.getPropertyValue(property) !== value) {
-      if (value === "") style.removeProperty(property);
-      else style.setProperty(property, value);
+    writePixels(style, property, inset);
+    for (const float of floats) {
+      const band = floatBand(float, inset, gap);
+      obstacles.push(band);
+      floatBands.push(band);
     }
-    for (const float of floats) obstacles.push(floatBand(float, inset, gap));
+  }
+  for (const [scroller, lo] of scrollerFeet) {
+    const held: Band[] = [];
+    for (const [element, band] of pageBands) if (scroller.contains(element)) held.push(band);
+    writePixels(scroller.style, CLEARANCE_PROPERTY, footClearance(lo, held, floatBands, gap));
   }
 }
 
@@ -286,4 +368,44 @@ export function useFootInset(
       publish();
     };
   }, [active, layer, ref]);
+}
+
+/**
+ * While `active`, makes `ref`'s element a scroller of the foot (`FOOT_LAYERS` says what that
+ * means and lists the scrollers), and publishes every layer's property again each time it
+ * measures the element. Each `publish` writes the element's clearance to its own
+ * `--foot-clearance`, and the hook removes that property once the element is no longer one.
+ *
+ * The element is measured whenever its own box changes size or the window resizes, since its foot
+ * moves with its box, and the hook holds its foot. Whether it scrolls itself is read again at each
+ * measure, since a window resize can cross a breakpoint that changes that. The hook observes its
+ * box rather than its content box: the padding its clearance gives it changes its content box,
+ * and never moves its foot.
+ */
+export function useFootClearance(ref: RefObject<HTMLElement | null>, active: boolean): void {
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!active || element === null) return;
+    const measure = () => {
+      const { overflowY } = getComputedStyle(element);
+      const screen = window.innerHeight;
+      scrollerFeet.set(
+        element,
+        overflowY === "auto" || overflowY === "scroll"
+          ? screen - Math.min(element.getBoundingClientRect().bottom, screen)
+          : 0
+      );
+      publish();
+    };
+    const sizes = new ResizeObserver(() => measure());
+    sizes.observe(element, { box: "border-box" });
+    window.addEventListener("resize", measure);
+    measure();
+    return () => {
+      sizes.disconnect();
+      window.removeEventListener("resize", measure);
+      scrollerFeet.delete(element);
+      writePixels(element.style, CLEARANCE_PROPERTY, 0);
+    };
+  }, [active, ref]);
 }
