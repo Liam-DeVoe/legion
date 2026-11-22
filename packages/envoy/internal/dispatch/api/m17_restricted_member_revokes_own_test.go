@@ -26,9 +26,8 @@ const (
 // ownRevokeBroker is a secrets broker that decides whose a grant or a sign-in is as the real one
 // does for a full member: a grant's revoke is its approver's or its enrollment's operator's (403
 // NOT_APPROVER for anyone else; the real broker ends a restricted member's revoke only of a grant
-// whose session acts for them, requests' restricted_approver.go), and a sign-in's is its person's
-// (anyone else's is an unknown id, 404). It counts
-// the revokes Dispatch sends it.
+// whose session acts for them, as its operator, requests' mayRevoke), and a sign-in's is its
+// person's (anyone else's is an unknown id, 404). It counts the revokes Dispatch sends it.
 type ownRevokeBroker struct {
 	server  *httptest.Server
 	mu      sync.Mutex
