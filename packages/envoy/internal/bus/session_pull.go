@@ -58,10 +58,9 @@ const (
 	// bound Detach put on every drain, so it is what a stop on a silent hub spent on its relays'
 	// hand-overs.
 	SessionPullDrainWait = time.Second
-	// SessionPullFlushBound is nats.go's own bound on a flush (Conn.Flush, 10 s in nats.go
-	// v1.55.0), which Detach's flush keeps for a ctx that has no deadline: a hand-over on a silent
-	// link that no caller's wait ends takes this long.
-	SessionPullFlushBound = 10 * time.Second
+	// sessionPullFlushBound is nats.go's own bound on a flush (Conn.Flush, 10 s in nats.go
+	// v1.55.0), which Detach's flush keeps for a ctx that has no deadline.
+	sessionPullFlushBound = 10 * time.Second
 	// sessionPullDrainPoll is how often Detach reads whether the pull's inbox subscription has
 	// gone invalid, which is nats.go having handed over every message it held unread. It is the
 	// 10 ms the connection's own drain waits at (Client.drainDeliveries): nats.go runs a
@@ -121,6 +120,37 @@ type SessionPull struct {
 	// droppedHeld how many it has dropped since without one (sessionPullDroppedLogEvery).
 	droppedLoggedAt time.Time
 	droppedHeld     int
+
+	// flushEnded is the SessionConsumers' flush observer when the pull started (SetFlushObserver),
+	// nil outside tests.
+	flushEnded func(SessionPullFlushEnd)
+}
+
+// SessionPullFlushEnd is how the flush Detach sends after its drain's UNSUB ended, as a flush
+// observer is told (SessionConsumers.SetFlushObserver).
+type SessionPullFlushEnd int
+
+const (
+	// SessionPullFlushAnswered: the server answered, so it took the UNSUB.
+	SessionPullFlushAnswered SessionPullFlushEnd = iota + 1
+	// SessionPullFlushEndedByCaller: Detach's caller's context ended before the server answered.
+	SessionPullFlushEndedByCaller
+	// SessionPullFlushEndedOtherwise: anything else ended it before the server answered, nats.go's
+	// own bound on a flush (sessionPullFlushBound) or the connection's close among them.
+	SessionPullFlushEndedOtherwise
+)
+
+// String is the flush end's name, as a test's failure names it.
+func (e SessionPullFlushEnd) String() string {
+	switch e {
+	case SessionPullFlushAnswered:
+		return "answered"
+	case SessionPullFlushEndedByCaller:
+		return "ended by the caller's context"
+	case SessionPullFlushEndedOtherwise:
+		return "ended otherwise"
+	}
+	return "unknown"
 }
 
 // Pull starts pulling sessionID's consumer on the connection, without reading it first: the first
@@ -145,10 +175,13 @@ func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*Session
 		return nil, err
 	}
 	conn := s.client.Connection()
+	s.pendingMu.Lock()
+	flushEnded := s.flushEnded
+	s.pendingMu.Unlock()
 	p := &SessionPull{
 		conn: conn, sessionID: sessionID, name: name, next: consumerAPI("MSG.NEXT", name), inbox: conn.NewInbox(),
 		ack: "$JS.ACK." + Stream + "." + name + ".", request: request, logger: s.logger, heartbeat: s.pullHeartbeat,
-		wake: make(chan struct{}, 1),
+		wake: make(chan struct{}, 1), flushEnded: flushEnded,
 	}
 	if p.sub, err = conn.Subscribe(p.inbox, p.receive); err != nil {
 		return nil, err
@@ -411,15 +444,32 @@ func (p *SessionPull) detach(ctx context.Context) error {
 }
 
 // flushWithin is the server's answer to a PING sent now: nil once it answered, else why it did
-// not before ctx ended, or before nats.go's own bound on a flush (SessionPullFlushBound) for a ctx
-// with no deadline of its own.
+// not before ctx ended, or before nats.go's own bound on a flush (sessionPullFlushBound) for a ctx
+// with no deadline of its own. It tells the pull's flush observer, if any, how the flush ended.
 func (p *SessionPull) flushWithin(ctx context.Context) error {
-	if _, bounded := ctx.Deadline(); !bounded {
+	bounded := ctx
+	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, SessionPullFlushBound)
+		bounded, cancel = context.WithTimeout(ctx, sessionPullFlushBound)
 		defer cancel()
 	}
-	return p.conn.FlushWithContext(ctx)
+	err := p.conn.FlushWithContext(bounded)
+	if p.flushEnded != nil {
+		p.flushEnded(flushEndOf(ctx, err))
+	}
+	return err
+}
+
+// flushEndOf is how a flush that ended with err ended, caller being Detach's caller's context:
+// FlushWithContext answers the context's own error once that context ends.
+func flushEndOf(caller context.Context, err error) SessionPullFlushEnd {
+	switch {
+	case err == nil:
+		return SessionPullFlushAnswered
+	case caller.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)):
+		return SessionPullFlushEndedByCaller
+	}
+	return SessionPullFlushEndedOtherwise
 }
 
 // Release ends the pull and returns to the server, at once, every message it holds that Next did

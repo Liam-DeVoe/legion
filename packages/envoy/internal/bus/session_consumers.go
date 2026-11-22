@@ -167,7 +167,7 @@ type SessionConsumers struct {
 	// logger is the logger the connection was opened with (ConnectSessionConsumers),
 	// slog.Default() where that was nil: where create and recordResumeFloorAt write their lines.
 	logger *slog.Logger
-	// pendingMu guards pending and createFault.
+	// pendingMu guards pending, createFault and flushEnded.
 	pendingMu sync.Mutex
 	// pending holds, by consumer name, the start of each consumer a restart (RestartAtFloor) read
 	// the floor of and may have deleted, until a create at that start is confirmed: the position
@@ -176,6 +176,9 @@ type SessionConsumers struct {
 	// createFault, when not nil, runs before each consumer create is sent, and an error it returns
 	// fails the create unsent. It is nil outside tests (SetCreateFault).
 	createFault func(consumer string) error
+	// flushEnded, when not nil, is told how each pull started after it was set ended the flush
+	// its Detach sends. It is nil outside tests (SetFlushObserver).
+	flushEnded func(SessionPullFlushEnd)
 
 	// streamMu guards streamNext and streamReading (streamState).
 	streamMu sync.Mutex
@@ -254,6 +257,16 @@ func (s *SessionConsumers) SetCreateFault(fault func(consumer string) error) {
 	s.pendingMu.Lock()
 	defer s.pendingMu.Unlock()
 	s.createFault = fault
+}
+
+// SetFlushObserver has every pull started after it tell observe how the flush its Detach sends
+// after the drain's UNSUB ended (SessionPullFlushEnd); nil removes it. It is a seam for tests,
+// which tell a hand-over a caller's wait ended from one that waited out nats.go's own bound;
+// nothing else sets it.
+func (s *SessionConsumers) SetFlushObserver(observe func(SessionPullFlushEnd)) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	s.flushEnded = observe
 }
 
 // Drain drains the connection, letting acks already sent reach the server, within timeout.
