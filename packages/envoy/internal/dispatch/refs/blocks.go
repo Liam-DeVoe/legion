@@ -116,9 +116,10 @@ func (v Versions) Newest(artifactID string) (string, Version) {
 // indexing left that the store holds only once the write phase has run, each nil for an index read
 // from the tables, whose facts the plan reads from the store: placed, the far end it gave each
 // block's part_of, by block id; stands, the stand of each other document of an issue room it
-// covered; values, the rank, text, placement and size it stated of each block it placed; rooms,
-// the document an issue room's record names for each block; authored, the blocks whose authors it
-// stated or found stated (blockAuthors), so a later indexing states none of them twice.
+// covered; values, the rank, text, placement, text_parent, text_rank and size it stated of each
+// block it placed; rooms, the document an issue room's record names for each block; authored, the
+// blocks whose authors it stated or found stated (blockAuthors), so a later indexing states none of
+// them twice.
 type BlockIndex struct {
 	blocks   map[string]storedBlock
 	links    []indexedLink
@@ -534,7 +535,8 @@ func (b BlockIndexing) retains(blockID string) bool {
 // it takes its first parent from what its author wrote, its parent attribute, its serves pointer
 // and for a requirement its From: line (located), and keeps it until its parent attribute names
 // another target (placeAuthored). Every block the pass places takes its rank, its text, its
-// placement and a plan node's size as values (planBlockValues), and an issue room records the
+// placement and a plan node's size as values, and its place in its document's text as a
+// text_parent tuple and a text_rank value (planBlockValues), and an issue room records the
 // document of each of its blocks (planRoomBlocks).
 //
 // version.Pointers are its `block[]` values (pmdoc.BlockPointers, which lists none of a typed
@@ -1254,9 +1256,10 @@ func (b BlockIndexing) Queue(batch *store.WriteBatch) {
 // cannot import docs.
 //
 // Rule 2 is this build's: the facts its pass states of each block of a version beside the block's
-// node, its part_of and its parent - its rank, its text, its placement, its size and the supertag
-// of its type - which a pass of rule 1 does not state. A pass records the rule it stated a document
-// by in document_block_versions.stated_rule, and the version in stated_version, in the statement
+// node, its part_of and its parent - its rank, its text, its placement, its place in the text (its
+// text_parent and its text_rank), its size and the supertag of its type - which a pass of rule 1
+// does not state. A pass records the rule it stated a document by in
+// document_block_versions.stated_rule, and the version in stated_version, in the statement
 // that writes store_version (queueStand); docs' indexOwedDocument and indexOwedRoom record both
 // where they clear the marks of a document no pass covers a version of. The backfill and the
 // block-index tick mark owed each document no pass of this rule or a later one has stated at its

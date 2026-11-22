@@ -177,9 +177,9 @@ func readSizing(ctx context.Context, tx pgx.Tx) (*SizingReport, error) {
 		Driver: "artifact_versions whose version node the store does not hold: the node, its visibility, its state and" +
 			" its document's project or parties, its part_of its document, and its number and created_at values",
 	}, {
-		Name: "block_values", MovedBy: movedWithBlocks, Tuples: 3, Owed: values,
+		Name: "block_values", MovedBy: movedWithBlocks, Tuples: 5, Owed: values,
 		Driver: "document_blocks rows of each document the backfill's marking marks (markStaleDocuments): each block's rank," +
-			" text and placement values",
+			" text, placement, text_parent and text_rank",
 	}, {
 		Name: "block_top", MovedBy: movedWithBlocks, Tuples: 2, Owed: tops,
 		Driver: "document_blocks rows of an issue's spec, Verification or plan document the marking marks, each at its" +

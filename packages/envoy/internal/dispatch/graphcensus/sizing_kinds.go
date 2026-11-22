@@ -72,10 +72,12 @@ type StoreKind struct {
 
 // movedParents is the name of the term no statement can count: a block's parent is the nesting
 // of its rendered version, which no table written before the store holds (replayParents).
-// movedRanks is the rank each of those blocks takes in its new place, counted by the same replay.
+// movedRanks is the rank each of those blocks takes in its new place, and movedTextPlaces its new
+// place in the text, both counted by the same replay.
 const (
-	movedParents = "block_parent_moved"
-	movedRanks   = "block_rank_moved"
+	movedParents    = "block_parent_moved"
+	movedRanks      = "block_rank_moved"
+	movedTextPlaces = "block_text_place_moved"
 )
 
 // storeKinds are the terms R4 states, each beside the writer or the requirement whose tuples it
@@ -98,8 +100,9 @@ const (
 //     gone state a document's removal states of its node, each written by its own create or
 //     removal on this branch;
 //   - the values of each block a version wrote: the text value of each block whose text it wrote,
-//     the rank and the placement of a block's first row, and the new rank of a block it moved
-//     under another parent (refs' reconcileBlockValues); each version's node with its base
+//     the rank, the placement, the text_parent and the text_rank of a block's first row, and the
+//     new rank and the new place in the text of a block it moved under another parent (refs'
+//     planBlockValues); each version's node with its base
 //     attributes, its part_of and its two values (graphstore.VersionFacts), the mime, size and
 //     sha256 values an image's or a file's version states on its document
 //     (graphstore.ArtifactBytes), and the part_of an issue's new document states
@@ -222,13 +225,18 @@ func storeKinds() []StoreKind {
 		Driver: "document_block_texts of the versions written in the window, each row with a text: its text value",
 		count:  `(select count(*) from sized_texts where written)`,
 	}, {
-		Name: "block_values", MovedBy: movedWithBlocks, Tuples: 2,
-		Driver: "document_block_texts of the versions written in the window, a block's first row: its rank and its placement values",
-		count:  `(select count(*) from sized_texts where written and earlier is null)`,
+		Name: "block_values", MovedBy: movedWithBlocks, Tuples: 4,
+		Driver: "document_block_texts of the versions written in the window, a block's first row: its rank, its" +
+			" placement, its text_parent and its text_rank",
+		count: `(select count(*) from sized_texts where written and earlier is null)`,
 	}, {
 		Name: movedRanks, MovedBy: movedWithBlocks, Tuples: 1,
 		Driver: "each block the moved-parent term counts: its rank among its new siblings, where no sibling it left or" +
 			" joined takes a new one",
+	}, {
+		Name: movedTextPlaces, MovedBy: movedWithBlocks, Tuples: 3,
+		Driver: "each block the moved-parent term counts, which refs.PlaceBlocks places by its text: its new" +
+			" text_parent, the retraction of its old one, and its text_rank among its new text siblings",
 	}, {
 		Name: "block_author", MovedBy: movedWithBlocks, Tuples: 1,
 		Driver: "document_block_texts of the versions written in the window, a block's first row in an issue's spec," +
@@ -822,7 +830,7 @@ func readStoreKinds(ctx context.Context, tx pgx.Tx) ([]StoreKind, error) {
 		switch {
 		case kind.Name == movedParents:
 			kind.Writes, kind.Replayed, kind.Unreadable = replayed.moved, replayed.read, replayed.unreadable
-		case kind.Name == movedRanks:
+		case kind.Name == movedRanks, kind.Name == movedTextPlaces:
 			kind.Writes = replayed.moved
 		case kind.Assumed > 0:
 			kind.Writes = kind.Assumed

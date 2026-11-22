@@ -95,10 +95,11 @@ type BackfillReport struct {
 // link a block no longer holds - is nothing the run reads: no row of it is left to read, and a
 // node stated gone because its row is missing would be a repair. And a build of an earlier rule of
 // the block index states none of this build's facts of each block of a version it indexes - its
-// rank, its text, its placement, its size, the supertag of its type - though it writes
-// store_version for that version as this build's pass does. So the run marks every document no
-// pass of this build's rule has stated at its version (markStaleDocuments), by the record of that
-// pass the document's row holds (stated_version, stated_rule) and by no row of either side, and
+// rank, its text, its placement, its place in the text (its text_parent and its text_rank), its
+// size, the supertag of its type - though it writes store_version for that version as this build's
+// pass does. So the run marks every document no pass of this build's rule has stated at its
+// version (markStaleDocuments), by the record of that pass the document's row holds
+// (stated_version, stated_rule) and by no row of either side, and
 // the reconciliation's index pass over the latest version then states what each block owes,
 // states each block the version dropped gone and retracts each link it dropped, from the
 // version's render (refs.IndexBlocks). No release deletes a comment's row (writeCommentBatch).
