@@ -15,9 +15,9 @@ These are the actions on an agent (stop, retry, suspend, resume_agent, compact a
 
 | `op` | What it does |
 | --- | --- |
-| `suspend` | Stops the claim's agent and keeps its session and owed task; a turn runs to its end or the stop timeout. Only your `resume_agent` or the operator's starts it again. |
+| `suspend` | Stops the agent and keeps its session and owed task; a turn runs to its end or the stop timeout. Only your `resume_agent` or the operator's starts it again. |
 | `resume_agent` | Starts a suspended agent again in its recorded session with the task it owes, an architect's suspension included. |
-| `stop` | Ends the agent at once, also in a turn, and retires its claim; only `retry` or its phase's start runs it again. Refused for a tree's root architect: suspend that agent. |
+| `stop` | Ends the agent at once, also in a turn, and retires it; only `retry` or its phase's start runs it again. Refused for a tree's root architect: suspend that agent. |
 | `retry` | Starts a failed or stopped agent again in its recorded session, with new launch budgets. A suspended agent takes `resume_agent`. |
 | `compact` | Shortens the session to a summary and sends the task again in the same session and workspace. Use it first for a session a provider keeps refusing; an agent with no process behind its claim (`CLAIM_NOT_RUNNING`) takes `fresh_session`. |
 | `fresh_session` | Starts the agent in a new session, leaving the old one and all it knew. Use it for an agent whose claim no process stands behind, or one still refused after `compact`. |
@@ -26,7 +26,7 @@ These are the actions on an agent (stop, retry, suspend, resume_agent, compact a
 2. After a refusal, ask again later: the refusal says what the claim does now. For a root with no architect claim, `compact` and `fresh_session` answer `NO_CLAIM`.
 3. While a wave runs (the summary's `wakes waiting` count is above 0), a start you raised waits its turn: ask for nothing again.
 
-While your project is paused (the summary's `paused:` line), the daemon refuses `resume_agent`, `retry`, `compact`, `fresh_session` and `replace_pod` with `409 PROJECT_PAUSED`. Only the project's resume lifts the pause: your `resume` operation or the operator's `legion project resume`; `resume_agent` lifts none. `stop` and `suspend` still run. On `409 SUSPENDED_BY_OPERATOR`, see [A claim the operator holds](#a-claim-the-operator-holds).
+While your project is paused (the summary's `paused:` line), the daemon refuses `resume_agent`, `retry`, `compact`, `fresh_session` and `replace_pod` with `409 PROJECT_PAUSED`. Only the project's resume lifts the pause: your `resume` operation or the operator's `legion project resume`; `resume_agent` lifts none. `stop` and `suspend` still run. On `409 SUSPENDED_BY_OPERATOR`, see [An agent the operator holds](#an-agent-the-operator-holds).
 
 ## A restart of your project's daemon
 
@@ -61,11 +61,11 @@ Your `gh` only reads: it holds the review App's read-only lease. This re-run and
 
 4. Read `gh run view <id> --repo <owner>/<repo> --json attempt,status`: the re-run started when `attempt` rose by one and `status` is `queued` or `in_progress`. Step 3's exit 77 with no `agent-secrets:` grant line is a denial, and its exit 22 is GitHub's refusal, whose status curl prints. Name a denial, or a 4xx such as a run that cannot be re-run, in the day's report. Run step 3 again only after a 5xx, once, at a later wake, and name a second failure there.
 
-## A claim the operator holds
+## An agent the operator holds
 
 `409 SUSPENDED_BY_OPERATOR` means that only the operator lifts the hold.
 
-1. Open a `dispatch ask` on the report issue that names the claim, quotes the refusal and says why its agent needs `<op>`, with the options `Resume it: the operator runs legion claims resume on the claim, and I then run <op> on its agent` and `Keep it held: <what stays as it is>`.
+1. Open a `dispatch ask` on the report issue that names the claim, quotes the refusal and says why its agent needs `<op>`, with the options `Resume it: the operator resumes the agent with legion claims resume, and I then run <op> on it` and `Keep it held: <what stays as it is>`.
 2. Send no Envoy message to the session that holds the operator's token, and ask no other session to lift the hold.
 3. Name the ask in your summary, and in the day's report while it is open.
 4. On `Resume it`, run `<op>` again; on a second 409, reply under the ask with the refusal, and run it again at the next reply. On `Keep it held`, run nothing.

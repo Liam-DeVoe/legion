@@ -414,7 +414,7 @@ type server struct {
 	beforeForgetSessionHandle func()
 	// beforeFreshSessionResume pauses a fresh session after its forget dropped the recorded
 	// session and before its resume, in the regression test of a suspension above the caller
-	// that takes the claim over in that window (freshSession, sessionLeftBehind).
+	// that takes the agent over in that window (freshSession, sessionLeftBehind).
 	beforeFreshSessionResume func()
 }
 
@@ -779,11 +779,11 @@ func (s *server) stopRefusal(request string) string {
 	return request + " refused: the daemon is stopping; ask again once it is back"
 }
 
-// refusedWhilePaused refuses request of c, answering PROJECT_PAUSED, while the project is paused
-// and c is not the controller's claim (decision 20): a turn a paused project's role would start —
-// a compaction or a fresh session the controller or an architect asks for, the controller's or an
-// architect's resume or retry, the operator's resume, retry, compaction, spawn or delivery —
-// waits for the resume, and nothing of the claim changes. The pause flag decides
+// refusedWhilePaused refuses request for c's agent, answering PROJECT_PAUSED, while the project is
+// paused and c is not the controller's claim (decision 20): a turn a paused project's role would
+// start — a compaction or a fresh session the controller or an architect asks for, the
+// controller's or an architect's resume or retry, the operator's resume, retry, compaction, spawn
+// or delivery — waits for the resume, and nothing of the claim changes. The pause flag decides
 // (pause.Service.Paused), as it decides every launch the machines hold; the refusal names the
 // standing pause when the store's read finds it. A stop, a suspension, an issue's status and the
 // daemon's own status are not turns, and no caller of this asks of them. A claim of another
@@ -796,14 +796,14 @@ func (s *server) refusedWhilePaused(w http.ResponseWriter, r *http.Request, requ
 	return s.refusedForPause(w, r, request, string(c.Token), "a paused project starts no turn of a role but the controller's", "claim", c.Token)
 }
 
-// refusedForPause answers request of of 409 PROJECT_PAUSED while the project is paused, why
+// refusedForPause answers request with 409 PROJECT_PAUSED while the project is paused, why
 // saying what of the request the pause holds, and reports whether it answered. It is the one
 // writer of that refusal: refusedWhilePaused's for a claim, and the controller's request for an
 // issue's pod update round (issuePodUpdate), whose round would ask each role of the pod for a turn
 // and replace the pod under them. The sentence says the project is paused and what lifts the
 // refusal: the project's resume, named as the controller's `resume` operation of its `legion`
-// tool and the operator's `legion project resume` (pauseLifts), so a caller that asked for a
-// claim's resume or retry meaning the project's learns which operation that is. logArgs name what
+// tool and the operator's `legion project resume` (pauseLifts), so a caller that asked for an
+// agent's resume or retry meaning the project's learns which operation that is. logArgs name what
 // the request was about in the log line.
 func (s *server) refusedForPause(w http.ResponseWriter, r *http.Request, request, of, why string, logArgs ...any) bool {
 	if s.pause == nil {
@@ -831,7 +831,7 @@ func (s *server) refusedForPause(w http.ResponseWriter, r *http.Request, request
 }
 
 // pauseLifts is the sentence every PROJECT_PAUSED refusal ends with (refusedForPause): what lifts
-// the pause, which is the project's resume and nothing an agent asks of one claim, named as each
+// the pause, which is the project's resume and no action on one agent, named as each
 // caller asks for it.
 const pauseLifts = "The pause lifts only at the project's resume: the controller's resume operation of its legion tool, which names no issue, or the operator's legion project resume. Ask again once the project runs"
 

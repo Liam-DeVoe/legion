@@ -247,7 +247,7 @@ func TestACheckStartOnAHeldImplementerEndsTheLook(t *testing.T) {
 // suspension (SUSPENDED_BY_DAEMON at the agent door).
 //
 // The negative control is supervise's suspendedAgain without its KeepsHold read: the suspend row
-// then takes the claim over for the daemon, and the architect's resume is refused
+// then takes the agent over for the daemon, and the architect's resume is refused
 // ErrNotTheArchitectsSuspension.
 func TestALookEndingOverAnArchitectsSuspensionLeavesTheRoleTheArchitects(t *testing.T) {
 	for _, tc := range []struct {

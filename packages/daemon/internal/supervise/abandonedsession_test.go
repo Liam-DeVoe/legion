@@ -122,9 +122,9 @@ func TestEveryAbandonmentIsRecordedWithItsOwnReason(t *testing.T) {
 	}{
 		{"the operator forgetting the session", RequestForgetSession{Claim: testToken, Session: session, By: SuspendedByOperator}, "forget-session"},
 		{"the controller's fresh session", RequestForgetSession{Claim: testToken, Session: session, By: SuspendedByController},
-			"the project's controller asked for a fresh session of this claim"},
+			"the project's controller asked for a fresh session of this agent"},
 		{"an architect's fresh session", RequestForgetSession{Claim: testToken, Session: session, By: SuspendedByArchitect},
-			"an architect asked for a fresh session of this claim"},
+			"an architect asked for a fresh session of this agent"},
 		{"a retry asking for a new session", RequestRetry{Claim: testToken, FreshSession: true}, "the retry asked for a new session"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

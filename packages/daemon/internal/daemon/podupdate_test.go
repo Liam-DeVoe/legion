@@ -991,13 +991,13 @@ func TestPodUpdateToldOnceAtTheBoundOfARoundAnOperatorsSuspensionHolds(t *testin
 	}
 }
 
-// A round the controller's suspension of one claim and an architect's suspension of another hold
+// A round the controller's suspension of one agent and an architect's suspension of another hold
 // past the bound is told once, at the bound, and the notice names each holder and who resumes
-// each claim. The issue has no architect claim, so no architect can be told of the architect's
+// each agent. The issue has no architect claim, so no architect can be told of the architect's
 // hold: the sweep writes no architect notice row, and the controller reads both
 // (tellUpdateStalled): the hold of its own and the architect's are resumes it makes itself, where
 // a notice that called both the operator's would send it to the operator with a finding ask.
-// Nothing in it says "operator", since no operator holds either claim. The walk's line names each
+// Nothing in it says "operator", since no operator holds either agent. The walk's line names each
 // holder the same way.
 //
 // The negative control is the notice's old text, "An operator suspended … until the operator

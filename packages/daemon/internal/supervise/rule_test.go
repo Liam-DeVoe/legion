@@ -68,7 +68,7 @@ func TestASuspensionNamingNoSourceIsRefused(t *testing.T) {
 // A resume, a stop and a forget of the session name who asks, as a suspension does, and one that
 // names none of the three that ask them — the operator, the controller and an architect — is a
 // wiring error refused before anything is asked (askedBy): read as the operator's, whom no
-// suspension refuses, it would get past every hold over the claim.
+// suspension refuses, it would get past every hold over the agent.
 func TestAResumeAStopAndAForgetNamingNoAskerAreRefused(t *testing.T) {
 	for _, by := range []SuspendSource{"", SuspendedByDaemon, SuspendedByExit, SuspendedByReleased, "someone"} {
 		t.Run(string(by), func(t *testing.T) {
@@ -98,7 +98,7 @@ func TestAResumeAStopAndAForgetNamingNoAskerAreRefused(t *testing.T) {
 // The rule resumes every suspension but the three that hold, the operator's, the controller's and
 // an architect's: the daemon's, a root's own exit, and one suspended before migration 0038
 // recorded its source (unknown, or none), as main resumed those on the same triggers. The
-// operator's holds until the operator resumes the claim, the controller's until the controller or
+// operator's holds until the operator resumes the agent, the controller's until the controller or
 // the operator does, and an architect's until an architect, the controller or the operator does.
 // (The boot's resume by rule, the one trigger main did not have, filters for daemon and exit
 // itself, leaving a released claim to its role's wake: workflow's booted.)

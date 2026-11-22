@@ -6,5 +6,5 @@ body: |-
   a role whose pod the idle release took, so a held role subscribes to nothing. The Dispatch
   consumer adds the document's subject to its filters, and a store migration adds the kind to
   `outbox_kind_check`. Before you roll back to an earlier release, stop the daemon and run the
-  steps of `docs/kubernetes.md`, "Rolling back the release whose controller and architects hold
-  claims and whose daemon tells a held role of a merge hold".
+  steps of `docs/kubernetes.md`, "Rolling back the release whose controller and architects act on
+  agents and whose daemon tells a held role of a merge hold".

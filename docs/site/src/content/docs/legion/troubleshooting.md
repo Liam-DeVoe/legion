@@ -895,12 +895,12 @@ the daemon released, which it wakes: a notice for a root's architect waits for i
 undelivered once that claim has failed or retired, and a notice for a child whose own architect
 does not hold its role goes to the architect above. A suspended worker of its issue's current
 phase that the daemon suspended is resumed by the daemon at boot. One the operator, the project's
-controller or an architect suspended (the operator's `legion claims suspend`, one claim at a time
+controller or an architect suspended (the operator's `legion claims suspend`, one agent at a time
 or a whole fleet before a restart, or the controller's or an architect's suspension through its
 `legion` tool), or whose suspension predates the release that records who suspended it
 (`suspendedBy: unknown`), is not; neither is a tree architect that the operator or the controller
 suspended or that failed, nor a claim whose launches ran out, nor
-a claim a close or a stop retired while its tree runs, whatever its role. Each of those but a
+an agent a close or a stop retired while its tree runs, whatever its role. Each of those but a
 child's own architect stops its tree: nothing wakes it, the daemon looks healthy and the state
 shows the tree active, but the tree stops for good at the worker's phase, or at the first decision
 that needs its architect. A child's own architect stops no tree, since its child's notices go to
@@ -1015,7 +1015,7 @@ it, an operator's retry and the controller's `fresh_session` are among such star
 architect that the operator, the controller or an architect above it suspended waits for that
 holder's resume, or one that outranks it: the operator's lifts any of the three, and the
 controller's an architect's too (`legion claims list` shows the holder as its `suspendedBy`).
-Any other claim one of those three suspended is listed even when a workflow start is queued for it:
+Any other claim whose agent one of those three suspended is listed even when a workflow start is queued for it:
 that start waits for the same resume. One whose `suspendedBy` is `unknown` is listed only while no
 start is queued for it, since the next phase start or re-admission resumes it as before.
 
@@ -1031,8 +1031,8 @@ That bound is 30 minutes by default, and the configuration refuses a value under
 
 The daemon sends the worker its work again, chosen by the phase entry the issue's phase row names for the role: the work of that entry where the worker's claim was never given it, and the phase's task again where the claim is on that entry already.
 The notice says what the daemon wrote, which is that start row, so the worker is coming back and there is nothing to do.
-A suspension the operator, the controller or an architect holds over the claim is the one thing that refuses the start when the outbox runs it, and the notice says so as well.
-Resume the claim, or have the architect message the role and the controller start its session again with `fresh_session`.
+A suspension the operator, the controller or an architect holds over the agent is the one thing that refuses the start when the outbox runs it, and the notice says so as well.
+Resume the agent, or have the architect message the role and the controller start its session again with `fresh_session`.
 Under your own suspension, the daemon refuses the controller's `fresh_session` with `409 SUSPENDED_BY_OPERATOR`, so lift that hold first with your own `legion claims resume`.
 
 The daemon writes the same record to its own log, as `workflow: a phase worker nothing will prompt was found silent; its architect is told`, so an operator finds every silence without a Dispatch notice.

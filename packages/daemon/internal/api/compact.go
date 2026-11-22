@@ -57,10 +57,10 @@ const reasonBound = 200
 
 // The refusals the compaction writes itself, which both doors give word for word (compact).
 const (
-	// claimNotRunning: the claim runs no agent, so there is no session to compact, and what
-	// starts it again is what reaches it — fresh_session for a workflow role, the daemon's
-	// controller keeper for the project's own controller (startsAgain, startsAgainName), and
-	// the holder's resume for a claim a suspension outranking the caller holds
+	// claimNotRunning: no agent runs behind the claim, so there is no session to compact, and
+	// what starts the agent again is what reaches it — fresh_session for a workflow role, the
+	// daemon's controller keeper for the project's own controller (startsAgain, startsAgainName),
+	// and the holder's resume for an agent a suspension outranking the caller holds
 	// (holdSentences). Two claims take it: one that is suspended, failed or retired, and one
 	// stored working that the read of its process at the request finds nothing behind, which
 	// runs no agent either however the record reads (refuseState, refuseWorkingClaim). The
@@ -107,23 +107,23 @@ const compactInstructions = "Write the summary as text. " +
 //
 // It is the one action the agent door lets the controller past a suspension that outranks
 // it (controllerPassesHold): a compaction stops, takes over and lifts no suspension, so the
-// operator's suspension is no refusal of it. A claim that suspension holds is answered by the
-// compaction's own refusals of the claim as it stands: a landed one runs no session to compact,
+// operator's suspension is no refusal of it. An agent that suspension holds is answered by the
+// compaction's own refusals of its claim as it stands: a landed one runs no session to compact,
 // and a held one is the held suspension's refusal (refuseState, refuseHeldSuspension). Each of
-// them names the operator's resume as what starts that claim again, since the controller's
+// them names the operator's resume as what starts that agent again, since the controller's
 // fresh session would be refused that suspension at the door (holdSentences).
 var compactOp = agentAction{
 	name:                 "a compaction",
 	invalidRole:          "the controller does not compact its own session",
 	controllerPassesHold: true,
 	cutsTheTurn:          "a compaction would abort that turn",
-	reaches:              "A compaction reaches a claim whose agent is ready or idle",
+	reaches:              "A compaction reaches an agent that is ready or idle",
 	liveStates:           "ready or idle",
 }
 
 // claimCompact is the agent door's compaction (compact). The effect is the operator's own, and so
 // are its refusals and its answer; only the authentication differs (agentDoor), which refuses an
-// architect a claim the operator's or the controller's suspension holds before the effect is
+// architect an agent the operator's or the controller's suspension holds before the effect is
 // asked, and lets the controller past the operator's (compactOp).
 func (s *server) claimCompact(w http.ResponseWriter, r *http.Request) {
 	target, ok := s.agentDoor(w, r, compactOp)
@@ -134,7 +134,7 @@ func (s *server) claimCompact(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.log.Info("api: "+callerName(target.by)+" compacted a claim's session", "claim", target.token, "issue", target.issue,
+	s.log.Info("api: "+callerName(target.by)+" compacted an agent's session", "claim", target.token, "issue", target.issue,
 		"role", target.role, "compacted", answer.Compacted, "reason", answer.Reason)
 	s.writeAnswer(w, r, AnswerCompact, http.StatusOK, answer)
 }
@@ -228,12 +228,12 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 // the transcript gets shorter. The controller's own door still cannot name it, since
 // `controller` is no role a claim token is built from (claimCompact).
 //
-// So the refusals of this door are the only ones a controller claim ever reads, and what they
-// name as starting it again is never the fresh session, which would refuse the very claim they
-// send there: it is that keeper for a controller suspended, failed or retired, and the
-// operator's own suspend and resume for one stored working over a dead process, which the
-// keeper does nothing for (startsAgainName, refuseState, refuseHeldSuspension,
-// refuseDeadController). For the same reason a claim held by a suspension that outranks the
+// So the refusals of this door are the only ones the controller's agent ever takes, and what
+// they name as starting it again is never the fresh session, which would refuse the very agent
+// they send there: it is that keeper for a controller suspended, failed or retired, and the
+// operator's own suspend and resume for one whose claim is stored working over a dead process,
+// which the keeper does nothing for (startsAgainName, refuseState, refuseHeldSuspension,
+// refuseDeadController). For the same reason an agent held by a suspension that outranks the
 // caller (by, whose resume that suspension refuses: supervise.Claim.ResumeRefusal) is named that
 // suspension's own resume as what starts it, rather than the fresh session the agent door would
 // refuse the caller (holdSentences).
@@ -251,8 +251,8 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 //
 // While the project is paused, a claim that is not the project's controller is refused
 // PROJECT_PAUSED at both doors before anything is asked of it, and nothing of it changes
-// (refusedWhilePaused). An architect's compaction of a
-// claim a suspension above it holds is refused at the agent door in that hold's code first
+// (refusedWhilePaused). An architect's compaction of an
+// agent a suspension above it holds is refused at the agent door in that hold's code first
 // (agentDoor), paused or not; the controller's passes the door's hold check
 // (agentAction.controllerPassesHold) and meets the pause here.
 func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
@@ -368,7 +368,7 @@ func boundReason(text string) string {
 // working because its session is being compacted rather than because a turn is
 // (supervise.Claim.Compacting), and the claim's role, which decides what a refusal may name as
 // starting it again (startsAgainName). by is the caller: a suspension that outranks it refuses
-// its resume (supervise.Claim.ResumeRefusal), and a claim such a suspension holds, held or
+// its resume (supervise.Claim.ResumeRefusal), and an agent such a suspension holds, held or
 // landed, is named the holder's resume as what starts it (refuseHeldSuspension,
 // refuseNotRunning). A claim stored working is read once more, at the runtime and now, because
 // what stands behind it is the one thing neither the state nor the view says: that read is this
@@ -444,9 +444,9 @@ const overADeadProcess = "stored working over a process that is no longer runnin
 // the project's own controller, which has a sentence of its own (refuseDeadController).
 //
 // hold is the caller's resume refusal (supervise.Claim.ResumeRefusal), nil where there is
-// none. A suspension that outranks the caller refuses that caller's fresh session too, so a
-// claim it holds is named the holder's resume instead, in the words every refusal of a hold
-// gives it (holdSentences): the operator's own for the controller's compaction of a claim the
+// none. A suspension that outranks the caller refuses that caller's fresh session too, so an
+// agent it holds is named the holder's resume instead, in the words every refusal of a hold
+// gives it (holdSentences): the operator's own for the controller's compaction of an agent the
 // operator suspended, and the daemon's rules for an architect's of one the daemon did.
 func (s *server) refuseNotRunning(w http.ResponseWriter, r *http.Request, token claim.Token, doing string, role claim.Role,
 	hold error) {

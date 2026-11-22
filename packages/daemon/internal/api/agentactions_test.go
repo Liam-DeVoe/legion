@@ -35,7 +35,7 @@ func askAgentAction(t *testing.T, h *harness, route, issue string, role claim.Ro
 }
 
 // wantAgentActionAnswer holds a success of the controller's agent actions to its status and
-// its body: the claim as the request left it.
+// its body: the claim's state after the request.
 func wantAgentActionAnswer(t *testing.T, recorder *httptest.ResponseRecorder, status int, want AgentActionResponse) {
 	t.Helper()
 	if recorder.Code != status {
@@ -136,7 +136,7 @@ func TestTheControllersAgentActionsNeedAControllerGrantAClaimRoleAndAClaimOfItsP
 
 // The controller's suspend runs the operator's effect and records the suspension as its own:
 // the claim's process stops, its session is kept, and the answer and the store name the
-// controller. Its own resume lifts it, and starts the claim again in that session.
+// controller. Its own resume lifts it, and starts the agent again in that session.
 func TestTheControllerSuspendsAnAgentAsItsOwnAndResumesIt(t *testing.T) {
 	h := freshSessionHarness(t, &phaseRestarter{})
 	token := readyImplementer(t, h)
@@ -159,7 +159,7 @@ func TestTheControllerSuspendsAnAgentAsItsOwnAndResumesIt(t *testing.T) {
 	}
 }
 
-// A suspension that reaches a claim in a turn is held for that turn's end, as the operator's is,
+// A suspension that reaches an agent in a turn is held for that turn's end, as the operator's is,
 // and answered 202 with the hold named as the controller's.
 func TestTheControllersSuspensionOfAnAgentInATurnIsHeldForTheTurn(t *testing.T) {
 	h := freshSessionHarness(t, &phaseRestarter{})
@@ -205,7 +205,7 @@ func TestTheControllerStopsAnAgentAndRetriesIt(t *testing.T) {
 	}
 }
 
-// The retry and the resume reach no claim in a turn, and each refuses it in the code both
+// The retry and the resume reach no agent in a turn, and each refuses it in the code both
 // recoveries give a claim stored working, the retry before anything is asked and the resume from
 // the machine's own refusal, with nothing of the claim changed.
 func TestTheControllersRetryAndResumeRefuseAnAgentInATurn(t *testing.T) {
@@ -246,7 +246,7 @@ func operatorHoldRefusal(token claim.Token, operation, caller string) string {
 		string(token) + "` is theirs to run"
 }
 
-// operatorLifts is how a compaction's refusal of a claim the operator's suspension holds, asked
+// operatorLifts is how a compaction's refusal of an agent the operator's suspension holds, asked
 // by a caller that suspension outranks, ends: it names the holder and the operator's resume, in
 // the words of the hold's own refusal (api's holdSentences), where the claim's own refusal would
 // name the fresh session the agent door refuses that caller.
@@ -255,10 +255,10 @@ func operatorLifts(token claim.Token) string {
 		string(token) + "` is theirs to run"
 }
 
-// operatorHeldCompactionRefusal is the compaction's refusal of a claim the operator's suspension
+// operatorHeldCompactionRefusal is the compaction's refusal of an agent the operator's suspension
 // is held over, asked by the controller (api's refuseHeldSuspension).
 func operatorHeldCompactionRefusal(token claim.Token) string {
-	return string(token) + " has a suspension held over it, and a compaction reaches no claim a suspension waits over, whatever state it is in; " +
+	return string(token) + " has a suspension held over it, and a compaction reaches no agent a suspension waits over, whatever state it is in; " +
 		operatorLifts(token)
 }
 
@@ -331,12 +331,12 @@ func TestTheControllerCannotGetPastTheOperatorsHeldSuspension(t *testing.T) {
 // refuse (compactOp.controllerPassesHold): a compaction stops, takes over and lifts nothing, so a
 // claim that suspension holds is answered in the compaction's own words and left as it was — a
 // landed one runs no session to compact, and a held one is the held suspension's refusal. What
-// either names as starting the claim is the operator's resume, since the controller's
-// fresh_session of that claim is refused SUSPENDED_BY_OPERATOR at the door: the answer sends the
+// either names as starting the agent is the operator's resume, since the controller's
+// fresh_session of that agent is refused SUSPENDED_BY_OPERATOR at the door: the answer sends the
 // controller to the operator rather than to a door that refuses it (api's holdSentences).
 //
 // The negative control is refuseState with no hold read (a nil hold for refuseNotRunning and
-// refuseHeldSuspension): both rows then name fresh_session as what starts the claim again.
+// refuseHeldSuspension): both rows then name fresh_session as what starts the agent again.
 func TestTheControllersCompactionIsNotRefusedTheOperatorsSuspension(t *testing.T) {
 	t.Run("landed", func(t *testing.T) {
 		h := freshSessionHarness(t, &phaseRestarter{})
@@ -375,7 +375,7 @@ func TestTheControllersCompactionIsNotRefusedTheOperatorsSuspension(t *testing.T
 }
 
 // The operator's door is the operator's, and lifts a suspension of either: the operator's
-// retry --fresh-session of a claim the operator suspended starts it in a new session, and the
+// retry --fresh-session of an agent the operator suspended starts it in a new session, and the
 // operator's resume lifts the controller's suspension.
 func TestTheOperatorLiftsItsOwnSuspensionAndTheControllers(t *testing.T) {
 	t.Run("the operator's fresh session of its own suspension", func(t *testing.T) {
@@ -402,8 +402,8 @@ func TestTheOperatorLiftsItsOwnSuspensionAndTheControllers(t *testing.T) {
 	})
 }
 
-// The controller's fresh session of a claim it suspended itself runs: the suspension is its own,
-// and so is the resume that starts the claim in a new session.
+// The controller's fresh session of an agent it suspended itself runs: the suspension is its own,
+// and so is the resume that starts the agent in a new session.
 func TestTheControllersFreshSessionLiftsItsOwnSuspension(t *testing.T) {
 	h := freshSessionHarness(t, &phaseRestarter{})
 	token := controllerSuspendedImplementer(t, h)
@@ -563,7 +563,7 @@ func TestAnArchitectsAgentActionsServeAnAgentOfItsOwnTree(t *testing.T) {
 	})
 }
 
-// An architect reaches the claims of the issues it owns alone. A claim of another tree is refused
+// An architect reaches the agents of the issues it owns alone. An agent of another tree is refused
 // 403 ISSUE_OUTSIDE_TREE before it is looked up, with nothing of it changed, as every architect
 // operation refuses an issue of another tree (issueOfTree).
 func TestAnArchitectsAgentActionsRefuseAnotherTreesAgent(t *testing.T) {
@@ -652,7 +652,7 @@ func TestAnArchitectsAgentActionsNeedARecordedIssueAndAClaim(t *testing.T) {
 	}
 }
 
-// An architect's own claim is refused in a code of its own: stopping, suspending, compacting or
+// An architect's own agent is refused in a code of its own: stopping, suspending, compacting or
 // restarting the session that makes the call ends or cuts off the turn that would report it, so
 // its recovery stays the controller's, the operator's and any architect's above it in the tree.
 // The claim is left in its turn.
@@ -702,7 +702,7 @@ func TestAnArchitectCannotGetPastTheOperatorsSuspension(t *testing.T) {
 }
 
 // The controller's suspension is project-wide work a tree's architect must not undo: its resume
-// would lift it, its suspend would change nothing, its stop would retire the claim for a retry to
+// would lift it, its suspend would change nothing, its stop would retire the agent for a retry to
 // relaunch, its retry would start it, its fresh session would resume it, and its compaction has no
 // session to ask. Each is refused SUSPENDED_BY_CONTROLLER with nothing of the claim changed, and
 // the controller's own resume then lifts the suspension as before.
@@ -842,7 +842,7 @@ func TestAnArchitectsResumeSuspendStopRetryAndFreshSessionRefuseAnAgentTheDaemon
 // issue's record and its root's itself: the architect's retry and its fresh session, either of
 // which would start the worker on that stopped work, are refused ISSUE_OUT_OF_WORKFLOW with
 // nothing of the claim changed — it stays retired on its session, no session is resumed or
-// spawned, and no phase restarts. The controller's retry still reaches the claim.
+// spawned, and no phase restarts. The controller's retry still reaches the agent.
 //
 // The negative control is the door without refuseStartOfStoppedWork: the retry then starts the
 // worker, through its machine or its issue's phase, and so does the fresh session.

@@ -10,19 +10,19 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// retryStart starts a claim that is running nothing: one that failed or retired, whatever retired
+// retryStart starts an agent that is running nothing: one that failed or retired, whatever retired
 // it. It answers every refusal itself and reports the status its caller's success answer takes.
 // Whether the retry goes through the issue's phase is restartWorkedPhase's to decide: where it
 // starts that phase again, a relaunched phase worker is handed the phase's task, since a worker
-// relaunched outside its own phase is handed none and does nothing. Every claim it does not reach,
+// relaunched outside its own phase is handed none and does nothing. Every agent it does not reach,
 // an architect among them, is the machine's to answer (machineRetry), relaunched on its own with
-// whatever task it still holds. It is how an operator relaunches the claims a runtime failed to
-// launch — every failed claim in turn, with `legion claims retry --failed` — once the cause is
+// whatever task it still holds. It is how an operator relaunches the agents a runtime failed to
+// launch — every failed agent in turn, with `legion claims retry --failed` — once the cause is
 // gone.
 //
 // The session is the claim's own either way: this start relaunches the recorded one, or a new one
 // once supervise's Machine.forgetSession has dropped it. A caller that wants a new session forgets
-// it before calling here (freshSession), which is also what reaches a claim this start refuses. by
+// it before calling here (freshSession), which is also what reaches an agent this start refuses. by
 // is who asks — the operator, the controller or an architect — which the machine's retry names
 // (machineRetry).
 func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, fresh bool,
@@ -42,10 +42,10 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 
 // restartWorkedPhase starts again the phase the claim's role works, which is what hands a
 // relaunched phase worker that phase's task. Both recoveries run it: the retry of a failed or
-// retired claim (retryStart), and the fresh session of a phase worker that comes back owing no
-// task (freshSession). restarted is false for a claim no phase start reaches — an architect, a
-// claim whose issue works another role's phase or has left the workflow, and any claim on a daemon
-// that records no issues — and its caller starts such a claim another way.
+// retired agent (retryStart), and the fresh session of a phase worker that comes back owing no
+// task (freshSession). restarted is false for an agent no phase start reaches — an architect, an
+// agent whose issue works another role's phase or has left the workflow, and any agent on a daemon
+// that records no issues — and its caller starts such an agent another way.
 //
 //   - an issue held for that worker's own role (Options.RoleFor of the phase it is held from) is
 //     retried as its architect's retry_or_escalate retries it (intake.RetryOrEscalate): the phase
@@ -58,7 +58,7 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 // answer with the claim as it is until that start runs. A restart that did not run reports the
 // status and the sentence it is refused with, and writes neither itself, because the two
 // callers answer a refusal differently: the retry gives it as its own answer (retryStart),
-// while the fresh session has started the claim before it gets here and answers success with
+// while the fresh session has started the agent before it gets here and answers success with
 // the refusal named in it (freshSession). A restart that leaves the issue held relaunched
 // nothing (a lingering tree's members stay where they stood), so it is refused naming the issue
 // rather than reported as a restart.
@@ -108,7 +108,7 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 // other state, naming that state, and for the daemon's controller, naming who retries it
 // (supervise's askedRetry). A caller that asked for a new session has forgotten the recorded one
 // before it gets here (freshSession), so the relaunch spawns rather than resumes. A relaunch the
-// machine holds for the agent's turn answers 202, as every operator request on a claim answers one
+// machine holds for the agent's turn answers 202, as every operator request on an agent answers one
 // (claimRequest). The retry names by, its caller, and the wake pacing lets the operator's alone
 // through unpaced (supervise.RequestAskedRetry.By).
 func (s *server) machineRetry(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, fresh bool,
@@ -123,20 +123,20 @@ func (s *server) machineRetry(w http.ResponseWriter, r *http.Request, m *supervi
 	return http.StatusOK, true
 }
 
-// failedOrRetired is whether a claim's state is one the operator's retry acts on through its
-// issue's phase: the claim failed or retired, whatever retired it, so its process is gone.
+// failedOrRetired is whether a claim's state is one in which the operator's retry starts the agent
+// through its issue's phase: the claim is failed or retired, whatever ended its agent, so its process is gone.
 func failedOrRetired(state supervise.ClaimState) bool {
 	return state == supervise.StateFailed || state == supervise.StateRetired
 }
 
 // forgetRecordedSession has the claim drop the session it recorded, for a caller that is
-// starting it in a new one (freshSession), and hands back the machine's refusal, if any, for
-// that caller to answer: a claim running the session, which no fresh session reaches, one that
-// recorded another session since the route read it, one a suspension above by — the caller,
-// whose resume would start the claim — took over since the route read it
+// starting the agent in a new one (freshSession), and hands back the machine's refusal, if any, for
+// that caller to answer: an agent running the session, which no fresh session reaches, one whose
+// claim recorded another session since the route read it, one a suspension above by — the caller,
+// whose resume would start the agent — took over since the route read it
 // (supervise.RequestForgetSession.By), or a forget the store would not write. What such a
 // refusal means depends on what the caller did before it — a fresh session that had already
-// stopped the claim gives it as a sentence of its answer (notStartedAgain) — so this writes no
+// stopped the agent gives it as a sentence of its answer (notStartedAgain) — so this writes no
 // answer of its own.
 func (s *server) forgetRecordedSession(r *http.Request, m *supervise.Machine, token claim.Token, session string,
 	by supervise.SuspendSource) error {

@@ -99,7 +99,7 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // once supervise's Machine.forgetSession has dropped it. What nothing does by itself is queue that
 // start: no rule the daemon runs starts a retired claim this report names, the boot's repair reads
 // only a suspension, and a caller's retry — the operator's, the controller's or an architect's —
-// which reaches a retired claim as well as a failed one, is a person's or an agent's move, not a
+// which reaches an agent a stop retired as well as one that failed, is a person's or an agent's move, not a
 // rule's (supervise.RequestAskedRetry). So the rule this report states is unchanged in meaning — a
 // claim no queued start will reach — and what was wrong was the states it read.
 //

@@ -697,15 +697,15 @@ type FailureBudget struct {
 
 // UpdateStalled is what an update-stalled notice carries: the update round the daemon opened over
 // an issue's pod, and why something holds it past its bound. The controller is told it, or, for
-// the holds an architect placed, the architect that owns the held claim (the daemon's
+// the holds an architect placed, the architect that owns the held agent (the daemon's
 // tellUpdateStalled). Round is the round's identity (supervise.Claim.UpdateRound), Pod the pod it
 // was opened over, and Reasons the drift the round was opened for, as the ask states it. Waiting is
 // every claim of the issue with a session that has not failed (the daemon's noticeClaims), each
 // with its role, its state and whether it answered. A claim the daemon suspended is listed too,
-// although the round neither asks it nor waits for it, unless a project's pause stopped it and
+// although the round neither asks it nor waits for it, unless a project's pause stopped its agent and
 // still owes that role a launch (internal/daemon's podHolds.owes). So the reader finds the claims
 // in the round, and which of them are suspended, without reading the whole claims list; the
-// notice's Reason names who holds each held claim and who may resume it. What each entry says is
+// notice's Reason names who holds each held agent and who may resume it. What each entry says is
 // UpdateWaiting's. The notice's issue is the outbox row's own.
 //
 // Reasons is one string, never a list: a single reason carries ", " inside it already — a moved
@@ -724,7 +724,7 @@ type UpdateStalled struct {
 // UpdateWaiting is one claim the notice lists (UpdateStalled.Waiting): its token, the role it
 // holds, the state it is in (supervise.ClaimState — a claim under a suspension that holds waits
 // for a resume by whoever may lift that suspension, which the notice's Reason names, and the round
-// waits for no other suspended claim but one a project's pause stopped while the pause still owes
+// waits for no other suspended claim but one whose agent a project's pause stopped while the pause still owes
 // that role a launch, internal/daemon's podHolds.owes; a pod round lists no `failed` claim, whose
 // machine records no round), and Answered for a claim that has already answered this round.
 //
@@ -911,7 +911,7 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // the replacement by issue is refused or not offered (runtime.IssuePodReplacer): otherwise the
 // daemon replaces that pod by issue at the bound. It is told once per round (the daemon's
 // reconcilePodUpdates). The holds an architect placed are told instead to the architect that
-// owns the held claim, in a notice row of the same kind, unless no architect can act on one:
+// owns the held agent, in a notice row of the same kind, unless no architect can act on one:
 // that architect's claim has failed or retired or is one this daemon does not supervise, or the
 // hold is over the tree root's own architect, which no architect stands above
 // (validNoticeKinds, the daemon's tellUpdateStalled and architectHears). A provider-errors notice
@@ -2634,16 +2634,16 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // `provider-errors` is a claim whose turns have ended six times in a row in an error the model's
 // provider returned (supervise's tellOfProviderErrors). The issue's architect is told,
 // since narrowing the work the provider keeps refusing is the architect's, and so is the
-// controller, in a row of its own (ProviderErrorsNotice), since compacting or refreshing that
-// claim's session is the controller's (internal/daemon's providerErrorRunReached). A run of the
+// controller, in a row of its own (ProviderErrorsNotice), since compacting that agent's session
+// or starting that agent in a fresh session is the controller's (internal/daemon's providerErrorRunReached). A run of the
 // tree root's architect's own claim is told to the controller alone: the architect's copy would
 // reach the failing session itself. A run of a child's own architect's claim is told to the
 // architect above that child (NoticeStartsAtParent).
 //
 // `update-stalled` is an update round held past its bound (UpdateStalled). The controller is told
 // of the round in a row of its own (ControllerNotice) for every reason that holds it, except the
-// holds an architect placed over claims of the round: those are told in a notice row (Notice) to
-// the architect that owns the held claim, which can resume them, and to the controller only where
+// holds an architect placed over agents of the round: those are told in a notice row (Notice) to
+// the architect that owns the held agent, which can resume them, and to the controller only where
 // no architect can act on one: that architect's claim has failed or retired or is one the daemon
 // does not supervise when the sweep reads it, there is no owning architect, the hold is over the
 // tree root's own architect, or the notice row to the architect finishes undelivered in a tree
@@ -2686,7 +2686,7 @@ func validNoticeKind(kind NoticeKind) bool {
 // validateNoticeUpdate holds an update round's account to the update-stalled notice, the one kind
 // that carries one, and requires that kind to carry one naming its round and the claims it asked.
 // Both arms of the switch above call it, because a round is told in rows of this one kind, to the
-// architect that owns the held claim for a hold an architect placed and to the controller for the
+// architect that owns the held agent for a hold an architect placed and to the controller for the
 // rest, and for such a hold where no architect can act on it (internal/daemon's
 // tellUpdateStalled and relayUpdateStalled), and a rule written in one arm alone would take the
 // row the other refused.

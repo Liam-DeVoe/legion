@@ -215,7 +215,7 @@ func TestEachDoorNamesTheStatesItsOwnPredicatesReach(t *testing.T) {
 				t.Errorf("liveStates = %q, want %q, the states %s reaches while an agent runs",
 					door.op.liveStates, stateWords(live), door.op.name)
 			}
-			if clause := "whose agent is " + stateWords(live); !strings.Contains(door.op.reaches, clause) {
+			if clause := "an agent that is " + stateWords(live); !strings.Contains(door.op.reaches, clause) {
 				t.Errorf("reaches = %q, want it to carry %q", door.op.reaches, clause)
 			}
 			if door.stopped != nil {
@@ -311,10 +311,10 @@ func TestTheHeldSuspensionRefusalReadsWholeAtEachDoor(t *testing.T) {
 			token: "LEGION-209-implementer",
 			state: supervise.StateReady,
 			role:  claim.RoleImplementer,
-			want: "LEGION-209-implementer has a suspension held over it, and a fresh session reaches no claim a " +
-				"suspension waits over, whatever state it is in. Of the claims with no suspension held over them, " +
+			want: "LEGION-209-implementer has a suspension held over it, and a fresh session reaches no agent a " +
+				"suspension waits over, whatever state it is in. Of the agents with no suspension held over them, " +
 				"fresh_session (`legion claims retry --fresh-session`) reaches those that are suspended, failed or " +
-				"retired, and a fresh session reaches those whose agent is registered, ready or idle. Ask again " +
+				"retired, and a fresh session reaches those that are registered, ready or idle. Ask again " +
 				"later; `read_state` (`legion claims list`) shows its state",
 		},
 		{
@@ -323,10 +323,10 @@ func TestTheHeldSuspensionRefusalReadsWholeAtEachDoor(t *testing.T) {
 			token: "LEGION-209-implementer",
 			state: supervise.StateReady,
 			role:  claim.RoleImplementer,
-			want: "LEGION-209-implementer has a suspension held over it, and a compaction reaches no claim a " +
-				"suspension waits over, whatever state it is in. Of the claims with no suspension held over them, " +
+			want: "LEGION-209-implementer has a suspension held over it, and a compaction reaches no agent a " +
+				"suspension waits over, whatever state it is in. Of the agents with no suspension held over them, " +
 				"fresh_session (`legion claims retry --fresh-session`) reaches those that are suspended, failed or " +
-				"retired, and a compaction reaches those whose agent is ready or idle. Ask again later; " +
+				"retired, and a compaction reaches those that are ready or idle. Ask again later; " +
 				"`read_state` (`legion claims list`) shows its state",
 		},
 		{
@@ -335,10 +335,10 @@ func TestTheHeldSuspensionRefusalReadsWholeAtEachDoor(t *testing.T) {
 			token: "INFRA-controller",
 			state: supervise.StateLaunching,
 			role:  claim.RoleController,
-			want: "INFRA-controller has a suspension held over it, and a compaction reaches no claim a suspension " +
-				"waits over, whatever state it is in. Of the claims with no suspension held over them, the daemon's " +
+			want: "INFRA-controller has a suspension held over it, and a compaction reaches no agent a suspension " +
+				"waits over, whatever state it is in. Of the agents with no suspension held over them, the daemon's " +
 				"controller keeper (whose resume an operator's own suspension holds) reaches those that are " +
-				"suspended, failed or retired, and a compaction reaches those whose agent is ready or idle. Ask " +
+				"suspended, failed or retired, and a compaction reaches those that are ready or idle. Ask " +
 				"again later; `read_state` (`legion claims list`) shows its state",
 		},
 	} {

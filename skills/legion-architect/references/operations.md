@@ -8,9 +8,9 @@ The actions on an agent, each naming one agent by its issue and role, are `legio
 
 - Try `compact` before `fresh_session` for a session a provider keeps refusing.
 - `provider-errors`: six turns of the agent in a row ended in a provider error, and the daemon keeps the task. The controller compacts or refreshes the agent; ask it for nothing. For a rate limit or an overload, do nothing. For a refusal of the content, ask the worker which step its turns end on and narrow that step, or move the issue back with `request_backward_move`.
-- `update-stalled`: an update round past its bound waits on an architect's suspension of a claim you own. Read the claim in `read_record`, then `resume_agent` its agent once its cause is gone, or keep the claim held. Open no ask, and send the controller nothing.
+- `update-stalled`: an update round past its bound waits on an architect's suspension of an agent you own. Read its claim in `read_record`, then `resume_agent` the agent once its cause is gone, or keep the agent held. Open no ask, and send the controller nothing.
 - Your suspension is recorded as `architect`, and your `resume_agent` lifts it. Only the operator lifts the operator's suspension (`SUSPENDED_BY_OPERATOR`), and only the controller or the operator lifts the controller's (`SUSPENDED_BY_CONTROLLER`): ask the operator with a `dispatch ask` on the root, and the controller with `envoy_publish`.
-- The daemon's own suspension of a park, a linger, a close or a carry takes yours over and refuses your `resume_agent` (`SUSPENDED_BY_DAEMON`). If you still want the claim held when the issue comes back, suspend its agent again.
+- The daemon's own suspension of a park, a linger, a close or a carry takes yours over and refuses your `resume_agent` (`SUSPENDED_BY_DAEMON`). If you still want the agent held when the issue comes back, suspend it again.
 - While the project is paused, each agent action that would start a turn (`resume_agent`, `retry`, `compact` and `fresh_session`) is refused `409 PROJECT_PAUSED`; `stop` and `suspend` still run. Only the project's resume lifts the pause. Wait for it, and ask nobody to resume.
 
 ## The token the secrets broker lends

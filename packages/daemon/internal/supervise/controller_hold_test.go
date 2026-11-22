@@ -66,8 +66,8 @@ func TestTheControllersResumeLiftsEverySuspensionButTheOperators(t *testing.T) {
 	})
 }
 
-// The controller's suspend of a claim the operator holds suspended changes nothing and is refused
-// (ErrOperatorHolds), landed or held for the agent's turn; the operator's suspend of a claim the
+// The controller's suspend of an agent the operator holds suspended changes nothing and is refused
+// (ErrOperatorHolds), landed or held for the agent's turn; the operator's suspend of an agent the
 // controller holds takes it over, landed or held, so the controller's resume lifts it no more.
 func TestTheOperatorsSuspensionOutranksTheControllers(t *testing.T) {
 	t.Run("the controller's suspend of the operator's landed suspension", func(t *testing.T) {
@@ -139,9 +139,9 @@ func TestTheOperatorsSuspensionOutranksTheControllers(t *testing.T) {
 	})
 }
 
-// The controller's stop of a claim the operator's own suspension holds is refused
-// (ErrOperatorHolds): a stop retires the claim, and a retry then relaunches it, past the operator's
-// hold. Its stop of a claim it suspended itself retires it, and the operator's stop is refused
+// The controller's stop of an agent the operator's own suspension holds is refused
+// (ErrOperatorHolds): a stop retires the agent, and a retry then relaunches it, past the operator's
+// hold. Its stop of an agent it suspended itself retires it, and the operator's stop is refused
 // nothing here.
 func TestTheControllersStopOfAnAgentTheOperatorHoldsIsRefused(t *testing.T) {
 	t.Run("the operator's landed suspension", func(t *testing.T) {
@@ -181,10 +181,10 @@ func TestTheControllersStopOfAnAgentTheOperatorHoldsIsRefused(t *testing.T) {
 }
 
 // A forget of the session asked by the controller or an architect — the step of its fresh session
-// that drops the session it means to leave behind — is refused, with the session kept, for a
-// claim a suspension above the asker took over after the asker's own suspension (suspendedAgain,
+// that drops the session it means to leave behind — is refused, with the session kept, for an
+// agent a suspension above the asker took over after the asker's own suspension (suspendedAgain,
 // RequestForgetSession.By, Claim.ResumeRefusal): the asker's resume would be refused that hold,
-// so a forget let through would drop the session of a claim the asker could then not start. The
+// so a forget let through would drop the session of an agent the asker could then not start. The
 // holder's own forget drops it.
 func TestAForgetIsRefusedForAClaimASuspensionAboveTheAskerTookOver(t *testing.T) {
 	for _, tc := range []struct {
@@ -198,7 +198,7 @@ func TestAForgetIsRefusedForAClaimASuspensionAboveTheAskerTookOver(t *testing.T)
 		t.Run(string(tc.holder)+" over "+string(tc.asker), func(t *testing.T) {
 			h := newHarness(t)
 			suspendedBy(h, tc.asker)
-			h.must(RequestSuspend{Claim: testToken, Reason: "a suspension above the asker takes the claim over", By: tc.holder})
+			h.must(RequestSuspend{Claim: testToken, Reason: "a suspension above the asker takes the agent over", By: tc.holder})
 			recorded := h.claim().Session
 
 			err := h.handle(RequestForgetSession{Claim: testToken, Session: recorded, By: tc.asker})
@@ -236,10 +236,10 @@ func startInFlight(t *testing.T, h *harness) *int {
 	return &cancelled
 }
 
-// The controller's suspension of a claim the operator holds is refused, and the refusal changes
+// The controller's suspension of an agent the operator holds is refused, and the refusal changes
 // nothing: a start in flight is not cancelled before the row refuses it, and no stopped start is
 // left for a later suspension to read (Handle, stoppedAStart). The operator's own suspension of
-// the same claim still cancels the start at its arrival, so the gate is the controller's alone.
+// the same agent still cancels the start at its arrival, so the gate is the controller's alone.
 func TestTheControllersRefusedSuspensionCancelsNoStartInFlight(t *testing.T) {
 	for _, tc := range []struct {
 		name string

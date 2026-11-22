@@ -164,7 +164,7 @@ const schemas: Record<string, z.ZodType> = {
   "fresh-session.json": LegionFreshSessionResponse,
   "compact.json": LegionCompactResponse,
   // Four of the six agent actions of the controller and of an architect, stop, retry, suspend and
-  // resume (contract 215): the claim as each left it, and who holds a suspension over it.
+  // resume (contract 215): the claim's state after each, and who holds a suspension over the agent.
   "agent-stop.json": LegionAgentActionResponse,
   "agent-retry.json": LegionAgentActionResponse,
   "agent-suspend.json": LegionAgentActionResponse,

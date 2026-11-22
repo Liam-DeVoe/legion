@@ -186,7 +186,7 @@ func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) 
 	asked := noticeClaims(live)
 	if len(asked) == 0 {
 		return refusePodUpdate(api.PodUpdateNoPod,
-			"no claim of %s runs a worker in its pod %s that an update round could ask: none has a session, or each one that has has failed. Nothing was opened; retry a failed claim, or ask again once a claim of the issue has registered its agent", issue, pod)
+			"no claim of %s runs a worker in its pod %s that an update round could ask: none has a session, or each one that has has failed. Nothing was opened; retry an agent that failed, or ask again once an agent of the issue has registered", issue, pod)
 	}
 	tokens := make([]claim.Token, len(asked))
 	for i, c := range asked {
@@ -277,7 +277,7 @@ func (s *supervision) podRoundUnrecorded(ctx context.Context, issue, round strin
 		return err
 	}
 	return &api.PodUpdateRefused{Refusal: api.PodUpdateNotRecorded, Message: fmt.Sprintf(
-		"the daemon posted the update round %s to the claims of %s, and no claim recorded it within %s: a claim's machine is busy, as in a relaunch, or the claim stopped. The round is not one the sweeps carry yet. Read updateRound on the claims of %s, and ask again: a later request answers the round once a claim records it",
+		"the daemon posted the update round %s to the claims of %s, and no claim recorded it within %s: a claim's machine is busy, as in a relaunch, or the claim's agent stopped. The round is not one the sweeps carry yet. Read updateRound on the claims of %s, and ask again: a later request answers the round once a claim records it",
 		round, issue, bound, issue)}
 }
 

@@ -3025,8 +3025,9 @@ package api
 // `claims/compact`, each taking that route's `api.ClaimRequest` (`grantId`, `issue`, `role`) and
 // the same door
 // (agentDoor: a controller grant, or an architect grant for an agent of an issue it owns, or `403
-// CONTROLLER_REQUIRED`, a claim the daemon supervises or `404 NO_CLAIM`, built from the daemon's
-// own project, so another project's claim cannot be named): `POST /legion/v1/agents/stop` runs
+// CONTROLLER_REQUIRED`, an agent whose claim the daemon supervises or `404 NO_CLAIM`, its token
+// built from the daemon's own project, so another project's agent cannot be named):
+// `POST /legion/v1/agents/stop` runs
 // `legion claims stop`'s effect, `POST /legion/v1/agents/retry` the plain `legion claims retry`
 // (no fresh session), `POST /legion/v1/agents/suspend` `legion claims suspend`'s, and
 // `POST /legion/v1/agents/resume` `legion claims resume`'s. Each answers
@@ -3041,23 +3042,24 @@ package api
 // resume lifts it, and the operator's suspension outranks it. So the operator claim routes'
 // `suspendedBy` and `suspensionHeldBy` gain the value `controller`, which only the operator's
 // bearer reads. The controller's resume_agent, suspend, stop and retry, and its fresh session,
-// are refused a claim the operator's own suspension holds, held for a turn or landed, with `409
-// SUSPENDED_BY_OPERATOR`, nothing of the claim changed; its compaction is not, and answers such a
-// claim in its own codes. Its retry and resume of a claim stored working that no such suspension
-// holds are refused `409 CLAIM_IN_A_TURN`. An architect gets the same six agent actions — these
-// four, `fresh-session` and `compact` — for the claims of the issues it owns alone (#4065), as
-// sign_off and retry_or_escalate take an issue: an issue the daemon does not record is `404
+// are refused an agent the operator's own suspension holds, held for a turn or landed, with `409
+// SUSPENDED_BY_OPERATOR`, nothing of the claim changed; its compaction is not, and refuses such an
+// agent in its own codes. Its retry and resume of an agent whose claim is stored working and that
+// no such suspension holds are refused `409 CLAIM_IN_A_TURN`. An architect gets the same six
+// agent actions — these four, `fresh-session` and `compact` — for the agents of the issues it
+// owns alone (#4065), as sign_off and retry_or_escalate take an issue: an issue the daemon does
+// not record is `404
 // ISSUE_NOT_FOUND`, one of another tree `403 ISSUE_OUTSIDE_TREE`, one of its own tree it does not
 // own — for a sub-architect its tree's root and a sibling's subtree — `403 ISSUE_NOT_OWNED`, and
-// the architect's own claim `403 OWN_AGENT`. Its suspension is recorded as `architect`, a
+// the architect's own agent `403 OWN_AGENT`. Its suspension is recorded as `architect`, a
 // further supervise.SuspendSource that `claims.suspended_by` admits from migration
 // 20261115083448, which holds as the controller's does and ranks under it: an architect's resume
 // lifts it, and so do the controller's and the operator's. Each of an architect's actions is
-// refused a claim the operator's own suspension holds (`409 SUSPENDED_BY_OPERATOR`) and one the
+// refused an agent the operator's own suspension holds (`409 SUSPENDED_BY_OPERATOR`) and one the
 // controller's holds (`409 SUSPENDED_BY_CONTROLLER`), held or landed, and its resume, suspend, stop
-// and fresh session a claim the daemon suspended (`409 SUSPENDED_BY_DAEMON`; its suspend and stop
-// reach a released claim). Its retry and fresh session of a claim that failed or that a stop
-// retired are refused `409 ISSUE_OUT_OF_WORKFLOW` while the claim's issue is out of the workflow
+// and fresh session an agent the daemon suspended (`409 SUSPENDED_BY_DAEMON`; its suspend and stop
+// reach a released agent). Its retry and fresh session of an agent that failed or that a stop
+// retired are refused `409 ISSUE_OUT_OF_WORKFLOW` while its issue is out of the workflow
 // or its tree lingers (refuseStartOfStoppedWork), nothing of the claim changed, since the daemon's
 // own rules start that work again. The operator claim routes'
 // and the four routes' `suspendedBy` and `suspensionHeldBy` gain the value `architect`; no shape
@@ -3086,13 +3088,13 @@ package api
 // `Retry-After` of the sweep's interval in seconds (60), its sentence naming which of the two
 // ended the wait, and the bound.
 // While the project is paused (178), the controller's and an architect's `agents/resume` and
-// `agents/retry` answer 409 `PROJECT_PAUSED`, with the `pause` that stands, for every claim, as
-// their `claims/fresh-session` and `claims/compact` do, and change nothing: a claim the pause
+// `agents/retry` answer 409 `PROJECT_PAUSED`, with the `pause` that stands, for every agent, as
+// their `claims/fresh-session` and `claims/compact` do, and change nothing: an agent the pause
 // stopped is the pause's to bring back at the project's resume, and no agent action undoes
 // the pause. Their `agents/stop` and `agents/suspend` start nothing and still
 // run. A suspension of the controller's, an architect's or the operator's and the pause's stop
-// each keep their own source: the pause stops no claim such a suspension already holds, a
-// claim the pause stopped that such a suspension then takes over stays suspended by it at the
+// each keep their own source: the pause stops no agent such a suspension already holds, an
+// agent the pause stopped that such a suspension then takes over stays suspended by it at the
 // resume, and the resume brings back only what the pause stopped. `issues/pod-update` answers
 // 409 `PROJECT_PAUSED` while the project is paused, before the daemon is asked anything, and 409
 // `POD_HELD_BY_PAUSE` for a pod a pause holds: the hold of a pause that began after that

@@ -311,47 +311,47 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "stands), and for a pod a pause holds (POD_HELD_BY_PAUSE): the hold of a pause that began after the daemon read " +
   "the project as running, or a hold the resume left on a pod until a role of that pod is running again; neither " +
   "opens a round. " +
-  "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
-  "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
+  "fresh_session (issue, role) starts one agent again in a new session, leaving behind the session it ran in: the daemon " +
+  "stops the agent if it runs, forgets the session, and starts the agent, which loses everything that session held. A " +
   "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
-  "The answer is empty when the claim came back and nothing else is to be said. phaseNotRestarted says why nothing " +
-  "restarted the claim's phase, where the claim came back owing no task and the workflow refused that restart: the " +
-  "claim is running, and no work was handed to it. It says what was refused, where this request stopped the claim " +
-  "and a step that would have started it again was refused, and the state that left the claim in: read that state " +
+  "The answer is empty when the agent came back and nothing else is to be said. phaseNotRestarted says why nothing " +
+  "restarted the agent's phase, where the agent came back owing no task and the workflow refused that restart: the " +
+  "agent is running, and no work was handed to it. It says what was refused, where this request stopped the agent " +
+  "and a step that would have started it again was refused, and the state its claim stands in after that: read that state " +
   "in read_state, and ask for a fresh session again only where the claim is suspended. " +
-  "It reaches a claim stored working that no process stands behind: the daemon reads that claim's process when the " +
-  "request arrives, suspends the claim where it stands, and starts it again with the task its dead turn held. " +
-  "The daemon refuses it for a claim whose process that read finds running " +
-  "(CLAIM_IN_A_TURN), for a claim whose session is being compacted, which is not read at " +
-  "all (CLAIM_IN_A_TURN), for a claim whose process the runtime would not answer for, for " +
-  "one that records no process to read, and for one that moved under the request and that a second read " +
+  "It reaches an agent whose claim is stored working and that no process stands behind: the daemon reads that agent's " +
+  "process when the request arrives, suspends the agent where it stands, and starts it again with the task its dead turn held. " +
+  "The daemon refuses it for an agent whose claim's process that read finds running " +
+  "(CLAIM_IN_A_TURN), for an agent whose session is being compacted, whose process is not read at " +
+  "all (CLAIM_IN_A_TURN), for an agent whose process the runtime would not answer for, for " +
+  "one whose claim records no process to read, and for one whose claim moved under the request and that a second read " +
   "finds no longer working or gone once more, each left exactly as the request found it " +
-  "(CLAIM_UNSETTLED; a claim that moved is otherwise answered as that second read finds it), for a claim a " +
+  "(CLAIM_UNSETTLED; an agent whose claim moved is otherwise answered as that second read finds it), for an agent a " +
   "suspension that does not outrank yours is held over, in whatever state the hold found it (CLAIM_IN_A_TURN where " +
-  "the claim is working, CLAIM_UNSETTLED where it is not), for a claim between states — " +
-  "one queued, one whose launch is in flight, and one left working under a relaunch the " +
-  "wake pacing parked (CLAIM_UNSETTLED) — and for role controller. Before any of those it refuses a claim " +
+  "its claim is working, CLAIM_UNSETTLED where it is not), for an agent whose claim is between states — " +
+  "queued, with its launch in flight, or left working under a relaunch the " +
+  "wake pacing parked (CLAIM_UNSETTLED) — and for role controller. Before any of those it refuses an agent " +
   "whose suspension outranks yours, landed or waiting for a turn to end: the operator's, which only the operator " +
-  "lifts (SUSPENDED_BY_OPERATOR). A suspension that outranks yours and takes the claim over while the request " +
-  "runs ends it with the same code, after your own suspension of the claim ran: the claim keeps the session it " +
-  "recorded. " +
-  "compact (issue, role) shortens one claim's session instead: the daemon has Oh My Pi write a text summary of the " +
-  "session so far, and the claim keeps its session, its workspace and everything it knows of its issue and is sent " +
-  "whatever task it owes again. Try compact first for a claim whose session a provider keeps refusing, and " +
-  "fresh_session for a claim no process stands behind, which compact refuses and fresh_session reaches. The answer " +
-  "says whether the session was compacted and, when it was not, why; the claim is back either way. The daemon " +
-  "refuses it for a claim that is suspended, failed or retired, and for one stored working " +
-  "that no process stands behind (CLAIM_NOT_RUNNING: fresh_session reaches both), for a " +
-  "claim whose process the daemon reads as running (CLAIM_IN_A_TURN), for a claim whose " +
-  "session is being compacted already (CLAIM_IN_A_TURN), for a claim whose process the " +
-  "runtime would not answer for, for one that records no process to read, and for one " +
-  "that moved out of working while the request was made " +
-  "(CLAIM_UNSETTLED), for a claim a " +
-  "suspension is held over (CLAIM_IN_A_TURN where the claim is working, CLAIM_UNSETTLED " +
-  "where it is not), for a claim between states — one queued, one whose launch is in " +
-  "flight, one whose agent has registered and is not ready yet, which fresh_session " +
-  "reaches, and one left working under a relaunch the wake pacing parked " +
-  "(CLAIM_UNSETTLED) — for a claim whose role runs on Claude Code (CLAIM_NOT_ON_OMP) " +
+  "lifts (SUSPENDED_BY_OPERATOR). A suspension that outranks yours and takes the agent over while the request " +
+  "runs ends it with the same code, after your own suspension of the agent ran: the agent keeps the session its " +
+  "claim recorded. " +
+  "compact (issue, role) shortens one agent's session instead: the daemon has Oh My Pi write a text summary of the " +
+  "session so far, and the agent keeps its session, its workspace and everything it knows of its issue and is sent " +
+  "whatever task it owes again. Try compact first for an agent whose session a provider keeps refusing, and " +
+  "fresh_session for an agent whose claim no process stands behind, which compact refuses and fresh_session reaches. The answer " +
+  "says whether the session was compacted and, when it was not, why; the agent is back either way. The daemon " +
+  "refuses it for an agent whose claim is suspended, failed or retired, and for one whose claim is stored working " +
+  "and that no process stands behind (CLAIM_NOT_RUNNING: fresh_session reaches both), for an " +
+  "agent whose process the daemon reads as running (CLAIM_IN_A_TURN), for an agent whose " +
+  "session is being compacted already (CLAIM_IN_A_TURN), for an agent whose process the " +
+  "runtime would not answer for, for one whose claim records no process to read, and for one " +
+  "whose claim moved out of working while the request was made " +
+  "(CLAIM_UNSETTLED), for an agent a " +
+  "suspension is held over (CLAIM_IN_A_TURN where its claim is working, CLAIM_UNSETTLED " +
+  "where it is not), for an agent whose claim is between states — queued, with its launch in " +
+  "flight, registered and not ready yet, which fresh_session " +
+  "reaches, or left working under a relaunch the wake pacing parked " +
+  "(CLAIM_UNSETTLED) — for an agent whose role runs on Claude Code (CLAIM_NOT_ON_OMP) " +
   "and for role controller. " +
   "stop, retry, suspend and resume_agent (issue, role), with fresh_session and compact, are the actions on an agent, " +
   "each naming one agent by its issue and role; the four " +
@@ -359,25 +359,25 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "the claim's state after it, with who holds a suspension over it: suspendedBy while the claim is " +
   "suspended, and suspensionHeld with suspensionHeldBy while a suspension waits for a turn to end. " +
   "stop ends the agent: the daemon stops it at once, also in a turn, which loses that turn, and " +
-  "retires its claim with its session kept on record. Only retry, or a start of its issue's phase, runs " +
+  "retires it with its session kept on record. Only retry, or a start of its issue's phase, runs " +
   "it again. The daemon refuses stop for a tree's root architect, which ends only with its tree: suspend " +
   "it instead. " +
-  "retry starts an agent that failed, or whose claim a stop retired, again in the session its claim recorded, with " +
+  "retry starts an agent that failed, or that a stop retired, again in the session its claim recorded, with " +
   "new launch budgets. A phase worker is started through its issue's current phase, so it has that " +
   "phase's work, and the answer can show it failed or retired until that start runs. The daemon refuses " +
-  "retry for a claim stored working (CLAIM_IN_A_TURN) and for a suspended claim: resume_agent that agent instead, unless the operator suspended it. " +
-  "suspend stops the claim's agent and keeps its session and the task it owes. A claim in a turn " +
+  "retry for an agent whose claim is stored working (CLAIM_IN_A_TURN) and for a suspended agent: resume_agent that agent instead, unless the operator suspended it. " +
+  "suspend stops the agent and keeps its session and the task it owes. An agent in a turn " +
   "keeps that turn until it ends, or until the stop timeout, which cuts the turn off, and the answer " +
   "shows suspensionHeld until then. Your suspension holds: no rule of the daemon's starts the agent " +
   "again until your resume_agent or the operator's legion claims resume. " +
   "resume_agent starts a suspended agent again in the session its claim recorded, and sends it the task it owes. " +
-  "The daemon refuses resume_agent for a claim stored working (CLAIM_IN_A_TURN). " +
-  "The daemon refuses resume_agent, suspend, stop, retry and fresh_session for a claim the operator suspended, or whose " +
-  "suspension by the operator waits for a turn to end (SUSPENDED_BY_OPERATOR), before any refusal of the " +
-  "claim's state, and nothing of the claim changes but where fresh_session's own suspension ran first, or " +
-  "where fresh_session left behind the session the claim recorded, so the claim starts in a new session once " +
-  "it is started: only the operator lifts the operator's suspension, so ask the operator. " +
-  "The controller's compact is not refused the operator's suspension, and answers such a claim " +
+  "The daemon refuses resume_agent for an agent whose claim is stored working (CLAIM_IN_A_TURN). " +
+  "The daemon refuses resume_agent, suspend, stop, retry and fresh_session for an agent the operator suspended, or whose " +
+  "suspension by the operator waits for a turn to end (SUSPENDED_BY_OPERATOR), before any refusal of its " +
+  "claim's state, and the request leaves the agent as it was, but where fresh_session's own suspension of the " +
+  "agent ran first, or where fresh_session left behind the session its claim recorded, so the agent starts in a " +
+  "new session once it is started: only the operator lifts the operator's suspension, so ask the operator. " +
+  "The controller's compact is not refused the operator's suspension, and refuses such an agent " +
   "in its own codes. The four " +
   "refuse role controller as fresh_session and compact do. " +
   "An architect has the same six agent actions, fresh_session, compact, stop, retry, suspend and " +
@@ -387,18 +387,18 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "architect another tree's agent (ISSUE_OUTSIDE_TREE), an agent of an issue of its tree that it does not own, " +
   "as the tree's root and a sibling's issues are for a sub-architect (ISSUE_NOT_OWNED), and its own agent " +
   "(OWN_AGENT). It refuses " +
-  "each of the six for a claim the operator's suspension holds (SUSPENDED_BY_OPERATOR) and for a " +
-  "claim the controller's suspension holds (SUSPENDED_BY_CONTROLLER), also while that suspension " +
-  "waits for a turn to end, before any refusal of the claim's state. Nothing of the claim changes but where " +
-  "fresh_session's own suspension ran first, or where fresh_session left behind the session the claim " +
-  "recorded, so the claim starts in a new session once it is started: ask the holder to lift its suspension. " +
+  "each of the six for an agent the operator's suspension holds (SUSPENDED_BY_OPERATOR) and for an " +
+  "agent the controller's suspension holds (SUSPENDED_BY_CONTROLLER), also while that suspension " +
+  "waits for a turn to end, before any refusal of its claim's state. The request leaves the agent as it was, but " +
+  "where fresh_session's own suspension of the agent ran first, or where fresh_session left behind the session " +
+  "its claim recorded, so the agent starts in a new session once it is started: ask the holder to lift its suspension. " +
   "An architect's suspension is recorded as architect. An architect's resume_agent lifts it, and the " +
   "controller's resume_agent and the operator's resume lift it too. An architect's resume_agent, suspend, stop and " +
-  "fresh_session are refused for a claim the daemon suspended (SUSPENDED_BY_DAEMON). Its retry " +
+  "fresh_session are refused for an agent the daemon suspended (SUSPENDED_BY_DAEMON). Its retry " +
   "of such an agent is refused too, since retry reaches no suspended agent. Its suspend takes " +
-  "over a claim the daemon released, and its stop retires one. " +
-  "An architect's retry and fresh_session are refused for a claim that failed or that a stop " +
-  "retired while the claim's issue is parked or closed, or its tree's root is parked, closed or " +
+  "over an agent the daemon released, and its stop retires one. " +
+  "An architect's retry and fresh_session are refused for an agent that failed or that a stop " +
+  "retired while its issue is parked or closed, or its tree's root is parked, closed or " +
   "signed off (ISSUE_OUT_OF_WORKFLOW). The daemon's own rules start that work again when the " +
   "issue and its tree are back in the workflow. " +
   "Each refusal says what the claim does now and which operation reaches each state. It " +
@@ -416,7 +416,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "daemon refuses a resume of a project that is not paused (PROJECT_NOT_PAUSED, naming its last pause when it has one). While " +
   "the project is paused it refuses fresh_session, compact, retry, resume_agent and replace_pod (PROJECT_PAUSED, " +
   "naming the pause that stands), since each would start a turn, an architect's included: only the project's " +
-  "resume brings back a role the pause stopped. stop and suspend still run while the project is paused. A claim a " +
+  "resume brings back a role the pause stopped. stop and suspend still run while the project is paused. An agent a " +
   "suspension holds when the project is resumed stays suspended until a resume_agent that may lift that " +
   "suspension, or the operator's legion claims resume, lifts it. " +
   "What a later phase needs goes in your handoff; a question for another live role goes to its role topic with envoy_publish.";
@@ -2336,7 +2336,7 @@ test("an architect acts on a claim of an issue it owns with its own grant", asyn
   expect(calls).toHaveLength(before);
 
   // The daemon's refusals reach the architect in their own code and words: another tree's agent,
-  // an agent of an issue of its tree it does not own, its own agent, and a claim the controller's
+  // an agent of an issue of its tree it does not own, its own agent, and an agent the controller's
   // suspension holds.
   for (const [route, op, path, status, code] of [
     ["stopAgent", "stop", "/legion/v1/agents/stop", 403, "ISSUE_OUTSIDE_TREE"],

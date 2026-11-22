@@ -1,7 +1,7 @@
 package daemon
 
 // Who is told of an update round a hold keeps past its bound (tellUpdateStalled): the architect
-// that owns the held claim for a hold an architect placed, and the controller for every other
+// that owns the held agent for a hold an architect placed, and the controller for every other
 // hold, and for an architect's hold no architect can be told of. Each test drives the rig's real
 // sweep to the round's bound, then runs the rows it wrote through the outbox's own executors, so
 // what each test reads is the topic each notice was published on.
@@ -127,9 +127,9 @@ func toldOn(t *testing.T, told map[string][]record.Notice, topic string) record.
 }
 
 // A round held past its bound by an architect's suspension alone is told to the architect that
-// owns the held claim, on that architect's role topic, and not to the controller: the hold is that
+// owns the held agent, on that architect's role topic, and not to the controller: the hold is that
 // architect's to resume, and the controller has nothing of its own to do about it. The notice
-// carries the round, its pod and every claim the round asks, and names the held claim and its
+// carries the round, its pod and every claim the round asks, and names the held agent and its
 // holder. It is told once: a sweep an hour later tells nobody again.
 //
 // The negative control is the routing undone, every hold told to the controller, which writes a
@@ -213,7 +213,7 @@ func TestPodUpdateTellsTheControllerOfAnArchitectsHoldWhenTheOwningArchitectFail
 }
 
 // A round held past its bound by an architect's suspension is told to the architect that owns the
-// held claim, and where that architect's claim fails after the sweep queued its notice and before
+// held agent, and where that architect's claim fails after the sweep queued its notice and before
 // the outbox runs it, the row finishes undelivered (noticeAnswered's architectEnded) and the
 // controller is told the round in its place, with the architect's hold named: the sweep marked the
 // round told when it queued the row, so no later sweep would tell anyone. The relayed notice does
@@ -253,7 +253,7 @@ func TestPodUpdateTellsTheControllerOfAnArchitectsHoldWhoseArchitectFailedBefore
 }
 
 // A round held past its bound by an architect's suspension is told to the architect that owns the
-// held claim, and where the listener refuses that notice on every attempt — the architect's
+// held agent, and where the listener refuses that notice on every attempt — the architect's
 // session does not advertise the delivery mode, or the listener's own NATS grant denies the
 // forward — the row finishes undelivered (noticeAnswered) and the controller is told the round in
 // its place, once, with the architect's hold named: the sweep marked the round told when it
@@ -298,7 +298,7 @@ func TestPodUpdateTellsTheControllerOfAnArchitectsHoldWhoseNoticeTheListenerRefu
 }
 
 // A round held past its bound by an architect's suspension is told to the architect that owns the
-// held claim, and where that architect's session confirms none of its copies — a listener of the
+// held agent, and where that architect's session confirms none of its copies — a listener of the
 // deployed, older build answers each publish 504 receipt_timeout — the notice is queued again
 // until it has been queued again the most times a notice is, the last copy's answer finishes it
 // undelivered (reholdNotice), and the controller is told the round in its place, once, with the

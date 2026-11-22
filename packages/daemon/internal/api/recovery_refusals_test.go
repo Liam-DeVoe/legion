@@ -46,9 +46,9 @@ import (
 // words are the states its predicates admit is a different question, and a copy like this one
 // cannot answer it: the predicates decide it in reachstates_test.go.
 const (
-	wantCompactionReaches   = "A compaction reaches a claim whose agent is ready or idle"
+	wantCompactionReaches   = "A compaction reaches an agent that is ready or idle"
 	wantCompactionLive      = "ready or idle"
-	wantFreshSessionReaches = "A fresh session reaches a claim whose agent is registered, ready or idle, one that is suspended, failed or retired, and one stored working that no process stands behind"
+	wantFreshSessionReaches = "A fresh session reaches an agent that is registered, ready or idle, one that is suspended, failed or retired, and one whose claim is stored working and that no process stands behind"
 	wantFreshSessionLive    = "registered, ready or idle"
 	wantAskAgainLater       = "Ask again later; `read_state` (`legion claims list`) shows its state"
 )
@@ -1067,8 +1067,8 @@ func TestAFreshSessionThatStoppedTheClaimAndCouldNotStartItSaysNotRestartedInIts
 // (refusingCheckLaunchStore). Each finds its own line and not the other's.
 func TestTheControllersFreshSessionLogsWhetherItStartedTheClaimAgain(t *testing.T) {
 	const (
-		startedLine = "api: the controller started a claim in a fresh session"
-		stoppedLine = "api: the controller's fresh session stopped a claim and did not start it again"
+		startedLine = "api: the controller started an agent in a fresh session"
+		stoppedLine = "api: the controller's fresh session stopped an agent and did not start it again"
 	)
 	for _, row := range []struct {
 		name          string
@@ -1591,10 +1591,10 @@ func heldSuspensionCases() []heldSuspensionCase {
 // before it. What the words themselves have to be is checked from the predicates rather than
 // from this copy of them (TestTheHeldSuspensionRefusalNamesEachDoorsOwnLiveStates).
 func heldSuspensionRefusal(token claim.Token, startsAgain, operation, liveStates string) string {
-	return string(token) + " has a suspension held over it, and " + operation + " reaches no claim a " +
-		"suspension waits over, whatever state it is in. Of the claims with no suspension held over them, " +
+	return string(token) + " has a suspension held over it, and " + operation + " reaches no agent a " +
+		"suspension waits over, whatever state it is in. Of the agents with no suspension held over them, " +
 		startsAgain + " reaches those that are suspended, failed or retired, and " + operation +
-		" reaches those whose agent is " + liveStates + ". " + wantAskAgainLater
+		" reaches those that are " + liveStates + ". " + wantAskAgainLater
 }
 
 // A suspension held over the claim is read ahead of every other window the claim can be in,
@@ -1606,10 +1606,10 @@ func heldSuspensionRefusal(token claim.Token, startsAgain, operation, liveStates
 // operation reaches instead, of the claims nothing is held over, and both recoveries say so
 // of every row (api's refuseHeldSuspension). The code each row takes is the claim's own, so
 // the answer a state was refused with before either door read the hold is the answer it is
-// refused with now. The one exception is the hold's own: the controller's fresh session of a
-// claim the operator's suspension is held over is refused that hold first, while the
+// refused with now. The one exception is the hold's own: the controller's fresh session of an
+// agent the operator's suspension is held over is refused that hold first, while the
 // controller's compaction is let past it (compactOp.controllerPassesHold) and named the
-// operator's resume as what starts the claim rather than the fresh session the door refuses it
+// operator's resume as what starts the agent rather than the fresh session the door refuses it
 // (wantHeldRefusal).
 func TestARecoveryRefusedUnderAHeldSuspensionSaysTheClaimStopsWorking(t *testing.T) {
 	for _, held := range heldSuspensionCases() {

@@ -67,8 +67,8 @@ func compactDoors() []compactDoor {
 	}
 }
 
-// wantHeldRefusal holds the answer this door gave the compaction of token, a claim a suspension
-// by heldBy is held over, to the held suspension's refusal in code: the sentence every held claim
+// wantHeldRefusal holds the answer this door gave the compaction of token, an agent a suspension
+// by heldBy is held over, to the held suspension's refusal in code: the sentence every held agent
 // takes (heldSuspensionRefusal), except where the suspension outranks the door's caller. The
 // operator's outranks the controller, whose compaction the agent door lets past it but whose
 // fresh session it refuses, so that answer names the operator's resume rather than the fresh

@@ -14,10 +14,10 @@ import (
 
 // AgentActionResponse is what four of the agent door's six agent actions answer — stop, retry,
 // suspend and resume (stopAgent, retryAgent, suspendAgent, resumeAgent), the controller's and an
-// architect's alike: the claim as the request left it, read from its machine's published view as
-// every operator request on a claim reads it (claimRequest).
+// architect's alike: the claim's state after the request, read from its machine's published view
+// as every operator request on an agent reads it (claimRequest).
 //
-// SuspendedBy and SuspensionHeldBy say who holds a suspension over the claim: `architect` for one
+// SuspendedBy and SuspensionHeldBy say who holds a suspension over the agent: `architect` for one
 // an architect placed, which an architect's resume lifts and so does the controller's;
 // `controller` for one the controller placed, which its own resume lifts and an architect's does
 // not (suspendedByController); and `operator` for the operator's, which only the operator lifts
@@ -33,7 +33,7 @@ type AgentActionResponse struct {
 	// machine ran; and still failed or retired after a retry of a phase worker, whose start the
 	// issue's phase queued and runs once that start comes (the 202 answer, retryStart).
 	State string `json:"state"`
-	// SuspendedBy is who suspended the claim while it is suspended — operator, controller,
+	// SuspendedBy is who suspended the agent while its claim is suspended — operator, controller,
 	// architect, daemon, exit, released or unknown (supervise.SuspendSource) — and absent
 	// otherwise.
 	SuspendedBy string `json:"suspendedBy,omitempty"`
@@ -44,46 +44,46 @@ type AgentActionResponse struct {
 }
 
 // The refusals of a request the agent door's caller may not make past a suspension
-// (refuseHold), each 409. Each says what of the claim changed, which is nothing but where a
-// fresh session's own suspension ran first or its forget left the recorded session behind
-// (nothingChanged, itsSuspensionTakenOver, sessionLeftBehind).
+// (refuseHold), each 409. Each says what the request did to the agent, which is nothing but where
+// a fresh session's own suspension of the agent ran first or its forget left the agent's recorded
+// session behind (nothingChanged, itsSuspensionTakenOver, sessionLeftBehind).
 const (
 	// suspendedByOperator: a request of the controller's or an architect's that would get past a
 	// suspension the operator holds, held for a turn or landed — its resume, which would lift it;
 	// its suspend, which would take it over or change nothing; its stop, which would retire the
-	// claim under it for a retry to relaunch; its retry; and its fresh session, which would
+	// agent under it for a retry to relaunch; its retry; and its fresh session, which would
 	// resume it — and, for an architect, its compaction as well, so every action of the door but
 	// the controller's compaction (supervise.ErrOperatorHolds, agentAction.controllerPassesHold).
 	// Only the operator undoes the operator's decision, so the sentence sends the caller to the
 	// operator.
 	suspendedByOperator = "SUSPENDED_BY_OPERATOR"
-	// suspendedByController: an architect's action on a claim the controller's suspension
+	// suspendedByController: an architect's action on an agent the controller's suspension
 	// holds, held or landed (supervise.ErrControllerHolds). The controller's suspension is
 	// project-wide work — a deploy, a merge hold, a stuck pod — which a tree's architect must not
 	// undo, so the sentence sends the architect to the controller.
 	suspendedByController = "SUSPENDED_BY_CONTROLLER"
-	// suspendedByDaemon: an architect's request that would lift, take over or end a claim under a
-	// suspension the daemon placed rather than an architect (supervise.ErrNotTheArchitectsSuspension):
-	// its resume, or its fresh session, of a claim the daemon suspended or released, and its suspend
-	// or stop of a claim the daemon's own suspension holds — a park, a linger, a close, a root's
+	// suspendedByDaemon: an architect's request that would lift or take over a suspension the daemon
+	// placed rather than an architect, or end the agent under it (supervise.ErrNotTheArchitectsSuspension):
+	// its resume, or its fresh session, of an agent the daemon suspended or released, and its suspend
+	// or stop of an agent the daemon's own suspension holds — a park, a linger, a close, a root's
 	// exit, or one recorded before sources existed — which, taken over, its resume would then undo,
 	// and which, stopped, its retry would relaunch.
 	suspendedByDaemon = "SUSPENDED_BY_DAEMON"
 )
 
-// What a refusal of a hold says became of the claim (refuseHold): nothing, for a request the
-// hold refused before it changed anything, which is every such refusal but two; the caller's
-// own suspension and nothing more, for the fresh session whose forget a suspension above the
-// caller refused after taking the claim over from that suspension, which leaves the claim
-// suspended by the holder with the session it recorded; and the session left behind and
-// nothing more, for the fresh session of a claim it found suspended whose resume such a
-// suspension refused after the forget had dropped that session, which leaves the claim
-// suspended by the holder with no session to resume (freshSession). Each reads after
+// What a refusal of a hold says the request did to the agent (refuseHold): nothing, for a request
+// the hold refused before it did anything, which is every such refusal but two; its own
+// suspension of the agent and nothing more, for the fresh session whose forget a suspension above
+// the caller refused after taking the agent over from that suspension, after which the claim's
+// state is suspended, by the holder, with the session it recorded; and the agent's session left
+// behind and nothing more, for the fresh session of an agent it found suspended whose resume such
+// a suspension refused after the forget had dropped that session, after which the claim's state
+// is suspended, by the holder, with no session to resume (freshSession). Each reads after
 // "so <operation> by <caller>", or after "so it" in the daemon's sentence.
 const (
 	nothingChanged         = "is refused and nothing of the claim changed"
-	itsSuspensionTakenOver = "went no further than its own suspension of the claim, which that suspension then took over, and the claim keeps the session it recorded"
-	sessionLeftBehind      = "went no further than leaving behind the session the claim recorded, which that suspension took the claim over after, so the claim starts in a new session once it is started"
+	itsSuspensionTakenOver = "went no further than its own suspension of the agent, which that suspension then took over, and the agent keeps the session its claim recorded"
+	sessionLeftBehind      = "went no further than leaving behind the session the claim recorded before that suspension took the agent over, so the agent starts in a new session once it is started"
 )
 
 // The four lifecycle actions on an agent in the words their refusals name them by (agentAction),
@@ -107,7 +107,7 @@ var (
 		name:        "a retry",
 		invalidRole: "the controller does not retry its own agent",
 		did:         "retried",
-		reaches:     "A retry reaches an agent that failed and one whose claim a stop retired",
+		reaches:     "A retry reaches an agent that failed and one that a stop retired",
 	}
 	suspendOp = agentAction{
 		name:        "a suspension",
@@ -142,14 +142,14 @@ func callerName(by supervise.SuspendSource) string {
 	}
 }
 
-// stopAgent is the agent door's `legion claims stop` (stopEvent): the claim is released and
+// stopAgent is the agent door's `legion claims stop` (stopEvent): the agent is stopped and
 // retired, a turn it is in cut off with it. The one difference is a hold the caller may not get
 // past, which its stop does not end (agentDoor, supervise.RequestStop.By,
 // supervise.Claim.StopOrSuspendRefusal): the operator's for the controller, the operator's or the
 // controller's for an architect (SUSPENDED_BY_OPERATOR, SUSPENDED_BY_CONTROLLER), and for an
 // architect the daemon's own suspension too (SUSPENDED_BY_DAEMON) — a park, a linger, a close. A
-// stop would retire the claim, and a retry would then relaunch it past that hold. An architect's
-// stop of a claim the daemon released retires it, since any wake would bring that claim back
+// stop would retire the agent, and a retry would then relaunch it past that hold. An architect's
+// stop of an agent the daemon released retires it, since any wake would bring that agent back
 // anyway.
 func (s *server) stopAgent(w http.ResponseWriter, r *http.Request) {
 	s.agentEventAction(w, r, stopOp, func(_ http.ResponseWriter, _ *http.Request, target claimTarget) (supervise.Event, bool) {
@@ -157,8 +157,8 @@ func (s *server) stopAgent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// suspendAgent is the agent door's `legion claims suspend` (suspendEvent): the claim's process is
-// stopped and its session kept, and a suspension that reaches a claim in a turn, or one whose
+// suspendAgent is the agent door's `legion claims suspend` (suspendEvent): the agent's process is
+// stopped and its session kept, and a suspension that reaches an agent in a turn, or one whose
 // launch has not said ready, is held for that turn's end or that ready, bounded at the stop
 // timeout as the operator's is, and answered 202. The suspension is recorded as the caller's
 // (supervise.SuspendedByController, supervise.SuspendedByArchitect): it holds against every rule
@@ -166,19 +166,19 @@ func (s *server) stopAgent(w http.ResponseWriter, r *http.Request) {
 // either, and the controller's lifts an architect's. One a source above the caller already holds
 // is refused (SUSPENDED_BY_OPERATOR, and for an architect SUSPENDED_BY_CONTROLLER), and so is an
 // architect's of one the daemon's own suspension holds (SUSPENDED_BY_DAEMON); an architect's
-// suspend of a released claim takes it over.
+// suspend of a released agent takes it over.
 func (s *server) suspendAgent(w http.ResponseWriter, r *http.Request) {
 	s.agentEventAction(w, r, suspendOp, func(_ http.ResponseWriter, _ *http.Request, target claimTarget) (supervise.Event, bool) {
 		return supervise.RequestSuspend{Claim: target.token, Reason: callerName(target.by) + " suspended it", By: target.by}, true
 	})
 }
 
-// resumeAgent is the agent door's `legion claims resume` (resumeEvent): the suspended claim's
-// session is relaunched. The controller's resume_agent lifts every suspension but the operator's
-// own, which only the operator lifts; an architect's lifts an architect's suspension alone
-// (agentDoor, supervise.RequestResume.By, supervise.Claim.ResumeRefusal). While the project is
+// resumeAgent is the agent door's `legion claims resume` (resumeEvent): the suspended agent starts
+// again in the session its claim records. The controller's resume_agent lifts every suspension
+// but the operator's own, which only the operator lifts; an architect's lifts an architect's
+// suspension alone (agentDoor, supervise.RequestResume.By, supervise.Claim.ResumeRefusal). While the project is
 // paused its event builder refuses it PROJECT_PAUSED, before the event is posted, and nothing of
-// the claim changes (refusedWhilePaused), as the operator's resume is (resumeEvent): a claim the
+// the claim changes (refusedWhilePaused), as the operator's resume is (resumeEvent): an agent the
 // pause stopped is the pause's to bring back at the project's resume, and no agent action
 // undoes the pause.
 func (s *server) resumeAgent(w http.ResponseWriter, r *http.Request) {
@@ -191,14 +191,14 @@ func (s *server) resumeAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 // retryAgent is the agent door's plain `legion claims retry` (retryStart), with no fresh
-// session: a claim that failed, or that a stop retired, is started again in the session it
-// recorded — a phase worker through its issue's phase, which hands it that phase's task, and an
-// architect by its own machine. The store records no one as having retired a claim
-// (supervise.Machine.retire writes the state alone), so a claim the operator stopped is retried
-// here as one the controller stopped is. A claim a suspension above the caller holds, landed or
+// session: an agent that failed, or that a stop retired, is started again in the session its
+// claim recorded — a phase worker through its issue's phase, which hands it that phase's task,
+// and an architect by its own machine. The store records no one as having stopped the agent
+// (supervise.Machine.retire writes the claim's state alone), so an agent the operator stopped is retried
+// here as one the controller stopped is. An agent a suspension above the caller holds, landed or
 // held for its turn, is refused by the door before anything is asked, as every action of the
 // door but the controller's compaction is (agentDoor). A claim stored working is refused as a
-// claim in a turn (refuseClaimInATurn), and an architect's retry of a claim whose issue is out of
+// claim in a turn (refuseClaimInATurn), and an architect's retry of an agent whose issue is out of
 // the workflow or whose tree lingers is refused as work the daemon stopped
 // (ISSUE_OUT_OF_WORKFLOW, refuseStartOfStoppedWork); every other refusal is the effect's own, in
 // the words the operator's door gives it. One read of the claim's state decides both refusals.
@@ -227,18 +227,18 @@ func (s *server) retryAgent(w http.ResponseWriter, r *http.Request) {
 	s.answerAgentAction(w, r, target, retryOp.did, status)
 }
 
-// issueOutOfWorkflow is the refusal of an architect's start of a claim whose issue's work the
+// issueOutOfWorkflow is the refusal of an architect's start of an agent whose issue's work the
 // daemon has stopped (refuseStartOfStoppedWork), 409. It is no sibling of SUSPENDED_BY_DAEMON's,
-// since no suspension stands over the claim it answers: the claim failed or a stop retired it,
+// since no suspension stands over the agent it answers: the agent failed or a stop retired it,
 // and what stands in the way is the issue's own record, which the sentence names.
 const issueOutOfWorkflow = "ISSUE_OUT_OF_WORKFLOW"
 
-// refuseStartOfStoppedWork refuses an architect's retry or fresh session (op) of a claim that
-// failed or that a stop retired while the claim's issue is out of the workflow or its tree
+// refuseStartOfStoppedWork refuses an architect's retry or fresh session (op) of an agent that
+// failed or that a stop retired while its issue is out of the workflow or its tree
 // lingers — the issue parked or closed, or its tree's root parked, closed or signed off — and
 // reports whether it answered. state is the claim's state as the caller read it from the claim's
 // view. It closes the one order the daemon's own suspension does not reach: an architect stops a
-// worker, which retires the claim, and the issue is parked after. A park suspends no retired
+// worker, which retires it, and the issue is parked after. A park suspends no retired
 // claim (the outbox's suspend row), so nothing of the claim records that the work stopped, and
 // the architect's retry would start the worker on the parked issue. The rule is the one every
 // path that would bring an issue's pod back reads
@@ -248,9 +248,9 @@ const issueOutOfWorkflow = "ISSUE_OUT_OF_WORKFLOW"
 // are not refused, as neither is refused the daemon's own suspension.
 //
 // The records are read at the request, and no lock holds a park off between this read and the
-// start. None is needed: a park that lands after the read sends its suspension to the claim the
+// start. None is needed: a park that lands after the read sends its suspension to the agent the
 // retry started, and the daemon's suspension takes over whatever suspension of an architect's it
-// meets there (supervise's suspensionRank), so that claim is the daemon's from then on and only
+// meets there (supervise's suspensionRank), so that agent is the daemon's from then on and only
 // the daemon's own rules start it again.
 //
 // A claim in any other state is left to the action's own refusals: a suspended claim's is its
@@ -322,8 +322,8 @@ func capitalized(sentence string) string {
 }
 
 // agentEventAction is the agent door's one operator request a single event to the claim's
-// machine makes (claimRequest), op.request: the claim is named by its issue and role and the
-// caller authenticated as the project's controller or an architect that owns the claim's issue
+// machine makes (claimRequest), op.request: the agent is named by its issue and role and the
+// caller authenticated as the project's controller or an architect that owns its issue
 // (agentDoor), the event is built and posted, and the claim is answered as it then stands, the
 // log line saying the caller op.did it. The event builder has the operator's door's shape: it
 // answers the request itself and reports false where it refuses it, as the resume's does while
@@ -355,8 +355,8 @@ func (s *server) agentEventAction(w http.ResponseWriter, r *http.Request, op age
 }
 
 // refuseAgentAction answers an event of the caller's that the claim's machine refused: a
-// suspension the caller may not get past in that hold's own code (refuseHold), a claim stored
-// working that the action does not reach as a claim in a turn (agentAction.refusesATurn,
+// suspension the caller may not get past in that hold's own code (refuseHold), an agent whose
+// claim is stored working, which the action does not reach, as a claim in a turn (agentAction.refusesATurn,
 // refuseClaimInATurn), and every other refusal as the operator's door answers it, in the
 // machine's own words (operationFailure).
 func (s *server) refuseAgentAction(w http.ResponseWriter, r *http.Request, target claimTarget, err error, op agentAction) {
@@ -387,7 +387,7 @@ func holdRefusal(err error) bool {
 // (holdRefusal): the operator's own (suspendedByOperator), the controller's for an architect
 // (suspendedByController), and one the daemon placed for an architect's resume, suspend, stop or
 // fresh session (suspendedByDaemon). Each sentence names who lifts the suspension, in the words
-// holdSentences gives it, and outcome says what of the claim changed (nothingChanged,
+// holdSentences gives it, and outcome says what the request did to the agent (nothingChanged,
 // itsSuspensionTakenOver). An error it does not know is no hold it can name: it is logged and
 // answered 500 in its own words, as the daemon's own failure, rather than given the words of a
 // hold it may not be.
@@ -410,10 +410,10 @@ func (s *server) refuseHold(w http.ResponseWriter, r *http.Request, token claim.
 
 // holdSentences is how the refusals of a suspension a caller may not get past name it, from the
 // machine's word for it: the code, what the claim is held by, in words that read after "<token>
-// is", and the sentence naming what starts the claim again — the holder's resume, or for the
+// is", and the sentence naming what starts the agent again — the holder's resume, or for the
 // daemon's own suspension the daemon's rules, the controller's resume_agent and the operator's
-// resume. Each refusal of a hold says both (refuseHold), and so does each recovery's refusal of a
-// claim such a hold stands over, where it would otherwise name a door that refuses the caller
+// resume. Each refusal of a hold says both (refuseHold), and so does each recovery's refusal of an
+// agent such a hold stands over, where it would otherwise name a door that refuses the caller
 // (refuseHeldSuspension, refuseNotRunning). held is whether err names such a hold at all, which
 // is the one answer every reader takes to that question (holdRefusal among them): an error that
 // names no hold, nil among them, has no words, and every string is empty.
@@ -433,7 +433,7 @@ func holdSentences(token claim.Token, err error) (code, heldBy, lifts string, he
 }
 
 // refuseClaimInATurn is the retry's and the resume's refusal of a claim stored working
-// (claimInATurn): neither reaches a claim in a turn, the machine refuses each for a claim that
+// (claimInATurn): neither reaches an agent in a turn, the machine refuses each for a claim that
 // has not failed or is not suspended, and the code is the one both recoveries give a claim stored
 // working, so the caller reads one code for it whichever action it asked. A claim stored
 // working that a suspension above the caller holds, held for its turn, is no exception: the
@@ -445,9 +445,9 @@ func (s *server) refuseClaimInATurn(w http.ResponseWriter, r *http.Request, toke
 		"%s is stored working, and %s reaches no agent in a turn. %s. %s", token, op.name, op.reaches, askAgainLater))
 }
 
-// answerAgentAction writes the claim as the caller's action left it (AgentActionResponse) under
+// answerAgentAction writes the claim's state after the caller's action (AgentActionResponse) under
 // status, as the answer the agent actions' row of the table names (AnswerAgentAction), and logs
-// what the caller did to which claim, as the caller named it.
+// what the caller did to which agent, as the caller named it.
 func (s *server) answerAgentAction(w http.ResponseWriter, r *http.Request, target claimTarget, did string, status int) {
 	view := target.machine.View().Claim
 	answer := AgentActionResponse{

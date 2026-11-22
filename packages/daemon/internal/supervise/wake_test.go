@@ -404,8 +404,8 @@ func TestAnOperatorsRetryRefusedByTheParkedClaimLeavesItsWakeItsTurn(t *testing.
 
 // Only the operator's own resume and retry are let past the wake pacing, because a person is
 // waiting on each. The controller's and an architect's come through the agent door, which an
-// agent asks of as many claims at once as it decides to — a controller lifting its own holds
-// after a deploy asks it of every claim it held — so each takes its turn behind the wake ahead of
+// agent asks of as many agents at once as it decides to — a controller lifting its own holds
+// after a deploy asks it of every agent it held — so each takes its turn behind the wake ahead of
 // it, as every launch the pacing holds does, and launches at that turn.
 //
 // The negative control is exemptWake letting every RequestResume and RequestAskedRetry

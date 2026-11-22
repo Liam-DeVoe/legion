@@ -2430,8 +2430,8 @@ func (w *workflowRuntime) applySessionFact(c supervise.Claim, id string, fact in
 // records nothing of internal/record. The architect is told in a notice row, which the notice
 // executor delivers to the architect that owns the issue, waking it where its pod was released
 // (deliverNotice, wakeForDelivery): narrowing the work the provider keeps refusing is the
-// architect's. The controller is told in a row of its own, since compacting or refreshing the
-// claim's session is the controller's; admission's own check stops a second controller notice
+// architect's. The controller is told in a row of its own, since compacting the agent's session
+// or starting that agent in a fresh session is the controller's; admission's own check stops a second controller notice
 // while one still waits in the outbox (TellController). The two rows are one transaction. A run of
 // the tree root's architect's own claim writes the controller's row alone (tellsArchitect), and a
 // run of a child's own architect's claim writes its notice row for the architect above that child

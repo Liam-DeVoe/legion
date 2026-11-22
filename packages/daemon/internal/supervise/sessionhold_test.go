@@ -1004,7 +1004,7 @@ func TestAResumeOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
 	}
 }
 
-// The controller's resume of a claim it suspended, recording a session another claim holds, is
+// The controller's resume of an agent it suspended, whose claim records a session another claim holds, is
 // refused by the same check as the operator's (resumeRefusal), which runs after the controller's
 // own checks (askedBy, Claim.ResumeRefusal) admit it: a RefusedError naming the operator's
 // forget-session and the controller's own fresh_session, either of which gives the claim a new
@@ -1019,7 +1019,7 @@ func TestAControllersResumeOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) 
 	h.reach(StateReady)
 	h.store.setHold(sessionID(session), other)
 	h.restart()
-	h.must(RequestSuspend{Claim: h.token, Reason: "the controller holds the claim", By: SuspendedByController})
+	h.must(RequestSuspend{Claim: h.token, Reason: "the controller holds the agent", By: SuspendedByController})
 	h.wantState(StateSuspended)
 	resumes := len(h.calls("Resume"))
 

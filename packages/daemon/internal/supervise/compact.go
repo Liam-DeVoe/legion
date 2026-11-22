@@ -60,9 +60,9 @@ var ErrCompactNotEnded = errors.New("the compaction ended and the claim could no
 //
 // What happens to the claim next is its own path's, and that path is not always a relaunch. A
 // claim whose death the daemon relaunches is sent the owed task when its agent is ready again
-// (sendPending). A claim its death failed runs again only on a retry, the workflow's or one the
-// operator, the controller or an architect asks (retry, askedRetry), and one a held suspension
-// stopped only on a resume that may lift it: the operator's lifts every one, the controller's its
+// (sendPending). An agent whose death failed its claim runs again only on a retry, the workflow's
+// or one the operator, the controller or an architect asks (retry, askedRetry), and an agent a
+// held suspension stopped runs again only on a resume that may lift it: the operator's lifts every one, the controller's its
 // own and an architect's, and an architect's an architect's alone (Claim.ResumeRefusal). The task
 // waits for that.
 var ErrCompactProcessGone = errors.New("the claim lost its process while its session was being compacted, so it was not given back and the task it owes was not sent")
@@ -77,8 +77,8 @@ var ErrCompactProcessGone = errors.New("the claim lost its process while its ses
 // the claim owes was not sent.
 //
 // What becomes of that task is the hold's own, and settle is what decides it. A suspension by
-// a source that resumes this same claim in the same phase — one that holds, and a
-// released claim's — keeps the task through the suspension, and it goes when the claim runs
+// a source whose resume restarts this same agent in the same phase — one that holds, and a
+// release — keeps the task through the suspension, and it goes when the agent runs
 // again (SuspendSource.RetiresPhaseTask, settle). The daemon's own suspension ends the
 // claim's phase, so settle retires the task queued for that phase with it and nothing sends
 // it; the claim's next phase brings a task of its own. A hold of the daemon's that a start

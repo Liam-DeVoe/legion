@@ -101,7 +101,7 @@ func (c IdleClaim) Live() bool {
 	return true
 }
 
-// SuspensionHolds is whether a suspension that holds is over this claim: the operator's own, the
+// SuspensionHolds is whether a suspension that holds is over this claim's agent: the operator's own, the
 // project's controller's or an architect's, the suspensions no daemon rule undoes, which only a
 // resume ends (supervise.SuspendSource.Holds). The hold it decides keeps the name it had before
 // the controller's and the architect's suspensions, which hold the pod for the same reason

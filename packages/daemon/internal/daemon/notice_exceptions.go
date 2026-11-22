@@ -291,7 +291,7 @@ const updateStalledRelaySource = "update-stalled-relay"
 // a claim runs no turn on the pod, so the round does not wait for it, and listed in the state the
 // sweep read it in, it would read as a claim the round still waits on. Where no claim is left,
 // nothing the round asked holds it, and the controller is told nothing. A tree that lingers or has
-// closed is told nothing: it runs nothing until its re-admission starts its claims again from the
+// closed is told nothing: it runs nothing until its re-admission starts its agents again from the
 // tree's record. Any other kind writes nothing. The write marks key processed in a transaction of
 // its own, as parkDecision's does, and owns the commit hook it registers (projectRecords,
 // intake.OnCommit), so the controller's lane wakes as it commits.

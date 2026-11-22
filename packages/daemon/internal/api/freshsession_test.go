@@ -804,7 +804,7 @@ func TestTheControllersFreshSessionRefusesTheRoleController(t *testing.T) {
 
 	refusedSaying(t, recorder, http.StatusBadRequest, "INVALID_ROLE",
 		"role must be one of architect, planner, implementer, tester, reviewer, merger; "+
-			"the project's controller is none of them, and its own claim takes no fresh session")
+			"the project's controller is none of them, and its own agent takes no fresh session")
 }
 
 // The controller's own claim is refused through the operator's door too, which names a claim by
@@ -863,13 +863,13 @@ func TestTheControllersFreshSessionNeedsAControllerGrantAndAClaim(t *testing.T) 
 }
 
 // Each step of a fresh session is a decision of its own, so a suspension that outranks the caller
-// can take the claim over between them: after the caller's own suspension of a live claim, and
-// after the read at the request of a claim the caller suspended earlier. The forget reads the
+// can take the agent over between them: after the caller's own suspension of a live agent, and
+// after the read at the request of an agent the caller suspended earlier. The forget reads the
 // hold again in its own decision (supervise.RequestForgetSession.By) and is refused, so the
 // claim keeps the session it recorded under the holder's suspension, nothing is started, and the
 // caller is answered that hold's refusal, which says whether its own suspension ran. Let
 // through, the forget would drop the session of a claim whose resume the machine then refuses,
-// and the caller would read a 200 for a claim only the holder can start.
+// and the caller would read a 200 for an agent only the holder can start.
 func TestAFreshSessionKeepsTheSessionOfAClaimASuspensionAboveTheCallerTookOver(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -884,8 +884,8 @@ func TestAFreshSessionKeepsTheSessionOfAClaimASuspensionAboveTheCallerTookOver(t
 			by: supervise.SuspendedByController, holder: supervise.SuspendedByOperator, code: suspendedByOperator,
 			want: func(token claim.Token) string {
 				return string(token) + " is held by the operator's own suspension, which only the operator lifts, so a fresh session " +
-					"by the controller went no further than its own suspension of the claim, which that suspension then took over, " +
-					"and the claim keeps the session it recorded. Ask the operator: `legion claims resume --claim " + string(token) +
+					"by the controller went no further than its own suspension of the agent, which that suspension then took over, " +
+					"and the agent keeps the session its claim recorded. Ask the operator: `legion claims resume --claim " + string(token) +
 					"` is theirs to run"
 			},
 		},
@@ -894,8 +894,8 @@ func TestAFreshSessionKeepsTheSessionOfAClaimASuspensionAboveTheCallerTookOver(t
 			by: supervise.SuspendedByArchitect, holder: supervise.SuspendedByController, code: suspendedByController,
 			want: func(token claim.Token) string {
 				return string(token) + " is held by the controller's suspension, which only the controller or the operator lifts, so " +
-					"a fresh session by the architect went no further than its own suspension of the claim, which that suspension " +
-					"then took over, and the claim keeps the session it recorded. Ask the controller: its `resume_agent` is its " +
+					"a fresh session by the architect went no further than its own suspension of the agent, which that suspension " +
+					"then took over, and the agent keeps the session its claim recorded. Ask the controller: its `resume_agent` is its " +
 					"own to run"
 			},
 		},
@@ -916,7 +916,7 @@ func TestAFreshSessionKeepsTheSessionOfAClaimASuspensionAboveTheCallerTookOver(t
 			s.beforeForgetSessionHandle = func() {
 				tookOver = true
 				if err := m.Handle(h.ctx, supervise.RequestSuspend{
-					Claim: token, Reason: "a suspension above the caller takes the claim over", By: tc.holder,
+					Claim: token, Reason: "a suspension above the caller takes the agent over", By: tc.holder,
 				}); err != nil {
 					t.Errorf("the takeover before the forget: %v", err)
 				}
@@ -944,11 +944,11 @@ func TestAFreshSessionKeepsTheSessionOfAClaimASuspensionAboveTheCallerTookOver(t
 	}
 }
 
-// A suspension above the caller can take the claim over after the fresh session's forget dropped
+// A suspension above the caller can take the agent over after the fresh session's forget dropped
 // the session it recorded and before its resume: the resume is refused that hold, and the
-// refusal says the session was left behind, since the claim the holder starts is no longer the
-// one the request found. Said "nothing of the claim changed", the caller would read the claim as
-// resumable on the session it can no longer reach.
+// refusal says the session was left behind, since the holder's resume starts the agent in a new
+// session rather than the one the request found. Said "nothing of the claim changed", the caller
+// would read the claim as resumable on the session it can no longer reach.
 func TestAFreshSessionWhoseResumeAHoldRefusesAfterTheForgetSaysTheSessionWasLeftBehind(t *testing.T) {
 	h := freshSessionHarness(t, &phaseRestarter{})
 	token := controllerSuspendedImplementer(t, h)
@@ -958,7 +958,7 @@ func TestAFreshSessionWhoseResumeAHoldRefusesAfterTheForgetSaysTheSessionWasLeft
 	s.beforeFreshSessionResume = func() {
 		tookOver = true
 		if err := m.Handle(h.ctx, supervise.RequestSuspend{
-			Claim: token, Reason: "a suspension above the caller takes the claim over", By: supervise.SuspendedByOperator,
+			Claim: token, Reason: "a suspension above the caller takes the agent over", By: supervise.SuspendedByOperator,
 		}); err != nil {
 			t.Errorf("the takeover before the resume: %v", err)
 		}
@@ -976,8 +976,8 @@ func TestAFreshSessionWhoseResumeAHoldRefusesAfterTheForgetSaysTheSessionWasLeft
 	}
 	refusedSaying(t, recorder, http.StatusConflict, suspendedByOperator, string(token)+
 		" is held by the operator's own suspension, which only the operator lifts, so a fresh session by the controller "+
-		"went no further than leaving behind the session the claim recorded, which that suspension took the claim over "+
-		"after, so the claim starts in a new session once it is started. Ask the operator: `legion claims resume --claim "+
+		"went no further than leaving behind the session the claim recorded before that suspension took the agent over, "+
+		"so the agent starts in a new session once it is started. Ask the operator: `legion claims resume --claim "+
 		string(token)+"` is theirs to run")
 	if got := h.stored(token); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByOperator || got.Session != "" {
 		t.Fatalf("the claim is %s suspended by %q on session %q, want it suspended by the operator with no session",

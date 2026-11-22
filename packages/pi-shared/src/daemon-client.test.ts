@@ -431,8 +431,8 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       "compact.json",
     ],
     // Four of the six agent actions (stop, retry, suspend, resume) take the body of the other
-    // two, the recoveries, and answer the claim as each left it, with who holds a suspension
-    // over it.
+    // two, the recoveries, and answer the claim's state after each, with who holds a suspension
+    // over the agent.
     [
       "stopAgent",
       "/legion/v1/agents/stop",

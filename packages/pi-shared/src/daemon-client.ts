@@ -157,13 +157,13 @@ export interface LegionDaemonClient {
   readonly issueStatus: (
     input: z.input<typeof LegionIssueStatusRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
-  /** The controller's or an architect's `fresh_session`: the claim on `role` of `issue` leaves
+  /** The controller's or an architect's `fresh_session`: the agent on `role` of `issue` leaves
    * its recorded session behind and starts again in a new one, the effect
    * `legion claims retry --fresh-session` runs for an operator. The answer is empty wherever
-   * the claim came back and its start ran. `phaseNotRestarted` carries the workflow's refusal
-   * of the phase restart, where the claim came back owing no task, or the machine's refusal of
-   * a step that would have started the claim again, where this request stopped it. That
-   * sentence names the state the claim stands in: read it in `read_state`, and ask for a fresh
+   * the agent came back and its start ran. `phaseNotRestarted` carries the workflow's refusal
+   * of the phase restart, where the agent came back owing no task, or the machine's refusal of
+   * a step that would have started the agent again, where this request stopped it. That
+   * sentence names the state its claim stands in: read it in `read_state`, and ask for a fresh
    * session again only where the claim is suspended. */
   readonly freshSession: (
     input: z.input<typeof LegionClaimRequest>
@@ -171,53 +171,53 @@ export interface LegionDaemonClient {
   readonly gateRegister: (
     input: z.input<typeof LegionGateRegisterRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
-  /** The controller's or an architect's `compact`: the claim on `role` of `issue` has its Oh My
+  /** The controller's or an architect's `compact`: the agent on `role` of `issue` has its Oh My
    * Pi session compacted and is then sent the task it owes again, the effect
    * `legion claims compact` runs for an operator. The answer says whether the session was
-   * compacted and, when it was not, why; the claim came back and whatever task it owes went again
+   * compacted and, when it was not, why; the agent came back and whatever task it owes went again
    * either way. */
   readonly compact: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionCompactResponse>>;
-  /** The controller's or an architect's `stop`: the claim on `role` of `issue` is released and
+  /** The controller's or an architect's `stop`: the agent on `role` of `issue` is stopped and
    * retired, the effect `legion claims stop` runs for an operator; a turn it is in is cut off with
-   * it. Refused for a claim the operator's own suspension holds (`SUSPENDED_BY_OPERATOR`). The
-   * answer is the claim as the stop left it. */
+   * it. Refused for an agent the operator's own suspension holds (`SUSPENDED_BY_OPERATOR`). The
+   * answer is the claim's state after the stop. */
   readonly stopAgent: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionAgentActionResponse>>;
-  /** The controller's or an architect's `retry`: a claim that failed, or that a stop retired,
-   * starts again in the session it recorded, the effect a plain `legion claims retry` runs for an
-   * operator; a phase worker is started through its issue's phase. Refused for a claim stored
-   * working (`CLAIM_IN_A_TURN`), for a claim the operator's own suspension holds
-   * (`SUSPENDED_BY_OPERATOR`), and for every claim while the project is paused
+  /** The controller's or an architect's `retry`: an agent that failed, or that a stop retired,
+   * starts again in the session its claim recorded, the effect a plain `legion claims retry` runs
+   * for an operator; a phase worker is started through its issue's phase. Refused for an agent
+   * whose claim is stored working (`CLAIM_IN_A_TURN`), for an agent the operator's own suspension
+   * holds (`SUSPENDED_BY_OPERATOR`), and for every agent while the project is paused
    * (`PROJECT_PAUSED`, with the pause that stands; its resume lifts that refusal). The answer is
-   * the claim as the retry left it. */
+   * the claim's state after the retry. */
   readonly retryAgent: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionAgentActionResponse>>;
-  /** The controller's or an architect's `suspend`: the claim's process stops and its session is
+  /** The controller's or an architect's `suspend`: the agent's process stops and its session is
    * kept, the effect `legion claims suspend` runs for an operator, held for a turn's end; the
    * suspension is the caller's (`controller` or `architect`), which holds against the daemon's
-   * rules and which the caller's own `resume_agent` lifts. Refused for a claim the operator's own
-   * suspension holds (`SUSPENDED_BY_OPERATOR`). The answer is the claim as the suspension left it,
-   * with who holds the suspension. */
+   * rules and which the caller's own `resume_agent` lifts. Refused for an agent the operator's own
+   * suspension holds (`SUSPENDED_BY_OPERATOR`). The answer is the claim's state after the
+   * suspension, with who holds the suspension. */
   readonly suspendAgent: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionAgentActionResponse>>;
-  /** The controller's or an architect's `resume_agent`: a suspended claim's session is relaunched,
+  /** The controller's or an architect's `resume_agent`: a suspended agent's session is relaunched,
    * the effect `legion claims resume` runs for an operator, but never over the operator's own
-   * suspension (`SUSPENDED_BY_OPERATOR`); a claim stored working is refused (`CLAIM_IN_A_TURN`),
-   * and so is every claim while the project is paused (`PROJECT_PAUSED`): a claim the pause
-   * stopped is the project's resume's to bring back. A stop and a suspension still run while the
-   * project is paused. The answer is the claim as the resume left it.
+   * suspension (`SUSPENDED_BY_OPERATOR`); an agent whose claim is stored working is refused
+   * (`CLAIM_IN_A_TURN`), and so is every agent while the project is paused (`PROJECT_PAUSED`): an
+   * agent the pause stopped is the project's resume's to bring back. A stop and a suspension still
+   * run while the project is paused. The answer is the claim's state after the resume.
    *
    * An architect's grant reaches the agents of the issues it owns alone, through all six of these
    * agent actions: another tree's agent is refused (`ISSUE_OUTSIDE_TREE`), and so is an agent of
-   * an issue of its tree it does not own (`ISSUE_NOT_OWNED`), the architect's own (`OWN_AGENT`), a
-   * claim the controller's suspension holds (`SUSPENDED_BY_CONTROLLER`), for its `resume_agent`,
-   * suspend, stop and `fresh_session` a claim the daemon suspended (`SUSPENDED_BY_DAEMON`), and,
-   * for its retry and `fresh_session`, a failed or retired claim whose issue is out of the
+   * an issue of its tree it does not own (`ISSUE_NOT_OWNED`), the architect's own (`OWN_AGENT`), an
+   * agent the controller's suspension holds (`SUSPENDED_BY_CONTROLLER`), for its `resume_agent`,
+   * suspend, stop and `fresh_session` an agent the daemon suspended (`SUSPENDED_BY_DAEMON`), and,
+   * for its retry and `fresh_session`, an agent that failed or retired whose issue is out of the
    * workflow or whose tree lingers (`ISSUE_OUT_OF_WORKFLOW`). */
   readonly resumeAgent: (
     input: z.input<typeof LegionClaimRequest>

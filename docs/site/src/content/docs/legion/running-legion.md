@@ -1306,7 +1306,7 @@ Closing the terminal leaves the project without one, and the daemon logs
    pod brings a disk of its own, so its workspace is provisioned afresh from the issue's branch
    and anything the old pod held unpushed is gone. Let the agent push before you suspend it.
 
-   **An operator's suspension holds until the operator resumes the claim.** The daemon keeps every
+   **An operator's suspension holds until the operator resumes the agent.** The daemon keeps every
    role of an open issue live and idle between phases and while the root waits on a person. A child
    that left the workflow and is set back to `todo` gets its own architect and its planner back,
    on their kept sessions, at its next first phase start, and each other role at the start of its
@@ -1315,14 +1315,14 @@ Closing the terminal leaves the project without one, and the daemon logs
    when a claim moves to another tree, or for a production check after the issue is done. A phase
    start gives its task to that live claim. At boot the daemon
    resumes by rule a suspended worker that still owns its issue's phase and that the daemon itself
-   suspended, but never a claim the operator, the project's controller or an architect suspended:
-   a start for a claim one of those three holds waits instead, until a resume lifts the hold. The
+   suspended, but never an agent the operator, the project's controller or an architect suspended:
+   a start for an agent one of those three holds waits instead, until a resume lifts the hold. The
    operator's resume lifts any of the three, the controller's its own and an architect's, and an
    architect's only an architect's. A notice for a root's architect that the operator or the
    controller suspended waits until a resume lifts that suspension. A notice for a child whose own
    architect is suspended, whoever suspended it, goes to the architect above that child, unless the
    daemon only released that architect's idle pod, which the notice wakes. A drain therefore
-   ends with the operator resuming every claim they suspended, one `legion claims resume` each;
+   ends with the operator resuming every agent they suspended, one `legion claims resume` each;
    `legion claims list --json` names each one's `suspendedBy` (`operator`, `controller`,
    `architect`, `daemon`, `exit`, `released` for one whose idle pod the daemon released, or
    `unknown` for one suspended before this release). A daemon suspension of a claim whose issue

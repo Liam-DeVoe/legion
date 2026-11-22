@@ -229,7 +229,7 @@ func TestAStartWaitsForTheOperatorToResumeAClaimItSuspended(t *testing.T) {
 	}
 	if waits := strings.Count(logged.String(), `"msg":"outbox row waits"`); waits != 1 ||
 		!strings.Contains(logged.String(), `"level":"INFO","msg":"outbox row waits"`) ||
-		!strings.Contains(logged.String(), "suspended by operator; it waits for the operator's resume: the suspension holds until the operator resumes the claim") {
+		!strings.Contains(logged.String(), "suspended by operator; its agent waits for the operator's resume: the suspension holds until the operator resumes the agent") {
 		t.Fatalf("the waiting start logged %q, want one Info line naming the operator's suspension", logged.String())
 	}
 

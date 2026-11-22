@@ -65,7 +65,7 @@ const (
 	PodUpdateLimited
 	// PodUpdateNotRecorded: the daemon posted the round, and no claim of the issue recorded it
 	// within the request's bound — a claim's machine is held in a long decision, a relaunch, or
-	// the claim stopped — so it is no round the sweeps carry yet, and none a restart would find.
+	// the claim's agent stopped — so it is no round the sweeps carry yet, and none a restart would find.
 	// 503 POD_UPDATE_NOT_RECORDED: the post may still land, and a later request answers the round
 	// once a claim records it. A 200 is only ever a round a claim records.
 	PodUpdateNotRecorded

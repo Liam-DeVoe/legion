@@ -856,7 +856,7 @@ type plan struct {
 	ensureWorkspace func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
 	// owner is the architect that owns a claim, read from the claims the store records now
 	// (workflowRuntime.owningArchitect): at each launch for a claim on an issue that is not its
-	// tree's root, which the launch's addressing names, and for the claim an architect's hold is
+	// tree's root, which the launch's addressing names, and for the agent an architect's hold is
 	// over in an update round held past its bound, on the root or not, where an answer that is
 	// the claim itself names no architect above it (architectHears); nil without a workflow.
 	owner func(ctx context.Context, project string, c supervise.Claim) (claim.Token, error)
@@ -1586,8 +1586,8 @@ type supervision struct {
 	// enqueue (workflowRuntime.enqueueOutbox); nil in a deployment with no workflow, which has no
 	// outbox to write to and no Dispatch issue to write on. It is the whole of the record the
 	// update-round sweep and the stall backstop need (reconcilePodUpdates, tellStallBackstopped):
-	// the late-round notices they publish, to the controller or to the architect that owns a
-	// claim an architect's suspension holds, the asks and the message written on the issue are
+	// the late-round notices they publish, to the controller or to the architect that owns an
+	// agent an architect's suspension holds, the asks and the message written on the issue are
 	// all outbox rows, and threading the workflow engine into supervision to post them would tie
 	// every claim decision to the workflow. Rows that must land together go in one call, since a
 	// stall told one reader but not another would be told again at every tick

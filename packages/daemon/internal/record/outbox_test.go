@@ -50,7 +50,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 			Waiting: []UpdateWaiting{{Claim: "legion-LEGION-208-implementer", Role: claim.RoleImplementer, State: "failed"}},
 		}},
 		// An architect's hold over a round held past its bound is told to the architect that
-		// owns the held claim, in a notice row of the same kind as the controller's.
+		// owns the held agent, in a notice row of the same kind as the controller's.
 		Notice{Kind: UpdateStalledNotice, Reason: "An architect suspended implementer (suspended). An architect that owns the issue, or the controller, can resume it.", Update: &UpdateStalled{
 			Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Reasons: "image ghcr.io/cybermonklabs/legion-worker:v1, now ghcr.io/cybermonklabs/legion-worker:v2",
 			Waiting: []UpdateWaiting{{Claim: "legion-LEGION-208-implementer", Role: claim.RoleImplementer, State: "suspended"}},
@@ -1086,7 +1086,7 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "worker-stalled", Role: claim.RoleImplementer,
 			Reason: "the daemon ended the implementer's turn and started a replacement in its place: its agent last stepped at 2026-11-08T08:00:00Z, past the bound this deployment gives the role, and its session was brought back on the replacement the daemon started"},
 		{Kind: "worker-silent", Role: claim.RoleTester, Phase: phase.Testing,
-			Reason: "LEGION-208's tester is a phase worker nothing will prompt: its process is up and between turns, it holds no task of testing, and its agent last stepped at 2026-11-08T08:00:00Z, 1h0m0s ago, past the bound this deployment gives a phase worker (worker_silence_minutes), so the daemon wrote the start row that sends the phase's task again, on phase entry 2 its phase row names and its claim was already given. A suspension the operator, the controller or an architect holds over the claim refuses that start when the outbox runs it."},
+			Reason: "LEGION-208's tester is a phase worker nothing will prompt: its process is up and between turns, it holds no task of testing, and its agent last stepped at 2026-11-08T08:00:00Z, 1h0m0s ago, past the bound this deployment gives a phase worker (worker_silence_minutes), so the daemon wrote the start row that sends the phase's task again, on phase entry 2 its phase row names and its claim was already given. A suspension the operator, the controller or an architect holds over the agent refuses that start when the outbox runs it."},
 		{Kind: "worker-background-stalled", Role: claim.RoleTester, Phase: phase.Testing,
 			Reason: "LEGION-208's tester is waiting on background work of its own that has stood too long: its session reports async-job running and last said so at 2026-11-08T08:00:00Z, 1h0m0s ago, past the bound this deployment sets (worker_background_hours). Nothing was sent to it and nothing will be: the daemon cannot tell a background job that hung from a long one, so this is yours to read."},
 		{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: string(HoldEscalated)},

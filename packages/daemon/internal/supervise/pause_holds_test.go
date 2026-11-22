@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// A suspension that holds — the operator's, the controller's or an architect's — that reaches a
-// claim whose turn a project pause's stop is held for takes that hold over, and the hold is its own
+// A suspension that holds — the operator's, the controller's or an architect's — that reaches an
+// agent whose turn a project pause's stop is held for takes that hold over, and the hold is its own
 // from then on: it names no pause, so the project's resume drops nothing of it
-// (dropEndedPauseHold), and the turn's end suspends the claim by that source, with no record of the
+// (dropEndedPauseHold), and the turn's end suspends the agent by that source, with no record of the
 // pause's stop. Each hold keeps its source, and lifting the pause brings back only what the pause
 // suspended (holdSuspension).
 //
@@ -49,7 +49,7 @@ func TestASuspensionThatHoldsTakesOverAPausesHeldStopAndKeepsItThroughTheResume(
 	}
 }
 
-// A claim a pause stopped and the operator then suspended, whose operator's suspension is lifted
+// An agent a pause stopped and the operator then suspended, whose operator's suspension is lifted
 // while the project is still paused, does not start: the operator's hold is gone and the pause's is
 // not, and main's gate holds every launch of a claim that is not the controller's while the project
 // is paused, whatever asked for it and whatever the claim's own holds (reserveWake's pauseHolds,
@@ -59,7 +59,7 @@ func TestASuspensionThatHoldsTakesOverAPausesHeldStopAndKeepsItThroughTheResume(
 // this is the machine under it, as a resume that reached it would be decided.
 //
 // The negative control is the gate's pause check undone (reserveWake's `pauseHolds` branch): the
-// operator's resume starts the claim while the project is paused.
+// operator's resume starts the agent while the project is paused.
 func TestAClaimWhoseOperatorsHoldIsLiftedWhileThePauseStandsDoesNotStart(t *testing.T) {
 	c := wakeClaim(testToken, StateSuspended)
 	c.SuspendedBy = SuspendedByReleased

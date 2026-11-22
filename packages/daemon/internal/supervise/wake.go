@@ -753,8 +753,8 @@ func (m *Machine) reparkWake(ctx context.Context, dropped *wake) {
 // launch that rule would make. Nor is the controller's or an architect's resume or retry, which
 // the pacing makes wait (exemptWake): dropping the wake for it would park a wake of its own
 // behind every turn the queue holds, for the launch this claim already waits its turn for, so it
-// meets the claim parked launching, is refused as a request of a claim not suspended or not
-// failed, and the claim keeps the turn it holds.
+// reaches the agent while its claim is parked launching, is refused because that claim is neither
+// suspended nor failed, and the claim keeps the turn it holds.
 func dropsWaitingWake(ev Event) bool {
 	if _, ok := ev.(RequestForgetSession); ok {
 		return true
@@ -778,7 +778,7 @@ func operatorDelivery(ev Event) bool {
 // claim.IsController). The same two events from the agent door are paced: the controller's and an
 // architect's resume, retry and fresh session (api's resumeAgent, retryAgent, claimFreshSession)
 // are launches an agent raises, as many at once as it asks for — a controller lifting its own
-// holds after a deploy asks one for every claim it held — and let through, they would start them
+// holds after a deploy asks one for every agent it held — and let through, they would start them
 // all at once, past `worker_wakes_per_minute`, the bound that keeps a wave under the provider's
 // per-minute cap. Every other path into a launch is paced, so every other event is too: an
 // operator's delivery carries no launch of its own, and revive reads the exemption from the

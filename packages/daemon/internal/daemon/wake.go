@@ -249,7 +249,7 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // prompt whose role is, the messages that tell a released merger its pull request left the merge
 // queue (mergeQueueRemoval) or that the project's merge holds changed (mergeHoldsChanged), and a
 // message of a merge forward whose role is released (mergeForwardMessage). Every other delivery is
-// an outbox `start` or a task, which the supervise machine already resumes a suspended claim for
+// an outbox `start` or a task, for which the supervise machine already resumes a suspended agent
 // (deliverResuming); these five publish to a live session instead, so the row's own retry is what
 // waits for the pod, and this is what makes the pod come back for it to find.
 //

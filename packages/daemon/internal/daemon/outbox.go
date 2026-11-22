@@ -2556,9 +2556,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		}
 		// A child of a closed tree re-admitted as a root of its own keeps its roles' claims, which
 		// still name the tree it left; each is re-pointed before anything else here, so it binds this
-		// tree's lifecycle and launches in this tree's resources, and so does whatever resumes it
-		// while this start waits (the resume that lifts a suspension the operator, the controller
-		// or an architect holds over it). The issue the supervisor keeps beside the machine
+		// tree's lifecycle and launches in this tree's resources, and so does whatever resumes its
+		// agent while this start waits (the resume that lifts a suspension the operator, the
+		// controller or an architect holds over that agent). The issue the supervisor keeps beside the machine
 		// (volumeLost) never moves with it: a claim's issue is fixed for its life.
 		if found && machine.Claim().Tree != issue.Tree {
 			if err := machine.Retree(ctx, issue.Tree); err != nil {

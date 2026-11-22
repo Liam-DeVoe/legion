@@ -26,9 +26,9 @@ func OwningArchitect(project string, tree map[string]Issue, issue Issue, fromPar
 // architect, which has none above it, hears its own worker-died and worker-stalled (the walk from
 // the root ends at the root, OwningIssue); the daemon writes no architect row for the root
 // architect's own provider-errors (daemon's providerErrorRunReached), since that wake would reach
-// the session the provider keeps refusing, nor for a hold over the root architect's own claim
+// the session the provider keeps refusing, nor for a hold over the root architect itself
 // (daemon's tellUpdateStalled), which the controller is told of, since no architect stands above
-// it to resume it. Any of these notices on a child with no parent goes
+// that architect to resume it. Any of these notices on a child with no parent goes
 // to the tree root, never to the child's own architect: a failed claim is passed over by the walk
 // anyway, but a stalled one still holds its role and would be told of its own stall, and the
 // outbox can publish a child's close or status change while the child's own architect still holds
@@ -121,7 +121,7 @@ func TreeByKey(members []Issue) map[string]Issue {
 // outbox runs the start its child's first phase start queued, and holds its role from that run on,
 // queued or launching. A released claim keeps its session, its phase and its task, and the next
 // wake for its role resumes it, so what it owns is still its own; any other suspension stops the
-// claim until a rule or a resume starts it again, and one the operator, the controller or an
+// agent until a rule or a resume starts it again, and one the operator, the controller or an
 // architect holds (supervise.SuspendSource.Holds) until that holder's resume, or one that outranks
 // it, lifts it. Were a released architect to lose its role here, a notice for it would walk up to
 // the architect above it, which owns neither the issue nor the answer.

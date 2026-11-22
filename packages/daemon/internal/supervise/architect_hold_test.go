@@ -20,7 +20,7 @@ func TestSuspensionRankPutsTheArchitectUnderTheDaemonAndTheController(t *testing
 }
 
 // A start or a delivery that meets a suspension that holds waits, and RuleHoldError says why: it
-// names the source that holds the claim, landed or held for its agent's turn, and wraps that
+// names the source that holds the agent, landed or held for its turn, and wraps that
 // holder's own wait, which says whose resume lifts it. A controller's or an architect's hold
 // named as the operator's would send its reader to the operator for a resume the controller or
 // an architect makes.
@@ -126,9 +126,9 @@ func TestAnArchitectsResumeLiftsOnlyAnArchitectsSuspension(t *testing.T) {
 	}
 }
 
-// The controller's suspension outranks an architect's: an architect's suspend of a claim the
+// The controller's suspension outranks an architect's: an architect's suspend of an agent the
 // controller holds, landed or held for the agent's turn, is refused (ErrControllerHolds) and one
-// the operator holds is refused too (ErrOperatorHolds); the controller's suspend of a claim an
+// the operator holds is refused too (ErrOperatorHolds); the controller's suspend of an agent an
 // architect holds takes it over, landed or held, so an architect's resume lifts it no more, and so
 // does the daemon's suspend of an architect's held suspension. An architect's suspend takes over a
 // release's, which ranks under it, and its resume then lifts it.
@@ -222,10 +222,10 @@ func TestTheControllersSuspensionOutranksAnArchitects(t *testing.T) {
 }
 
 // An architect does not take over the daemon's own suspension, which outranks it, nor end the
-// claim under it: its suspend or stop of a claim the daemon parked, lingers or closed, a root's
+// agent under it: its suspend or stop of an agent the daemon parked, lingers or closed, a root's
 // exit suspended, or one suspended before sources existed is refused
 // (ErrNotTheArchitectsSuspension) with nothing of the claim changed, and so is either over the
-// daemon's suspension held for the agent's turn. Taken over, the claim would be the architect's,
+// daemon's suspension held for the agent's turn. Taken over, the agent would be the architect's,
 // whose resume would restart a worker on a parked or closed issue, and a stop would retire it for
 // a retry to relaunch. The refused suspend cancels no start in flight either (Handle). The other
 // order, an architect's suspension the daemon's then reaches, is
@@ -387,9 +387,9 @@ func TestTheDaemonsSuspensionTakesOverAnArchitectsPlacedBeforeIt(t *testing.T) {
 }
 
 // A suspension that keeps a hold (RequestSuspend.KeepsHold, a production check's suspend between
-// looks) takes over no source that holds: a claim the architect, the controller or the operator
+// looks) takes over no source that holds: an agent the architect, the controller or the operator
 // suspended stays that holder's, and its resume still lifts it; an architect's suspension held
-// for the agent's turn stays the architect's and lands as its own. A released claim is still taken
+// for the agent's turn stays the architect's and lands as its own. A released agent is still taken
 // over, as every daemon suspension takes it over.
 //
 // The negative control is suspendedAgain and suspendRequest without their KeepsHold reads: the
@@ -435,9 +435,9 @@ func TestASuspensionThatKeepsHoldsTakesOverNoSourceThatHolds(t *testing.T) {
 	})
 }
 
-// An architect's stop of a claim a suspension outranking it holds, landed or held for the agent's
-// turn, is refused with that hold's own error: a stop retires the claim and a retry then
-// relaunches it, past the hold. Its stop of a claim an architect suspended, or one the daemon
+// An architect's stop of an agent a suspension outranking it holds, landed or held for the agent's
+// turn, is refused with that hold's own error: a stop retires the agent and a retry then
+// relaunches it, past the hold. Its stop of an agent an architect suspended, or one the daemon
 // released, retires it (the daemon's own suspension: TestAnArchitectDoesNotTakeOverTheDaemonsSuspension).
 func TestAnArchitectsStopOfAnAgentAHoldAboveItHoldsIsRefused(t *testing.T) {
 	for _, tc := range []struct {
@@ -479,9 +479,9 @@ func TestAnArchitectsStopOfAnAgentAHoldAboveItHoldsIsRefused(t *testing.T) {
 	}
 }
 
-// An architect's suspension of a claim the controller holds is refused, and the refusal changes
+// An architect's suspension of an agent the controller holds is refused, and the refusal changes
 // nothing: a start in flight is not cancelled before the row refuses it (Handle). The controller's
-// own suspension of the same claim still cancels the start at its arrival.
+// own suspension of the same agent still cancels the start at its arrival.
 func TestAnArchitectsRefusedSuspensionCancelsNoStartInFlight(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateWorking)

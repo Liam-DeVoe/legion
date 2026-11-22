@@ -47,10 +47,10 @@ type DeliverRequest struct {
 // RetryRequest is the operator's retry, whose body is optional: a retry that sends none, as every
 // caller before this contract did, resumes the claim's recorded session, or a new one once
 // supervise's Machine.forgetSession has dropped it. FreshSession is `legion claims retry
-// --fresh-session`, which starts the claim in a new session instead. It is the one effect the
-// controller's fresh_session runs as well (freshSession), and it reaches every claim of the
+// --fresh-session`, which starts the agent in a new session instead. It is the one effect the
+// controller's fresh_session runs as well (freshSession), and it reaches every agent of the
 // project that is not in a turn and whose launch is not in flight, where the plain retry reaches
-// only a failed or retired claim (supervise's onAskedRetry row).
+// only an agent that failed or that a stop retired (supervise's onAskedRetry row).
 type RetryRequest struct {
 	FreshSession bool `json:"freshSession,omitempty"`
 }
@@ -95,7 +95,7 @@ type OperatorClaim struct {
 	UncertainStreak int              `json:"uncertainStreak"`
 	// Pending is the task the claim holds, until the turn it started ends.
 	Pending *DeliveryView `json:"pending,omitempty"`
-	// SuspendedBy is who suspended the claim while it is suspended: operator, controller,
+	// SuspendedBy is who suspended the agent while its claim is suspended: operator, controller,
 	// architect, daemon, exit, released (its idle pod was released), or unknown (a suspension
 	// recorded before migration 0038), supervise.SuspendSource's values; absent otherwise. These
 	// routes are the one surface that serves it: a session parses
@@ -516,7 +516,7 @@ func (s *server) claimRequest(request string, event func(http.ResponseWriter, *h
 }
 
 // claimEvent posts one request of by's to a claim's machine (postClaimEvent), as every operator
-// request on a claim does (claimRequest) and every retry (machineRetry): it answers the caller
+// request on an agent does (claimRequest) and every retry (machineRetry): it answers the caller
 // itself when the daemon is stopping or the machine refuses, and reports whether the machine held
 // the request for the agent's turn (supervise.ErrSuspendHeld), which is no refusal.
 func (s *server) claimEvent(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
@@ -787,7 +787,7 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 	s.writeUnparsedAnswer(w, r, http.StatusOK, s.operatorAnswer(ctx, root.Claim()))
 }
 
-// operatorDone logs the one Info line every operator request on a claim that succeeded writes: its
+// operatorDone logs the one Info line every operator request on an agent that succeeded writes: its
 // route, the claim and the caller's address. The operator's bearer names nobody, so the address is
 // what the line can say of the caller; with it, a day's operator requests are counted from the log
 // alone. A request the claim's machine refused (409) writes its answer and logs no line. One that

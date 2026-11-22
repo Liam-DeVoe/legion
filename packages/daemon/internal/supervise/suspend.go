@@ -249,22 +249,22 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 	return ErrSuspendHeld
 }
 
-// suspendedAgain is a suspension of a claim already suspended, and the one place a suspension's
-// source changes under it (Claim.SuspendedBy). A source takes the claim over only when it
-// outranks the one that holds it (suspensionRank): an operator's or the controller's suspend of a
-// claim the daemon suspended, so the rule resumes it no more until a resume lifts it, the
-// daemon's own suspend — a park, a linger, a close or a carry — of a claim an architect suspended,
-// so the architect's resume lifts it no more and the claim is the daemon's own rules' to start
-// again, the controller's or an operator's suspend of a claim an architect suspended, so an
-// architect's resume lifts it no more, an operator's suspend of a claim the controller suspended,
+// suspendedAgain is a suspension of an agent already suspended, and the one place a suspension's
+// source changes under it (Claim.SuspendedBy). A source takes the agent over only when it
+// outranks the one that holds it (suspensionRank): an operator's or the controller's suspend of an
+// agent the daemon suspended, so the rule resumes it no more until a resume lifts it, the
+// daemon's own suspend — a park, a linger, a close or a carry — of an agent an architect suspended,
+// so the architect's resume lifts it no more and the agent is the daemon's own rules' to start
+// again, the controller's or an operator's suspend of an agent an architect suspended, so an
+// architect's resume lifts it no more, an operator's suspend of an agent the controller suspended,
 // so the controller's resume lifts it no more, and a daemon's, an architect's, the controller's or
-// an operator's suspend of a claim whose idle pod was released, so the linger, park, close,
-// hand-over or hold that asked for it owns the claim and no later wake acts on it. A suspension
+// an operator's suspend of an agent whose idle pod was released, so the linger, park, close,
+// hand-over or hold that asked for it owns the agent and no later wake acts on it. A suspension
 // that keeps a hold (RequestSuspend.KeepsHold, a production check's suspend between looks) takes
 // over no source that holds — the operator's, the controller's or an architect's — whatever its
-// rank, and still takes a released claim over. Anything else changes nothing, and some suspends
+// rank, and still takes a released agent over. Anything else changes nothing, and some suspends
 // are refused before they get here (suspendRequest): no source
-// takes over a suspension that outranks it — an architect's suspend of a claim the daemon, the
+// takes over a suspension that outranks it — an architect's suspend of an agent the daemon, the
 // controller or the operator holds, and the controller's of one the operator holds
 // (Claim.StopOrSuspendRefusal).
 func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
@@ -352,11 +352,11 @@ func suspendAtTimeout(m *Machine, ctx context.Context, _ Event) error {
 // whether the daemon may resume the claim and what becomes of the phase's task. So is a project
 // pause's id on any source but the release's, or an id that is no pause's (RequestSuspend.Pause).
 // Each is refused before anything is stopped, rather than a panic, a journal line with no reason,
-// or a claim suspended by nobody. So is the controller's or an architect's suspension of a claim a
+// or a claim suspended by nobody. So is the controller's or an architect's suspension of an agent a
 // suspension outranking it holds, held or landed — the operator's for either, the controller's
 // for an architect's (ErrOperatorHolds, ErrControllerHolds): it would change nothing of the claim,
 // and the refusal says so where an answer of success would not. And so is an architect's
-// suspension of a claim the daemon's own suspension holds, held or landed
+// suspension of an agent the daemon's own suspension holds, held or landed
 // (ErrNotTheArchitectsSuspension): that suspension outranks it too, and no request of an
 // architect's reaches a park, a linger or a close. Each is Claim.StopOrSuspendRefusal.
 //

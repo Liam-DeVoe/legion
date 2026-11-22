@@ -494,7 +494,7 @@ func TestTheOperatorsRetryOfAClaimThatHasNotFailedIsRefused(t *testing.T) {
 		refusal string
 	}{
 		{supervise.StateReady, architectToken, "", "retry refused: the claim is ready (the claim has not failed)"},
-		{supervise.StateSuspended, architectToken, "suspend", "retry refused: the claim is suspended (a suspended claim is resumed, not retried)"},
+		{supervise.StateSuspended, architectToken, "suspend", "retry refused: the claim is suspended (a suspended agent is resumed, not retried)"},
 	} {
 		if step.reach != "" {
 			if recorder := h.operator(http.MethodPost, route(step.token, step.reach), nil); recorder.Code != http.StatusOK {

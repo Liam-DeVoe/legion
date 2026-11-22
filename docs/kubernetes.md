@@ -1571,10 +1571,10 @@ Each refusal says what the claim is doing when it is given, and which operation 
 The compaction refuses three more: a claim that is suspended, failed or retired, which runs no session to ask and whose refusal names what starts it again, the fresh session for a workflow role and the daemon's controller keeper for the project's own controller claim, a claim whose agent has registered and is not ready yet, which has no session to ask either and which the fresh session reaches, and a claim whose role runs on the Claude Code harness, which has no Oh My Pi session to compact at all.
 The project's controller holds both as tools of its own, `compact (issue, role)` and `fresh_session (issue, role)`, which name the agent by its issue and role rather than by its claim's token, which the controller never sees, and a `provider-errors on <KEY>` notice is where the controller reaches for them, the compaction first for an agent whose session the provider keeps refusing and a fresh session when the agent is still refused after it, and the fresh session alone for an agent whose claim no process stands behind, which the compaction refuses by name (`skills/legion-controller`).
 The controller's compaction has the operator's effect, codes and answer, and only the authentication and two refusal sentences differ.
-For a claim the operator's own suspension holds, landed or held over the claim, the controller's sentence names that hold and the operator's `legion claims resume` as what starts the claim, where the operator's names the fresh session or asks again later, since that suspension refuses the controller's fresh session (`refuseNotRunning`, `packages/daemon/internal/api/compact.go`, and `refuseHeldSuspension`, `packages/daemon/internal/api/freshsession.go`).
-The controller's fresh session has the operator's effect and answer, but not every refusal of the operator's: the suspension and the resume it runs are the controller's own, so before it reads anything else of the claim it is refused `409 SUSPENDED_BY_OPERATOR` for a claim the operator's own suspension holds, landed or held for a turn (`claimFreshSession`, `packages/daemon/internal/api/freshsession.go`).
+For an agent the operator's own suspension holds, landed or held over it, the controller's sentence names that hold and the operator's `legion claims resume` as what starts the agent, where the operator's names the fresh session or asks again later, since that suspension refuses the controller's fresh session (`refuseNotRunning`, `packages/daemon/internal/api/compact.go`, and `refuseHeldSuspension`, `packages/daemon/internal/api/freshsession.go`).
+The controller's fresh session has the operator's effect and answer, but not every refusal of the operator's: the suspension and the resume it runs are the controller's own, so before it reads anything else of the claim it is refused `409 SUSPENDED_BY_OPERATOR` for an agent the operator's own suspension holds, landed or held for a turn (`claimFreshSession`, `packages/daemon/internal/api/freshsession.go`).
 Only the operator's `legion claims resume` lifts that hold.
-The controller's own claim is a case of its own: a fresh session of it is refused whatever state it is in, because the daemon's controller keeper is what starts the controller — it launches a queued one, resumes one the daemon suspended (its resume is the rule's, which an operator's suspension holds against, so a controller an operator suspended stands until that operator resumes it) and retries one that failed or retired — where a compaction of it is not refused, since the session, its process and everything the controller holds stay and only the transcript gets shorter.
+The controller's own agent is a case of its own: a fresh session of it is refused whatever state its claim is in, because the daemon's controller keeper is what starts the controller — it launches a queued one, resumes one the daemon suspended (its resume is the rule's, which an operator's suspension holds against, so a controller an operator suspended stands until that operator resumes it) and retries one that failed or retired — where a compaction of it is not refused, since the session, its process and everything the controller holds stay and only the transcript gets shorter.
 The controller cannot name itself through its own door either way, since `controller` is no role a claim token is built from, so the operator's `--claim` is the one way onto that claim.
 
 Use `legion claims forget-session` for a session that is gone rather than refused: a stopped claim's session lost with its volume, or a file session imported before its volume can be reaped.
@@ -2369,13 +2369,13 @@ So after the rollback a merger learns of a removal only when it reads the pull r
 The kind check keeps both names after the rollback, and the rollback needs no statement for it: an earlier release never writes either kind, so the check refuses nothing that release writes.
 This release's one-time start of the mergers that the `awaiting_merge` cutover left stopped ([Idle release](#idle-release)) adds no outbox kind and no payload field, and its one `processed_events` row is harmless to a rollback.
 
-#### Rolling back the release whose controller and architects hold claims and whose daemon tells a held role of a merge hold
+#### Rolling back the release whose controller and architects act on agents and whose daemon tells a held role of a merge hold
 
 This release adds the outbox kind `merge_holds_changed`, the notice kind `merge-holds-changed`, and two suspension sources of a claim, `controller` and `architect`.
 Its migration `20261119211852_merge_holds_changed` adds the outbox kind to the outbox's kind check (`outbox_kind_check`), and it writes the whole list, `step_record`, `plan_record`, `conflict_confirm`, `merge_forward` and `phase_ended` among its kinds, and its version stands above `20261119003157_conflict_reads_and_merge_forward`, `20261117023932_outbox_kinds_with_the_plan_record` and `20261117000528_outbox_kinds_with_the_step_record`, whose lists do not name the kind, so it writes the list last on any database.
 Its migrations `20261115060739_claim_suspended_by_controller` and `20261115083448_claim_suspended_by_architect` add the two sources to the claims' check (`claims_suspended_by_check`).
 The migrations change no column.
-This release also tells an issue's architect of a run of provider errors, in a `notice` row of the kind `provider-errors`, and the architect that owns a claim an architect's suspension holds of an update round held past its bound, in one of the kind `update-stalled`, both of which only the controller was told before.
+This release also tells an issue's architect of a run of provider errors, in a `notice` row of the kind `provider-errors`, and the architect that owns an agent an architect's suspension holds of an update round held past its bound, in one of the kind `update-stalled`, both of which only the controller was told before.
 Its migration `20261115121838_drop_controller_wakes_for_nothing` deletes the queued controller notices of `awaiting-person` and `unslotted`, the two kinds this release no longer writes, and the rollback needs no statement for it: the earlier release writes and runs both kinds again.
 
 **The rows of the new kinds must go before the earlier image is pinned.**
@@ -2396,13 +2396,13 @@ After the rollback, no role reads that document, because the earlier release's r
 **The architect's `provider-errors` and `update-stalled` notices must go as well.**
 An earlier release refuses a `notice` row of either kind at each attempt (`unknown notice kind`, `validNoticeKind` in `record/outbox.go`), so the row fails on its backoff for ever, and while that backoff holds it ahead of now it fails every read of the project's state that passes it (`WaitingNotices`, `pacedCatchUps`).
 Run this with the daemon stopped, before the earlier image is pinned.
-First read the `update-stalled` rows, because each names a claim an architect suspended, and the delete leaves nobody told of it:
+First read the `update-stalled` rows, because each names an agent an architect suspended, and the delete leaves nobody told of it:
 
 ```sql
 select issue, payload->>'reason' from outbox where kind = 'notice' and payload->>'kind' = 'update-stalled';
 ```
 
-Keep what it prints: the step below hands each such claim to the operator, and after the rollback resume each one with `legion claims resume` once the cause it was suspended for is gone, or the round's pod waits for it.
+Keep what it prints: the step below hands the suspension of each such agent to the operator, and after the rollback resume each one with `legion claims resume` once the cause it was suspended for is gone, or the round's pod waits for it.
 Then delete the rows:
 
 ```sql
@@ -2429,9 +2429,9 @@ update outbox set payload = payload - 'keepsHold' where kind = 'supervise' and p
 It prints `UPDATE <n>`, and a rerun prints `UPDATE 0`.
 The earlier release then runs each such row as a suspend of its own, which has no such rule.
 
-**The earlier release does not hold a claim that the controller or an architect suspended, unless you move it to the operator.**
-An earlier release keeps a claim suspended against its own rules only when the operator suspended it (`suspended_by = 'operator'`, supervise's `RuleHolds` and the repair in `admit.go`), and it repairs every other suspended claim as it repairs one the daemon itself suspended.
-To keep each such claim suspended through the rollback, run this with the daemon stopped, before the earlier image is pinned:
+**The earlier release does not hold an agent that the controller or an architect suspended, unless you move its suspension to the operator.**
+An earlier release keeps an agent suspended against its own rules only when the operator suspended it (`suspended_by = 'operator'`, supervise's `RuleHolds` and the repair in `admit.go`), and it treats every other suspended agent as one the daemon itself suspended, which its rules start again.
+To keep each such agent suspended through the rollback, run this with the daemon stopped, before the earlier image is pinned:
 
 ```sql
 -- Hand each suspension the controller or an architect holds to the operator.
@@ -2440,8 +2440,8 @@ update claims set suspended_by = 'operator'
 ```
 
 It prints `UPDATE <n>`, and a rerun prints `UPDATE 0`.
-Each moved claim then stays suspended until the operator resumes it with `legion claims resume`, or the controller starts its agent in a new session with `fresh_session`: the earlier release gives the controller no `resume_agent`, and the architects no action on an agent.
-Leave the statement out, and the earlier release repairs each such claim as one the daemon suspended.
+Each agent whose suspension moved then stays suspended until the operator resumes it with `legion claims resume`, or the controller starts it in a new session with `fresh_session`: the earlier release gives the controller no `resume_agent`, and the architects no action on an agent.
+Leave the statement out, and the earlier release treats each such agent as one the daemon suspended, which its rules start again.
 The two checks keep the new names after the rollback, and the rollback needs no statement for them: an earlier release never writes them, so the checks refuse nothing that release writes.
 The kind check also keeps every kind of the list of `20261119003157_conflict_reads_and_merge_forward`, `conflict_confirm`, `merge_forward` and `phase_ended` among them, so it refuses no row the earlier release writes either.
 
@@ -2868,7 +2868,7 @@ its message tells it to push its work, let its subagents and background jobs fin
 A role on Claude Code, whose plugin is its pod image's own and which no install can move, is carried by that same path and needs no operator step either ("Contract discipline" below).
 What holds a round past its bound is a claim under a suspension that holds (the operator's, the controller's or an architect's, which the notice names with its holder), a pod replacement the cluster refuses, a pod the runtime cannot read, two pods at once, or no process in the round's pod where such a suspension holds a role of the round or the runtime cannot say which pod the issue's Sandbox holds,
 and the daemon reports such a round as `update-stalled`, once, after the bound has passed:
-to the architect that owns the held claim for a hold an architect placed, and to the project's controller for the rest,
+to the architect that owns the held agent for a hold an architect placed, and to the project's controller for the rest,
 and for such a hold where that architect's claim has failed or been retired, where there is no owning architect, where the hold is over the tree root's own architect, or where its notice to that architect ends undelivered in a tree that neither lingers nor has closed: the claim ended before the delivery, the session does not advertise the delivery mode, the listener's NATS grant denies the forward, or the notice was queued again the most times a notice is.
 Such an undelivered notice reaches the controller only while at least one claim the notice lists has neither failed nor retired since: where every one has, nobody is told, since nothing the round asked holds it.
 After this release deploys, move the project's controller onto this release's `skills/legion-controller`.
@@ -3327,8 +3327,8 @@ The migrations recorded above this one are these.
 20261114020537_claim_entry_handshake adds four columns of `claims` and touches none of the six, and the contract 146 block above reverses it too, because the earlier release writes no handshake into them.
 20261114031356_merge_queue_removal, of dispatch://INFRA-3274, touches none of the six either, so the block holds over it too, and a rollback to a release before it reverses it by its own steps.
 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim` and touches none of the six, and the contract 146 block above reverses it too, so that the roll-forward can add it again.
-20261115060739_claim_suspended_by_controller and 20261115083448_claim_suspended_by_architect, of cybermonklabs/legion#4065, write the claims' check `claims_suspended_by_check` again, the first with the source `controller` added and the second with `architect`, and touch none of the six, so the block holds over them; a rollback to a release before them needs no statement for the check, and the steps of their own section, [Rolling back the release whose controller and architects hold claims and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-and-architects-hold-claims-and-whose-daemon-tells-a-held-role-of-a-merge-hold), hand each claim the controller or an architect suspended to the operator, so that it stays suspended through the rollback.
-20261115121838_drop_controller_wakes_for_nothing, of cybermonklabs/legion#4065, deletes the queued `controller_notice` rows of the kinds `awaiting-person` and `unslotted`, alters no table and touches none of the six, so the block holds over it, and a rollback to a release before it needs no statement for it ([Rolling back the release whose controller and architects hold claims and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-and-architects-hold-claims-and-whose-daemon-tells-a-held-role-of-a-merge-hold)).
+20261115060739_claim_suspended_by_controller and 20261115083448_claim_suspended_by_architect, of cybermonklabs/legion#4065, write the claims' check `claims_suspended_by_check` again, the first with the source `controller` added and the second with `architect`, and touch none of the six, so the block holds over them; a rollback to a release before them needs no statement for the check, and the steps of their own section, [Rolling back the release whose controller and architects act on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-and-architects-act-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold), hand the suspension of each agent the controller or an architect suspended to the operator, so that it stays suspended through the rollback.
+20261115121838_drop_controller_wakes_for_nothing, of cybermonklabs/legion#4065, deletes the queued `controller_notice` rows of the kinds `awaiting-person` and `unslotted`, alters no table and touches none of the six, so the block holds over it, and a rollback to a release before it needs no statement for it ([Rolling back the release whose controller and architects act on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-and-architects-act-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold)).
 20261115194357_project_pause, of dispatch://INFRA-3759, adds the tables `project_pauses`, `project_pause_stops` and `project_pause_pod_holds`, two columns of `pod_resumes` and one of `outbox`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement; the steps of its own section, [Rolling back the project pause](#rolling-back-the-project-pause), come before the earlier image is pinned.
 20261116144907_claim_sessions adds the table `claim_sessions`, which holds each name of a session to the claim that first recorded it, and fills it from each claim's session and the session it last abandoned; it touches none of the six, so the block holds over it and leaves the table standing, which the earlier release names in no statement, and at the roll forward each boot holds again every name no row holds that a claim's row still records, its current session and file and the session it last abandoned (`HoldRecordedSessions`), not a session the earlier release recorded and then replaced.
 20261116165926_role_holders_publish adds `role_holders_publish` to `outbox_kind_check` and touches none of the six, so the block holds over it, and a rollback to a release before it needs no statement for it ([Rolling back the release that publishes each issue's role sessions to Dispatch](#rolling-back-the-release-that-publishes-each-issues-role-sessions-to-dispatch)).
@@ -3340,7 +3340,7 @@ The migrations recorded above this one are these.
 20261117112334_pull_request_statuses, of cybermonklabs/legion#4299, adds `pull_requests.statuses` at its default, the empty list, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; the way back in its own header drops the column.
 20261117200337_update_ask_marks_at_delivery, of cybermonklabs/legion#4337, clears `claims.update_tasked_at` on each claim whose update ask of the round it records still waits in the outbox, and touches none of the six either, so the block holds over it; it alters no table and has no down file, so it leaves nothing for the block to reverse.
 20261119003157_conflict_reads_and_merge_forward, of cybermonklabs/legion#4464, writes the outbox's kind check again with `conflict_confirm` and `merge_forward` added to the plan record's list, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that merges a conflicting head forward in its phase](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase).
-20261119211852_merge_holds_changed, of cybermonklabs/legion#4065, writes the outbox's kind check again with `merge_holds_changed` added to the list of 20261119003157 and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release whose controller and architects hold claims and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-and-architects-hold-claims-and-whose-daemon-tells-a-held-role-of-a-merge-hold).
+20261119211852_merge_holds_changed, of cybermonklabs/legion#4065, writes the outbox's kind check again with `merge_holds_changed` added to the list of 20261119003157 and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release whose controller and architects act on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-and-architects-act-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold).
 20261120012547_set_back_observed_seq, of dispatch://INFRA-3178, changes no table, runs no statement and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that lets the owning architect's status stand](#rolling-back-the-release-that-lets-the-owning-architects-status-stand).
 20261120042902_claim_agent_resume_generation, of dispatch://INFRA-4108, adds `claims.agent_resume_generation` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which deletes the queued `session-forgotten` notices no earlier release decodes, drops the column and deletes its version row.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
@@ -6726,7 +6726,7 @@ A Claude Code role has no report before its first `Stop`, so it holds the early 
 While the round waits, each role that has answered gets no next task (`answeredOpenRound`), and the round keeps its slot under `pod_update_max_open_rounds`.
 A service that a role started with a name is in no report: it holds nothing, and it goes with the pod.
 Each sweep that finds the round held this way logs `supervise: every worker of this update round has answered and no turn runs; the replacement waits for the background work its roles report, or for the round's bound`, with `background`, each role whose report names work that runs and the kinds it names, and `unreported`, each role with no report since its last turn.
-A suspension that holds over a claim the round asks — the operator's, the controller's or an architect's — is the one wait that outlasts the bound: the daemon does not replace the pod until a resume lifts that suspension (`heldClaims`).
+A suspension that holds over an agent the round asks — the operator's, the controller's or an architect's — is the one wait that outlasts the bound: the daemon does not replace the pod until a resume lifts that suspension (`heldClaims`).
 When the round ends, the daemon ends the pod (`ReplacePod`), each role in it is reported displaced and resumed uncharged on its own session, and the first of those resumes provisions a fresh pod from the current configuration.
 A replacement the bound made, with a claim unanswered, a turn running or a claim's report holding the round, is logged on a line of its own, `supervise pod update replaced at the bound`, which names the claims that answered and those that did not, and apart from them the roles whose reports held the round (`background`, `unreported`).
 The replacement asks once more, under the pod's own lock and immediately before it suspends anything, whether it is still due:
@@ -6808,15 +6808,15 @@ a replacement waits its pod out and a sweep interval at worst, so one made where
 What the last sweep decided under the two limits is one line of `legion claims list` ("Contract discipline" above).
 
 A round that outlives its bound is told once, as an `update-stalled` notice, when the bound has passed and something still holds the round (`tellLateRound`):
-to the project's controller, but for a hold an architect placed, which goes to the architect that owns the held claim, and to the controller only where that architect's claim has failed or been retired, before its notice is queued or before it is delivered (`relayUpdateStalled`), where there is none, or where the hold is over the tree root's own architect (`tellUpdateStalled`, `architectHears`),
+to the project's controller, but for a hold an architect placed, which goes to the architect that owns the held agent, and to the controller only where that architect's claim has failed or been retired, before its notice is queued or before it is delivered (`relayUpdateStalled`), where there is none, or where the hold is over the tree root's own architect (`tellUpdateStalled`, `architectHears`),
 or where the listener refuses that notice on every attempt, because the architect's session does not advertise the delivery mode or the listener's own NATS grant denies the forward, or where the notice has been queued again the most times a notice is, whatever re-held it (`relayUpdateStalled`, `reholdNotice`).
 Where that notice ends undelivered in a tree that lingers or has closed, the controller is told nothing in the architect's place.
 The notice `relayUpdateStalled` writes leaves out of `waiting` each claim that has failed or retired since the sweep read the round, since the round does not wait for such a claim.
 Where that leaves no claim, every claim the notice listed has failed or retired, nothing the round asked holds it, and the controller is told nothing either.
-What holds it is a suspension that holds over a claim the round asks — the operator's, the controller's or an architect's, each named with its holder and with who can resume it (`holdSentences`) — a pod replacement the cluster refuses (`ReplacePod`, or `ReplaceIssuePod` below), a pod the runtime cannot read (`tellUnreadPod`), no claim recording a process in the round's pod or in any pod (`roundWithNoProcessInItsPod`, `tellPodlessRound`), or claims recording two pods at once.
+What holds it is a suspension that holds over an agent the round asks — the operator's, the controller's or an architect's, each named with its holder and with who can resume it (`holdSentences`) — a pod replacement the cluster refuses (`ReplacePod`, or `ReplaceIssuePod` below), a pod the runtime cannot read (`tellUnreadPod`), no claim recording a process in the round's pod or in any pod (`roundWithNoProcessInItsPod`, `tellPodlessRound`), or claims recording two pods at once.
 Its `reason` names that hold, and the notice names the issue, the round, the pod, the drift and every claim of the issue with a session that has not failed, a claim the round passed over included, with that claim's state and whether it answered (`noticeClaims`, `skill://legion-controller/references/escalation.md`).
-No process in the round's pod holds a round past its bound only where a suspension that holds is over a claim of the round, where the runtime cannot say which pod the issue's Sandbox holds, or where the replacement by issue below is refused or not offered.
-A pod the runtime cannot read decides nothing, so the round waits for a read that succeeds, and where a suspension that holds is over a claim of the same round, the notice names that suspension and its holder in place of the unread pod, since only a resume can end it.
+No process in the round's pod holds a round past its bound only where a suspension that holds is over an agent of the round, where the runtime cannot say which pod the issue's Sandbox holds, or where the replacement by issue below is refused or not offered.
+A pod the runtime cannot read decides nothing, so the round waits for a read that succeeds, and where a suspension that holds is over an agent of the same round, the notice names that suspension and its holder in place of the unread pod, since only a resume can end it.
 One round is told once, however many sweeps find it open.
 A round that waits for its roles before its bound is told to nobody, since the bound ends that wait by itself.
 A suspension that holds is the one hold the bound never steps over: the daemon replaces the pod only after a resume lifts each such suspension.
@@ -6847,7 +6847,7 @@ A pod with no role process in it has no process to replace it through, and a rol
 So the daemon replaces such a pod before any launch goes into it, wherever nothing holds the pod (`roundPodEnds`).
 Four things hold it:
 
-- a suspension that holds over a claim the round asks — the operator's, the controller's or an architect's — at any time;
+- a suspension that holds over an agent the round asks — the operator's, the controller's or an architect's — at any time;
 
 - a hold of a project's pause on the pod, at any time ([Pausing a project](#pausing-a-project));
 
@@ -7152,7 +7152,7 @@ That release deletes its Secrets, keeps the Sandbox with its uid and writes the 
 Nothing takes a released issue out of the list the pass decides, because this release changes no claim, so the rule reads every issue whose pod it has taken on every later pass and holds it under that word, once a minute, until a start makes a claim of the issue live, which builds its pod again, or the issue or its tree root leaves the workflow or lingers.
 A pass line whose `held` counts are mostly `unowned_sandbox_gone` is the ordinary state of a deployment that has released pods, and the two numbers to read beside it are `decided` and `released`.
 A suspension that holds keeps the pod because it is one that the daemon never ends by itself (`RuleMayResume`).
-Its holder ends that pod, or a resume or a stop that outranks the holder does: resuming the agent starts the role in the pod that is still there, and stopping it retires its claim and leaves the issue to this rule.
+Its holder ends that pod, or a resume or a stop that outranks the holder does: resuming the agent starts the role in the pod that is still there, and stopping it retires the agent and leaves the issue to this rule.
 
 A release is three acts, in this order, and the daemon gives it an id (`issue_releases.id`) that its mark, its bundle and the restore report of the pod that puts that bundle back all carry:
 
@@ -7212,13 +7212,13 @@ The wakes are these:
 The merge-queue removal message tells a merger that GitHub took its pull request out of the merge queue at the head the record holds, and that the daemon's read of the pull request found no merge, or that no read of it succeeded.
 While the root's design gate is closed, that message wakes no released merger, and it waits for the gate to open.
 The message can also wait for a merger that has no claim yet, because the merger's start is still owed.
-The message wakes no merger that the operator, the controller or an architect suspended, since a wake acts only on a released claim (`wakeForDelivery`, `internal/daemon/wake.go`).
+The message wakes no merger that the operator, the controller or an architect suspended, since a wake starts only an agent whose claim is still `released` (`wakeForDelivery`, `internal/daemon/wake.go`).
 It waits for that merger too, and it reaches the merger when a resume lifts that suspension.
 While it waits, the message holds the issue's pod, as any row of the role-message lane does.
 The idle release does not take that pod, and the other roles of the issue keep running in it.
 
 A wake acts only on a claim that is still `released`, of an issue still in the workflow whose tree is live.
-Every other path that suspends, resumes, stops or closes the agent of a released claim takes that claim over, after which no wake acts on it: a linger, a park, a close, a hand-over, the production check — whose `pending` report suspends the checking role's claim, the role the project's `production_check` names, until the look the report's own `wake_at` asked for — the operator's `legion claims` commands, the controller's `suspend`, `resume_agent`, `stop` and `fresh_session`, and an architect's `suspend` and `stop`.
+Every other path that suspends, resumes, stops or closes the agent of a released claim takes that agent over from the release, after which no wake acts on it: a linger, a park, a close, a hand-over, the production check — whose `pending` report suspends the checking role's agent, the role the project's `production_check` names, until the look the report's own `wake_at` asked for — the operator's `legion claims` commands, the controller's `suspend`, `resume_agent`, `stop` and `fresh_session`, and an architect's `suspend` and `stop`.
 The boot's resume by rule passes over a released claim (`booted`), and a wake or a backstop that came due while the daemon was down acts once the daemon has started.
 Two other boot steps can start a released claim.
 Admission's pass at a boot does what each of its passes does: when a released claim stands behind the entry that its phases row names, the pass sends that entry's task to the claim (`owedEntryRoles`, `internal/admit/admit.go`).
@@ -7402,7 +7402,7 @@ Every outbox row outside the list above runs as before: a stop (a `supervise` ro
 The workflow still records what happens.
 A handoff, a review, a CI result or a merge moves its issue's phase as it does while the project runs, and the start that the move writes waits with the other held rows.
 `legion claims suspend`, `legion claims stop`, `legion issue status` and the controller's `set_status` still work, because none of them starts a turn, and so do the controller's and an architect's `stop` and `suspend`, two of the actions on an agent (stop, retry, suspend, resume_agent, compact and fresh session of one agent, named by its issue and role).
-A suspension of the controller's, an architect's or the operator's and the pause's stop each keep their own source: the pause stops no claim such a suspension already holds, a claim the pause stopped that such a suspension then takes over stays suspended by it after the resume, and the resume brings back only what the pause stopped.
+A suspension of the controller's, an architect's or the operator's and the pause's stop each keep their own source: the pause stops no agent such a suspension already holds, an agent the pause stopped that such a suspension then takes over stays suspended by it after the resume, and the resume brings back only what the pause stopped.
 
 **How each role stops.**
 The pause's transaction asks for the stop of each live role of the project but the controller: one stop record (`project_pause_stops`) and one `pause_stop` row in the outbox for each.
@@ -7429,7 +7429,7 @@ The stops themselves run in the outbox, so a pause of several hundred roles does
 
 Background work that a session still runs ends with its process.
 A stopped role's claim is `suspended` with the source `released`, the idle release's own (`supervise.SuspendedByReleased`), so `legion claims list` prints it as `suspended:released`.
-Every rule of the daemon reads it as a released claim: it keeps its phase and the task it holds, the boot does not resume it, a wake starts it again, and a park, a close, a linger, or a suspension by the operator, the controller or an architect takes it over.
+Every rule of the daemon reads it as a released claim: it keeps its phase and the task it holds, the boot does not resume its agent, a wake starts that agent again, and a park, a close, a linger, or a suspension by the operator, the controller or an architect takes the stopped agent over.
 Each stop is one store transaction (`projectPause.stopped`, `internal/daemon/pause.go`).
 It writes the claim and the stop's record, and with them:
 
@@ -7757,7 +7757,7 @@ The reaper frees that claim once nobody has answered for it inside the live wind
 A suspension whose own stop ends a live process sends the same read and the same delete: an idle release, any other suspension by the daemon, the operator, the controller or an architect, and a tree root's own exit, each once the runtime's stop of that process has returned (`supervise.Deps.SessionGone`).
 Its moment is when that stop returned, and both runtimes answer that stop only once the process has ended, so on clocks that agree the process's last heartbeat is stamped before that moment.
 A stop the runtime refused sends nothing, because that process may still be running, and a delete then would take a live session's registration away until its next heartbeat.
-No wake acts on a claim that the daemon, the operator, the controller or an architect suspended ([Idle release](#idle-release)).
+No wake acts on an agent that the daemon, the operator, the controller or an architect suspended ([Idle release](#idle-release)).
 After its stop, an Envoy direct message to that session is stored for the stopped session, and a person's targeted Dispatch message to it is recorded `queued`: the listener stores it, or Dispatch publishes it on the session's agent subject itself when no store of the listener's holds the session.
 The session reads either message if the claim is resumed within the stream's 72 hours.
 The delete names the ended process's own registration rather than a moment alone, because the claim is relaunched under the same session id, after a death by the very decision that asks for the stop and after a suspension by a later wake or resume:

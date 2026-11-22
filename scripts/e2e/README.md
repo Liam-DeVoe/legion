@@ -2583,7 +2583,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   The proof human parks child 2 again: within 900 s it has no Sandbox, no pod and no disk, and its planner is suspended by the daemon.
   The control, on the same claim and start path:
   `legion claims suspend` of the parked planner records `suspendedBy: operator`, and child 2 is set `todo` once more;
-  its planning start waits (`outbox row waits` naming the suspension that holds until the operator resumes the claim), the planner stays suspended by the operator at the same generation for 60 s, and no `supervise: resuming by rule` line names it.
+  its planning start waits (`outbox row waits` naming the suspension that holds until the operator resumes the agent), the planner stays suspended by the operator at the same generation for 60 s, and no `supervise: resuming by rule` line names it.
   `legion claims resume` relaunches it and the waiting start gives it the run's planning task, its session's third.
   Child 2 is parked a last time: within 900 s no Sandbox, no pod and no disk, its planner suspended by the daemon
   — what the session keeps is the table's, not the disk's

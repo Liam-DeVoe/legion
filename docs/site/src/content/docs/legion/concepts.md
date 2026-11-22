@@ -575,7 +575,7 @@ check's own bound starts no look of its own, because the look at that bound alre
 Nothing else wakes a check: no deploy run, no Dispatch `issue.deployed`, no Dispatch build and no
 daemon boot, and the daemon reads no deployment's production workflows at all.
 A look is bounded at two hours, and a look nobody reported — its two hours, a hold the operator,
-the controller or an architect put on the claim, or a claim that failed to start — starts the next
+the controller or an architect put on the agent, or a claim that failed to start — starts the next
 look two hours later. A look that began before a pause of the project ended counts its two hours
 from the resume, or from its agent's last ready after the resume where that is later, and counts
 nothing while that agent is still starting.

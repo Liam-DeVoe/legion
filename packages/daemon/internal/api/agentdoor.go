@@ -10,10 +10,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// ClaimRequest is what every action of the agent door names (agentDoor): the claim on Role of
-// Issue, under the caller's grant — the project's controller's, or an architect's for a claim of
+// ClaimRequest is what every action of the agent door names (agentDoor): the agent on Role of
+// Issue, under the caller's grant — the project's controller's, or an architect's for an agent of
 // an issue it owns. Role is a workflow role or `architect`; the project controller is no role
-// here, so the controller's own claim cannot be named at all (claim.IsRole, whose six roles the
+// here, so the controller's own agent cannot be named at all (claim.IsRole, whose six roles the
 // controller is not one of). The six actions take the same three members, so they take one
 // type.
 type ClaimRequest struct {
@@ -29,35 +29,35 @@ type ClaimRequest struct {
 // (agentDoor). request is the word for the request the stop, the suspension and the resume each
 // make as a single event to the claim's machine, which the daemon's stop and the machine's
 // refusals name it by (agentEventAction, postClaimEvent, operationFailure), and did is what the
-// log line of a stop, a retry, a suspension or a resume that ran says the caller did to the claim
-// (answerAgentAction). The retry starts the claim through retryStart, the start the operator's
+// log line of a stop, a retry, a suspension or a resume that ran says the caller did to the agent
+// (answerAgentAction). The retry starts the agent through retryStart, the start the operator's
 // own retry route makes too, rather than one event, so it leaves request empty (retryAgent,
 // retryStart); the two recoveries write their own answers and log lines, and leave both empty.
 //
 // refusesATurn is whether the machine's refusal of one of those three events in state working
 // is answered as a claim in a turn (refuseAgentAction, refuseClaimInATurn): the resume's
-// alone is, since a resume reaches no claim in a turn, and reaches names the states it does
-// reach. The stop's is not: the machine refuses a stop of a working claim only for a tree's
-// root, and that is the root's own refusal, in the machine's words (operationFailure). Nor is the
-// suspension's, which is held for a turn rather than refused for it. The retry reaches no claim
+// alone is, since a resume reaches no agent in a turn, and reaches names the states it does
+// reach. The stop's is not: the machine refuses a stop of an agent whose claim is working only
+// for a tree's root, and that is the root's own refusal, in the machine's words
+// (operationFailure). Nor is the suspension's, which is held for a turn rather than refused for it. The retry reaches no agent
 // in a turn either, and refuses one from retryAgent's own read of the claim's state before the
 // machine is asked anything, so it leaves refusesATurn false and names its states in reaches.
 // controllerPassesHold is whether the controller's request is let past a suspension that
 // outranks it at the door rather than refused there (agentDoor, supervise.Claim.HeldAgainst):
-// the compaction's alone, which stops, takes over and lifts no suspension, so a claim the
-// operator's suspension holds is answered by the compaction's own refusals of the claim as it
+// the compaction's alone, which stops, takes over and lifts no suspension, so an agent the
+// operator's suspension holds is answered by the compaction's own refusals of its claim as it
 // stands, which name the operator's resume as what starts it (refuseHeldSuspension,
 // refuseState, holdSentences). An architect's request is refused such a suspension whatever the
 // action.
 //
-// cutsTheTurn is what the refusal of a claim stored working says the action would do to a turn
-// of that claim that is running (refuseInATurn), and reaches is the states the action does
+// cutsTheTurn is what the refusal of an agent whose claim is stored working says the action would
+// do to that agent's running turn (refuseInATurn), and reaches is the states the action does
 // reach, which every refusal of a claim's state that ends in askAgainLater gives as a
 // sentence of its own: it is the one thing a refused caller can act on, since the claim's state
 // is published and this says which door that state belongs to (askAgainLater).
 //
-// liveStates is the live half of reaches on its own — the states the action acts on in a
-// claim that runs an agent — for the one refusal that writes its own sentence around it, the
+// liveStates is the live half of reaches on its own — the states of a claim in which the action
+// reaches a running agent — for the one refusal that writes its own sentence around it, the
 // held suspension's (refuseHeldSuspension). The two recoveries take different sets there, so
 // each carries its own: a registered agent is one the fresh session suspends and the
 // compaction has no session to ask yet (agentRunning, supervise's onCompact rows), and a
@@ -66,9 +66,9 @@ type ClaimRequest struct {
 // decide them.
 //
 // No field says which action a paused project refuses: each door that starts a turn refuses
-// it itself, 409 PROJECT_PAUSED with the pause that stands, after the door and before anything
-// is asked of the claim (refusedWhilePaused), as the operator's doors do. The resume refuses it in
-// its own event builder (resumeAgent), as the operator's resume does (resumeEvent), the retry
+// it itself, 409 PROJECT_PAUSED with the pause that stands, after the door and before an event
+// for the agent action is posted to its machine (refusedWhilePaused), as the operator's doors
+// do. The resume refuses it in its own event builder (resumeAgent), as the operator's resume does (resumeEvent), the retry
 // before its read of the claim's state (retryAgent), and the two recoveries in the paths they
 // share with the operator's door (freshSession, compact). No agent action undoes the pause,
 // which the project's resume alone lifts. The stop and the suspension start nothing and are let
@@ -85,13 +85,13 @@ type agentAction struct {
 	liveStates           string
 }
 
-// claimTarget is the claim an action of the agent door named, read and authenticated: the
+// claimTarget is the claim of the agent an action of the agent door named, read and authenticated: the
 // machine to run the effect on, the issue and role the caller spelled, which the route logs as
 // the caller named them, and by, who the caller is — supervise.SuspendedByController for the
 // project's controller and supervise.SuspendedByArchitect for an architect — which is the source
 // its suspension records and what decides which suspensions refuse it (supervise.Claim.HeldAgainst,
 // supervise.Claim.ResumeRefusal). recorded is the issue's record as the door read it for an
-// architect's ownership (issueOfTree), which the two actions that start a stopped claim weigh
+// architect's ownership (issueOfTree), which the two actions that start a stopped agent weigh
 // with its tree's root for whether the issue still runs (refuseStartOfStoppedWork); the
 // controller's door reads none, and leaves it the zero record.
 type claimTarget struct {
@@ -110,14 +110,14 @@ type claimTarget struct {
 const ownAgent = "OWN_AGENT"
 
 // agentDoor is the door all six agent actions come through — the two recoveries
-// (claimFreshSession, claimCompact) and the four that stop, retry, suspend and resume a claim
-// (stopAgent, retryAgent, suspendAgent, resumeAgent): the claim is named by its issue and role
+// (claimFreshSession, claimCompact) and the four that stop, retry, suspend and resume an agent
+// (stopAgent, retryAgent, suspendAgent, resumeAgent): the agent is named by its issue and role
 // rather than by a token the caller never sees, and the caller is its project's controller or an
 // architect rather than the operator. It answers every refusal of the body, the grant and the
 // lookup itself, and reports false when it has; only the effect behind it differs between the
 // six.
 //
-// The controller reaches every claim of its project. An architect reaches the claims of the
+// The controller reaches every agent of its project. An architect reaches the agents of the
 // issues it owns alone, by the rule sign_off, retry_or_escalate and request_backward_move hold it
 // to: the issue is checked against its grant (issueOfTree: 404 ISSUE_NOT_FOUND, 403
 // ISSUE_OUTSIDE_TREE) and then against what the architect owns (architectOwns: 403
@@ -125,9 +125,9 @@ const ownAgent = "OWN_AGENT"
 // its tree, and a sub-architect its own issue and those under it, never the root or a sibling's
 // (owns). A sub-architect holds a grant for the whole tree and can name any issue of it, so the
 // tree alone would let it stop, suspend or restart the root's architect or a sibling subtree's
-// workers. An architect's own claim is refused as well (OWN_AGENT).
+// workers. An architect's own agent is refused as well (OWN_AGENT).
 //
-// A claim a suspension outranking the caller holds, held for a turn or landed, is refused here
+// An agent a suspension outranking the caller holds, held for a turn or landed, is refused here
 // whoever the caller is and before the action asks anything (supervise.Claim.HeldAgainst,
 // refuseHold): the operator's for either caller (SUSPENDED_BY_OPERATOR), and the controller's
 // for an architect (SUSPENDED_BY_CONTROLLER). So a held suspension and a landed one take one
@@ -136,12 +136,12 @@ const ownAgent = "OWN_AGENT"
 // caller and lands after this read is still the machine's to refuse, and each action that names
 // its caller to the machine answers that refusal as the hold it is (refuseAgentAction,
 // freshSession). The compaction never meets that refusal: the machine's compaction carries no
-// caller (supervise.RequestCompact), so a claim such a suspension holds is answered by the
-// compaction's own refusals of its state, which name the holder's resume as what starts it
+// caller (supervise.RequestCompact), so an agent such a suspension holds is answered by the
+// compaction's own refusals of its claim's state, which name the holder's resume as what starts it
 // (refuseState, holdSentences). The one request let past such a suspension at this door is the
 // controller's compaction (agentAction.controllerPassesHold).
 //
-// The controller is refused its own claim here and nowhere else: the token is built from the
+// The controller is refused its own agent here and nowhere else: the token is built from the
 // issue and the role, and no issue's role spells the controller's token (claim.ControllerToken),
 // so a role this check takes can never name it.
 func (s *server) agentDoor(w http.ResponseWriter, r *http.Request, op agentAction) (claimTarget, bool) {

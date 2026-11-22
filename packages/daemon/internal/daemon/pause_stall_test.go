@@ -9,8 +9,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// A claim a project's pause stopped is no stall: its turn ended at the stop, so the record of the
-// last step it holds names no turn, however old that step is. The stall backstop's sweep leaves
+// An agent a project's pause stopped is no stall: its turn ended at the stop, so the record of the
+// last step its claim holds names no turn, however old that step is. The stall backstop's sweep leaves
 // it alone — no relaunch, no report from its machine, and no notice to its owner.
 //
 // Two guards keep it so: the sweep posts the backstop only over a claim in StateWorking

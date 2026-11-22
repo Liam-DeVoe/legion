@@ -1726,8 +1726,8 @@ func StrandedMoves() []StrandedMove {
 //   - StrandedWorkflowStart, a failed phase worker: the retry of its held phase — its architect's
 //     retry_or_escalate, or the operator's retry (`legion claims retry`, which applies the same
 //     retry) — since a failed claim ignores resume and deliver.
-//   - StrandedWorkflowStart, a retired claim, whatever its role: a retired claim ignores resume
-//     and deliver, and the operator's retry (`legion claims retry`) reaches it as it reaches a
+//   - StrandedWorkflowStart, a retired claim, whatever its role: its machine ignores resume and
+//     deliver, and the operator's retry (`legion claims retry`) reaches its agent as it reaches a
 //     failed one (supervise's askedRetry), but the move named is a workflow start. A start of
 //     its phase sends it the retry the daemon's own start executor makes of a retired claim, so
 //     the move is the act that queues such a start: the architect's retry_or_escalate of a held

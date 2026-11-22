@@ -20,7 +20,7 @@ import (
 //
 // The negative control is the pause check undone (the refusedWhilePaused calls of resumeAgent's
 // event builder and of retryAgent, and issuePodUpdate's refusedForPause): the resume and the
-// retry reach the claim and are answered 200, and the pod update is answered 404 NO_POD by this
+// retry reach the agent and are answered 200, and the pod update is answered 404 NO_POD by this
 // daemon, which runs no pod update rounds.
 func TestWhilePausedTheAgentDoorRefusesResumeAndRetryAndStillStopsAndSuspends(t *testing.T) {
 	h := newPauseHarness(t, pauseCapable())
