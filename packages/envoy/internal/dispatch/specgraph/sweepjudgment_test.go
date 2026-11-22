@@ -568,8 +568,8 @@ func eachAnswer(t *testing.T, whole map[string]string, kinds map[string]judgedKi
 
 // declaredStates is the value of each constant of the block of the Go file file, a path under this
 // package, whose doc comment is doc: the states of a kind as the reader's code declares them, read
-// from the file that the build of the reader's binary reads (sweepReaderCommand, Source), the overlay
-// of ENVOY_TEST_GO_OVERLAY included where it is set.
+// from the file as the build of the reader's binary reads it (sweepReaderCommand, Source), through
+// the overlay that the build reads, which ENVOY_TEST_GO_OVERLAY, the command's flags or GOFLAGS gives.
 func declaredStates(t *testing.T, file, doc string) []string {
 	t.Helper()
 	src, err := sweepReaderCommand().Source(file)

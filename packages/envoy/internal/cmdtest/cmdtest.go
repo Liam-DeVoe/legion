@@ -70,12 +70,16 @@ type builtBinary struct {
 }
 
 // BuildCommand builds c and returns the binary's path. The binary is removed when the test ends,
-// and ENVOY_TEST_GO_OVERLAY, when set, is passed to go build -overlay (buildOverlay), so a probe can
-// build it from changed sources without editing the tree; Command.Source reads a file as that build
-// reads it. A test that asks for the same build again is handed the one it already built (built).
+// and the overlay of the build (Command.overlay: c's own -overlay flag, else ENVOY_TEST_GO_OVERLAY,
+// else GOFLAGS's) is passed to go build as its last flag, so a probe can build it from changed
+// sources without editing the tree; Command.Source reads a file as that build reads it. A test that
+// asks for the same build again is handed the one it already built (built).
 func BuildCommand(t testing.TB, c Command) string {
 	t.Helper()
-	overlay := buildOverlay()
+	overlay, err := c.overlay()
+	if err != nil {
+		t.Fatalf("build %s: %v", c.Name, err)
+	}
 	// The count of the flags stands between them and the environment, so a value that moves from
 	// one of the two to the other is another key rather than the same one.
 	parts := append([]string{c.Name, c.Dir, c.Target, overlay, strconv.Itoa(len(c.Flags))}, c.Flags...)
@@ -93,15 +97,14 @@ func BuildCommand(t testing.TB, c Command) string {
 }
 
 // runBuild is one go build of c, into a binary named c.Name under a directory of this test's
-// own. It returns the empty path where the build failed, having failed the test.
+// own, with overlay, c's (Command.overlay), as its last flag: the go command takes the last value of
+// a flag, and the command line's over GOFLAGS's, so the build reads that overlay and no other, none
+// where it is "". It returns the empty path where the build failed, having failed the test.
 func runBuild(t testing.TB, c Command, overlay string) string {
 	t.Helper()
 	binary := filepath.Join(t.TempDir(), c.Name)
-	args := []string{"build", "-o", binary}
-	if overlay != "" {
-		args = append(args, "-overlay", overlay)
-	}
-	args = append(args, c.Flags...)
+	args := append([]string{"build", "-o", binary}, c.Flags...)
+	args = append(args, "-overlay="+overlay)
 	target := c.Target
 	if target == "" {
 		target = "."
@@ -116,17 +119,95 @@ func runBuild(t testing.TB, c Command, overlay string) string {
 	return binary
 }
 
-// buildOverlay is the overlay that BuildCommand passes to go build -overlay: the file that
-// ENVOY_TEST_GO_OVERLAY names, "" where it is not set. Command.Source reads files through it.
-func buildOverlay() string { return os.Getenv("ENVOY_TEST_GO_OVERLAY") }
+// overlay is the overlay file of BuildCommand's go build of c, "" for none: the value of the last
+// -overlay of c.Flags, as the flag package reads one (-overlay or --overlay, with its value after "="
+// or in the next argument); else ENVOY_TEST_GO_OVERLAY of this process; else the value of the last
+// -overlay of GOFLAGS in the build's environment (c.Env, or this process's where c.Env is nil), as
+// the go command splits GOFLAGS into flags (at white space, a flag in single or double quotes taken
+// whole). It is the one reading of the overlay of c's build: runBuild passes it to the build as its
+// last flag, so the build reads it whatever GOFLAGS says, and Source reads each file through it. A
+// relative path is read from c.Dir, as the go command reads it.
+func (c Command) overlay() (string, error) {
+	if overlay, set, err := lastFlag(c.Flags, "overlay"); err != nil || set {
+		return overlay, err
+	}
+	if overlay := os.Getenv("ENVOY_TEST_GO_OVERLAY"); overlay != "" {
+		return overlay, nil
+	}
+	goflags := os.Getenv("GOFLAGS")
+	if c.Env != nil {
+		goflags = ""
+		for _, kv := range c.Env {
+			if value, ok := strings.CutPrefix(kv, "GOFLAGS="); ok {
+				goflags = value
+			}
+		}
+	}
+	flags, err := goflagsFlags(goflags)
+	if err != nil {
+		return "", err
+	}
+	overlay, _, err := lastFlag(flags, "overlay")
+	return overlay, err
+}
+
+// lastFlag is the value of the last flag named name among args, as the flag package reads one: -name
+// or --name, with its value after "=" or in the next argument; and whether one names it.
+func lastFlag(args []string, name string) (string, bool, error) {
+	value, set := "", false
+	for i := 0; i < len(args); i++ {
+		flag, ok := strings.CutPrefix(args[i], "-")
+		if !ok {
+			continue
+		}
+		named, given, hasValue := strings.Cut(strings.TrimPrefix(flag, "-"), "=")
+		if named != name {
+			continue
+		}
+		if !hasValue {
+			if i+1 == len(args) {
+				return "", false, fmt.Errorf("the flag %s has no value", args[i])
+			}
+			i++
+			given = args[i]
+		}
+		value, set = given, true
+	}
+	return value, set, nil
+}
+
+// goflagsFlags is the flags of GOFLAGS, goflags, as the go command splits them: at white space, with
+// a flag in single or double quotes taken whole, the space within it too.
+func goflagsFlags(goflags string) ([]string, error) {
+	var flags []string
+	for s := goflags; ; {
+		s = strings.TrimLeft(s, " \t\n\r")
+		if s == "" {
+			return flags, nil
+		}
+		if quote := s[0]; quote == '"' || quote == '\'' {
+			end := strings.IndexByte(s[1:], quote)
+			if end < 0 {
+				return nil, fmt.Errorf("GOFLAGS %q: an unterminated %c string", goflags, quote)
+			}
+			flags, s = append(flags, s[1:1+end]), s[2+end:]
+			continue
+		}
+		end := strings.IndexAny(s, " \t\n\r")
+		if end < 0 {
+			end = len(s)
+		}
+		flags, s = append(flags, s[:end]), s[end:]
+	}
+}
 
 // Source is the content of the file at path as BuildCommand's go build of c reads it, with the overlay
-// of that build (buildOverlay) as go applies one: where the overlay names path, the file that it
+// of that build (Command.overlay) as go applies one: where the overlay names path, the file that it
 // names in its place, or no file where it names none (""); where it names a directory above path, no
 // file; and else the file on disk. A relative path, the overlay's own path and each path in it are
 // read from c.Dir, the directory that go build runs in, or the test's working directory where c.Dir
 // is empty, as go reads them. So a test that reads the code that it builds reads the code of the
-// binary, overlay and all.
+// binary, overlay and all, for each Command.
 func (c Command) Source(path string) ([]byte, error) {
 	dir, err := filepath.Abs(c.Dir)
 	if err != nil {
@@ -139,7 +220,10 @@ func (c Command) Source(path string) ([]byte, error) {
 		return filepath.Join(dir, p)
 	}
 	file := abs(path)
-	overlay := buildOverlay()
+	overlay, err := c.overlay()
+	if err != nil {
+		return nil, fmt.Errorf("the overlay of the build: %w", err)
+	}
 	if overlay == "" {
 		return os.ReadFile(file)
 	}

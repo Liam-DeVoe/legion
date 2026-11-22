@@ -2,6 +2,7 @@ package cmdtest
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -156,12 +157,17 @@ func TestStartThenRunsAfterExitBeforeExited(t *testing.T) {
 	}
 }
 
-// Source reads a file as BuildCommand's go build reads it. The test builds a command whose file
-// word.go declares the word that it prints, once from the files on disk and once with an overlay, in
-// the build's directory and named by a relative path, that puts another file in word.go's place, takes
-// a file that is not Go out of the build, and puts a file in the place of a directory. Each binary
-// prints the word of the word.go that Source gives for its build; Source gives no file for the file
-// taken out, which the build did not read, and none under the directory replaced.
+// Source reads a file as BuildCommand's go build reads it, through the overlay that the build reads
+// (Command.overlay). The test builds a command whose file word.go declares the word that it prints,
+// from the files on disk, and through an overlay given each way that one reaches the build: by
+// ENVOY_TEST_GO_OVERLAY naming a file in a folder of its own (conf) whose paths are relative to the
+// build's folder, and naming one whose paths are absolute; by the Command's own Flags, beside
+// ENVOY_TEST_GO_OVERLAY; by GOFLAGS of the Command's own Env, and of the test's environment; and by
+// ENVOY_TEST_GO_OVERLAY beside GOFLAGS. Each overlay puts a word.go of its own in word.go's place,
+// takes not-go.go, a file that is not Go, out of the build, and puts a file in the place of the
+// directory gone, under which gone/word.go is on disk. Each binary prints its leg's word, and Source
+// reads that word in word.go; with no overlay Source reads not-go.go and gone/word.go, and under each
+// overlay it gives no file for either.
 func TestSourceIsTheFileThatTheBuildReads(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, text string) {
@@ -177,45 +183,80 @@ func TestSourceIsTheFileThatTheBuildReads(t *testing.T) {
 	write("go.mod", "module example.com/sourceprobe\n\ngo 1.22\n")
 	write("main.go", "package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Print(word) }\n")
 	write("word.go", "package main\n\nconst word = \"disk\"\n")
-	c := Command{Name: "sourceprobe", Dir: dir}
-	// wordOf is the word that the file word.go declares, as Source reads it.
-	wordOf := func() string {
+	write("gone/word.go", "package gone\n\nconst word = \"gone\"\n")
+	// overlay writes conf/<word>.json, an overlay that puts <word>/word.go, which declares word, in
+	// word.go's place, takes not-go.go out and puts word.go in the place of the directory gone, each
+	// path relative to the build's folder, or absolute where abs holds; it is the overlay's path,
+	// written the same way.
+	overlay := func(word string, abs bool) string {
 		t.Helper()
-		src, err := c.Source("word.go")
-		if err != nil {
-			t.Fatalf("Source(word.go): %v", err)
+		at := func(path string) string {
+			if abs {
+				return filepath.Join(dir, path)
+			}
+			return path
 		}
+		write(filepath.Join(word, "word.go"), fmt.Sprintf("package main\n\nconst word = %q\n", word))
+		replace, err := json.Marshal(map[string]map[string]string{"Replace": {
+			at("word.go"): at(filepath.Join(word, "word.go")), at("not-go.go"): "", at("gone"): at("word.go"),
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		write(filepath.Join("conf", word+".json"), string(replace))
+		return at(filepath.Join("conf", word+".json"))
+	}
+	// leg is one build: what it is, ENVOY_TEST_GO_OVERLAY and GOFLAGS of the test's environment for
+	// it, the Command, and the word that its binary prints.
+	type leg struct {
+		what, overlay, goflags string
+		c                      Command
+		word                   string
+	}
+	// buildLeg builds l's Command and fails the test unless its binary prints l's word and Source
+	// reads that word in word.go.
+	buildLeg := func(l leg) {
+		t.Helper()
+		t.Setenv("ENVOY_TEST_GO_OVERLAY", l.overlay)
+		t.Setenv("GOFLAGS", l.goflags)
+		out, err := exec.Command(BuildCommand(t, l.c)).Output()
+		if err != nil {
+			t.Errorf("%s: the built command: %v", l.what, err)
+			return
+		}
+		src, err := l.c.Source("word.go")
 		_, quoted, _ := strings.Cut(string(src), "const word = ")
-		word, err := strconv.Unquote(strings.TrimSpace(quoted))
-		if err != nil {
-			t.Fatalf("Source(word.go) gives %q, which declares no word: %v", src, err)
+		read, _ := strconv.Unquote(strings.TrimSpace(quoted))
+		if string(out) != l.word || err != nil || read != l.word {
+			t.Errorf("%s: the build prints %q and Source reads %q in word.go (%v), want both %q", l.what, out, read, err, l.word)
 		}
-		return word
 	}
-	printed := func() string {
-		t.Helper()
-		out, err := exec.Command(BuildCommand(t, c)).Output()
-		if err != nil {
-			t.Fatalf("the built command: %v", err)
-		}
-		return string(out)
-	}
-
-	t.Setenv("ENVOY_TEST_GO_OVERLAY", "")
-	if got, read := printed(), wordOf(); got != "disk" || read != got {
-		t.Errorf("with no overlay the build prints %q and Source reads %q in word.go, want both %q", got, read, "disk")
-	}
-
+	goflags := os.Getenv("GOFLAGS")
+	c := Command{Name: "sourceprobe", Dir: dir}
+	buildLeg(leg{"no overlay", "", goflags, c, "disk"})
 	write("not-go.go", "this is not Go\n")
-	write("other/word.go", "package main\n\nconst word = \"overlay\"\n")
-	write("overlay.json", `{"Replace": {"word.go": "other/word.go", "not-go.go": "", "gone": "word.go"}}`)
-	t.Setenv("ENVOY_TEST_GO_OVERLAY", "overlay.json")
-	if got, read := printed(), wordOf(); got != "overlay" || read != got {
-		t.Errorf("with the overlay the build prints %q and Source reads %q in word.go, want both %q", got, read, "overlay")
+	gone := []string{"not-go.go", filepath.Join("gone", "word.go")}
+	for _, path := range gone {
+		if _, err := c.Source(path); err != nil {
+			t.Errorf("with no overlay, Source(%s): %v, where the file is on disk", path, err)
+		}
 	}
-	for _, gone := range []string{"not-go.go", filepath.Join("gone", "word.go")} {
-		if src, err := c.Source(gone); err == nil {
-			t.Errorf("with the overlay Source reads %s as %q, which the build does not read", gone, src)
+	envOverlay, goflagsOverlay := overlay("env", false), overlay("goflags", false)
+	for _, l := range []leg{
+		{"ENVOY_TEST_GO_OVERLAY naming conf/env.json, whose paths are relative to the build's folder", envOverlay, goflags, c, "env"},
+		{"ENVOY_TEST_GO_OVERLAY naming an overlay, and each path in it, by an absolute path", overlay("abs", true), goflags, c, "abs"},
+		{"the Command's Flags naming an overlay, beside ENVOY_TEST_GO_OVERLAY", envOverlay, goflags,
+			Command{Name: "sourceprobe", Dir: dir, Flags: []string{"-overlay", overlay("flags", false)}}, "flags"},
+		{"GOFLAGS of the Command's Env naming an overlay", "", goflags,
+			Command{Name: "sourceprobe", Dir: dir, Env: append(os.Environ(), "GOFLAGS="+goflags+" -overlay="+overlay("goenv", false))}, "goenv"},
+		{"GOFLAGS of the test's environment naming an overlay", "", goflags + " -overlay=" + goflagsOverlay, c, "goflags"},
+		{"ENVOY_TEST_GO_OVERLAY beside GOFLAGS of the test's environment", envOverlay, goflags + " -overlay=" + goflagsOverlay, c, "env"},
+	} {
+		buildLeg(l)
+		for _, path := range gone {
+			if src, err := l.c.Source(path); err == nil {
+				t.Errorf("%s: Source reads %s as %q, which the overlay takes out of the build", l.what, path, src)
+			}
 		}
 	}
 }
