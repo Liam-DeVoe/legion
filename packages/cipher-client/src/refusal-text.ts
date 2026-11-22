@@ -255,6 +255,9 @@ const POLICY_REFUSAL_PATTERNS: readonly string[] = [
 const KNOWN_BROKER_REFUSAL_PATTERNS: readonly RegExp[] = [
   `${PERSON_SLOT} revoked this machine's sign-in, so the key this proof was signed with trades nothing\\. Sign in again with \`agent-secrets login\`\\.`,
   `${PERSON_SLOT}'s sign-in on this box key was made on another machine, and a sign-in belongs to the machine it was made on\\. Sign in again with \`agent-secrets login\`\\.`,
+  `${PERSON_SLOT}'s sign-in on this box key was made by another Google account, and a sign-in belongs to the account that made it\\. Sign in again with \`agent-secrets login\`\\.`,
+  // A sign-in nothing on this box cures: Google gave the person's address to another account.
+  `The Google account this token was minted for no longer holds ${PERSON_SLOT}: another account holds that address now, and the broker takes no sign-in of the account it replaced\\.`,
   "The machine login the subject token belongs to has ended\\.",
   "The machine login has ended\\.",
   "Another live machine login holds the key this proof was signed with\\. A (?:machine makes a key of its own|sign-in makes a box key of its own)\\.",

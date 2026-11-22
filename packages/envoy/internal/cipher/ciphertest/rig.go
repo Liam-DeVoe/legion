@@ -138,8 +138,9 @@ type Rig struct {
 	// Registry holds the policy's two metrics as cmd/cipherd/main.go builds them on its own
 	// registry: broker_policy_store_reads_total, counted from the first load on, and
 	// broker_unservable_secrets, registered once that load answered; and, for a Rig built
-	// WithDispatchAccess, the hold gate's broker_hold_unchecked_total. A test reads them through
-	// Registry.Handler(), the scrape main serves.
+	// WithDispatchAccess, the hold gate's broker_hold_unchecked_total and the Dispatch client's
+	// broker_member_kind_unchecked_total. A test reads them through Registry.Handler(), the scrape
+	// main serves.
 	Registry *metrics.Registry
 	// Policy is the broker's live policy, for a test that reloads it as the broker's five-minute
 	// reload does (Refresh): the rig's own reload runs once an hour, so never within a test.
@@ -258,8 +259,9 @@ func WithMinters(minters map[string]requests.Minter) Option {
 
 // WithDispatchAccess wires the rig's broker to Dispatch at baseURL as cmd/cipherd wires one whose
 // BROKER_PROJECT_ACCESS_URL is set: one Dispatch client, which the token exchange, the enrollment,
-// the request machine and the policy loader's project checks read, and the hold gate built on that
-// client and the rig's store, given to every field of the broker that takes it. now is the
+// the request machine and the policy loader's project checks read and which keeps each person
+// answer in the rig's store (projectaccess.Client.Keep), and the hold gate built on that client and
+// the rig's store, given to every field of the broker that takes it. now is the
 // clock the client's 30-second cache of an answer (projectaccess.CacheTTL) and the gate's memories
 // are timed by, so a test can move it past an answer it would otherwise wait out; nil is the
 // wall clock, as main runs. NewRig fails t when it is given with WithProjectAccess, which gives the
@@ -357,6 +359,11 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	// The loader serves a secret tagged with a project only where the broker can ask Dispatch
 	// whether that project is private, as main's does (policy.Loader.ProjectChecks).
 	registry := metrics.New()
+	// The Dispatch client keeps each person answer in this rig's store and counts on its registry,
+	// as main's does, before anything is built on it.
+	if config.projectAccess != nil {
+		config.projectAccess.Keep(st, slog.Default(), registry)
+	}
 	loader := policytest.Loader(local)
 	loader.ProjectChecks = config.projectAccess != nil
 	cur := policytest.Metered(t, loader, registry)
