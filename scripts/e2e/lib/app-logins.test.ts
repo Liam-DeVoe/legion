@@ -45,6 +45,7 @@ const closed = Bun.listen({
   port: 0,
   socket: {
     open(socket) {
+      socket.write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"); // CONTROL: the GitHub that never answers answers
       socket.end();
     },
     data() {},
