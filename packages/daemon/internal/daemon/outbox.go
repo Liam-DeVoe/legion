@@ -566,8 +566,11 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 	case record.StepRecord:
 		// Nobody is told: no architect can change an issue Dispatch does not have, a body it will
 		// never take, a writer its route refuses or an id of another issue, and the work the
-		// record is of went on without it. The line is what says the record is not in Dispatch,
-		// since nothing else would.
+		// record is of went on without it. The line stands for two refusals. Where Dispatch
+		// refused the record's own write, the line is what says the record is not in Dispatch,
+		// since nothing else would. Where it refused the variant's write after it took the record
+		// (publishStepExperiment), the record stays in Dispatch with no variant. The line's error
+		// tells the two apart: only the variant's names "write the variant of the step record".
 		told = r.recordDropped(row, "step", value.ID, cause)
 	case record.PlanRecord:
 		// Nobody is told, for the step record's reasons: the plan is history of a run that went
