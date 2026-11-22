@@ -1,6 +1,6 @@
 // The family fence, the owner check and adoption: which consumers a record of a logical name may
 // name, which consumer the server holds is that logical name's own, and which candidate an open
-// operation may publish. Names applies the fence to every record it reads (Check), the owner
+// operation may publish. Names applies the fence to every record it reads (check), the owner
 // check to every read and delete of a name a record supplies (info, deleteOwned), and the adoption
 // check to every candidate it did not see created (adopt).
 
@@ -29,21 +29,15 @@ func (n *Names) freshOf(logical, name string) bool {
 	})
 }
 
-// Check refuses, as ErrMalformedRecord naming the field and the name, a record of logical that
+// check refuses, as ErrMalformedRecord naming the field and the name, a record of logical that
 // names a consumer outside logical's own family: its current, each retired name and an open
 // operation's candidate must be fresh names of logical (freshOf), and an open operation's old name
 // one of those or logical's fixed name, which the cutover's convert replaces. Each is a name the
 // protocol creates, binds, updates or deletes, so a record that names another family's consumer (a
 // daemon's durable, a session's of another prefix) never gets one of those calls on it. It is the
-// creator's own fence on every record it reads (read).
-//
-// Its nil says only that the record's names are of logical's family. It says nothing of the record
-// itself, which must come from a store read or DecodeKVValue (Record.check: its own key, well-formed
-// fields), nor of the consumers: every session's prefix is "session", so a record of one session
-// passes with another session's consumer as its current. A name the record gives must pass Owns,
-// the consumer's own metadata, before anything reads, binds, updates or deletes it, as the creator
-// does. A reader that deletes what a record names calls Cleanup, which does all three.
-func (n *Names) Check(logical string, record Record) error {
+// creator's own fence on every record it reads (read), and a reader's by the family's naming
+// (CheckFamily).
+func (n *Names) check(logical string, record Record) error {
 	refuse := func(field, name string) error {
 		return fmt.Errorf("%w: the key %s's %s %q is no %s~<nuid> name", ErrMalformedRecord, logical, field, name, n.cfg.Prefix(logical))
 	}

@@ -9,9 +9,9 @@ import (
 
 // The listener's durable creator names as the family table does: its Config's prefix and fixed
 // name are the table's for a durable's key (consumernames.DurableNaming), both the durable's own
-// name, and on the round-6 cases its own fence (the Check its read applies) and
-// consumernames.CheckFamily give the same answer, the one each case pins. The control, run with a
-// fault and seen failing: a creator whose prefix is not the table's fails the naming row.
+// name, so its fence is the one consumernames.CheckFamily applies for that key, which gives the
+// answer each round-6 case pins. The control, run with a fault and seen failing: a creator whose
+// prefix is not the table's fails the naming row.
 func TestTheDurableCreatorNamesAsTheFamilyTable(t *testing.T) {
 	r := newDurableRig(t, consumernames.ModeFresh)
 	names := durableNames(r.client, r.durable)
@@ -34,10 +34,8 @@ func TestTheDurableCreatorNamesAsTheFamilyTable(t *testing.T) {
 		{"a current of the session prefix", consumernames.Record{Current: "session~A", Start: 3}, false},
 		{"another durable's old name", consumernames.Record{Start: 3, Op: &consumernames.Op{Kind: consumernames.OpReplace, Old: "listener-other", Candidate: r.durable + "~B", ReservedAt: reserved}}, false},
 	} {
-		own := names.Check(key, c.record)
-		family := consumernames.CheckFamily(consumernames.SessionFamily, key, c.record)
-		if (own == nil) != c.served || (family == nil) != c.served {
-			t.Errorf("%s: the durable creator's fence = %v, CheckFamily = %v; want both served %t", c.name, own, family, c.served)
+		if err := consumernames.CheckFamily(consumernames.SessionFamily, key, c.record); (err == nil) != c.served {
+			t.Errorf("%s: CheckFamily for the durable's key = %v; want served %t", c.name, err, c.served)
 		}
 	}
 }

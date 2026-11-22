@@ -8,12 +8,12 @@ import (
 )
 
 // The session creator names as the family table does: its Config's prefix and fixed name are the
-// table's for the session family (consumernames.SessionNaming), and on the round-6 cases its own
-// fence (the Check its read applies) and consumernames.CheckFamily give the same answer, which is
-// the one each case pins: a convert's open replace of s-ses-A served, a retired fixed name, another
-// session's fixed name and another family's current refused. The controls, each run with a fault
-// and seen failing: a creator whose prefix is not the table's fails the naming row, and a table with
-// no fixed rule fails the convert's case.
+// table's for the session family (consumernames.SessionNaming), so its fence is the one
+// consumernames.CheckFamily applies for the session family, which gives the answer each round-6
+// case pins: a convert's open replace of s-ses-A served, a retired fixed name, another session's
+// fixed name and another family's current refused. The controls, each run with a fault and seen
+// failing: a creator whose prefix is not the table's fails the naming row, and a table with no
+// fixed rule fails the convert's case.
 func TestTheSessionCreatorNamesAsTheFamilyTable(t *testing.T) {
 	_, consumers, _ := freshSessionConsumersOnStream(t)
 	names := consumers.fresh.names
@@ -38,10 +38,8 @@ func TestTheSessionCreatorNamesAsTheFamilyTable(t *testing.T) {
 		{"a retired fixed name", consumernames.Record{Current: "session~A", Start: 3, Retired: []string{"s-ses-A"}}, false},
 		{"a current of the listener's durable", consumernames.Record{Current: "listener-m~A", Start: 3}, false},
 	} {
-		own := names.Check("ses-A", c.record)
-		family := consumernames.CheckFamily(consumernames.SessionFamily, "ses-A", c.record)
-		if (own == nil) != c.served || (family == nil) != c.served {
-			t.Errorf("%s: the session creator's fence = %v, CheckFamily = %v; want both served %t", c.name, own, family, c.served)
+		if err := consumernames.CheckFamily(consumernames.SessionFamily, "ses-A", c.record); (err == nil) != c.served {
+			t.Errorf("%s: CheckFamily for the session family = %v; want served %t", c.name, err, c.served)
 		}
 	}
 }

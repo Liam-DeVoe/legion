@@ -71,17 +71,22 @@ func FamilyNaming(family, logical string) (Naming, error) {
 	return LogicalNaming(), nil
 }
 
-// CheckFamily is Names.Check of logical's record in the store of family, by the family's own
-// naming (FamilyNaming), for a reader with no creator's Config: an operator's status, census or
-// cleanup. It answers what the family's creator answers of the record, and its nil says no more
-// than Check's: the record must come from a store read or DecodeKVValue, and a name it gives must
-// pass Owns before anything acts on it.
+// CheckFamily is the family fence (Names.check, the one each creator applies to every record it
+// reads) of logical's record in the store of family, by the family's own naming (FamilyNaming), for
+// a reader with no creator's Config: an operator's status, census or cleanup. It answers what the
+// family's creator answers of the record.
+//
+// Its nil says only that the record's names are of logical's family. It says nothing of the record
+// itself, which must come from a store read or DecodeKVValue (its own key, well-formed fields), nor
+// of the consumers: every session's prefix is "session", so a record of one session passes with
+// another session's consumer as its current. A name the record gives must pass the owner check
+// before anything reads, binds, updates or deletes it, as the creator does.
 func CheckFamily(family, logical string, record Record) error {
 	naming, err := FamilyNaming(family, logical)
 	if err != nil {
 		return err
 	}
-	return (&Names{cfg: Config{Prefix: naming.Prefix, Fixed: naming.Fixed}}).Check(logical, record)
+	return (&Names{cfg: Config{Prefix: naming.Prefix, Fixed: naming.Fixed}}).check(logical, record)
 }
 
 // Naming is n's own naming (Config.Prefix and Config.Fixed), which a test of a family's creator
