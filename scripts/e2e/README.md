@@ -5101,7 +5101,7 @@ A run starts up to twenty, so under a cap on tasks (systemd's `TasksMax`) pin it
 | :--- | :--- |
 | `prerequisites` | as for [`handoff-records.sh`](#handoff-recordssh) |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
-| `driver` | a test binary of `TestCheckStatesLive` (`internal/daemon/check_states_live_test.go`, `-tags e2e`) |
+| `driver` | a test binary of `TestCheckStatesLive` (`internal/daemon/check_states_live_test.go` and the `check_states_live_*_test.go` files beside it, `-tags e2e`) |
 | `proof` | each chosen case below, printing what it drove and read between its own `== <case>` and `ok <case>`; the first that fails ends the run, naming the case and the assertion (`FAIL <case> at <assertion>: …`), and a read that finds nothing it could judge says `UNKNOWN` and what it could not read, and fails its case |
 
 Nothing between the tester and the move is stood in for.

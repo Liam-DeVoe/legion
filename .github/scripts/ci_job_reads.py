@@ -851,16 +851,17 @@ RULES = {
         (f"{ENVOY}/scripts/fixtures/github/*", "internal/contracts/normalize_test.go:2078,2711")),
     f"{ENVOY}/internal/contracts/plan_rating_test.go": reads(
         (f"{FIX}/daemon-api/plan-rating-cases.json", "internal/contracts/plan_rating_test.go:21")),
-    f"{ENVOY}/internal/dispatch/api/check_states_test.go": reads(
+    f"{ENVOY}/internal/dispatch/api/check_states_publish_test.go": reads(
         (CONTRACTS_SRC,
-         "internal/dispatch/api/check_states_test.go:602 runs `bun -e` in ../../../../contracts (:598), importing "
+         "internal/dispatch/api/check_states_publish_test.go:134 runs `bun -e` in ../../../../contracts (:130), importing "
          "./src/index.ts to parse a stored check.state_changed payload with CheckStateChangedEventPayloadSchema"),
         ("packages/contracts/package.json",
-         "internal/dispatch/api/check_states_test.go:602 runs bun in packages/contracts, which reads the package's manifest"),
+         "internal/dispatch/api/check_states_publish_test.go:134 runs bun in packages/contracts, which reads the package's manifest"),
         ("packages/contracts/tsconfig.json",
-         "internal/dispatch/api/check_states_test.go:602 runs bun in packages/contracts, which reads its tsconfig"),
+         "internal/dispatch/api/check_states_publish_test.go:134 runs bun in packages/contracts, which reads its tsconfig")),
+    f"{ENVOY}/internal/dispatch/api/check_states_settle_test.go": reads(
         (f"{ENVOY}/cmd/dispatch/main.go",
-         "internal/dispatch/api/check_states_test.go:1194 parses ../../../cmd/dispatch/main.go for the lease pool's "
+         "internal/dispatch/api/check_states_settle_test.go:267 parses ../../../cmd/dispatch/main.go for the lease pool's "
          "reservations TestTheLeasePoolCountsTheCheckStatesLoop counts")),
     f"{ENVOY}/internal/dispatch/api/copy_lock_order_test.go": [
         run(ENVOY, ["./cmd/dispatch"], "internal/dispatch/api/copy_lock_order_test.go:264 go list -deps -export ./cmd/dispatch in packages/envoy", mode="build")],

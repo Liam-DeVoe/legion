@@ -61,7 +61,7 @@ jobs:
         with:
           persist-credentials: false
       # The package's check states test parses a stored event with @legion/contracts' schema
-      # through bun (internal/dispatch/api/check_states_test.go), and fails without it.
+      # through bun (internal/dispatch/api/check_states_publish_test.go), and fails without it.
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

@@ -6,9 +6,10 @@
 # and the daemon, which takes those events and nothing else of the results, moves the issue to
 # reviewing when every check reads yes at the head the tester's test record names, and back to
 # implementing otherwise, its task naming each check that does not pass with its state and reason.
-# The driver is packages/daemon/internal/daemon/check_states_live_test.go, which this script builds
-# with `-tags e2e`, over localruntime_live_test.go, the runtime that starts a pane with no tmux,
-# and late_completion_live_test.go's model stand-in, which calls the `legion` tool as a model does.
+# The driver is packages/daemon/internal/daemon/check_states_live_test.go and the
+# check_states_live_*_test.go files beside it, which this script builds with `-tags e2e`, over
+# localruntime_live_test.go, the runtime that starts a pane with no tmux, and
+# late_completion_live_test.go's model stand-in, which calls the `legion` tool as a model does.
 #
 # The cases, each on issues of its own, chosen with CHECK_STATES_E2E_CASES (a comma- or
 # space-separated list; every case when it is unset or empty), in this order:
