@@ -837,6 +837,39 @@ test("a node the address names under a row keeps the tree's order among that row
   ).toEqual(shapeOf(tree(undefined), "verification", "plan#b-t1"));
 });
 
+// Under Spec and Plan the tree's lift stops at a transclusion, and a row the view read draws
+// stands at its first placement in the tree's order, which can be one. A node the address names
+// under that row stands under it all the same, whichever read lands first. Here the tree
+// transcludes the plan task t1 under the statement r1 before t1's own place under the issue, with
+// the named comment under each placement.
+test("a node the address names under a row whose first placement is a transclusion stands under that row, whether its filter's view read is held or not", () => {
+  const plan: TreeAnswer = treeAnswer([viewNode("t1", "plan_task", "query", { in: "plan" })], [], {
+    view: "plan",
+  });
+  const task = (transcluded: boolean) =>
+    node(
+      "plan#b-t1",
+      "plan_task",
+      [node("comment-x", "comment", [], { readId: "comment-x", transcluded })],
+      { readId: "CORE-1/plan#t1", transcluded }
+    );
+  const tree = (views: TreeNode["views"]) =>
+    node(
+      "CORE-1",
+      "issue",
+      [statement("spec#b-r1", [task(true)], { readId: "CORE-1/spec#r1" }), task(false)],
+      views === undefined ? {} : { views }
+    );
+
+  expect(shapeOf(tree(undefined), "plan", "comment-x")).toEqual([
+    ["plan#b-t1", undefined, [["comment-x", undefined, []]]],
+  ]);
+  expect(
+    shapeOf(tree({ plan }), "plan", "comment-x"),
+    "the named comment's place once the Plan view read is held"
+  ).toEqual(shapeOf(tree(undefined), "plan", "comment-x"));
+});
+
 // Another part draws the Decisions filter's rows itself and reads its kinds from here.
 test("the Decisions filter's row kinds are the asks and the decisions", () => {
   expect(rowKindsOf("decisions")).toEqual(["ask", "decision"]);

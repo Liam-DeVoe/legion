@@ -44,7 +44,7 @@ function eventOf(
 const ISSUE_EVENTS: readonly DispatchEvent[] = [
   eventOf("comment.created", { body: "A reply.", id: "comment-1", kind: "comment" }, "CORE-1"),
   eventOf("decision.kept", { block_id: "block-1" }, "CORE-1"),
-  eventOf("issue.updated", { changes: ["status"] }, "CORE-1"),
+  eventOf("issue.updated", { changed: ["status"] }, "CORE-1"),
   eventOf("artifact.version", { artifact_id: "artifact-1", number: 2 }, "CORE-1"),
   eventOf("ask.opened", { id: "ask-1" }, "CORE-1"),
   eventOf("issue.claimed", {}, "CORE-1"),
@@ -77,9 +77,9 @@ test("an event of an issue marks its tree and each view stale, and no other issu
   ).toBe(false);
 });
 
-test("an event of a parent's spec marks stale a child's view that holds a node of the parent, and no tree that holds none", () => {
-  const client = new QueryClient();
-  // The child's Verification view carries the parent's requirement as context, read-only.
+/** The child CORE-2's Verification view, which carries its parent CORE-1's requirement as
+ *  context, read-only, as the route answers it. */
+function viewHoldingParent(client: QueryClient): readonly unknown[] {
   const childView = viewKey("CORE-2", "verification");
   const requirement = treeNode("r1", "requirement", null, {
     in: "spec",
@@ -95,6 +95,12 @@ test("an event of a parent's spec marks stale a child's view that holds a node o
       view: "verification",
     })
   );
+  return childView;
+}
+
+test("an event of a parent's spec marks stale a child's view that holds a node of the parent, and no tree that holds none", () => {
+  const client = new QueryClient();
+  const childView = viewHoldingParent(client);
   // The child's whole tree and another issue's tree, each holding nodes of its own issue alone.
   const childTree = issueTreeKey("CORE-2");
   client.setQueryData(
@@ -137,7 +143,7 @@ test("an issue write marks stale each ancestor's tree it names, whose answer hol
     parent,
     treeAnswer([treeNode("CORE-1", "issue", null)], [], { issue: "CORE-1" })
   );
-  const moved = eventOf("issue.updated", { ancestors: ["CORE-1"], changes: ["parent"] }, "CORE-2");
+  const moved = eventOf("issue.updated", { ancestors: ["CORE-1"], changed: ["parent"] }, "CORE-2");
   refreshQueries(client, eventRefreshTargets(moved, "alice"));
   expect(
     client.getQueryState(parent)?.isInvalidated,
@@ -255,38 +261,21 @@ test("a child's comment or message marks stale no tree of its parent that holds 
   }
 });
 
-// A descendant's view carries its ancestor's requirement as context. A version of the
-// ancestor's documents can move the requirement; the ancestor's comment or message moves no node
-// of the ancestor's that the view holds, and the view holds no comment of another issue.
-test("an ancestor's comment marks stale no descendant's view that holds the ancestor's requirement, and its document version does", () => {
-  const cases: readonly (readonly [DispatchEvent, boolean])[] = [
-    [
-      eventOf("comment.created", { body: "A reply.", id: "comment-1", kind: "comment" }, "CORE-1"),
-      false,
-    ],
-    [eventOf("comment.edited", { body: "A reply, reworded.", id: "comment-1" }, "CORE-1"), false],
-    [eventOf("message.created", { body: "Look at the spec.", id: "message-1" }, "CORE-1"), false],
-    [eventOf("artifact.version", { artifact_id: "artifact-spec", number: 2 }, "CORE-1"), true],
+// A descendant's view carries its ancestor's requirement as context, and a version of the
+// ancestor's documents, which can move the requirement, marks the view stale (the case of a
+// parent's spec above). The ancestor's comment or message moves no node of the ancestor's that
+// the view holds, and the view holds no comment of another issue, so neither marks it stale.
+test("an ancestor's comment or message marks stale no descendant's view that holds the ancestor's requirement", () => {
+  const events: readonly DispatchEvent[] = [
+    eventOf("comment.created", { body: "A reply.", id: "comment-1", kind: "comment" }, "CORE-1"),
+    eventOf("comment.edited", { body: "A reply, reworded.", id: "comment-1" }, "CORE-1"),
+    eventOf("message.created", { body: "Look at the spec.", id: "message-1" }, "CORE-1"),
   ];
-  for (const [event, marks] of cases) {
+  for (const event of events) {
     const client = new QueryClient();
-    const childView = viewKey("CORE-2", "verification");
-    const requirement = treeNode("r1", "requirement", null, {
-      in: "spec",
-      issue: "CORE-1",
-      read_only: true,
-      role: "context",
-      text: "Every child is drawn.",
-    });
-    client.setQueryData(
-      childView,
-      treeAnswer([treeNode("CORE-2", "issue", null), requirement], [], {
-        issue: "CORE-2",
-        view: "verification",
-      })
-    );
+    const childView = viewHoldingParent(client);
     refreshQueries(client, eventRefreshTargets(event, "alice"));
-    expect(client.getQueryState(childView)?.isInvalidated, event.type).toBe(marks);
+    expect(client.getQueryState(childView)?.isInvalidated, event.type).toBe(false);
   }
 });
 

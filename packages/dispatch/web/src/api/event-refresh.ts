@@ -387,32 +387,42 @@ const ISSUE_NODE_MOVERS: Readonly<Record<keyof IssueTreeNode, readonly string[]>
   result: MOVED_BY_NO_WRITE,
 };
 
-const ISSUE_NODE_MEMBERS = Object.keys(ISSUE_NODE_MOVERS) as readonly (keyof IssueTreeNode)[];
-
-/** The relations an issue states out of its own node, each named by the field an issue write
- *  names in `changed` when it moves one: its parent (`child_of`, and the `part_of` a parent move
- *  retracts), its waits (`needs`, which a Dispatch of the release before names `blocked_by`),
- *  the issue it repeats, the item it was filed out of, its components (`affects`) and its
- *  priorities (`advances`). A tree read carries each one whose far end its answer holds as a
- *  tuple out of the issue's node. */
-const ISSUE_NODE_RELATIONS: readonly string[] = [
+/** The relations an issue states out of its own node that are edges of the reference graph,
+ *  each named by the field an issue write names in `changed` when it moves one: its parent
+ *  (`child_of`, and the `part_of` a parent move retracts), its waits (`needs`, which a Dispatch
+ *  of the release before names `blocked_by`), the issue it repeats, the item it was filed out of
+ *  and its components (`affects`). */
+const ISSUE_EDGE_FIELDS: readonly string[] = [
   "parent",
   "needs",
   "blocked_by",
   "duplicate_of",
   "filed_from",
   "components",
-  "advances",
 ];
+
+/** The relations an issue states out of its own node: its edges of the reference graph
+ *  (`ISSUE_EDGE_FIELDS`), and its priorities (`advances`), which are none. A tree read carries
+ *  each one whose far end its answer holds as a tuple out of the issue's node. */
+const ISSUE_NODE_RELATIONS: readonly string[] = [...ISSUE_EDGE_FIELDS, "advances"];
+
+/** Every field an issue write names in `changed` that moves the issue's node in a tree read of
+ *  another issue: a relation out of it (`ISSUE_NODE_RELATIONS`) or a member of it
+ *  (`ISSUE_NODE_MOVERS`). */
+const ISSUE_NODE_FIELDS: ReadonlySet<string> = new Set([
+  ...ISSUE_NODE_RELATIONS,
+  ...Object.values(ISSUE_NODE_MOVERS).flat(),
+]);
 
 /**
  * What a node of an issue is, in a tree read of another issue, for which of the issue's events
  * can move it: the issue's own node; one of its documents, which an answer names only as the
- * parent of a node whose parent it does not hold; a block of one of its documents, a check apart,
- * since a result stands under a check; a result; an ask, a comment or a message, or a block of
- * one, which an answer names only as a parent (`treeIssueOf` names no issue of one, so no answer
- * holds one of another issue); and any other node - a lens, a finding, a risk, a constraint, a
- * person - which only writes that append no event make.
+ * parent of a node whose parent it does not hold; a block of one of its documents, or a finding,
+ * which the route keys as a block, a check apart, since a result stands under a check; a result;
+ * an ask, a comment or a message, or a block of one, whose issue an answer names only where it
+ * is a node's parent (`treeIssueOf` names no issue of one, so no answer marks one with its
+ * issue); and any other node - a lens, a risk, a constraint, a person - which only writes that
+ * append no event make.
  */
 const EVERY_KIND = [
   "issue",
@@ -546,10 +556,10 @@ const TREE_NODES_MOVED: Readonly<Record<EventType, readonly HeldKind[] | typeof 
 
 /**
  * The kinds of the issue's nodes an event of the issue can move (`TREE_NODES_MOVED`). A write
- * moves the issue's node where it moved a member of it (`ISSUE_NODE_MOVERS`) or a relation out of
- * it (`ISSUE_NODE_RELATIONS`), and every kind where it moved the parent, which decides whether a
- * tree reads the issue's nodes at all: the route reads the nodes of the issues under the issue
- * read alone. A write that does not say what it moved may have moved the parent.
+ * moves the issue's node where it moved a member of it or a relation out of it
+ * (`ISSUE_NODE_FIELDS`), and every kind where it moved the parent, which decides whether a tree
+ * reads the issue's nodes at all: the route reads the nodes of the issues under the issue read
+ * alone. A write that does not say what it moved may have moved the parent.
  */
 function treeNodesMoved(event: DispatchEvent): readonly HeldKind[] {
   const moved = TREE_NODES_MOVED[event.type];
@@ -560,11 +570,7 @@ function treeNodesMoved(event: DispatchEvent): readonly HeldKind[] {
   if (changes === undefined || changes.has("parent")) {
     return EVERY_KIND;
   }
-  const changed = (field: string) => changes.has(field);
-  return ISSUE_NODE_RELATIONS.some(changed) ||
-    ISSUE_NODE_MEMBERS.some((member) => ISSUE_NODE_MOVERS[member].some(changed))
-    ? ["issue"]
-    : [];
+  return [...changes].some((field) => ISSUE_NODE_FIELDS.has(field)) ? ["issue"] : [];
 }
 
 /** Every tree read and every view of one (`["issue-tree", key, view]`) whose answer holds a node
@@ -909,8 +915,8 @@ function issueChanges(event: DispatchEvent): ReadonlySet<string> | undefined {
  * upload or title correction, which moves the title every reference to the document shows; an
  * ask's creation or edit (a settled ask block among them), a comment or message body -
  * an answer's reply body is indexed like any other - an anchor refresh, a follower change, a child
- * link, and an issue write that moved a structural edge (its parent, its blockers, its components)
- * or the title every one of them shows as its excerpt.
+ * link, and an issue write that moved a structural edge (`ISSUE_EDGE_FIELDS`: its parent, its
+ * blockers, its components) or the title every one of them shows as its excerpt.
  */
 function changesReferenceGraph(event: DispatchEvent): boolean {
   switch (event.type) {
@@ -935,10 +941,7 @@ function changesReferenceGraph(event: DispatchEvent): boolean {
     case "issue.updated": {
       const changes = issueChanges(event);
       return (
-        changes === undefined ||
-        ["parent", "needs", "blocked_by", "duplicate_of", "filed_from", "components", "title"].some(
-          (field) => changes.has(field)
-        )
+        changes === undefined || [...ISSUE_EDGE_FIELDS, "title"].some((field) => changes.has(field))
       );
     }
     default:

@@ -100,6 +100,13 @@ const COUNTED_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
   verification: ["check"],
 };
 
+/** Whether `filter` draws a node at every placement the tree has it: Verification draws a check
+ *  under every requirement it serves, as the outline does; every other filter draws a node at
+ *  its own place alone. */
+function drawsEveryPlacement(filter: Filter): boolean {
+  return filter === "verification";
+}
+
 /** No node named by the address, which is every address but a deep link's. */
 const EMPTY: ReadonlySet<string> = new Set();
 
@@ -277,9 +284,6 @@ function filterView(
   const rows = ROW_KINDS[filter];
   const contextKinds = CONTEXT_KINDS[filter];
   const counted = COUNTED_KINDS[filter];
-  // Verification draws a check under every requirement it serves, as the outline does; every
-  // other filter draws a node at its own place alone.
-  const everyPlacement = filter === "verification";
   const context = new Set<string>();
   const matched = new Set<string>();
   // The row `node` is, with the rows of its branch under it, where the filter draws it.
@@ -301,6 +305,7 @@ function filterView(
     const below = parts.flatMap((part) => part.rows);
     return { ...node, children: below, held: heldBy(below) };
   };
+  const everyPlacement = drawsEveryPlacement(filter);
   // The issue is no row of a filter, and no row's parent line: the page is the issue.
   const top = root.children.flatMap((child) => lift(child, everyPlacement, rowOf).rows);
   return {
@@ -402,7 +407,7 @@ function heldFilterView(
     const id = treeOf.get(node)?.id;
     if (id !== undefined && parent !== undefined && rowIds.has(parent)) homes.set(id, [parent]);
   }
-  for (const tuple of filter === "verification" ? (answer.tuples ?? []) : []) {
+  for (const tuple of drawsEveryPlacement(filter) ? (answer.tuples ?? []) : []) {
     const to = treeNodeOf(tuple.to.id)?.id;
     const from = treeNodeOf(tuple.from.id)?.id;
     if (tuple.kind !== "serves" || to === undefined || from === undefined || !rowIds.has(to)) {
@@ -432,11 +437,16 @@ function heldFilterView(
   // draws it, at each place the tree has it (every placement under Verification, as there),
   // under the nearest row of the view above it or at the top, carrying its parent's line where
   // that parent is no row. What the tree holds under each placement of a row of the view is kept
-  // by that placement (`liftedAt`). An address that names no node lifts nothing.
+  // by that placement (`liftedAt`), and by the row's id at its first placement the lift reaches
+  // (`liftedOf`), for a placement it stops at: under Spec and Plan it stops at a transclusion,
+  // which can come first in the tree's order. An address that names no node, or only rows of the
+  // view, lifts nothing: the view read places every row.
   const liftedAt = new Map<TreeNode, readonly Lifted[]>();
+  const liftedOf = new Map<string, readonly Lifted[]>();
   const treeRowOf = (node: TreeNode, parts: readonly Lifted[]): TreeNode | undefined => {
     if (rowIds.has(node.id)) {
       liftedAt.set(node, parts);
+      if (!liftedOf.has(node.id)) liftedOf.set(node.id, parts);
       return node;
     }
     // A named node with what its branch gave, which `amongView` draws (`namedRow`).
@@ -444,10 +454,9 @@ function heldFilterView(
       ? { ...node, children: parts.flatMap((part) => part.rows) }
       : undefined;
   };
-  const liftedTop =
-    named.size === 0
-      ? undefined
-      : root.children.map((child) => lift(child, filter === "verification", treeRowOf));
+  const liftedTop = [...named].every((id) => rowIds.has(id))
+    ? undefined
+    : root.children.map((child) => lift(child, drawsEveryPlacement(filter), treeRowOf));
   // The rows the view draws at one place, each of `nodes` drawn by `drawNode`, with each node the
   // address names that the tree holds at that place (`lifted`), in the tree's order: before the
   // first of the view's rows here that comes after it in the tree, else after them all. A row of
@@ -508,9 +517,8 @@ function heldFilterView(
         : placements.get(`${held.id} ${home.id}`)) ?? held;
     if (tree === undefined || above.has(tree.id)) return { drawn: false, rows: [] };
     const inner = new Set([...above, tree.id]);
-    const parts = amongView(below.get(tree.id) ?? [], liftedAt.get(tree), (child) =>
-      draw(child, tree, inner)
-    );
+    const lifted = liftedAt.get(tree) ?? liftedOf.get(tree.id);
+    const parts = amongView(below.get(tree.id) ?? [], lifted, (child) => draw(child, tree, inner));
     const own = named.has(tree.id) || (node.role === "query" && holds(tree, wanted));
     const placing =
       !own &&

@@ -599,30 +599,37 @@ export function askState(ask: Ask): AskState | undefined {
   return words[token] === undefined ? undefined : (token as AskState);
 }
 
-/** Each record's text sources (`textSourceOf`), by the record they were made for and then by
- *  their kind, since one record can name more than one: an ask block is its ask and a block of
- *  its document. A re-read whose answer is unchanged keeps each record's object, so every build
- *  of the drafts hands a row the source object it handed it before, and the row's words are not
- *  drawn again for a source that only looks new; and a source goes when its record does. */
-const recordSources = new WeakMap<object, Map<TextSource["kind"], TextSource>>();
+/** Each text source (`textSourceOf`) a row was handed, by its kind, since one object can stand
+ *  for more than one - an ask block's reading is its ask's text and a block of its document - and
+ *  then by the object the row draws: the reading of its words, else the node or the entry it was
+ *  drafted from. A re-read whose answer is unchanged keeps each of these objects, and one whose
+ *  node changed beside its words keeps the node's reading, so every build of the drafts hands a
+ *  row the source object it handed it before, and the row's words are not drawn again for a
+ *  source that only looks new; and a source goes when that object does. */
+const recordSources: Readonly<Record<TextSource["kind"], WeakMap<object, TextSource>>> = {
+  artifact: new WeakMap(),
+  ask: new WeakMap(),
+  comment: new WeakMap(),
+  message: new WeakMap(),
+};
 
-/** The text source of record `id` of `kind` (`textSourceOf`) for `record`, the record object the
- *  caller holds: the one object `recordSources` holds for that record and kind, made again only
- *  where `id` is not the one it was made with, since the reads an id is found through can change
- *  while the record stays; none where there is no id, as `textSourceOf` answers. */
+/** The text source of record `id` of `kind` (`textSourceOf`) for `drawn`, the object the row it
+ *  is handed to draws - its reading, else the node or the entry it is drafted from: the one
+ *  object `recordSources` holds for that object and kind, made again only where `id` is not the
+ *  one it was made with, since the reads an id is found through can change while the object
+ *  stays; none where there is no id, as `textSourceOf` answers. */
 export function stableSourceOf(
-  record: object,
+  drawn: object,
   kind: TextSource["kind"],
   id: string | undefined
 ): TextSource | undefined {
   if (id === undefined) return undefined;
-  const byKind = recordSources.get(record);
-  const kept = byKind?.get(kind);
+  const sources = recordSources[kind];
+  const kept = sources.get(drawn);
   if (kept?.id === id) return kept;
   const source = textSourceOf(kind, id);
   if (source === undefined) return undefined;
-  if (byKind === undefined) recordSources.set(record, new Map([[kind, source]]));
-  else byKind.set(kind, source);
+  sources.set(drawn, source);
   return source;
 }
 
