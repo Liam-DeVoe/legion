@@ -20,9 +20,8 @@ func setBy(who string) putSetter {
 	return putSetter{who: who}
 }
 
-// noSetterRecorded is an object that records no setter - a follower, a repository mapping, an
-// architecture source - whose equal PUT is a no-op whoever sends it, since no caller is recorded as
-// having set it.
+// noSetterRecorded is an object that records no setter - a follower, an architecture source -
+// whose equal PUT is a no-op whoever sends it, since no caller is recorded as having set it.
 var noSetterRecorded = putSetter{anyone: true}
 
 // putChangesNothing reports whether a /api/v2 PUT is the no-op of dispatch://INFRA-4071/spec R8:

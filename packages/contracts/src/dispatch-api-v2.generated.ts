@@ -1062,7 +1062,7 @@ export interface paths {
     /** @description List the issues of every project, filtered. project=<key>, repeatable, keeps those projects' issues, with no default project; GET /api/v2/projects/{key}/issues lists one project's. ref=<KEY or owner/repo#n> keeps the issue a key names, or every issue linked to that GitHub issue or pull request (an issue imported from it, or one a link names), none where nothing is; any other ref is 400 INVALID_ISSUE_REF. status=, repeatable, keeps the issues standing in any of those statuses (a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue); parent=<key> an issue's children; label=, repeatable, the issues carrying every label named; priority=, repeatable, 0 to 3 or none for unset; advances=, repeatable, a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited, several a union; open=true the open issues; updated_from and updated_to window updated_at, and closed_from and closed_to closed_at, RFC3339, each from inclusive and to exclusive, so an open issue matches no closed window (a closed_to at or before closed_from is 400 INVALID_CLOSED_WINDOW, an updated_to at or before updated_from 400 INVALID_QUERY); route_status=live, holder_unresponsive, no_holder or unknown keeps the open issues whose route stands so (503 ENVOY_UNAVAILABLE or ENVOY_REFILLING where the listener cannot judge a route); pinned=true the issues the caller pinned, which needs the person scope; moved=true adds moved_at and moved_by to each issue standing in backlog or icebox, when it was moved there and by whom. Issues come in lifecycle order of their status, then by rank, creation time and key. Each is one row: its own fields, its route's reach (route_status, route_holder, route_status_reason), closed_at, open_asks and progress {tasks, children}, each null when it has none. limit 1 to 250 (default 50) and offset; {items, total, limit, offset}, total counting every issue the filters match. */
     get: operations["getApiV2Issues"];
     put?: never;
-    /** @description Create an issue {project, title, parent?, blocked_by?, advances?, external?, force?, spec?, labels?, priority?, assignee?, components?, repo?}, a bearer naming its session in actor: a native issue in project, or one imported from a GitHub owner/repo#n named in external, whose project is the repository's mapping (400 PROJECT_UNMAPPED with no mapping and no default project, 400 EXTERNAL_PROJECT_MISMATCH for another project named beside it). assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. An unforced create whose title is a near copy of another issue's is 409 POSSIBLE_DUPLICATE with the candidates. Answers 201 the issue with advice beside it, and 200 the issue an external ref already imported. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the advice's suggestions say whether it found related items (outcome found, none or not_made with the reason in missing), how it searched, the three items most like the new issue with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches). A blocked_by that would make the new issue wait on itself through its parent is 409 ISSUE_CYCLE. */
+    /** @description Create an issue {project, title, parent?, blocked_by?, advances?, external?, force?, spec?, labels?, priority?, assignee?, components?, repo?}, a bearer naming its session in actor: a native issue in project, or one imported from a GitHub owner/repo#n named in external into project. Every create names its project, an import included: external with no project, or an empty one, is 400 INVALID_ISSUE, and an external ref already linked to an issue of another project is 400 EXTERNAL_PROJECT_MISMATCH. assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. An unforced create whose title is a near copy of another issue's is 409 POSSIBLE_DUPLICATE with the candidates. Answers 201 the issue with advice beside it, and 200 the issue an external ref already imported. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the advice's suggestions say whether it found related items (outcome found, none or not_made with the reason in missing), how it searched, the three items most like the new issue with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches). A blocked_by that would make the new issue wait on itself through its parent is 409 ISSUE_CYCLE. */
     post: operations["postApiV2Issues"];
     delete?: never;
     options?: never;
@@ -1856,7 +1856,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List every project by key: {key, name, open_asks, gated_steps, created_at}, open_asks the open asks on its open issues and its documents, gated_steps the design-gate steps the Legion deployment that serves it gates, in the order it gates them ([] for none). include=default_assignee adds default_assignee, the person a project's unowned work lands on: who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to, and who a question on an issue nobody holds reaches, which needs the person scope (403 OAUTH_SCOPE_REQUIRED otherwise): the default names a person. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. */
+    /** @description List every project by key: {key, name, open_asks, gated_steps, default_repository?, created_at}, open_asks the open asks on its open issues and its documents, gated_steps the design-gate steps the Legion deployment that serves it gates, in the order it gates them ([] for none), default_repository the repository, owner/name, an issue of the project resolves to when neither the issue nor an issue above it names one, absent for a project with none. include=default_assignee adds default_assignee, the person a project's unowned work lands on: who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to, and who a question on an issue nobody holds reaches, which needs the person scope (403 OAUTH_SCOPE_REQUIRED otherwise): the default names a person. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. */
     get: operations["getApiV2Projects"];
     put?: never;
     /** @description Create a project {key, name, default_assignee?}, a bearer naming its session in actor. Every project names a default assignee, the person a project's unowned work lands on: who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to, and who a question on an issue nobody holds reaches. default_assignee is the email of a person who has signed in, and a call that names none takes the person creating the project, else the person its credential acts for. A login nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED. A credential that acts for nobody and names no default_assignee, a key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate, or a name with no visible character is 400 INVALID_PROJECT; a name over 80 characters is 400 CAP_EXCEEDED; a key that already exists is 409 PROJECT_EXISTS. A credential scoped to one project is refused, since a project belongs to the deployment. Answers 201 the project with the default_assignee the create stored, and appends project.created. */
@@ -1880,7 +1880,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Change a project {default_assignee?, gated_steps?}, a bearer naming its session in actor. default_assignee moves the person a project's unowned work lands on: who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to, and who a question on an issue nobody holds reaches to another person, the email of a person who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise), and appends settings.project_default_assignee.updated naming both people; a body naming default_assignee at all, null included, needs the person scope (403 OAUTH_SCOPE_REQUIRED otherwise), and since a project always names a person, the default cannot be cleared (null leaves it as it stands). gated_steps publishes the design-gate steps the Legion deployment that serves the project gates, a list of decisions, criteria and spec in the order it gates them or [] for none, which needs no scope: the deployment's daemon writes it at every boot. The list the project already holds changes nothing and appends no event; another list appends project.updated. A body that names neither field, a blank default_assignee, and a step that is none of the three or is named twice are 400 INVALID_PROJECT. Both fields are written in one transaction. Answers the project as GET /api/v2/projects lists it, with default_assignee where the patch named it. 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    /** @description Change a project {default_assignee?, gated_steps?, default_repository?}, a bearer naming its session in actor. default_assignee moves the person a project's unowned work lands on: who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to, and who a question on an issue nobody holds reaches to another person, the email of a person who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise), and appends settings.project_default_assignee.updated naming both people; a body naming default_assignee at all, null included, needs the person scope (403 OAUTH_SCOPE_REQUIRED otherwise), and since a project always names a person, the default cannot be cleared (null leaves it as it stands). gated_steps publishes the design-gate steps the Legion deployment that serves the project gates, a list of decisions, criteria and spec in the order it gates them or [] for none, which needs no scope: the deployment's daemon writes it at every boot. default_repository sets the repository, owner/name, an issue of the project resolves to when neither the issue nor an issue above it names one: "owner/name" sets it, read lowercase with one trailing .git trimmed and stored under its new name where the repository was renamed, and null clears it; a value that is not a repository GitHub could hold is 400 INVALID_PROJECT. The default belongs to the deployment and needs no scope, so a credential scoped to one project is refused it (403 PROJECT_SCOPE_DEPLOYMENT), the project this path names included. A list or a default repository the project already holds changes nothing and appends no event; another appends project.updated. A body that names none of the three fields, a blank default_assignee, and a step that is none of the three or is named twice are 400 INVALID_PROJECT. Every field is written in one transaction. Answers the project as GET /api/v2/projects lists it, with default_assignee where the patch named it. 404 PROJECT_NOT_FOUND for a project that does not exist. */
     patch: operations["patchApiV2ProjectsByKey"];
     trace?: never;
   };
@@ -2133,29 +2133,11 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the GitHub repository to project mappings by repository, of every project: {repo, project, default, renamed_to, created_by, created_at}, default whether it is its project's default repository and renamed_to the owner/name it is called today, null for one that was never renamed. project=<key>, repeatable, keeps the mappings of those projects, with no default project. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. */
+    /** @description Read only: the GitHub repository to project mappings as the last release left them, by repository, of every project: {repo, project, default, renamed_to, created_by, created_at}, default whether it was its project's default repository and renamed_to the owner/name it is called today, null for one that was never renamed. Nothing writes them: PATCH /api/v2/projects/{key} sets a project's default repository (default_repository). project=<key>, repeatable, keeps the mappings of those projects, with no default project. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. */
     get: operations["getApiV2Repositories"];
     put?: never;
     post?: never;
     delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/v2/repositories/{owner}/{repo}": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    /** @description Map a GitHub repository to a project {project, default?, renamed_to?}, a bearer naming its session in actor; the repository is read lowercase with one trailing .git trimmed, and its owner and name are held to the characters GitHub allows, the name, so read, never . or .. or empty or longer than 100 characters. default true makes it the project's one default, demoting the one before, and absent keeps the mapping's own while its project is unchanged. renamed_to is the owner/name this repository is called today, which every comparison of a repository canonicalises through: absent or null leaves the stored one alone, "" clears it, and a pair the path's rule refuses, a pair naming this repository, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is 400 INVALID_REPO_PROJECT, as are a path that rule refuses and a project that is not a key. A mapping issues name as their repository moves like any other, since an issue's own repository needs no mapping; 404 NOT_FOUND for a project that does not exist. Each mapping the write changes appends settings.repo_project.updated on its project, and a moved one deleted true on the project it left. A mapping records no setter, so a PUT that would leave it exactly as it stands, by any caller, answers it and writes nothing. A credential scoped to one project is refused. Answers 200 the mapping. */
-    put: operations["putApiV2RepositoriesByOwnerByRepo"];
-    post?: never;
-    /** @description Remove the mapping stored under the path's own spelling, a bearer naming its session in actor, and append settings.repo_project.updated with deleted true on the project. The path's two segments, as unescaped, are compared byte for byte with the stored name: acme/x removes acme/x, and acme/x.git removes a mapping stored as acme/x.git and never acme/x, so the same DELETE sent again finds nothing. An issue's own repository needs no mapping, so an issue that names the repository keeps it; one that resolved to the mapping as its project's default resolves to no repository until the project has another default. A credential scoped to one project is refused, since a mapping belongs to the deployment. 204. 404 REPOSITORY_NOT_FOUND for a spelling no mapping is stored under, a value that is no owner/name among them. */
-    delete: operations["deleteApiV2RepositoriesByOwnerByRepo"];
     options?: never;
     head?: never;
     patch?: never;
@@ -2168,7 +2150,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository, read from GitHub on every call: {installed}, false when GitHub answers 404, for a repository no mapping names too. 400 INVALID_REPO_PROJECT, before GitHub is asked anything, when the path's owner or name has a character GitHub does not allow or the name is . or .. or empty or longer than 100 characters (a trailing .git trimmed). 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure. */
+    /** @description Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository, read from GitHub on every call: {installed}, false when GitHub answers 404, for a repository no mapping names too. 400 INVALID_REPOSITORY, before GitHub is asked anything, when the path's owner or name has a character GitHub does not allow or the name is . or .. or empty or longer than 100 characters (a trailing .git trimmed). 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure. */
     get: operations["getApiV2RepositoriesByOwnerByRepoAppInstallation"];
     put?: never;
     post?: never;
@@ -3670,7 +3652,7 @@ export interface components {
       labels?: string[] | null;
       parent?: null | string;
       priority?: number | null;
-      project?: string;
+      project: string;
       repo?: string | null;
       spec?: null | string;
       title?: string;
@@ -3722,6 +3704,7 @@ export interface components {
       /** Format: date-time */
       created_at: string;
       default_assignee: string;
+      default_repo?: string;
       gated_steps: string[] | null;
       key: string;
       name: string;
@@ -5550,6 +5533,7 @@ export interface components {
     PatchProjectV2Input: {
       actor?: components["schemas"]["Actor"] | null;
       default_assignee?: null | string;
+      default_repository?: string | null;
       gated_steps?: null | ("decisions" | "criteria" | "spec")[];
     };
     PersonSignInResp: {
@@ -5688,6 +5672,7 @@ export interface components {
       /** Format: date-time */
       created_at: string;
       default_assignee?: string;
+      default_repository?: string;
       gated_steps: string[] | null;
       key: string;
       name: string;
@@ -5700,12 +5685,6 @@ export interface components {
     PutLegionSettingInput: {
       actor?: components["schemas"]["Actor"] | null;
       state_url: string;
-    };
-    PutRepoProjectInput: {
-      actor?: components["schemas"]["Actor"] | null;
-      default?: null | boolean;
-      project: string;
-      renamed_to?: null | string;
     };
     QueryKeyUnknownBody: {
       code: string;
@@ -13855,104 +13834,6 @@ export interface operations {
       };
     };
   };
-  putApiV2RepositoriesByOwnerByRepo: {
-    parameters: {
-      query?: {
-        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
-        session?: string;
-      };
-      header?: never;
-      path: {
-        owner: string;
-        repo: string;
-      };
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        "application/json": components["schemas"]["PutRepoProjectInput"];
-      };
-    };
-    responses: {
-      /** @description OK */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["RepoProject"];
-        };
-      };
-      /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json":
-            | components["schemas"]["QueryKeyUnknownBody"]
-            | components["schemas"]["ErrorBody"];
-        };
-      };
-      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
-      default: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorBody"];
-        };
-      };
-    };
-  };
-  deleteApiV2RepositoriesByOwnerByRepo: {
-    parameters: {
-      query?: {
-        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
-        session?: string;
-      };
-      header?: never;
-      path: {
-        owner: string;
-        repo: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: {
-      content: {
-        "application/json": components["schemas"]["ActorInput"];
-      };
-    };
-    responses: {
-      /** @description No Content */
-      204: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-      /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json":
-            | components["schemas"]["QueryKeyUnknownBody"]
-            | components["schemas"]["ErrorBody"];
-        };
-      };
-      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
-      default: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorBody"];
-        };
-      };
-    };
-  };
   getApiV2RepositoriesByOwnerByRepoAppInstallation: {
     parameters: {
       query?: {
@@ -14888,7 +14769,6 @@ export type ProgressCount = components["schemas"]["ProgressCount"];
 export type ProjectV2 = components["schemas"]["ProjectV2"];
 export type PutArchitectureSourceInput = components["schemas"]["PutArchitectureSourceInput"];
 export type PutLegionSettingInput = components["schemas"]["PutLegionSettingInput"];
-export type PutRepoProjectInput = components["schemas"]["PutRepoProjectInput"];
 export type QueryKeyUnknownBody = components["schemas"]["QueryKeyUnknownBody"];
 export type QueuedMessage = components["schemas"]["QueuedMessage"];
 export type QueuedMessages = components["schemas"]["QueuedMessages"];

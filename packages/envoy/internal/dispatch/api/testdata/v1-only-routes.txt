@@ -5,7 +5,9 @@
 # row /api/v1 alone serves that this list does not hold, and a line no row of v1Rows is.
 #
 # It holds the 184 rows of c8a44f97's testdata/routes.txt that are no rows of the INFRA-979 tree
-# (v2Infra979Rows: those five are served in both versions), and each row another pull request
+# (v2Infra979Rows: those five are served in both versions), less the two a pull request merged
+# into main took out of /api/v1 (#4457 removed PUT and DELETE
+# /api/v1/settings/repo-projects/{owner}/{repo}, so 182), and each row another pull request
 # merged into main before /api/v2's change merged. Such a row is added here at the forward merge
 # that brings it, with its successor and its route-map entry in the same commit, and ends in a
 # ` # ` note naming that pull request: it is outside the bound of 137 /api/v2 routes for the rows
@@ -184,6 +186,7 @@ GET /api/v1/projects/{key}/artifacts/{slug}/text
 POST /api/v1/projects/{key}/artifacts/{slug}/versions
 GET /api/v1/projects/{key}/artifacts/{slug}/versions/{number}
 PUT /api/v1/projects/{key}/default-assignee
+PUT /api/v1/projects/{key}/default-repository # #4457, each project has an optional default repository, and Dispatch writes no repository mapping
 PUT /api/v1/projects/{key}/gated-steps
 GET /api/v1/projects/{key}/plans # #4488, each retro rates the plan its issue ran
 GET /api/v1/projects/{key}/related
@@ -201,8 +204,6 @@ GET /api/v1/settings/architecture-sources
 GET /api/v1/settings/new-issue
 GET /api/v1/settings/project-default-assignees
 GET /api/v1/settings/repo-projects
-DELETE /api/v1/settings/repo-projects/{owner}/{repo}
-PUT /api/v1/settings/repo-projects/{owner}/{repo}
 GET /api/v1/signins
 POST /api/v1/signins/{id}/revoke
 GET /api/v1/users

@@ -9,10 +9,10 @@
 // (internal/dispatch/legion). The path names the project, but writing one belongs to the
 // deployment rather than to that project — it points Dispatch at a host, which a credential that
 // may write one project's issues has no business doing — so the PUT and the DELETE are classed
-// scopeDeployment beside the repository-mapping rows, not scopeProject (v2Infra979Rows, the rows'
-// Scope).
+// scopeDeployment beside the project's default-repository row, not scopeProject (v2Infra979Rows,
+// the rows' Scope).
 //
-// Unlike putRepoProject, and like putDeliverySettings, these write no event. The write belongs to
+// Like putDeliverySettings, these write no event. The write belongs to
 // the deployment, so there is no project whose event it would be, and events/broker.go's
 // eventOwnerKey refuses an ownerless event; the row's own created_by and updated_at are the
 // record of who set it and when.

@@ -2,22 +2,24 @@ package api
 
 // v2_projects.go is the projects, architecture, repositories, priorities and deployment settings
 // of /api/v2 (R1 of dispatch://INFRA-4071/spec): the projects and the patch of
-// one, which takes the default assignee and the gated steps two PUTs of /api/v1 wrote (the route
-// map's J16); a project's architecture, its sources and the one sync route the three syncs of
-// /api/v1 become (J15); the finished issues with their plans and ratings, a row #4488 added; the
-// related-item search; the near-copy gate's records, in the envelope (two rows #4103 added, which
-// no row of the route map names); the repository mappings and the App's installation on one; the
-// priorities and the acts of one (J29); the three deployment settings (J19); and the counts of the
-// related-item checks (J30). Every route runs the work its /api/v1 route runs (createProjectFrom,
-// writeProjectDefaultAssignee, writeProjectGatedSteps, getArchitectureTree, querySources,
-// putArchitectureSourceFrom, deleteArchitectureSourceAs, syncProjectSources,
-// projectFinishedIssues, answerRelated, readNearCopyCheck, putRepoProjectFrom, deleteRepoProjectAs,
-// getAppInstallation, readPriorities, createPriorityFrom, patchPriorityFrom, deletePriorityAs,
-// priorityActsOf, getNewIssueSettings, getCredentialCapabilities, getGoingCapability,
-// relatedChecksReportOf), each path object checked first and answered with its own 404 (R7); the
-// app-installation read's {owner}/{repo} keeps the answer /api/v1 gives it (R7).
+// one, which takes the default assignee, the gated steps and the default repository three PUTs of
+// /api/v1 wrote (the route map's J16); a project's architecture, its sources and the one sync
+// route the three syncs of /api/v1 become (J15); the finished issues with their plans and
+// ratings, a row #4488 added; the related-item search; the near-copy gate's records, in the
+// envelope (two rows #4103 added, which no row of the route map names); the read-only repository
+// mappings the last release left and the App's installation on one repository; the priorities and
+// the acts of one (J29); the three deployment settings (J19); and the counts of the related-item
+// checks (J30). Every route runs the work its /api/v1 route runs (createProjectFrom,
+// writeProjectDefaultAssignee, writeProjectGatedSteps, writeProjectDefaultRepository,
+// getArchitectureTree, querySources, putArchitectureSourceFrom, deleteArchitectureSourceAs,
+// syncProjectSources, projectFinishedIssues, answerRelated, readNearCopyCheck, getAppInstallation,
+// readPriorities, createPriorityFrom, patchPriorityFrom, deletePriorityAs, priorityActsOf,
+// getNewIssueSettings, getCredentialCapabilities, getGoingCapability, relatedChecksReportOf), each
+// path object checked first and answered with its own 404 (R7); the app-installation read's
+// {owner}/{repo} keeps the answer /api/v1 gives it (R7).
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -41,7 +43,6 @@ import (
 var (
 	priorityMissingRefusal      = apicode.Refusal{Condition: apicode.PriorityMissing, Code: apicode.PriorityNotFound}
 	nearCopyCheckMissingRefusal = apicode.Refusal{Condition: apicode.NearCopyCheckMissing, Code: apicode.NearCopyCheckNotFound}
-	repositoryMissingRefusal    = apicode.Refusal{Condition: apicode.RepositoryMissing, Code: apicode.RepositoryNotFound}
 )
 
 // projectDefaultAssigneeText is what the routes that read or write a project's default assignee
@@ -54,20 +55,28 @@ const projectDefaultAssigneeText = "the person a project's unowned work lands on
 const architectureSourceText = "each source {project, repo, branch, enabled, created_by, created_at, last_sync_at, " +
 	"last_commit, last_error, components}, components how many components the project holds from it"
 
+// projectDefaultRepositoryText is what the routes that read or write a project's default repository
+// say of it.
+const projectDefaultRepositoryText = "the repository, owner/name, an issue of the project resolves to when neither " +
+	"the issue nor an issue above it names one"
+
 // v2ProjectRows are the project, architecture, repository, priority and settings routes: rows 147
-// and 182; 148; 166 and 167; 149; 150, 152 and 178; 154; 155; 151, 153 and 156; 168 and 169; the
-// plans row of #4488 and the two near-copy rows of #4103; 183; 184; 185; 73; 142; 143; 144; 145;
-// 146; 181; 63; 74; and 172 of the route map.
+// and 182; 148; 166 and 167, with the default repository's PUT #4457 added; 149; 150, 152 and 178;
+// 154; 155; 151, 153 and 156; 168 and 169; the plans row of #4488 and the two near-copy rows of
+// #4103; 183; 73; 142; 143; 144; 145; 146; 181; 63; 74; and 172 of the route map. Rows 184 and 185,
+// the repository mapping writes, are gone with /api/v1's, since #4457 Dispatch writes no mapping.
 func (s *server) v2ProjectRows() []routeRow {
 	person := routeScopeSet{model.ScopePerson}
 	return []routeRow{
 		{
 			Method: http.MethodGet, Pattern: "/projects", Auth: authAny, Versions: onlyV2,
-			Description: "List every project by key: {key, name, open_asks, gated_steps, created_at}, open_asks the open " +
-				"asks on its open issues and its documents, gated_steps the design-gate steps the Legion deployment that " +
-				"serves it gates, in the order it gates them ([] for none). include=default_assignee adds default_assignee, " +
-				projectDefaultAssigneeText + ", which needs the person scope (403 OAUTH_SCOPE_REQUIRED otherwise): the default " +
-				"names a person. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}.",
+			Description: "List every project by key: {key, name, open_asks, gated_steps, default_repository?, created_at}, " +
+				"open_asks the open asks on its open issues and its documents, gated_steps the design-gate steps the Legion " +
+				"deployment that serves it gates, in the order it gates them ([] for none), default_repository " +
+				projectDefaultRepositoryText + ", absent for a project with none. include=default_assignee adds " +
+				"default_assignee, " + projectDefaultAssigneeText + ", which needs the person scope (403 " +
+				"OAUTH_SCOPE_REQUIRED otherwise): the default names a person. limit 1 to 200 (default 50) and offset; " +
+				"{items, total, limit, offset}.",
 			Handler:  s.listProjectsV2,
 			Resource: "projects", Kind: kindCollection, Key: "{key}",
 			Query: projectListV2Query{},
@@ -99,19 +108,24 @@ func (s *server) v2ProjectRows() []routeRow {
 		},
 		{
 			Method: http.MethodPatch, Pattern: "/projects/{key}", Auth: authAny, Versions: onlyV2,
-			Description: "Change a project {default_assignee?, gated_steps?}, a bearer naming its session in actor. " +
-				"default_assignee moves " + projectDefaultAssigneeText + " to another person, the email of a person who has " +
-				"signed in (400 ASSIGNEE_NOT_ALLOWED otherwise), and appends settings.project_default_assignee.updated " +
-				"naming both people; a body naming default_assignee at all, null included, needs the person scope (403 " +
-				"OAUTH_SCOPE_REQUIRED otherwise), and since a project always names a person, the default cannot be " +
-				"cleared (null leaves it as it stands). gated_steps publishes the " +
+			Description: "Change a project {default_assignee?, gated_steps?, default_repository?}, a bearer naming its " +
+				"session in actor. default_assignee moves " + projectDefaultAssigneeText + " to another person, the email of " +
+				"a person who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise), and appends " +
+				"settings.project_default_assignee.updated naming both people; a body naming default_assignee at all, null " +
+				"included, needs the person scope (403 OAUTH_SCOPE_REQUIRED otherwise), and since a project always names a " +
+				"person, the default cannot be cleared (null leaves it as it stands). gated_steps publishes the " +
 				"design-gate steps the Legion deployment that serves the project gates, a list of decisions, criteria and " +
 				"spec in the order it gates them or [] for none, which needs no scope: the deployment's daemon writes it at " +
-				"every boot. The list the project already holds changes nothing and appends no event; another list " +
-				"appends project.updated. A body that names neither field, a blank default_assignee, and a step that is " +
-				"none of the three or is named twice are 400 INVALID_PROJECT. Both fields are written in one " +
-				"transaction. Answers the project as GET /api/v2/projects lists it, with default_assignee where the patch " +
-				"named it. 404 PROJECT_NOT_FOUND for a project that does not exist.",
+				"every boot. default_repository sets " + projectDefaultRepositoryText + ": \"owner/name\" sets it, read " +
+				"lowercase with one trailing .git trimmed and stored under its new name where the repository was renamed, " +
+				"and null clears it; a value that is not a repository GitHub could hold is 400 INVALID_PROJECT. The default " +
+				"belongs to the deployment and needs no scope, so a credential scoped to one project is refused it (403 " +
+				"PROJECT_SCOPE_DEPLOYMENT), the project this path names included. A list or a default repository the " +
+				"project already holds changes nothing and appends no event; another appends project.updated. A body that " +
+				"names none of the three fields, a blank default_assignee, and a step that is none of the three or is named " +
+				"twice are 400 INVALID_PROJECT. Every field is written in one transaction. Answers the project as GET " +
+				"/api/v2/projects lists it, with default_assignee where the patch named it. 404 PROJECT_NOT_FOUND for a " +
+				"project that does not exist.",
 			Handler:  s.patchProjectV2,
 			Resource: "projects", Kind: kindItem, Key: "{key}",
 			Body:  requestBody{Kind: bodyJSON, Type: patchProjectV2Input{}},
@@ -281,11 +295,12 @@ func (s *server) v2ProjectRows() []routeRow {
 		},
 		{
 			Method: http.MethodGet, Pattern: "/repositories", Auth: authAny, Versions: onlyV2,
-			Description: "List the GitHub repository to project mappings by repository, of every project: {repo, project, " +
-				"default, renamed_to, created_by, created_at}, default whether it is its project's default repository and " +
-				"renamed_to the owner/name it is called today, null for one that was never renamed. project=<key>, " +
-				"repeatable, keeps the mappings of those projects, with no default project. limit 1 to 200 (default 50) and " +
-				"offset; {items, total, limit, offset}.",
+			Description: "Read only: the GitHub repository to project mappings as the last release left them, by " +
+				"repository, of every project: {repo, project, default, renamed_to, created_by, created_at}, default " +
+				"whether it was its project's default repository and renamed_to the owner/name it is called today, null " +
+				"for one that was never renamed. Nothing writes them: PATCH /api/v2/projects/{key} sets a project's " +
+				"default repository (default_repository). project=<key>, repeatable, keeps the mappings of those " +
+				"projects, with no default project. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}.",
 			Handler:  s.listRepositoriesV2,
 			Resource: "repositories", Kind: kindCollection, Key: "{owner}/{repo}",
 			CrossProject: true,
@@ -294,51 +309,10 @@ func (s *server) v2ProjectRows() []routeRow {
 			Refusals:     listRefusals(),
 		},
 		{
-			Method: http.MethodDelete, Pattern: "/repositories/{owner}/{repo}", Auth: authAny, Versions: onlyV2,
-			Description: "Remove the mapping stored under the path's own spelling, a bearer naming its session in actor, and " +
-				"append settings.repo_project.updated with deleted true on the project. The path's two segments, as " +
-				"unescaped, are compared byte for byte with the stored name: acme/x removes acme/x, and acme/x.git removes " +
-				"a mapping stored as acme/x.git and never acme/x, so the same DELETE sent again finds nothing. An issue's " +
-				"own repository needs no mapping, so an issue that names the repository keeps it; one that resolved to the " +
-				"mapping as its project's default resolves to no repository until the project has another default. A " +
-				"credential scoped to one project is refused, since a mapping belongs to the deployment. 204. 404 " +
-				"REPOSITORY_NOT_FOUND for a spelling no mapping is stored under, a value that is no owner/name among them.",
-			Handler:  s.deleteRepositoryV2,
-			Resource: "repositories", Kind: kindItem, Key: "{owner}/{repo}",
-			Body:     requestBody{Kind: bodyJSON, Type: actorInput{}, Optional: true},
-			Shape:    routeShape{Status: http.StatusNoContent},
-			Scope:    scopeDeployment,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, repositoryMissingRefusal},
-		},
-		{
-			Method: http.MethodPut, Pattern: "/repositories/{owner}/{repo}", Auth: authAny, Versions: onlyV2,
-			Description: "Map a GitHub repository to a project {project, default?, renamed_to?}, a bearer naming its " +
-				"session in actor; the repository is read lowercase with one trailing .git trimmed, and its owner and name " +
-				"are held to the characters GitHub allows, the name, so read, never . or .. or empty or longer than 100 " +
-				"characters. default true makes it the project's " +
-				"one default, demoting the one before, and absent keeps the mapping's own while its project is unchanged. " +
-				"renamed_to is the owner/name this repository is called today, which every comparison of a repository " +
-				"canonicalises through: absent or null leaves the stored one alone, \"\" clears it, and a pair the path's " +
-				"rule refuses, a pair naming this repository, one naming a repository that is itself renamed, or one on a " +
-				"repository another mapping is already renamed to is 400 INVALID_REPO_PROJECT, as are a path that rule " +
-				"refuses and a project that is not a key. A mapping issues name " +
-				"as their repository moves like any other, since an issue's own repository needs no mapping; 404 NOT_FOUND " +
-				"for a project that does not exist. Each mapping the write changes appends settings.repo_project.updated on " +
-				"its project, and a moved one deleted true on the project it left. A mapping records no setter, so a PUT " +
-				"that would leave it exactly as it stands, by any caller, answers it and writes nothing. A credential " +
-				"scoped to one project is refused. Answers 200 the mapping.",
-			Handler:  s.putRepositoryV2,
-			Resource: "repositories", Kind: kindItem, Key: "{owner}/{repo}",
-			Body:     requestBody{Kind: bodyJSON, Type: putRepoProjectInput{}},
-			Shape:    routeShape{Status: http.StatusOK, Response: model.RepoProject{}},
-			Scope:    scopeDeployment,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal},
-		},
-		{
 			Method: http.MethodGet, Pattern: "/repositories/{owner}/{repo}/app-installation", Auth: authAny, Versions: onlyV2,
 			Description: "Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is " +
 				"installed on the repository, read from GitHub on every call: {installed}, false when GitHub answers 404, " +
-				"for a repository no mapping names too. 400 INVALID_REPO_PROJECT, before GitHub is asked anything, when " +
+				"for a repository no mapping names too. 400 INVALID_REPOSITORY, before GitHub is asked anything, when " +
 				"the path's owner or name has a character GitHub does not allow or the name is . or .. or empty or longer " +
 				"than 100 characters (a trailing .git trimmed). 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App " +
 				"key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure.",
@@ -503,20 +477,29 @@ type projectListV2Query struct {
 	Include []string `query:"include,comma" enum:"default_assignee"`
 }
 
-// projectV2 is a project as every /api/v2 read of projects answers it: model.Project, and its
+// projectV2 is a project as every /api/v2 read of projects answers it: model.Project's members,
+// with its default repository under the name PATCH /api/v2/projects/{key} writes it by, and its
 // default assignee where the request asks for it (include=default_assignee, or a patch that wrote
 // it), since the default names a person and only a caller holding the person scope reads it. It is
 // a type of its own, so no /api/v1 shape's tags change (dispatch://INFRA-4071/spec R3).
 type projectV2 struct {
-	model.Project
-	DefaultAssignee *string `json:"default_assignee,omitempty"`
+	Key        string   `json:"key"`
+	Name       string   `json:"name"`
+	OpenAsks   int      `json:"open_asks"`
+	GatedSteps []string `json:"gated_steps"`
+	// DefaultRepository is model.Project's DefaultRepo: the repository an issue of the project
+	// resolves to when neither the issue nor an issue above it names one. A project with none
+	// carries no member, as GET /api/v1/projects answers it.
+	DefaultRepository *string   `json:"default_repository,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	DefaultAssignee   *string   `json:"default_assignee,omitempty"`
 }
 
 // projectV2Query reads the projects GET /api/v2/projects pages through, by key, each with its open
-// asks counted as GET /api/v1/projects counts them (projectOpenAsksJoin) and its default assignee:
-// every project, or the one $1 names, $2 of them from $3.
+// asks counted as GET /api/v1/projects counts them (projectOpenAsksJoin), its default repository
+// and its default assignee: every project, or the one $1 names, $2 of them from $3.
 const projectV2Query = `
-		select p.key, p.name, coalesce(open_asks.total, 0), p.gated_steps, p.created_at, p.default_assignee
+		select p.key, p.name, coalesce(open_asks.total, 0), p.gated_steps, p.default_repo, p.created_at, p.default_assignee
 		from projects p` + projectOpenAsksJoin + `
 		where $1::text is null or p.key = $1
 		order by p.key
@@ -532,7 +515,7 @@ func (s *server) readProjectsV2(r *http.Request, key *string, limit, offset int,
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (projectV2, error) {
 		var project projectV2
 		var assignee string
-		if err := row.Scan(&project.Key, &project.Name, &project.OpenAsks, &project.GatedSteps, &project.CreatedAt, &assignee); err != nil {
+		if err := row.Scan(&project.Key, &project.Name, &project.OpenAsks, &project.GatedSteps, &project.DefaultRepository, &project.CreatedAt, &assignee); err != nil {
 			return projectV2{}, err
 		}
 		if withDefault {
@@ -569,8 +552,8 @@ func (s *server) createProjectV2(w http.ResponseWriter, r *http.Request) {
 	s.createProjectFrom(w, r, v2Body[createProjectInput](r))
 }
 
-// patchProjectV2Input is PATCH /api/v2/projects/{key}'s body: the two columns of a project two PUTs
-// of /api/v1 wrote (the route map's J16), each absent to leave it as it stands.
+// patchProjectV2Input is PATCH /api/v2/projects/{key}'s body: the three columns of a project three
+// PUTs of /api/v1 wrote (the route map's J16), each absent to leave it as it stands.
 type patchProjectV2Input struct {
 	// DefaultAssignee is the email of the person the project's unowned work lands on, which
 	// needs the person scope; null leaves it as it stands, and blank is refused, since the default
@@ -578,17 +561,25 @@ type patchProjectV2Input struct {
 	DefaultAssignee *string `json:"default_assignee"`
 	// GatedSteps is the design-gate steps the deployment that serves the project gates, in the
 	// order it gates them, [] for none.
-	GatedSteps *[]string    `json:"gated_steps" enum:"decisions,criteria,spec"`
-	Actor      *model.Actor `json:"actor"`
+	GatedSteps *[]string `json:"gated_steps" enum:"decisions,criteria,spec"`
+	// DefaultRepository is the repository an issue of the project resolves to when neither the
+	// issue nor an issue above it names one: "owner/name" sets it and null clears it. It is held as
+	// its bytes because absent, null and a value are its three states (parseIssueRepo).
+	DefaultRepository json.RawMessage `json:"default_repository"`
+	Actor             *model.Actor    `json:"actor"`
 }
 
 // patchProjectV2 answers PATCH /api/v2/projects/{key}: the writes PUT
-// /api/v1/projects/{key}/default-assignee and PUT /api/v1/projects/{key}/gated-steps make
-// (writeProjectDefaultAssignee, writeProjectGatedSteps), each held to its own rule, in one
+// /api/v1/projects/{key}/default-assignee, PUT /api/v1/projects/{key}/gated-steps and PUT
+// /api/v1/projects/{key}/default-repository make (writeProjectDefaultAssignee,
+// writeProjectGatedSteps, writeProjectDefaultRepository), each held to its own rule, in one
 // transaction, answered as the project GET /api/v2/projects lists. The default assignee is the
 // person's own call, so its event names the person the credential acts for (actingPerson), whose
-// person scope the authority gate has already held it to; gated steps alone name the caller as
-// any write does (requireActor).
+// person scope the authority gate has already held it to; the gated steps and the default
+// repository name the caller as any write does (requireActor). The default repository belongs to
+// the deployment, so a credential scoped to one project is refused it here, the project this path
+// names included, as the PUT's write class refuses it (scopeDeployment); the row's own class,
+// scopeProject, is the other two fields'.
 func (s *server) patchProjectV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -600,8 +591,19 @@ func (s *server) patchProjectV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body := v2Body[patchProjectV2Input](r)
-	if body.DefaultAssignee == nil && body.GatedSteps == nil {
-		writeError(w, r, apicode.InvalidProject, "a patch of a project names default_assignee, gated_steps or both")
+	if covers, scoped := s.callerProject(r); scoped && len(body.DefaultRepository) > 0 {
+		writeError(w, r, apicode.ProjectScopeDeployment, fmt.Sprintf(
+			"this request's credential may write project %s and nothing else; a project's default_repository belongs to the deployment rather than to a project",
+			covers))
+		return
+	}
+	repo, repoNamed, err := parseIssueRepo(body.DefaultRepository, "default_repository", apicode.InvalidProject)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	if body.DefaultAssignee == nil && body.GatedSteps == nil && !repoNamed {
+		writeError(w, r, apicode.InvalidProject, "a patch of a project names default_assignee, gated_steps, default_repository or more than one of them")
 		return
 	}
 	var actor model.Actor
@@ -644,6 +646,18 @@ func (s *server) patchProjectV2(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.GatedSteps != nil {
 		event, err := s.writeProjectGatedSteps(r.Context(), tx, actor, &project, steps)
+		if err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
+		if event != nil {
+			events = append(events, *event)
+		}
+	}
+	// The default repository last: its write reads the project row back in tx, so its event
+	// carries the row as every field of this patch left it.
+	if repoNamed {
+		_, event, err := s.writeProjectDefaultRepository(r.Context(), tx, actor, key, s.renamedRepo(repo))
 		if err != nil {
 			s.writeHandlerError(w, r, err)
 			return
@@ -1026,70 +1040,6 @@ func (s *server) listRepositoriesV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, newPage(mappings, total, query.pageQuery))
-}
-
-// deleteRepositoryV2 answers DELETE /api/v2/repositories/{owner}/{repo}: the removal DELETE
-// /api/v1/settings/repo-projects/{owner}/{repo} makes (deleteRepoProjectAs) of the mapping stored
-// under the path's own spelling (deletedRepoProjectSpelling), the mapping held to exist first,
-// where /api/v1 answers 204 for one that does not, or 400 INVALID_ISSUE_REF for a spelling no
-// issue reference takes (dispatch://INFRA-4071/spec R7): a spelling no mapping is stored under,
-// such as acme/x.git where acme/x is, names no mapping. The same 404 answers a DELETE that finds
-// the mapping gone once it holds the write lock, as the second of two DELETEs of one mapping at
-// once does.
-func (s *server) deleteRepositoryV2(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
-		return
-	}
-	spelled := deletedRepoProjectSpelling(r)
-	unmapped := errorf(apicode.RepositoryNotFound, "no mapping names the repository %s", spelled)
-	held := false
-	if err := s.deps.Store.Pool.QueryRow(r.Context(), `select exists (select 1 from repo_projects where repo = $1)`, spelled).Scan(&held); err != nil {
-		s.writeHandlerError(w, r, fmt.Errorf("read whether the repository is mapped: %w", err))
-		return
-	}
-	if !held {
-		s.writeHandlerError(w, r, unmapped)
-		return
-	}
-	actor, ok := s.requireActor(w, r, v2Body[actorInput](r).Actor)
-	if !ok {
-		return
-	}
-	s.deleteRepoProjectAs(w, r, actor, spelled, unmapped)
-}
-
-// putRepositoryV2 answers PUT /api/v2/repositories/{owner}/{repo}: the mapping PUT
-// /api/v1/settings/repo-projects/{owner}/{repo} writes (putRepoProjectFrom), under the no-op rule
-// of dispatch://INFRA-4071/spec R8 (repoProjectWriteChangesNothing).
-func (s *server) putRepositoryV2(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
-		return
-	}
-	owner, name, err := repoProjectPath(r)
-	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return
-	}
-	s.putRepoProjectFrom(w, r, owner+"/"+name, v2Body[putRepoProjectInput](r), repoProjectWriteChangesNothing)
-}
-
-// repoProjectWriteChangesNothing reports whether a PUT of input, whose renamed_to parseRepoRename
-// read as renamedTo, would leave the stored mapping exactly as it stands: the same project, the
-// default it would store (a body naming none keeps the stored one while the project is unchanged)
-// and the rename it would store (a body naming none keeps the stored pair). A mapping records no
-// setter, so the PUT that changes nothing answers the mapping as it stands whoever sends it
-// (noSetterRecorded).
-func repoProjectWriteChangesNothing(stored model.RepoProject, input putRepoProjectInput, renamedTo *string) bool {
-	isDefault := stored.Default
-	if input.Default != nil {
-		isDefault = *input.Default
-	}
-	if input.RenamedTo == nil {
-		renamedTo = stored.RenamedTo
-	}
-	sent := putRepoProjectInput{Project: input.Project, Default: &isDefault, RenamedTo: renamedTo, Actor: input.Actor}
-	current := putRepoProjectInput{Project: stored.Project, Default: &stored.Default, RenamedTo: stored.RenamedTo, Actor: input.Actor}
-	return putChangesNothing(sent, current, noSetterRecorded, "")
 }
 
 // prioritiesV2Query is GET /api/v2/priorities's query.

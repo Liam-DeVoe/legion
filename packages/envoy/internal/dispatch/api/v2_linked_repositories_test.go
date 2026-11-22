@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -18,9 +17,9 @@ import (
 // successors: a result at a commit of a repository the issue links a pull request in is recorded
 // and read through /api/v2 with that repository named; a linked read that did not answer is 502
 // GITHUB_UNREADABLE on the /api/v2 record and dry run alike; a repository path GitHub's names
-// refuse is 400 INVALID_REPO_PROJECT on the /api/v2 mapping write and app-installation read; the
-// /api/v2 mapping removal removes only the mapping stored under its path's own spelling; and the
-// mention rules the dispatch_comment tool quotes are the /api/v2 comment create's own.
+// refuse is 400 INVALID_REPOSITORY on the /api/v2 app-installation read; and the mention rules the
+// dispatch_comment tool quotes are the /api/v2 comment create's own. #4457 ended the mapping
+// writes those facts also held, on both versions.
 
 // readChecksV2 is GET /api/v2/issues/{issue}/checks, its page read as the /api/v1 read's checks so
 // the results tests' helpers (checkOf, standsAt) read it.
@@ -166,12 +165,11 @@ func TestV2RefusesAResultWhoseLinkedReadDidNotAnswer(t *testing.T) {
 	}
 }
 
-// The /api/v2 mapping write and the /api/v2 app-installation read hold the path's repository to
-// the names GitHub allows, as their /api/v1 predecessors do (TestRepoProjectMappingPathIsHeldToTheNamesGitHubAllows,
-// TestAppInstallationPathIsHeldToTheNamesGitHubAllows): `...git` and `.git` leave `..` or an
-// empty name once `.git` is trimmed, and each is 400 INVALID_REPO_PROJECT, the read asking GitHub
-// nothing and the write storing nothing. A renamed_to the rule refuses is refused the same way.
-// The negative control is a path GitHub allows, which the read asks GitHub about.
+// The /api/v2 app-installation read holds the path's repository to the names GitHub allows, as its
+// /api/v1 predecessor does (TestAppInstallationPathIsHeldToTheNamesGitHubAllows): `...git` and
+// `.git` leave `..` or an empty name once `.git` is trimmed, and each is 400 INVALID_REPOSITORY,
+// the code #4457 gave the refusal, the read asking GitHub nothing. The negative control is a path
+// GitHub allows, which the read asks GitHub about.
 func TestV2RepositoryPathsAreHeldToTheNamesGitHubAllows(t *testing.T) {
 	var asked atomic.Int32
 	handler := appInstallationServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -179,32 +177,15 @@ func TestV2RepositoryPathsAreHeldToTheNamesGitHubAllows(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 		fmt.Fprint(w, `{"message":"Not Found"}`)
 	})
-	createTestProject(t, handler, "CORE")
-	refused := func(what string, response *httptest.ResponseRecorder) {
-		t.Helper()
-		if code, _ := refusalOf(t, response); response.Code != http.StatusBadRequest || code != "INVALID_REPO_PROJECT" {
-			t.Errorf("%s: status=%d body=%s, want 400 INVALID_REPO_PROJECT", what, response.Code, response.Body.String())
-		}
-	}
 	for _, path := range []string{"acme/...git", "acme/.git", "acme/.git.git", "acme/...git.git"} {
-		refused("GET /api/v2/repositories/"+path+"/app-installation",
-			dispatchRequest(t, handler, http.MethodGet, "/api/v2/repositories/"+path+"/app-installation", nil, "alice"))
-		refused("PUT /api/v2/repositories/"+path,
-			dispatchRequest(t, handler, http.MethodPut, "/api/v2/repositories/"+path, map[string]any{"project": "CORE", "default": true}, "alice"))
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v2/repositories/"+path+"/app-installation", nil, "alice")
+		if code, _ := refusalOf(t, response); response.Code != http.StatusBadRequest || code != "INVALID_REPOSITORY" {
+			t.Errorf("GET /api/v2/repositories/%s/app-installation: status=%d body=%s, want 400 INVALID_REPOSITORY",
+				path, response.Code, response.Body.String())
+		}
 	}
 	if requests := asked.Load(); requests != 0 {
 		t.Fatalf("the refused paths sent GitHub %d requests, want none", requests)
-	}
-	for _, rename := range []string{"acme/...git", "acme/.git"} {
-		refused("PUT /api/v2/repositories/acme/tools renamed_to "+rename,
-			dispatchRequest(t, handler, http.MethodPut, "/api/v2/repositories/acme/tools", map[string]any{"project": "CORE", "renamed_to": rename}, "alice"))
-	}
-	listed := dispatchRequest(t, handler, http.MethodGet, "/api/v2/repositories", nil, "alice")
-	if listed.Code != http.StatusOK {
-		t.Fatalf("list the mappings: status=%d body=%s", listed.Code, listed.Body.String())
-	}
-	if mappings := decodeBody[page[model.RepoProject]](t, listed).Items; len(mappings) != 0 {
-		t.Fatalf("the refused writes stored %+v, want no mapping", mappings)
 	}
 
 	read := dispatchRequest(t, handler, http.MethodGet, "/api/v2/repositories/acme/tools/app-installation", nil, "alice")
@@ -212,68 +193,6 @@ func TestV2RepositoryPathsAreHeldToTheNamesGitHubAllows(t *testing.T) {
 		t.Fatalf("GET /api/v2/repositories/acme/tools/app-installation: status=%d body=%s after %d GitHub requests, want 200 not installed, GitHub asked",
 			read.Code, read.Body.String(), asked.Load())
 	}
-}
-
-// DELETE /api/v2/repositories/{owner}/{repo} removes only the mapping stored under its path's own
-// spelling, as the /api/v1 removal does (TestRepoProjectDeleteRemovesOnlyTheMappingItsPathSpells),
-// and answers a spelling no mapping is stored under 404 REPOSITORY_NOT_FOUND, its own refusal of a
-// repository no mapping names: the PUT of `acme/x.git.git` stores `acme/x.git` beside `acme/x`;
-// the DELETE of `acme/x.git.git` finds nothing; that of `acme/x.git` removes `acme/x.git` alone;
-// that of `Acme/X.git`, which the canonical reading reads as `acme/x`, finds nothing; a mapping
-// direct SQL stored as `Acme/X` is removed by that spelling, and the same DELETE sent again finds
-// nothing; and that of `acme/x` removes `acme/x`.
-func TestV2RepositoryDeleteRemovesOnlyTheMappingItsPathSpells(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
-	createTestProject(t, handler, "CORE")
-	for _, path := range []string{"acme/x.git.git", "acme/x"} {
-		if response := dispatchRequest(t, handler, http.MethodPut, "/api/v2/repositories/"+path,
-			map[string]string{"project": "CORE"}, "alice"); response.Code != http.StatusOK {
-			t.Fatalf("map %s: status=%d body=%s", path, response.Code, response.Body.String())
-		}
-	}
-	stored := func() []string {
-		t.Helper()
-		listed := dispatchRequest(t, handler, http.MethodGet, "/api/v2/repositories", nil, "alice")
-		if listed.Code != http.StatusOK {
-			t.Fatalf("list the mappings: status=%d body=%s", listed.Code, listed.Body.String())
-		}
-		var repos []string
-		for _, mapping := range decodeBody[page[model.RepoProject]](t, listed).Items {
-			repos = append(repos, mapping.Repo)
-		}
-		slices.Sort(repos)
-		return repos
-	}
-	deleteLeaving := func(path string, status int, want ...string) {
-		t.Helper()
-		response := dispatchRequest(t, handler, http.MethodDelete, "/api/v2/repositories/"+path, nil, "alice")
-		if response.Code != status {
-			t.Fatalf("DELETE /api/v2/repositories/%s: status=%d body=%s, want %d", path, response.Code, response.Body.String(), status)
-		}
-		if status == http.StatusNotFound {
-			if code, _ := refusalOf(t, response); code != "REPOSITORY_NOT_FOUND" {
-				t.Fatalf("DELETE /api/v2/repositories/%s refused %s, want REPOSITORY_NOT_FOUND", path, code)
-			}
-		}
-		if got := stored(); !slices.Equal(got, want) {
-			t.Fatalf("after DELETE /api/v2/repositories/%s the mappings are %q, want %q", path, got, want)
-		}
-	}
-
-	if got := stored(); !slices.Equal(got, []string{"acme/x", "acme/x.git"}) {
-		t.Fatalf("the /api/v2 PUTs stored %q, want acme/x and acme/x.git", got)
-	}
-	deleteLeaving("acme/x.git.git", http.StatusNotFound, "acme/x", "acme/x.git")
-	deleteLeaving("acme/x.git", http.StatusNoContent, "acme/x")
-	deleteLeaving("Acme/X.git", http.StatusNotFound, "acme/x")
-	if _, err := database.Pool.Exec(t.Context(), `
-		insert into repo_projects (repo, project, created_by) values ('Acme/X', 'CORE', '{"kind":"system","id":"test"}'::jsonb)
-	`); err != nil {
-		t.Fatalf("store the mapping Acme/X by SQL: %v", err)
-	}
-	deleteLeaving("Acme/X", http.StatusNoContent, "acme/x")
-	deleteLeaving("Acme/X", http.StatusNotFound, "acme/x")
-	deleteLeaving("acme/x", http.StatusNoContent)
 }
 
 // The mention rules the dispatch_comment tool quotes in Dispatch's words (the contracts'

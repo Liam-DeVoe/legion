@@ -129,9 +129,10 @@ func (s *server) v2IssueRows() []routeRow {
 			Method: http.MethodPost, Pattern: "/issues", Auth: authAny, Versions: onlyV2,
 			Description: fmt.Sprintf("Create an issue {project, title, parent?, blocked_by?, advances?, external?, "+
 				"force?, spec?, labels?, priority?, assignee?, components?, repo?}, a bearer naming its session in actor: a "+
-				"native issue in project, or one imported from a GitHub owner/repo#n named in external, whose project is the "+
-				"repository's mapping (400 PROJECT_UNMAPPED with no mapping and no default project, 400 "+
-				"EXTERNAL_PROJECT_MISMATCH for another project named beside it). assignee defaults to the creating person, the "+
+				"native issue in project, or one imported from a GitHub owner/repo#n named in external into project. Every "+
+				"create names its project, an import included: external with no project, or an empty one, is 400 "+
+				"INVALID_ISSUE, and an external ref already linked to an issue of another project is 400 "+
+				"EXTERNAL_PROJECT_MISMATCH. assignee defaults to the creating person, the "+
 				"personal token's owner, the parent's assignee, or the project's default assignee. A title over %d "+
 				"characters is 400 CAP_EXCEEDED. An unforced create whose title is a near copy of another issue's is 409 "+
 				"POSSIBLE_DUPLICATE with the candidates. Answers 201 the issue with advice beside it, and 200 the issue an "+

@@ -191,9 +191,14 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	// parseIssuePriority (issue_create.go), read by create and update alike.
 	{reflect.TypeOf(createIssueInput{}), "priority"}: rawField{Fragment: openAPIIssuePriority, Nullable: true},
 	{reflect.TypeOf(updateIssueInput{}), "priority"}: rawField{Fragment: openAPIIssuePriority, Nullable: true},
-	// parseIssueRepo (issue_repo.go): null clears the repository, a string is "owner/name".
-	{reflect.TypeOf(createIssueInput{}), "repo"}: rawField{Fragment: openAPIRepository, Nullable: true},
-	{reflect.TypeOf(updateIssueInput{}), "repo"}: rawField{Fragment: openAPIRepository, Nullable: true},
+	// parseIssueRepo (issue_repo.go): null clears the repository, a string is "owner/name". The
+	// project's default repository is read by the same rule; its PUT refuses a body without the
+	// field, which the field's own `required:"true"` says, and PATCH /api/v2/projects/{key} reads
+	// absent as leaving it.
+	{reflect.TypeOf(createIssueInput{}), "repo"}:                  rawField{Fragment: openAPIRepository, Nullable: true},
+	{reflect.TypeOf(updateIssueInput{}), "repo"}:                  rawField{Fragment: openAPIRepository, Nullable: true},
+	{reflect.TypeOf(projectDefaultRepositoryInput{}), "repo"}:     rawField{Fragment: openAPIRepository, Nullable: true},
+	{reflect.TypeOf(patchProjectV2Input{}), "default_repository"}: rawField{Fragment: openAPIRepository, Nullable: true},
 	// An upload refuses `primary` whenever it carries one, JSON or multipart (artifacts.go):
 	// primary is fixed at issue creation. The field is described so a client reading the document
 	// knows what the bytes would have to be, never because one may send them.

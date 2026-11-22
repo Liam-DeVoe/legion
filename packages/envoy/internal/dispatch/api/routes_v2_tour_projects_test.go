@@ -20,9 +20,9 @@ func init() { addTourSteps("projects", projectsTourSteps) }
 
 // projectsTourSteps are the route tour's steps of the project, architecture, repository,
 // near-copy check, priority, settings and related-search routes: each route, the project list with
-// its default assignees, the project patch of its gated steps alone by the deployment's daemon, the
-// sync of one named source and of every source, the related search with the other projects'
-// questions, and the priorities' count alone at limit 0.
+// its default assignees, the project patch of its gated steps alone by the deployment's daemon and
+// of its default repository alone, the sync of one named source and of every source, the related
+// search with the other projects' questions, and the priorities' count alone at limit 0.
 func projectsTourSteps() []tourStep {
 	alice := tourPerson("alice")
 	projectMissing := []tourMissing{{Param: "key", Value: "NOPE", Code: apicode.ProjectNotFound}}
@@ -87,6 +87,12 @@ func projectsTourSteps() []tourStep {
 					As: tourBearer("agent-token"),
 				}
 			},
+			Missing: projectMissing,
+		},
+		{
+			Method: http.MethodPatch, Pattern: "/projects/{key}", Name: "its default repository",
+			Status:  http.StatusOK,
+			Setup:   onProject(nil, map[string]any{"default_repository": "Tour/Default-Repository.git"}),
 			Missing: projectMissing,
 		},
 		{
@@ -170,27 +176,6 @@ func projectsTourSteps() []tourStep {
 			Setup: func(t *testing.T, tour *routeTour) tourRequest {
 				project, _ := tour.repository(t)
 				return tourRequest{Query: url.Values{"project": {project, tour.project(t)}}, As: alice}
-			},
-		},
-		{
-			Method: http.MethodDelete, Pattern: "/repositories/{owner}/{repo}", Status: http.StatusNoContent,
-			Setup: func(t *testing.T, tour *routeTour) tourRequest {
-				_, repo := tour.repository(t)
-				owner, name, _ := strings.Cut(repo, "/")
-				return tourRequest{Path: map[string]string{"owner": owner, "repo": name}, As: alice}
-			},
-			Missing: []tourMissing{
-				{Param: "owner", Value: "no-such-owner", Code: apicode.RepositoryNotFound},
-				{Param: "repo", Value: "no-such-repository", Code: apicode.RepositoryNotFound},
-			},
-		},
-		{
-			Method: http.MethodPut, Pattern: "/repositories/{owner}/{repo}", Status: http.StatusOK,
-			Setup: func(t *testing.T, tour *routeTour) tourRequest {
-				return tourRequest{
-					Path: map[string]string{"owner": "tour", "repo": "mapped-" + uuid.NewString()[:8]},
-					Body: map[string]any{"project": tour.project(t), "default": true}, As: alice,
-				}
 			},
 		},
 		{
@@ -331,14 +316,16 @@ func (tour *routeTour) nearCopyCheck(t *testing.T) (project, id string) {
 	return project, id
 }
 
-// repository maps a repository of its own to a project of its own through /api/v1 as alice,
-// answering the project and the repository's owner/name.
+// repository stores a mapping of a repository of its own to a project of its own, as the last
+// release left the rows (nothing writes them now, #4457), answering the project and the
+// repository's owner/name.
 func (tour *routeTour) repository(t *testing.T) (project, repo string) {
 	t.Helper()
 	project, repo = tour.project(t), "tour/mapped-"+uuid.NewString()[:8]
-	if mapped := dispatchRequest(t, tour.handler, http.MethodPut, "/api/v1/settings/repo-projects/"+repo,
-		map[string]any{"project": project}, "alice"); mapped.Code != http.StatusOK {
-		t.Fatalf("map %s to %s: %d %s", repo, project, mapped.Code, mapped.Body.String())
+	if _, err := tour.database.Pool.Exec(t.Context(), `
+		insert into repo_projects (repo, project, is_default, created_by) values ($1, $2, false, '{"kind":"user","id":"alice"}')
+	`, repo, project); err != nil {
+		t.Fatalf("store the mapping of %s to %s: %v", repo, project, err)
 	}
 	return project, repo
 }

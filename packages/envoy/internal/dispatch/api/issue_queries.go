@@ -578,8 +578,8 @@ func callerLabelLimit(string) (int, bool) {
 
 // labelFilterLimit holds a `label` filter value to a caller's limits, except one that names a
 // repository (repoLabelPrefix), which runs to maxRepoLabel16 units: the repo: label an import
-// through the default project writes is held to no caller's 40 but to this bound
-// (createIssueFrom), and it exists so that its repository stays filterable.
+// through the default project wrote is held to no caller's 40 but to this bound, and it exists
+// so that its repository stays filterable.
 func labelFilterLimit(key string) (int, bool) {
 	if strings.HasPrefix(key, repoLabelPrefix) {
 		return maxRepoLabel16, true

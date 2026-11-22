@@ -176,11 +176,6 @@ func TestV2Retries(t *testing.T) {
 		{"an ask's follower by any caller", "/asks/{id}/followers/{session_id}", func(t *testing.T) (tourRequest, tourCaller) {
 			return tourRequest{Path: map[string]string{"id": tour.ask(t, tour.issue(t)), "session_id": tourSession}, As: alice}, bob
 		}},
-		{"a repository's mapping by any caller", "/repositories/{owner}/{repo}", func(t *testing.T) (tourRequest, tourCaller) {
-			return tourRequest{
-				Path: map[string]string{"owner": "tour", "repo": uuid.NewString()}, Body: map[string]any{"project": tour.project(t)}, As: alice,
-			}, bob
-		}},
 		{"an architecture source by any caller", "/projects/{key}/architecture-sources/{owner}/{repo}", func(t *testing.T) (tourRequest, tourCaller) {
 			owner, name, _ := strings.Cut(tour.architectureRepo(t), "/")
 			return tourRequest{

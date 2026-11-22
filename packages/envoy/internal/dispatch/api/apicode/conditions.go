@@ -17,9 +17,9 @@ type Refusal struct {
 	Code      Code
 }
 
-// The objects a v2 path names, each missing: the path's {key}, {id}, {block_id}, {number},
-// {attempt} or {owner}/{repo} names a row Dispatch stores, and that row does not exist
-// (dispatch://INFRA-4071/spec R7). A route answers each with the object's own not-found code.
+// The objects a v2 path names, each missing: the path's {key}, {id}, {block_id}, {number} or
+// {attempt} names a row Dispatch stores, and that row does not exist (dispatch://INFRA-4071/spec
+// R7). A route answers each with the object's own not-found code.
 var (
 	IssueMissing             = Condition{"issue missing"}
 	ProjectMissing           = Condition{"project missing"}
@@ -38,7 +38,6 @@ var (
 	BlockMissing             = Condition{"block missing"}
 	VersionMissing           = Condition{"version missing"}
 	DeliveryMissing          = Condition{"delivery missing"}
-	RepositoryMissing        = Condition{"repository missing"}
 	CredentialRequestMissing = Condition{"credential request missing"}
 	CredentialGrantMissing   = Condition{"credential grant missing"}
 	MachineLoginMissing      = Condition{"machine login missing"}

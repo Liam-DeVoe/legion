@@ -186,10 +186,20 @@ func (s *server) patchIssueAs(w http.ResponseWriter, r *http.Request, input upda
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	repo, repoProvided, err := parseIssueRepo(input.Repo)
+	repo, repoProvided, err := parseIssueRepo(input.Repo, "repo", apicode.InvalidIssue)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
+	}
+	repo = s.renamedRepo(repo)
+	// Each link URL is stored under its repository's new name where a rename pair renames it
+	// away (refs.Renames.CanonicalURL), as every write of a stored URL is. It is rewritten here,
+	// before the closed-issue gate compares the links with the stored ones, so a link resent
+	// under the old name is the link the issue already has.
+	if input.ExternalLinks != nil {
+		for i := range *input.ExternalLinks {
+			(*input.ExternalLinks)[i].URL = s.deps.Renames.CanonicalURL((*input.ExternalLinks)[i].URL)
+		}
 	}
 
 	key := r.PathValue("key")
@@ -758,13 +768,19 @@ func (s *server) patchIssueAs(w http.ResponseWriter, r *http.Request, input upda
 // its group the repository's <owner>/<repo>.
 var githubIssueLink = regexp.MustCompile(`^https://github\.com/([^/]+/[^/]+)/issues/[0-9]+$`)
 
+// repoLabelPrefix opens the repo:<owner>/<repo> label an import through DISPATCH_DEFAULT_PROJECT
+// wrote beside the link it recorded, until #4457 ended those imports: every import names its
+// project now and writes no such label, and the issues an earlier import made keep theirs, so
+// the repository stays visible and filterable.
+const repoLabelPrefix = "repo:"
+
 // ownRepoLabel is the lower-cased key of the issue's own repo: label, or "" where it holds none:
 // the first of labels equal, case-insensitively, to repoLabelPrefix and the <owner>/<repo> of one
-// of links that names a GitHub issue, the label an import through the default project writes
-// beside the link it records (createIssueFrom). That label is Dispatch's record of the issue's
-// source repository, and no caller limit binds it. An issue can also hold a repo: label a caller
-// set, which is an ordinary label, held to a caller's limits as any other. The web label editor
-// reads the same rule (ownRepoLabelKey, packages/dispatch/web/src/features/issue/IssueLabels.tsx).
+// of links that names a GitHub issue, the label an import through the default project wrote
+// beside the link it recorded. That label is Dispatch's record of the issue's source repository,
+// and no caller limit binds it. An issue can also hold a repo: label a caller set, which is an
+// ordinary label, held to a caller's limits as any other. The web label editor reads the same
+// rule (ownRepoLabelKey, packages/dispatch/web/src/features/issue/IssueLabels.tsx).
 func ownRepoLabel(labels []string, links []model.ExternalLink) string {
 	for _, label := range labels {
 		key := strings.ToLower(label)

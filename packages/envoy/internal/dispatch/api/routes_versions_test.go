@@ -21,6 +21,20 @@ const v1OnlyRoutesList = "testdata/v1-only-routes.txt"
 // maps - every row of its routes.txt but the INFRA-979 tree's five - number at most 137.
 const v2RouteBound = 137
 
+// c8a44f97Rows is how many rows of c8a44f97's routes.txt the parent maps: every row but the
+// INFRA-979 tree's five.
+const c8a44f97Rows = 184
+
+// v1RowsMainRemoved names each of those rows a pull request merged into main took out of /api/v1
+// after c8a44f97, by "<METHOD> <path>": v1Rows holds none of them, the frozen list holds none of
+// them, and the rows of c8a44f97 v1Rows holds are c8a44f97Rows less these. A row main removes is
+// named here at the forward merge that brings the removal, so a removal no line names fails the
+// count.
+var v1RowsMainRemoved = map[string]string{
+	"PUT /api/v1/settings/repo-projects/{owner}/{repo}":    "#4457, Dispatch writes no repository mapping",
+	"DELETE /api/v1/settings/repo-projects/{owner}/{repo}": "#4457, Dispatch writes no repository mapping",
+}
+
 // readV1OnlyRoutes reads the frozen list: by "<METHOD> <path>", whether the row is one other work
 // added after c8a44f97, a line ending in a ` # ` note naming the pull request that brought it.
 func readV1OnlyRoutes(t *testing.T) map[string]bool {
@@ -214,8 +228,22 @@ func TestEveryV1RowNamesItsV2Route(t *testing.T) {
 		t.Logf("routes /api/v1 serves: %d; routes /api/v2 serves: %d", len(servedAt(apiV1, routes)), len(servedAt(apiV2, routes)))
 		t.Logf("distinct /api/v2 routes the %d rows of c8a44f97 name: %d (R2's bound: %d); the routes every v1 row names: %d",
 			ofC8a44f97, len(successorsOfC8a44f97(rows, frozen)), v2RouteBound, len(every))
-		if ofC8a44f97 != 184 {
-			t.Errorf("v1Rows holds %d rows of c8a44f97, and the parent maps 184", ofC8a44f97)
+		// The parent maps c8a44f97Rows rows of c8a44f97, and main took the ones v1RowsMainRemoved
+		// names out of /api/v1: v1Rows and the frozen list hold none of them, and every other row
+		// of c8a44f97 is still a v1Row.
+		for _, row := range rows {
+			if why, removed := v1RowsMainRemoved[row.Method+" "+row.Pattern]; removed {
+				t.Errorf("v1Rows holds %s %s, which main removed from /api/v1 (%s)", row.Method, row.Pattern, why)
+			}
+		}
+		for name, why := range v1RowsMainRemoved {
+			if _, listed := frozen[name]; listed {
+				t.Errorf("%s lists %s, which main removed from /api/v1 (%s)", v1OnlyRoutesList, name, why)
+			}
+		}
+		if want := c8a44f97Rows - len(v1RowsMainRemoved); ofC8a44f97 != want {
+			t.Errorf("v1Rows holds %d rows of c8a44f97, and the parent maps %d, less the %d main removed (v1RowsMainRemoved): %d",
+				ofC8a44f97, c8a44f97Rows, len(v1RowsMainRemoved), want)
 		}
 		if err := successorBoundFault(rows, frozen); err != nil {
 			t.Error(err)

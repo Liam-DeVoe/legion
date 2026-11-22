@@ -272,7 +272,7 @@ var (
 	InvalidProject         = both("INVALID_PROJECT", http.StatusBadRequest)
 	InvalidQuery           = both("INVALID_QUERY", http.StatusBadRequest)
 	InvalidReference       = both("INVALID_REFERENCE", http.StatusBadRequest)
-	InvalidRepoProject     = both("INVALID_REPO_PROJECT", http.StatusBadRequest)
+	InvalidRepository      = both("INVALID_REPOSITORY", http.StatusBadRequest)
 	InvalidResolution      = both("INVALID_RESOLUTION", http.StatusBadRequest)
 	InvalidReview          = both("INVALID_REVIEW", http.StatusBadRequest)
 	InvalidRoleHolder      = both("INVALID_ROLE_HOLDER", http.StatusBadRequest)
@@ -346,7 +346,6 @@ var (
 	// ProjectScopeDeployment refuses a project-scoped caller a write that belongs to the
 	// deployment rather than to any one project.
 	ProjectScopeDeployment = both("PROJECT_SCOPE_DEPLOYMENT", http.StatusForbidden)
-	ProjectUnmapped        = both("PROJECT_UNMAPPED", http.StatusBadRequest)
 	// QueuedOnBus is the queued-messages test hook's read on a process that publishes a queued
 	// message to NATS, where the stream holds it and no recorder of the process does (#4088).
 	QueuedOnBus = both("QUEUED_ON_BUS", http.StatusNotFound)
@@ -539,7 +538,6 @@ var (
 	AgentTokenNotFound        = v2Only("AGENT_TOKEN_NOT_FOUND", http.StatusNotFound)
 	VersionNotFound           = v2Only("VERSION_NOT_FOUND", http.StatusNotFound)
 	DeliveryNotFound          = v2Only("DELIVERY_NOT_FOUND", http.StatusNotFound)
-	RepositoryNotFound        = v2Only("REPOSITORY_NOT_FOUND", http.StatusNotFound)
 	CredentialRequestNotFound = v2Only("CREDENTIAL_REQUEST_NOT_FOUND", http.StatusNotFound)
 	CredentialGrantNotFound   = v2Only("CREDENTIAL_GRANT_NOT_FOUND", http.StatusNotFound)
 	MachineLoginNotFound      = v2Only("MACHINE_LOGIN_NOT_FOUND", http.StatusNotFound)
