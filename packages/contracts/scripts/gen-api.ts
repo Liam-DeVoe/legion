@@ -41,7 +41,7 @@ const OWNED_BY_THE_SPLIT: Record<string, true> = {
   Suggestion: true,
 };
 
-type OpenAPISchema = { $ref?: string; oneOf?: OpenAPISchema[] };
+type OpenAPISchema = { $ref?: string; oneOf?: OpenAPISchema[]; anyOf?: OpenAPISchema[] };
 type OpenAPIResponse = { content?: Record<string, { schema?: OpenAPISchema }> };
 type OpenAPIDocument = {
   components?: { schemas?: Record<string, unknown> };
@@ -84,8 +84,10 @@ function renderOwnedUnion(document: OpenAPIDocument) {
 // status or as its default answer, the common `{error, code}` (`ErrorBody`) among them. A client
 // reads a refusal before its `code` says which one it holds, so this union is what it reads one as
 // (`DispatchServiceErrorShape`), and a refusal body a route grows reaches that reading by
-// regeneration. A refusal schema that names no component cannot be named in the union, so the
-// render refuses it rather than leave that refusal out.
+// regeneration. A status that answers more than one body lists them under `oneOf`, or under
+// `anyOf` where the server's emitter holds `ErrorBody` beside a richer refusal at that status. A
+// refusal schema that names no component cannot be named in the union, so the render refuses it
+// rather than leave that refusal out.
 function renderRefusalUnion(document: OpenAPIDocument) {
   if (document.components?.schemas?.[REFUSAL_UNION] !== undefined) {
     throw new Error(`the schema ${REFUSAL_UNION} takes the name of the union of refusal bodies`);
@@ -97,7 +99,7 @@ function renderRefusalUnion(document: OpenAPIDocument) {
         if (status !== "default" && Number(status) < 400) continue;
         const schema = response.content?.["application/json"]?.schema;
         if (schema === undefined) continue;
-        for (const shape of schema.oneOf ?? [schema]) {
+        for (const shape of schema.oneOf ?? schema.anyOf ?? [schema]) {
           if (!shape.$ref?.startsWith(SCHEMA_REFERENCE)) {
             throw new Error(
               `${method.toUpperCase()} ${pattern} answers ${status} with a schema that names no component, which ${REFUSAL_UNION} cannot name`

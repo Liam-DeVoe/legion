@@ -669,7 +669,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -717,7 +724,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -786,7 +800,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -1058,7 +1079,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -1110,7 +1138,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -1236,7 +1271,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -1304,7 +1346,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -1381,7 +1430,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -1442,7 +1498,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -1507,7 +1570,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -1582,7 +1652,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -1647,7 +1724,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -1724,7 +1808,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -1916,7 +2007,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -1983,7 +2081,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -2051,7 +2156,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -2112,7 +2224,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -2172,7 +2291,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -2237,7 +2363,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -2302,7 +2435,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -2363,7 +2503,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -2431,7 +2578,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -2498,7 +2652,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -2573,7 +2734,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -2648,7 +2816,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -2770,7 +2945,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -2835,7 +3017,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -2903,7 +3092,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -2974,7 +3170,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -3045,7 +3248,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -3106,7 +3316,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -3173,7 +3390,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -3239,7 +3463,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -3307,7 +3538,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -3606,7 +3844,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -3671,7 +3916,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -3741,7 +3993,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -3802,7 +4061,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -3869,7 +4135,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -3936,7 +4209,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -3997,7 +4277,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -4085,7 +4372,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -4152,7 +4446,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -7575,7 +7876,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -8993,7 +9301,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -9045,7 +9360,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -9106,7 +9428,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -9174,7 +9503,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -9651,7 +9987,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -9708,7 +10051,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -9775,7 +10125,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -9851,7 +10208,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -9943,7 +10307,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -12138,7 +12509,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -12207,7 +12585,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IDAmbiguousError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
