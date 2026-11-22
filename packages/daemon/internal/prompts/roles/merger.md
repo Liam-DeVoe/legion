@@ -11,19 +11,19 @@ Do not request `isolated` work, create a workspace, edit files, or create a comm
 ## The merge, step by step
 
 1. Verify tester and reviewer cycles completed and retro completed, then read the pull request: `gh pr view <n> --json number,title,url,state,baseRefName,headRefOid,mergeStateStatus,autoMergeRequest`. Its `headRefOid` is the head you merge, and every step below names that same sha; its `title` is the subject you merge under. Every handoff is a record on the Dispatch issue, never a commit, so the merge carries no handoff onto the default branch and there is nothing on the head to read for one. A non-null `autoMergeRequest` is auto-merge already armed on the pull request, which a release before this one may have left there: turn it off with `gh pr merge <n> --disable-auto` before you go on, because GitHub checks the head auto-merge was armed at only while it is being armed and never again when it merges, so an armed pull request whose head moves afterwards merges code no merger ever read.
+
+   A pull request in one of GitHub's stacked pull requests (`gh api repos/<o>/<r>/pulls/<n> --jq .stack` prints an object, not `null`) cannot be merged as it stands. GitHub refuses `gh pr merge` and `enqueuePullRequest` for a pull request in a stack, and the one call it takes for a stack, its asynchronous merge, refuses a GitHub App, which you act as, on a merge-queue base ("Enqueuer is not authorized to merge", github/gh-stack#497). That call would also land every open pull request below yours, which GitHub holds to their reviews and checks but not to their issues' acceptance, retro or design gate. `gh api 'repos/<o>/<r>/stacks?pull_request=<n>'` lists the stack's pull requests in order, bottom first. Where one below yours is open, merge nothing: tell the architect with `envoy_publish` to its encoded role token, naming each open pull request below yours and its issue (the key in its `legion/<KEY>` branch, or that no issue owns it), and wait while each lands through its own issue's merger, bottom first. With none below open, take the stack apart with `gh api -X POST repos/<o>/<r>/stacks/<stack number>/unstack`, which removes every unmerged pull request from it and leaves each open on its own base branch, tell the architect which pull requests it removed, and begin again at this step: yours is now a pull request like any other.
 2. Read, in one command, the repository's default branch, whether it allows merge commits, its own squash-message setting and whether the base branch has a merge queue, with the base escaped in the same command that reads it (a raw `#` or `%` reads another branch):
 
    ```bash
-   base=$(gh api repos/<o>/<r>/pulls/<n> --jq '.stack.base.ref // .base.ref') && \
+   base=$(gh pr view <n> -R <o>/<r> --json baseRefName -q .baseRefName) && \
      base_path=$(jq -rn --arg b "$base" '$b | split("/") | map(@uri) | join("/")') && \
      gh api "repos/<o>/<r>" --jq '[.default_branch, .allow_merge_commit, .squash_merge_commit_title, .squash_merge_commit_message] | @tsv' && \
      gh api --paginate "repos/<o>/<r>/rules/branches/$base_path" --jq '.[].type'
    ```
 
-   A pull request whose read above carries a `stack` object, not `null`, is part of one of GitHub's stacked pull requests, and `base` is then the stack's target branch, whose rules and merge queue GitHub applies to the whole stack, not the branch of the pull request below it.
-
    `squash_merge_commit_message` of `COMMIT_MESSAGES` is GitHub's default, and it joins every commit message of the pull request into the squash commit: this tree's `Dispatch:` keys and its `Omp-Session:` and `Legion-Role:` trailers would land on the default branch, where they are no part of the change's history. Step 3 passes the message itself and never lets GitHub write it; step 4 cannot, which is why the setting is read here.
-3. Merge at that head, writing the message yourself. A pull request in a stack merges through the asynchronous call at the end of step 4 instead: GitHub refuses this command and `enqueuePullRequest` for it.
+3. Merge at that head, writing the message yourself:
 
    ```bash
    gh pr merge <n> --squash --match-head-commit <head> --subject '<pull request title> (#<n>)' --body ''
@@ -40,15 +40,6 @@ Do not request `isolated` work, create a workspace, edit files, or create a comm
    ```
 
    `enqueuePullRequest` takes no message: GitHub writes the squash commit under the repository's own setting, so on a merge-queue base whose `squash_merge_commit_message` reads `COMMIT_MESSAGES` the queue would put this branch's commit messages on the default branch and nothing you pass can stop it. Do not enqueue it and do not complete. Tell the architect with `envoy_publish` to its encoded role token, naming the pull request, the head, the setting's value, and that only a person can change the repository's setting to `PR_BODY` or `BLANK`; the merge waits for that answer.
-
-   A pull request in a stack merges only through GitHub's asynchronous merge call. The call merges or queues, all or none, this pull request and every open pull request below it in the stack, and the base holds those to their reviews and checks, not to their issues' acceptance, retro or design gate. So merge a pull request in a stack only when no pull request below it is open: `gh api 'repos/<o>/<r>/stacks?pull_request=<n>'` lists the stack's pull requests in order, bottom first. Where one below is open, merge nothing: tell the architect with `envoy_publish` to its encoded role token, naming each open pull request below yours and its issue (the key in its `legion/<KEY>` branch, or that no issue owns it), and wait while each lands through its own issue's merger, bottom first. GitHub rebases yours onto the base when the one below merges; once none below is open, begin again at step 1, reading the head afresh. With none below, submit the call at the head you read. On a base with no merge queue it takes step 3's subject, empty body and method:
-
-   ```bash
-   gh api -X PUT repos/<o>/<r>/pulls/<n>/merge-async -f sha=<head> -f merge_action=direct_merge -f merge_method=squash \
-     -f commit_title='<pull request title> (#<n>)' -f commit_message=''
-   ```
-
-   On a merge-queue base it takes `-f sha=<head> -f merge_action=merge_queue` and nothing else, since the queue takes no message: the `COMMIT_MESSAGES` stop above holds for it too. Read the answer's `status`. `merged` is the merge, and `enqueued` goes on to step 5's watch. `pending` carries `details.uuid`: read the result with `gh api repos/<o>/<r>/pulls/<n>/merge-async/<uuid> --jq '.status, .details'` until its `status` is no longer `pending`. A `409` answer is a request already pending, and its `details` are that request's head and options, not yours: read it by its `uuid` to its end before you submit again. A `400` answer and a `failed` result are step 6, with `details.message` as GitHub's message. `gh stack merge` makes the same call with no head and no message.
 5. On a merge-queue base, watch the pull request with this command:
 
    ```bash

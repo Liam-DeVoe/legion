@@ -333,31 +333,29 @@ func TestTheMergersSquashMessageIsItsOwn(t *testing.T) {
 	}
 }
 
-// A pull request in one of GitHub's stacks merges only through the asynchronous merge call
-// (docs.github.com/en/pull-requests/reference/stacked-pull-requests-apis-and-webhooks: "A stack
-// cannot be merged with the legacy synchronous merge endpoints or mutations"), so the merger is
-// told that call: held to the head it read (`sha`), with its own subject and empty body on a
-// direct merge, nothing but the head on a queue, and the result read back by its uuid, since an
-// accepted request is no merge. The rules and queue that decide it are those of the stack's
-// target branch, which GitHub holds the whole stack to, so step 2 reads that branch for one. The
-// call also lands every open pull request below, which the base holds to its reviews and checks
-// alone and not to its issue's acceptance, retro or design gate, so the merger merges a pull
-// request of a stack only when none below it is open, and the stack lands bottom first.
-func TestTheMergerLandsAStackedPullRequestThroughTheAsynchronousMergeCall(t *testing.T) {
+// A pull request in one of GitHub's stacks takes neither of the merger's calls (GitHub refuses
+// `gh pr merge` and `enqueuePullRequest` for it, measured on cybermonklabs/legion#4961 on
+// 2026-11-22), and the stack's own asynchronous merge refuses a GitHub App on a merge-queue base
+// ("Enqueuer is not authorized to merge", github/gh-stack#497, measured on the same pull request
+// with the merge App's token). That merge would also land every open pull request below, which
+// the base holds to its reviews and checks alone and not to its issue's acceptance, retro or
+// design gate. So the merger waits while every pull request below lands through its own issue,
+// then takes the stack apart, after which its pull request merges as any other (dispatch://INFRA-5217).
+func TestTheMergerTakesAStackApartOnceNothingBelowItsPullRequestIsOpen(t *testing.T) {
 	merger := rolePart(t, "merger.md")
 	for _, want := range []string{
-		"base=$(gh api repos/<o>/<r>/pulls/<n> --jq '.stack.base.ref // .base.ref')",
-		"GitHub refuses this command and `enqueuePullRequest` for it",
-		"gh api -X PUT repos/<o>/<r>/pulls/<n>/merge-async -f sha=<head> -f merge_action=direct_merge -f merge_method=squash",
-		"-f commit_title='<pull request title> (#<n>)' -f commit_message=''",
-		"`-f sha=<head> -f merge_action=merge_queue`",
-		"gh api repos/<o>/<r>/pulls/<n>/merge-async/<uuid>",
+		"gh api repos/<o>/<r>/pulls/<n> --jq .stack",
 		"gh api 'repos/<o>/<r>/stacks?pull_request=<n>'",
-		"merge a pull request in a stack only when no pull request below it is open",
+		"Where one below yours is open, merge nothing",
+		"gh api -X POST repos/<o>/<r>/stacks/<stack number>/unstack",
+		"yours is now a pull request like any other",
 	} {
 		if !strings.Contains(merger, want) {
 			t.Errorf("roles/merger.md does not say %q", want)
 		}
+	}
+	if strings.Contains(merger, "merge-async") {
+		t.Errorf("roles/merger.md names merge-async, which refuses the App the merger acts as on a merge-queue base")
 	}
 }
 

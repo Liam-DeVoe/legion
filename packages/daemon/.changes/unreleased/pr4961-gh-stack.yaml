@@ -6,10 +6,9 @@ body: |-
     in a pod is on the issue's scratch, so the worker shim links each extension the image ships
     there before the agent starts, and leaves an entry already there as it is. The pod's `gh`
     wrapper still refuses extensions, so `gh stack` is not yet usable through it. The merger's
-    instructions now say how to land a pull request that is part of a stack: once no pull request
-    below it is open, through GitHub's asynchronous merge call at the head it read, with the
-    stack's target branch deciding the rules and the merge queue; a stack lands bottom first,
-    each layer through its own issue's merger.
+    instructions now say what to do with a pull request that is part of a stack, which GitHub
+    lets no GitHub App merge or queue while it is in one: wait while every pull request below it
+    lands through its own issue, then take the stack apart, after which it merges as any other.
 time: 2026-11-22T06:26:10Z
 custom:
     Issue: pr4961
