@@ -2625,7 +2625,7 @@ cat >"$kinds" <<'EOF'
 {"s": "plain", "e": "", "nl": "two\n\n", "nul": "a\u0000b", "u": "ünïcode", "q": "it's \"q\"",
  "n1": 1.50, "n2": 1E3, "n3": -0, "n4": 100000000000000000001, "t": true, "f": false, "z": null,
  "o": {"a": {"b": "deep", "z": null, "f": false}, "arr": [1, "x"], "e": {}}, "arr": [{"a": 1}],
- "arr2": [10, "x", null, {"k": 1}], "o2": {"k-dash": "v", "k\"q": "w"},
+ "arr2": [10, "x", null, {"k": 1}], "o2": {"k-dash": "v", "k\"q": "w"}, "o3": {"a\tb": "tab"},
  "_x9": {"y_1": "ok"}, "k-dash": {"x": 1}}
 EOF
 # Each kinds filter with what the reading must do with it: answer it itself, or leave it to jq.
@@ -2699,6 +2699,18 @@ IFS=$'\t' read -r filter by from_reading from_jq <<<"$answers"
 [ "$by" = jq ] && [ "$from_reading" = "$from_jq" ] && [[ $from_jq == 1:* ]] ||
   fail "cfg answered .s of a file of two documents with [$from_reading] (${by}), where jq refuses it: [$from_jq]"
 
+# A key holding a control character is spelt escaped in the reading, as jq's tojson spells it, so
+# a filter holding the character itself is jq's to answer, and cfg gives jq's answer. It is put
+# apart from cfg_answers, whose lines a tab in a filter would split.
+control=$(bash -c '
+  source "$1"
+  CONFIG=$2
+  cfg_load
+  if cfg_read "$3"; then echo "read $CFG_READ"; else echo "jq $(cfg "$3" DEFAULT)"; fi
+' _ "$vm" "$kinds" $'.o3["a\tb"]' 2>&1)
+[ "$control" = "jq tab" ] ||
+  fail "cfg answered a key holding a tab with [$control], where it must leave it to jq, which answers [tab]"
+
 # The file as it is at each read: an edit between two reads of one shell is the next read's
 # answer, as it was when each read ran jq, and a file the edit leaves unreadable is refused as jq
 # refuses it.
@@ -2718,12 +2730,14 @@ edits=$(bash -c '
 [[ $edits == "old new 2 new refused: jq: parse error"* ]] ||
   fail "cfg did not answer the deployment file as it was at each read: [$edits], where it must be [old new 2 new refused: jq: parse error ...]"
 
-# And an up and a step run no jq of their own for one value: such a jq is given the deployment file
-# last and a filter ending `// empty` (cfg's, container_vm_configured's, load_listener_port's), so
-# a jq on PATH ahead of the real one records every call given that file, and the calls of that
-# shape are counted among them, of which a jq per value made 297 in an up and 408 in a step. The
-# calls it records at all are the proof that it sees the file vm.sh reads: parse's own reading is
-# one of them.
+# And an up and a step run no jq of their own for one value. A jq on PATH ahead of the real one
+# records every call given the deployment file, one line each (printf %q), and every reading (the
+# dump, given the file's text on its standard input). Each call given the file must be one of the
+# whole-file reads the script keeps -- parse's validation and its two key lists, and up's record
+# of the deployment -- so a read of one value is named whatever its spelling; a jq per value made
+# 297 of them in an up and 408 in a step. And while the file does not change, each subcommand
+# takes one reading: two for the up and the step. Parse's validation among the recorded calls is
+# the proof that this counter sees the file vm.sh reads.
 counting=$tmp/counting-jq
 mkdir -p "$counting"
 cat >"$counting/jq" <<EOF
@@ -2731,22 +2745,38 @@ cat >"$counting/jq" <<EOF
 REAL_JQ=$(command -v jq)
 EOF
 cat >>"$counting/jq" <<'EOF'
-[ "${!#}" != "$COUNTED_CONFIG" ] || printf '%s\n' "${*:1:$#-1}" >>"$FAKE_DIR/config-jq"
+if [ "${!#}" = "$COUNTED_CONFIG" ]; then
+  printf '%q ' "${@:1:$#-1}" >>"$FAKE_DIR/config-jq"
+  echo >>"$FAKE_DIR/config-jq"
+elif [ "${1:-}" = -s ] && [ "${2:-}" = -j ] && [[ ${3:-} == 'if length == 1 and'* ]]; then
+  echo reading >>"$FAKE_DIR/config-readings"
+fi
 exec "$REAL_JQ" "$@"
 EOF
 chmod +x "$counting/jq"
+jq_call() { printf '%q ' "$@"; echo; }
+whole_file_reads=$(
+  jq_call -e .
+  jq_call -r '.vms // {} | keys_unsorted[]'
+  jq_call -r '.containers // {} | keys_unsorted[]'
+  jq_call '{project, zone, vms, load_vm, containers, images, ports}'
+)
 reset_fake
 : >"$fake/config-jq"
+: >"$fake/config-readings"
 PATH="$counting:$PATH" COUNTED_CONFIG=$config run_vm up --config "$config"
 ((RC == 0)) || fail "up failed in the read-once case: see the output above"
 seeded_run
 PATH="$counting:$PATH" COUNTED_CONFIG=$config run_vm step --config "$config" once 1 --duration 10m
 ((RC == 0)) || fail "the step of the read-once case failed: see the output above"
-grep -q -- '-j if type == "object"' "$fake/config-jq" ||
-  fail "the counting jq saw no reading of $config by parse, so it counts nothing: $(cat "$fake/config-jq")"
-per_value=$(grep -c -- ' // empty$' "$fake/config-jq" || true)
-((per_value == 0)) ||
-  fail "an up and a step ran $per_value jq calls of the deployment file for one value each (the first: $(grep_first -- ' // empty$' "$fake/config-jq")), which the one reading answers"
+grep -Fxq -- "$(jq_call -e .)" "$fake/config-jq" ||
+  fail "the counting jq saw no validation of $config by parse, so it counts nothing: $(cat "$fake/config-jq")"
+while IFS= read -r call; do
+  grep -Fxq -- "$call" <<<"$whole_file_reads" ||
+    fail "an up or a step ran jq $call on the deployment file, which is no whole-file read: the reading answers a single value"
+done <"$fake/config-jq"
+[ "$(grep -c . "$fake/config-readings")" = 2 ] ||
+  fail "an up and a step took $(grep -c . "$fake/config-readings") readings of a deployment file that did not change, not one each"
 pass "cfg answers every value out of a reading of the deployment file as a jq of its own answers it at that read, and an up and a step run no jq per value"
 
 # ---- (t) the eleven the deployment itself found --------------------------------------------

@@ -567,15 +567,16 @@ cfg_parse() {
 }
 
 # cfg_read FILTER: what `jq -r "FILTER // empty"` prints of the file as it is now, into CFG_READ,
-# when FILTER is a path -- steps of .name, ["key"] with no quote or backslash in the key, and [N]
+# when FILTER is a path -- steps of .name, ["key"] with no quote, backslash or control character in
+# the key (the dump spells those keys as jq's tojson escapes them), and [N]
 # -- and the answer is a string, a number, true or nothing; 1 for every other case, which the
 # caller hands to jq. A step under null or under nothing is nothing, as jq has it; a name under
 # anything but an object, and an index under anything but an array, are jq's to refuse.
 cfg_read() {
   local rest=$1 path="" step kind key type=object
-  local name_re='^\.([A-Za-z_][A-Za-z0-9_]*)(.*)$' key_re='^\["([^"\\]*)"\](.*)$'
+  local name_re='^\.([A-Za-z_][A-Za-z0-9_]*)(.*)$' key_re='^\["([^"\\[:cntrl:]]*)"\](.*)$'
   local index_re='^\[(0|[1-9][0-9]*)\](.*)$' ident_re='^[A-Za-z_][A-Za-z0-9_]*$'
-  CFG_READ=""
+  CFG_READ="" CFG_OUT=""
   # A filter that opens with [ is jq's array constructor, not a step: it is jq's to answer.
   [[ $rest == .* ]] && cfg_current || return 1
   while [ -n "$rest" ]; do
@@ -601,12 +602,16 @@ cfg_read() {
       *) return 1 ;;
     esac
   done
+  # CFG_OUT is what jq itself prints, a line or nothing (null, false or nothing at all), for a
+  # caller that hands jq's output on; CFG_READ is what a command substitution of it keeps.
+  CFG_OUT=""
   case $type in
     string | number | boolean) CFG_READ=${CFG_VALUE[$path]} ;;
     null | absent) ;;
     *) return 1 ;;
   esac
-  # What a command substitution of jq's output keeps: no trailing newline.
+  [ "$type" = boolean ] && [ -z "$CFG_READ" ] || [ "$type" = null ] || [ "$type" = absent ] ||
+    CFG_OUT=$CFG_READ$'\n'
   while [[ $CFG_READ == *$'\n' ]]; do CFG_READ=${CFG_READ%$'\n'}; done
 }
 
@@ -654,7 +659,7 @@ vm_keys() { jq -r '.vms // {} | keys_unsorted[]' "$CONFIG"; }
 # places ROLE nowhere. check_placement is what reads it; everything else takes CONTAINER_VM.
 container_vm_configured() {
   if cfg_read ".containers[\"$1\"]"; then
-    [ -z "$CFG_READ" ] || printf '%s\n' "$CFG_READ"
+    printf '%s' "$CFG_OUT"
     return 0
   fi
   jq -r --arg role "$1" ".containers[\$role] // empty" "$CONFIG" ||
