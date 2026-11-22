@@ -48,24 +48,7 @@ export interface QuarantineEntry {
 
 /** The quarantined rows. An entry is written as `entryLines` prints it, which is what
  *  `e2e/tools/quarantine-check.ts` names as the lines to add or to remove. */
-export const quarantine: readonly QuarantineEntry[] = [
-  {
-    file: "mention-composer.e2e.ts",
-    project: "chromium",
-    title:
-      "a duplicated mention delivery says the listener already had it, and offers no safe retry",
-    issue: "dispatch://INFRA-3904",
-    added: "2026-11-19",
-  },
-  {
-    file: "board.e2e.ts",
-    project: "chromium",
-    title:
-      "picker keeps a pick on screen: a card dragged to another priority lane while its pick is out stays in that lane",
-    issue: "dispatch://INFRA-3904",
-    added: "2026-11-20",
-  },
-];
+export const quarantine: readonly QuarantineEntry[] = [];
 
 /** A row a commit on main fixed, which a quarantine entry is not: the row stays in every gating
  *  lane, and the nightly's check counts only the flakes of runs whose head holds `fixed`, or that
@@ -93,12 +76,28 @@ export const fixes: readonly FixEntry[] = [
     fixed: "a5348c75fa42c05f5581df45abaf33877c9ce90b",
   },
   {
+    file: "board.e2e.ts",
+    project: "chromium",
+    title:
+      "picker keeps a pick on screen: a card dragged to another priority lane while its pick is out stays in that lane",
+    issue: "dispatch://INFRA-3904",
+    fixed: "9d72a63e5f4e1d4a9dce0b74fe51af3d7d4dfa11",
+  },
+  {
     file: "close-withdraws-asks.e2e.ts",
     project: "chromium",
     title:
       "a person's Close withdraws the issue's asks, an earlier version keeps its open block, and Reopen brings the asks back @pr",
     issue: "dispatch://INFRA-3904",
     fixed: "708ca88c523acb412bc3b7a52e0ba9fcf5642516",
+  },
+  {
+    file: "mention-composer.e2e.ts",
+    project: "chromium",
+    title:
+      "a duplicated mention delivery says the listener already had it, and offers no safe retry",
+    issue: "dispatch://INFRA-3904",
+    fixed: "8ed2e187874f3aa9797796f24da51bb3a9bb1ac0",
   },
   {
     file: "project.e2e.ts",
