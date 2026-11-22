@@ -1429,7 +1429,7 @@ func observe(m *Machine, ctx context.Context, ev Event) error {
 // carries every frame of its turns from its first (connview.go).
 func helloed(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateShimConnected
-	m.connSeen = viewWhole
+	m.setView(viewWhole)
 	m.armRegistration()
 	if err := m.persist(ctx); err != nil {
 		return err
@@ -1442,7 +1442,7 @@ func helloed(m *Machine, ctx context.Context, _ Event) error {
 // it never received, or the resumed claim its first one. An agent not yet ready is under no bound
 // that reads its frames, and its connection is read whole from here (connview.go).
 func enrolledOnly(m *Machine, ctx context.Context, _ Event) error {
-	m.connSeen = viewWhole
+	m.setView(viewWhole)
 	return m.ensureEnrolled(ctx)
 }
 
@@ -1573,7 +1573,7 @@ func turnAnswered(m *Machine, ctx context.Context, ev Event) error {
 		return m.answerView(ctx, answer)
 	}
 	m.askTurn, m.unansweredAsks = false, 0
-	m.connSeen = viewWhole
+	m.setView(viewWhole)
 	m.disarm(TimerRegistration)
 	if answer.Streaming && !m.busy() {
 		m.log.Info("supervise: the agent of a claim the daemon's start restored is in a turn its shim's replay did not show begin; the claim is working")
@@ -1663,7 +1663,7 @@ func (m *Machine) askTurnOver(ctx context.Context, ev Event) error {
 		return nil
 	}
 	m.unansweredAsks = 0
-	m.connSeen = viewWhole
+	m.setView(viewWhole)
 	if state.IsStreaming {
 		// The agent is still in the turn an earlier daemon saw start. Its agent_end ends it
 		// (turnEnded).

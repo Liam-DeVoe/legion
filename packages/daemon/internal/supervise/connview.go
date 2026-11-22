@@ -67,6 +67,12 @@ import (
 // else bounds a shim that never comes back once its agent is ready, so a take it holds would wait
 // for ever.
 //
+// Every change of the view goes through one helper (setView), which logs each one that crosses
+// whole: one line where the view stops being whole (viewCutLine) and one where it becomes whole
+// (viewWholeLine), each naming the claim and the task pending where one is. The cost reading reads
+// those two lines alone of the connection, so it stops and starts each claim's clocks where the
+// machine does (ReadTaskCost).
+//
 // One case is stated, not closed: a connection that closes again before each bound passes
 // postpones the bounds, each time to a whole bound after its next hello. The reconnect deadline
 // bounds each gap, and nothing bounds how many gaps come.
@@ -105,6 +111,44 @@ const viewAnsweredLine = "supervise: the agent said whether it is in a turn afte
 // task taken back as a cut turn.
 const viewUnansweredRelaunchLine = "supervise: the agent did not say whether it is in a turn within the reconnect deadline of its shim's hello; it is relaunched, uncharged, and its task taken back as a cut turn"
 
+// viewCutLine is the line of the claim's view ceasing to be whole (setView), at Info, with the
+// task pending where one is: a daemon start that restored the claim with a process (NewMachine), a
+// close (closeView), or a reconnect hello over a pending task that found the view whole (askView).
+// The three bounds stand still from here. The cost reading stops the claim's clocks at it
+// (ReadTaskCost).
+const viewCutLine = "supervise: the daemon no longer sees every frame of the worker's turns; the bounds on the worker stand still until it does again"
+
+// viewWholeLine is the line of the claim's view becoming whole again (setView), at Info, with the
+// task pending where one is: the new process's first hello (helloed, enrolledOnly), a reconnect
+// hello over no pending task (askView), the agent's answer to a hello's ask (answerView) or to a
+// daemon start's own ask (askTurnOver, turnAnswered), a turn frame (seeView), and the let-go of
+// the process, whose next one opens a connection of its own (letGo). The bounds the view held
+// still are armed whole from here, as each one's other conditions allow. The cost reading starts
+// the claim's clocks again at it, whole (ReadTaskCost).
+const viewWholeLine = "supervise: the daemon sees every frame of the worker's turns again; the bounds on the worker run again, whole, from here"
+
+// setView is the claim's view of the worker's turns becoming v (connSeen). Every change of it goes
+// through here, and one that crosses whole is logged: viewCutLine where the view stops being
+// whole, viewWholeLine where it becomes whole. A change between two views that are not whole — a
+// hello over a closed view or a daemon start's, which asks — logs nothing, since the bounds stood
+// still and still do; nor does a view set to what it was.
+func (m *Machine) setView(v connView) {
+	was := m.connSeen
+	m.connSeen = v
+	if (was == viewWhole) == (v == viewWhole) {
+		return
+	}
+	line := viewCutLine
+	if v == viewWhole {
+		line = viewWholeLine
+	}
+	var task []any
+	if p := m.claim.Pending; p != nil {
+		task = []any{"task", p.Number}
+	}
+	m.log.Info(line, task...)
+}
+
 // reconnectBound is the reconnect deadline's bound: the registration deadline's base,
 // Timeouts.Boot × RegistrationIntervals.
 func (m *Machine) reconnectBound() time.Duration {
@@ -119,7 +163,8 @@ func (m *Machine) reconnectBound() time.Duration {
 // with no hello since, keeps a reconnect deadline whole from this close (readyView); one holding
 // no pending task is given none.
 func (m *Machine) closeView() {
-	m.connSeen, m.closedAt = viewClosed, m.deps.Clock.Now()
+	m.setView(viewClosed)
+	m.closedAt = m.deps.Clock.Now()
 	if m.claim.Pending != nil {
 		m.armReconnectForTask()
 	}
@@ -205,11 +250,11 @@ func (m *Machine) startAskServes() bool {
 // agent does not answer is not asked again: the view waits for a turn frame, or for the deadline.
 func (m *Machine) askView(ctx context.Context) (asked bool) {
 	if m.claim.Pending == nil {
-		m.connSeen = viewWhole
+		m.setView(viewWhole)
 		return false
 	}
 	served := m.startAskServes()
-	m.connSeen = viewAsked
+	m.setView(viewAsked)
 	if served {
 		return false
 	}
@@ -235,7 +280,7 @@ func (m *Machine) seeView() {
 		return
 	}
 	asked := m.connSeen == viewAsked
-	m.connSeen = viewWhole
+	m.setView(viewWhole)
 	if asked && !m.askTurn {
 		m.disarm(TimerRegistration)
 	}
@@ -262,7 +307,7 @@ func (m *Machine) turnMayHaveRunUnseen() bool {
 // bounds are armed whole from here at the end of this decision, or at the end of the turn the
 // answer started.
 func (m *Machine) answerView(ctx context.Context, answer StreamTurnAnswered) error {
-	m.connSeen = viewWhole
+	m.setView(viewWhole)
 	m.disarm(TimerRegistration)
 	m.log.Info(viewAnsweredLine, "streaming", answer.Streaming)
 	return m.applyTurnAnswer(ctx, answer.Streaming, answer)

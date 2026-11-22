@@ -30,6 +30,8 @@ const (
 	diedLiteral       = "supervise: process died"
 	registeredLiteral = "supervise: an agent registered"
 	startedLiteral    = "legion daemon started"
+	viewCutLiteral    = "supervise: the daemon no longer sees every frame of the worker's turns; the bounds on the worker stand still until it does again"
+	viewWholeLiteral  = "supervise: the daemon sees every frame of the worker's turns again; the bounds on the worker run again, whole, from here"
 )
 
 // wantAttr fails the test unless r carries key with the value want, compared as the text handler
@@ -281,7 +283,8 @@ func TestTaskValueLogOfARetakeAfterAFailedTakeNamesRetake(t *testing.T) {
 // search: the constants are pinned to the words, and walks of a claim write each of them under
 // those words — but the undecided take's, which its own test walks
 // (TestTaskValueLogOfATakeTheDaemonFailedToDecideNamesTakeFailed), and the daemon's start, which
-// internal/daemon writes. The cost reading reads every one of them.
+// internal/daemon writes. The cost reading reads every one of them. A close and the hello after it,
+// over no pending task, write the two lines of the claim's view of the worker's turns.
 func TestTurnLogPinnedMessagesAreUnchanged(t *testing.T) {
 	for constant, words := range map[string]string{
 		turnStartedLine:     startedLine,
@@ -298,6 +301,8 @@ func TestTurnLogPinnedMessagesAreUnchanged(t *testing.T) {
 		processDiedLine:     diedLiteral,
 		agentRegisteredLine: registeredLiteral,
 		DaemonStartedLine:   startedLiteral,
+		viewCutLine:         viewCutLiteral,
+		viewWholeLine:       viewWholeLiteral,
 	} {
 		if constant != words {
 			t.Errorf("the pinned message %q reads %q", words, constant)
@@ -319,6 +324,10 @@ func TestTurnLogPinnedMessagesAreUnchanged(t *testing.T) {
 	dies := waitsHarness(t)
 	dies.reach(StateReady)
 	dies.observe(runtime.Gone)
+	reconnects := waitsHarness(t)
+	reconnects.reach(StateReady)
+	reconnects.reconnectLater()
+	reconnects.connect()
 	for _, walked := range []struct {
 		h     *harness
 		lines []string
@@ -326,6 +335,7 @@ func TestTurnLogPinnedMessagesAreUnchanged(t *testing.T) {
 		{h, []string{startedLine, endedLine, writtenLine, seenLiteral, deletedLine, answeredLine, takenBackLiteral,
 			finishedLine, promptFailed, retiredAfterLimit, registeredLiteral}},
 		{dies, []string{diedLiteral}},
+		{reconnects, []string{viewCutLiteral, viewWholeLiteral}},
 	} {
 		for _, words := range walked.lines {
 			if len(walked.h.records.of(words)) == 0 {

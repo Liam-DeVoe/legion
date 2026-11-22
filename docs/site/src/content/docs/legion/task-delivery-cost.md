@@ -75,7 +75,6 @@ The first is `numbers owed that no take reached within the first bound`, and its
 The second is the turns that each task number took.
 The daemon can give a turn to a take inside the window and then put the take back at or after `<to>`.
 The reading reads no line from `<to>` on, so it counts that turn as a turn of the number.
-The first verdict can also name a charge too many after a start of the daemon, and its entry below says when.
 
 `kubectl logs` reads the log of the current container only.
 So a reading goes back no further than the start of the current container.
@@ -217,7 +216,17 @@ So each figure that names a task names its claim too.
     The daemon does not charge a new process for a task that only the process before it saw.
     So after a registration, the clock starts again only at the report of the new process that it saw the task.
 
-  - A start of the daemon, `legion daemon started`, stops the clock as of the line before it, until the worker's next act that the command reads in the log: a report that it saw the task, a take, a turn, a report that put a take back, or a registration.
+  - The clock runs only while the daemon sees every frame of the worker's turns on the worker's connection.
+    The daemon writes `supervise: the daemon no longer sees every frame of the worker's turns; the bounds on the worker stand still until it does again` when it stops seeing them: when the connection closes, when a start of the daemon restores a claim with a process, and when a hello over a pending task comes on a new connection before the daemon read the close of the one before it.
+    That line stops the clock, and no act of the worker starts it again.
+    The daemon writes `supervise: the daemon sees every frame of the worker's turns again; the bounds on the worker run again, whole, from here` when it sees them again: at the first hello of a new process, at a hello over no pending task, at the agent's answer to the daemon's ask whether it is in a turn, at a turn's start or end, and when the daemon lets the worker's process go.
+    That line starts the clock again, and the bound starts again from zero.
+
+  - A start of the daemon, `legion daemon started`, stops the clock as of the line before it.
+    The daemon writes that line after it restores its claims.
+    So a claim that the daemon restores with a process has the line that stops the clock before the start line, and its clock starts again at the line that starts it.
+    A claim whose last such line before the start line is the line that starts the clock waits for no act: the daemon that started wrote that line before its start line, or the claim has no process.
+    The clock of every other claim starts again at the worker's next act that the command reads in the log: a report that it saw the task, a take, a turn, a report that put a take back, or a registration.
     A daemon that starts with a report of a seen task from its database writes the task again at the first bound, and charges nobody.
     So a clock whose bound ends at a new write of the task has not passed the bound.
 
@@ -232,7 +241,7 @@ So each figure that names a task names its claim too.
 
   - The figure can count too many tasks.
     The log has no line for the time that a new process of the worker needs to start after a release, a suspension or a relaunch, for the time of a compaction, or for a hold that stands while the worker asks for nothing.
-    The command reads no line of the worker's connection closing either, and the daemon's first wait stands still while that connection is closed, until the agent answers the daemon's ask after the shim's next hello, or a turn starts or ends.
+    When the daemon lets a process go, it writes the line that starts the clock for the next process, so a clock that a closed connection stopped runs during that time.
     A turn that started before the first line of the log has no start line in the log.
     The clock counts all of that time, so the figure can list a task that no worker could take in time.
 
@@ -240,10 +249,8 @@ So each figure that names a task names its claim too.
     When the daemon stops a process during a turn for a reason other than a death, and takes back no task, the log has no line for the end of that turn.
     The clock then starts again only at the end of the next turn of that claim, or at the first report of the claim's next process that it saw the task.
     A take-back of a task that the daemon last wrote before the first line of the log opens no time owed that the command can measure until a report of the task seen is in the log, because the command does not know which revision the worker must report seen.
-
-  - After a start of the daemon, the daemon's own first wait starts again only once the agent answers the daemon's ask after the shim's hello, or a turn starts or ends.
-    The command does not read the lines of that hello and that answer, `supervise: the shim reconnected over a pending task; …` and `supervise: the agent said whether it is in a turn after its shim reconnected; …`, so its clock starts again at the worker's next act that it reads.
-    When the worker acts before that answer, the clock starts too early, and the figure can count too many; when the worker does nothing after it, the clock starts too late or never, and the figure can miss a task.
+    A start of the daemon also stops the clock of a claim whose line that starts the clock comes before the start line, because the daemon that started wrote it before its start line.
+    That clock then starts again only at the claim's next report of a seen task, end of a turn, or line about what the daemon sees.
 
 - `numbers finished, by what finished each` is the number of tasks that finished.
 
@@ -306,14 +313,16 @@ So each figure that names a task names its claim too.
 
   1. `no charge of a worker whose turn began within the second bound after its take`.
      It fails for a charge made while an accepted take stood, if a turn of that claim started no earlier than the start of the second wait of that take, and no later than the charge's limit.
-     The second wait begins at the latest of these times: the daemon accepts the take; the daemon puts the take back; a turn that ran while the take waited for its turn ends; the worker acts for the first time after a start of the daemon.
+     The second wait begins at the latest of these times: the daemon accepts the take; the daemon puts the take back; a turn that ran while the take waited for its turn ends; the daemon sees every frame of the worker's turns again after a closed connection or a start of the daemon, `supervise: the daemon sees every frame of the worker's turns again; …`.
      So a turn that the daemon gave to the take and then put back is not a turn within the second bound.
      For a `turn-start` charge, the limit is the second bound after the second wait began.
      For every other charge, the limit is the charge itself.
      When the second wait began after the take, the line of the failure gives that time too.
-     The daemon's own second wait also waits, after a closed connection and after a start of the daemon, for the agent's answer to its ask after the shim's hello, or for a turn's start or end on the new connection, and the command cannot place that time: it reads no line of a close, nor the lines of that hello and that answer.
-     So the command's second wait can begin before the daemon's, and the verdict can then miss a turn that began late in the daemon's bound.
-     After a start of the daemon it can also begin after the daemon's, when the worker's first act that the command reads comes after that answer, and the verdict can then fail a `turn-start` charge over a turn that began after the charge, such as the turn of the task taken again after the charge took it back.
+     A take that the worker makes while the daemon does not see every frame of its turns, for example before the agent answers the daemon's ask after the shim's hello, begins its second wait at that line.
+     After a start of the daemon, a claim with neither line about what the daemon sees has no process, and its second wait begins again at the worker's first act that the command reads too, as the daemon's waits do.
+     So the command's second wait never begins after the daemon's.
+     It can begin before the daemon's, when a hold that the command does not read kept the daemon's wait from running, for example while the worker's new process was not ready yet.
+     The verdict can then miss a turn that began late in the daemon's bound.
 
   2. `no write of origin resume to a claim that finished its last task in its session`.
      It fails for each task of origin `resume` written with `finished` set to `true`.

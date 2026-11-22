@@ -1573,7 +1573,8 @@ type Machine struct {
 	// (connView, connview.go): whole, so the bounds that judge the worker by its frames run; or cut,
 	// by a daemon start before the shim's first hello (NewMachine), by a close (closeView), or by a
 	// reconnect hello over a pending task until the agent's answer or a turn frame (askView). It is
-	// memory only, as the connection is.
+	// memory only, as the connection is. Every change of it goes through setView, which logs the
+	// changes that cross whole for the cost reading.
 	connSeen connView
 	// closedAt is when the claim's connection last closed (closeView), which a ready that comes
 	// over that cut view counts the reconnect deadline from (readyView). It is read only while the
@@ -1930,13 +1931,13 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 	switch c.State {
 	case StateLaunching, StateShimConnected:
 		m.armBoot()
-		m.connSeen = viewNoHello
+		m.setView(viewNoHello)
 	case StateRegistered:
 		m.armRegistration()
-		m.connSeen = viewNoHello
+		m.setView(viewNoHello)
 	case StateReady, StateIdle:
 		m.armRegistration()
-		m.connSeen = viewNoHello
+		m.setView(viewNoHello)
 		// A task whose take's turn started and ended under an earlier daemon, which nothing has
 		// finished: its report may still come, and for a plugin that names no number (whose end
 		// frame finishes its task, TakesNoTask) where none does the end of that turn
@@ -1955,7 +1956,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		m.askTrigger = "boot"
 	case StateWorking:
 		m.armRegistration()
-		m.connSeen = viewNoHello
+		m.setView(viewNoHello)
 		m.askFirst = true
 	}
 	// A report applied before the daemon that applied it stopped, whose effect on the pending task
@@ -4157,7 +4158,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.wake = nil
 	m.askFirst = false
 	m.askTurn, m.askedAt, m.askTrigger = false, time.Time{}, ""
-	m.connSeen = viewWhole
+	m.setView(viewWhole)
 	m.dropHeld()
 	m.staleRelaunch = nil
 	m.turnsTask, m.reportedAhead, m.rewrite = 0, aheadReport{}, valueRewrite{}
