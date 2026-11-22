@@ -770,7 +770,7 @@ test("the wake table and the guides say only a review that requests changes coun
   };
   expect([
     ...lacks("legion-architect/references/wake-routing.md", [
-      /Only a request for changes counts a round, never a tester's fail or a move back\./,
+      /Only requests for changes count: no tester's fail, no move back\./,
       /^(?![\s\S]*Tester fails and requests for changes are what it counts)/,
     ]),
     ...guide("concepts.md", [
