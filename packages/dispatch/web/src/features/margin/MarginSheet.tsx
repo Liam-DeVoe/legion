@@ -247,15 +247,21 @@ export function MarginSheet({
   const unnamedShutSheet =
     compactSheet && !sheet.expanded && selection.selectedItemId === undefined;
   const covered = collapsed || unnamedShutSheet || (isPhoneViewport && phoneThread !== undefined);
-  // Whether a reader sees the margin: the Details drawer open, a compact sheet they have opened,
-  // or the desktop column up. The composer below reads it for its `onScreen`.
-  const seen = drawer ? drawerOpen : sheet.expanded || !isCompactViewport;
-  // The margin's reads - its comments and its answered asks - go out before the document's first
-  // batch (`useMarginItems`, `features/doc/first-batch.ts`), and the open document measures where
-  // its blocks and marks sit (`features/doc/ProofDocument.tsx`, dispatch://INFRA-341 requirement
-  // R11), only while a reader sees the margin. A margin with no owner shows nothing, and a covered
-  // one has given its room away.
-  const { setPlacesItems } = useMargin();
+  // Whether a reader sees the margin: the desktop column up, a compact sheet they have opened, or
+  // Details open and drawing the conversation, which Details draws only once the document's editor
+  // is bound (`DetailsFill` in `issue-page/slots/details.tsx`: the margin's `documentBridge`, which
+  // `ProofDocument`'s `bindEditor` sets after the build). While a reader sees it, its comments and
+  // its answered asks are read before the document's first batch (`useMarginItems`,
+  // `features/doc/first-batch.ts`), and the open document places the margin's cards against its
+  // blocks and marks (`features/doc/ProofDocument.tsx`'s `placed`, dispatch://INFRA-341
+  // requirement R11). Details open during the first load's build draws none of the margin's cards,
+  // so the reads wait for the first batch there. The composer below reads `seen` for its
+  // `onScreen`.
+  const { documentBridge, setPlacesItems } = useMargin();
+  const seen = drawer
+    ? drawerOpen && documentBridge !== undefined
+    : sheet.expanded || !isCompactViewport;
+  // A margin with no owner shows nothing, and a covered one has given its room away.
   const placesItems = owner !== undefined && !covered && seen;
   useEffect(() => {
     setPlacesItems(placesItems);

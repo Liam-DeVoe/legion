@@ -257,11 +257,8 @@ interface MarginContextValue {
   hoveredItemId: string | undefined;
   hoveredMarkId: string | undefined;
   markPlacements: ReadonlyMap<string, MarkPlacement>;
-  /** Whether a reader sees the margin, which has an owner and nothing covering it: the Details
-   *  drawer open, a compact sheet they have opened, or the desktop column up (`MarginSheet`'s
-   *  `seen`). Only then do the margin's reads go out before the document's first batch
-   *  (`useMarginItems`), and does the open document measure where its blocks and marks sit
-   *  (`ProofDocument`, dispatch://INFRA-341 requirement R11). */
+  /** Whether a reader sees the margin, which has an owner and nothing covering it: `MarginSheet`'s
+   *  `placesItems`. Its `seen` says when a reader sees the margin and what turns on that. */
   placesItems: boolean;
   /** Whether the registered document has reported its layout: it says so by publishing
    *  placements, and the answer resets whenever a document registers or unregisters, or the

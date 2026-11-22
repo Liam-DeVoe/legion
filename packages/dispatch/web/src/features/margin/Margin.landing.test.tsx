@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the reader's wheel and the margin's own scroll events, which user-event has no form for
 import { act, fireEvent, type RenderResult, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { MemoryRouter } from "react-router-dom";
 
@@ -24,7 +24,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { type KeyBindingDescription, useKeymap } from "../shell/keymap";
 import { ShortcutHelp } from "../shell/ShortcutHelp";
 import { Margin } from "./Margin";
-import { MarginProvider } from "./margin-context";
+import { MarginProvider, useMargin } from "./margin-context";
 import {
   anchoredAsk,
   CommentLink,
@@ -37,6 +37,8 @@ import {
   ReportEmptyLayoutButton,
   SameCommentLink,
   SelectedItemLabel,
+  specArtifact,
+  stubDocumentBridge,
   stubViewport,
 } from "./margin-fixture";
 import { RELAYOUT_SETTLES_FRAMES } from "./useCardHold";
@@ -193,15 +195,26 @@ test("a phone comment deep link highlights its card without expanding it or open
   }
 });
 
-/** The new page's fill of the margin's slot, at its plainest: the margin's own content. */
-const passThrough: MarginFill = (content) => content;
-
 /** What the new issue page's root does for Details while it is mounted: it sets the drawer's
- *  words and its address rule (`drawer-page.ts`), and, where `fills`, fills the margin's slot so
- *  the margin's cards are drawn in Details. */
+ *  words and its address rule (`drawer-page.ts`), and, where `fills`, fills the margin's slot as
+ *  `DetailsFill` does: with the margin's own content while a document's editor is bound (the
+ *  margin's `documentBridge`), and with nothing before. */
 function NewPageRoot({ fills }: { fills: boolean }): null {
   useDrawerPage(issue);
-  useFillMarginSlot(fills ? passThrough : undefined);
+  const documentUp = useMargin().documentBridge !== undefined;
+  const fill = useCallback<MarginFill>((content) => (documentUp ? content : null), [documentUp]);
+  useFillMarginSlot(fills ? fill : undefined);
+  return null;
+}
+
+/** Stands in for the page's document with its editor bound: it registers a bridge with the
+ *  margin as `ProofDocument`'s `bindEditor` does after the build, and takes it back as it goes. */
+function BoundDocument(): null {
+  const { registerDocument } = useMargin();
+  useEffect(() => {
+    registerDocument(stubDocumentBridge(specArtifact.id));
+    return () => registerDocument(undefined);
+  }, [registerDocument]);
   return null;
 }
 
@@ -247,6 +260,7 @@ test("a desktop link to a comment's node marks its card without expanding its th
           <QueryClientProvider client={landingClient([comment])}>
             <MarginProvider>
               <Details fills open>
+                <BoundDocument />
                 <SelectedItemLabel />
                 <Margin />
               </Details>
@@ -327,11 +341,13 @@ test("a link to a card beside its document opens Details on it, and a link to a 
   }
 });
 
-// Below `xl` the margin is a compact sheet, which draws no card until the reader opens it. On the
-// new issue page the same sheet is the body of the Details drawer, which the reader sees whenever
-// the drawer is open: there the margin draws its cards with no card named in the address, at a
-// width under `xl` that is no phone's as at every other.
-test("below xl, the margin in an open Details drawer draws its cards with no card named", async () => {
+// Below `xl` a margin outside Details is a compact sheet, which draws no card while it is shut and
+// the address names none (`MarginSheet`'s `unnamedShutSheet`). That rule is the compact sheet's
+// alone: in this fixture, an open Details drawer whose document is bound - the fixture's fill
+// draws the margin's content only then, as `DetailsFill` does - draws the margin's card at a width
+// under `xl` that is no phone's, with no card named. It is the fixture's drawer, and says nothing
+// of what the new issue page's Details draws in a browser.
+test("below xl, the shut-sheet rule is the compact sheet's alone: it hides no card of a margin in an open Details drawer with its document bound", async () => {
   const tabletWidth = 1024;
   const restoreMatchMedia = stubViewport(tabletWidth);
   const scrollTo = stubScrollTo();
@@ -341,6 +357,7 @@ test("below xl, the margin in an open Details drawer draws its cards with no car
         <QueryClientProvider client={landingClient([comment])}>
           <MarginProvider>
             <Details fills open>
+              <BoundDocument />
               <Margin />
             </Details>
           </MarginProvider>
@@ -364,15 +381,16 @@ test("below xl, the margin in an open Details drawer draws its cards with no car
 });
 
 // The margin's reads - its comments and its answered asks - wait for the document's first batch
-// unless a reader sees the margin (`MarginSheet`'s `seen`). An open Details drawer is a margin the
-// reader sees at every width, below `xl` too, where a margin outside Details is a compact sheet
-// that waits until the reader opens it. A closed one is a margin no reader sees at every width, at
-// `xl` and above too, where a margin outside Details is the desktop column, which reads at once.
+// unless a reader sees the margin (`MarginSheet`'s `seen`). Details draws the margin's cards only
+// once the document's editor is bound, which is after the build the first batch comes out of, so
+// Details open during the first load's build draws none of them, and the reads wait for the batch
+// at every width: below `xl`, and at `xl` and above too, where a margin outside Details is the
+// desktop column, which reads at once. Details closed waits as well.
 test.each([
-  [1024, "open", "before"],
-  [1440, "open", "before"],
-  [1440, "closed", "after"],
-] as const)("at %i px with Details %s, the margin reads its comments and answered asks %s the document's first batch", async (width, drawer, when) => {
+  [1024, "open"],
+  [1440, "open"],
+  [1440, "closed"],
+] as const)("at %i px with Details %s during the first load's build, the margin reads its comments and answered asks after the document's first batch", async (width, drawer) => {
   const restoreMatchMedia = stubViewport(width);
   const listComments = spyOn(api, "listComments").mockResolvedValue([comment]);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
@@ -394,27 +412,19 @@ test.each([
     </MemoryRouter>
   );
   try {
-    if (when === "before") {
-      await waitFor(() =>
-        expect(
-          reads(),
-          `Details ${drawer} at ${width} px held the margin's reads for the first batch`
-        ).toEqual({ answeredAsks: 1, comments: 1 })
-      );
-    } else {
-      await settled();
+    // Under a rule that lets the reads go before the batch, both have gone out by here.
+    await settled();
+    expect(
+      reads(),
+      `Details ${drawer} at ${width} px made the margin's reads before the first batch`
+    ).toEqual({ answeredAsks: 0, comments: 0 });
+    act(() => theFirstBatchIsAwaited(false));
+    await waitFor(() =>
       expect(
         reads(),
-        `Details ${drawer} at ${width} px made the margin's reads before the first batch`
-      ).toEqual({ answeredAsks: 0, comments: 0 });
-      act(() => theFirstBatchIsAwaited(false));
-      await waitFor(() =>
-        expect(
-          reads(),
-          `Details ${drawer} at ${width} px did not make the margin's reads after the first batch`
-        ).toEqual({ answeredAsks: 1, comments: 1 })
-      );
-    }
+        `Details ${drawer} at ${width} px did not make the margin's reads after the first batch`
+      ).toEqual({ answeredAsks: 1, comments: 1 })
+    );
   } finally {
     view.unmount();
     act(() => theFirstBatchIsAwaited(false));
