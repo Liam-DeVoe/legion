@@ -42,7 +42,7 @@ func TestAReviewerReportsAVerdictWhereNoReviewOfGitHubDecides(t *testing.T) {
 			verdict: "pass", status: http.StatusBadRequest, code: "MISSING_FIELD", text: "commit is required", handoffRecords: true},
 		{name: "the reviewer of an open pull request names a verdict", steps: "implementer reviewer", at: phase.Reviewing, role: claim.RoleReviewer,
 			pullRequest: true, verdict: "pass", commit: headSHA, status: http.StatusBadRequest, code: "VERDICT_ROLE_FORBIDDEN",
-			text: "only a tester, a role of the deployment or of the plan, the role acceptance, a reviewer of an issue with no pull request, and the owner in a review step report a verdict",
+			text:           "only a tester, a role of the deployment or of the plan, the role acceptance, a reviewer of an issue with no pull request, and the owner in a review step report a verdict",
 			handoffRecords: true},
 		{name: "the fresh agent of acceptance names no verdict", steps: "implementer acceptance", at: phase.Accepting, role: "acceptance",
 			pullRequest: true, commit: headSHA, status: http.StatusBadRequest, code: "STEP_VERDICT_REQUIRED",
