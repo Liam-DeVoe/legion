@@ -186,7 +186,7 @@ func TestDispatchPodWithoutOutsideInputsIsUnchanged(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, committed, "the glob found the committed pod goldens")
 	// The two goldens rendered with an outside input set, which their own tests hold
-	// (TestDispatchPodWithOutsideSignInRendersBothSettings, TestDispatchPodWithPasskeySignInRendersTheSetting).
+	// (TestDispatchPodWithOutsideOriginRendersItsSetting, TestDispatchPodWithPasskeySignInRendersTheSetting).
 	covered := []string{"testdata/" + dispatchOutsideGolden, "testdata/" + dispatchPasskeyGolden}
 	for _, row := range goldens {
 		covered = append(covered, "testdata/"+row.golden)

@@ -211,7 +211,50 @@ func TestTheCatchUpOwesExactlyTheUnmarkedChangeBesideAMarkedPasskeyChange(t *tes
 	if err != nil || !held || !slices.Equal(caught.Replaced, []string{p2}) || !slices.Equal(caught.Owed, []string{p2}) {
 		t.Fatalf("the catch-up answered held %t, %+v, %v; want it to owe %s alone", held, caught, err, p2)
 	}
-	if got := owedSubjects(t, database, email); !slices.Equal(got, []string{"passkey-p1", p2}) {
-		t.Errorf("owed after the catch-up %q; want passkey-p1, which the Reset owed itself, and %s, which the catch-up owed", got, p2)
+	want := []owedRevocation{{Subject: "passkey-p1", Issuer: passkeyBindingIssuer}, {Subject: p2, Issuer: testRevocationIssuer}}
+	if got := owedRevocations(t, database, email); !slices.Equal(got, want) {
+		t.Errorf("owed after the catch-up %+v; want %+v: passkey-p1, which the Reset owed itself under its own issuer, and %s, which the catch-up owed under the deployment's (account_binding_replacements keeps no issuer)", got, want, p2)
+	}
+}
+
+// TestAPasskeyAccountReplacingAGoogleAccountRevokesAndOwesAtOnceWhileTheBindingIsOff: the
+// account.issuer arm of the gate alone. The address records a Google account (no sub_issuer), and
+// a passkey account replaces it while a build without the binding is in the fleet: the change
+// revokes the address's personal tokens and owes the Google account at once under the deployment's
+// issuer, keeps no change for the catch-up, and leaves the catch-up nothing to owe.
+//
+// Control: drop the account.issuer arm (revokesNow := binding || storedIssuer != ""), and the row
+// fails: no token revoked, nothing owed, the change kept.
+func TestAPasskeyAccountReplacingAGoogleAccountRevokesAndOwesAtOnceWhileTheBindingIsOff(t *testing.T) {
+	ctx := context.Background()
+	database := migratedEmptyStore(t)
+	people := brokerPeople(database)
+	const email = "replaced@binding.example"
+	if err := people.SignInSubject(ctx, email, "google-a", "refresh-a", "", model.MemberRestricted); err != nil {
+		t.Fatalf("google-a's sign-in: %v", err)
+	}
+	tokenA := mintToken(t, database.Pool, email, "token-a", "google-a")
+
+	bindingOff(t, database)
+	recordPasskeyAccount(t, people, email, "passkey-p1")
+	if _, revoked := tokenState(t, database.Pool, tokenA); !revoked {
+		t.Error("the passkey account replacing google-a while the binding is off left token-a live; want it revoked at once")
+	}
+	// The deployment's issuer as the people store spells it (WithBrokerRevocations canonicalizes it).
+	want := []owedRevocation{{Subject: "google-a", Issuer: canonicalIssuer}}
+	if got := owedRevocations(t, database, email); !slices.Equal(got, want) {
+		t.Errorf("the replacement while the binding is off owes %+v; want %+v", got, want)
+	}
+	if kept := keptReplacements(t, database, email); len(kept) != 0 {
+		t.Errorf("the replacement left the changes %q kept for the catch-up; want none, its transaction marked", kept)
+	}
+
+	bindingOn(t, database)
+	held, caught, err := CatchUpAccountBindingOf(ctx, database.Pool, email, testRevocationIssuer)
+	if err != nil || !held || !reflect.DeepEqual(caught, AccountBindingCatchUp{}) {
+		t.Errorf("the catch-up once the binding holds answered held %t, %+v, %v; want nothing more owed", held, caught, err)
+	}
+	if got := owedRevocations(t, database, email); !slices.Equal(got, want) {
+		t.Errorf("after the catch-up %s owes %+v; want %+v, nothing owed twice", email, got, want)
 	}
 }

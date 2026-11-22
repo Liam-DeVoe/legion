@@ -421,7 +421,7 @@ func TestTheRefreshRefusalControlRefusesOnePersonsRefresh(t *testing.T) {
 	flow := oidc.NewCodeFlow(issuerURL, testClientID, testClientSecret, testDomain)
 	signIn := func(state string) oidc.Session {
 		t.Helper()
-		authURL, err := flow.AuthURL(ctx, testRedirect, state, "nonce-"+state, oidc.AuthOptions{DomainHint: true})
+		authURL, err := flow.AuthURL(ctx, testRedirect, state, "nonce-"+state)
 		if err != nil {
 			t.Fatal(err)
 		}
