@@ -15,6 +15,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
 import { skillHeaderPath } from "../skill-scenarios/transcript";
+import { LISTING_MEASURE, ListingMeasure } from "./build";
 import {
   armPromptBlocks,
   type CaptureRecord,
@@ -751,6 +752,94 @@ const ENVOY_ENTRY = {
   name: "pi-envoy",
 };
 
+/** Saves under `out` each task's Oh My Pi capture, where the command reads it back: F2's body
+ *  with the task's text as its one message, and the fields of its record that the load test
+ *  reads. */
+function saveCaptures(out: string, lines: readonly { id: string; text: string }[]): void {
+  for (const { id, text } of lines) {
+    const files = loadCapturePaths(out, "omp", id);
+    writeTree(path.dirname(files.body), {
+      [path.basename(files.body)]: JSON.stringify({
+        ...F2,
+        messages: [{ role: "user", content: [{ type: "text", text }] }],
+      }),
+      [path.basename(files.record)]: JSON.stringify({
+        listing: [
+          { name: "alpha", hint: "Use for the alpha checklist." },
+          { name: "beta", hint: "Use for the beta greeting." },
+        ],
+        // A header the gateway's client never adds itself, so a run carries it only when the
+        // capture's headers go with it.
+        requestHeaders: { "anthropic-version": "2023-06-01", "anthropic-beta": "made-up-beta-1" },
+        hintCalls: [],
+        // A saved capture holds the harness-string rule's record, or it is refused.
+        harness: { head: null, replaced: [] },
+      }),
+    });
+  }
+}
+
+/** One item of a profile's evidence, as a build-tasks summary keeps it. */
+interface EvidenceItem {
+  readonly item: string;
+  readonly source: string;
+}
+
+/** A listing measure as build.ts writes it into a task profile's evidence (ListingMeasure): its
+ *  session's recorded listing holding `recorded` names, `missing` of them not in the rebuilt
+ *  listing; with `recorded` null, not measurable. */
+function measureItem(recorded: number | null, missing: string[] = []): EvidenceItem {
+  const measure = ListingMeasure.parse({
+    kind: recorded === null ? "not measurable" : "session listing",
+    recorded,
+    listed: 2,
+    missing,
+    added: [],
+    missingShare: recorded === null || recorded === 0 ? null : missing.length / recorded,
+    sessionDigest: null,
+    rebuiltDigest: null,
+    subagent: null,
+    why:
+      recorded === null
+        ? "the made-up session records no system prompt, and the store holds no subagent of it"
+        : "the made-up session recorded its system prompt",
+  });
+  return { item: LISTING_MEASURE, source: JSON.stringify(measure) };
+}
+
+/** Writes beside the tasks file `tasks` the summary build-tasks writes (`<tasks>.summary.json`):
+ *  the evidence of each session task's profile (`sessions`, by task id) and of the context
+ *  session's (`context`), which each written task takes, each its one listing measure. */
+function writeTasksSummary(
+  tasks: string,
+  sessions: Record<string, EvidenceItem>,
+  context: EvidenceItem
+): void {
+  writeFileSync(
+    `${tasks}.summary.json`,
+    JSON.stringify({
+      command: "build-tasks",
+      skill: "alpha",
+      profiles: {
+        dir: path.dirname(tasks),
+        contextSession: {
+          store: "store_a",
+          hash: "made-up-context",
+          pathHash: pathHash("/sessions/context.jsonl"),
+          context: "devbox",
+          secretsRemoved: 0,
+          evidence: [context],
+        },
+        tasks: Object.entries(sessions).map(([task, measure]) => ({
+          task,
+          from: "session",
+          evidence: [measure],
+        })),
+      },
+    })
+  );
+}
+
 describe("skill-cuts load with saved captures", () => {
   const dir = path.join(scratch, "saved");
   const out = path.join(dir, "out");
@@ -785,31 +874,11 @@ describe("skill-cuts load with saved captures", () => {
       { id: "near-1", text: NEAR, label: "near-miss", source: "written" },
     ];
     writeFileSync(tasks, lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
+    // The build-tasks summary beside it: both tasks' listings measured, none missing a name.
+    writeTasksSummary(tasks, { "need-1": measureItem(10) }, measureItem(10));
     writeFileSync(profile, JSON.stringify(BETA_PROFILE));
     writeFileSync(profileA, JSON.stringify(GAMMA_PROFILE));
-    // Each task's capture, saved where the command reads it back: F2's body with the task's text
-    // as its one message, and the fields of its record that the load test reads.
-    for (const { id, text } of lines) {
-      const files = loadCapturePaths(out, "omp", id);
-      writeTree(path.dirname(files.body), {
-        [path.basename(files.body)]: JSON.stringify({
-          ...F2,
-          messages: [{ role: "user", content: [{ type: "text", text }] }],
-        }),
-        [path.basename(files.record)]: JSON.stringify({
-          listing: [
-            { name: "alpha", hint: "Use for the alpha checklist." },
-            { name: "beta", hint: "Use for the beta greeting." },
-          ],
-          // A header the gateway's client never adds itself, so a run carries it only when the
-          // capture's headers go with it.
-          requestHeaders: { "anthropic-version": "2023-06-01", "anthropic-beta": "made-up-beta-1" },
-          hintCalls: [],
-          // A saved capture holds the harness-string rule's record, or it is refused.
-          harness: { head: null, replaced: [] },
-        }),
-      });
-    }
+    saveCaptures(out, lines);
     answer = (body) => {
       const text = texts(body.messages).find((each) => reads.has(each)) ?? "";
       const n = (answered.get(text) ?? 0) + 1;
@@ -1020,6 +1089,201 @@ describe("skill-cuts load with saved captures", () => {
       `${out} holds a capture or runs of task near-1, which its summary does not list`
     );
     expect(recorder.requests.length).toBe(before);
+  });
+});
+
+// The listing rule (the architect, 2026-11-22T03:04Z): every load applies it, from the listing
+// measure of each task's profile in the tasks file's build-tasks summary.
+describe("skill-cuts load applies the listing rule", () => {
+  const NEED_2 = "List the alpha steps of the made-up project.";
+  /** A load test under `scratch/<name>`: alpha against `lines` (session tasks of store_a unless
+   *  written), each in BETA_PROFILE's context with its capture saved, and the arguments that run
+   *  it; the stand-in answers a run of each text with a read of skill://alpha in its first `reads`
+   *  runs. */
+  const listingTest = (
+    name: string,
+    lines: readonly { id: string; text: string; label: TaskLabel; written?: true }[],
+    reads: ReadonlyMap<string, number>
+  ) => {
+    const dir = path.join(scratch, name);
+    const made = setup(dir);
+    const skill = path.join(dir, "alpha");
+    writeTree(skill, { "SKILL.md": ALPHA_SKILL, "references/x.md": ALPHA_X });
+    const tasks = path.join(dir, "tasks.jsonl");
+    writeFileSync(
+      tasks,
+      lines
+        .map(({ id, text, label, written }) =>
+          JSON.stringify(
+            written
+              ? { id, text, label, source: "written" }
+              : { id, text, label, source: "session", store: "store_a", pathHash: pathHash(id) }
+          )
+        )
+        .map((line) => `${line}\n`)
+        .join("")
+    );
+    const profile = path.join(dir, "profile.json");
+    writeFileSync(profile, JSON.stringify(BETA_PROFILE));
+    const out = path.join(dir, "out");
+    saveCaptures(out, lines);
+    const answered = new Map<string, number>();
+    answer = (body) => {
+      const text = texts(body.messages).find((each) => reads.has(each)) ?? "";
+      const n = (answered.get(text) ?? 0) + 1;
+      answered.set(text, n);
+      return n <= (reads.get(text) ?? 0) ? READ_ALPHA : TEXT;
+    };
+    const args = [
+      ...["load", "--config", made.config, "--key-file", made.keyFile, "--skill", skill],
+      ...["--tasks", tasks, "--host", "omp", "--profile", profile, "--out", out],
+      ...["--omp", path.join(dir, "no-omp-runs-here"), "--scratch", path.join(dir, "scratch")],
+      ...["--cache-dir", path.join(dir, "cache")],
+    ];
+    return { tasks, out, args };
+  };
+  /** The summary `out` holds, as far as these rows read it. */
+  const summaryOf = (out: string) =>
+    z
+      .looseObject({
+        tasks: z.array(z.looseObject({ id: z.string(), made: z.number(), dropped: z.unknown() })),
+        listing: z.unknown(),
+        verdict: z.unknown(),
+        verdicts: z.unknown(),
+      })
+      .parse(JSON.parse(readFileSync(path.join(out, "summary.json"), "utf8")));
+  /** The requests the stand-in took since `from` whose body holds `text`. */
+  const sentWith = (from: number, text: string) =>
+    recorder.requests.slice(from).filter((request) => request.body.includes(text)).length;
+
+  test("a task whose rebuilt listing misses more than 10% of its session's recorded names is dropped with that reason: in the summary's tasks, not run, counted, and out of the verdict", async () => {
+    const { tasks, out, args } = listingTest(
+      "listing-drop",
+      [
+        { id: "need-1", text: NEED, label: "need" },
+        { id: "near-1", text: NEAR, label: "near-miss", written: true },
+        { id: "need-2", text: NEED_2, label: "need" },
+      ],
+      new Map([
+        [NEED, 2],
+        [NEAR, 2],
+        [NEED_2, 0],
+      ])
+    );
+    writeTasksSummary(
+      tasks,
+      { "need-1": measureItem(10), "need-2": measureItem(10, ["beta", "gamma"]) },
+      measureItem(10, ["beta"])
+    );
+    const from = recorder.requests.length;
+    const ran = await cli(args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const misses =
+      "listing-misses: its rebuilt listing misses 2 of the 10 names of the recorded session listing (20.0%), more than 10%: beta, gamma";
+    expect(ran.stdout).toContain(`task need-2 (need, from a session): dropped, not run: ${misses}`);
+    expect(ran.stdout).toContain(
+      `the listing rule (${tasks}.summary.json): 2 tasks' listings measured, 0 not measurable, 1 tasks dropped`
+    );
+    expect(sentWith(from, NEED_2)).toBe(0);
+    expect(sentWith(from, NEED)).toBe(3);
+    const summary = summaryOf(out);
+    expect(summary.tasks.map((task) => [task.id, task.made, task.dropped])).toEqual([
+      ["need-1", 3, null],
+      ["near-1", 3, null],
+      ["need-2", 0, misses],
+    ]);
+    expect(summary.listing).toEqual({
+      summary: `${tasks}.summary.json`,
+      measured: 2,
+      notMeasurable: 0,
+      dropped: 1,
+    });
+    expect(summary.verdict).toEqual({
+      descriptionFault: true,
+      reason: "a description fault: tasks near-1",
+    });
+  });
+
+  test("the verdict is made with and without the tasks whose listing could not be measured; where the two agree it stands, with their count", async () => {
+    const { tasks, out, args } = listingTest(
+      "listing-agree",
+      [
+        { id: "need-1", text: NEED, label: "need" },
+        { id: "near-1", text: NEAR, label: "near-miss", written: true },
+      ],
+      new Map([
+        [NEED, 2],
+        [NEAR, 0],
+      ])
+    );
+    writeTasksSummary(tasks, { "need-1": measureItem(10) }, measureItem(null));
+    const ran = await cli(args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const reason =
+      "no description fault in 2 tasks; the listing of 1 of its 2 tasks could not be measured, and without them the verdict is the same";
+    expect(ran.stdout).toContain(`the skill alpha: ${reason}`);
+    const summary = summaryOf(out);
+    expect(summary.verdict).toEqual({ descriptionFault: false, reason });
+    expect(summary.verdicts).toEqual({
+      withUnmeasured: { descriptionFault: false, reason: "no description fault in 2 tasks" },
+      withoutUnmeasured: { descriptionFault: false, reason: "no description fault in 1 tasks" },
+    });
+  });
+
+  test("where the verdicts with and without the tasks whose listing could not be measured differ, there is no verdict, and the summary holds both", async () => {
+    const { tasks, out, args } = listingTest(
+      "listing-differ",
+      [
+        { id: "need-1", text: NEED, label: "need" },
+        { id: "near-1", text: NEAR, label: "near-miss", written: true },
+      ],
+      new Map([
+        [NEED, 2],
+        [NEAR, 2],
+      ])
+    );
+    writeTasksSummary(tasks, { "need-1": measureItem(10) }, measureItem(null));
+    const ran = await cli(args);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const reason =
+      "no verdict: depends on tasks whose listing could not be measured (1 of its 2 tasks): with them, a description fault: tasks near-1; without them, no description fault in 1 tasks";
+    expect(ran.stdout).toContain(`the skill alpha: ${reason}`);
+    const summary = summaryOf(out);
+    expect(summary.verdict).toEqual({ descriptionFault: null, reason });
+    expect(summary.verdicts).toEqual({
+      withUnmeasured: { descriptionFault: true, reason: "a description fault: tasks near-1" },
+      withoutUnmeasured: { descriptionFault: false, reason: "no description fault in 1 tasks" },
+    });
+  });
+
+  test("where the listing rule drops most tasks of a load, the command stops before any run and says so with the numbers (exit 3)", async () => {
+    const { tasks, out, args } = listingTest(
+      "listing-most",
+      [
+        { id: "need-1", text: NEED, label: "need" },
+        { id: "near-1", text: NEAR, label: "near-miss", written: true },
+        { id: "need-2", text: NEED_2, label: "need" },
+      ],
+      new Map()
+    );
+    writeTasksSummary(
+      tasks,
+      { "need-1": measureItem(10, ["beta", "gamma", "delta"]), "need-2": measureItem(10) },
+      measureItem(10, ["beta", "gamma"])
+    );
+    const from = recorder.requests.length;
+    const ran = await cli(args);
+    expect(ran.code).toBe(3);
+    expect(ran.stderr).toContain(
+      `skill-cuts: stopped: the listing rule drops 2 of the 3 tasks of ${tasks}, more than half (need-1, near-1): the rebuilt listing of each misses more than 10% of the names its session's recorded listing holds, so the test stops before any run, and the architect decides such a load; 1 tasks' listings were measured and 0 could not be`
+    );
+    expect(recorder.requests.length).toBe(from);
+    const tasksOf = summaryOf(out).tasks;
+    expect(tasksOf.map((task) => [task.id, task.made, task.dropped !== null])).toEqual([
+      ["need-1", 0, true],
+      ["near-1", 0, true],
+      ["need-2", 0, false],
+    ]);
   });
 });
 

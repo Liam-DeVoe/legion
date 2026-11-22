@@ -48,7 +48,7 @@ bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
   [--after-case <command>] [--request-log <file>] \
   [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] \
   [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] \
-  [--reading-models <file>]
+  [--reading-models <file>] [--again <case id>]...    (--again: confirm only)
 ```
 
 One skill per run: `--old` and `--new` are that skill's own directories, and `--cases` holds that
@@ -62,12 +62,26 @@ skill's cases (`cases.ts`), one JSON object per line.
   whose model the gateway does not serve (none of the configuration's `servedModels` has its id,
   the text after its last `/`) is dropped before any call as `model-not-served`; a case on a
   served model runs as that served `provider/model`, so an Anthropic model behind another
-  gateway prefix runs as `anthropic/<id>`. With `--reading-models` (the skill's
-  `<cut id>/models/<skill>.json` that `attribute` writes: its reading sessions by model), a skill
-  with fewer than 6 reading sessions on models the gateway serves is refused before any call
-  (exit 2): it gets no verdict, with the reason `too few sessions on served models` and its served
-  and total counts, and the walk of the cut's ranking goes on to the next skill.
-- `confirm`: 40 fresh runs of old and new for each flagged case.
+  gateway prefix runs as `anthropic/<id>`. A case whose listing measure (its `listing measure`
+  evidence item, under `build-cases` below) misses more than 10% of the names its session's
+  recorded listing holds is dropped before any call too, as `listing-misses`, with the count and
+  the names. With `--reading-models`
+  (the skill's `<cut id>/models/<skill>.json` that `attribute` writes: its reading sessions by
+  model), a skill with fewer than 6 reading sessions on models the gateway serves is refused
+  before any call (exit 2): it gets no verdict, with the reason `too few sessions on served
+  models` and its served and total counts, and the walk of the cut's ranking goes on to the next
+  skill.
+- `confirm`: 40 fresh runs of old and new for each flagged case that is not dropped. Each confirm
+  records the runner that made it: a digest of the runner's code (each file of this directory but
+  its tests, its test data and this README). Where a case's last two confirms at the same texts on
+  one runner disagree, one a loss and one not, `confirm` runs a third, and the three are pooled
+  (INFRA-323's decision "The behaviour test's pass rule"): the case is a loss when the cut's text
+  passes at least 30 fewer of the 120 runs than the old text, the same bound of 10 for each 40.
+  Confirms made on different runners (before and after a fix) or at other texts are not pooled:
+  only the last confirm's runner and texts count. `--again <case id>` asks for one more confirm of
+  a flagged case whose confirm is finished, on this runner; it is refused (exit 2), naming the
+  case, where the case already has three confirms at these texts on this runner (no fourth runs)
+  or two that agree (a third runs only where two disagree).
 - `control`: on the skill's control case, 40 runs each of three arms: old; `minus` (old without
   each line of the case's file that is the case's line, trimmed, or without each line that is
   `--planted-line`; a rule written twice is still the rule, so every copy goes; a link in the old
@@ -81,12 +95,32 @@ skill's cases (`cases.ts`), one JSON object per line.
 - In every stage, a case one of whose captures needs a directory no read can give (the commit
   holds no such directory, or GitHub cuts a level of its tree short even read alone) is dropped
   as `unreadable-directory`, its drop naming the repository, the commit and the path; a run
-  started again skips it, and a dropped case is never informative. A read that fails for another
-  reason, after its retries, fails the command (exit 1), and the next run reads it again.
-- `report`: each case's passes per arm and stage, the control case's passes of old, `minus` and
-  `twin` and what each control says, the skill's verdict and its reason (`keeps` prints as "no
-  loss detected by the registered rule"), the drops per judge control and the drops counted as
-  `model-not-served` and as `unreadable-directory`, an estimate of the procedure's false-loss
+  started again skips it. Each drop records the stage that made it (`droppedAt`; a result written
+  before that field is read as dropped at screen when its screen runs are not counted, else at
+  confirm when its screen flagged it and it has no confirm runs, else at control). No dropped case
+  leaves the score (the architect, 2026-11-22): a case dropped at screen is not informative; a case
+  dropped at confirm or control keeps its screen's passes, and any confirm made before the drop.
+  A flagged case that can no longer be confirmed leaves its skill no "no loss detected" verdict:
+  the skill gets no verdict, `flagged case <id> could not be confirmed (<reason>)`, unless another
+  of its cases is a confirmed loss, which stands as the skill's loss. A dropped control case gives
+  its place to the next informative case of the control rule's order (the largest old − none gap,
+  a tie to the lower id), chosen by that rule and by no result; with none left, the skill gets no
+  verdict, and the reason names each dropped one. A drop at confirm of a case its screen did not
+  flag cannot happen, since only flagged cases are confirmed: results that show one are refused,
+  naming the case, by `report` and by every stage command (exit 1), not scored. A read that fails
+  for another reason, after its retries, fails the command (exit 1), and the next run reads it
+  again.
+- `report`: each case's passes per arm and stage; for a dropped case, the stage that dropped it,
+  why, and the passes of each stage it ran (its screen's old, new and none passes where the screen
+  ran); for a case with more than one confirm, each confirm numbered (one on another runner or at
+  other texts marked not counted) and, for three pooled ones, their pooled passes, and a
+  `pooled confirms` line naming each such case with its three results and the pooled numbers; the
+  control case's passes of old, `minus` and `twin` and what each control says, and each dropped
+  case the control case took the place of; the skill's verdict and its reason (`keeps` prints as
+  "no loss detected by the registered rule"), ending with how many of the skill's screened cases
+  have a listing measure that could not be measured; the drops per judge control and the drops
+  counted as `model-not-served`, as `unreadable-directory` and as `listing-misses`; an estimate of
+  the procedure's false-loss
   chance at the cases run (exact binomial under identical old and new texts, the pass rates taken
   from each case's own screen; its assumptions are printed with it),
   a table of the chance it finds a loss of 10 to 40 points in one informative case, the spend
@@ -285,6 +319,20 @@ whose context needs a directory no read can give (as `behaviour` drops a case fo
 its line and the summary's `dropped` give the reason (`unreadable-directory: ` and the
 repository, the commit and the path), a run started again skips it while its profile file keeps
 the same bytes, and the verdict rule counts it as a task with no runs.
+
+Every load applies the listing rule (the architect, 2026-11-22), so no one applies it by hand.
+Each task's listing measure comes from the tasks file's build-tasks summary
+(`<tasks>.summary.json`): a session task's own profile's `listing measure` evidence item, and a
+written task's context session's; a task with no summary beside its file is not measurable. A
+task whose rebuilt listing misses more than 10% of the names its session's recorded listing holds
+is dropped before any run (`listing-misses: ` with the count and the names): its line and the
+summary's task give the reason, the summary's `listing` counts the tasks measured, not
+measurable and dropped, and no verdict reads it. Where the rule drops more than half of a load's
+tasks, the command stops before any run (exit 3) and says so with the numbers: the architect
+decides such a load. The skill's verdict is made twice, with and without the tasks whose listing
+could not be measured, both in the summary's `verdicts`. Where they agree it stands, its reason
+giving how many tasks were not measured; where they differ there is no verdict (`no verdict:
+depends on tasks whose listing could not be measured`, with both results).
 
 ### `copies`
 
@@ -614,8 +662,8 @@ name a model's hint for the skill or a preview of its description (system-prompt
 981-983; extensibility/skill-descriptions.ts, lines 448-476), never the frontmatter's text. The
 summaries of `build-cases`, `build-cases --reprofile`, `build-tasks --profiles-out` and
 `build-tasks --reprofile` count the measures of each kind and sum the missing and added names
-(`listing`); a task that keeps its old profile is `not measurable`, with why. Nothing is dropped
-by the measure: a report applies its rules.
+(`listing`); a task that keeps its old profile is `not measurable`, with why. The measure drops
+nothing here: `behaviour` and `load` apply the listing rule to it (above, under each command).
 
 `--reprofile` builds the profiles of an existing case file again that way, from the cases and
 their sessions' heads (no transcript pulled, no reader call), and writes a new file in which only
@@ -798,7 +846,8 @@ message's text.
 ## Exit status
 
 0 done (a control held); 1 failed (every reply of a reader refused, a control that did not hold, a
-call, a load test's task or an `--after-case` command that failed); 2 refused before any model
-call or store read (among the refusals, an `--out` inside a git or jj checkout, from `behaviour`'s
-stage commands, `load` and `build-cases`); 3 stopped (the budget is spent, or the peak memory
-passed 1 GiB, 1.5 GiB for `copies`); 4 stopped by build-cases' stop rule.
+call, a load test's task or an `--after-case` command that failed, or `behaviour` results that show
+a drop no stage makes); 2 refused before any model call or store read (among the refusals, an
+`--out` inside a git or jj checkout, from `behaviour`'s stage commands, `load` and `build-cases`);
+3 stopped (the budget is spent, the peak memory passed 1 GiB, 1.5 GiB for `copies`, or the listing
+rule dropped more than half of a load's tasks); 4 stopped by build-cases' stop rule.

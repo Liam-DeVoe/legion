@@ -142,6 +142,19 @@
  * task's line ends with the seconds of its phases: its capture (its context build, and the
  * GitHub reads in it with their count), the runs of its profile's tasks, its writes, the rest,
  * and the total.
+ *
+ * The listing rule (the architect, 2026-11-22T03:04Z), so that no one applies it by hand: each
+ * task's listing measure is read from the tasks file's build-tasks summary
+ * (`<tasks>.summary.json`: a session task's own profile's evidence, a written task's context
+ * session's; `taskListings`), and a task with no summary beside its file is not measurable. A task
+ * whose rebuilt listing misses more than MAX_LISTING_MISSING_PERCENT of the names its session's
+ * recorded listing holds (score.ts's `listingStanding`) is dropped before any run, its reason in
+ * the summary's task and the counts in its `listing`; it is not run and no verdict reads it. Where
+ * the rule drops more than half of the tasks, the command stops before any run and says so with
+ * the numbers (exit 3): the architect decides such a load. The skill's verdict is made with and
+ * without the tasks whose listing could not be measured (`listedOutcome`), both in the summary's
+ * `verdicts`: where they agree it stands, with how many tasks were not measured; where they
+ * differ there is no verdict, since it depends on those tasks.
  */
 import { createHash } from "node:crypto";
 import {
@@ -212,7 +225,10 @@ import { type RecordedRequest, startRecorder } from "./recorder";
 import { sendOrder } from "./replay";
 import {
   descriptionFault,
+  type ListingStanding,
   LOAD_RUNS,
+  listingStanding,
+  MAX_LISTING_MISSING_PERCENT,
   NEAR_MISS_MAX_LOADS,
   NEED_MIN_LOADS,
   TaskLabel,
@@ -439,6 +455,58 @@ function loadTasks(file: string): Task[] {
   if (refusals.length > 0) throw new Refused(`refused tasks:\n${refusals.join("\n")}`);
   if (tasks.length === 0) throw new Refused(`the tasks file ${file} holds no task`);
   return tasks;
+}
+
+/** One item of a profile's evidence, as a build-tasks summary keeps it. */
+const EvidenceItem = z.strictObject({ item: z.string(), source: z.string() });
+/** What the load test reads of a tasks file's summary (`<tasks>.summary.json`, as build-tasks and
+ *  `build-tasks --reprofile` write it, build.ts): the evidence of each session task's profile, and
+ *  of the context session's profile, which each written task takes. */
+const TasksSummary = z.looseObject({
+  profiles: z
+    .looseObject({
+      contextSession: z
+        .looseObject({ evidence: z.array(EvidenceItem).optional() })
+        .nullable()
+        .optional(),
+      tasks: z.array(
+        z.looseObject({ task: z.string(), evidence: z.array(EvidenceItem).optional() })
+      ),
+    })
+    .optional(),
+});
+
+/** Each task's standing by the listing measure of its profile (score.ts's `listingStanding`), as
+ *  the tasks file's summary gives it: a session task's own profile's, a written task's context
+ *  session's. With no summary beside the tasks file, each task is not measurable. Throws a refusal
+ *  when the summary is not JSON or no build-tasks summary. */
+function taskListings(tasksFile: string, tasks: readonly Task[]): Map<string, ListingStanding> {
+  const file = `${tasksFile}.summary.json`;
+  if (!existsSync(file)) {
+    const why = `the tasks file has no build-tasks summary (${file}) to give its listing measure`;
+    const standing: ListingStanding = { state: "not measurable", why };
+    return new Map(tasks.map((task) => [task.id, standing]));
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) {
+    throw new Refused(`the tasks file's summary ${file} is not JSON: ${messageFor(error)}`);
+  }
+  const summary = TasksSummary.safeParse(raw);
+  if (!summary.success) {
+    throw new Refused(`${file} is no build-tasks summary: ${schemaFaults(summary.error)}`);
+  }
+  const profiles = summary.data.profiles;
+  const noted = new Map((profiles?.tasks ?? []).map((note) => [note.task, note.evidence]));
+  return new Map(
+    tasks.map((task) => [
+      task.id,
+      listingStanding(
+        task.source === "written" ? profiles?.contextSession?.evidence : noted.get(task.id)
+      ),
+    ])
+  );
 }
 
 /** A profile file as a load test read it: its absolute path, the SHA-256 of its bytes, its
@@ -771,6 +839,50 @@ export function skillOutcome(
     reason: fault
       ? `a description fault: tasks ${faulty.join(", ")}`
       : `no description fault in ${tasks.length} tasks`,
+  };
+}
+
+/** The skill's verdict under the listing rule (the architect, 2026-11-22T03:04Z): made twice, from
+ *  all `tasks` (`withUnmeasured`) and from those whose listing was measured
+ *  (`withoutUnmeasured`, no verdict when none was). Where no task is unmeasured, or the first is
+ *  no verdict yet, it is the first; where the two agree, the first, its reason giving how many
+ *  tasks were not measured; where they differ, no verdict, its reason giving both. */
+export function listedOutcome(
+  tasks: readonly {
+    readonly id: string;
+    readonly label: TaskLabel;
+    readonly outcome: TaskOutcome;
+    readonly measured: boolean;
+  }[],
+  wanted: number
+): { verdict: LoadVerdict; withUnmeasured: LoadVerdict; withoutUnmeasured: LoadVerdict } {
+  const withUnmeasured = skillOutcome(tasks, wanted);
+  const measured = tasks.filter((task) => task.measured);
+  const withoutUnmeasured: LoadVerdict =
+    measured.length === 0
+      ? { descriptionFault: null, reason: "no verdict: no task's listing was measured" }
+      : skillOutcome(measured, wanted);
+  const unmeasured = tasks.length - measured.length;
+  const both = { withUnmeasured, withoutUnmeasured };
+  if (unmeasured === 0 || withUnmeasured.descriptionFault === null) {
+    return { verdict: withUnmeasured, ...both };
+  }
+  const count = `${unmeasured} of its ${tasks.length} tasks`;
+  if (withoutUnmeasured.descriptionFault === withUnmeasured.descriptionFault) {
+    return {
+      verdict: {
+        descriptionFault: withUnmeasured.descriptionFault,
+        reason: `${withUnmeasured.reason}; the listing of ${count} could not be measured, and without them the verdict is the same`,
+      },
+      ...both,
+    };
+  }
+  return {
+    verdict: {
+      descriptionFault: null,
+      reason: `no verdict: depends on tasks whose listing could not be measured (${count}): with them, ${withUnmeasured.reason}; without them, ${withoutUnmeasured.reason}`,
+    },
+    ...both,
   };
 }
 
@@ -1816,6 +1928,20 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   const profiled = taskProfiles(tasks, o, name);
   const injected = await injectedRefusal(profiled, o, own, name);
   if (injected !== undefined) throw new Refused(injected);
+  // Each task's standing by its listing measure, and the tasks the listing rule drops: never run.
+  const listings = taskListings(o.tasksFile, tasks);
+  const listingDrops = new Map(
+    [...listings].flatMap(([id, standing]) =>
+      standing.state === "dropped" ? [[id, standing.reason] as const] : []
+    )
+  );
+  const standings = [...listings.values()];
+  const listingCounts = {
+    summary: `${o.tasksFile}.summary.json`,
+    measured: standings.filter((standing) => standing.state === "measured").length,
+    notMeasurable: standings.filter((standing) => standing.state === "not measurable").length,
+    dropped: listingDrops.size,
+  };
   // With no --hint-model the hint model is the model itself, and Oh My Pi's hints are written on
   // the Messages route only, so each capture to be made would fail.
   if (
@@ -1844,9 +1970,10 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   };
 
   const summaryFile = path.join(o.out, "summary.json");
-  // Each task dropped for a directory of its context no read can give, by its id, with why: one an
-  // earlier command dropped under this profile is not tried again.
-  const dropped = new Map<string, string>();
+  // Each task dropped, by its id, with why: by the listing rule, before any run; or for a
+  // directory of its context no read can give, which an earlier command dropped under this
+  // profile and which is not tried again.
+  const dropped = new Map<string, string>(listingDrops);
   if (existsSync(summaryFile)) {
     let raw: unknown;
     try {
@@ -1882,7 +2009,13 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
           `${o.out} holds task ${task.id} made under a profile of other bytes (SHA-256 ${before.profileDigest ?? "not recorded"}) than ${profile.file} (SHA-256 ${profile.digest}): give the task that profile again, or use another --out`
         );
       }
-      if (typeof before?.dropped === "string" && before.profileDigest === profile.digest) {
+      // A listing drop is the listing rule's again on this run's summary, never a saved one.
+      if (
+        typeof before?.dropped === "string" &&
+        before.dropped.startsWith(UNREADABLE_DIRECTORY) &&
+        before.profileDigest === profile.digest &&
+        !dropped.has(task.id)
+      ) {
         dropped.set(task.id, before.dropped);
       }
     }
@@ -1913,12 +2046,26 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   };
   for (const task of tasks) readHintDollars(task);
   /** Writes the summary as the runs stand; returns the skill's verdict and the test's dollars so
-   *  far at list price, its runs' and its hints'. */
+   *  far at list price, its runs' and its hints'. The verdict leaves out each task the listing
+   *  rule dropped, and is made with and without the tasks whose listing was not measured
+   *  (`listedOutcome`), both in the summary. */
   const writeSummary = (): { verdict: LoadVerdict; usd: number } => {
-    const verdict = skillOutcome(
-      tasks.map((task) => ({ id: task.id, label: task.label, outcome: outcomeOf(task) })),
+    const listed = listedOutcome(
+      tasks.flatMap((task) =>
+        listingDrops.has(task.id)
+          ? []
+          : [
+              {
+                id: task.id,
+                label: task.label,
+                outcome: outcomeOf(task),
+                measured: listings.get(task.id)?.state === "measured",
+              },
+            ]
+      ),
       o.runs
     );
+    const verdict = listed.verdict;
     const runs = [...runsOf.values()].flat();
     const runsUsd = runs.reduce((sum, run) => sum + run.usage.usd, 0);
     let hintsUsd = 0;
@@ -1943,8 +2090,14 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
           profileDigest: profile.digest,
           ...outcomeOf(task),
           dropped: dropped.get(task.id) ?? null,
+          listing: listings.get(task.id) ?? null,
         })),
+        listing: listingCounts,
         verdict,
+        verdicts: {
+          withUnmeasured: listed.withUnmeasured,
+          withoutUnmeasured: listed.withoutUnmeasured,
+        },
         spend: { runsUsd, hintsUsd, usd: runsUsd + hintsUsd },
         peakRssBytes: peak,
         requestLog: o.requestLog,
@@ -1954,10 +2107,18 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     return { verdict, usd: runsUsd + hintsUsd };
   };
   writeSummary();
+  if (listingDrops.size * 2 > tasks.length) {
+    throw new Stopped(
+      `the listing rule drops ${listingDrops.size} of the ${tasks.length} tasks of ${o.tasksFile}, more than half (${[...listingDrops.keys()].join(", ")}): the rebuilt listing of each misses more than ${MAX_LISTING_MISSING_PERCENT}% of the names its session's recorded listing holds, so the test stops before any run, and the architect decides such a load; ${listingCounts.measured} tasks' listings were measured and ${listingCounts.notMeasurable} could not be; written to ${summaryFile}`
+    );
+  }
 
   const count = (label: TaskLabel) => tasks.filter((task) => task.label === label).length;
   test.say(
     `the skill ${name} on ${o.host === "omp" ? "Oh My Pi" : "Claude Code"}, model ${settings.model}, thinking ${o.thinking}: ${count("need")} need and ${count("near-miss")} near-miss tasks, ${o.runs} runs each`
+  );
+  test.say(
+    `the listing rule (${listingCounts.summary}): ${listingCounts.measured} tasks' listings measured, ${listingCounts.notMeasurable} not measurable, ${listingCounts.dropped} tasks dropped, each missing more than ${MAX_LISTING_MISSING_PERCENT}% of the names its session's recorded listing holds`
   );
   const byFile = new Map<string, { profile: TaskProfile; ids: string[] }>();
   for (const { task, profile } of profiled) {
@@ -1996,7 +2157,9 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
       const saved = runsOf.get(task.id) ?? [];
       const drop = dropped.get(task.id);
       if (drop !== undefined) {
-        test.say(`${what(task)}: dropped before, skipped: ${drop}`);
+        test.say(
+          `${what(task)}: ${listingDrops.has(task.id) ? "dropped, not run" : "dropped before, skipped"}: ${drop}`
+        );
         continue;
       }
       if (saved.length >= o.runs) {

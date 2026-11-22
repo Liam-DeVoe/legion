@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import {
   type Arm,
+  type CaseFacts,
+  confirmScore,
   controlCase,
   descriptionFault,
   isControlLoss,
@@ -8,7 +10,11 @@ import {
   isFlagged,
   isInformative,
   isLoss,
+  isPooledLoss,
+  LISTING_MEASURE_ITEM,
   type LoadTask,
+  listingStanding,
+  type MadeConfirm,
   poorName,
   RunRecord,
   rankSkills,
@@ -74,6 +80,43 @@ const fresh = (
 const sixCases = (minus: number, twin = 30): RunRecord[] => [
   ...["c1", "c2", "c3", "c4", "c5", "c6"].flatMap((id) => screen(id, 8, 8, 5)),
   ...fresh("c1", "control", 30, minus, twin),
+];
+/** The facts of cases `ids`, each dropped at `stage` for a made-up unreadable directory. */
+const droppedAt = (stage: Stage, ...ids: string[]): Map<string, CaseFacts> =>
+  new Map(
+    ids.map((id) => [id, { drop: { stage, reason: `unreadable-directory: acme/skills ${id}` } }])
+  );
+/** One confirm made on `runner` at the made-up texts "t1 t2", counted: old and new passes of 40. */
+const confirmOn = (runner: string, old: number, cut: number): MadeConfirm => ({
+  runner,
+  texts: "t1 t2",
+  outcome: { state: "counted", passes: { old, new: cut } },
+});
+/** Confirms on the one runner `r1`, the old text passing 40 of 40 in each, the cut text `cuts`. */
+const onOneRunner = (...cuts: number[]): MadeConfirm[] =>
+  cuts.map((cut) => confirmOn("r1", 40, cut));
+/** A case's evidence holding one listing measure as build.ts writes it: of `kind`, its recorded
+ *  listing holding `recorded` names, of which the rebuilt one misses `missing`. */
+const measured = (
+  kind: "session listing" | "subagent listing" | "not measurable",
+  recorded: number | null,
+  missing: string[]
+) => [
+  {
+    item: LISTING_MEASURE_ITEM,
+    source: JSON.stringify({
+      kind,
+      recorded,
+      listed: 9,
+      missing,
+      added: [],
+      missingShare: recorded === null || recorded === 0 ? null : missing.length / recorded,
+      sessionDigest: null,
+      rebuiltDigest: null,
+      subagent: null,
+      why: "the made-up session records no system prompt",
+    }),
+  },
 ];
 /** A load test that passes: 5 need tasks, each loaded on 2 or 3 of 3 runs, and 5 near-miss tasks,
  * each loaded on at most 1; and the same test with its first need task loaded once. */
@@ -377,6 +420,209 @@ const rows: [string, () => unknown, unknown][] = [
         ...unjudged("c7", "confirm", "new", 11),
       ]).outcome,
     { verdict: null, reason: "confirm runs missing: c7" },
+  ],
+
+  // Drops (the architect, 2026-11-22T01:28:33Z): no dropped case leaves the score.
+  [
+    "a case dropped at screen is not informative",
+    () => {
+      const score = scoreSkill(sixCases(20), droppedAt("screen", "c6"));
+      return [score.screened, score.informative, score.outcome];
+    },
+    [5, 5, tooFew],
+  ],
+  [
+    "a flagged case dropped at confirm gives no verdict that names it, never keeps",
+    () =>
+      scoreSkill([...sixCases(20), ...screen("c7", 8, 6, 5)], droppedAt("confirm", "c7")).outcome,
+    {
+      verdict: null,
+      reason: "flagged case c7 could not be confirmed (unreadable-directory: acme/skills c7)",
+    },
+  ],
+  [
+    "a flagged case dropped at confirm leaves another case's confirmed loss standing as the skill's",
+    () =>
+      scoreSkill(
+        [
+          ...sixCases(20),
+          ...screen("c7", 8, 6, 5),
+          ...screen("c8", 8, 6, 5),
+          ...fresh("c8", "confirm", 30, 20),
+        ],
+        droppedAt("confirm", "c7")
+      ).outcome,
+    loss,
+  ],
+  [
+    "a dropped control case keeps its screen and gives its place to the next case of the control rule's order",
+    () => {
+      const score = scoreSkill(
+        [
+          ...screen("c1", 9, 9, 5),
+          ...["c2", "c3", "c4", "c5", "c6"].flatMap((id) => screen(id, 8, 8, 5)),
+          ...fresh("c2", "control", 30, 20),
+        ],
+        droppedAt("control", "c1")
+      );
+      return [score.informative, score.controlCase, score.replacedControls, score.outcome];
+    },
+    [6, "c2", ["c1"], keeps],
+  ],
+  [
+    "a skill whose every informative case is dropped after its screen gets no verdict naming each",
+    () =>
+      scoreSkill(
+        sixCases(20).filter((run) => run.stage === "screen"),
+        droppedAt("control", "c1", "c2", "c3", "c4", "c5", "c6")
+      ).outcome,
+    {
+      verdict: null,
+      reason:
+        "no informative case is left to be the control case: each is dropped (c1 at control, c2 at control, c3 at control, c4 at control, c5 at control, c6 at control)",
+    },
+  ],
+  [
+    "a case recorded as dropped at confirm that its screen did not flag is refused, naming it",
+    () => {
+      try {
+        scoreSkill(sixCases(20), droppedAt("confirm", "c2"));
+        return "scored";
+      } catch (error) {
+        return (error as Error).message;
+      }
+    },
+    "case c2 is recorded as dropped at confirm, but its screen did not flag it, and only flagged cases are confirmed: its records are refused, not scored (its drop: unreadable-directory: acme/skills c2)",
+  ],
+
+  // Pooled confirms (INFRA-323's decision "The behaviour test's pass rule", 2026-11-22).
+  [
+    "30 fewer passes of 120 pooled runs are a loss",
+    () => isPooledLoss({ old: 120, new: 90 }),
+    true,
+  ],
+  [
+    "29 fewer passes of 120 pooled runs are no loss",
+    () => isPooledLoss({ old: 120, new: 91 }),
+    false,
+  ],
+  [
+    "two confirms on one runner that disagree call for a third",
+    () => confirmScore("c7", onOneRunner(30, 31)),
+    { state: "running", third: true },
+  ],
+  [
+    "three confirms on one runner pooled at 29 fewer of 120 are no loss",
+    () => confirmScore("c7", onOneRunner(30, 31, 30)),
+    {
+      state: "counted",
+      loss: false,
+      counted: [
+        { old: 40, new: 30 },
+        { old: 40, new: 31 },
+        { old: 40, new: 30 },
+      ],
+      pooled: { old: 120, new: 91 },
+    },
+  ],
+  [
+    "three confirms on one runner pooled at 30 fewer of 120 are a loss",
+    () => confirmScore("c7", onOneRunner(30, 31, 29)),
+    {
+      state: "counted",
+      loss: true,
+      counted: [
+        { old: 40, new: 30 },
+        { old: 40, new: 31 },
+        { old: 40, new: 29 },
+      ],
+      pooled: { old: 120, new: 90 },
+    },
+  ],
+  [
+    "the decision's first case: 40 against 40, 40 against 30, then 40 against 39 pool to 120 against 109, no loss",
+    () => confirmScore("c7", onOneRunner(40, 30, 39)),
+    {
+      state: "counted",
+      loss: false,
+      counted: [
+        { old: 40, new: 40 },
+        { old: 40, new: 30 },
+        { old: 40, new: 39 },
+      ],
+      pooled: { old: 120, new: 109 },
+    },
+  ],
+  [
+    "two confirms on one runner that agree are what both say, and call for no third",
+    () => confirmScore("c7", onOneRunner(30, 25)),
+    {
+      state: "counted",
+      loss: true,
+      counted: [
+        { old: 40, new: 30 },
+        { old: 40, new: 25 },
+      ],
+      pooled: undefined,
+    },
+  ],
+  [
+    "confirms on two runners are not pooled: the last runner's confirm counts alone",
+    () => confirmScore("c7", [confirmOn("r1", 40, 30), confirmOn("r2", 40, 31)]),
+    { state: "counted", loss: false, counted: [{ old: 40, new: 31 }], pooled: undefined },
+  ],
+  [
+    "a fourth confirm on one runner is refused, naming the case",
+    () => {
+      try {
+        confirmScore("c7", onOneRunner(30, 31, 30, 29));
+        return "scored";
+      } catch (error) {
+        return (error as Error).message;
+      }
+    },
+    "case c7 holds 4 confirms at the same texts on one runner: the pooled rule takes 3, and no confirm runs after them",
+  ],
+  [
+    "a flagged case whose three pooled confirms are 30 fewer of 120 gives loss",
+    () =>
+      scoreSkill(
+        [...sixCases(20), ...screen("c7", 8, 6, 5)],
+        new Map([["c7", { confirms: onOneRunner(30, 31, 29) }]])
+      ).outcome,
+    loss,
+  ],
+
+  // listing: a case or a load task whose rebuilt listing misses more than 10% of its session's
+  // recorded names is dropped (the architect, 2026-11-22T03:04Z).
+  [
+    "a listing that misses 2 of 20 recorded names (10%) is measured, and the case stays",
+    () => listingStanding(measured("session listing", 20, ["a1", "a2"])),
+    { state: "measured", recorded: 20, missing: 2 },
+  ],
+  [
+    "a listing that misses 3 of 20 recorded names (15%) drops the case, the reason naming them",
+    () => listingStanding(measured("subagent listing", 20, ["a1", "a2", "a3"])),
+    {
+      state: "dropped",
+      reason:
+        "listing-misses: its rebuilt listing misses 3 of the 20 names of the recorded subagent listing (15.0%), more than 10%: a1, a2, a3",
+    },
+  ],
+  [
+    "a listing that misses 1 of 9 recorded names (11.1%) drops the case",
+    () => listingStanding(measured("session listing", 9, ["a1"])).state,
+    "dropped",
+  ],
+  [
+    "a measure that says not measurable keeps the case in, with why",
+    () => listingStanding(measured("not measurable", null, [])),
+    { state: "not measurable", why: "the made-up session records no system prompt" },
+  ],
+  [
+    "evidence that holds no listing measure is not measurable",
+    () => listingStanding([{ item: "role", source: "made up" }]),
+    { state: "not measurable", why: "its evidence holds no listing measure" },
   ],
 
   // skills tested: the walk of the ranking.

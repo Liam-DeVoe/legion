@@ -15,7 +15,7 @@
  *       [--planted-line <text>] [--budget-usd <n>] [--concurrency <n>] [--after-case <command>]
  *       [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>]
  *       [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] [--request-log <file>]
- *       [--reading-models <file>]
+ *       [--reading-models <file>] [--again <case id>]... (confirm only)
  *   bun scripts/skill-cuts/cli.ts read --config <file> --key-file <file> --prompt <name>
  *       --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>]
  *       [--concurrency <n>]
@@ -64,9 +64,11 @@
  *   or MAX_SCREENED_CASES screened cases (score.ts): a case whose model the gateway does not serve
  *   (none of the configuration's `servedModels` has its id, its text after the last `/`) is
  *   dropped as `model-not-served`, and a case on a served model runs as that served
- *   `provider/model`, on the gateway route of its capture's body (gateway.ts); the three judge
- *   controls (judge.ts's CONTROLS) run, and a case that fails any is dropped, its drop naming
- *   each control it failed; then a capture
+ *   `provider/model`, on the gateway route of its capture's body (gateway.ts); a case whose
+ *   listing measure misses more than MAX_LISTING_MISSING_PERCENT of its session's recorded names
+ *   (score.ts's `listingStanding`) is dropped as `listing-misses`, before any call too; the three
+ *   judge controls (judge.ts's CONTROLS) run, and a case that fails any is dropped, its drop
+ *   naming each control it failed; then a capture
  *   per arm (old, new, none; capture.ts, read back when saved already), SCREEN_RUNS replays of
  *   each, every reply of the round judged blind (all arms shuffled under a recorded seed), and
  *   rounds of extra runs for the runs with no verdict, as score.ts's `stageOutcome` says, at most
@@ -76,7 +78,13 @@
  *   before any model call (score.ts's `servedScreeningRefusal`: `too few sessions on served
  *   models`, with the served and total counts): it gets no verdict, and the walk of the cut's
  *   ranking goes on to its next skill.
- * - `confirm`: FRESH_RUNS fresh runs of old and new for each flagged case.
+ * - `confirm`: FRESH_RUNS fresh runs of old and new for each flagged case that is not dropped. A
+ *   confirm records the runner that made it (`runnerDigest`). Where a case's last two confirms at
+ *   the same texts on one runner disagree, one a loss and one not, `confirm` runs a third, and
+ *   score.ts pools the three (`confirmScore`). `--again <case id>` asks for one more confirm of a
+ *   flagged case whose confirm is finished; it is refused (exit 2), naming the case, where the
+ *   case already has POOLED_CONFIRMS confirms at these texts on this runner (no fourth runs), or
+ *   two that agree (a third runs only where two disagree).
  * - `control`: on the skill's control case, FRESH_RUNS runs each of old, `minus` (old less every
  *   line of the case's file that is the case's line, trimmed, or less every line that is
  *   `--planted-line`: a rule written twice is still the rule, so each copy goes; arms.ts) and
@@ -88,17 +96,25 @@
  *   In any stage, a case one of whose captures needs a directory no read can give (context.ts's
  *   UnreadableDirectory: the commit holds no such directory, or GitHub cuts a level of its tree
  *   short even read alone) is dropped as `unreadable-directory`, its drop naming the repository,
- *   the commit and the path, and a run started again skips it; a dropped case is never
- *   informative. A read that failed for another reason, after its retries, fails the command, and
+ *   the commit and the path, and a run started again skips it. Each drop records its stage
+ *   (`droppedAt`). A case dropped at screen is never informative; one dropped at confirm or
+ *   control keeps its screen's passes in the score, so a flagged one that cannot be confirmed
+ *   gives its skill no verdict unless another case is a confirmed loss, and a dropped control
+ *   case gives its place to the next case of the control rule's order (score.ts's `scoreSkill`).
+ *   A read that failed for another reason, after its retries, fails the command, and
  *   the next run reads it again. A cases file with a case that holds a block of its skill its arms
  *   cannot each give their own text (arms.ts's `injectionFault`: one the plugin or Oh My Pi's
  *   autoload did not write in the form the runner rebuilds) is refused before any model call,
  *   naming each such case; so is a case whose capture finds its subagent's agent autoloads the
  *   skill and its messages hold no block of it (capture.ts's InjectionRefused), when the capture
  *   is made.
- * - `report` (no model call) prints each case's passes per arm and stage, the drops by each judge
- *   control, by `model-not-served` and by `unreadable-directory`, the skill's verdict and its
- *   reason (score.ts; `keeps` is printed "no loss detected by the registered rule"), the rule's
+ * - `report` (no model call) prints each case's passes per arm and stage, and for a dropped case
+ *   the stage that dropped it, why, and the passes of each stage it ran; each confirm of a case
+ *   with more than one, and the pooled passes of a case whose three confirms are pooled; the drops
+ *   by each judge control, by `model-not-served`, by `unreadable-directory` and by
+ *   `listing-misses`; the control case, and each dropped case it replaced; the skill's verdict and
+ *   its reason (score.ts; `keeps` is printed "no loss detected by the registered rule"), with how
+ *   many of its screened cases have a listing that could not be measured; the rule's
  *   sensitivity (`lossChance` at an old pass rate of 0.9 and 0.7 and drops of 0.1 to 0.4), the
  *   estimated false-loss rate at the cases run (`falseLossChance`),
  *   the spend, the peak memory, and how many captures' system-prompt digests differ from their
@@ -109,7 +125,9 @@
  *   cases ran on (a model of the file counted under the served model of its id), and the ones it
  *   does not: on models the gateway does not serve, and on served models no screened case ran
  *   on; a skill the screen's refusal holds for gets no verdict. Without it, `report` says the
- *   reading sessions by model were not given, and its verdict names no models.
+ *   reading sessions by model were not given, and its verdict names no models. A drop at confirm
+ *   of a case its screen did not flag cannot happen, since only flagged cases are confirmed: a
+ *   result that shows one fails `report`, and every stage command, naming the case (exit 1).
  *
  * Every round of a stage sends the runs of all its arms in one order, seeded by the round's
  * recorded seed (replay.ts's `replayInterleaved`), each run with a session id of its own, and its
@@ -161,10 +179,11 @@
  * dollars at list price; never the key and never a message's text.
  *
  * Exit status: 0 done (a control held); 1 failed (a reader's every reply refused, a control that
- * did not hold, a call, a load test's task or an `--after-case` command that failed); 2 refused
- * before any model call; 3 stopped (the budget is spent, or the peak memory passed 1 GiB, 1.5 GiB
- * for `copies`); 4 stopped by build-cases' stop rule. The commands of the other files return
- * their own status, which `main` returns as it is.
+ * did not hold, a call, a load test's task or an `--after-case` command that failed, or behaviour
+ * results that show a drop no stage makes); 2 refused before any model call; 3 stopped (the budget
+ * is spent, the peak memory passed 1 GiB, 1.5 GiB for `copies`, or the listing rule dropped most
+ * of a load test's tasks); 4 stopped by build-cases' stop rule. The commands of the other files
+ * return their own status, which `main` returns as it is.
  */
 import { createHash } from "node:crypto";
 import {
@@ -261,6 +280,8 @@ import {
 } from "./readers";
 import { type Replayed, replayInterleaved } from "./replay";
 import {
+  type CaseFacts,
+  type CaseScore,
   FLAG_GAP,
   FRESH_RUNS,
   INFORMATIVE_GAP,
@@ -269,11 +290,15 @@ import {
   isFlagged,
   isInformative,
   isLoss,
+  LISTING_MISSES,
   LOAD_RUNS,
   LOSS_GAP,
+  listingStanding,
   MAX_EXTRA_RUNS,
   MAX_SCREENED_CASES,
+  type MadeConfirm,
   MIN_INFORMATIVE_CASES,
+  POOLED_CONFIRMS,
   RunRecord,
   SCREEN_RUNS,
   type SkillScore,
@@ -753,7 +778,8 @@ const SENDS = "each run its own session id; a round's arms interleaved in one se
 /** One stage of a case: `running` until score.ts's `stageOutcome` says `counted` or `unscreened`.
  *  `texts` are the digests of `--old` and `--new` it ran with, and `plantedLine` the line `minus`
  *  left out in place of the case's (control only). `sends` is SENDS. `usd` is what its calls cost
- *  at list price. */
+ *  at list price. `runner` is the runner that started it (`runnerDigest`), absent in a stage
+ *  started before the runner was recorded. */
 const StageResult = z.strictObject({
   state: StageState,
   sends: z.literal(SENDS),
@@ -763,6 +789,7 @@ const StageResult = z.strictObject({
   seeds: z.array(z.string()),
   runs: z.array(Run),
   usd: z.number(),
+  runner: z.string().optional(),
 });
 type StageResult = z.infer<typeof StageResult>;
 
@@ -771,13 +798,18 @@ const Judgement = z.strictObject({
   reason: z.string(),
 });
 
-/** Everything the runner keeps of one case: why it was dropped, if it was; its judge controls;
- *  each stage it ran; and the peak resident memory at the end of its last stage. */
+/** Everything the runner keeps of one case: why it was dropped, if it was, and the stage that
+ *  dropped it (`droppedAt`: `screen` for a drop by the judge controls, the model or the listing,
+ *  else the stage whose capture needed a directory no read gives; absent when it was not dropped,
+ *  and in a result written before the stage was recorded, `dropStage`); its judge controls; each
+ *  stage it ran, `confirm` its latest confirm and `earlierConfirms` the finished ones before it,
+ *  oldest first; and the peak resident memory at the end of its last stage. */
 export const CaseResult = z.strictObject({
   caseId: z.string().min(1),
   skill: z.string().min(1),
   cut: z.string().min(1),
   dropped: z.string().nullable(),
+  droppedAt: Stage.optional(),
   controls: z
     .strictObject({
       realStep: Judgement,
@@ -793,6 +825,7 @@ export const CaseResult = z.strictObject({
     confirm: StageResult.optional(),
     control: StageResult.optional(),
   }),
+  earlierConfirms: z.array(StageResult).optional(),
   peakRssBytes: z.number().nullable(),
 });
 export type CaseResult = z.infer<typeof CaseResult>;
@@ -802,12 +835,12 @@ export function caseResultFile(out: string, caseId: string): string {
   return path.join(out, "cases", `${encodeURIComponent(caseId)}.json`);
 }
 
-/** A digest of the skill directory `dir`: each file's path inside it and its bytes, in path
- *  order. */
-export function textDigest(dir: string): string {
+/** A digest of the directory `dir`: each file's path inside it and its bytes, in path order, of
+ *  the files `keep` keeps (every file by default). */
+export function textDigest(dir: string, keep: (file: string) => boolean = () => true): string {
   const hash = createHash("sha256");
   const files = readdirSync(dir, { recursive: true, encoding: "utf8" })
-    .filter((file) => statSync(path.join(dir, file)).isFile())
+    .filter((file) => keep(file) && statSync(path.join(dir, file)).isFile())
     .sort();
   for (const file of files) {
     hash
@@ -817,6 +850,18 @@ export function textDigest(dir: string): string {
       .update("\0");
   }
   return hash.digest("hex").slice(0, 16);
+}
+
+/** The runner's own code, as each stage it starts records it: textDigest of this directory less
+ *  its tests (`*.test.ts`), its test data and README.md. Two confirms of one case are pooled only
+ *  when one runner made both (score.ts's `confirmScore`), so a confirm made before a fix of the
+ *  runner is not pooled with one made after it. */
+export function runnerDigest(): string {
+  return textDigest(
+    import.meta.dir,
+    (file) =>
+      !file.endsWith(".test.ts") && file !== "README.md" && file.split(path.sep)[0] !== "testdata"
+  );
 }
 
 /** Where the captures of `arm` are saved under `out`: one directory per arm and text. `texts` are
@@ -934,7 +979,8 @@ interface Behaviour {
 
 /** What a stage command runs with. `gateway` counts the spend; `replays`, `judge` and the capture
  *  send through it, each logged. `source` reads the context's repositories, and counts its GitHub
- *  reads. */
+ *  reads. `runner` is this runner's code (`runnerDigest`), which each stage it starts records;
+ *  `again` the cases `--again` names (confirm only). */
 interface Runner extends Behaviour {
   readonly dirs: ArmDirs;
   readonly texts: { readonly old: string; readonly new: string };
@@ -946,6 +992,8 @@ interface Runner extends Behaviour {
   capture(c: Case, arm: Arm): Promise<Capture>;
   readonly afterCase: string | undefined;
   readonly afterCaseFailures: string[];
+  readonly runner: string;
+  readonly again: readonly string[];
 }
 
 /** The milliseconds of the phases of one case's stage, from `startedAt` (`performance.now()`), for
@@ -1037,20 +1085,71 @@ function writeResult(b: Behaviour, result: CaseResult, phases?: Phases): string 
   return file;
 }
 
-/** The run records of `results`, every stage's, as score.ts reads them. A dropped case's are
- *  none, so a case dropped after its screen (its context could not be read for a later stage) is
- *  never informative. */
+/** The screen and control run records of `results`, as score.ts reads them, a dropped case's
+ *  included: score.ts reads its drop from its facts (`caseFacts`), and each confirm from there. */
 function runRecords(results: Iterable<CaseResult>): RunRecord[] {
   const records: RunRecord[] = [];
   for (const result of results) {
-    if (result.dropped !== null) continue;
-    for (const stage of Stage.options) {
+    for (const stage of ["screen", "control"] as const) {
       for (const { caseId, arm, verdict, reason } of result.stages[stage]?.runs ?? []) {
         records.push({ caseId, arm, stage, verdict, reason });
       }
     }
   }
   return records;
+}
+
+/** The stage that dropped `result`: its `droppedAt`, or for a result written before that was
+ *  recorded, the stage its runs show: screen when its screen runs are not counted, else confirm
+ *  when its screen flagged it and it has no confirm runs, else control. */
+function dropStage(result: CaseResult): Stage {
+  if (result.droppedAt !== undefined) return result.droppedAt;
+  const screen = result.stages.screen;
+  const outcome =
+    screen === undefined ? undefined : stageOutcome(screen.runs, result.caseId, "screen");
+  if (outcome?.state !== "counted") return "screen";
+  return isFlagged(outcome.passes) && result.stages.confirm === undefined ? "confirm" : "control";
+}
+
+/** Each confirm of `result`, oldest first: its earlier ones, then its latest. */
+function confirmStages(result: CaseResult): StageResult[] {
+  const latest = result.stages.confirm;
+  return [...(result.earlierConfirms ?? []), ...(latest === undefined ? [] : [latest])];
+}
+
+/** The texts of `stage` as score.ts's MadeConfirm holds them: the two digests in one string. */
+const textsOf = (stage: StageResult) => `${stage.texts.old} ${stage.texts.new}`;
+
+/** What score.ts reads of `b`'s cases beside their run records (CaseFacts): the drop of each case
+ *  that has one, the drop its result records (`dropStage`), else its listing measure's
+ *  (score.ts's `listingStanding`), at screen; and each case's confirms with the runner and texts
+ *  of each. */
+function caseFacts(b: Behaviour, results: ReadonlyMap<string, CaseResult>): Map<string, CaseFacts> {
+  const facts = new Map<string, CaseFacts>();
+  for (const c of b.cases) {
+    const result = results.get(c.id);
+    const listing = listingStanding(c.evidence);
+    const drop =
+      result !== undefined && result.dropped !== null
+        ? { stage: dropStage(result), reason: result.dropped }
+        : listing.state === "dropped"
+          ? { stage: "screen" as const, reason: listing.reason }
+          : undefined;
+    const confirms: MadeConfirm[] = (result === undefined ? [] : confirmStages(result)).map(
+      (stage) => ({
+        runner: stage.runner ?? null,
+        texts: textsOf(stage),
+        outcome: stageOutcome(stage.runs, c.id, "confirm"),
+      })
+    );
+    facts.set(c.id, { ...(drop === undefined ? {} : { drop }), confirms });
+  }
+  return facts;
+}
+
+/** The score of `b`'s skill from `results` (score.ts's `scoreSkill`, with `caseFacts`). */
+function scored(b: Behaviour, results: ReadonlyMap<string, CaseResult>): SkillScore {
+  return scoreSkill(runRecords(results.values()), caseFacts(b, results));
 }
 
 /** Why the screen of `b`'s skill is not finished, or undefined when it is: each case is dropped
@@ -1060,9 +1159,12 @@ function screenUnfinished(
   results: ReadonlyMap<string, CaseResult>,
   score: SkillScore
 ): string | undefined {
+  const dropped = new Set(
+    score.cases.flatMap((each) => (each.drop === undefined ? [] : [each.caseId]))
+  );
   for (const c of b.cases) {
+    if (dropped.has(c.id)) continue;
     const result = results.get(c.id);
-    if (result !== undefined && result.dropped !== null) continue;
     const state = result?.stages.screen?.state;
     if (state === "counted" || state === "unscreened") continue;
     if (result === undefined && screeningDone(score)) continue;
@@ -1079,7 +1181,7 @@ function screened(
   keep: (score: SkillScore) => readonly (string | undefined)[]
 ): { results: Map<string, CaseResult>; score: SkillScore } {
   const results = readResults(b);
-  const score = scoreSkill(runRecords(results.values()));
+  const score = scored(b, results);
   const unfinished = screenUnfinished(b, results, score);
   if (unfinished !== undefined) {
     throw new Refused(`the screen is not finished: ${unfinished}; run behaviour screen first`);
@@ -1090,9 +1192,10 @@ function screened(
 }
 
 /** Why a skill whose screen is finished can get no verdict, whatever its confirm runs show, or
- *  undefined: too few informative cases, or a control whose runs are made and whose planted-loss
- *  control is no loss or whose false-loss control is a loss (score.ts's `skillVerdict`, and its
- *  reason). Exported for cli.test.ts. */
+ *  undefined: too few informative cases; no informative case left to be the control case, each
+ *  one dropped; or a control whose runs are made and whose planted-loss control is no loss or
+ *  whose false-loss control is a loss (score.ts's `skillVerdict`, and its reason). Exported for
+ *  cli.test.ts. */
 export function noVerdict(score: SkillScore): string | undefined {
   const control = score.control;
   const counted = control?.state === "counted" ? control.passes : undefined;
@@ -1107,7 +1210,7 @@ export function noVerdict(score: SkillScore): string | undefined {
     falseLoss,
     losses: 0,
   });
-  if (outcome.verdict !== null) return undefined;
+  if (outcome.verdict !== null) return score.noControl;
   // Too few informative cases is the reason whatever the control is; with enough, an unscreened
   // control is no control loss, and its reason says why.
   return control?.state === "unscreened" && score.informative >= MIN_INFORMATIVE_CASES
@@ -1235,7 +1338,11 @@ async function judgeTheControls(r: Runner, c: Case, result: CaseResult): Promise
     (name) =>
       `${CONTROLS[name].step} is judged ${controls[name].verdict ?? "not at all"} (${CONTROLS[name].wanted} wanted)`
   );
-  return { ...next, dropped: `the judge controls do not hold: ${failures.join("; ")}` };
+  return {
+    ...next,
+    dropped: `the judge controls do not hold: ${failures.join("; ")}`,
+    droppedAt: "screen",
+  };
 }
 
 /** Round `round` of a stage: `toStart` replays of each arm, every arm's sent in one order under
@@ -1332,8 +1439,9 @@ async function runRound(
  * ends; the stage's last state is returned unsaved, for `finishCase` to write. Each phase's time
  * is counted in `phases`. A case whose context holds a directory no read can give (context.ts's
  * UnreadableDirectory: the commit holds no such directory, or GitHub cuts a level of it short
- * even read alone) is returned dropped, with that reason, before any run, so a run started again
- * skips it. Throws Stopped, after saving, when the budget refused a call.
+ * even read alone) is returned dropped, with that reason and `stage`, before any run, so a run
+ * started again skips it. A stage it starts records this runner (`r.runner`). Throws Stopped,
+ * after saving, when the budget refused a call.
  */
 async function runStage(
   r: Runner,
@@ -1352,6 +1460,7 @@ async function runStage(
     seeds: [],
     runs: [],
     usd: 0,
+    runner: r.runner,
   };
   let spentAt = r.gateway.spend().usd;
   let current = result;
@@ -1393,7 +1502,11 @@ async function runStage(
       if (!(error instanceof UnreadableDirectory)) throw error;
       phases.captureMs[name] = performance.now() - started;
       countReads();
-      return { ...current, dropped: `${UNREADABLE_DIRECTORY}: ${error.message}` };
+      return {
+        ...current,
+        dropped: `${UNREADABLE_DIRECTORY}: ${error.message}`,
+        droppedAt: stage,
+      };
     }
     phases.captureMs[name] = performance.now() - started;
     if (capture.made) phases.contextMs += capture.record.timings.contextMs;
@@ -1451,7 +1564,10 @@ async function finishCase(
   const peak = Math.max(r.io.peakRssBytes(), result.peakRssBytes ?? 0);
   const written = { ...result, peakRssBytes: peak };
   const file = writeResult(r, written, phases);
-  const what = result.dropped === null ? stageLine(result, stage) : `dropped: ${result.dropped}`;
+  const what =
+    result.dropped === null
+      ? stageLine(result.caseId, stage, result.stages[stage])
+      : `dropped: ${result.dropped}`;
   say(
     r,
     `case ${result.caseId}: ${what}; peak memory ${mib(peak)} MiB; ${phaseWords(phases)}; written to ${file}`
@@ -1482,12 +1598,11 @@ async function screenCommand(r: Runner): Promise<void> {
     r,
     `${r.cases.length} cases of the skill ${r.cases[0]?.skill} in ${r.casesFile}; old text ${r.texts.old}, new text ${r.texts.new}`
   );
-  // Each case's run records, read once here and kept as each case ends (only this process
-  // writes <out>/cases/), for the score that says when screening stops.
-  const records = new Map<string, RunRecord[]>();
-  for (const [id, result] of readResults(r)) records.set(id, runRecords([result]));
+  // Each case's result, read once here and kept as each case ends (only this process writes
+  // <out>/cases/), for the score that says when screening stops.
+  const results = readResults(r);
   const finished = async (result: CaseResult, phases: Phases): Promise<void> => {
-    records.set(result.caseId, runRecords([await finishCase(r, result, "screen", phases)]));
+    results.set(result.caseId, await finishCase(r, result, "screen", phases));
   };
   for (const c of r.cases) {
     const phases = newPhases();
@@ -1501,7 +1616,7 @@ async function screenCommand(r: Runner): Promise<void> {
       continue;
     }
     if (result === undefined) {
-      const score = scoreSkill([...records.values()].flat());
+      const score = scored(r, results);
       if (screeningDone(score)) {
         say(
           r,
@@ -1512,9 +1627,14 @@ async function screenCommand(r: Runner): Promise<void> {
       result = newResult(c);
       if (servedModel(c.model, r.servedModels) === undefined) {
         const dropped = `${MODEL_NOT_SERVED}: its model ${c.model} is none the gateway serves (the configuration's servedModels: ${r.servedModels.join(", ") || "none"})`;
-        await finished({ ...result, dropped }, phases);
+        await finished({ ...result, dropped, droppedAt: "screen" }, phases);
         continue;
       }
+    }
+    const listing = listingStanding(c.evidence);
+    if (listing.state === "dropped") {
+      await finished({ ...result, dropped: listing.reason, droppedAt: "screen" }, phases);
+      continue;
     }
     if (result.controls === null) {
       const controlsStarted = performance.now();
@@ -1531,26 +1651,85 @@ async function screenCommand(r: Runner): Promise<void> {
   say(r, "every case of the file is screened");
 }
 
-/** `behaviour confirm`. */
+/** Why `--again <id>` is refused, or undefined: the file holds no such case, or it is dropped, is
+ *  not flagged, or has no finished confirm; or it has POOLED_CONFIRMS confirms at this run's
+ *  texts on this runner, which the rule pools and after which no confirm runs, or two there that
+ *  agree, where the rule runs no third. */
+function againRefusal(
+  r: Runner,
+  score: SkillScore,
+  result: CaseResult | undefined,
+  id: string
+): string | undefined {
+  if (!r.cases.some((c) => c.id === id)) {
+    return `--again ${id}: ${r.casesFile} holds no case ${id}`;
+  }
+  const each = score.cases.find((c) => c.caseId === id);
+  if (each?.drop !== undefined) {
+    return `--again ${id}: case ${id} is dropped at ${each.drop.stage} (${each.drop.reason}), so no confirm of it runs`;
+  }
+  if (each === undefined || !each.flagged || result === undefined) {
+    return `--again ${id}: case ${id} is not flagged by its screen, and only flagged cases are confirmed`;
+  }
+  const latest = result.stages.confirm;
+  if (latest === undefined || latest.state === "running") {
+    return `--again ${id}: case ${id} has no finished confirm yet: run behaviour confirm without --again first`;
+  }
+  const texts = `${r.texts.old} ${r.texts.new}`;
+  const losses = confirmStages(result).flatMap((stage) => {
+    if (stage.runner !== r.runner || textsOf(stage) !== texts) return [];
+    const outcome = stageOutcome(stage.runs, id, "confirm");
+    return outcome.state === "counted" ? [isLoss(outcome.passes)] : [];
+  });
+  if (losses.length >= POOLED_CONFIRMS) {
+    return `--again ${id}: case ${id} has ${losses.length} confirms at these texts on this runner, which the rule pools, and no fourth confirm runs`;
+  }
+  if (losses.length === 2 && losses[0] === losses[1]) {
+    return `--again ${id}: case ${id}'s two confirms at these texts on this runner agree (${losses[0] ? "both a loss" : "both no loss"}), and a third confirm runs only where two disagree`;
+  }
+  return undefined;
+}
+
+/** `behaviour confirm`: a confirm of each flagged case that is not dropped and has none; a third
+ *  of each whose last two confirms at its texts on one runner disagree (score.ts's
+ *  `confirmScore`); and one more of each case `--again` names, where `againRefusal` allows it. */
 async function confirmCommand(r: Runner): Promise<void> {
   const { results, score } = screened(r, (s) =>
     s.cases.filter((each) => each.flagged).map((each) => each.caseId)
   );
+  const refused = r.again.flatMap((id) => againRefusal(r, score, results.get(id), id) ?? []);
+  if (refused.length > 0) throw new Refused(refused.join("; "));
   const why = noVerdict(score);
   if (why !== undefined) {
     say(r, `no confirm runs: the skill gets no verdict: ${why}`);
     return;
   }
-  const flagged = score.cases.filter((each) => each.flagged).map((each) => each.caseId);
-  say(r, `${flagged.length} flagged cases${flagged.length === 0 ? "" : `: ${flagged.join(", ")}`}`);
-  for (const id of flagged) {
+  const flagged = score.cases.filter((each) => each.flagged);
+  const ids = flagged.map((each) => each.caseId);
+  say(r, `${ids.length} flagged cases${ids.length === 0 ? "" : `: ${ids.join(", ")}`}`);
+  for (const { caseId: id, drop, confirm } of flagged) {
+    if (drop !== undefined) {
+      say(r, `case ${id}: dropped at ${drop.stage}, so no confirm of it runs: ${drop.reason}`);
+      continue;
+    }
     const phases = newPhases();
     const c = r.cases.find((each) => each.id === id);
-    const result = results.get(id);
+    let result = results.get(id);
     if (c === undefined || result === undefined) throw new Error(`no case ${id} in ${r.casesFile}`);
     if (stageDone(r, result, "confirm")) {
-      say(r, `case ${id}: confirmed before, skipped`);
-      continue;
+      const third = confirm?.state === "running" && confirm.third;
+      if (!third && !r.again.includes(id)) {
+        say(r, `case ${id}: confirmed before, skipped`);
+        continue;
+      }
+      const { confirm: _latest, ...stages } = result.stages;
+      result = { ...result, stages, earlierConfirms: confirmStages(result) };
+      say(
+        r,
+        third
+          ? `case ${id}: its last two confirms at these texts on one runner disagree, one a loss and one not, so a third confirm runs, and the three are pooled`
+          : `case ${id}: one more confirm runs, as --again asks`
+      );
     }
     await finishCase(r, await runStage(r, c, "confirm", result, phases), "confirm", phases);
   }
@@ -1569,6 +1748,10 @@ async function controlStageCommand(r: Runner): Promise<void> {
     say(r, `no control runs: the skill gets no verdict: ${tooFew.reason}`);
     return;
   }
+  if (score.noControl !== undefined) {
+    say(r, `no control runs: the skill gets no verdict: ${score.noControl}`);
+    return;
+  }
   // The control case's own work starts here: reading and scoring every case's result is no part
   // of its stage.
   const phases = newPhases();
@@ -1579,7 +1762,7 @@ async function controlStageCommand(r: Runner): Promise<void> {
   const planted = r.dirs.plantedLine;
   say(
     r,
-    `the control case is ${c.id}; minus leaves out ${planted === undefined ? "the case's line" : `the planted line ${JSON.stringify(planted)}`}, and twin is the old text again (the false-loss control); old, minus and twin are sent in one order each round`
+    `the control case is ${c.id}${replacedWords(score)}; minus leaves out ${planted === undefined ? "the case's line" : `the planted line ${JSON.stringify(planted)}`}, and twin is the old text again (the false-loss control); old, minus and twin are sent in one order each round`
   );
   if (stageDone(r, result, "control")) {
     say(r, `case ${c.id}: control runs made before, skipped`);
@@ -1603,11 +1786,16 @@ function stageVerdict(stage: Stage, passes: Record<ArmName, number>): string {
   }
 }
 
-/** Case `result`'s `stage` as one line: each arm's passes and what they say. */
-function stageLine(result: CaseResult, stage: Stage): string {
-  const state = result.stages[stage];
-  if (state === undefined) return `${stage}: not run`;
-  const outcome = stageOutcome(state.runs, result.caseId, stage);
+/** Case `caseId`'s stage `state` of `stage` as one line, under `label`: each arm's passes and what
+ *  they say. */
+function stageLine(
+  caseId: string,
+  stage: Stage,
+  state: StageResult | undefined,
+  label: string = stage
+): string {
+  if (state === undefined) return `${label}: not run`;
+  const outcome = stageOutcome(state.runs, caseId, stage);
   const unjudged = state.runs.filter((run) => run.verdict === null).length;
   const extra = unjudged === 0 ? "" : ` (${unjudged} runs with no verdict, run again)`;
   switch (outcome.state) {
@@ -1615,17 +1803,67 @@ function stageLine(result: CaseResult, stage: Stage): string {
       const passes = Object.entries(outcome.passes)
         .map(([arm, count]) => `${arm} ${count}/${STAGE_RUNS[stage]}`)
         .join(", ");
-      return `${stage}: ${passes}: ${stageVerdict(stage, outcome.passes)}${extra}`;
+      return `${label}: ${passes}: ${stageVerdict(stage, outcome.passes)}${extra}`;
     }
     case "unscreened":
-      return `${stage}: unscreened: an arm lacks its ${STAGE_RUNS[stage]} judged runs after ${MAX_EXTRA_RUNS} extra runs${extra}`;
+      return `${label}: unscreened: an arm lacks its ${STAGE_RUNS[stage]} judged runs after ${MAX_EXTRA_RUNS} extra runs${extra}`;
     case "running": {
       const toStart = Object.entries(outcome.toStart)
         .map(([arm, count]) => `${arm} ${count}`)
         .join(", ");
-      return `${stage}: not finished, still to start: ${toStart}`;
+      return `${label}: not finished, still to start: ${toStart}`;
     }
   }
+}
+
+/** A case's pooled confirms (score.ts's `confirmScore`, counted with `pooled`) in words: the
+ *  pooled passes of each arm, the gap, and whether it is a loss. */
+function pooledWords(pooled: { old: number; new: number }, loss: boolean): string {
+  const runs = FRESH_RUNS * POOLED_CONFIRMS;
+  return `old ${pooled.old}/${runs}, new ${pooled.new}/${runs}, ${pooled.old - pooled.new} fewer: ${loss ? "a loss" : "no loss"}`;
+}
+
+/** Case `result`'s stages as its report line gives them (`stageLine`), each stage it ran; a case
+ *  with more than one confirm gives each numbered, those on another runner or at other texts than
+ *  its last marked as not counted, then their pooled passes, or the third confirm they call for
+ *  (`score`, score.ts's `confirmScore`). */
+function caseStageLines(result: CaseResult, score: CaseScore | undefined): string[] {
+  const lines: string[] = [];
+  const confirms = confirmStages(result);
+  const last = confirms.at(-1);
+  for (const stage of Stage.options) {
+    if (stage !== "confirm" || confirms.length < 2 || last === undefined) {
+      const state = stage === "confirm" ? last : result.stages[stage];
+      if (state !== undefined) lines.push(stageLine(result.caseId, stage, state));
+      continue;
+    }
+    for (const [n, each] of confirms.entries()) {
+      const note =
+        each.runner !== last.runner
+          ? " (another runner's, not counted)"
+          : textsOf(each) !== textsOf(last)
+            ? " (at other texts, not counted)"
+            : "";
+      lines.push(stageLine(result.caseId, stage, each, `confirm ${n + 1}${note}`));
+    }
+    const confirm = score?.confirm;
+    if (confirm?.state === "counted" && confirm.pooled !== undefined) {
+      lines.push(`pooled: ${pooledWords(confirm.pooled, confirm.loss)}`);
+    } else if (confirm?.state === "running" && confirm.third) {
+      lines.push("a third confirm is due, since two on one runner disagree (behaviour confirm)");
+    }
+  }
+  return lines;
+}
+
+/** The words after a control case that name each dropped case it took the place of, which the
+ *  control rule chose before it, or none. */
+function replacedWords(score: SkillScore): string {
+  if (score.replacedControls.length === 0) return "";
+  const named = score.replacedControls.map(
+    (id) => `${id} (dropped at ${score.cases.find((each) => each.caseId === id)?.drop?.stage})`
+  );
+  return `, in place of ${named.join(", ")}, which the control rule chose before it`;
 }
 
 /** `count` with `word`, plural unless the count is 1: `1 session`, `2 sessions`. */
@@ -1702,9 +1940,24 @@ function speaksFor(b: Behaviour, score: SkillScore): string {
   );
 }
 
+/** The end of a verdict's line: how many of the skill's screened cases have a listing measure
+ *  that says their listing could not be measured, or none (score.ts's `listingStanding`). */
+function listingWords(b: Behaviour, score: SkillScore): string {
+  const screened = score.cases.filter(
+    (each) => each.screen.state === "counted" && each.drop?.stage !== "screen"
+  );
+  const unmeasured = screened.filter((each) => {
+    const c = b.cases.find((candidate) => candidate.id === each.caseId);
+    return listingStanding(c?.evidence).state === "not measurable";
+  }).length;
+  return `; the listing of ${unmeasured} of its ${screened.length} screened cases could not be measured`;
+}
+
 /** The skill's verdict as one line: the verdict and its reason, or what it waits for; a verdict
- *  ends with the reading sessions it speaks for (`speaksFor`). With `--reading-models`, a skill
- *  too few of whose reading sessions are on served models (`servedScreeningRefusal`) gets none. */
+ *  ends with the reading sessions it speaks for (`speaksFor`), and a verdict or its reason with
+ *  how many screened cases' listings could not be measured (`listingWords`). With
+ *  `--reading-models`, a skill too few of whose reading sessions are on served models
+ *  (`servedScreeningRefusal`) gets none. */
 function verdictLine(
   b: Behaviour,
   results: ReadonlyMap<string, CaseResult>,
@@ -1717,52 +1970,97 @@ function verdictLine(
   if (unfinished !== undefined) return `not yet: ${unfinished} (behaviour screen)`;
   const outcome = score.outcome;
   if (outcome === undefined) {
+    const third = score.cases.flatMap((each) =>
+      each.confirm?.state === "running" && each.confirm.third ? [each.caseId] : []
+    );
     return score.control?.state === "running"
       ? "not yet: the control runs are not all made (behaviour control)"
-      : "not yet: the confirm runs of a flagged case are not all made (behaviour confirm)";
+      : third.length > 0
+        ? `not yet: two confirms on one runner disagree in ${third.join(", ")}, so a third confirm of each is due (behaviour confirm)`
+        : "not yet: the confirm runs of a flagged case are not all made (behaviour confirm)";
   }
-  if (outcome.verdict === null) return `none: ${outcome.reason}`;
+  const listing = listingWords(b, score);
+  if (outcome.verdict === null) return `none: ${outcome.reason}${listing}`;
   const flagged = score.cases.filter((each) => each.flagged).length;
   const control = `the planted-loss control (case ${score.controlCase}) is a loss and its false-loss control is no loss`;
   if (outcome.verdict === "keeps") {
-    return `no loss detected by the registered rule: no confirmed case is a loss (${flagged} flagged of ${score.informative} informative), and ${control}${speaksFor(b, score)}`;
+    return `no loss detected by the registered rule: no confirmed case is a loss (${flagged} flagged of ${score.informative} informative), and ${control}${speaksFor(b, score)}${listing}`;
   }
-  const losses = score.cases.filter((each) => each.loss).map((each) => each.caseId);
-  return `loss: in ${losses.join(", ")} the cut's text passes at least ${LOSS_GAP} fewer of ${FRESH_RUNS} fresh runs than the old text, and ${control}${speaksFor(b, score)}`;
+  const losses = (pooled: boolean) =>
+    score.cases.flatMap((each) =>
+      each.loss &&
+      each.confirm?.state === "counted" &&
+      (each.confirm.pooled !== undefined) === pooled
+        ? [each.caseId]
+        : []
+    );
+  const single = losses(false);
+  const pooled = losses(true);
+  const where = [
+    ...(single.length === 0
+      ? []
+      : [
+          `in ${single.join(", ")} the cut's text passes at least ${LOSS_GAP} fewer of ${FRESH_RUNS} fresh runs than the old text`,
+        ]),
+    ...(pooled.length === 0
+      ? []
+      : [
+          `in ${pooled.join(", ")}, over ${POOLED_CONFIRMS} pooled confirms, at least ${LOSS_GAP * POOLED_CONFIRMS} fewer of ${FRESH_RUNS * POOLED_CONFIRMS}`,
+        ]),
+  ];
+  return `loss: ${where.join("; ")}, and ${control}${speaksFor(b, score)}${listing}`;
 }
 
-/** `behaviour report`: prints each case's passes, the skill's verdict and the run's figures. */
+/** `behaviour report`: prints each case's passes, the skill's verdict and the run's figures. A
+ *  dropped case's line gives the stage that dropped it, why, and each stage it ran. */
 function reportCommand(b: Behaviour): void {
   const results = readResults(b);
-  const score = scoreSkill(runRecords(results.values()));
+  const score = scored(b, results);
+  const byCase = new Map(score.cases.map((each) => [each.caseId, each]));
   const lines = [`skill ${b.cases[0]?.skill}: ${b.cases.length} cases in ${b.casesFile}`];
   for (const c of b.cases) {
     const result = results.get(c.id);
-    let line = "not run";
-    if (result !== undefined && result.dropped !== null) line = `dropped: ${result.dropped}`;
-    else if (result !== undefined) {
-      line = Stage.options
-        .filter((stage) => result.stages[stage] !== undefined)
-        .map((stage) => stageLine(result, stage))
-        .join("; ");
-    }
+    const drop = byCase.get(c.id)?.drop;
+    const ran = result === undefined ? [] : caseStageLines(result, byCase.get(c.id));
+    const line =
+      drop !== undefined
+        ? `dropped at ${drop.stage}: ${drop.reason}; ${ran.length === 0 ? "screen: not run" : ran.join("; ")}`
+        : ran.length === 0
+          ? "not run"
+          : ran.join("; ");
     lines.push(`case ${c.id}: ${line}`);
   }
 
   const dropped = [...results.values()].filter((result) => result.dropped !== null);
+  const drops = score.cases.flatMap((each) => (each.drop === undefined ? [] : [each.drop.reason]));
   // A case dropped after its judge controls held (its context could not be read) is no drop by
   // them.
   const byControls = dropped.filter((result) => result.controls?.hold === false).length;
-  const notServed = dropped.filter((result) => result.dropped?.startsWith(MODEL_NOT_SERVED)).length;
-  const unreadable = dropped.filter((result) =>
-    result.dropped?.startsWith(UNREADABLE_DIRECTORY)
+  const droppedAs = (kind: string) =>
+    `${drops.filter((reason) => reason.startsWith(kind)).length} ${kind}`;
+  const unscreened = score.cases.filter(
+    (each) => each.drop === undefined && each.screen.state === "unscreened"
   ).length;
-  const unscreened = score.cases.filter((each) => each.screen.state === "unscreened").length;
   const flagged = score.cases.filter((each) => each.flagged).length;
   const losses = score.cases.filter((each) => each.loss).length;
+  const notRun = b.cases.filter(
+    (c) => !results.has(c.id) && byCase.get(c.id)?.drop === undefined
+  ).length;
   lines.push(
-    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${dropped.length} dropped (${byControls} by the judge controls, ${notServed} ${MODEL_NOT_SERVED}, ${unreadable} ${UNREADABLE_DIRECTORY}), ${unscreened} unscreened, ${b.cases.length - results.size} not run`
+    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${drops.length} dropped (${byControls} by the judge controls, ${droppedAs(MODEL_NOT_SERVED)}, ${droppedAs(UNREADABLE_DIRECTORY)}, ${droppedAs(LISTING_MISSES)}), ${unscreened} unscreened, ${notRun} not run`
   );
+  const pooled = score.cases.flatMap(({ caseId, confirm }) =>
+    confirm?.state === "counted" && confirm.pooled !== undefined
+      ? [
+          `${caseId} (confirms of old ${confirm.counted.map((each) => each.old).join(", ")} and new ${confirm.counted.map((each) => each.new).join(", ")} of ${FRESH_RUNS} each; pooled ${pooledWords(confirm.pooled, confirm.loss)})`,
+        ]
+      : []
+  );
+  if (pooled.length > 0) {
+    lines.push(
+      `pooled confirms (two confirms at one case's texts on one runner disagreed, so a third ran, and the case is a loss when the cut's text passes at least ${LOSS_GAP * POOLED_CONFIRMS} fewer of the ${FRESH_RUNS * POOLED_CONFIRMS} pooled runs than the old text): ${pooled.join("; ")}`
+    );
+  }
   const byControl = ControlName.options.map((name) => {
     const count = dropped.filter((result) => result.controls?.failed.includes(name)).length;
     return `${CONTROLS[name].step} not judged ${CONTROLS[name].wanted} ${count}`;
@@ -1771,9 +2069,11 @@ function reportCommand(b: Behaviour): void {
     `judge controls failed, by control (a case can fail more than one): ${byControl.join(", ")}`
   );
   lines.push(
-    score.controlCase === undefined
-      ? "control case: none, since no case is informative"
-      : `control case: ${score.controlCase}`
+    score.controlCase !== undefined
+      ? `control case: ${score.controlCase}${replacedWords(score)}`
+      : score.noControl !== undefined
+        ? `control case: none: ${score.noControl}`
+        : "control case: none, since no case is informative"
   );
   const control = score.control;
   if (control?.state === "counted") {
@@ -1818,8 +2118,14 @@ function reportCommand(b: Behaviour): void {
   for (const result of results.values()) {
     controlsUsd += result.controls?.usd ?? 0;
     peak = Math.max(peak, result.peakRssBytes ?? 0);
-    for (const stage of Stage.options) {
-      const state = result.stages[stage];
+    const stages: [Stage, StageResult | undefined][] = [
+      ...Stage.options.map((stage): [Stage, StageResult | undefined] => [
+        stage,
+        result.stages[stage],
+      ]),
+      ...(result.earlierConfirms ?? []).map((state): [Stage, StageResult] => ["confirm", state]),
+    ];
+    for (const [stage, state] of stages) {
       stageUsd[stage] += state?.usd ?? 0;
       for (const note of Object.values(state?.captures ?? {})) notes.set(note.bodyFile, note);
     }
@@ -1845,6 +2151,7 @@ const BEHAVIOUR_USAGE = [
   "  [--planted-line <text>] [--budget-usd <n>] [--concurrency <n>] [--after-case <command>] [--request-log <file>]",
   "  [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>]",
   "  [--reading-models <file>] (the skill's <cut id>/models/<skill>.json, written by attribute)",
+  "  [--again <case id>]... (confirm only: one more confirm of that flagged case)",
   "  report needs only --config, --out, --old and --cases",
 ].join("\n");
 
@@ -1884,9 +2191,13 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       "cache-dir": { type: "string" },
       scratch: { type: "string" },
       "reading-models": { type: "string" },
+      again: { type: "string", multiple: true },
     },
     BEHAVIOUR_USAGE
   );
+  if (values.again !== undefined && command !== "confirm") {
+    throw new Refused(`--again goes with behaviour confirm only. ${BEHAVIOUR_USAGE}`);
+  }
   const report = command === "report";
   const given = required(
     values,
@@ -2017,6 +2328,8 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     },
     afterCase: values["after-case"],
     afterCaseFailures: [],
+    runner: runnerDigest(),
+    again: values.again ?? [],
   };
   if (command === "screen") await screenCommand(runner);
   else if (command === "confirm") await confirmCommand(runner);
