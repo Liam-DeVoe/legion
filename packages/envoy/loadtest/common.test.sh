@@ -29,7 +29,8 @@
 # and no two ports of two blocks meet, and a LOADTEST_*_PORT overrides its own port alone; (j) under
 # an ephemeral range that covers the old block (a gVisor pod's 16000-65535, or one from 15500) every
 # default port lies below it, Linux's default range keeps the blocks at 15000, and a range with no
-# room for 2000 ports above 1023 is refused naming both ranges unless every port variable is set.
+# room for 2000 ports above 1023 is refused naming both ranges unless every port variable is set;
+# (k) lock_holders reads the processes of the proc root it is given, and none of the machine's.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -703,6 +704,29 @@ echo ready >"$3"; exec sleep 300' holder "$root" "$gone" "$ready" >/dev/null 2>&
   printf 'PASS: a refusal whose look was cut says others may hold the lock too\n'
 }
 
+# case_holder_look_reads_proc_root: lock_holders_walk reads the processes of ${proc_root:-/proc}
+# and no others, so a caller that gives it a proc root of its own processes pays for those alone:
+# a walk of the machine's /proc stats every process's descriptor 9, which on a machine of 20,000
+# processes ran past lock_root's 3 s (the cost port_holder's walk had over 27,000 socket rows). The
+# proc root here holds one entry alone, under a pid that cannot run (one above pid_max): its
+# descriptor 9 is a link to the lock file and its command line is "unreal holder". The machine's
+# /proc holds no such pid, so a walk of it names no holder, and the case fails by that name.
+case_holder_look_reads_proc_root() {
+  out=""
+  local dir="${temporary_dir}/proc-root-walk" gone
+  gone=$(($(</proc/sys/kernel/pid_max) + 1))
+  mkdir -p "$dir/proc/$gone/fd"
+  : >"$dir/lock"
+  ln -s "$dir/lock" "$dir/proc/$gone/fd/9"
+  printf 'unreal\0holder\0' >"$dir/proc/$gone/cmdline"
+  out=$(proc_root="$dir/proc" bash -c 'source "$1"; lock_holders "$2" 10' check "$helper" "$dir/lock" 2>&1) ||
+    { fail "lock_holders failed over a proc root of one entry"; return; }
+  [ "$out" = "pid $gone (unreal holder)" ] ||
+    { fail "lock_holders did not read the proc root it was given: it did not name pid $gone, the one holder that root alone holds"; return; }
+  out=""
+  printf 'PASS: lock_holders reads the processes of the proc root it is given, not the machine'"'"'s\n'
+}
+
 # case_port_look_bounded: port_holder's look for a listener reads a link of every descriptor of
 # every process of its proc root, so check_port holds it to PORT_HOLDER_SECONDS and names that bound
 # when the look ends there. The proc root is a listener's alone, as case_holder_names_escaped's is;
@@ -806,9 +830,10 @@ case_stack_ports || failed=$((failed + 1))
 case_holder_names_escaped || failed=$((failed + 1))
 case_holder_look_bounded || failed=$((failed + 1))
 case_holder_look_cut_partial || failed=$((failed + 1))
+case_holder_look_reads_proc_root || failed=$((failed + 1))
 case_port_look_bounded || failed=$((failed + 1))
 case_ports_below_ephemeral_range || failed=$((failed + 1))
 if ((failed > 0)); then
-  printf 'FAIL: %d of 15 cases failed\n' "$failed" >&2
+  printf 'FAIL: %d of 16 cases failed\n' "$failed" >&2
   exit 1
 fi
