@@ -865,6 +865,31 @@ function AddressedStage({ issue }: { issue: IssueDetails }): ReactNode {
   );
 }
 
+/** The tree read for the stage's cases: the issue's two threads, each comment a node of it, as
+ *  the outline's own cases answer it (`IssueTree.test.tsx`'s `treeReadOf`). */
+function threadsTree(): TreeAnswer {
+  return treeAnswer([
+    treeNode(KEY, "issue", null),
+    ...TWO_THREADS.map((comment) =>
+      treeNode(comment.id, "comment", comment.reply_to ?? KEY, {
+        author: [comment.author],
+        made_at: comment.created_at,
+        text: comment.body,
+      })
+    ),
+  ]);
+}
+
+/** Answers the tree read with `threadsTree`, and the Spec view's read of it never, so the view is
+ *  drawn off the whole tree, as before the page holds its view read (`presets.ts`). */
+function answerThreadsTree() {
+  return spyOn(api, "getIssueTree").mockImplementation((_key, query = {}) =>
+    query.view === undefined
+      ? Promise.resolve(threadsTree())
+      : Promise.withResolvers<never>().promise
+  );
+}
+
 // The Spec view's slot is filled (`SLOT_FILLED`), so an address that names an item beside the
 // view's own - `/spec?comment=<id>`, as `documentItemPath` writes the address of an item of the
 // spec - is the view's to draw: the stage draws the Spec view and no outline, and the view lands
@@ -885,6 +910,8 @@ test("with the Spec view's slot filled, a spec item's address lands on the item 
   client.setQueryData(["asks", KEY], []);
   client.setQueryData(["comments", KEY], TWO_THREADS);
   client.setQueryData(["issue-messages", KEY], []);
+  client.setQueryData(issueTreeQuery(KEY).queryKey, threadsTree());
+  const trees = answerThreadsTree();
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   const view = render(
     <MemoryRouter initialEntries={[`/issues/${KEY}/spec?comment=reply-b`]}>
@@ -920,6 +947,7 @@ test("with the Spec view's slot filled, a spec item's address lands on the item 
   } finally {
     view.unmount();
     names.mockRestore();
+    trees.mockRestore();
   }
 });
 
@@ -944,6 +972,8 @@ test("a failed names read says so in its own line, after the view's own, and its
   client.setQueryData(["asks", KEY], []);
   client.setQueryData(["comments", KEY], TWO_THREADS);
   client.setQueryData(["issue-messages", KEY], []);
+  client.setQueryData(issueTreeQuery(KEY).queryKey, threadsTree());
+  const trees = answerThreadsTree();
   const decisions = spyOn(api, "getIssueDecisions").mockRejectedValue(new Error("offline"));
   const names = spyOn(api, "getReferenceTargets").mockRejectedValue(new Error("offline"));
   const view = render(
@@ -979,6 +1009,7 @@ test("a failed names read says so in its own line, after the view's own, and its
     view.unmount();
     decisions.mockRestore();
     names.mockRestore();
+    trees.mockRestore();
   }
 });
 

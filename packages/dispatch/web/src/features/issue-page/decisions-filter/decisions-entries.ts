@@ -4,6 +4,7 @@ import { useCallback, useMemo } from "react";
 import type { IssueDetails } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
+import { isDecisionEntry } from "../../issue/decision-entries";
 import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
 import { wordsOf } from "../../refs/tree-fragment";
 import { decisionChanges } from "../decision-review";
@@ -65,8 +66,9 @@ import {
  * refused; nor are the comments, which only move a decision between parts.
  *
  * The seam says too which decisions are a person's write-up of an answered question
- * (`writeUps`) - a person's decision that names an answered ask of this issue, which the model
- * draws no entry for - and which questions each one restates: an address naming a write-up
+ * (`writeUps`) - a person's entry that names an answered ask of this issue (`from_ask`), whose
+ * decision entry the seam leaves out of every part - and which questions each one restates: an
+ * address naming a write-up
  * lands on the row of a question it answers, and only the decisions read and the asks can tell a
  * write-up from a person's decision of its own.
  *
@@ -184,9 +186,39 @@ export function useDecisionsEntries({
   // `shaped` tie resolves to the node it names (`tree-drafts.ts`). `nodeIdOf` names no block by
   // a line, so the line rule it is handed is the reading's words, as G's tests hand it.
   const nodeIdOf = useMemo(() => treeContext({ issue }, wordsOf).nodeIdOf, [issue]);
-  // From the model's inputs alone: how a read stands is no input of the model, so while only
-  // that changes the parts keep their identity and nothing the body works out from them is
-  // worked out again.
+  // The write-ups, read as the model reads the decisions read (`decisionsParts`), from its
+  // entries: an answered question is an ask the tree holds with an answer on it, named by the
+  // ask's own id, which is how an entry names the question it settles (`from_ask`), and a
+  // decision's row is the one its node's address names. A write-up is a person's entry that names
+  // an answered ask of this issue: under the model a person's decision is the answered ask
+  // itself, so the entry restates it. A node drawn under two parents is one node, read at its
+  // first placement in the reading order, as the model reads it (`placements`).
+  const writeUps = useMemo(() => {
+    if (asks === undefined && !asksRefused) return undefined;
+    const questions = new Map<string, string>();
+    const decided: TreeNode[] = [];
+    for (const { node } of placements(root).values()) {
+      const id = askIdOf(node);
+      if (id !== undefined && node.answer !== undefined) questions.set(id, node.id);
+      if (node.type === "decision") decided.push(node);
+    }
+    const rows = new Map(
+      (decisions?.entries ?? []).filter(isDecisionEntry).map((row) => [row.ref, row])
+    );
+    const found = new Map<string, ReadonlySet<string>>();
+    for (const node of decided) {
+      const row = rows.get(node.reference ?? "");
+      if (row?.kind !== "person") continue;
+      const restated = (row.from_ask ?? []).flatMap((ask) => questions.get(ask) ?? []);
+      if (restated.length > 0) found.set(node.id, new Set(restated));
+    }
+    return found;
+  }, [asks, asksRefused, decisions, root]);
+  // From the model's inputs alone, and the write-ups once the asks read tells them: how a read
+  // stands is no input of the model, so while only that changes the parts keep their identity and
+  // nothing the body works out from them is worked out again. A write-up is no entry of its own
+  // (R2, R9): the question it restates is the person's decision, so its decision entry leaves
+  // every part.
   const parts = useMemo<DecisionsParts>(() => {
     const model = decisionsParts({
       asks,
@@ -198,41 +230,17 @@ export function useDecisionsEntries({
       root,
       view,
     });
+    const own = <Entry extends DecisionsEntry>(entries: readonly Entry[]): Entry[] =>
+      entries.filter((entry) => entry.kind !== "decision" || !writeUps?.has(entry.node.id));
+    const yours = model.others.length === 0 ? model.yours : [...model.yours, ...model.others];
     return {
       ...model,
+      agents: own(model.agents),
       others: [],
-      yours:
-        model.others.length === 0
-          ? model.yours
-          : newestFirst([...model.yours, ...model.others], root),
+      review: own(model.review),
+      yours: own(model.others.length === 0 ? yours : newestFirst(yours, root)),
     };
-  }, [asks, changes, decisions, issue.key, nodeIdOf, reader, root, view]);
-  // The write-ups, read as the model reads them (`decisionsParts`): an answered question is an
-  // ask the tree holds with an answer on it, named by the ask's own id, which is how a decision
-  // names the question it restates, and a decision's row is the one its node's address names.
-  // A node drawn under two parents is one node, read at its first placement in the reading
-  // order, as the model reads it (`placements`).
-  const writeUps = useMemo(() => {
-    if (asks === undefined && !asksRefused) return undefined;
-    const questions = new Map<string, string>();
-    const decided: TreeNode[] = [];
-    for (const { node } of placements(root).values()) {
-      const id = askIdOf(node);
-      if (id !== undefined && node.answer !== undefined) questions.set(id, node.id);
-      if (node.type === "decision") decided.push(node);
-    }
-    const answered = new Set(questions.keys());
-    const rows = new Map((decisions?.decisions ?? []).map((row) => [row.ref, row]));
-    const found = new Map<string, ReadonlySet<string>>();
-    for (const node of decided) {
-      const row = rows.get(node.reference ?? "");
-      const writeUp = row?.kind === "person" && (row.asks ?? []).some((ask) => answered.has(ask));
-      if (row === undefined || !writeUp) continue;
-      const restated = (row.asks ?? []).flatMap((ask) => questions.get(ask) ?? []);
-      found.set(node.id, new Set(restated));
-    }
-    return found;
-  }, [asks, asksRefused, decisions, root]);
+  }, [asks, changes, decisions, issue.key, nodeIdOf, reader, root, view, writeUps]);
   return { failures, parts, readsHeld, retry, retrying, unreadable, writeUps };
 }
 

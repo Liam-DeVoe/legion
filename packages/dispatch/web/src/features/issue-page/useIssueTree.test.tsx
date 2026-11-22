@@ -469,12 +469,13 @@ test("a names read moved to a set of addresses whose query already failed says i
   try {
     const view = renderHook(() => useIssueTree(issue).namesFailure, { wrapper });
     await waitFor(() => expect(view.result.current?.failure).toBe(1));
-    // A comment arrives, and the names read of the tree's new set fails too.
-    await act(async () => client.setQueryData(["comments", KEY], [comment]));
+    // A comment arrives with the tree read's next answer, and the names read of the tree's new
+    // set fails too.
+    await act(async () => client.setQueryData(issueTreeKey(KEY), treeAnswer([comment])));
     await waitFor(() => expect(view.result.current?.failure).toBe(2));
     // The comment goes: the read moves back to the first set, whose query failed, and is out.
     out = held.promise;
-    await act(async () => client.setQueryData(["comments", KEY], []));
+    await act(async () => client.setQueryData(issueTreeKey(KEY), treeAnswer([])));
     await waitFor(() => expect(view.result.current?.retrying).toBe(true));
     expect(view.result.current?.failure, "the first set's failure was not said again").toBe(3);
     view.unmount();
