@@ -1490,6 +1490,10 @@ type supervision struct {
 	// (roleBackends), which the launch, the stale-plugin rule (noPluginInstall) and the API's
 	// compaction route read; nil in a supervision a test builds by hand reads worker_backends alone.
 	backends roleBackend
+	// planRole is the daemon's one reader of a role an issue's plan defines (planRoleOf), which the
+	// stall backstop reads for a role the deployment gives a bound of its own (stallBackstopOf);
+	// nil in a supervision a test builds by hand reads no plan.
+	planRole func(ctx context.Context, issue string, role claim.Role) (record.PlanRole, bool, error)
 	// pauses is the project's pause (projectPause), nil without a workflow: the boot loads its
 	// flag before it restores any claim, and asks the stop of every claim it finds live while the
 	// project is paused (start).
@@ -1807,7 +1811,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	stopping, beginStop := context.WithCancel(context.Background())
 	supervisionOf := &supervision{
 		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
-		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate, pauses: pauses, backends: backends,
+		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate, pauses: pauses, backends: backends, planRole: planRole,
 		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
 		stopping: stopping, beginStop: beginStop, sessionStops: &sessionStops,
 	}

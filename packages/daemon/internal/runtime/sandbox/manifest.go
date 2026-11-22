@@ -566,6 +566,10 @@ func (l launch) trades(r *Runtime) bool {
 // never answers that round (INFRA-484). Each such drop is logged once, at the launch that makes
 // it, naming the issue, the role, the experiment and the arm.
 //
+// A role the plan of the launch's issue defines takes none of the settings the deployment keys
+// by its name (runtime.SpawnSpec.PlanRole), so it names none of the overlays role_config_files
+// names for a deployment role of that name, whether the launch keeps a pod or builds one.
+//
 // carried are the arms the launch runs in: each arm of l.spec.Variants, in its order, of which
 // the launch names every overlay — every arm for a launch that builds its pod, and for one that
 // keeps a pod, each arm none of whose overlays the pod lacks. An arm the pod holds only some of
@@ -576,6 +580,9 @@ func (l launch) overlays(r *Runtime) (files []string, carried []runtime.Variant)
 	own := r.roleConfigFiles[l.spec.Role]
 	if l.kept != nil {
 		own = l.kept.overlays
+	}
+	if l.spec.PlanRole {
+		own = nil
 	}
 	var variants []string
 	for _, variant := range l.spec.Variants {

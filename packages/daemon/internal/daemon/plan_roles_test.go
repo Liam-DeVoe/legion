@@ -138,9 +138,10 @@ func TestARoleOfTheDeploymentListsItsModel(t *testing.T) {
 // adds a role prober to the deployment and restarts: the deployment's prober has a prompt of its
 // own, the model deployment-prober-model and the implement App. A's plan keeps its definition for
 // A: once A's implementer passes, A's prober launches with the plan's prompt, the plan's model and
-// the review App of the plan's type testing. Issue B, whose plan defines no role, takes the
-// deployment's prober: its prompt, its model and the implement App. The boot logs one line naming
-// prober and A, and not B.
+// the review App of the plan's type testing, and its spawn spec says it is the plan's role, so the
+// runtime gives it none of the deployment role's own settings. Issue B, whose plan defines no
+// role, takes the deployment's prober: its prompt, its model and the implement App, and a spawn
+// spec that says it is no role of a plan. The boot logs one line naming prober and A, and not B.
 //
 // The control is the order this replaces, run by hand: the deployment's role read before the
 // plan's for every issue (specs.rolePromptPaths, appauth.AppRoleFor). A's prober then launches on
@@ -175,7 +176,7 @@ func TestARoleOfAPlanInForceKeepsItsDefinitionWhenTheDeploymentTakesItsName(t *t
 	// A restarted daemon knows no model until the agent answers again (supervise.StreamAnswered).
 	implementer.ownTurn()
 	r.finish(implementer, "implement", api.HandoffCompleteRequest{Summary: "implemented", Commit: stepRecordsHead}, phase.Step)
-	if err := r.proberLaunched(planProberModel, planProberPrompt, "legion-review[bot]"); err != nil {
+	if err := r.proberLaunched(planProberModel, planProberPrompt, "legion-review[bot]", true); err != nil {
 		t.Fatalf("%s, whose plan in force defines prober: %v", kept, err)
 	}
 
@@ -185,7 +186,7 @@ func TestARoleOfAPlanInForceKeepsItsDefinitionWhenTheDeploymentTakesItsName(t *t
 		t.Fatalf("%s's gate opened at %s, want implementing, the first step of its plan", other, first)
 	}
 	r.work(claim.RoleImplementer, "implement", api.HandoffCompleteRequest{Summary: "implemented", Commit: stepRecordsHead}, phase.Step)
-	if err := r.proberLaunched(deploymentProberModel, deploymentProberPrompt, "legion-implement[bot]"); err != nil {
+	if err := r.proberLaunched(deploymentProberModel, deploymentProberPrompt, "legion-implement[bot]", false); err != nil {
 		t.Fatalf("%s, whose plan defines no role: %v", other, err)
 	}
 
@@ -205,11 +206,15 @@ func TestARoleOfAPlanInForceKeepsItsDefinitionWhenTheDeploymentTakesItsName(t *t
 }
 
 // proberLaunched says whether the latest launch of prober on the walk's issue names model, holds
-// prompt in its launch prompt, and commits as bot, the bot of the App it acts as. The error names
-// the first of them that does not hold.
-func (r *deploymentRolesRig) proberLaunched(model, prompt, bot string) error {
+// prompt in its launch prompt, commits as bot, the bot of the App it acts as, and says whether it
+// is the role the issue's plan defines (planRole). The error names the first of them that does
+// not hold.
+func (r *deploymentRolesRig) proberLaunched(model, prompt, bot string, planRole bool) error {
 	r.t.Helper()
 	spec := lastLaunch(r.t, r.rt, r.worker(planProber).token)
+	if spec.PlanRole != planRole {
+		return fmt.Errorf("the prober's spawn spec says it is the plan's role: %t, want %t", spec.PlanRole, planRole)
+	}
 	if spec.Model != model {
 		return fmt.Errorf("the prober's spawn spec names the model %q, want %s", spec.Model, model)
 	}

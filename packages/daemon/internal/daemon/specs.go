@@ -213,7 +213,7 @@ func (s specs) launchBackend(ctx context.Context, c supervise.Claim) (runtime.Ba
 // that may stamp an issue key into its commits too (issueTrailer), since it is the one that
 // works a repository.
 func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnSpec, error) {
-	promptPaths, model, err := s.rolePromptPaths(ctx, c)
+	promptPaths, model, planned, err := s.rolePromptPaths(ctx, c)
 	if err != nil {
 		return runtime.SpawnSpec{}, err
 	}
@@ -274,8 +274,10 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	// merged after the fork, onto every launch (SpawnSpec).
 	passthrough(spec.Env, refusalCooldownVariables...)
 	// A role the deployment or the claim's issue's plan defines runs the model its definition
-	// gives it; Legion's roles name none and run the profile's own (runtime.SpawnSpec.Model).
-	spec.Model = model
+	// gives it; Legion's roles name none and run the profile's own (runtime.SpawnSpec.Model). A
+	// role the plan defines takes none of the settings the deployment keys by its name
+	// (runtime.SpawnSpec.PlanRole).
+	spec.Model, spec.PlanRole = model, planned
 	return spec, nil
 }
 
@@ -469,29 +471,31 @@ func (s specs) controllerSpawnSpec(ctx context.Context) (runtime.SpawnSpec, erro
 	}, nil
 }
 
-// rolePromptPaths is the role prompt of c and the model its role names ("" for one of Legion's
-// six, which run the profile's own). It keeps an explicit operator prompt as a narrow test
-// override, which replaces the prompt alone. Every ordinary claim uses the role prompts daemon
+// rolePromptPaths is the role prompt of c, the model its role names ("" for one of Legion's
+// six, which run the profile's own), and whether the plan of c's issue defines the role. It keeps
+// an explicit operator prompt as a narrow test override, which replaces the prompt alone. Every
+// ordinary claim uses the role prompts daemon
 // boot snapshotted below its state directory (prompts.New): Legion's roles their composed parts
 // (prompts.Composer.Compose), a role the plan of c's issue defines (planRole) the daemon's own
 // copy of the plan's prompt (planRolePromptFile) between the headless mechanics and Legion's
 // worker part (prompts.Composer.ComposeStep), and a role the deployment defines its own prompt
 // file in that same place. The plan is read first: a deployment that took the name of a role a
-// plan in force defines leaves that issue the plan's role, with its prompt and its model, until a
-// version of the plan changes it (appauth.AppRoleFor decides its App the same way). A role none
-// of them defines is refused, naming the issue and the role, with no prompt.
-func (s specs) rolePromptPaths(ctx context.Context, c supervise.Claim) ([]string, string, error) {
+// plan in force defines leaves that issue the plan's role, with its prompt and its model and none
+// of the settings the deployment keys by that name, until a version of the plan changes it
+// (appauth.AppRoleFor decides its App the same way). A role none of them defines is refused,
+// naming the issue and the role, with no prompt.
+func (s specs) rolePromptPaths(ctx context.Context, c supervise.Claim) ([]string, string, bool, error) {
 	if claim.IsBuiltin(c.Role) {
 		paths, err := s.overridden(c, func() ([]string, error) {
 			parts, err := s.prompts.Compose(c.Role, claim.IsTreeRoot(c.Issue, c.Tree))
 			return parts.RolePromptPaths, err
 		})
-		return paths, "", err
+		return paths, "", false, err
 	}
 	if s.planRole != nil {
 		planned, found, err := s.planRole(ctx, c.Issue, c.Role)
 		if err != nil {
-			return nil, "", fmt.Errorf("the role prompt of %s: %w", c.Token, err)
+			return nil, "", false, fmt.Errorf("the role prompt of %s: %w", c.Token, err)
 		}
 		if found {
 			paths, err := s.overridden(c, func() ([]string, error) {
@@ -501,16 +505,16 @@ func (s specs) rolePromptPaths(ctx context.Context, c supervise.Claim) ([]string
 				}
 				return s.prompts.ComposeStep(file).RolePromptPaths, nil
 			})
-			return paths, planned.Model, err
+			return paths, planned.Model, true, err
 		}
 	}
 	if role, defined := s.roleOf(c.Role); defined {
 		paths, err := s.overridden(c, func() ([]string, error) {
 			return s.prompts.ComposeStep(role.PromptFile).RolePromptPaths, nil
 		})
-		return paths, role.Model, err
+		return paths, role.Model, false, err
 	}
-	return nil, "", fmt.Errorf("the role prompt of %s: neither the deployment nor the plan of %s defines the role %s", c.Token, c.Issue, c.Role)
+	return nil, "", false, fmt.Errorf("the role prompt of %s: neither the deployment nor the plan of %s defines the role %s", c.Token, c.Issue, c.Role)
 }
 
 // overridden is the operator's prompt kept for c under the state directory (rolePromptPath),

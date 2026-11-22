@@ -689,10 +689,17 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 				"claim", spec.Claim, "why", err)
 		}
 	}
+	// A role the plan of the claim's issue defines takes none of the settings the deployment keys
+	// by its name (runtime.SpawnSpec.PlanRole), so its pane names none of the overlays
+	// role_config_files names for a deployment role of that name.
+	roleFiles := r.roleConfigFiles[spec.Role]
+	if spec.PlanRole {
+		roleFiles = nil
+	}
 	pairs := panePairs(spec, PaneInputs{
 		StateDir: r.stateDir, Workspace: workDir, DaemonURL: r.daemonURL, EnvoyURL: r.envoyURL, NATSURLs: r.natsURLs,
 		DispatchURL: r.dispatchURL, DispatchTokenFile: r.dispatchToken, GHOwnersDir: credential.root, GHDefault: ghDefault, GH: r.gh,
-		OperatorEnv: r.operatorEnv, PiConfigFiles: r.piConfigFiles, RoleConfigFiles: r.roleConfigFiles[spec.Role],
+		OperatorEnv: r.operatorEnv, PiConfigFiles: r.piConfigFiles, RoleConfigFiles: roleFiles,
 		Variants: spec.Variants, LeakCheck: leakCheck, LeakCheckManifestSHA256: r.leakCheckManifestSHA256,
 	}, files)
 	return r.openPane(ctx, spec, ghDefault, paneCommand(append(pairs, backendPairs...), command))

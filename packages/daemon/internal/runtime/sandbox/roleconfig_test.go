@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"context"
 	"reflect"
 	"slices"
 	"strings"
@@ -9,8 +10,11 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -91,6 +95,44 @@ func TestARolesOwnOverlaysStandAloneWithoutTheOperators(t *testing.T) {
 	}
 	if got, want := envOf(workerOf(t, r, workerSpec(t)))["PI_CONFIG_FILES"], strings.Join(roleFiles[claim.RoleTester], ":"); got != want {
 		t.Errorf("the tester's PI_CONFIG_FILES = %q, want %q", got, want)
+	}
+}
+
+// A role the plan in force of its issue defines is the plan's role, even where the deployment
+// defines a role of that name, and it takes none of that role's own settings: its process names
+// none of the overlays role_config_files names for the name. The deployment's own prober,
+// launched for an issue whose plan defines no prober, names them after the operator's.
+func TestAPlansRoleNamesNoneOfTheDeploymentRolesOverlays(t *testing.T) {
+	opts := testOptions()
+	opts.Pod = operatorPod()
+	opts.RoleApps.Deployed = appauth.DeploymentApps{"prober": appauth.Implement}
+	// The deployment's prober acts as the implement App, so its gh files are the implementer's.
+	opts.GitHubCredential = func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		if role == "prober" {
+			role = claim.RoleImplementer
+		}
+		return staticCredential(ctx, issue, role, repo)
+	}
+	opts.RoleConfigFiles = map[claim.Role][]string{"prober": {"/etc/legion-operator/creds/prober.yml"}}
+	r, err := configure(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operator := operatorPod().Env["PI_CONFIG_FILES"]
+	deployed := testSpec(t, claim.Token("legion-legion-legion-208-prober"), "prober", testTree)
+	planned := deployed
+	planned.PlanRole = true
+	for _, tc := range []struct {
+		name string
+		spec runtime.SpawnSpec
+		want string
+	}{
+		{"the deployment's prober", deployed, operator + ":/etc/legion-operator/creds/prober.yml"},
+		{"the plan's prober", planned, operator},
+	} {
+		if got := envOf(workerOf(t, r, tc.spec))["PI_CONFIG_FILES"]; got != tc.want {
+			t.Errorf("%s's PI_CONFIG_FILES = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }
 
