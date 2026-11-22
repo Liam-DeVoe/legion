@@ -2102,7 +2102,10 @@ func unacknowledged(err error, mayHold bool) error {
 // connection had closed under it, and names a refusal as the ErrPublishDenied, ErrTooLarge,
 // ErrStreamFull or ErrDuplicateInProcess it is. It is the one send of the stored path: its callers
 // (PublishStoredAck, publishStoredRaw) bound ctx, connected first and pass nats.Context(ctx)
-// among the options, so the acknowledgement wait ends with that bound.
+// among the options, so the acknowledgement wait ends with that bound. A send no stream takes
+// (nats.ErrNoStreamResponse) is sent again until ctx ends (sentAgainWhileNoStream), as a stream
+// whose leader was just named answers for a moment, and fails with that answer, which stored
+// nothing.
 //
 // A failure after a send that may have reached the stream wraps ErrUnacknowledged: ctx was live
 // as the send was made, read just before it, and what came back was no answer (sendUnanswered).
@@ -2110,9 +2113,16 @@ func unacknowledged(err error, mayHold bool) error {
 // that of the reconnect before the resend, since the first send may have stored the message. The
 // resend's acknowledgement is Resent, since its Duplicate may name the copy the first send stored.
 func (c *Client) sendStored(ctx context.Context, subject string, data []byte, options ...nats.PubOpt) (StoredAck, error) {
+	publish := func() (*nats.PubAck, error) { return c.JS().Publish(subject, data, options...) }
+	gone := func(ctx context.Context) bool {
+		return streamGone(ctx, func() error {
+			_, err := c.JS().StreamInfo(Stream)
+			return err
+		})
+	}
 	sentAt := time.Now()
 	live := ctx.Err() == nil
-	ack, err := c.JS().Publish(subject, data, options...)
+	ack, err := sentAgainWhileNoStream(ctx, publish, gone)
 	mayHold := live && sendUnanswered(err)
 	resent := false
 	if err != nil && (errors.Is(err, nats.ErrConnectionClosed) || errors.Is(err, nats.ErrDisconnected)) {
@@ -2122,7 +2132,7 @@ func (c *Client) sendStored(ctx context.Context, subject string, data []byte, op
 		sentAt = time.Now()
 		resent = true
 		live = ctx.Err() == nil
-		ack, err = c.JS().Publish(subject, data, options...)
+		ack, err = sentAgainWhileNoStream(ctx, publish, gone)
 		mayHold = mayHold || live && sendUnanswered(err)
 	}
 	if err != nil {

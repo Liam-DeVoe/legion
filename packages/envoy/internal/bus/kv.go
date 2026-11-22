@@ -62,6 +62,9 @@ type KeyValue struct {
 	// built (clientOwning), whose record of the server's refusals the handle's calls read
 	// (refusedOn, refusedAfterOn, watchRefused); nil on a connection no client owns.
 	owner *Client
+	// noStreamWait is how long a write the server answers "no response from stream" is sent again
+	// (writtenOn): RequestTimeout when zero, as every constructor leaves it. A test sets its own.
+	noStreamWait time.Duration
 }
 
 // RequestTimeout bounds one send of a read through the jetstream handle whose caller holds no
@@ -211,6 +214,27 @@ func (kv KeyValue) watchRefused(create watchCreate, watch func() (jetstream.KeyW
 // lists, and one it does not send is another call's to answer.
 func refusedAfterOn[T any](kv KeyValue, subjects func() []string, call func() (T, error)) (T, error) {
 	return refusedAfter(kv.owner, subjects, call)
+}
+
+// writtenOn is refusedAfterOn for call, a write of one key, sent again while the server answers
+// that no stream took it (sentAgainWhileNoStream), for up to kv's noStreamWait from the first
+// send: RequestTimeout, the JetStream wait every production handle is opened with, so the resends
+// end inside the span one send of such a handle could already take. A send that is in flight when
+// that span ends runs its own wait out, as the legacy handle's calls take no context.
+func writtenOn[T any](kv KeyValue, subjects func() []string, call func() (T, error)) (T, error) {
+	wait := kv.noStreamWait
+	if wait <= 0 {
+		wait = RequestTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	gone := func(ctx context.Context) bool {
+		return kv.streams != nil && streamGone(ctx, func() error {
+			_, err := kv.streams.Stream(ctx, "KV_"+kv.Bucket())
+			return err
+		})
+	}
+	return refusedAfterOn(kv, subjects, func() (T, error) { return sentAgainWhileNoStream(ctx, call, gone) })
 }
 
 // keySubjects is the subject a write of key publishes to: "$KV.<bucket>.<key>" (nats.go@v1.55.0
@@ -502,7 +526,7 @@ func (kv KeyValue) Put(key string, value []byte) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
-	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Put(key, value) })
+	revision, err := writtenOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Put(key, value) })
 	return revision, invalidKey(key, err)
 }
 
@@ -510,7 +534,7 @@ func (kv KeyValue) PutString(key string, value string) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
-	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.PutString(key, value) })
+	revision, err := writtenOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.PutString(key, value) })
 	return revision, invalidKey(key, err)
 }
 
@@ -518,7 +542,7 @@ func (kv KeyValue) Create(key string, value []byte) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
-	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Create(key, value) })
+	revision, err := writtenOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Create(key, value) })
 	return revision, invalidKey(key, err)
 }
 
@@ -526,7 +550,7 @@ func (kv KeyValue) Update(key string, value []byte, last uint64) (uint64, error)
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
-	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Update(key, value, last) })
+	revision, err := writtenOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Update(key, value, last) })
 	return revision, invalidKey(key, err)
 }
 
@@ -542,7 +566,7 @@ func (kv KeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
 	if err := kv.check(key, putOverhead(kv.Bucket())); err != nil {
 		return err
 	}
-	_, err := refusedAfterOn(kv, kv.keySubjects(key), func() (struct{}, error) { return struct{}{}, kv.legacy.Delete(key, opts...) })
+	_, err := writtenOn(kv, kv.keySubjects(key), func() (struct{}, error) { return struct{}{}, kv.legacy.Delete(key, opts...) })
 	return invalidKey(key, err)
 }
 
@@ -578,7 +602,7 @@ func (kv KeyValue) Purge(key string, opts ...nats.DeleteOpt) error {
 	if err := kv.check(key, putOverhead(kv.Bucket())); err != nil {
 		return err
 	}
-	_, err := refusedAfterOn(kv, kv.keySubjects(key), func() (struct{}, error) { return struct{}{}, kv.legacy.Purge(key, opts...) })
+	_, err := writtenOn(kv, kv.keySubjects(key), func() (struct{}, error) { return struct{}{}, kv.legacy.Purge(key, opts...) })
 	return invalidKey(key, err)
 }
 
