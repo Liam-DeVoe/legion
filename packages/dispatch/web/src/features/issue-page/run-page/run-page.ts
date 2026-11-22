@@ -9,7 +9,8 @@ import {
   GOING_EVENT_TEXT,
   type GraphFrame,
 } from "@legion/contracts";
-import { queryOptions, type UseQueryResult, useQuery } from "@tanstack/react-query";
+import { queryOptions, type UseQueryResult, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 
 import { ApiError, api } from "../../../api/client";
 import { queryRetry } from "../../../api/query-client";
@@ -72,24 +73,57 @@ const runQuery = (id: string) =>
 
 /** `useRun`'s answer: the read, and whether there is no run the reader may open at this id. */
 export interface RunRead {
-  /** True where `id` is no run id, which sends no request, and where the read answered 400 or
-   *  404. */
+  /** True where `id` is no run id, which sends no request, and where the read last ended 400 or
+   *  404, while it runs again too, until it ends with an answer or a failure of another kind. */
   readonly notFound: boolean;
   readonly query: UseQueryResult<GraphReferences>;
 }
 
-/** The run at the page's `id`, read only where `id` can name one (`isRunId`). */
+/** How the read of the run `id` last ended, as `useRun` keeps it: with no run to read or not. */
+interface RunEnded {
+  readonly id: string | undefined;
+  readonly missing: boolean;
+}
+
+/**
+ * The run at the page's `id`, read only where `id` can name one (`isRunId`).
+ *
+ * Whether the run is missing is kept from how the read last ended, not read off its failure
+ * alone: TanStack clears the failure of a read that holds no answer as the read runs again - on
+ * window focus, at an event about the run's address, or as the page is mounted again over the
+ * read the cache holds - and the failure alone would then draw the run's own page, its line
+ * saying the read failed, until the read answered 400 or 404 again. So a read that ended 400 or
+ * 404 stays missing until it ends with an answer or a failure of another kind. The hook keeps
+ * that per id, since the page stays drawn as its address moves to another run. For an id it has
+ * kept nothing of, it reads the cache's state, which still holds the read's last failure as the
+ * hook first renders for that id: TanStack sends the read again only after that render, though
+ * the result it hands the render already reads as pending.
+ */
 export function useRun(id: string | undefined): RunRead {
   const named = isRunId(id);
-  const query = useQuery({ ...runQuery(id ?? ""), enabled: named });
-  return { notFound: !named || isMissingRun(query.error), query };
+  const options = runQuery(id ?? "");
+  const client = useQueryClient();
+  const query = useQuery({ ...options, enabled: named });
+  const [ended, setEnded] = useState<RunEnded | null>(null);
+  const missing =
+    query.error !== null
+      ? isMissingRun(query.error)
+      : query.data === undefined &&
+        (ended !== null && ended.id === id
+          ? ended.missing
+          : isMissingRun(client.getQueryState(options.queryKey)?.error));
+  // Kept as the hook renders, as React has state follow what a render reads: React renders again
+  // at once with it, before it commits this render.
+  if (ended === null || ended.id !== id || ended.missing !== missing) setEnded({ id, missing });
+  return { notFound: !named || missing, query };
 }
 
 /** One piece of the answer, in the order its frames came: the model's text, one thing it cites,
- *  or a line the page says of the answer. */
+ *  or a line the page says of the answer. An item's `href` is the page it opens, none where the
+ *  frame's href is no page the page links (`isLinkableHref`). */
 export type RunPart =
   | { readonly kind: "answer"; readonly markdown: string }
-  | { readonly kind: "item"; readonly href: string; readonly title: string }
+  | { readonly kind: "item"; readonly href?: string; readonly title: string }
   | { readonly kind: "line"; readonly text: string };
 
 /** One node the run changed. */
@@ -126,6 +160,32 @@ function stringOf(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+/** The origin a path an item names is read against (`isLinkableHref`): a reserved name (RFC
+ *  6761), since only whether the path keeps the origin it is read against matters, not which. */
+const PATH_ORIGIN = "https://dispatch.invalid";
+
+/**
+ * Whether an item's `href` is one the page links: a path on Dispatch's own origin, or an absolute
+ * `http:` or `https:` URL. A path starts with `/` and the browser reads it as a path on the page's
+ * origin, so it is no `//host`, and no `/\host` or `/` and `/` split by a tab or a line break,
+ * which the browser reads as `//host`. A URL is written whole, `//` and a host after its scheme,
+ * and parses. Any other href is not linked: `javascript:` or another scheme, which the page's
+ * link (`Link`) would hand to the browser as written, or a path relative to the run's own
+ * address, which names no page the answer meant.
+ */
+export function isLinkableHref(href: string): boolean {
+  // `new URL` throws for what does not parse, which is then no link. The static parser that
+  // answers null instead is missing from browsers older than Safari 18 and Chrome 126.
+  try {
+    if (href.startsWith("/")) return new URL(href, PATH_ORIGIN).origin === PATH_ORIGIN;
+    if (!/^https?:\/\//i.test(href)) return false;
+    new URL(href);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** The line an `error` frame draws for its code: `GOING_ERROR_ANSWER_FAILED`, a code the page
  *  does not know, and no code at all are each the answer having failed. */
 function errorLine(code: unknown): string {
@@ -156,9 +216,15 @@ function partsOf(frames: readonly GraphFrame[]): RunPart[] {
         }
         break;
       }
-      case GOING_EVENT_ITEM:
-        parts.push({ href: stringOf(data.href), kind: "item", title: stringOf(data.title) });
+      case GOING_EVENT_ITEM: {
+        const href = stringOf(data.href);
+        parts.push({
+          href: isLinkableHref(href) ? href : undefined,
+          kind: "item",
+          title: stringOf(data.title),
+        });
         break;
+      }
       case GOING_EVENT_CUT:
         parts.push({
           kind: "line",

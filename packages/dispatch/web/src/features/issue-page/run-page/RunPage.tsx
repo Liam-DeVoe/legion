@@ -1,21 +1,14 @@
-import {
-  type ReactNode,
-  type RefObject,
-  useId,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type ReactNode, type RefObject, useId, useMemo, useRef } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import type { GraphReferences } from "../../../api/types";
 import { pageInkText, pageQuietText } from "../../../theme/classes";
 import { MarkdownBody } from "../../refs/MarkdownBody";
+import { standsFailed } from "../../refs/reference-target";
 import { Timestamp } from "../../refs/Timestamp";
 import { NotFoundPage } from "../../shell/NotFoundPage";
 import { useDocumentTitle } from "../../shell/useDocumentTitle";
-import { DetailsErrorLine } from "../details-error";
+import { DetailsErrorLine, retryRead, useRetryHandOff } from "../details-error";
 import { NoTooltips } from "../NoTooltips";
 import { authorText, pageChrome } from "../page-structure";
 import {
@@ -47,59 +40,41 @@ export function RunPage(): ReactNode {
   const { id } = useParams();
   const { notFound, query } = useRun(id);
   useDocumentTitle(`${RUN_WORD} · Dispatch`, !notFound);
-  // A retry of a read that holds no answer takes its failure away as it starts, and the focus
-  // on its Retry would fall to the page's body with it, where no keyboard action may leave it.
-  // So the line of a Retry the reader pressed stays drawn, its Retry busy and keeping the focus,
-  // until the read that Retry sent ends. An answer then replaces the line and the focus goes to
-  // the page's heading, as the history's Retry hands it to its own (`IssueHistory.tsx`); a read
-  // that fails again leaves the line, and its Retry has the focus; a read the server answers 400
-  // or 404 draws the not-found page, and the focus goes to its link. Only a focus left on the
-  // body moves. Once a Retry was pressed, the not-found page is drawn inside a wrapper the effect
-  // finds its link through, and the wrapper stays, so the page is not drawn anew when `pressed`
-  // clears; a first read's 404 draws the page bare.
-  const [pressed, setPressed] = useState(false);
-  const [retried, setRetried] = useState(false);
-  const retrying = pressed && query.isFetching;
+  // The line stands while the run's read stands failed (`standsFailed`), as each line of Details
+  // does: a read that holds no answer has its failure cleared as it runs again, which would take
+  // the line, and its Retry with the focus, away at the press. While the read is out the line
+  // stays, its Retry busy and keeping the focus; a read that fails again says its failure again
+  // in the same line (`failure`), and Retry keeps the focus. An answer replaces the line, and so
+  // does the not-found page where the server answers 400 or 404 (`notFound`, read from the
+  // failure the read ended in). Where the reader's press of Retry took the line away with the
+  // focus on it, the focus goes on (`useRetryHandOff`) to what that commit drew: the page's
+  // heading, as the history's Retry hands it to its own (`IssueHistory.tsx`), or the not-found
+  // page's link, found through the wrapper the not-found page is always drawn in.
   const heading = useRef<HTMLHeadingElement>(null);
-  const failure = useRef<HTMLDivElement>(null);
   const notFoundPage = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    if (!pressed || query.isFetching) return;
-    setPressed(false);
-    const active = document.activeElement;
-    if (active !== null && active !== document.body) return;
-    (
-      heading.current ??
-      failure.current?.querySelector("button") ??
-      notFoundPage.current?.querySelector<HTMLElement>("a[href]")
-    )?.focus({ preventScroll: true });
-  });
+  const retry = useRetryHandOff(
+    () => heading.current ?? notFoundPage.current?.querySelector<HTMLElement>("a[href]")
+  );
   if (notFound) {
-    return retried ? (
+    return (
       <div className="contents" ref={notFoundPage}>
         <NotFoundPage />
       </div>
-    ) : (
-      <NotFoundPage />
     );
   }
-  const failed = query.isError || retrying;
+  const failed = standsFailed(query);
   return (
     <div data-issue-page="">
       <NoTooltips>
         {failed ? (
-          <div ref={failure}>
-            <DetailsErrorLine
-              error={query.error}
-              message={ANSWER_LINES.run_unreadable}
-              onRetry={() => {
-                setPressed(true);
-                setRetried(true);
-                void query.refetch();
-              }}
-              retrying={retrying}
-            />
-          </div>
+          <DetailsErrorLine
+            error={query.error}
+            failure={query.errorUpdateCount}
+            message={ANSWER_LINES.run_unreadable}
+            onRetry={retryRead(query)}
+            {...retry}
+            retrying={query.isFetching}
+          />
         ) : null}
         {query.data !== undefined ? (
           <RunAnswer answer={query.data} heading={heading} />
@@ -202,7 +177,8 @@ function RunAnswer({
 }
 
 /** One part of the answer: the model's text through the one markdown renderer, a thing it cites
- *  as a link named by its title, or a line the page says of the answer. */
+ *  named by its title, as a link to the page it opens where it opens one, or a line the page says
+ *  of the answer. */
 function RunAnswerPart({ part }: { part: RunPart }): ReactNode {
   switch (part.kind) {
     case "answer":
@@ -214,14 +190,12 @@ function RunAnswerPart({ part }: { part: RunPart }): ReactNode {
     case "item":
       return (
         <p className="text-sm">
-          {part.href.startsWith("/") ? (
+          {part.href === undefined ? (
+            <span {...authorText}>{part.title}</span>
+          ) : (
             <Link className={LINK} to={part.href} {...authorText}>
               {part.title}
             </Link>
-          ) : (
-            <a className={LINK} href={part.href} {...authorText}>
-              {part.title}
-            </a>
           )}
         </p>
       );

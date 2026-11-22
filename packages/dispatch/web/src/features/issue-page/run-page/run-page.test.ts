@@ -18,7 +18,7 @@ import type { GraphEdge, GraphReferences } from "../../../api/types";
 import { drawnLine, firstLineOf } from "../issue-tree";
 import { EMPTY_STATE_LINES, NODE_REFERENCES_WORDS, STATE_LINES, sentenceCase } from "../page-words";
 import { plainWords } from "../tree-drafts";
-import { runView } from "./run-page";
+import { isLinkableHref, runView } from "./run-page";
 
 const RUN = "3f2b8c1e-5d4a-4b6f-9e2d-1a7c0b9e8f43";
 const ASKED_AT = "2026-11-17T09:00:00Z";
@@ -162,5 +162,53 @@ test("a changed node is named by the page's words alone, and an edge the page do
       kind: "",
       line: drawnLine(firstLineOf(plainWords(riskText))),
     },
+  ]);
+});
+
+// The page links an item's href only where it opens it as written: a path the browser reads on
+// Dispatch's own origin, or an absolute `http:` or `https:` URL.
+test("an item's href is linked only as a path on Dispatch's origin or an http(s) URL", () => {
+  for (const href of [
+    "/issues/CORE-9",
+    "/",
+    "/runs/3f2b8c1e?at=1#answer",
+    "https://example.com/release",
+    "http://example.com",
+    "HTTPS://example.com/release",
+  ]) {
+    expect(isLinkableHref(href), href).toBe(true);
+  }
+  for (const href of [
+    "javascript:alert(1)",
+    "JavaScript:alert(1)",
+    "data:text/html,<p>hi</p>",
+    "mailto:someone@example.com",
+    "dispatch://CORE-9",
+    // Another host, as `//host` and as the forms the browser reads as it.
+    "//elsewhere.example/plan",
+    "/\\elsewhere.example/plan",
+    "/\t/elsewhere.example/plan",
+    "/\n/elsewhere.example/plan",
+    // A path relative to the run's own address, and none at all.
+    "issues/CORE-9",
+    "",
+    // No valid absolute URL, though each starts as one: no host, and no `//` after the scheme.
+    "https://",
+    "https:example.com",
+  ]) {
+    expect(isLinkableHref(href), JSON.stringify(href)).toBe(false);
+  }
+
+  // An item whose href is not linked keeps its title, and opens nothing.
+  expect(
+    runView(
+      answerOf([
+        frame(1, GOING_EVENT_ITEM, { href: "javascript:alert(1)", title: "Run a script" }),
+        frame(2, GOING_EVENT_ITEM, { href: "/issues/CORE-9", title: "The release plan" }),
+      ])
+    ).parts
+  ).toEqual([
+    { href: undefined, kind: "item", title: "Run a script" },
+    { href: "/issues/CORE-9", kind: "item", title: "The release plan" },
   ]);
 });

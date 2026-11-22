@@ -15,12 +15,14 @@ import {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Profiler, type ReactElement } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { graphNode } from "../../../__tests__/graph-fixture";
 import { ApiError, api } from "../../../api/client";
 import { queryRetry } from "../../../api/query-client";
 import type { GraphEdge, GraphReferences } from "../../../api/types";
+import { referencesQuery } from "../../refs/reference-target";
 import { RUN_PATH } from "../../refs/routes";
 import { NotFoundPage } from "../../shell/NotFoundPage";
 import { drawnLine, firstLineOf } from "../issue-tree";
@@ -70,12 +72,9 @@ afterEach(() => {
   restore = undefined;
 });
 
-/** The page at the run `id`'s address, its one read answered by `answer`, in a client of its own
- *  that waits for no retry. */
-function draw(answer: () => Promise<GraphReferences>, id = RUN) {
-  const getReferences = spyOn(api, "getReferences").mockImplementation(answer);
-  const client = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } });
-  const view = render(
+/** The page at the run `id`'s address, reading through `client`. */
+function runPage(client: QueryClient, id = RUN): ReactElement {
+  return (
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[`/runs/${id}`]}>
         <Routes>
@@ -84,33 +83,60 @@ function draw(answer: () => Promise<GraphReferences>, id = RUN) {
       </MemoryRouter>
     </QueryClientProvider>
   );
+}
+
+/** The page at the run `id`'s address, its one read answered by `answer`, in a client of its own
+ *  that waits for no retry. */
+function draw(answer: () => Promise<GraphReferences>, id = RUN) {
+  const getReferences = spyOn(api, "getReferences").mockImplementation(answer);
+  const client = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } });
+  const view = render(runPage(client, id));
   restore = () => {
     getReferences.mockRestore();
     view.unmount();
     client.clear();
   };
-  return { getReferences, view };
+  return { client, getReferences, view };
 }
 
-/** `NotFoundPage` drawn on its own: its markup, the title it gives the tab, and the name of its
- *  one link. */
-function notFoundAlone(): {
+/** What a reader sees of `NotFoundPage`: its heading, its one link by its name and address, all
+ *  its words, and the title it gives the tab. */
+interface NotFoundSeen {
+  readonly heading: string;
+  readonly href: string;
   readonly link: string;
-  readonly markup: string;
+  readonly text: string;
   readonly title: string;
-} {
+}
+
+/** `NotFoundPage` drawn on its own, as a reader sees it. */
+function notFoundAlone(): NotFoundSeen {
   const alone = render(
     <MemoryRouter>
       <NotFoundPage />
     </MemoryRouter>
   );
+  const link = within(alone.container).getByRole("link");
   const drawn = {
-    link: within(alone.container).getByRole("link").textContent ?? "",
-    markup: alone.container.innerHTML,
+    heading: within(alone.container).getByRole("heading").textContent ?? "",
+    href: link.getAttribute("href") ?? "",
+    link: link.textContent ?? "",
+    text: alone.container.textContent ?? "",
     title: document.title,
   };
   alone.unmount();
   return drawn;
+}
+
+/** That `container` draws what a reader sees of `NotFoundPage` drawn on its own (`alone`): its one
+ *  heading, its one link by its name and address, and its words and no others. Returns the link. */
+function expectNotFoundPage(container: HTMLElement, alone: NotFoundSeen): HTMLElement {
+  expect(within(container).getByRole("heading")).toHaveAccessibleName(alone.heading);
+  const link = within(container).getByRole("link");
+  expect(link).toHaveAccessibleName(alone.link);
+  expect(link).toHaveAttribute("href", alone.href);
+  expect(container.textContent).toBe(alone.text);
+  return link;
 }
 
 /** Every word the run's page says of its own, none of which the not-found page may say. */
@@ -126,7 +152,8 @@ test("a 404 draws NotFoundPage", async () => {
   const alone = notFoundAlone();
   for (const refusal of [new ApiError(404, { code: "NOT_FOUND" }), new ApiError(400, {})]) {
     const { getReferences, view } = draw(() => Promise.reject(refusal));
-    await waitFor(() => expect(view.container.innerHTML).toBe(alone.markup));
+    await screen.findByRole("heading", { name: alone.heading });
+    expectNotFoundPage(view.container, alone);
     expect(document.title).toBe(alone.title);
     for (const phrase of RUN_PAGE_PHRASES) {
       expect(view.container.textContent).not.toContain(phrase);
@@ -139,7 +166,7 @@ test("a 404 draws NotFoundPage", async () => {
   // An id that is no lowercase uuid names no run, and nothing is asked for it.
   for (const id of ["not-a-run", RUN.toUpperCase()]) {
     const { getReferences, view } = draw(() => Promise.resolve(answerOf([])), id);
-    expect(view.container.innerHTML).toBe(alone.markup);
+    expectNotFoundPage(view.container, alone);
     expect(getReferences).toHaveBeenCalledTimes(0);
     restore?.();
     restore = undefined;
@@ -217,6 +244,34 @@ test("no frame draws its event name or error code", async () => {
   expect(screen.getAllByText(STATE_LINES.run_failed)).toHaveLength(2);
 });
 
+// An item is linked only where the page opens it as the reader expects: a path on Dispatch's
+// own origin, or an `http:` or `https:` URL. A `javascript:` href would run a script as the reader
+// follows it, and `//host` would open another host, so each draws its title alone.
+test("an item links only a path on Dispatch's origin or an http(s) URL", async () => {
+  const items = [
+    { href: "javascript:alert(1)", title: "Run a script" },
+    { href: "//elsewhere.example/plan", title: "Another host" },
+    { href: "https://example.com/release", title: "The release notes" },
+    { href: "/issues/CORE-9", title: "The release plan" },
+  ];
+  draw(() =>
+    Promise.resolve(answerOf(items.map((item, index) => frame(index + 1, GOING_EVENT_ITEM, item))))
+  );
+  await screen.findByRole("heading", { level: 1, name: RUN_WORD });
+  for (const title of ["Run a script", "Another host"]) {
+    expect(screen.getByText(title).closest("a"), `${title} was drawn in a link`).toBeNull();
+  }
+  expect(screen.getByRole("link", { name: "The release notes" })).toHaveAttribute(
+    "href",
+    "https://example.com/release"
+  );
+  expect(screen.getByRole("link", { name: "The release plan" })).toHaveAttribute(
+    "href",
+    "/issues/CORE-9"
+  );
+  expect(screen.getAllByRole("link")).toHaveLength(2);
+});
+
 test("a failed read other than 404 draws its one sentence with Retry", async () => {
   const user = userEvent.setup();
   const { getReferences } = draw(() => Promise.reject(new ApiError(500, {})));
@@ -261,25 +316,148 @@ test("a Retry the reader pressed keeps its line until the read lands, then hands
   expect(heading).toHaveFocus();
 });
 
-// A Retry whose read the server answers 404 draws the not-found page in place of the line and
-// the Retry the reader's focus is on, and the focus goes to that page's link rather than fall
-// to the page's body, where no keyboard action may leave it.
-test("a Retry the server answers 404 hands the focus to the not-found page's link", async () => {
-  const alone = notFoundAlone();
+// A Retry whose read fails again leaves its line where it stands: the failure is said again, a
+// new alert a screen reader reads out even in the same words, while Retry stays the same button
+// and keeps the focus.
+test("a Retry whose read fails again says the failure again in the same line and keeps the focus on Retry", async () => {
   const user = userEvent.setup();
-  const { getReferences, view } = draw(() => Promise.reject(new ApiError(500, {})));
-  expect(await screen.findByRole("alert")).toHaveTextContent(ANSWER_LINES.run_unreadable);
-  getReferences.mockImplementation(() => Promise.reject(new ApiError(404, { code: "NOT_FOUND" })));
-  act(() => screen.getByRole("button", { name: CONTROL_LABELS.retry }).focus());
+  const { getReferences } = draw(() => Promise.reject(new ApiError(500, {})));
+  const said = await screen.findByRole("alert");
+  expect(said).toHaveTextContent(ANSWER_LINES.run_unreadable);
+  const failing = Promise.withResolvers<GraphReferences>();
+  getReferences.mockImplementation(() => failing.promise);
+  const asked = getReferences.mock.calls.length;
+  const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
+  act(() => retry.focus());
   await user.keyboard("{Enter}");
+  await waitFor(() => expect(getReferences).toHaveBeenCalledTimes(asked + 1));
 
-  await waitFor(() => expect(view.container.innerHTML).toContain(alone.markup));
-  for (const phrase of RUN_PAGE_PHRASES) {
-    expect(view.container.textContent).not.toContain(phrase);
+  // The read is out: the line stands as it was, its Retry busy.
+  expect(screen.getByRole("alert"), "the line was drawn anew while its retry was out").toBe(said);
+  expect(retry).toHaveAttribute("aria-busy", "true");
+
+  // The read fails again, past each retry a read is given: the failure is a new alert in the
+  // same words, and Retry is the same button, no longer busy and still holding the focus.
+  await act(async () => {
+    failing.reject(new ApiError(500, {}));
+  });
+  await waitFor(() => expect(retry).not.toHaveAttribute("aria-busy"));
+  const again = screen.getByRole("alert");
+  expect(again, "the failure was not said again").not.toBe(said);
+  expect(said).not.toBeInTheDocument();
+  expect(again).toHaveTextContent(ANSWER_LINES.run_unreadable);
+  expect(screen.getByRole("button", { name: CONTROL_LABELS.retry }), "Retry was drawn anew").toBe(
+    retry
+  );
+  expect(retry).toHaveFocus();
+});
+
+// A Retry whose read the server answers 400 or 404 draws the not-found page in place of the line
+// and the Retry the reader's focus is on, and the focus goes to that page's link rather than fall
+// to the page's body, where no keyboard action may leave it. The read's failure, which says
+// whether the run is missing, is cleared while the read runs again; the line stands meanwhile.
+test("a Retry the server answers 400 or 404 hands the focus to the not-found page's link", async () => {
+  const alone = notFoundAlone();
+  for (const refusal of [new ApiError(404, { code: "NOT_FOUND" }), new ApiError(400, {})]) {
+    const user = userEvent.setup();
+    const { getReferences, view } = draw(() => Promise.reject(new ApiError(500, {})));
+    expect(await screen.findByRole("alert")).toHaveTextContent(ANSWER_LINES.run_unreadable);
+    getReferences.mockImplementation(() => Promise.reject(refusal));
+    act(() => screen.getByRole("button", { name: CONTROL_LABELS.retry }).focus());
+    await user.keyboard("{Enter}");
+
+    await screen.findByRole("heading", { name: alone.heading });
+    const link = expectNotFoundPage(view.container, alone);
+    for (const phrase of RUN_PAGE_PHRASES) {
+      expect(view.container.textContent).not.toContain(phrase);
+    }
+    expect(
+      link,
+      `the not-found page of a ${refusal.status} left the focus off its link`
+    ).toHaveFocus();
+    restore?.();
+    restore = undefined;
   }
-  const link = within(view.container).getByRole("link");
-  expect(link).toHaveAccessibleName(alone.link);
-  expect(document.activeElement, "the not-found page left the focus off its link").toBe(link);
+});
+
+// TanStack clears the failure of a read that holds no answer as the read runs again - on window
+// focus, or at an event about the run's address - so a missing run's page drew the run's own page,
+// its line saying the read failed, until the read answered 404 again.
+test("a missing run's read sent again keeps the not-found page while it is out", async () => {
+  const alone = notFoundAlone();
+  const { client, getReferences, view } = draw(() =>
+    Promise.reject(new ApiError(404, { code: "NOT_FOUND" }))
+  );
+  const heading = await screen.findByRole("heading", { name: alone.heading });
+  expectNotFoundPage(view.container, alone);
+  const again = Promise.withResolvers<GraphReferences>();
+  getReferences.mockImplementation(() => again.promise);
+  const asked = getReferences.mock.calls.length;
+  // An event about the references at the run's address sends its read again.
+  act(() => {
+    void client.invalidateQueries({
+      queryKey: referencesQuery(`dispatch://interaction/${RUN}`).queryKey,
+    });
+  });
+  expect(getReferences).toHaveBeenCalledTimes(asked + 1);
+
+  // The read is out: no line says it failed, and the not-found page stands as it was.
+  expect(screen.queryByRole("alert"), "the page said the read failed while it was out").toBeNull();
+  expectNotFoundPage(view.container, alone);
+  expect(screen.getByRole("heading"), "the not-found page was drawn anew").toBe(heading);
+
+  // The read answers 404 again: the not-found page still stands.
+  await act(async () => {
+    again.reject(new ApiError(404, { code: "NOT_FOUND" }));
+  });
+  expect(screen.queryByRole("alert")).toBeNull();
+  expectNotFoundPage(view.container, alone);
+});
+
+// A page mounted again over a missing run's read, which the cache holds, sends the read again,
+// and the result TanStack hands its first render already reads as pending, its failure cleared.
+// The page draws the not-found page in its first commit and in each while the read is out.
+test("a page mounted again over a missing run's read draws the not-found page at once and keeps it", async () => {
+  const alone = notFoundAlone();
+  const { client, getReferences, view } = draw(() =>
+    Promise.reject(new ApiError(404, { code: "NOT_FOUND" }))
+  );
+  await screen.findByRole("heading", { name: alone.heading });
+  view.unmount();
+  const again = Promise.withResolvers<GraphReferences>();
+  getReferences.mockImplementation(() => again.promise);
+  const asked = getReferences.mock.calls.length;
+  const container = document.body.appendChild(document.createElement("div"));
+  const drawn: string[] = [];
+  const remounted = render(
+    <Profiler id="remounted" onRender={() => drawn.push(container.textContent ?? "")}>
+      {runPage(client)}
+    </Profiler>,
+    { container }
+  );
+  const restoreFirst = restore;
+  restore = () => {
+    remounted.unmount();
+    container.remove();
+    restoreFirst?.();
+  };
+  expect(getReferences, "the page mounted again sent no read").toHaveBeenCalledTimes(asked + 1);
+
+  // The read is out: every commit since the mount drew the not-found page, and no line.
+  expect(drawn.length).toBeGreaterThan(0);
+  expect(
+    drawn.filter((text) => text !== alone.text),
+    "a commit drew something other than the not-found page"
+  ).toEqual([]);
+  expect(screen.queryByRole("alert")).toBeNull();
+  expectNotFoundPage(container, alone);
+
+  // The read answers 404 again: the not-found page still stands.
+  await act(async () => {
+    again.reject(new ApiError(404, { code: "NOT_FOUND" }));
+  });
+  expect(screen.queryByRole("alert")).toBeNull();
+  expectNotFoundPage(container, alone);
 });
 
 test("the answered page draws the question as typed, the time and what it changed", async () => {
