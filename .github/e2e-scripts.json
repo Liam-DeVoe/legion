@@ -249,6 +249,14 @@
       "needs": "the rig of this change's checks on a host that reaches a model: the pinned Oh My Pi every pane runs (LEGION_OMP_PATH), a model route (LEGION_E2E_MODEL_BASE_URL and LEGION_E2E_MODEL_KEY_COMMAND or LEGION_E2E_MODEL_KEY_FILE), a loopback PostgreSQL (LEGION_TEST_PG_DSN), XDG_CACHE_HOME on the driver's temporary filesystem, and a full checkout holding commit 8b8fac664c, which it builds the listener production pins from, and, for its negative control, the base commit `--base-commit` names; it installs its own nats-server with `go install`, and a run takes about twelve minutes of wall clock"
     },
     {
+      "script": "pack-memory-job.sh",
+      "needs": "a pod whose projected Kubernetes credential may create a Job (kubectl -n <namespace> auth can-i create jobs answers yes), go and a checkout of the head measured, whose role git block it builds with go run, the worker image digest to measure (--image, from the Worker Image run's Record digest step), and the deployment's compute class, storage class, labels and annotations (--node-selector, --storage-class, --label, --annotation); it starts one gVisor Job of that image, an hour or more on the default repository, and nothing of its own"
+    },
+    {
+      "script": "pack-memory-probe.sh",
+      "needs": "the worker image and the Job pack-memory-job.sh creates: it is that measurement's probe, not a proof of its own, and the harness writes it and lib/pack-memory-peak.py into the Job's command because a Job holds no checkout to read them from; it runs the image's own cache, fetch and provision on the Job's disk volume and judges nothing a runner could give it"
+    },
+    {
       "script": "multi-repo-acceptance.sh",
       "needs": "a live multi-repository run on the production cluster: it is the operator's acceptance observer, reads that run's daemon, Dispatch, GitHub and kubectl, and starts nothing of its own"
     },
