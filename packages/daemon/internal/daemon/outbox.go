@@ -2737,8 +2737,20 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// A claim that runs a process and records no agent of its session — one a release before
 		// that record started — takes this start's agent, whose task goes to that process, so a
 		// later start of another agent starts that one in a new session (the check above) rather
-		// than in this one (supervise.Machine.TakeSessionFor).
-		if err := machine.TakeSessionFor(ctx, payload.Agent); err != nil {
+		// than in this one (supervise.Machine.TakeSessionFor). A phase entry's start asks it with
+		// its step's standing for token (supervise.Standing, stepStands), judged under the claim's
+		// lock as the suspension's and the re-role's are, so a move or a later entry that committed
+		// since the fences above leaves the claim recording no agent, and the start finishes here
+		// without acting: its task would be refused at its delivery in any case.
+		take := ctx
+		if payload.Entry > 0 && payload.Phase != "" {
+			take = supervise.Standing(ctx, func(ctx context.Context) (bool, error) { return r.stepStands(ctx, row, payload, token) })
+		}
+		if err := machine.TakeSessionFor(take, payload.Agent); errors.Is(err, supervise.ErrStepLeft) {
+			r.log.Info("outbox start serves a step its issue left before the running claim took its agent; finished without acting", "row", row.ID,
+				"issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "role", payload.Role, "claim", token, "agent", payload.Agent)
+			return nil
+		} else if err != nil {
 			return fmt.Errorf("record the agent of the session of claim %s: %w", token, err)
 		}
 		state := machine.Claim().State
@@ -3286,9 +3298,10 @@ func (r *outbox) suspendForStep(ctx context.Context, machine *supervise.Machine,
 // issue asks of the role, read from the record again: the issue runs the generation and stands in
 // the phase the start serves, and the role's phases row now is the row of token, the claim the
 // start acts on, and names no later entry than the start's (record.StartLeft). They are the start's
-// own fences (supervise), which the suspension and the re-role a start asks of its claim judge
-// again under the machine's lock (supervise.Standing, reroleForStep, suspendForStep), since a move
-// back or a later entry can commit between the fences' read and that lock.
+// own fences (supervise), which the suspension and the re-role a start asks of its claim, and the
+// record of its agent on a running claim that records none, judge again under the machine's lock
+// (supervise.Standing, reroleForStep, suspendForStep, supervise.Machine.TakeSessionFor), since a
+// move back or a later entry can commit between the fences' read and that lock.
 func (r *outbox) stepStands(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, token claim.Token) (bool, error) {
 	stands := false
 	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {

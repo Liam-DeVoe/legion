@@ -118,11 +118,20 @@ func (c Claim) SessionOfAnotherAgent(agent string) bool {
 // once the claim is admitted (revive), and a refused admission leaves the record as it was. So is
 // a claim that records an agent, and a start that names none. Its one caller is the outbox's start,
 // under the machine's lock taken here, after the start's own record (StartedBy).
+//
+// The start read its step from the record before this lock, so it asks with the step's standing
+// (Standing), judged here under the lock before anything is recorded: a step its issue has left
+// since, by a move or a later entry, is ErrStepLeft, and the claim records no agent. Recorded for a
+// stale start, the agent would hold the session though its task is never delivered, and the next
+// start, of the agent whose session it is, would find another agent's and start a new session.
 func (m *Machine) TakeSessionFor(ctx context.Context, agent string) error {
 	m.mu.Lock()
 	defer m.unlock()
 	if agent == "" || m.claim.SessionAgent != "" || m.claim.RunsNothing() {
 		return nil
+	}
+	if err := judgeStanding(ctx, m.claim.Token, true); err != nil {
+		return fmt.Errorf("record the agent %s of the session of claim %s: %w", agent, m.claim.Token, err)
 	}
 	m.log.Info("supervise: a running claim that recorded no agent of its session takes the agent of the start that reached it",
 		"agent", agent, "session", m.claim.Session, "state", m.claim.State)

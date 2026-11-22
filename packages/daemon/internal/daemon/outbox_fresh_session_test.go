@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -267,6 +268,72 @@ func TestAClaimThatRecordsNoAgentTakesTheFirstStartsAgent(t *testing.T) {
 			if nowSpawns != spawns || got.Session != "ses-earlier" || got.SessionAgent != earlierAgent {
 				t.Fatalf("the second start of %s made %d spawns, the claim in session %q of agent %q; want the session ses-earlier kept",
 					tc.agent, nowSpawns-spawns, got.Session, got.SessionAgent)
+			}
+		})
+	}
+}
+
+// A running claim that records no agent takes a start's agent only where the start's step still
+// stands, judged under the claim's lock (supervise.Standing, stepStands): a later entry of the role
+// that commits between the start's fences and that lock — written here by a hook at the start's own
+// record of the claim (supervise.Machine.StartedBy), which runs after the fences and before the
+// lock is taken again — leaves the claim recording no agent, and the start finishes without acting.
+// The next start, of the later entry, then takes the session for its agent. The fault: the stale
+// start's agent recorded on the claim, so that next start found another agent's session and
+// started its agent in a new one. The control, with no entry written by the hook: the start records
+// its agent, so the judgment refuses no start whose step stands.
+func TestAStaleStartRecordsNoAgentOnARunningClaimThatRecordsNone(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		moves bool
+	}{
+		{name: "a later entry commits before the claim's lock", moves: true},
+		{name: "control: no entry commits", moves: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newAgentStartRigOf(t, false, "")
+			claims := r.runner.supervisor.deps.Store.(*outboxClaimStore)
+			var later sync.Once
+			claims.afterPut(func(c supervise.Claim) {
+				if !tc.moves || c.LastStartRow != 81 {
+					return
+				}
+				later.Do(func() {
+					putPhaseRow(t, r.runner.pool, r.runner.records, record.PhaseRow{Issue: r.issue.Key, Role: claim.RoleImplementer, Claim: r.token,
+						StepTask: "p", StepPlace: 1, Entry: 4})
+				})
+			})
+			spawns, resumes := r.launches()
+
+			if err := r.runner.execute(r.ctx, r.start(81, laterAgent, 1)); err != nil {
+				t.Fatalf("the start = %v, want it finished or its task given to the running claim", err)
+			}
+			claims.afterPut(nil)
+			got := r.machine.Claim()
+			if nowSpawns, nowResumes := r.launches(); nowSpawns != spawns || nowResumes != resumes || got.Session != "ses-earlier" {
+				t.Fatalf("the start made %d spawns and %d resumes, the claim in session %q; want the running process kept in ses-earlier",
+					nowSpawns-spawns, nowResumes-resumes, got.Session)
+			}
+			if !tc.moves {
+				if got.SessionAgent != laterAgent {
+					t.Fatalf("the start whose step stands left the claim recording the agent %q, want %s", got.SessionAgent, laterAgent)
+				}
+				return
+			}
+			if got.SessionAgent != "" {
+				t.Fatalf("the start whose step a later entry left recorded the agent %q of the claim's session, want none", got.SessionAgent)
+			}
+
+			next := mustOutboxRow(t, r.issue.Key, record.SuperviseRequest{Op: "start", Tree: r.issue.Tree, Role: claim.RoleImplementer,
+				Phase: phase.Implementing, Entry: 4, Task: "Build the index.", Generation: 1, Agent: earlierAgent}, time.Now())
+			next.ID = 82
+			if err := r.runner.execute(r.ctx, next); err != nil {
+				t.Fatalf("the start of the later entry = %v, want its task given to the running claim", err)
+			}
+			got = r.machine.Claim()
+			if nowSpawns, nowResumes := r.launches(); nowSpawns != spawns || nowResumes != resumes || got.Session != "ses-earlier" || got.SessionAgent != earlierAgent {
+				t.Fatalf("the start of the later entry made %d spawns and %d resumes, the claim in session %q of agent %q; want ses-earlier kept, %s's",
+					nowSpawns-spawns, nowResumes-resumes, got.Session, got.SessionAgent, earlierAgent)
 			}
 		})
 	}
