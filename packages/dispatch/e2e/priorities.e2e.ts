@@ -3634,6 +3634,35 @@ async function checkClean(cell: TableCell, suffix: string): Promise<void> {
   checkWrites(cell);
 }
 
+/** Rules 2 and 3 where an older write of hers was let go: her newer text stays on the server and
+ *  in the field, no notice of another person's text shows, and a reload changes none of that. A
+ *  refusal of the older write is allowed; a notice of it is not. */
+async function checkLetGo(cell: TableCell, newer: string): Promise<void> {
+  const soft = expect.configure({ soft: true });
+  const field =
+    cell.field === "title"
+      ? titleHeading(cell.page)
+      : cell.page.getByRole("textbox", { exact: true, name: "Description" });
+  const landed = Math.max(0, ...cell.writes.map((write) => write.answeredAt ?? 0));
+  await expect
+    .poll(() => cell.reads.some((one) => one.sentAt > landed && one.answeredAt !== undefined), {
+      message: "the page read the priorities after the Retry's answer",
+      timeout: 15_000,
+    })
+    .toBe(true);
+  await cell.page.evaluate(
+    () => new Promise((drawn) => requestAnimationFrame(() => requestAnimationFrame(drawn)))
+  );
+  soft(await tableStored(cell), "the server holds her newer text").toContain(newer);
+  await soft(field, "the field shows her newer text").toContainText(newer.trim());
+  await soft(tableNotice(cell), "no notice of another person's text").toHaveCount(0);
+  checkWrites(cell);
+  await cell.page.reload();
+  await expect(field).toContainText(newer.trim());
+  soft(await tableStored(cell), "after a reload the server holds her newer text").toContain(newer);
+  await soft(tableNotice(cell), "after a reload no notice of another person's text").toHaveCount(0);
+}
+
 /** Rules 1, 2 and 4 after another person's text met hers: one notice holds her text, the server
  *  holds his, and after a reload her text is still kept with the notice. */
 async function checkKept(cell: TableCell, suffix: string, theirs: string): Promise<void> {
@@ -4043,6 +4072,25 @@ const tableCells: {
       await expect(cell.page.getByText("third host").first()).toBeVisible();
       checkWrites(cell);
       await checkNotLost(cell, " five-f");
+    },
+  },
+  {
+    field: "description",
+    name: "a write that never reached the server stopped, she edits again and it lands, then she presses its Retry",
+    slow: true,
+    run: async (cell) => {
+      const busy = await refuseTableWrites(cell, false);
+      await typeAndLeave(cell, " five-h");
+      await busy.stop();
+      await typeAndLeave(cell, " five-i");
+      await expect.poll(() => tableStored(cell), { timeout: 15_000 }).toContain(" five-h five-i");
+      // Her stopped write is older than the one that landed: its Retry, made or not, is let go,
+      // and nothing of it reaches the field or the server.
+      const retry = pendingWrites(cell.page).getByRole("button", { exact: true, name: "Retry" });
+      await expect(retry.first()).toBeVisible();
+      await retry.first().click();
+      await expect.soft(retry, "the stopped write's line is gone").toHaveCount(0);
+      await checkLetGo(cell, " five-h five-i");
     },
   },
   {
