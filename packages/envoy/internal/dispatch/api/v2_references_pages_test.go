@@ -3,32 +3,57 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 )
 
 // GET /api/v2/issues/{key}/references pages each of the read's three lists in the envelope, as
-// the architect ruled (dispatch://INFRA-4071/comment/7ce01db2-7ea2-4cc4-8dd7-d4b6e9e9fa05): the
-// issue's comment links to three documents, so links and members each hold three rows, and three
-// comments of another issue link to the issue, so linked_from holds three. A page of two answers
-// two rows and the list's whole total; the next page answers the third. A row of members or of
-// links whose node is a document carries the document's row, and a row of linked_from carries
-// none. With no relation the read is of members. Each page answers an ETag of its own, which
-// another page or another list never shares, and the page's own ETag answers 304.
+// the architect ruled (dispatch://INFRA-4071/comment/7ce01db2-7ea2-4cc4-8dd7-d4b6e9e9fa05).
+//
+// The issue's comment links to another issue and to three documents of that issue, so links holds
+// four rows and members, the rows of links whose node is a document, three: a members read that
+// answered every row of links answers a total of four and the issue's row. Two comments of the
+// other issue and a document of it that the comment does not link to cite the issue, so
+// linked_from holds three rows, one of them a document's: a linked_from read that filled a
+// document's row as links does answers that row's artifact.
+//
+// Each list is paged by two: the first page answers two rows and the list's whole total, the next
+// page the rest, and no node is on two pages. A row of members, and a document's row of links,
+// carries the document's own row; the other issue's row of links, and every row of linked_from,
+// carries null. Each page answers an ETag of its own, which another page or another list never
+// shares, and the page's own ETag answers 304. A new version of a document on members' first page
+// moves that page's ETag and leaves the second page's: an ETag that hashed the page's place in its
+// list and not its rows would keep both. With no relation the read is of members.
 func TestEachV2ReferencesListPagesPastItsLimit(t *testing.T) {
 	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
 	other := createReferenceAPIIssue(t, handler, "OPS")
-	body := "It links"
+	otherOwner := "/api/v1/issues/" + other.Key
+	// want is each list's nodes, each with whether its row carries its document's row; names is
+	// the name of each document the issue links to, by its id.
+	want := map[string]map[[2]string]bool{
+		"members":     {},
+		"links":       {{"issue", other.Key}: false},
+		"linked_from": {},
+	}
+	names := map[string]string{}
+	body := "It links dispatch://" + other.Key
 	for _, name := range []string{"first.md", "second.md", "third.md"} {
-		document := uploadDocument(t, handler, "/api/v1/issues/"+other.Key, name, "A document the issue links to.\n").Artifact
+		document := uploadDocument(t, handler, otherOwner, name, "A document the issue links to.\n").Artifact
 		body += " dispatch://" + other.Key + "/artifact/" + document.Slug
+		names[document.ID] = name
+		want["members"][[2]string{"artifact", document.ID}] = true
+		want["links"][[2]string{"artifact", document.ID}] = true
 	}
 	createReferenceAPIComment(t, handler, issue.Key, body+" here.")
-	for range 3 {
-		createReferenceAPIComment(t, handler, other.Key, "It cites dispatch://"+issue.Key+" here.")
+	for range 2 {
+		comment := createReferenceAPIComment(t, handler, other.Key, "It cites dispatch://"+issue.Key+" here.")
+		want["linked_from"][[2]string{"comment", comment.ID}] = false
 	}
+	citing := uploadDocument(t, handler, otherOwner, "cites.md", "It cites dispatch://"+issue.Key+" here.\n").Artifact
+	want["linked_from"][[2]string{"artifact", citing.ID}] = false
 
 	target := "/api/v2/issues/" + issue.Key + "/references"
 	read := func(t *testing.T, query string) (page[referenceRowV2], string) {
@@ -42,24 +67,29 @@ func TestEachV2ReferencesListPagesPastItsLimit(t *testing.T) {
 	etags := map[string]string{}
 	for _, relation := range []string{"members", "links", "linked_from"} {
 		t.Run(relation, func(t *testing.T) {
+			nodes := want[relation]
 			first, firstTag := read(t, "?relation="+relation+"&limit=2")
 			next, nextTag := read(t, "?relation="+relation+"&limit=2&offset=2")
-			if first.Total != 3 || len(first.Items) != 2 || first.Limit != 2 || next.Total != 3 || len(next.Items) != 1 || next.Offset != 2 {
-				t.Fatalf("%s pages: first total=%d items=%d limit=%d, next total=%d items=%d offset=%d; want 3 rows paged 2 and 1",
-					relation, first.Total, len(first.Items), first.Limit, next.Total, len(next.Items), next.Offset)
+			if first.Total != len(nodes) || len(first.Items) != 2 || first.Limit != 2 ||
+				next.Total != len(nodes) || len(next.Items) != len(nodes)-2 || next.Offset != 2 {
+				t.Fatalf("%s pages: first total=%d items=%d limit=%d, next total=%d items=%d offset=%d; want %d rows paged 2 and %d",
+					relation, first.Total, len(first.Items), first.Limit, next.Total, len(next.Items), next.Offset, len(nodes), len(nodes)-2)
 			}
-			seen := map[string]bool{}
-			for _, row := range append(first.Items, next.Items...) {
-				if seen[row.Node.ID] {
-					t.Fatalf("%s answers node %s on two pages", relation, row.Node.ID)
+			seen := map[[2]string]bool{}
+			for _, row := range slices.Concat(first.Items, next.Items) {
+				node := [2]string{row.Node.Kind, row.Node.ID}
+				if seen[node] {
+					t.Fatalf("%s answers %s %s on two pages", relation, node[0], node[1])
 				}
-				seen[row.Node.ID] = true
-				document := relation != "linked_from"
-				if document && (row.Node.Kind != "artifact" || row.Artifact == nil || row.Artifact.ID != row.Node.ID) {
-					t.Fatalf("%s row %s %s carries artifact %+v; want the document's own row", relation, row.Node.Kind, row.Node.ID, row.Artifact)
-				}
-				if !document && row.Artifact != nil {
-					t.Fatalf("linked_from row %s %s carries artifact %s; want none", row.Node.Kind, row.Node.ID, row.Artifact.ID)
+				seen[node] = true
+				document, listed := nodes[node]
+				switch {
+				case !listed:
+					t.Fatalf("%s answers %s %s, which the fixture does not put on it", relation, node[0], node[1])
+				case document && (row.Artifact == nil || row.Artifact.ID != row.Node.ID):
+					t.Fatalf("%s row %s %s carries artifact %+v; want the document's own row", relation, node[0], node[1], row.Artifact)
+				case !document && row.Artifact != nil:
+					t.Fatalf("%s row %s %s carries artifact %s; want null", relation, node[0], node[1], row.Artifact.ID)
 				}
 			}
 			for _, tag := range []string{firstTag, nextTag} {
@@ -80,7 +110,25 @@ func TestEachV2ReferencesListPagesPastItsLimit(t *testing.T) {
 			}
 		})
 	}
-	if plain, plainTag := read(t, "?limit=2"); plain.Total != 3 || etags[plainTag] != "members" {
+	if plain, plainTag := read(t, "?limit=2"); plain.Total != len(want["members"]) || etags[plainTag] != "members" {
 		t.Fatalf("a read naming no relation answered total=%d under the ETag of %q; want members' first page", plain.Total, etags[plainTag])
+	}
+
+	firstPage, secondPage := "?relation=members&limit=2", "?relation=members&limit=2&offset=2"
+	first, firstTag := read(t, firstPage)
+	_, secondTag := read(t, secondPage)
+	var name string
+	if len(first.Items) > 0 {
+		name = names[first.Items[0].Node.ID]
+	}
+	if name == "" {
+		t.Fatalf("members' first page answered %+v; want it to begin with a document the issue links to", first.Items)
+	}
+	uploadDocument(t, handler, otherOwner, name, "A document the issue links to, written again.\n")
+	if _, tag := read(t, firstPage); tag == firstTag {
+		t.Fatalf("members' first page kept the ETag %s after a new version of %s, a document it holds", firstTag, name)
+	}
+	if _, tag := read(t, secondPage); tag != secondTag {
+		t.Fatalf("members' second page moved its ETag from %s to %s after a new version of %s, a document it does not hold", secondTag, tag, name)
 	}
 }

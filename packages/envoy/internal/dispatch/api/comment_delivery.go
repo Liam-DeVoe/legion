@@ -722,7 +722,7 @@ func (s *server) recordCommentDeliveryResolution(
 // try and settles nothing: the attempt stays pending under the claim this call renewed, and the
 // call answers, beside that pending attempt, a *mentionHeldForOrder carrying that claim, which its
 // caller hands to the mention sender's lane for that session (sendCommentMention,
-// resumeOwedDelivery, createCommentDelivery), so the send is made again once the outbox has sent
+// resumeOwedDelivery, retryCommentMention), so the send is made again once the outbox has sent
 // what comes first. A read of that rule that fails is answered the same way, as a wait behind no
 // event (mentionHeldForOrder.unread): the send keeps its claim and its place on its lane, so the
 // owner's later comments to the session stay behind it, and it tries again a moment later by
@@ -877,7 +877,7 @@ type mentionHeldForOrder struct {
 }
 
 // send is the mention sender's send that takes the held attempt up again, for a caller that holds
-// no lane of its own (resumeOwedDelivery, createCommentDelivery): bound to the attempt and the
+// no lane of its own (resumeOwedDelivery, retryCommentMention): bound to the attempt and the
 // claim the held call left on it, queued on the lane of the session it waits to reach, as actor,
 // with a take-over window of its own, held from now behind the event it waits behind, or behind
 // none when the read of the rule failed (held).

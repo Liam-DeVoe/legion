@@ -771,18 +771,15 @@ func loadReferenceRowsV2(ctx context.Context, q queryer, ids []string) (map[stri
 	return documents, rows.Err()
 }
 
-// issueReferenceRowsV2 is the issue key names and the list relation names of its references
-// read, as GET /api/v2/issues/{key}/references pages it: the read one hop in each direction GET
+// issueReferenceRowsV2 is the list relation names of the references read of the issue key names,
+// as GET /api/v2/issues/{key}/references pages it: the read one hop in each direction GET
 // /api/v1/issues/{key}/references makes (issueReferenceMembers), under the same bound
 // (issueClosure), its links or its linked_from, or members, the rows of links whose node is a
 // document, which are the documents /api/v1 answers as members. Each list is in the order of the
-// node's kind, then its id. A key no issue carries answers loadIssue's refusal.
+// node's kind, then its id. The route has answered a key no issue carries 404 before this runs
+// (requireIssueV2).
 func (s *server) issueReferenceRowsV2(ctx context.Context, key, relation string) ([]model.ReferenceLink, error) {
-	issue, err := s.loadIssue(ctx, s.deps.Store.Pool, key)
-	if err != nil {
-		return nil, err
-	}
-	closure, err := s.issueClosure(ctx, issue.Key)
+	closure, err := s.issueClosure(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -807,10 +804,12 @@ func (s *server) issueReferenceRowsV2(ctx context.Context, key, relation string)
 // fault: /api/v2 answers it 500, as /api/v1 does.
 func referenceRowsV2(ctx context.Context, q queryer, relation string, links []model.ReferenceLink) ([]referenceRowV2, error) {
 	rows := make([]referenceRowV2, len(links))
+	var documentRows []int
 	var ids []string
 	for index, link := range links {
 		rows[index].ReferenceLink = link
 		if relation != "linked_from" && link.Node.Kind == "artifact" {
+			documentRows = append(documentRows, index)
 			ids = append(ids, link.Node.ID)
 		}
 	}
@@ -818,10 +817,7 @@ func referenceRowsV2(ctx context.Context, q queryer, relation string, links []mo
 	if err != nil {
 		return nil, err
 	}
-	for index := range rows {
-		if relation == "linked_from" || rows[index].Node.Kind != "artifact" {
-			continue
-		}
+	for _, index := range documentRows {
 		document, ok := documents[rows[index].Node.ID]
 		if !ok {
 			return nil, fmt.Errorf("reference target %q disappeared while loading closure", rows[index].Node.ID)
