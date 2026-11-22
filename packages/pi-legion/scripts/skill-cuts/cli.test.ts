@@ -2503,6 +2503,74 @@ describe("behaviour: written cases and the report's descriptions", () => {
     );
   }, 60_000);
 
+  // Catches: a navigation line of the skill that a build dropped steps for and no case tests left
+  // out of the report, a tested one named, one named twice, and a file that is no build-cases
+  // summary read as one.
+  test("report --build-summary names each navigation line of the build summaries that no case has as its line, once, or none, and refuses a file that is no build-cases summary", async () => {
+    const s = scenario("report-navigation", f1File(2), [{ id: "c04" }, { id: "c05" }]);
+    writeMadeUpResult(s.out, "c04", { screen: { old: 10, none: 0 } }, { compared: "none" });
+    writeMadeUpResult(s.out, "c05", { screen: { old: 8, none: 4 } }, { compared: "none" });
+    /** alpha's line 8, which only sends the agent to references/x.md. */
+    const NAVIGATION = "1. Read `references/x.md` before the first step.";
+    /** Writes the summary file `name` of a build-cases form `command` that dropped one step for
+     *  each line of `lines` (file and number of SKILL.md, and text), and gives its path. */
+    const buildSummary = (name: string, command: string, lines: [number, string][]) => {
+      const file = path.join(s.dir, name);
+      const navigation = {
+        lines: lines.map(([number, text]) => ({ file: "SKILL.md", number, text, dropped: 1 })),
+        dropped: lines.length,
+        withReplacement: 0,
+        withoutReplacement: lines.length,
+      };
+      writeFileSync(file, JSON.stringify({ command, navigation }));
+      return file;
+    };
+    // The session build names line 8 and line 9 (LINE, which the cases test); the written build
+    // names line 8 again.
+    const sessionBuild = buildSummary("session.summary.json", "build-cases", [
+      [8, NAVIGATION],
+      [9, LINE],
+    ]);
+    const writtenBuild = buildSummary("written.summary.json", "build-cases --written", [
+      [8, NAVIGATION],
+    ]);
+    const reported = await cli([
+      ...report(s),
+      "--build-summary",
+      sessionBuild,
+      "--build-summary",
+      writtenBuild,
+    ]);
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = reported.stdout.split("\n");
+    const line = `navigation lines of the skill that no case tests (from the build summaries): SKILL.md:8 ${JSON.stringify(NAVIGATION)}`;
+    expect(lines).toContain(line);
+    // It comes beside the verdict, and the verdict is the rule's.
+    const verdict = lines.findIndex((each) => each.startsWith("verdict: "));
+    expect(lines.indexOf(line)).toBe(verdict + 1);
+    const plain = await cli(report(s));
+    expect(plain.stdout.split("\n")[verdict]).toBe(lines[verdict]);
+    // Without --build-summary the report has no such line.
+    expect(plain.stdout).not.toContain("navigation lines of the skill");
+
+    // Every navigation line tested by a case: none.
+    const tested = buildSummary("tested.summary.json", "build-cases", [[9, LINE]]);
+    const none = await cli([...report(s), "--build-summary", tested]);
+    expect(none.stdout.split("\n")).toContain(
+      "navigation lines of the skill that no case tests (from the build summaries): none"
+    );
+
+    // A file that is no build-cases summary is refused, and so is the flag on a stage command.
+    const tasks = path.join(s.dir, "tasks.summary.json");
+    writeFileSync(tasks, JSON.stringify({ command: "build-tasks", queries: [] }));
+    const refused = await cli([...report(s), "--build-summary", tasks]);
+    expect({ code: refused.code, stdout: refused.stdout }).toEqual({ code: 2, stdout: "" });
+    expect(refused.stderr).toContain(`--build-summary ${tasks} is no build-cases summary`);
+    const screen = await cli(behaviour("screen", s, "--build-summary", tested));
+    expect(screen.code).toBe(2);
+    expect(screen.stderr).toContain("--build-summary is for behaviour report only");
+  }, 60_000);
+
   test("the judge prompt's sha256 and settings are in the report and in each newly judged stage", async () => {
     const s = scenario("judge-identity", LOSS_SKILL(), [{ id: "c04" }]);
     recordCaptures(s, ["old", "none"]);

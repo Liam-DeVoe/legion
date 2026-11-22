@@ -16,6 +16,7 @@
  *       [--after-case <command>] [--models <models.yml>] [--omp <binary>] [--repos <dir>]
  *       [--hint-model <model>] [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>]
  *       [--request-log <file>] [--reading-models <file>] [--limits <file>]
+ *       [--build-summary <file>]... (report only)
  *       [--again <case id>]... (confirm only)
  *   bun scripts/skill-cuts/cli.ts read --config <file> --key-file <file> --prompt <name>
  *       --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>]
@@ -189,7 +190,9 @@
  *   arm's over the screened cases, all and each kind's, with its 95% t interval over the cases
  *   (score.ts's `meanDifference`), the screened cases that tie, floor, ceil and reverse
  *   (`screenShapes`), and the judge's identity (judge.ts's `judgeIdentity`) with how many stages
- *   record it. Its compared arm is the one its results record. With `--reading-models`, it prints
+ *   record it; with `--build-summary` (build-cases' summaries, build.ts's `NavigationSummary`),
+ *   each navigation line they name that no case has as its line (`untestedNavigationLine`). Its
+ *   compared arm is the one its results record. With `--reading-models`, it prints
  *   each model of the file with its sessions and
  *   whether the gateway serves it (the file's `served`), the sessions with no model and not
  *   queried, and the served models the screened session cases ran on, each with its cases; a
@@ -317,7 +320,7 @@ import {
   injectionFaults,
 } from "./arms";
 import { main as attributeMain, type ModelCount, modelCountOf, modelId } from "./attribute";
-import { main as buildMain } from "./build";
+import { main as buildMain, type NavigationCounts, NavigationSummary } from "./build";
 import {
   type Capture,
   captureBody,
@@ -3598,6 +3601,38 @@ function stepReadsLine(b: Behaviour, score: SkillScore, old: string): string {
   return `cases whose real step reads a file of the skill other than SKILL.md, which the arm with no skill does not have, so it fails them by construction: ${which}${untold.join("")}; the ${counted(others.length, "screened case")} with no such read: ${count((each) => each.informative)} informative, ${count((each) => each.flagged)} flagged, ${count((each) => each.loss)} confirmed losses (a description beside the registered rule, which it does not change)`;
 }
 
+/** The navigation lines the build-cases summaries `files` name (`--build-summary`, build.ts's
+ *  `NavigationSummary`), each line of a file once, in the order the files name them. Refuses a
+ *  file that is no build-cases summary, or one written before build-cases named them. */
+function buildNavigationLines(files: readonly string[]): NavigationCounts["lines"] {
+  const lines = new Map<string, NavigationCounts["lines"][number]>();
+  for (const file of files) {
+    const parsed = NavigationSummary.safeParse(readJson(file, "--build-summary"));
+    if (!parsed.success) {
+      throw new Refused(
+        `--build-summary ${file} is no build-cases summary that names its navigation lines: ${schemaFaults(parsed.error, "the file")}`
+      );
+    }
+    for (const line of parsed.data.navigation.lines) {
+      const key = `${line.file}\0${line.number}`;
+      if (!lines.has(key)) lines.set(key, line);
+    }
+  }
+  return [...lines.values()];
+}
+
+/** The report's line of the navigation lines of the build summaries (`buildNavigationLines`) whose
+ *  file and text, trimmed, no case of `b` has as its line: lines whose steps a build dropped, which
+ *  no case tests. A description beside the registered rule, which it does not change. */
+function untestedNavigationLine(b: Behaviour, navigation: NavigationCounts["lines"]): string {
+  const untested = navigation.filter(
+    (line) =>
+      !b.cases.some((c) => c.baseFile === line.file && c.line.text.trim() === line.text.trim())
+  );
+  const words = untested.map((line) => `${line.file}:${line.number} ${JSON.stringify(line.text)}`);
+  return `navigation lines of the skill that no case tests (from the build summaries): ${words.join("; ") || "none"}`;
+}
+
 /** The report's line of the judge's identity (judge.ts's `judgeIdentity`): the SHA-256 of
  *  `prompts/judge.md` and its pinned settings, and how many stages of the results record it,
  *  record another, and record none (a stage made before the identity was recorded). */
@@ -3727,9 +3762,14 @@ function dropLines(b: Behaviour, score: SkillScore): string[] {
 }
 
 /** `behaviour report`: prints each case's passes, the skill's verdict and the run's figures, `old`
- *  being the old text's directory (`--old`). A dropped case's line gives the stage that dropped it,
- *  why, and each stage it ran. */
-function reportCommand(given: Behaviour, old: string): void {
+ *  being the old text's directory (`--old`), and beside the verdict the line of `navigation`, the
+ *  navigation lines of `--build-summary` (`untestedNavigationLine`; none without the flag). A
+ *  dropped case's line gives the stage that dropped it, why, and each stage it ran. */
+function reportCommand(
+  given: Behaviour,
+  old: string,
+  navigation: NavigationCounts["lines"] | undefined
+): void {
   const results = readResults(given);
   const b = { ...given, compared: recordedCompared(given.out, results) ?? given.compared };
   const score = scored(b, results);
@@ -3828,6 +3868,7 @@ function reportCommand(given: Behaviour, old: string): void {
   lines.push(caseModelsLine(b));
   lines.push(...modelLines(b, score), writtenTasksLine(b, score));
   lines.push(`verdict: ${verdictLine(b, results, score)}`);
+  if (navigation !== undefined) lines.push(untestedNavigationLine(b, navigation));
 
   const percent = (x: number) => `${(100 * x).toFixed(2)}%`;
   lines.push(
@@ -3917,6 +3958,7 @@ const BEHAVIOUR_USAGE = [
   `  confirm [--case <id>] (${FRESH_RUNS} fresh runs of old and the compared arm on that case alone, into its own --out)`,
   "  [--again <case id>]... (confirm only, not with --case: one more confirm of that flagged case)",
   "  report needs only --config, --out, --old and --cases; [--limits <file>] (printed as it is)",
+  "  [--build-summary <file>]... (report only: build-cases' summaries, whose navigation lines no case tests it names)",
 ].join("\n");
 
 /** The compared arm the stages of `results` record (a stage that records none was run with
@@ -3970,6 +4012,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       scratch: { type: "string" },
       "reading-models": { type: "string" },
       limits: { type: "string" },
+      "build-summary": { type: "string", multiple: true },
       again: { type: "string", multiple: true },
     },
     BEHAVIOUR_USAGE
@@ -3998,6 +4041,9 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
   }
   if (values.limits !== undefined && !report) {
     throw new Refused("--limits is for behaviour report only");
+  }
+  if (values["build-summary"] !== undefined && !report) {
+    throw new Refused("--build-summary is for behaviour report only");
   }
   const named: Compared =
     values.new !== undefined ? "new" : values.ours !== undefined ? "ours" : "none";
@@ -4047,7 +4093,12 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
         : { file: limits, text: readBytes(limits, "the limits text").toString("utf8") },
   };
   if (report) {
-    reportCommand(behaviour, given.old);
+    const summaries = values["build-summary"];
+    reportCommand(
+      behaviour,
+      given.old,
+      summaries === undefined ? undefined : buildNavigationLines(summaries)
+    );
     return EXIT.ok;
   }
   // The served-sessions refusal stops the session cases only: a skill with written cases is

@@ -371,25 +371,29 @@
  * is refused (exit 2), since it would read neither `--sessions` nor `--seed`.
  *
  * **--drop-navigation** (both forms; README.md, "build-cases and build-tasks") gives no case of a
- * step that only reads a file of the skill, or of a line that only sends the agent to one: the arm
- * with no skill lacks that file, so it fails such a step whatever the skill's text teaches. In the
- * session form, a step the case reader proposes whose `read` calls read a file of `--old`
- * (SKILL.md among them), as cases.ts's `stepSkillFiles` tells one (the arms' and the behaviour
- * report's rule, at the installed directory the session's reads before the step show), is passed
- * over: a navigation step. So is a proposal whose line the `navigation` reader (given the line,
- * its file and the path of each file of `--old`) calls one whose only instruction a step could
- * show is to read or open a file of the skill: a navigation line. The case reader then goes on
- * from the window that starts after that step (after the window, for a step before it), within
- * READER_WINDOWS; a step it proposes again is passed over again and counted once. The lines it is
- * offered are those of every read its windows can reach (step 4), so the file a navigation step
- * read is offered in the windows after it, and a later step a line of that file governs is a case
- * whose `baseFile` is that file. The session's record names each step passed over (`navigation`:
- * its message index, `kind` `step` or `line`, the file read or the line's file, and a line's
- * reason), the summary counts them (`navigation: {steps, lines}`), and so does the last line
- * printed; a session whose windows run out after passing over steps is dropped as one with no step
- * is, and one whose navigation reader fails is dropped (`navigation-failed`). In the `--written`
- * form, a task whose following step reads a file of the skill, or whose line the navigation reader
- * calls navigation, is dropped (`written-navigation`). The summary's inputs record the flag
+ * navigation line: a line whose only instruction a step could show is to read or open a file of
+ * the skill. The arm with no skill lacks that file, so it fails such a step whatever the skill's
+ * text teaches. The `navigation` reader (given the line, its file and the path of each file of
+ * `--old`) judges each line the case reader proposes, and that is the only rule that drops a step
+ * for a read: a step that reads a file of the skill under a line that is not a navigation line
+ * stays a case. In the session form, a step under a navigation line gives no case; its
+ * replacement may. The files that step read, as cases.ts's `stepSkillFiles` tells them (the
+ * arms' and the behaviour report's rule, at the installed directory the session's reads before
+ * the step show), are the replacement's files: the case reader goes on from the window that
+ * starts after that step (after the window, for a step before it), within READER_WINDOWS, offered
+ * only those files' lines (step 4's rule, restricted to them), and its first proposal there is
+ * the replacement, which must be a later step and goes through every check, the navigation reader
+ * first. Where the step read no file of the skill, the windows run out, the replacement's own line
+ * is a navigation line, or any check drops it, the session gives no case
+ * (`navigation-no-replacement`, the navigation line and why in its detail); a session whose
+ * navigation reader fails before any step is dropped for a navigation line is dropped
+ * (`navigation-failed`). The session's record names each step dropped for a navigation line
+ * (`navigation`: its message index, the line's file, number and text, the reader's reason, and the
+ * id of the case that replaced it, or null); the summary's `navigation` lists each navigation line
+ * with the steps dropped for it and counts the drops with a replacement and without
+ * (`navigationCounts`), and the last line printed counts them too. In the `--written`
+ * form, a task whose line is a navigation line is dropped (`written-navigation`), with no
+ * replacement, and its summary lists those lines too. The summary's inputs record the flag
  * (`dropNavigation`), so a run that goes on with the other value is refused; a summary written
  * before the flag reads as one without it.
  *
@@ -757,6 +761,8 @@ export const DROP_REASONS = {
   "audit-failed": "the audit reader's every reply was refused, or its call failed",
   "navigation-failed":
     "the navigation reader's every reply was refused, or its call failed (build-cases --drop-navigation)",
+  "navigation-no-replacement":
+    "the step the case reader proposed is under a navigation line, and no later step replaces it: the step read no file of the skill, the windows ran out, the replacement's own line is a navigation line, or a check dropped the replacement (build-cases --drop-navigation)",
   "no-model": "no model_change or thinking_level_change before the step",
   "model-not-served":
     "no route of the gateway serves the session's model before the step (its id is the id of none of the configuration's servedModels), or none of its models from the skill's read on",
@@ -767,7 +773,7 @@ export const DROP_REASONS = {
   "written-not-followed":
     "the audit, which reads no criterion, does not find that a written task's following step follows the line: it breaks it, or the line does not govern it (build-cases --written)",
   "written-navigation":
-    "a written task's following step reads a file of the skill, or the navigation reader calls its line one that only sends the agent to a file of the skill (build-cases --written --drop-navigation)",
+    "the navigation reader calls a written task's line one that only sends the agent to a file of the skill (build-cases --written --drop-navigation)",
 } as const;
 export type DropReason = keyof typeof DROP_REASONS;
 
@@ -4750,7 +4756,7 @@ interface CaseRun {
   readonly files: readonly { readonly path: string; readonly text: string }[];
   /** The path of each file of `--old` (`skillPaths`). */
   readonly skillPaths: readonly string[];
-  /** `--drop-navigation`: a navigation step or line gives no case. */
+  /** `--drop-navigation`: a step under a navigation line gives no case; its replacement may. */
   readonly dropNavigation: boolean;
   readonly copies: Copies;
   readonly github: GithubReads;
@@ -4764,8 +4770,8 @@ interface CaseRun {
 /** One session's record in the summary. `model`: the session's model as its last `model_change`
  *  names it, before the step once a step is found, else before the skill's first successful read
  *  (absent when there is none). `windows`: how many windows of the session the case reader read.
- *  `navigation`, under `--drop-navigation`: each step the case reader proposed that was passed
- *  over, in order (absent when none was). `restatementCheck`, once a step is found and the case's
+ *  `navigation`, under `--drop-navigation`: each step the case reader proposed under a navigation
+ *  line, in order (absent when none was). `restatementCheck`, once a step is found and the case's
  *  messages are known: how many of the messages before the step the restatement check must read
  *  (the case's messages less the skill's own read results), how many it read whole, and in how
  *  many windows; a case is kept only when `read` is `before`. `audit`: the audit's verdict on the
@@ -4787,42 +4793,49 @@ interface SessionRecord {
   audit?: { verdict: string; reason: string };
 }
 
-/** A step the case reader proposed that `--drop-navigation` passed over: its message index, and
- *  either its own `read` calls read a file of the skill (`step`, with the first file it reads) or
- *  the navigation reader calls its line one that only sends the agent to a file of the skill
- *  (`line`, with the line's file and the reader's reason). */
+/** A step the case reader proposed that `--drop-navigation` gave no case for: its message index,
+ *  its navigation line (the line's file, its number there, found as the case's line number is, and
+ *  its text as the reader gave it), the navigation reader's reason, and the id of the case its
+ *  replacement gave, or null. */
 interface NavigationPass {
   readonly messageIndex: number;
-  readonly kind: "step" | "line";
-  readonly file?: string;
-  readonly reason?: string;
+  readonly file: string;
+  readonly number: number;
+  readonly text: string;
+  readonly reason: string;
+  replacement: string | null;
+}
+
+/** The number of the line `line` names in its file of `files`, the first of the file's lines that
+ *  is its text, each trimmed: a case's line number. 0 when no base file is `line.file`, or it holds
+ *  no such line. */
+function baseLineNumber(
+  files: CaseRun["files"],
+  line: { readonly file: string; readonly text: string }
+): number {
+  const file = files.find((each) => each.path === line.file);
+  const wanted = line.text.trim();
+  return file === undefined
+    ? 0
+    : textLines(file.text).findIndex((each) => each.trim() === wanted) + 1;
 }
 
 /**
- * Whether `--drop-navigation` passes over the case reader's proposal `proposal`, whose step is the
- * message `step`: the step's `read` calls read a file of the skill (cases.ts's `stepSkillFiles`,
- * the arms' rule, at the installed directory of the first of the session's skill reads `reads`
- * before the step whose header shows one, else `/skills/<skill>`, as the arms take it), or else the
- * `navigation` reader calls its line navigation. Undefined when neither, so the proposal goes on
- * to the case's checks; the drop when the navigation reader fails. Adds the reader's dollars to
- * `record`, and throws NotNeeded before its call once `session.stopped` is set.
+ * Whether the `navigation` reader calls the line of the case reader's proposal `proposal` a
+ * navigation line, one whose only instruction a step could show is to read or open a file of the
+ * skill: its pass, with no replacement yet, when it does; undefined when it does not, or when the
+ * line is no line of the base text, which the case's checks drop unread (`line-not-in-base`); the
+ * drop when the reader fails. Adds the reader's dollars to `record`, and throws NotNeeded before
+ * its call once `session.stopped` is set.
  */
 async function navigationOf(
   run: CaseRun,
-  step: SessionMessage,
-  reads: readonly SkillRead[],
   proposal: Exclude<CaseAnswer, { step: null }>,
   record: SessionRecord,
   session: { readonly stopped: boolean }
 ): Promise<NavigationPass | { readonly drop: DropReason; readonly detail: string } | undefined> {
-  const messageIndex = proposal.step.messageIndex;
-  const installedDir =
-    reads
-      .filter((read) => read.index < messageIndex)
-      .map((read) => installedDirOf(read.header, read.file))
-      .find((dir) => dir !== undefined) ?? path.posix.join("/skills", run.skill);
-  const [file] = stepSkillFiles(step, run.skill, installedDir, run.skillPaths);
-  if (file !== undefined) return { messageIndex, kind: "step", file };
+  const number = baseLineNumber(run.files, proposal.line);
+  if (number === 0) return undefined;
   if (session.stopped) throw new NotNeeded();
   let judged: NavigationAnswer;
   try {
@@ -4838,9 +4851,10 @@ async function navigationOf(
     if (error instanceof ReaderFailed) record.readerUsd += usdOf(error.spent);
     return { drop: "navigation-failed", detail: messageFor(error) };
   }
-  return judged.navigation
-    ? { messageIndex, kind: "line", file: proposal.line.file, reason: judged.reason }
-    : undefined;
+  if (!judged.navigation) return undefined;
+  const { file, text } = proposal.line;
+  const messageIndex = proposal.step.messageIndex;
+  return { messageIndex, file, number, text, reason: judged.reason, replacement: null };
 }
 
 /** A store as a session's context reads it: its name and its context. */
@@ -5172,7 +5186,17 @@ async function caseOf(
   record: SessionRecord,
   session: { readonly stopped: boolean }
 ): Promise<Outcome> {
-  const drop = (reason: DropReason, detail: string): Outcome => ({ drop: reason, detail });
+  // Under --drop-navigation, once the case reader proposed a step under a navigation line, the
+  // session's case is that step's replacement or none: from then on every drop is that.
+  let replaced: NavigationPass | undefined;
+  const noReplacement = (pass: NavigationPass, why: string): Outcome => ({
+    drop: "navigation-no-replacement",
+    detail: `the step at message ${pass.messageIndex} is under the navigation line ${pass.file}:${pass.number} ${JSON.stringify(pass.text)} (${pass.reason}), and no later step replaces it: ${why}`,
+  });
+  const drop = (reason: DropReason, detail: string): Outcome =>
+    replaced === undefined
+      ? { drop: reason, detail }
+      : noReplacement(replaced, `${reason}: ${detail}`);
   let t: Transcript;
   try {
     t = readTranscript(spool);
@@ -5354,6 +5378,9 @@ async function caseOf(
   let noStep = "";
   let start = from;
   let windows = 0;
+  // The files whose lines the case reader is offered: after a step dropped for a navigation line,
+  // only those that step read, whose lines may give its replacement.
+  let offering = offered;
   while (answer === undefined && windows < READER_WINDOWS && start < readable.length) {
     windows += 1;
     record.windows = windows;
@@ -5395,7 +5422,7 @@ async function caseOf(
     try {
       const result = await runReader(
         "case",
-        { skill: run.skill, files: offered, messages: [...earlier, ...windowMessages] },
+        { skill: run.skill, files: offering, messages: [...earlier, ...windowMessages] },
         run.gateway
       );
       record.readerUsd += usdOf(result.spent);
@@ -5412,17 +5439,46 @@ async function caseOf(
     if (given.step === null) noStep = given.reason;
     else if (!run.dropNavigation) answer = given;
     else {
-      // A navigation step or line is passed over, and the next window starts after its step when
-      // the step is in this window. A step passed over already, which the reader may propose
-      // again from the messages before the window, is passed over again and counted once.
+      // The navigation reader judges the proposal's line, a replacement's too, and a replacement
+      // must be a later step. After a step under a navigation line, the next window starts after
+      // it when it is in this window.
       const stepIndex = given.step.messageIndex;
-      const seen = record.navigation?.find((each) => each.messageIndex === stepIndex);
-      const passed =
-        seen ?? (await navigationOf(run, t.message(stepIndex), reads, given, record, session));
-      if (passed === undefined) answer = given;
-      else if ("drop" in passed) return drop(passed.drop, passed.detail);
+      if (replaced !== undefined && stepIndex <= replaced.messageIndex) {
+        return noReplacement(
+          replaced,
+          `the case reader's first proposal after it is step ${stepIndex}, no later step`
+        );
+      }
+      const pass = await navigationOf(run, given, record, session);
+      if (pass === undefined) answer = given;
+      else if ("drop" in pass) return drop(pass.drop, pass.detail);
       else {
-        if (seen === undefined) record.navigation = [...(record.navigation ?? []), passed];
+        record.navigation = [...(record.navigation ?? []), pass];
+        if (replaced !== undefined) {
+          return noReplacement(
+            replaced,
+            `its replacement, step ${stepIndex}, is under the navigation line ${pass.file}:${pass.number} too`
+          );
+        }
+        replaced = pass;
+        noStep = "";
+        // The replacement's files: those the step read, at the installed directory of the first of
+        // the session's skill reads before it whose header shows one (else `/skills/<skill>`, as
+        // the arms take it).
+        const installedDir =
+          reads
+            .filter((read) => read.index < stepIndex)
+            .map((read) => installedDirOf(read.header, read.file))
+            .find((dir) => dir !== undefined) ?? path.posix.join("/skills", run.skill);
+        const read = stepSkillFiles(t.message(stepIndex), run.skill, installedDir, run.skillPaths);
+        if (read.length === 0) return noReplacement(pass, "the step read no file of the skill");
+        offering = offered.filter((each) => read.includes(each.path));
+        if (offering.length === 0) {
+          return noReplacement(
+            pass,
+            `the session's reads of ${read.join(", ")} hold no whole line of the base text`
+          );
+        }
         if (stepIndex >= start) next = stepIndex + 1;
       }
     }
@@ -5430,20 +5486,19 @@ async function caseOf(
   }
   if (answer === undefined) {
     const extent = `${windows} window${windows === 1 ? "" : "s"} read, to message ${start - 1} of ${allMessages.length}`;
-    const passedOver = record.navigation?.length ?? 0;
-    const why = [
-      noStep,
-      passedOver === 0 ? "" : `${passedOver} navigation proposals passed over (--drop-navigation)`,
-    ]
-      .filter((each) => each !== "")
-      .join("; ");
+    if (replaced !== undefined) {
+      return noReplacement(
+        replaced,
+        `the windows ran out (${extent})${noStep === "" ? "" : `: ${noStep}`}`
+      );
+    }
     if (boundaryAfterRead >= 0 && start >= readable.length) {
       return drop(
         "read-before-compaction",
-        `the case reader found no step before the ${t.branch[boundaryAfterRead]?.type} after the skill's read, and a step after it would follow a skill read that precedes it (${extent}): ${why}`
+        `the case reader found no step before the ${t.branch[boundaryAfterRead]?.type} after the skill's read, and a step after it would follow a skill read that precedes it (${extent}): ${noStep}`
       );
     }
-    return drop("no-step", `${why} (${extent})`);
+    return drop("no-step", `${noStep} (${extent})`);
   }
   const stepIndex = answer.step.messageIndex;
   if (stepIndex <= first.index) {
@@ -5484,7 +5539,7 @@ async function caseOf(
   const file = run.files.find((each) => each.path === answer.line.file);
   const wanted = answer.line.text.trim();
   const baseLines = file === undefined ? [] : textLines(file.text);
-  const lineNumber = baseLines.findIndex((line) => line.trim() === wanted) + 1;
+  const lineNumber = baseLineNumber(run.files, answer.line);
   if (file === undefined || lineNumber === 0) {
     return drop("line-not-in-base", `${answer.line.file}: ${JSON.stringify(answer.line.text)}`);
   }
@@ -5657,6 +5712,7 @@ async function caseOf(
       },
     ],
   });
+  if (replaced !== undefined) replaced.replacement = built.id;
   return {
     case: built,
     step: stepIndex,
@@ -5691,14 +5747,50 @@ function byModel(sessions: readonly SessionRecord[]): Record<string, ModelCounts
   return counts;
 }
 
-/** How many steps of `sessions` `--drop-navigation` passed over, of each kind. */
-function navigationCounts(sessions: readonly SessionRecord[]): { steps: number; lines: number } {
-  const counts = { steps: 0, lines: 0 };
-  for (const pass of sessions.flatMap((session) => session.navigation ?? [])) {
-    if (pass.kind === "step") counts.steps += 1;
-    else counts.lines += 1;
+/** A build-cases summary's `navigation` (both forms): each navigation line `--drop-navigation`
+ *  dropped steps (or written tasks) for, by file and then number, with how many; how many it
+ *  dropped; and how many of those a replacement case took the place of, and how many none did. */
+export const NavigationCounts = z.strictObject({
+  lines: z.array(
+    z.strictObject({
+      file: z.string(),
+      number: z.number().int().min(1),
+      text: z.string(),
+      dropped: z.number().int().min(1),
+    })
+  ),
+  dropped: z.number().int().min(0),
+  withReplacement: z.number().int().min(0),
+  withoutReplacement: z.number().int().min(0),
+});
+export type NavigationCounts = z.infer<typeof NavigationCounts>;
+
+/** A summary of either form of build-cases, as `behaviour report --build-summary` reads it: one
+ *  that records no navigation lines (an older build-cases wrote it) is no such summary. */
+export const NavigationSummary = z.looseObject({
+  command: z.enum(["build-cases", "build-cases --written"]),
+  navigation: NavigationCounts,
+});
+
+/** The summary's `navigation` of the steps `passes` that `--drop-navigation` dropped. */
+function navigationCounts(
+  passes: readonly Pick<NavigationPass, "file" | "number" | "text" | "replacement">[]
+): NavigationCounts {
+  const lines = new Map<string, NavigationCounts["lines"][number]>();
+  for (const { file, number, text } of passes) {
+    const line = lines.get(`${file}\0${number}`);
+    if (line === undefined) lines.set(`${file}\0${number}`, { file, number, text, dropped: 1 });
+    else line.dropped += 1;
   }
-  return counts;
+  const withReplacement = passes.filter((pass) => pass.replacement !== null).length;
+  return {
+    lines: [...lines.values()].sort(
+      (a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0) || a.number - b.number
+    ),
+    dropped: passes.length,
+    withReplacement,
+    withoutReplacement: passes.length - withReplacement,
+  };
 }
 
 /** The copies output under `copiesDir` as the profile reads it (attribute.ts's `readR4`, the one
@@ -6636,6 +6728,8 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
     const built: Case[] = [];
     const records: Record<string, unknown>[] = [];
     const drops: Partial<Record<DropReason, number>> = {};
+    /** The navigation line of each task dropped for it (`written-navigation`). */
+    const navigationLines: Pick<NavigationPass, "file" | "number" | "text" | "replacement">[] = [];
     let budgetStop: string | undefined;
     let memoryStop: string | undefined;
     const peak = new BuildPeak(io);
@@ -6669,18 +6763,9 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
         criterion: task.criterion,
       });
       const { messages, realStep, violatingStep, criterion } = secrets.value;
-      // Under --drop-navigation, a following step that reads a file of the skill (the arms' rule,
-      // at the installed directory the case's read shows), or a line the navigation reader calls
-      // one that only sends the agent to a file of the skill, gives no case.
+      // Under --drop-navigation, a task whose line the navigation reader calls one that only sends
+      // the agent to a file of the skill gives no case, and nothing replaces it.
       if (run.dropNavigation) {
-        const read = stepSkillFiles(realStep, given.skill, installedDir, run.skillPaths);
-        if (read.length > 0) {
-          dropTask(
-            "written-navigation",
-            `its following step reads ${read.join(" and ")}, a file of the skill`
-          );
-          return true;
-        }
         try {
           const result = await runReader(
             "navigation",
@@ -6689,9 +6774,10 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
           );
           const judged = NavigationAnswer.parse(result.answer);
           if (judged.navigation) {
+            navigationLines.push({ ...task.line, replacement: null });
             dropTask(
               "written-navigation",
-              `the navigation reader calls its line one that only sends the agent to a file of the skill: ${judged.reason}`
+              `the navigation reader calls its line ${task.line.file}:${task.line.number} one that only sends the agent to a file of the skill: ${judged.reason}`
             );
             return true;
           }
@@ -6850,6 +6936,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
         tasks: records,
         casesBuilt: built.length,
         drops,
+        navigation: navigationCounts(navigationLines),
         stopped: stop ?? null,
         githubRetries: run.github.retries.record(),
         readerSpend: run.gateway.spend(),
@@ -7269,7 +7356,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
         sessionsTried: sessions.length,
         casesBuilt,
         drops,
-        navigation: navigationCounts(sessions),
+        navigation: navigationCounts(sessions.flatMap((session) => session.navigation ?? [])),
         byModel: byModel(sessions),
         sessions,
         cases: caseRecords,
@@ -7517,9 +7604,10 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   // The file must load as the behaviour commands load it.
   loadCases(given.out, given.old);
   const usd = addSpend(priorSpend, run.gateway.spend()).usd;
-  const passed = navigationCounts(sessions);
+  const counts = navigationCounts(sessions.flatMap((session) => session.navigation ?? []));
+  const lines = counts.lines.length;
   const navigation = run.dropNavigation
-    ? `, ${passed.steps} navigation steps and ${passed.lines} navigation lines passed over (--drop-navigation)`
+    ? `, ${counts.dropped} step${counts.dropped === 1 ? "" : "s"} dropped for ${lines} navigation line${lines === 1 ? "" : "s"} (${counts.withReplacement} with a replacement case, ${counts.withoutReplacement} without) (--drop-navigation)`
     : "";
   io.out(
     `build-cases: ${casesBuilt} cases of ${sessions.length} sessions tried${navigation}, $${usd.toFixed(4)} of readers at list price, peak memory ${mib(peak.bytes)} MiB; written to ${given.out} and ${summaryFile}\n`

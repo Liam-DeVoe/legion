@@ -844,14 +844,21 @@ const X_LINE =
 /** How F1's read of references/x.md (its message 3) shows in a reader's transcript. */
 const X_READ = '[tool call: read] {"path":"skill://alpha/references/x.md"';
 
+/** The sessions whose first proposal is the read of references/x.md under NAVIGATION_LINE. */
+const NAV_READS = ["nav-step", "nav-skill-md", "nav-nothing"];
+
 /** The proposal of the stand-in case reader for the session named in the transcript: the step is
- *  the message of the window that calls the `task` tool (F1's message 7), and a window that holds
- *  none gives no step. nav-line's step names NAVIGATION_LINE; nav-step's names X_LINE, and where
- *  the window holds no such call, its step is the read of references/x.md with NAVIGATION_LINE. */
+ *  the message of the window that calls the `task` tool (F1's message 7) under LINE, and a window
+ *  that holds none gives no step. But: nav-line's step is under NAVIGATION_LINE; ref-read's step
+ *  is the read of references/x.md (F1's message 3, X_READ) under LINE; and NAV_READS's step, where
+ *  the window offers SKILL.md's lines, is that read under NAVIGATION_LINE, and where it does not,
+ *  nav-step's is the task call under X_LINE, nav-skill-md's the task call under LINE, and
+ *  nav-nothing gives no step. */
 function caseAnswer(name: string, transcript: string): unknown {
   const criterion = CRITERION;
   const messages = transcript.split('<message index="');
   const step = messages.find((message) => message.includes("[tool call: task]"))?.split('"')[0];
+  const read = messages.find((message) => message.includes(X_READ))?.split('"')[0];
   const proposal = (messageIndex: string, line: { file: string; text: string }) => ({
     step: { messageIndex: Number(messageIndex), what: "calls a tool" },
     line,
@@ -861,17 +868,21 @@ function caseAnswer(name: string, transcript: string): unknown {
     // the messages before the read.
     restatements: name === "restated" ? [{ messageIndex: 0, quote: RESTATED }] : [],
   });
-  if (name === "nav-step" && step === undefined) {
-    const read = messages.find((message) => message.includes(X_READ))?.split('"')[0] ?? "";
+  if (NAV_READS.includes(name) && read !== undefined && transcript.includes(SKILL_MD_OFFERED)) {
     return proposal(read, { file: "SKILL.md", text: NAVIGATION_LINE });
   }
-  if (name === "no-step" || step === undefined)
+  if (name === "ref-read" && read !== undefined)
+    return proposal(read, { file: "SKILL.md", text: LINE });
+  if (name === "no-step" || name === "nav-nothing" || step === undefined)
     return { step: null, reason: "No step of the transcript is decided by the skill." };
   if (name === "nav-step") return proposal(step, { file: "references/x.md", text: X_LINE });
   if (name === "nav-line") return proposal(step, { file: "SKILL.md", text: NAVIGATION_LINE });
   const text = name === "not-in-base" ? "2. Write each step's result on two lines." : LINE;
   return proposal(step, { file: "SKILL.md", text });
 }
+
+/** How a case request shows that it offers SKILL.md's lines. */
+const SKILL_MD_OFFERED = '<file path="SKILL.md">';
 
 /** The tool call of the stand-in reader's violating step. */
 const VIOLATING_CALL = { name: "read", arguments: { path: "skill://beta" } };
@@ -1004,7 +1015,7 @@ const WRITTEN_TASK = {
 /** The stand-in written-case reader's tasks: one the build keeps; one whose task states the line
  *  in other words (RESTATED), which the stand-in restatement check finds; one whose task names
  *  the audit-breaks session, so the stand-in audit says its following step breaks the line; one
- *  whose line is NAVIGATION_LINE; and one whose following step reads references/x.md. */
+ *  whose line is NAVIGATION_LINE; and one whose following step reads references/x.md under LINE. */
 const WRITTEN_TASKS = [
   WRITTEN_TASK,
   { ...WRITTEN_TASK, task: `Write the alpha report of the fixture project. ${RESTATED}` },
@@ -4163,10 +4174,11 @@ describe("build-cases --written", () => {
   });
 });
 
-// Catches: a written task whose line only sends the agent to a file of the skill, or whose
-// following step reads one, kept as a case under --drop-navigation, which the arm with no skill
-// fails by construction.
-test("build-cases --written --drop-navigation drops a task whose line the navigation reader calls navigation, and one whose following step reads a file of the skill, as written-navigation", async () => {
+// Catches: a written task whose line only sends the agent to a file of the skill kept as a case
+// under --drop-navigation, which the arm with no skill fails by construction; a task dropped only
+// because its following step reads a file of the skill; and a navigation line left out of the
+// summary.
+test("build-cases --written --drop-navigation drops a task whose line the navigation reader calls navigation as written-navigation, lists that line in the summary, and keeps a task whose following step reads a file of the skill under a line that is not one", async () => {
   const out = path.join(scratch, "written-navigation", "cases.jsonl");
   const context = `store_a:${fileHash(sessionPath("good"))}`;
   const args = writtenArgs(out, "--context-session", context, "--drop-navigation");
@@ -4175,26 +4187,38 @@ test("build-cases --written --drop-navigation drops a task whose line the naviga
   const from = recorder.requests.length;
   expect(await main(args, io(printed))).toBe(EXIT.ok);
   const requests = recorder.requests.slice(from);
-  const summary = summaryOf<WrittenSummary & { inputs: { dropNavigation: boolean } }>(out);
+  const summary = summaryOf<
+    WrittenSummary & { inputs: { dropNavigation: boolean }; navigation: NavigationCounts }
+  >(out);
   expect(summary.inputs.dropNavigation).toBe(true);
+  const id = `skills-1-${pathHash(sessionPath("good")).slice(0, 12)}`;
   expect(summary.tasks.map((each) => [each.task, each.outcome, each.reason ?? null])).toEqual([
-    [1, `case skills-1-${pathHash(sessionPath("good")).slice(0, 12)}-w1`, null],
+    [1, `case ${id}-w1`, null],
     [2, "dropped", "written-restates"],
     [3, "dropped", "written-not-followed"],
     [4, "dropped", "written-navigation"],
-    [5, "dropped", "written-navigation"],
+    [5, `case ${id}-w5`, null],
   ]);
   expect(summary.drops).toEqual({
     "written-restates": 1,
     "written-not-followed": 1,
-    "written-navigation": 2,
+    "written-navigation": 1,
   });
   expect(summary.tasks[3]?.detail).toContain(NAVIGATION_REASON);
-  expect(summary.tasks[4]?.detail).toContain("its following step reads references/x.md");
-  // The navigation reader read the line of each task whose following step reads no file of the
-  // skill, before its restatement check.
-  expect(usersOf(requests, NAVIGATION_PROMPT)).toHaveLength(4);
-  expect(usersOf(requests, RESTATE_PROMPT)).toHaveLength(3);
+  expect(summary.navigation).toEqual({
+    lines: [{ file: "SKILL.md", number: 8, text: NAVIGATION_LINE, dropped: 1 }],
+    dropped: 1,
+    withReplacement: 0,
+    withoutReplacement: 1,
+  });
+  // The kept task's following step reads references/x.md.
+  const kept = loadCases(out, old).find((each) => each.id === `${id}-w5`);
+  expect(kept?.realStep.content).toContainEqual(
+    expect.objectContaining({ name: "read", arguments: { path: "skill://alpha/references/x.md" } })
+  );
+  // The navigation reader read every task's line, before its restatement check.
+  expect(usersOf(requests, NAVIGATION_PROMPT)).toHaveLength(5);
+  expect(usersOf(requests, RESTATE_PROMPT)).toHaveLength(4);
 }, 60_000);
 
 test("the context session is the first served reading session whose rebuilt profile lists the skill", async () => {
@@ -4581,20 +4605,32 @@ describe("build-cases goes on from where a run stopped", () => {
   });
 });
 
-// build-cases --drop-navigation: a step that reads a file of the skill, or whose line only sends
-// the agent to one, is no case, and the case reader goes on after it. Catches: a reference read
-// kept as a case (the arm with no skill fails it by construction), a later step that a line of the
-// reference governs never proposed for want of that file's lines, a count left out of the
-// summary, and a build without the flag that does not build as before.
+// build-cases --drop-navigation: a step under a line that only sends the agent to a file of the
+// skill is no case, and the case reader goes on after it, offered only the lines of the files
+// that step read: its first proposal there is the case, or the session gives none. Catches: a
+// navigation line kept as a case's line (the arm with no skill fails its step by construction), a
+// step dropped only because it reads a file of the skill, a replacement taken from a file the step
+// did not read, a navigation line left out of the summary, and a build without the flag that does
+// not build as before.
+
+/** The summary's `navigation`, of either form of build-cases. */
+interface NavigationCounts {
+  lines: { file: string; number: number; text: string; dropped: number }[];
+  dropped: number;
+  withReplacement: number;
+  withoutReplacement: number;
+}
 
 /** A build-cases summary as the navigation tests read it. */
 interface NavigationSummary {
   inputs: { dropNavigation: boolean };
-  navigation: { steps: number; lines: number };
+  navigation: NavigationCounts;
+  drops: Partial<Record<DropReason, number>>;
   sessions: {
     hash: string;
     outcome: string;
     reason?: DropReason;
+    detail?: string;
     windows?: number;
     navigation?: unknown[];
   }[];
@@ -4602,18 +4638,18 @@ interface NavigationSummary {
 }
 
 describe("build-cases --drop-navigation", () => {
-  const flagged = path.join(scratch, "navigation", "flagged", "cases.jsonl");
+  const replaced = path.join(scratch, "navigation", "replaced", "cases.jsonl");
+  const unreplaced = path.join(scratch, "navigation", "unreplaced", "cases.jsonl");
   const plain = path.join(scratch, "navigation", "plain", "cases.jsonl");
-  const flaggedPrinted: string[] = [];
-  const plainPrinted: string[] = [];
-  const codes: number[] = [];
-  let flaggedRequests: RecordedRequest[] = [];
-  let plainRequests: RecordedRequest[] = [];
+  const printed: Record<string, string[]> = { replaced: [], unreplaced: [], plain: [] };
+  const requests: Record<string, RecordedRequest[]> = {};
+  const codes: Record<string, number> = {};
   let store = "";
-  let sessions = "";
-  /** The arguments of a build of nav-step and nav-line into `out`, and `extra`. */
-  const navArgs = (out: string, ...extra: string[]) =>
-    buildArgs(sessions, out, "3", "--concurrency", "1", ...extra).map((arg) =>
+  /** The sessions file of each build. */
+  const sessions: Record<string, string> = {};
+  /** The arguments of a build of the sessions of `build` into `out`, and `extra`. */
+  const navArgs = (build: string, out: string, ...extra: string[]) =>
+    buildArgs(sessions[build] ?? "", out, "3", "--concurrency", "1", ...extra).map((arg) =>
       arg === config ? store : arg
     );
   const recordOf = (out: string, name: string) =>
@@ -4622,107 +4658,194 @@ describe("build-cases --drop-navigation", () => {
     );
   const caseOf = (out: string, name: string) =>
     loadCases(out, old).find((each) => each.source.pathHash === pathHash(sessionPath(name)));
+  /** A record's entry for the step at `messageIndex` passed over under NAVIGATION_LINE, with the
+   *  id of the case that replaced it, or null. */
+  const passedOver = (messageIndex: number, replacement: string | null) => ({
+    messageIndex,
+    file: "SKILL.md",
+    number: 8,
+    text: NAVIGATION_LINE,
+    reason: NAVIGATION_REASON,
+    replacement,
+  });
+  const NAMES = ["nav-step", "ref-read", "nav-skill-md", "nav-nothing", "nav-line"];
   beforeAll(async () => {
-    // nav-step is F1 with NAV_FILLERS fillers after its message 6; nav-line is F1.
+    // nav-step is F1 with NAV_FILLERS fillers after its message 6; each other is F1.
     store = changedStore("navigation-store", (files) => {
       const sessionFiles = files.store_a ?? {};
+      for (const name of NAMES) sessionFiles[sessionPath(name)] = sessionText(name);
       sessionFiles[sessionPath("nav-step")] = sessionText("nav-step", (lines) =>
         addFillers(lines, NAV_FILLERS, (n) => `Still reading (${n}).`)
       );
-      sessionFiles[sessionPath("nav-line")] = sessionText("nav-line");
     });
-    sessions = sessionsFile("navigation.jsonl", ["nav-step", "nav-line"]);
-    let from = recorder.requests.length;
-    codes.push(await main(navArgs(flagged, "--drop-navigation"), io(flaggedPrinted)));
-    flaggedRequests = recorder.requests.slice(from);
-    from = recorder.requests.length;
-    codes.push(await main(navArgs(plain), io(plainPrinted)));
-    plainRequests = recorder.requests.slice(from);
+    sessions.replaced = sessionsFile("navigation-replaced.jsonl", ["nav-step", "ref-read"]);
+    sessions.unreplaced = sessionsFile("navigation-unreplaced.jsonl", NAMES.slice(2));
+    sessions.plain = sessionsFile("navigation-plain.jsonl", NAMES);
+    for (const [build, out, extra] of [
+      ["replaced", replaced, ["--drop-navigation"]],
+      ["unreplaced", unreplaced, ["--drop-navigation"]],
+      ["plain", plain, []],
+    ] as const) {
+      const from = recorder.requests.length;
+      codes[build] = await main(navArgs(build, out, ...extra), io(printed[build] ?? []));
+      requests[build] = recorder.requests.slice(from);
+    }
   }, 120_000);
 
-  test("with --drop-navigation, a step that reads a file of the skill is passed over and counted, and the case reader goes on from the window after it, offered that file's lines: the later step a line of that file governs is the case", () => {
-    expect(codes[0]).toBe(EXIT.ok);
-    const c = caseOf(flagged, "nav-step");
+  test("with --drop-navigation, a step under a line the navigation reader calls navigation gives no case, and the case reader goes on from the window after it offered only the lines of the file that step read: its first proposal there, a later step under a line of references/x.md, is the case, and the summary names the line and counts one drop with a replacement", () => {
+    expect(codes.replaced).toBe(EXIT.ok);
+    const c = caseOf(replaced, "nav-step");
     expect(c?.realStep).toEqual(f1Messages()[7] as SessionMessage);
     expect([c?.baseFile, c?.line]).toEqual([
       "references/x.md",
       { text: X_LINE, lineNumber: 3, lineCount: 3 },
     ]);
-    expect(recordOf(flagged, "nav-step")).toMatchObject({
+    expect(recordOf(replaced, "nav-step")).toMatchObject({
       outcome: `case ${c?.id}`,
       windows: 2,
-      navigation: [{ messageIndex: 3, kind: "step", file: "references/x.md" }],
+      navigation: [passedOver(3, c?.id ?? "")],
     });
-    // The first window (messages 1 to 40) ends before the task call, message 42; the second starts
-    // after the read of references/x.md, message 3. Both offer that file's lines.
-    const asked = usersOf(flaggedRequests, CASE_PROMPT).filter((user) =>
+    // The first window (messages 1 to 40) offers both files and ends before the task call, message
+    // 42; the second starts after the read of references/x.md, message 3, and offers that file
+    // alone.
+    const asked = usersOf(requests.replaced ?? [], CASE_PROMPT).filter((user) =>
       user.includes("(case nav-step)")
     );
     const offered = `<file path="references/x.md">\n1: # Alpha reference x\n3: ${X_LINE}\n</file>`;
     const shows = (user: string, index: number) => user.includes(`<message index="${index}"`);
     expect(
-      asked.map((user) => [user.includes(offered), ...[40, 41, 43, 44].map((n) => shows(user, n))])
+      asked.map((user) => [
+        user.includes(SKILL_MD_OFFERED),
+        user.includes(offered),
+        ...[40, 41, 43, 44].map((n) => shows(user, n)),
+      ])
     ).toEqual([
-      [true, true, false, false, false],
-      [true, true, true, true, false],
+      [true, true, true, false, false, false],
+      [false, true, true, true, true, false],
     ]);
-    const summary = summaryOf<NavigationSummary>(flagged);
-    expect(summary.inputs.dropNavigation).toBe(true);
-    expect(summary.navigation).toEqual({ steps: 1, lines: 1 });
-    expect(flaggedPrinted.at(-1)).toContain(
-      "1 navigation steps and 1 navigation lines passed over (--drop-navigation)"
-    );
-  });
-
-  test("with --drop-navigation, a proposal the navigation reader calls navigation is passed over and counted as a line, and a session whose windows run out after it is dropped no-step, keeping what it passed over", () => {
-    expect(recordOf(flagged, "nav-line")).toMatchObject({
-      outcome: "dropped",
-      reason: "no-step",
-      windows: 2,
-      navigation: [{ messageIndex: 7, kind: "line", file: "SKILL.md", reason: NAVIGATION_REASON }],
-    });
-    // The navigation reader read each proposal whose step reads no file of the skill, once: its
-    // line, the line's file and the skill's files.
+    // The navigation reader read nav-step's line, its replacement's and ref-read's: each line, the
+    // line's file and the skill's files.
     const files = "<files>\nSKILL.md\nreferences/x.md\n</files>";
-    expect(usersOf(flaggedRequests, NAVIGATION_PROMPT).sort()).toEqual(
+    expect(usersOf(requests.replaced ?? [], NAVIGATION_PROMPT).sort()).toEqual(
       [
         `${files}\n\n<file>\nSKILL.md\n</file>\n\n<line>\n${NAVIGATION_LINE}\n</line>`,
         `${files}\n\n<file>\nreferences/x.md\n</file>\n\n<line>\n${X_LINE}\n</line>`,
+        `${files}\n\n<file>\nSKILL.md\n</file>\n\n<line>\n${LINE}\n</line>`,
       ].sort()
     );
-    // Its spend is in readerSpend with the other readers'.
-    const calls = Object.values(summaryOf<NavigationSummary>(flagged).readerSpend.models).reduce(
+    const summary = summaryOf<NavigationSummary>(replaced);
+    expect(summary.inputs.dropNavigation).toBe(true);
+    expect(summary.navigation).toEqual({
+      lines: [{ file: "SKILL.md", number: 8, text: NAVIGATION_LINE, dropped: 1 }],
+      dropped: 1,
+      withReplacement: 1,
+      withoutReplacement: 0,
+    });
+    expect(printed.replaced?.at(-1)).toContain(
+      "1 step dropped for 1 navigation line (1 with a replacement case, 0 without) (--drop-navigation)"
+    );
+    // The navigation reader's spend is in readerSpend with the other readers'.
+    const calls = Object.values(summary.readerSpend.models).reduce(
       (sum, each) => sum + each.calls,
       0
     );
-    expect(calls).toBe(flaggedRequests.length);
+    expect(calls).toBe(requests.replaced?.length);
   });
 
-  test("without --drop-navigation, the same sessions give today's cases, the step that reads references/x.md among them; no navigation reader is called, and nothing is counted", () => {
-    expect(codes[1]).toBe(EXIT.ok);
+  test("with --drop-navigation, a step that reads references/x.md under a line that is not a navigation line is the case, and nothing is passed over", () => {
+    const c = caseOf(replaced, "ref-read");
+    expect(c?.realStep).toEqual(f1Messages()[3] as SessionMessage);
+    expect([c?.baseFile, c?.line.text]).toEqual(["SKILL.md", LINE]);
+    const record = recordOf(replaced, "ref-read");
+    expect(record).toMatchObject({ outcome: `case ${c?.id}`, windows: 1 });
+    expect(record?.navigation).toBeUndefined();
+  });
+
+  test("with --drop-navigation, a navigation drop whose later windows propose only a SKILL.md line, or nothing, or whose step read no file of the skill, gives no case: the session is dropped navigation-no-replacement, naming the line, and the summary counts each drop without a replacement", () => {
+    expect(codes.unreplaced).toBe(EXIT.ok);
+    expect(loadCases(unreplaced, old)).toEqual([]);
+    const line = `SKILL.md:8 ${JSON.stringify(NAVIGATION_LINE)}`;
+    // nav-skill-md's later window offers references/x.md alone, so the reader's proposal of a
+    // SKILL.md line there is refused; nav-nothing's later window proposes no step, and then the
+    // messages run out.
+    for (const [name, why] of [
+      ["nav-skill-md", "reader-failed: "],
+      ["nav-nothing", "the windows ran out (2 windows read, to message 11 of 12): No step"],
+    ] as const) {
+      const record = recordOf(unreplaced, name);
+      expect(record).toMatchObject({
+        outcome: "dropped",
+        reason: "navigation-no-replacement",
+        windows: 2,
+        navigation: [passedOver(3, null)],
+      });
+      expect(record?.detail).toContain(line);
+      expect(record?.detail).toContain(why);
+      const asked = usersOf(requests.unreplaced ?? [], CASE_PROMPT).filter((user) =>
+        user.includes(`(case ${name})`)
+      );
+      expect(asked[0]).toContain(SKILL_MD_OFFERED);
+      expect(asked.slice(1).some((user) => user.includes(SKILL_MD_OFFERED))).toBe(false);
+    }
+    // nav-line's step, the task call, reads no file of the skill, so nothing can replace it.
+    const lineRecord = recordOf(unreplaced, "nav-line");
+    expect(lineRecord).toMatchObject({
+      outcome: "dropped",
+      reason: "navigation-no-replacement",
+      windows: 1,
+      navigation: [passedOver(7, null)],
+    });
+    expect(lineRecord?.detail).toContain(line);
+    expect(lineRecord?.detail).toContain("read no file of the skill");
+    const summary = summaryOf<NavigationSummary>(unreplaced);
+    expect(summary.drops).toEqual({ "navigation-no-replacement": 3 });
+    expect(summary.navigation).toEqual({
+      lines: [{ file: "SKILL.md", number: 8, text: NAVIGATION_LINE, dropped: 3 }],
+      dropped: 3,
+      withReplacement: 0,
+      withoutReplacement: 3,
+    });
+    expect(printed.unreplaced?.at(-1)).toContain(
+      "3 steps dropped for 1 navigation line (0 with a replacement case, 3 without) (--drop-navigation)"
+    );
+  });
+
+  test("without --drop-navigation, the same sessions give today's cases, navigation lines and reads of references/x.md among them; no navigation reader is called, and nothing is counted", () => {
+    expect(codes.plain).toBe(EXIT.ok);
     const messages = f1Messages();
-    const step = caseOf(plain, "nav-step");
-    expect(step?.realStep).toEqual(messages[3] as SessionMessage);
-    expect([step?.baseFile, step?.line.text]).toEqual(["SKILL.md", NAVIGATION_LINE]);
-    const line = caseOf(plain, "nav-line");
-    expect(line?.realStep).toEqual(messages[7] as SessionMessage);
-    expect(line?.line.text).toBe(NAVIGATION_LINE);
-    expect(usersOf(plainRequests, NAVIGATION_PROMPT)).toEqual([]);
+    expect(
+      NAMES.map((name) => {
+        const c = caseOf(plain, name);
+        return [name, c?.realStep, c?.baseFile, c?.line.text];
+      })
+    ).toEqual([
+      ["nav-step", messages[3], "SKILL.md", NAVIGATION_LINE],
+      ["ref-read", messages[3], "SKILL.md", LINE],
+      ["nav-skill-md", messages[3], "SKILL.md", NAVIGATION_LINE],
+      ["nav-nothing", messages[3], "SKILL.md", NAVIGATION_LINE],
+      ["nav-line", messages[7], "SKILL.md", NAVIGATION_LINE],
+    ]);
+    expect(usersOf(requests.plain ?? [], NAVIGATION_PROMPT)).toEqual([]);
     const summary = summaryOf<NavigationSummary>(plain);
     expect(summary.inputs.dropNavigation).toBe(false);
-    expect(summary.navigation).toEqual({ steps: 0, lines: 0 });
-    expect(summary.sessions.map((each) => each.navigation)).toEqual([undefined, undefined]);
-    expect(plainPrinted.at(-1)).not.toContain("passed over");
+    expect(summary.navigation).toEqual({
+      lines: [],
+      dropped: 0,
+      withReplacement: 0,
+      withoutReplacement: 0,
+    });
+    expect(summary.sessions.map((each) => each.navigation)).toEqual(NAMES.map(() => undefined));
+    expect(printed.plain?.at(-1)).not.toContain("navigation line");
   });
 
   test("a run that goes on with another --drop-navigation value is refused, naming it, and leaves the files as they were", async () => {
-    const before = readFileSync(`${flagged}.summary.json`, "utf8");
+    const before = readFileSync(`${replaced}.summary.json`, "utf8");
     const off: string[] = [];
-    expect(await main(navArgs(flagged), io(off))).toBe(EXIT.refused);
+    expect(await main(navArgs("replaced", replaced), io(off))).toBe(EXIT.refused);
     expect(off.join("\n")).toContain("--drop-navigation was given, now not given");
-    expect(readFileSync(`${flagged}.summary.json`, "utf8")).toBe(before);
+    expect(readFileSync(`${replaced}.summary.json`, "utf8")).toBe(before);
     const on: string[] = [];
-    expect(await main(navArgs(plain, "--drop-navigation"), io(on))).toBe(EXIT.refused);
+    expect(await main(navArgs("plain", plain, "--drop-navigation"), io(on))).toBe(EXIT.refused);
     expect(on.join("\n")).toContain("--drop-navigation was not given, now given");
   });
 });

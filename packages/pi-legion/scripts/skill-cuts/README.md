@@ -50,7 +50,7 @@ bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
   [--after-case <command>] [--request-log <file>] \
   [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] \
   [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] \
-  [--reading-models <file>] [--limits <file>] \
+  [--reading-models <file>] [--limits <file>] [--build-summary <file>]... \
   [--again <case id>]...    (--again: confirm only, not with --case)
 ```
 
@@ -171,8 +171,17 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   over the cases; one case has none, and a kind with no screened case has no mean); and how many
   screened cases tie (old and the compared arm pass alike), floor (0 of 10 in both), ceil (10 of
   10 in both) and reverse (the compared arm passes more than old), a floor or a ceiling being a
-  tie too. It names the judge: the SHA-256 of the bytes of `prompts/judge.md` the process read
-  (once, the text every judgement sends) and the settings its header pins, and how many stages of
+  tie too. With `--build-summary <file>` (report only, repeatable: the summaries of
+  `build-cases --drop-navigation`, of the session form and of the `--written` form), it prints
+  beside the verdict, as a description that changes no rule, `navigation lines of the skill that
+  no case tests (from the build summaries): <file>:<number> "<text>"; …`: each navigation line
+  of those summaries' `navigation.lines` (each file and number once) whose file and text, trimmed,
+  no case of `--cases` has as its line (`baseFile` and `line.text`), or `none`; without the flag
+  it prints no such line. A file that is not a build-cases summary naming its navigation lines (one
+  of another command, or one written before build-cases named them) is refused (exit 2), as is
+  the flag on a stage command. It names the judge: the SHA-256 of the bytes of `prompts/judge.md`
+  the process read (once, the text every judgement sends) and the settings its header pins, and how
+  many stages of
   the results record that judge, another one, or none. Each stage records
   the judge it was made with (`judge`) before its first judgement; a results file made before
   that records none and still loads. A skill whose planted-loss control is no loss gets the reason
@@ -1394,34 +1403,48 @@ are there at once. When the build ends, each session still open is stopped befor
 reader call and recorded with what it spent, as `not-needed` (or, at the budget or the memory
 stop, as stopped by it).
 
-`--drop-navigation` (both forms above; without it every build is as before) gives no case of a
-step that only reads a file of the skill, or of a line that only sends the agent to one: the arm
-with no skill does not have that file, so it fails such a step whatever the skill's text teaches.
-In the session form, a step the `case` reader proposes whose `read` calls read a file of `--old`
-(SKILL.md among them) is passed over as a navigation step. A read is told by the rule the arms
-and `behaviour report` use (`cases.ts`'s `stepSkillFiles`): a read of `skill://<skill>/<path>`, or
-of a path that ends with `<installed dir>/<path>`, the installed directory being the one the
-session's first read before the step shows. Each other proposal goes to the `navigation` reader
-(`prompts/navigation.md`, the audit's model and settings), which reads the line, its file's path
-and the path of each file of `--old`, and answers `{"navigation": true|false, "reason": "..."}`:
-`true` when the only instruction of the line that a step could show is to read or open a file of
-the skill. Such a line is passed over as a navigation line. After a navigation step or line the
-`case` reader goes on from the window that starts after that step (after the window, for a step
-in the messages before it), within the 6 windows; a step it proposes again is passed over again
-and counted once. It is offered the lines of every read its windows can reach, so the file a
-navigation step read is offered in each later window, and a later step that a line of that file
-governs gives a case whose `baseFile` is that file. Each session record names the steps it
-passed over (`navigation: [{messageIndex, kind: "step"|"line", file, reason}]`, `reason` for a
-line), the summary counts them (`navigation: {steps, lines}`), and the last line printed says
-`<n> navigation steps and <n> navigation lines passed over (--drop-navigation)`. A session whose
-windows run out after it passed over steps is dropped as one with no step is (`no-step`, or
-`read-before-compaction`), and its record keeps what it passed over; a session whose navigation
-reader fails is dropped (`navigation-failed`). In the `--written` form, a task whose following
-step reads a file of the skill, or whose line the `navigation` reader calls navigation, is dropped
-(`written-navigation`), before its restatement check. The navigation reader's spend is counted in
-`readerSpend` with the other readers'. Both summaries record the flag in their inputs
-(`dropNavigation`), and a run that goes on from one of the other value is refused (exit 2); a
-summary written before the flag goes on as one without it.
+`--drop-navigation` (both forms above; without it every build is as before, as a build for a test
+of a skill's old text against its new text needs) gives no case whose line is a navigation line:
+a line whose only instruction that the step can show is to read or open a file of the skill. The
+arm with no skill does not have that file, so it fails such a step whatever the skill's text
+teaches. The `navigation` reader (`prompts/navigation.md`, the audit's model and settings) reads
+each line the `case` reader proposes, its file's path and the path of each file of `--old`, and
+answers `{"navigation": true|false, "reason": "..."}`. This is the only rule that drops a step for
+a read: a step that reads a file of the skill under a line that is not a navigation line stays a
+case (a step under "Read `references/scope.md` and resolve the reviewed diff" is one). In the
+session form, a step under a navigation line gives no case, and the files it read are the files of
+its replacement: those its `read` calls read by the rule the arms and `behaviour report` use
+(`cases.ts`'s `stepSkillFiles`: a read of `skill://<skill>/<path>`, or of a path that ends with
+`<installed dir>/<path>`, the installed directory being the one the session's first read before
+the step shows). The `case` reader goes on from the window that starts after that step (after the
+window, for a step in the messages before it), within the 6 windows, offered only those files'
+lines (the lines the session's own reads of them held, as the reader's offered lines always are).
+Its first proposal there is the replacement case, with that file's line as its line: it must be a
+later step, and it goes through every check any proposal goes through, the navigation reader
+first, then the line's checks, the restatement check and the audit (and, later, the judge
+controls). Where the step read no file of the skill, the session's reads of those files hold no
+line of the base text, the windows run out, the replacement's own line is a navigation line, or
+any check drops the replacement, the session gives no case: it is dropped
+`navigation-no-replacement`, its detail naming the navigation line and why. A session gives at
+most one case, as without the flag. A session whose navigation reader fails before any step is
+dropped for a navigation line is dropped `navigation-failed`. Each
+session record names the steps dropped for a navigation line (`navigation: [{messageIndex, file,
+number, text, reason, replacement}]`: the line's file, its number there, found as a case's line
+number is, its text, the reader's reason, and the id of the case its replacement gave, or `null`).
+The summary's `navigation` is `{lines: [{file, number, text, dropped}], dropped, withReplacement,
+withoutReplacement}`: each navigation line, by file and then number, with the steps dropped for it,
+and how many dropped steps got a replacement case and how many did not; without the flag its
+lines are none and its counts 0. With the flag, the last line printed adds `<n> steps dropped for
+<n> navigation lines (<n> with a replacement case, <n> without) (--drop-navigation)`. In the
+`--written` form, a task whose line the `navigation` reader calls navigation is dropped
+(`written-navigation`), before its restatement check, with no replacement; a task whose following
+step reads a file of the skill under another line is not dropped for that read; and its summary's
+`navigation` lists those lines in the same form. The
+navigation reader's spend is counted in `readerSpend` with the other readers'. Both summaries
+record the flag in their inputs (`dropNavigation`), and a run that goes on from one of the other
+value is refused (exit 2); a summary written before the flag goes on as one without it.
+`behaviour report --build-summary` names the navigation lines of these summaries that no case
+tests.
 
 `build-cases --written <n>` (the second form above) writes up to n written cases of one skill, for
 a skill whose session cases give fewer than 6 informative cases in the screen.
