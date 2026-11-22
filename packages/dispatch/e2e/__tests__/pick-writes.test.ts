@@ -3,8 +3,9 @@ import * as timers from "node:timers/promises";
 
 import type { Page, Route } from "@playwright/test";
 
-// The picker rows read each save's hold with `Date.now()` and assert it lasted at least
-// `PICK_HOLD_MS`, and `pick-writes.ts` holds a save with `node:timers/promises`' `setTimeout`.
+// The picker rows read each save's hold window with `Date.now()` (`expectReadWhileHeld`, and
+// project.e2e.ts's held reads), which counts on the hold lasting at least `PICK_HOLD_MS` by that
+// clock, and `pick-writes.ts` holds a save with `node:timers/promises`' `setTimeout`.
 // Node's timer can end up to 1 ms early: a probe on the session image
 // (dispatch://INFRA-983/comment/74b7abbc-95c8-4815-99b6-8b4d37d273c9) measured Node 24's
 // `sleep(3000)` ending 2,999 ms later by `Date.now()` in 13 of 200 runs, and the shortest lasted
