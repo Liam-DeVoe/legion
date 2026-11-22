@@ -7,6 +7,7 @@ import {
   createIssueArtifact,
   createProject,
   editArtifact,
+  fixedKey,
   getArtifact,
   getArtifactVersion,
   getAsk,
@@ -599,6 +600,34 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       `the route's marker is not between "${CONTROL_LABELS.not_requested}" and the labels`
     ).toEqual(["the approval control", "the route's marker", "the labels"]);
   });
+});
+
+// Red test of the INFRA-983 test round at 54a60643. The row above draws its project's key with
+// `rowKey("HDR")`: "HDR" and five characters of `BCDFGHJKLMNPQRSTVWXZ0123456789`
+// (e2e/row-names.ts). Its 390 px limit was read on the literal key "HDR" (`PHONE_TITLE`). Under a
+// wide suffix the crumbs leave no room on row one for the navigation's control, which takes a
+// line of its own, and the header is 265 px against 250: nightly 45024923413's first attempt of
+// the row above failed so under HDRVWQDM, and a builds Job at 54a60643 failed it under HDRWWWWW
+// and HDRMMMMM and passed it under HDR11111 and HDRJJJJJ. This row seeds the widest key that draw
+// can give. The fixed key is safe: no other row writes it, and every worker, and so every repeat
+// and every retry, starts on a database of its own, emptied (`workerDatabase`, e2e/test.ts).
+// SLOW(>=2s): one load of the issue at 390 px, with every part of the header read whole.
+test("the header holds its 390 px limit under the widest key the row's own key can be @phone", async ({
+  browser,
+}) => {
+  const widest = fixedKey("HDRWWWWW", 'the widest key rowKey("HDR") draws, read at 390 px');
+  await phase(
+    browser,
+    () => seedHeader(widest),
+    async (page, seeded) => {
+      await patchIssue(seeded.key, { labels: [...TWENTY_LABELS], title: PHONE_TITLE });
+      await page.setViewportSize(viewportAt(IPHONE_13.width));
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectHeaderDrawn(page);
+      await expect(issueHeader(page)).toContainText(PHONE_TITLE);
+      await expectHeaderWithinItsLimit(page, IPHONE_13.width, false, TYPEFACE);
+    }
+  );
 });
 
 // Row (2): a gated root's approval entries stay in the header, and each reads the document its

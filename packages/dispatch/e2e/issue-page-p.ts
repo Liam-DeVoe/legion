@@ -10,6 +10,7 @@ import {
   createIssueArtifact,
   createProject,
   patchIssue,
+  type RowKey,
   userHeaders,
 } from "./api";
 import { filterRow } from "./issue-page";
@@ -127,10 +128,10 @@ export interface HeaderSeed {
  * whose route reaches nobody, so the parent draws the header's one route marker; the issue under
  * it in progress, at P1, assigned to alice, with a spec and a Verification document, three
  * children (one done, one in progress, one to do) and two questions an agent asked, which wait
- * on alice. No approval request is open: a row that needs one asks for it.
+ * on alice. No approval request is open: a row that needs one asks for it. The project is the
+ * row's own (`rowKey("HDR")`) unless a row names one.
  */
-export async function seedHeader(): Promise<HeaderSeed> {
-  const project = rowKey("HDR");
+export async function seedHeader(project: RowKey = rowKey("HDR")): Promise<HeaderSeed> {
   await createProject({ key: project, name: "Header" });
   const parent = await createIssue({
     force: true,
