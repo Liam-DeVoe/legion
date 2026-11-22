@@ -54,11 +54,12 @@ type roleForReader struct {
 // architect's completion there, as its reader took the issue's phase while RoleFor named no role
 // (phase.Of, and the completion route's answerCompletion, which reads the phase LeftBy answers
 // where the role does not work the issue's), or reads only the places of a plan's steps, which
-// admitted never is (reportsBefore, Walk.RoleAt, and Engine.restartTask, which reads its task's
-// first step: a planner's, an implementer's or a role of the deployment's, as plan.Supported takes
-// the acceptance only after an implementer), or reads the retro's own phase (retroHeldNotice and
-// Engine.startHeldRetro, which run only for a parent held before its retro for the issues beneath
-// it), or answers RoleFor's role for every phase but step to the readers this list holds
+// admitted never is (reportsBefore, Walk.RoleAt, completionOf, which reads the role of a place
+// only while the task runs there and so never at admitted, whose task is at no act, and
+// Engine.restartTask, which reads its task's first step, a place no plan runs as admitted), or
+// reads the retro's own phase (retroHeldNotice and Engine.startHeldRetro, which run only for a
+// parent held before its retro for the issues beneath it), or answers RoleFor's role for every
+// phase but step and its place's, which admitted never is, to the readers this list holds
 // (record.Issue.RoleAt), or reads the phase a held issue's retry restores only past the refusal of
 // a plan's own hold, which is the one hold an issue at admitted takes (Engine.retryOrEscalate, for
 // the retry of a named claim), or never reads admitted at all because a check before it refuses
@@ -109,10 +110,15 @@ var roleForReaders = map[roleForSite]roleForReader{
 	// The requester's role, twice, and the roles of the two earlier places that run as step.
 	{file: "internal/workflow/engine.go", fn: "backwardRefusal"}: {calls: 4, tests: []string{
 		"TestArchitectUnchangedByABackwardMoveFromAdmitted", "TestABackwardMoveToStepNamesWhichStep", "TestADeploymentRoleMovesItsTaskBack"}},
+	// The role that works the place a running task stands at, which a current completion names.
+	{file: "internal/workflow/engine.go", fn: "completionOf"}: {calls: 1, tests: []string{
+		"TestArchitectUnchangedByAWorkersCompletionAtAdmitted", "TestTheRetroRunsAsTheRoleOfItsAgent",
+		"TestALateReportIsTakenAfterAnEventAndRefusedAfterAStop"}},
 	{file: "internal/workflow/gate.go", fn: "Engine.tellGateMoved"}: {calls: 1, tests: []string{
 		"TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole"}},
-	// The retro's role, the merge's, and the role a step's role runs as.
-	{file: "internal/workflow/line.go", fn: "Walk.RoleAt"}: {calls: 3, tests: []string{"TestADeploymentRoleOfAnyTypeStartsAndReports"}},
+	// The merge's role and the role a step's role runs as; the retro's is its agent's
+	// (plan.RetroAgent), which reads no RoleFor.
+	{file: "internal/workflow/line.go", fn: "Walk.RoleAt"}: {calls: 2, tests: []string{"TestADeploymentRoleOfAnyTypeStartsAndReports", "TestTheRetroRunsAsTheRoleOfItsAgent"}},
 	// The role whose step a move ends (Engine.transition, Engine.arrive, Engine.holdBeforeRetro and
 	// endOfTransition read it), read by the place on a task with plan rows and by the phase on an
 	// issue with none.

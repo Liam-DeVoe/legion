@@ -68,13 +68,26 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 // issueColumns reads an empty ancestry as NULL, so a record with none scans as a nil Ancestry, as
 // it was written. The four issues.memory_* columns are no part of it: what a unit was drawn is an
 // assignment row of its own (AssignmentsOf, AssignmentsFor), and nothing this release's daemon
-// runs reads the columns but the back-fill of 20261111045636_experiment_assignments. Its last
-// column is no column of issues: it is the role of the step the issue's task stands at, read from
-// the plan rows of the issue's generation (Issue.StepRole), "" where they hold none or the task
-// stands at no step. A run holds one task in this release, so the read finds one row at most.
+// runs reads the columns but the back-fill of 20261111045636_experiment_assignments. Its last two
+// columns are no columns of issues, each read from the plan rows of the issue's generation: the
+// role of the step the issue's task stands at (Issue.StepRole), "" where they hold none or the task
+// stands at no step; and the role of the claim that works the task's place (Issue.PlaceRole): at a
+// step, the architect where its key is owner and its role otherwise; at the retro, the same of the
+// task's last step of the type implementation, and the architect where it has none (the rule of
+// plan.RetroAgent, which workflow's Walk.PlaceRole reads and a test holds this to); "" otherwise. A
+// run holds one task in this release, so each read finds one row at most.
 const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, ` +
 	`coalesce((select s.role from plan_tasks t join plan_steps s on s.issue = t.issue and s.generation = t.generation and s.task = t.task and s.position = t.position ` +
-	`where t.issue = issues.key and t.generation = issues.generation and t.running_kind = 'step'), '')`
+	`where t.issue = issues.key and t.generation = issues.generation and t.running_kind = 'step'), ''), ` +
+	placeRoleColumn
+
+// placeRoleColumn is the subquery of Issue.PlaceRole over the alias issues (issueColumns).
+const placeRoleColumn = `coalesce((select case t.running_kind ` +
+	`when 'step' then (select case when s.agent_key = 'owner' then 'architect' else s.role end from plan_steps s ` +
+	`where s.issue = t.issue and s.generation = t.generation and s.task = t.task and s.position = t.position) ` +
+	`when 'retro' then coalesce((select case when s.agent_key = 'owner' then 'architect' else s.role end from plan_steps s ` +
+	`where s.issue = t.issue and s.generation = t.generation and s.task = t.task and s.type = 'implementation' order by s.position desc limit 1), 'architect') ` +
+	`end from plan_tasks t where t.issue = issues.key and t.generation = issues.generation), '')`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -504,7 +517,7 @@ func scanIssue(row scanner) (*Issue, error) {
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
-		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt, &issue.StepRole); err != nil {
+		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt, &issue.StepRole, &issue.PlaceRole); err != nil {
 		return nil, err
 	}
 	if declaredAt != nil {

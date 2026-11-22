@@ -291,6 +291,15 @@ type Issue struct {
 	// generation), "" where the run has no plan rows or its task stands at no step. It is read
 	// only: PutIssue writes nothing of it, and workflow's moveTask sets it on the issue it moves.
 	StepRole claim.Role
+	// PlaceRole is the role of the claim that works the place where the issue's one task stands,
+	// running or stopped (plan_tasks.running_kind step or retro): the architect where the agent
+	// there is the owner of the task (a step of the key owner, or the retro of a task whose last step
+	// of the type implementation is the owner's or that has none), the step's role at a step, and
+	// at the retro the role of the task's last step of the type implementation (plan.RetroAgent's
+	// role); "" with no plan rows, at the merge, and while no place runs. It is read with the issue
+	// from its plan rows, and only read: PutIssue writes nothing of it, and workflow's moveTask sets
+	// it on the issue it moves (Walk.PlaceRole, the same rule).
+	PlaceRole claim.Role
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -498,14 +507,30 @@ func (i Issue) WorkingPhase() phase.Phase {
 	return i.Phase
 }
 
-// RoleAt is the role that works the issue at p: the role of the step its task stands at
-// (StepRole) for phase.Step, whose role the plan names, and phase.RoleFor(p) for every other
-// phase.
+// RoleAt is the role that works the issue at p: the role of the claim that works its task's place
+// (PlaceRole) where it is set and p is the phase the issue works (WorkingPhase: its phase, or the
+// one its hold left) and one a place runs as (planning, implementing, testing, reviewing,
+// accepting, step, retro), so the owner's step and the owner's retro answer the architect;
+// otherwise the role of the step its task stands at (StepRole) for phase.Step, whose role the plan
+// names, and phase.RoleFor(p) for every other phase.
 func (i Issue) RoleAt(p phase.Phase) claim.Role {
+	if i.PlaceRole != "" && p == i.WorkingPhase() && placeRunsAs(p) {
+		return i.PlaceRole
+	}
 	if p == phase.Step {
 		return i.StepRole
 	}
 	return phase.RoleFor(p)
+}
+
+// placeRunsAs says whether a place of a task runs as p: a step, which runs as the phase of its
+// role, or the retro. Admitted, held, merging, done and awaiting_person are none.
+func placeRunsAs(p phase.Phase) bool {
+	switch p {
+	case phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Step, phase.Retro:
+		return true
+	}
+	return false
 }
 
 // EventMark places a Dispatch event in its issue's event log: its sequence on the issue (Seq) and

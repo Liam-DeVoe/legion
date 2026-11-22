@@ -239,9 +239,10 @@ func issuePhaseOf(w Walk, place record.TaskPlace, state record.TaskState) phase.
 // (record.Store.MoveTask), the place of the row that moves it: a move to done passes the place the
 // task keeps, and a move to admitted, where a task waits for its first step (waitForFirstStep), no
 // place, the task at no act. It sets issue.Phase to the phase that place derives (issuePhaseOf),
-// which must be to, and issue.StepRole to the role of the step at that place ("" at the retro, the
-// merge or no act), in the caller's transaction and before the caller's write of issue
-// (WriteIssue), so a caller that reads the issue after the move reads the role a fresh read gives.
+// which must be to, issue.StepRole to the role of the step at that place ("" at the retro, the
+// merge or no act) and issue.PlaceRole to the role of the claim that works it (Walk.PlaceRole), in
+// the caller's transaction and before the caller's write of issue (WriteIssue), so a caller that
+// reads the issue after the move reads the roles a fresh read gives.
 // w then stands where the task does, for whatever the caller reads of it after the move. A run
 // with no plan rows has no task to move, and issue.Phase is to, as it always was. A move to where
 // the task already stands writes nothing. The caller clears or keeps issue.Hold itself.
@@ -264,7 +265,34 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 	if step, ok := w.planStepAt(place); ok {
 		issue.StepRole = claim.Role(step.Role)
 	}
+	issue.PlaceRole = w.PlaceRole(place)
 	return nil
+}
+
+// PlaceRole is the role of the claim that works place on w, a stored walk: the architect where
+// the agent there is the owner of the task (OwnerAt: a step of the key owner, or a retro the owner
+// does), the step's own role at any other step (acceptance for a fresh agent of acceptance, and a
+// role the deployment or the plan defines as itself), and at the retro the role of the agent that
+// does it (retroAgent); "" for the merge, for no act, and for a walk with no plan rows. It is the
+// rule the store's read of the issue states again in SQL (record.Issue.PlaceRole), which a test
+// holds to this one.
+func (w Walk) PlaceRole(place record.TaskPlace) claim.Role {
+	if !w.Stored {
+		return ""
+	}
+	if w.OwnerAt(place) {
+		return claim.RoleArchitect
+	}
+	switch place.Kind {
+	case record.PlaceRetro:
+		_, role := w.retroAgent()
+		return claim.Role(role)
+	case record.PlaceStep:
+		if step, ok := w.planStepAt(place); ok {
+			return claim.Role(step.Role)
+		}
+	}
+	return ""
 }
 
 // WriteIssue writes issue (record.Store.PutIssue), and is the one write of an issue of the workflow
