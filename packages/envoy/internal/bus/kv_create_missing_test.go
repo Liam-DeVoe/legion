@@ -115,8 +115,10 @@ func TestCreateMissingCopiedBucketRefusesABucketItsCreateFindsInUse(t *testing.T
 		t.Fatalf("create the bucket another client made: %v", err)
 	}
 
+	member := &behindMember{JetStreamContext: js}
+	member.misses.Store(1)
 	start := time.Now()
-	kv, err := CreateMissingCopiedBucket(t.Context(), conn, &behindMember{JetStreamContext: js, misses: 1}, SessionBucket, 1)
+	kv, err := CreateMissingCopiedBucket(t.Context(), conn, member, SessionBucket, 1)
 	waited := time.Since(start)
 	if !errors.Is(err, ErrBucketExists) || !errors.Is(err, nats.ErrStreamNameAlreadyInUse) || !strings.Contains(err.Error(), stream+" create") || kv.Opened() {
 		t.Fatalf("a create-only open whose create is answered \"already in use\" = %v (handle opened: %t), want ErrBucketExists named for the create and no handle", err, kv.Opened())
@@ -125,7 +127,9 @@ func TestCreateMissingCopiedBucketRefusesABucketItsCreateFindsInUse(t *testing.T
 		t.Fatalf("the refusal took %s, want it answered within %s rather than waited out", waited.Round(time.Millisecond), refusalWait)
 	}
 
-	kv, err = CreateCopiedBucket(t.Context(), conn, &behindMember{JetStreamContext: js, misses: 1}, SessionBucket, 1)
+	control := &behindMember{JetStreamContext: js}
+	control.misses.Store(1)
+	kv, err = CreateCopiedBucket(t.Context(), conn, control, SessionBucket, 1)
 	if err != nil || kv.Bucket() != SessionBucket {
 		t.Fatalf("control: CreateCopiedBucket with the same member = %v, want the bucket opened", err)
 	}
