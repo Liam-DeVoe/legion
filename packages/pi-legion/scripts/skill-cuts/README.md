@@ -75,8 +75,9 @@ skill's cases (`cases.ts`), one JSON object per line.
   records the runner that made it: a digest of the runner's code (each file of this directory but
   its tests, its test data and this README). Where a case's last two confirms at the same texts on
   one runner disagree, one a loss and one not, `confirm` runs a third, and the three are pooled
-  (INFRA-323's decision "The behaviour test's pass rule"): the case is a loss when the cut's text
-  passes at least 30 fewer of the 120 runs than the old text, the same bound of 10 for each 40.
+  (the architect's decision "The behaviour test's pass rule"): the case is a loss when the cut's
+  text passes at least 30 fewer of the 120 runs than the old text, the same bound of 10 for each
+  40.
   Confirms made on different runners (before and after a fix) or at other texts are not pooled:
   only the last confirm's runner and texts count. `--again <case id>` asks for one more confirm of
   a flagged case whose confirm is finished, on this runner; it is refused (exit 2), naming the
@@ -830,6 +831,19 @@ keep them. At most n sessions are open (being read, or read and waiting), so at 
 are there at once. When the build ends, each session still open is stopped before its next
 reader call and recorded with what it spent, as `not-needed` (or, at the budget, as stopped by
 it).
+
+A build that pulls transcripts (`build-cases`, `build-tasks` with `--model` or `--profiles-out`,
+`build-tasks --reprofile`, `build-tasks --first-read`) holds its spool `<out>.spool` by a lock
+file in it, `run.lock`, which names its process. A second run of the same `--out` is refused
+(exit 2), naming that process, while it runs, so no run empties or removes the spool of another.
+A lock whose process runs no more (a run that was killed) is taken over, and the run says so.
+`build-cases` takes the lock before it reads or writes anything at `--out`. When a build stops for
+any reason, it stops each open session and waits for it before the spool is removed.
+
+The runner starts at most 4 gh processes at once, across all its GitHub reads (copies.ts's
+`spawnGh` and context.ts's reads, through common.ts's `ghLimiter`): a pod's gh is a wrapper of
+about 145 MiB a call, and one profile can start a read for every repository at once. The
+environment variable `SKILL_CUTS_GH_CONCURRENCY` (a whole number of 1 or more) sets another bound.
 
 A stopped build goes on where it stopped. The summary records the run's inputs: the cut, the
 skill, the seed, and the SHA-256 of `--old`'s files, the sessions file, the copies files read and

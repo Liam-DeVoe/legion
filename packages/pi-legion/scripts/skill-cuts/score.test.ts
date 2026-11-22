@@ -495,7 +495,7 @@ const rows: [string, () => unknown, unknown][] = [
     "case c2 is recorded as dropped at confirm, but its screen did not flag it, and only flagged cases are confirmed: its records are refused, not scored (its drop: unreadable-directory: acme/skills c2)",
   ],
 
-  // Pooled confirms (INFRA-323's decision "The behaviour test's pass rule", 2026-11-22).
+  // Pooled confirms (the architect's decision "The behaviour test's pass rule", 2026-11-22).
   [
     "30 fewer passes of 120 pooled runs are a loss",
     () => isPooledLoss({ old: 120, new: 90 }),
