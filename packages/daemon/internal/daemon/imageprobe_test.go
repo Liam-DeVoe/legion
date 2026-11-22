@@ -466,10 +466,11 @@ func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 // hangs and is cut off where it hangs (endWhenHung), three times; the second's hangs under the
 // gate's own budget, slow_command_timeout_seconds (expire nil), which alone can end its one
 // attempt, so the words the refusal says of the budget come from a budget that fired. Its fake
-// sleeps past that budget, and the run is bounded by fakeBudget, so a budget that never fires
-// fails the row with the context's error rather than hanging the test. It counts no attempt of
-// the fake: a budget can end an attempt before the fake has counted it, which is why the other
-// rows run under fakeBudget, and a budget of seconds keeps that from failing it.
+// sleeps past that budget, and the runs of the two rows whose fake hangs are bounded by
+// fakeBudget, so a budget that never fires fails the row with the context's error rather than
+// hanging the test. It counts no attempt of the fake: a budget can end an attempt before the fake
+// has counted it, which is why the other rows run under fakeBudget, and a budget of seconds keeps
+// that from failing it.
 func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
 	const hangBudget = 3 * time.Second
 	for _, testCase := range []struct {
@@ -496,8 +497,12 @@ func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
 			if testCase.budget != 0 {
 				gate.timeout, gate.expire = testCase.budget, nil
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), fakeBudget)
-			defer cancel()
+			ctx := context.Background()
+			if slices.Contains(testCase.agents, "hang") {
+				bounded, cancel := context.WithTimeout(ctx, fakeBudget)
+				defer cancel()
+				ctx = bounded
+			}
 
 			started := time.Now()
 			err := gate.verifyImage(ctx)
