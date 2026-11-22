@@ -182,3 +182,71 @@ func TestAReKeyByTheReleaseBeforeCarriesTheHeadsItLeft(t *testing.T) {
 		t.Fatalf("the old name %s still keeps the former heads %v of #%d", gadgetsOldRepo, got, rig.number)
 	}
 }
+
+// TestTheReKeyOwesTheCanonicalIssueASettle: #527 and #528 are each stored under the old name,
+// unattributed there, and read through under the canonical name, attributed to the issue; the
+// issue's check states are settled, so it owes nothing. Then each old row is re-keyed, #527 by the
+// reconcile and #528 by the plain delete of the release before. The canonical row is written with
+// the head, state and issue it already holds, so its own write marks nothing, and the old row's
+// delete marks no issue, since that row has none: the re-key must itself mark the issue owed,
+// in its own transaction, so the settler publishes the states at the heads it carried.
+func TestTheReKeyOwesTheCanonicalIssueASettle(t *testing.T) {
+	const left, oldHead, head = "7171717171717171717171717171717171717171", "7272727272727272727272727272727272727272", "7373737373737373737373737373737373737373"
+	for _, reKey := range []struct {
+		name   string
+		number int
+		run    func(rig *reKeyRig) error
+	}{
+		{"the reconcile", 527, func(rig *reKeyRig) error { return rig.refresh() }},
+		{"the release before", 528, func(rig *reKeyRig) error {
+			_, err := rig.pool.Exec(rig.ctx, `delete from pull_request_heads where repo = $1 and number = $2`, gadgetsOldRepo, rig.number)
+			return err
+		}},
+	} {
+		t.Run(reKey.name, func(t *testing.T) {
+			rig := newReKeyRig(t, reKey.number, left, oldHead, head)
+			owed := func() int {
+				t.Helper()
+				var count int
+				if err := rig.pool.QueryRow(rig.ctx, `select count(*) from check_states_owed where issue_key = $1`, rig.issue).Scan(&count); err != nil {
+					t.Fatalf("count the marks of %s: %v", rig.issue, err)
+				}
+				return count
+			}
+			if _, err := rig.pool.Exec(rig.ctx, `delete from check_states_owed where issue_key = $1`, rig.issue); err != nil {
+				t.Fatalf("settle %s: %v", rig.issue, err)
+			}
+			if err := reKey.run(rig); err != nil {
+				t.Fatalf("re-key %s#%d by %s: %v", gadgetsOldRepo, rig.number, reKey.name, err)
+			}
+			if got, want := rig.formerHeadsOf(gadgetsRepo), []string{left, oldHead}; !slices.Equal(got, want) {
+				t.Fatalf("#%d under %s left %v after the re-key, want %v", rig.number, gadgetsRepo, got, want)
+			}
+			if marks := owed(); marks == 0 {
+				t.Fatalf("%s owes no settle after %s carried the heads %v of #%d to it: nothing publishes their states", rig.issue, reKey.name, []string{left, oldHead}, rig.number)
+			}
+		})
+	}
+}
+
+// TestAReKeyOfAPullRequestBackAtAHeadItLeftCarriesThatHead: #529 under the old name left 7171…,
+// then 7272…, and is back at 7171…, which it therefore holds both as its head and as a head it
+// left. The reconcile's re-key carries both heads to the canonical row, 7171… once.
+func TestAReKeyOfAPullRequestBackAtAHeadItLeftCarriesThatHead(t *testing.T) {
+	const left, oldHead, head = "7171717171717171717171717171717171717171", "7272727272727272727272727272727272727272", "7373737373737373737373737373737373737373"
+	rig := newReKeyRig(t, 529, left, oldHead, head)
+	back := time.Date(2026, 2, 1, 0, 2, 0, 0, time.UTC)
+	stale := time.Now().Add(-10 * time.Minute)
+	if err := UpsertPullRequestHead(rig.ctx, rig.pool, nil, PullRequestHead{
+		Repo: gadgetsOldRepo, Number: rig.number, HeadSHA: left,
+		HeadRef: "legion/work", BaseRef: "main", State: "open", EventAt: &back, CheckedAt: &stale,
+	}); err != nil {
+		t.Fatalf("move %s#%d back to %s: %v", gadgetsOldRepo, rig.number, left, err)
+	}
+	if err := rig.refresh(); err != nil {
+		t.Fatalf("re-key %s#%d, back at a head it left: %v", gadgetsOldRepo, rig.number, err)
+	}
+	if got, want := rig.formerHeadsOf(gadgetsRepo), []string{left, oldHead}; !slices.Equal(got, want) {
+		t.Fatalf("#%d under %s left %v after the re-key, want %v", rig.number, gadgetsRepo, got, want)
+	}
+}

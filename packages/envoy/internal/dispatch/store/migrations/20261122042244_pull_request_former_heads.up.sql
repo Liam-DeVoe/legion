@@ -25,11 +25,14 @@
 -- (delivery.upsertHeadUnderCanonicalName, and the release before this one, which carries nothing
 -- itself): the function locks the canonical row, and where that row is open it carries the
 -- deleted row's former heads, and the deleted row's own head where the canonical row is at
--- another, to the canonical key, in the deleting transaction. The delete holds the deleted row's
--- lock and the function takes the canonical row's before either's heads are read, so a head write
--- to either row commits before the carry reads it or waits until the carry has committed, and a
--- close of the canonical row comes either first, when nothing is carried, or after, when it drops
--- what was carried.
+-- another, to the canonical key, and marks the canonical row's issue owed (check_states_owe), all
+-- in the deleting transaction: the canonical row may be written with the head, state and issue it
+-- already holds, which marks nothing, and the deleted row may have no issue, so no other trigger
+-- owes the settle that publishes the carried heads. The delete holds the deleted row's lock and
+-- the function takes the canonical row's before either's heads are read, so a head write to
+-- either row commits before the carry reads it or waits until the carry has committed, and a close
+-- of the canonical row comes either first, when nothing is carried, or after, when it drops what
+-- was carried.
 --
 -- A new table and a new function: nothing existing is read, locked or rewritten, and the release
 -- before this one neither reads nor writes them, so it rolls beside this one (cmd/dispatch/README.md,
@@ -62,12 +65,13 @@ begin
     select coalesce((select max(renamed.renamed_to) from repo_projects renamed
       where renamed.renamed_to is not null and lower(renamed.repo) = lower(old.repo)), old.repo) into canonical;
     if canonical <> old.repo then
-      select head.repo, head.number, head.head_sha into target from pull_request_heads head
+      select head.repo, head.number, head.head_sha, head.issue_key into target from pull_request_heads head
       where head.repo = canonical and head.number = old.number and head.state = 'open'
       for no key update;
       if found then
+        -- A pull request back at a head it left holds that head twice here, once as left.
         insert into pull_request_former_heads (repo, number, head_sha, left_at)
-        select target.repo, target.number, kept.head_sha, kept.left_at
+        select target.repo, target.number, kept.head_sha, max(kept.left_at)
         from (
           select former.head_sha, former.left_at from pull_request_former_heads former
           where former.repo = old.repo and former.number = old.number
@@ -75,8 +79,10 @@ begin
           select old.head_sha, now()
         ) kept
         where kept.head_sha <> target.head_sha
+        group by kept.head_sha
         on conflict (repo, number, head_sha) do update set
           left_at = greatest(pull_request_former_heads.left_at, excluded.left_at);
+        perform check_states_owe(target.issue_key);
       end if;
     end if;
   end if;

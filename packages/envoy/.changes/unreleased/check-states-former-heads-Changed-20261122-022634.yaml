@@ -12,9 +12,10 @@ body: |-
     transaction of the write that moved the row, whichever build wrote it, so a head is kept
     whether or not a settle ran while the pull request was there; a close, a merge or a delete of
     the row drops its former heads, and the delete of a row stored under a repository's old name
-    carries them to the canonical row where it is open, in the delete's own trigger with both rows
-    locked, whichever build deletes it, so no head write and no close of either row loses or brings
-    back a head meanwhile. A former head's rows in `check_states` go once no open pull
+    carries them to the canonical row where it is open, and marks that row's issue owed, in the
+    delete's own trigger with both rows locked, whichever build deletes it, so no head write and no
+    close of either row loses or brings back a head meanwhile, and the carried heads' states are
+    published. A former head's rows in `check_states` go once no open pull
     request is or was at it. A check CI proves is read at the former heads after the open heads, in
     a batch of their own under its own 10 s bound, at most eight reads at a time, the head whose
     read started longest ago first (`check_states.ci_read_at`, migration `20261122042853`); a
