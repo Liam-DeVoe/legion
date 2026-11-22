@@ -359,7 +359,8 @@ func TestAnIssueThatRanUnderTheReleaseBeforeKeepsItsClaims(t *testing.T) {
 	r.work(claim.RoleImplementer, "implement", implementCompletion, phase.Reviewing)
 	r.worker(claim.RoleReviewer)
 	r.restartWith(func() {
-		for _, migration := range []string{"_claim_session_agent.up.sql", phaseStepKeyMigration, "_pod_resume_claim.up.sql", planStepAgentMigration} {
+		for _, migration := range []string{"_issue_release_suspended_claims.up.sql", "_claim_session_agent.up.sql", phaseStepKeyMigration,
+			"_pod_resume_claim.up.sql", planStepAgentMigration} {
 			r.exec(strings.ReplaceAll(r.headerTransaction(migration), "<PROJECT>", r.cfg.Project))
 		}
 		if key := r.phasesKey(); key != releaseBeforesPhasesKey {

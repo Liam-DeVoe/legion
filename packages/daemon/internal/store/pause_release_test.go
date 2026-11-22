@@ -279,7 +279,7 @@ func TestACancelOfAReleaseOfAnotherProjectsIssueReadsThisProjectsPause(t *testin
 			SuspendedBy: supervise.SuspendedByReleased}); err != nil {
 			t.Fatalf("seed the released %s of %s: %v", role, otherIssue, err)
 		}
-		if err := st.ReleaseSuspendedClaim(ctx, "legion", otherIssue, role, otherBoundary); err != nil {
+		if err := st.ReleaseSuspendedClaim(ctx, "legion", otherIssue, role, token, otherBoundary); err != nil {
 			t.Fatalf("record the %s's suspension: %v", role, err)
 		}
 	}

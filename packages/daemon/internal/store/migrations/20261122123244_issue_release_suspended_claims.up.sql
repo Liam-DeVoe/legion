@@ -1,0 +1,35 @@
+-- 20261122123244_issue_release_suspended_claims.up.sql — the claims an idle release suspended.
+--
+-- issue_releases.suspended_claims is the token of each claim this release's own role stops have
+-- suspended as `released`, appended beside its role (issue_releases.suspended) by each stop once
+-- its claim is suspended (store.ReleaseSuspendedClaim). Two claims can hold one role of an issue —
+-- the second agent of a role, `…-implementer-2`, or a keyed agent beside its role's own claim — so
+-- the roles alone cannot say which claims the release suspended. The check that the pod went on
+-- working after the mark (store's releaseOvertaken) reads a claim this release suspended that is
+-- no longer suspended as `released`; read by role, a second claim of the role that the release did
+-- not suspend, one the daemon suspended for a stop of its step, read as one the release suspended
+-- and something resumed, and cancelled the release at each idle period, so the pod was never
+-- released. The check now reads these tokens.
+--
+-- Every mark the table already holds takes the default, the empty list: a release the release
+-- before marked records its roles alone, and the check reads such a mark by its roles, as that
+-- release read it, until that release finishes or is cancelled.
+--
+-- The release before this one names each column it reads and writes (the release mark's reads and
+-- store.ReleaseSuspendedClaim), so it neither reads nor writes this one, and every mark it writes
+-- takes the default, which this release reads by its roles.
+--
+-- There is no down file. This directory keeps none — migrations here are forward-only and no
+-- .down.sql file exists — so the way back is the one transaction that closes this header, its last
+-- paragraph (migrations.WayBack), run with this release's daemon stopped and before the release
+-- before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. The drop and the delete of
+-- this migration's row go together: the delete is what makes the version the store reports that
+-- release's own again, and both are owed to the roll-forward, which then runs this file again and
+-- adds the column at its default. What the drop costs is the claims of each release in flight at
+-- the rollback, which the roll-forward reads by their roles.
+--
+-- begin;
+-- alter table issue_releases drop column if exists suspended_claims;
+-- delete from schema_version where version = 20261122123244;
+-- commit;
+alter table issue_releases add column suspended_claims text[] not null default '{}';

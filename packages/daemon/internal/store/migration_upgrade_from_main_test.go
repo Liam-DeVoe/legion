@@ -134,6 +134,9 @@ import (
 // step and touches no outbox_kind_check: it adds claims.session_agent at its default, the empty
 // string, on every row it finds, so it needs no row of its own here
 // (migration_20261122120917_test.go).
+// The claims a release suspended (20261122123244) is applied after it and touches no
+// outbox_kind_check: it adds issue_releases.suspended_claims at its default, the empty list, on
+// every row it finds, so it needs no row of its own here (migration_20261122123244_test.go).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -144,7 +147,7 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261117213545, 20261117223524, 20261119003157, 20261120042902, 20261120055717, 20261121183336,
-	20261122062637, 20261122120917,
+	20261122062637, 20261122120917, 20261122123244,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -163,7 +166,8 @@ var thisBranchsMigrations = []int{
 // 20261117200337, the name of each step's agent's 20261117213545, dispatch://INFRA-4374's
 // 20261119003157, dispatch://INFRA-4108's 20261120042902, dispatch://INFRA-4729's 20261120055717,
 // the claim of each resume's 20261121183336, the key of a phases row by its step's
-// 20261122062637 and the agent of a claim's session's 20261122120917. That is why the loop below holds the list rather
+// 20261122062637, the agent of a claim's session's 20261122120917 and the claims a release
+// suspended's 20261122123244. That is why the loop below holds the list rather
 // than counting it, so that a version added above any of them is named here rather than read as
 // main's.
 const mainsNewestMigration = 20261111212544
