@@ -4201,14 +4201,14 @@ journals stop a `released` row then only while a hold's journal shows it held.
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the
 shell it runs in, requests no credential, and lists each principal that is not a person and can
 mint the token of a guarded ServiceAccount (the operator's, the secrets broker's, and each
-`--guarded` pair), run or enter a pod as one, create a custom resource in a guarded namespace, write
-a binding or a webhook or admission policy, have the cluster sign it a client certificate for any
-user, mint the operator's Google service account's token, make a guarded namespace on another
-cluster of the project or of the workload pool's fleet, register a cluster to that fleet or write
-the namespaces and RBAC its scopes put on the members, set IAM policy over any of these, or write
-the writer hold's tables beside the broker's routes, whether a role grants the right outright or
-limits it to an object by name, and each principal that can become one of those: through IAM
-impersonation, reported as the chain, by minting the token of a Google service
+`--guarded` pair), run or enter a pod as one, create or change a custom resource in a guarded
+namespace, write a binding or a webhook or admission policy, have the cluster sign it a client
+certificate for any user, mint the operator's Google service account's token, make a guarded
+namespace on another cluster of the project or of the workload pool's fleet, register a cluster to
+that fleet or write the namespaces and RBAC its scopes put on the members, set IAM policy over any
+of these, or write the writer hold's tables beside the broker's routes, whether a role grants the
+right outright or limits it to an object by name, and each principal that can become one of those:
+through IAM impersonation, reported as the chain, by minting the token of a Google service
 account an RBAC finding names, by impersonating a user who holds GKE's IAM permissions, or in
 Kubernetes by running, entering or minting the token of a ServiceAccount that holds such a right. On
 each cluster of the project, of the pool project and of the pool's fleet it reviews every
