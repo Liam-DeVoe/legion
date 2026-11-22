@@ -10,9 +10,12 @@ import {
   currentBranch,
   DROP_REASONS,
   type DropReason,
+  type Evidence,
   EXIT,
   fileHash,
   GithubReads,
+  LISTING_MEASURE,
+  ListingMeasure,
   main,
   messageOf,
   pullTranscript,
@@ -597,8 +600,9 @@ const TASK_ROWS = [
   },
 ];
 
-/** The stand-in store command: it answers pull.sql, sessions.sql, tasks.sql, session-head.sql and
- *  session-paths.sql from the store file `storeFile`, and appends each call to `logFile`. */
+/** The stand-in store command: it answers pull.sql, sessions.sql, tasks.sql, session-head.sql,
+ *  session-paths.sql and subagents.sql from the store file `storeFile`, and appends each call to
+ *  `logFile`. */
 const STANDIN_PSQL = (storeFile: string, logFile: string) => `
 import { appendFileSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -662,6 +666,32 @@ if (query.includes("omp_session_files_parts pt") && place) {
     .map((p) => ({ path: p, hash: createHash("sha256").update(p).digest("hex") }))
     .filter((row) => hashes.has(row.hash))
     .sort((a, b) => (a.path < b.path ? -1 : 1));
+} else if (query.includes("'subagents', r.subagents")) {
+  kind = "subagents";
+  // For each file of a path hash the query names, the files one level below its directory: the
+  // earliest by header timestamp (then path) whose session_init line holds <skills>, and counts.
+  const hashes = new Set(literals(query.slice(query.indexOf("ANY"))));
+  const sha = (p) => createHash("sha256").update(p).digest("hex");
+  rows = [];
+  for (const parent of Object.keys(store.files).filter((p) => hashes.has(sha(p)) && p.endsWith(".jsonl"))) {
+    const dir = parent.slice(0, -".jsonl".length) + "/";
+    const children = Object.entries(store.files)
+      .filter(([p]) => p.startsWith(dir) && !p.slice(dir.length).includes("/") && p.endsWith(".jsonl"))
+      .map(([p, text]) => {
+        const lines = text.split("\\n");
+        const header = lines.find((line) => line.includes('"type":"session"'));
+        const init = lines.find((line) => line.includes('"type":"session_init"') && line.includes("<skills>"));
+        return { path: p, start: header === undefined ? null : JSON.parse(header).timestamp ?? null, init };
+      });
+    const recorded = children
+      .filter((child) => child.init !== undefined)
+      .sort((a, b) => ((a.start ?? "") + "\\u0000" + a.path < (b.start ?? "") + "\\u0000" + b.path ? -1 : 1));
+    const first = recorded[0];
+    if (first !== undefined) {
+      rows.push({ parent: sha(parent), hash: sha(first.path), start: first.start, init: first.init, subagents: children.length, recorded: recorded.length });
+    }
+  }
+  rows.sort((a, b) => (a.parent < b.parent ? -1 : 1));
 } else if (query.includes("encode(sha256(convert_to(f.path")) {
   kind = "heads";
   // Each file of a path hash the query names: its header's cwd and timestamp and its first user
@@ -940,6 +970,20 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
     "skills/delta/SKILL.md": skillMd("delta"),
     "installers/skills.sh": INSTALLER,
   },
+  // A dev box's own repository (it holds an installer and Claude Code's settings): its installer
+  // links each skill of skills/ into Oh My Pi's user skills, its Oh My Pi config ignores dropped,
+  // and quiet and shy hide themselves from the listing. No session reads any of them.
+  "acme/home": {
+    "installers/omp.sh": INSTALLER,
+    ".claude/settings.json": "{}\n",
+    "omp/config.yml": "skills:\n  ignoredSkills:\n    - dropped\n",
+    "skills/unread/SKILL.md": skillMd("unread"),
+    "skills/dropped/SKILL.md": skillMd("dropped"),
+    "skills/quiet/SKILL.md":
+      "---\nname: quiet\ndescription: Use for quiet work.\ndisable-model-invocation: true\n---\n\n# quiet\n",
+    "skills/shy/SKILL.md":
+      "---\nname: shy\ndescription: Use for shy work.\nhide: true\n---\n\n# shy\n",
+  },
   "acme/skills": {
     "skills/alpha/SKILL.md": skillMd("alpha"),
     "skills/alpha/references/x.md": "Step notes.\n",
@@ -1039,6 +1083,9 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
     "skills/pack-later/SKILL.md": skillMd("pack-later"),
   },
 };
+
+/** The ref the copies output read acme/pack at, later than the sessions (repositories.tsv). */
+const PACK_LATER = "5".repeat(40);
 
 /** The made-up repositories at a commit other than SHA, by `<repository>@<ref>`: the commit the
  *  stand-in gh gives for that ref, and the files there. acme/dots's installer pins acme/pack at
@@ -1140,6 +1187,9 @@ const io = (lines: string[]): BuildIo => ({
     if (commits !== null) {
       const ref = new URLSearchParams(commits[2]).get("sha");
       const repo = (commits[1] ?? "").slice("repos/".length);
+      // acme/pack's later ref, the one repositories.tsv names, was made after the sessions'
+      // start: GitHub gives no commit of it at or before then, and `--jq .[0].sha` prints null.
+      if (repo === "acme/pack" && ref === PACK_LATER) return ok("null\n");
       return ok(`${PINNED[`${repo}@${ref}`]?.sha ?? SHA}\n`);
     }
     if (route === "repos/acme/infra/contents/legion/projects/10-ACME.yaml") {
@@ -1226,6 +1276,11 @@ beforeAll(() => {
     const store = files[session.store] ?? {};
     store[sessionPath(name)] = sessionText(name);
   }
+  // A subagent the good session started, one level below its directory, whose recorded prompt
+  // lists alpha and beta: the good case's listing is measured against it.
+  const goodStore = files[SESSIONS.good?.store ?? "store_a"] ?? {};
+  goodStore[`${sessionPath("good").slice(0, -".jsonl".length)}/Helper.jsonl`] =
+    sessionText("subagent");
   for (const name of Object.keys(CONTROL_SESSIONS)) {
     const store = files.store_a ?? {};
     store[controlPath(name)] = controlText(name);
@@ -1474,8 +1529,8 @@ beforeAll(() => {
       ["acme/dual", "main", SHA, "no", "no", "", 10, "recursive", 0, ""],
       ["acme/powers", "v1.2.0", SHA, "no", "no", "", 3, "whole", 2, ""],
       ["acme/dots", "main", SHA, "no", "no", "", 4, "whole", 0, ""],
-      // Read later at another ref than PACK_PIN, which the stand-in answers with SHA.
-      ["acme/pack", "5".repeat(40), SHA, "no", "no", "", 2, "whole", 2, ""],
+      // Read later at another ref than PACK_PIN, made after the sessions' start.
+      ["acme/pack", PACK_LATER, SHA, "no", "no", "", 2, "whole", 2, ""],
     ])
   );
   writeFileSync(
@@ -1515,8 +1570,10 @@ beforeAll(() => {
         kind: "read",
         files: 1,
         hashes: ["0123456789abcdef"],
+        calls: { "0123456789abcdef": ["0123456789abcdef"] },
         unpaired: 0,
         unpaired_hashes: [],
+        unpaired_calls: {},
       },
       {
         row: "summary",
@@ -1639,6 +1696,56 @@ describe("build-cases over every made-up session", () => {
     requests = recorder.requests.slice(from);
     cases = loadCases(out, old);
   }, 120_000);
+
+  test("each case's evidence holds its listing measure: a subagent's against its own recorded listing, a top-level session's against a subagent's of it, else not measurable; the summary counts them", () => {
+    const measureOf = (name: string) => {
+      const items = byName(name)?.evidence?.filter((each) => each.item === LISTING_MEASURE) ?? [];
+      expect(items).toHaveLength(1);
+      return ListingMeasure.parse(JSON.parse(items[0]?.source ?? "{}"));
+    };
+    const listed = (name: string) => (byName(name)?.profile.skills ?? []).map((each) => each.name);
+    // The subagent's recorded prompt lists alpha and beta; the measure sets its profile against it.
+    const own = measureOf("subagent");
+    const names = ["alpha", "beta"];
+    expect(own).toMatchObject({
+      kind: "session listing",
+      recorded: 2,
+      missing: names.filter((name) => !listed("subagent").includes(name)),
+      added: listed("subagent")
+        .filter((name) => !names.includes(name))
+        .sort(),
+      rebuiltDigest: null,
+      subagent: null,
+    });
+    expect(own.missingShare).toBe(own.missing.length / 2);
+    // The good session records only its digest; its subagent Helper's listing is used.
+    const good = measureOf("good");
+    expect(good).toMatchObject({
+      kind: "subagent listing",
+      recorded: 2,
+      missing: names.filter((name) => !listed("good").includes(name)),
+      sessionDigest: byName("good")?.sessionDigest ?? null,
+      rebuiltDigest: null,
+      subagent: {
+        pathHash: pathHash(`${sessionPath("good").slice(0, -".jsonl".length)}/Helper.jsonl`),
+        agent: "task",
+        subagents: 1,
+        recorded: 1,
+      },
+    });
+    expect(good.why).toContain("the build makes no prompt");
+    // A top-level session with no subagent in its store is not measurable.
+    const checkout = measureOf("checkout");
+    expect(checkout).toMatchObject({ kind: "not measurable", recorded: null, missing: [] });
+    expect(checkout.why).toContain("the store holds no subagent of it");
+    const summary = JSON.parse(readFileSync(`${out}.summary.json`, "utf8")) as {
+      listing: Record<string, number>;
+    };
+    expect(summary.listing["session listing"]).toBeGreaterThan(0);
+    expect(summary.listing["subagent listing"]).toBe(1);
+    expect(summary.listing["not measurable"]).toBeGreaterThan(0);
+    expect(summary.listing.none).toBe(0);
+  });
 
   test("exits 0 and writes cases that loadCases loads", () => {
     expect(printed.join("")).not.toContain("failed");
@@ -1943,7 +2050,7 @@ describe("build-cases over every made-up session", () => {
       psqlLines(logBefore)
         .map((line) => `${line.db} ${line.kind}`)
         .sort()
-    ).toEqual(["store_a heads", "store_b heads"]);
+    ).toEqual(["store_a heads", "store_a subagents", "store_b heads", "store_b subagents"]);
 
     const rebuilt = loadCases(fresh, old);
     expect(rebuilt.map((c) => c.id)).toEqual(cases.map((c) => c.id));
@@ -2055,7 +2162,7 @@ describe("build-cases over every made-up session", () => {
       psqlLines(logBefore)
         .map((line) => `${line.db} ${line.kind}`)
         .sort()
-    ).toEqual(["store_a heads", "store_b heads"]);
+    ).toEqual(["store_a heads", "store_a subagents", "store_b heads", "store_b subagents"]);
     const headFile = `${devbox.source.store}-${devbox.source.pathHash}.json`;
     expect(existsSync(path.join(`${fresh}.sessions`, headFile))).toBe(true);
     const summary = JSON.parse(readFileSync(`${fresh}.summary.json`, "utf8")) as {
@@ -2697,6 +2804,7 @@ describe("build-cases over every made-up session", () => {
 test("a dev-box session that read a skill of a github: dependency's package and one of a cloned pool gets a profile that holds each unit's skills, the pool's at the commit its installer pins at the session's start", async () => {
   const out = path.join(scratch, "pinned-units", "cases.jsonl");
   const lines: string[] = [];
+  const callsBefore = ghCalls.length;
   const sessions = sessionsFile("pinned-units.jsonl", ["pinned-units"]);
   expect(await main(buildArgs(sessions, out, "1"), io(lines))).toBe(EXIT.ok);
   const [c] = loadCases(out, old);
@@ -2728,6 +2836,74 @@ test("a dev-box session that read a skill of a github: dependency's package and 
   expect(evidence["left out: skill pack-later (acme/pack skills/pack-later)"]).toContain(
     "does not ship it at the session's start"
   );
+  // acme/pack's later ref (repositories.tsv's) has no commit at the session's start, so its
+  // default branch is read before its installer's pin takes its place.
+  expect(
+    ghCalls
+      .slice(callsBefore)
+      .flat()
+      .some((arg) => arg.startsWith(`repos/acme/pack/commits?sha=${PACK_LATER}&`))
+  ).toBe(true);
+  expect(
+    ghCalls
+      .slice(callsBefore)
+      .flat()
+      .some((arg) => arg.startsWith("repos/acme/pack/commits?sha=main&"))
+  ).toBe(true);
+});
+
+test("a dev-box profile installs the units its dev box's own installers install though the session read none of them, leaves out a skill its Oh My Pi config ignores, and installs a skill that hides itself as not listed", async () => {
+  // The copies output of the suite, with acme/home named as the dev box's repository: it holds an
+  // installer script and Claude Code's settings.
+  const copies = path.join(setupDir, "copies-home");
+  mkdirSync(copies, { recursive: true });
+  for (const file of [
+    "prefix-table.tsv",
+    "installers.tsv",
+    "loaders.tsv",
+    "skill-copies.tsv",
+    "repositories.tsv",
+  ]) {
+    writeFileSync(path.join(copies, file), readFileSync(path.join(copiesDir, file)));
+  }
+  writeFileSync(
+    path.join(copies, "manifests.tsv"),
+    `${readFileSync(path.join(copiesDir, "manifests.tsv"), "utf8")}${[
+      ["acme/home", "installers/omp.sh", "installer-script", "tree", 4, "links skills", ""],
+      ["acme/home", ".claude/settings.json", "claude-settings", "tree", 0, "none", ""],
+    ]
+      .map((row) => `${row.join("\t")}\n`)
+      .join("")}`
+  );
+  const out = path.join(scratch, "devbox-home", "cases.jsonl");
+  const sessions = sessionsFile("devbox-home.jsonl", ["good"]);
+  const lines: string[] = [];
+  expect(await main(buildArgs(sessions, out, "1", "--copies", copies), io(lines))).toBe(EXIT.ok);
+  const [c] = loadCases(out, old);
+  const names = (c?.profile.skills ?? []).map((skill) => `${skill.name} ${skill.repo}`);
+  // The session read none of acme/home's skills; the dev box installs them all but dropped.
+  expect(names).toEqual(
+    expect.arrayContaining(["unread acme/home", "quiet acme/home", "shy acme/home"])
+  );
+  expect(names).not.toContain("dropped acme/home");
+  const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+  expect(evidence["unit user-skills:omp (acme/home:installers/omp.sh)"]).toStartWith(
+    "a dev box installs every unit the installers of its own repository install into Oh My Pi at the session's start, whether or not the session read from it"
+  );
+  expect(evidence["left out: skill dropped (acme/home skills/dropped)"]).toContain(
+    "acme/home:omp/config.yml at "
+  );
+  expect(evidence["left out: skill dropped (acme/home skills/dropped)"]).toContain(
+    "names dropped in skills.ignoredSkills"
+  );
+  // quiet and shy are installed, so skill:// reads them, and not listed; unread is listed.
+  expect(evidence["not listed: skill quiet"]).toContain("disable-model-invocation: true");
+  expect(evidence["not listed: skill shy"]).toContain("hide: true");
+  expect(evidence["not listed: skill unread"]).toBeUndefined();
+  const measure = ListingMeasure.parse(JSON.parse(evidence[LISTING_MEASURE] ?? "{}"));
+  expect(measure.added).toContain("unread");
+  expect(measure.added).not.toContain("quiet");
+  expect(measure.added).not.toContain("shy");
 });
 
 test("the seed fixes the order the sessions are taken in, and --max stops at that many cases", async () => {
@@ -3478,15 +3654,35 @@ test("a transcript read from its spool, in chunks of any size, gives the entries
   const dir = path.join(scratch, "spools");
   mkdirSync(dir, { recursive: true });
   // Every made-up session, and one with a line of characters of 2 to 4 bytes, a line that ends
-  // "\r\n", and a last line still being written.
+  // "\r\n", and a last line still being written. Each is read in chunks of 4096 bytes and of
+  // SPOOL_CHUNK: a session longer than 4096 bytes puts a line across a 4096-byte edge. Only the
+  // "written" text is read in chunks of 7 bytes too, which put its characters of 2 to 4 bytes
+  // across chunk edges; the made-up sessions read so add nothing to that and take seconds.
   const texts = Object.keys(SESSIONS).map((name) => ({ name, text: sessionText(name) }));
   const note = { type: "custom", customType: "note", data: "é 日本 🎉 ".repeat(9) };
   texts.push({
     name: "written",
     text: `${sessionText("good")}${JSON.stringify(note)}\r\n{"type":"message","message":{"ro`,
   });
+  // A line crosses a 4096-byte edge (the byte before it is no newline), and a character of more
+  // than one byte crosses a 7-byte edge of the "written" text.
+  expect(
+    texts.some(({ text }) => {
+      const bytes = Buffer.from(text);
+      return bytes.length > 4096 && bytes[4095] !== 0x0a;
+    })
+  ).toBe(true);
+  let offset = 0;
+  let crossed = false;
+  for (const char of texts.at(-1)?.text ?? "") {
+    const size = Buffer.byteLength(char);
+    crossed ||= size > 1 && Math.floor(offset / 7) !== Math.floor((offset + size - 1) / 7);
+    offset += size;
+  }
+  expect(crossed).toBe(true);
   const refusedNames: string[] = [];
   for (const { name, text } of texts) {
+    const chunks = name === "written" ? [7, 4096, SPOOL_CHUNK] : [4096, SPOOL_CHUNK];
     const file = path.join(dir, `${name}.jsonl`);
     writeFileSync(file, text);
     let whole: ReturnType<typeof readWhole>;
@@ -3494,13 +3690,13 @@ test("a transcript read from its spool, in chunks of any size, gives the entries
       whole = readWhole(text);
     } catch (error) {
       // The broken session: the same line is refused, whatever the chunk.
-      for (const chunk of [7, SPOOL_CHUNK]) {
+      for (const chunk of chunks) {
         expect(() => readTranscript(file, chunk)).toThrow((error as Error).message);
       }
       refusedNames.push(name);
       continue;
     }
-    for (const chunk of [7, 4096, SPOOL_CHUNK]) {
+    for (const chunk of chunks) {
       const t = readTranscript(file, chunk);
       expect({ name, chunk, messages: t.items.map((_, index) => t.message(index)) }).toEqual({
         name,
@@ -4312,7 +4508,7 @@ test("build-tasks with no bound writes the pinned bytes: the tasks, the summary,
     "model summary": "fd2cf470c0eaa72f67f8a326ecfaeafd58a63ed82764f9aae296cfffc84bff8b",
     "model printed": "bf894d108dd96d68557fc836907c898f504618a57f906e073f786c51c1144dc3",
     "profiles tasks": "6978ce55a25eb77c1f126e1b0e35e0f4899d63975797aee26b9e32d53ff3dea0",
-    "profiles summary": "db45bf70ca2d151562b92543a0d81fce355e214eddbae7d288deaf3df5c29310",
+    "profiles summary": "6d77e8e093e478a2bb9dde4da88d8f6c8071af24f04dfb17502b4c15fe484e42",
     "profiles printed": "6e4a4b3f3da89a2faa7e4e21ab71ad7d844a05da52f0aa836ebc41b6baee1532",
     "profiles profiles": "26bf1079e50926d2c9e1bdc9482bca041b0a71392fb091f4352c437ab81932c4",
   });
@@ -4584,7 +4780,7 @@ test("build-tasks --reprofile builds each task's profile again as --profiles-out
       .filter((line) => line.kind !== "pull")
       .map((line) => `${line.db} ${line.kind}`)
       .sort()
-  ).toEqual(["store_a paths", "store_b sessions"]);
+  ).toEqual(["store_a paths", "store_a subagents", "store_b sessions", "store_b subagents"]);
   expect(transcriptPulls(logged)).toBe(3);
   expect(existsSync(`${dir}.spool`)).toBe(false);
 
@@ -4705,31 +4901,30 @@ test("build-tasks --reprofile keeps the old profile of a task whose session its 
   }
   const summary = reprofileSummary(dir);
   const byTask = new Map(summary.profiles.tasks.map((each) => [each.task, each]));
-  expect(byTask.get("t1")).toMatchObject({
-    outcome: "kept",
-    differs: {
-      added: [
-        {
-          item: "no session in the store",
-          source: `the store store_a holds no file of the path hash ${pathHash(task4)} now (session-paths.sql), so the task keeps its old profile`,
-        },
-      ],
-      removed: [],
-    },
+  // A kept task's evidence says why, and its listing measure is not measurable for that reason;
+  // the measure its old build wrote is the one item it drops.
+  const kept = (task: string, gone: Evidence) => {
+    const note = byTask.get(task) as {
+      outcome: string;
+      differs: { added: Evidence[]; removed: Evidence[] };
+    };
+    expect(note.outcome).toBe("kept");
+    expect(note.differs.added.map((each) => each.item)).toEqual([gone.item, LISTING_MEASURE]);
+    expect(note.differs.added[0]).toEqual(gone);
+    const measure = ListingMeasure.parse(JSON.parse(note.differs.added[1]?.source ?? "{}"));
+    expect(measure.kind).toBe("not measurable");
+    expect(measure.why).toEndWith(gone.source);
+    expect(note.differs.removed.map((each) => each.item)).toEqual([LISTING_MEASURE]);
+  };
+  kept("t1", {
+    item: "no session in the store",
+    source: `the store store_a holds no file of the path hash ${pathHash(task4)} now (session-paths.sql), so the task keeps its old profile`,
   });
   expect(byTask.get("t2")?.outcome).toBe("unchanged");
   for (const task of tasks.filter((each) => each.source === "written")) {
-    expect(byTask.get(String(task.id))).toMatchObject({
-      outcome: "kept",
-      differs: {
-        added: [
-          {
-            item: "no session in the store",
-            source: `the store store_b holds no file of the hash ${fileHash(sessionPath("legion"))} now (sessions.sql), so each written task keeps its old profile`,
-          },
-        ],
-        removed: [],
-      },
+    kept(String(task.id), {
+      item: "no session in the store",
+      source: `the store store_b holds no file of the hash ${fileHash(sessionPath("legion"))} now (sessions.sql), so each written task keeps its old profile`,
     });
   }
   expect(summary.counts).toEqual({ changed: 0, unchanged: 1, kept: 9, leftOut: 0 });

@@ -3,11 +3,13 @@
  * one UTC day or hour of file mtime), models.sql (the model of each session of the same files),
  * pull.sql (a transcript, by path), tasks.sql (first user messages that hold some terms),
  * sessions.sql (the paths of the files a count row names by hash), session-head.sql (the head
- * of each session a case or a load task names by its path's SHA-256) and session-paths.sql (the
- * path of each session a load task names by its path's SHA-256). Each placeholder is the name of
- * a value inside double braces, and each is filled with one whole SQL value: a number, a string
- * literal with its quotes (`sqlString`), or a text array of such literals (`sqlTextArray`:
- * tasks.sql's terms, and the hashes of sessions.sql, session-head.sql and session-paths.sql), so
+ * of each session a case or a load task names by its path's SHA-256), session-paths.sql (the
+ * path of each session a load task names by its path's SHA-256) and subagents.sql (a subagent
+ * with a recorded skill listing of each top-level session a path hash names). Each placeholder is
+ * the name of a value inside double braces, and each is filled with one whole SQL value: a number,
+ * a string literal with its quotes (`sqlString`), or a text array of such literals
+ * (`sqlTextArray`: tasks.sql's terms, and the hashes of sessions.sql, session-head.sql,
+ * session-paths.sql and subagents.sql), so
  * no value can end the literal it is in. The filled text goes into the store's read command
  * unchanged.
  *
@@ -33,7 +35,8 @@ type Template =
   | "tasks.sql"
   | "sessions.sql"
   | "session-head.sql"
-  | "session-paths.sql";
+  | "session-paths.sql"
+  | "subagents.sql";
 
 /** The text of one of the runner's SQL files. */
 function readTemplate(name: Template): string {
@@ -214,6 +217,11 @@ export function sessionHeadSql(pathHashes: readonly string[]): string {
 /** session-paths.sql filled for the path hashes `pathHashes` (`pathHashArray`). */
 export function sessionPathsSql(pathHashes: readonly string[]): string {
   return fillTemplate(readTemplate("session-paths.sql"), { hashes: pathHashArray(pathHashes) });
+}
+
+/** subagents.sql filled for the top-level sessions' path hashes `pathHashes` (`pathHashArray`). */
+export function subagentsSql(pathHashes: readonly string[]): string {
+  return fillTemplate(readTemplate("subagents.sql"), { hashes: pathHashArray(pathHashes) });
 }
 
 const USAGE =

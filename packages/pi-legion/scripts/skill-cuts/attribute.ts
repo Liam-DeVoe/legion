@@ -34,10 +34,15 @@
  * Rules.
  *   A session is one transcript file: a 16-hex file hash of a count row, with its store. Each one
  *   is counted once, however many queries of its store hold it: a resumed session whose mtime day
- *   moved while the count ran is in two queries. A `read` row counts in `sessions`, and a
- *   `reference` row (a read of `skill://<name>/<other>` or of `<name>/references/...`) in
- *   `reference_sessions`. A call that has no result in its file is not a read: the report counts
- *   such sessions per store, and no copy counts them.
+ *   moved while the count ran is in two queries. A read that two files hold (one key of
+ *   count.sql's `calls` or `unpaired_calls`: a forked session copies its parent's lines) counts in
+ *   the file whose hash sorts first, over every query of the store, by the rule count.sql applies
+ *   inside one query (`countOnce`), since a fork written on another mtime day than its parent is
+ *   in another query; a file stays in a row when one of its keys there counts in it. A count
+ *   whose rows have no `calls` (made by an earlier count.sql) is refused. A `read` row counts in
+ *   `sessions`, and a `reference` row (a read of `skill://<name>/<other>` or of
+ *   `<name>/references/...`) in `reference_sessions`. A call that has no result in its file is
+ *   not a read: the report counts such sessions per store, and no copy counts them.
  *   The copy of a count row is decided in this order:
  *   1. The prefix table. When every prefix-table.tsv row whose pattern matches the row's copy path
  *      maps to the same copy, the row goes to that copy. The match is `prefixRegExp`, the one
@@ -48,12 +53,18 @@
  *      from the session's working directory). The longest such directory wins; copies of several
  *      repositories at it are told apart by the repository's owner and name, else its name, in
  *      the path; a tie left is unattributed. A one-segment skill directory counts only when the
- *      path names its repository.
+ *      path names its repository. A path inside a copy of another repository that an installer
+ *      writes (`<dir>/vendor/<name>/`, a package under `node_modules/`, a plugin under
+ *      `plugins/cache/`) is a checkout only of a repository that the path from that copy's own
+ *      directory on names; when it names none, step 3 decides.
  *   3. The store's context. The units (packages, plugins, a host's user skills, each named with its
  *      manifest in prefix-table.tsv's `via`) that the store's own step-1 reads come from are the
  *      units its context installs. Their copies are the installers.tsv rows of those units and the
  *      prefix rows' own copies. When they hold exactly one copy of the row's skill name, the row
- *      goes to that copy. A store with no step-1 read installs no unit.
+ *      goes to that copy. A store with no step-1 read installs no unit. A row whose path is inside
+ *      an `ensure_vendor` clone (`<dir>/vendor/<name>/`) goes to no copy by this step: no prefix
+ *      row maps that clone, so the copies output's end time holds no installer that makes it, and
+ *      the copies the context installs then are other copies than the clone the read came from.
  *   4. Otherwise the row is unattributed for its skill name.
  *   `placer` is these four steps, and the one place a read's copy is decided: `attribute` counts
  *   each row where it puts it, and build.ts's `build-cases` keeps a session only when it puts the
@@ -89,9 +100,11 @@
  *                          with, `<repository> <path>`, joined by `; `), loaded (yes or no),
  *                          status.
  *   skill-read-count.md    The end time and the window; the stores with their spans, earliest
- *                          record and earliest read; each failed, split or missing query; the
- *                          attribution rule with the units each store's context installs; the
- *                          unmapped prefixes with their sessions and the rule that placed them;
+ *                          record and earliest read, and the call keys two files hold (in one
+ *                          query, and across queries with the pairs of files that hold them);
+ *                          each failed, split or missing query; the attribution rule with the
+ *                          units each store's context installs; the unmapped prefixes with their
+ *                          sessions and the rule that placed them;
  *                          the mapped prefixes with their copies; the ties; the loaded list; per
  *                          repository, the skills with no read; the two Claude Code lists; per
  *                          repository, the bytes of its skill names and descriptions at the commit
@@ -147,6 +160,9 @@ import { rankSkills } from "./score";
 // the count's output
 
 const Hash = z.string().regex(/^[0-9a-f]{16}$/, { error: "a file hash of 16 hex characters" });
+const Key = z.string().regex(/^[0-9a-f]{16}$/, { error: "a call key of 16 hex characters" });
+/** Each file of a count row, by its hash, with the keys of its reads that put it in the row. */
+const Calls = z.record(Hash, z.array(Key).min(1));
 const Count = z.number().int().nonnegative();
 /** A session as the count names it across stores: its store and its file hash. */
 export const sessionKey = (store: string, hash: string) => `${store}\t${hash}`;
@@ -161,8 +177,10 @@ export const CountRow = z.strictObject({
   kind: z.enum(["read", "reference"]),
   files: Count,
   hashes: z.array(Hash),
+  calls: Calls,
   unpaired: Count,
   unpaired_hashes: z.array(Hash),
+  unpaired_calls: Calls,
 });
 export type CountRow = z.infer<typeof CountRow>;
 
@@ -194,21 +212,29 @@ export interface QueryOutput {
 
 const QUERY_FILE = /^\d{4}-\d{2}-\d{2}(T\d{2})?\.txt$/;
 
-/** The rows and the summary of the psql output `text` of one query of the store `store`, each
+/** The fields of a count row that name its files' keys. */
+const CALL_FIELDS = ["calls", "unpaired_calls"] as const;
+
+/** A count query's output from an earlier count.sql, whose rows name no file's keys: no read in
+ *  it can be counted once across queries, so it ends the read of the count (readQueryDir) rather
+ *  than being set aside as one unreadable query. */
+class EarlierCount extends Error {}
+
+/** The rows and the summary of the psql rows `values` of one query of the store `store`, each
  *  row parsed by `schema` (`what` names the query's SQL file) and the summary kept apart; `check`
  *  throws on a row the query's own rule refuses. Throws, naming the row, on a row of another shape
  *  or store, a row after the summary or one `check` refuses, and when no summary ends it (the
  *  query did not end). */
 function queryRows<Row extends { readonly row: string; readonly store: string }>(
   store: string,
-  text: string,
+  values: readonly unknown[],
   schema: z.ZodType<Row>,
   what: string,
   check: (row: Exclude<Row, { row: "summary" }>, at: string) => void
 ): { rows: Exclude<Row, { row: "summary" }>[]; summary: Extract<Row, { row: "summary" }> } {
   const rows: Exclude<Row, { row: "summary" }>[] = [];
   let summary: Extract<Row, { row: "summary" }> | undefined;
-  for (const [index, value] of psqlRows(text).entries()) {
+  for (const [index, value] of values.entries()) {
     const at = `row ${index + 1}`;
     const parsed = schema.safeParse(value);
     if (!parsed.success) {
@@ -231,12 +257,32 @@ function queryRows<Row extends { readonly row: string; readonly store: string }>
 
 /** The output of the query `name` of the store `store`; throws when the text is not one whole
  *  count.sql result of that store: no psql table, a row of another shape or store, a row after the
- *  summary, hashes that do not match their counts, or no summary (the query did not end). */
+ *  summary, hashes that do not match their counts or their calls, or no summary (the query did not
+ *  end). Throws an EarlierCount, naming the field, on a count row with no `calls` or
+ *  `unpaired_calls`. */
 export function parseQueryOutput(store: string, name: string, text: string): QueryOutput {
-  const { rows, summary } = queryRows(store, text, QueryRow, "count.sql", (row, at) => {
+  const values = psqlRows(text);
+  for (const [index, value] of values.entries()) {
+    if (typeof value !== "object" || value === null || !("row" in value)) continue;
+    if (value.row !== "count") continue;
+    const missing = CALL_FIELDS.filter((field) => !Object.hasOwn(value, field));
+    if (missing.length > 0) {
+      const fields = missing.map((field) => JSON.stringify(field)).join(" and no ");
+      throw new EarlierCount(
+        `the count query ${store} ${name}: row ${index + 1} has no ${fields} field, so an earlier count.sql made it and its reads cannot be counted once across queries; run the count again with this count.sql`
+      );
+    }
+  }
+  /** Whether `calls` names exactly the files of `hashes`. */
+  const sameFiles = (calls: Readonly<Record<string, unknown>>, hashes: readonly string[]) =>
+    Object.keys(calls).length === hashes.length &&
+    hashes.every((hash) => Object.hasOwn(calls, hash));
+  const { rows, summary } = queryRows(store, values, QueryRow, "count.sql", (row, at) => {
     if (row.hashes.length !== row.files || row.unpaired_hashes.length !== row.unpaired) {
       throw new Error(`${at}: its hashes do not match its files or unpaired counts`);
     }
+    if (!sameFiles(row.calls, row.hashes) || !sameFiles(row.unpaired_calls, row.unpaired_hashes))
+      throw new Error(`${at}: its calls or unpaired_calls do not name the files of its hashes`);
   });
   return { store, name, rows, summary };
 }
@@ -295,7 +341,9 @@ export interface QueryDir<O> {
 }
 export type CountRead = QueryDir<QueryOutput>;
 
-/** Reads the query directory `dir` for the stores `stores`, each `.txt` parsed by `parse`. */
+/** Reads the query directory `dir` for the stores `stores`, each `.txt` parsed by `parse`. A
+ *  `.txt` that `parse` throws on is listed as unreadable, but for an EarlierCount, which ends the
+ *  read. */
 export function readQueryDir<O>(
   dir: string,
   stores: readonly string[],
@@ -313,6 +361,7 @@ export function readQueryDir<O>(
       try {
         outputs.push(parse(store, name, readFileSync(path.join(storeDir, file), "utf8")));
       } catch (error) {
+        if (error instanceof EarlierCount) throw error;
         unreadable.push({ store, name, why: (error as Error).message });
       }
     }
@@ -329,6 +378,116 @@ export function readQueryDir<O>(
 /** Reads the count directory `dir` for the stores `stores`. */
 export function readCount(dir: string, stores: readonly string[]): CountRead {
   return readQueryDir(dir, stores, parseQueryOutput);
+}
+
+/** A file that lists a key in a count row: its hash, and the name of its query. */
+interface Holder {
+  readonly hash: string;
+  readonly name: string;
+}
+
+/** What `countOnce` finds in the files of two queries of one store. */
+export interface AcrossQueries {
+  /** The keys that files of two queries hold. */
+  readonly keys: number;
+  /** The pairs of files of two queries that hold one key: a fork written on another mtime day
+   *  than its parent, with its parent, among them. */
+  readonly pairs: number;
+}
+
+/** The count's rows with each read counted once across queries, and per store what files of two
+ *  queries hold. */
+export interface CountedOnce {
+  readonly outputs: readonly QueryOutput[];
+  readonly acrossQueries: ReadonlyMap<string, AcrossQueries>;
+}
+
+/**
+ * count.sql's rule for a read that two files hold, applied to every query of each store: a key
+ * that several files hold counts in the file whose hash sorts first (in byte order), and a file
+ * stays in a row's `hashes` (or `unpaired_hashes`) when one of its keys there counts in it;
+ * `files` and `unpaired` follow. Each query applied the rule to its own files, so a query lists
+ * a key under one file; a fork written on another mtime day than its parent lists the parent's
+ * key in another query. Each row keeps its `calls`, so the rule applied again gives the same
+ * rows. A row whose files all keep their place, and an output with no such row changed, are
+ * returned as they are.
+ */
+export function countOnce(outputs: readonly QueryOutput[]): CountedOnce {
+  // Per store: each key's first holder, and every holder of a key that more than one holds.
+  const stores = new Map<string, { first: Map<string, Holder>; more: Map<string, Holder[]> }>();
+  for (const output of outputs) {
+    const store = entry(stores, output.store, () => ({
+      first: new Map<string, Holder>(),
+      more: new Map<string, Holder[]>(),
+    }));
+    for (const row of output.rows) {
+      for (const calls of [row.calls, row.unpaired_calls]) {
+        for (const [hash, keys] of Object.entries(calls)) {
+          for (const key of keys) {
+            const first = store.first.get(key);
+            if (first === undefined) {
+              store.first.set(key, { hash, name: output.name });
+              continue;
+            }
+            if (first.hash === hash && first.name === output.name) continue;
+            const held = entry(store.more, key, () => [first]);
+            if (!held.some((holder) => holder.hash === hash && holder.name === output.name))
+              held.push({ hash, name: output.name });
+          }
+        }
+      }
+    }
+  }
+  // Per store: the file that each key two files hold counts in, and what files of two queries
+  // hold.
+  const owners = new Map<string, Map<string, string>>();
+  const acrossQueries = new Map<string, AcrossQueries>();
+  for (const [store, { more }] of stores) {
+    const owner = new Map<string, string>();
+    const pairs = new Set<string>();
+    let keys = 0;
+    for (const [key, held] of more) {
+      const files = [...new Set(held.map((holder) => holder.hash))].sort();
+      const [lowest] = files;
+      if (lowest === undefined || files.length < 2) continue;
+      owner.set(key, lowest);
+      let across = false;
+      for (const a of held) {
+        for (const b of held) {
+          if (a.hash >= b.hash || a.name === b.name) continue;
+          across = true;
+          pairs.add(`${a.hash}\t${b.hash}`);
+        }
+      }
+      if (across) keys++;
+    }
+    owners.set(store, owner);
+    acrossQueries.set(store, { keys, pairs: pairs.size });
+  }
+  const counted = outputs.map((output) => {
+    const owner = owners.get(output.store);
+    if (owner === undefined || owner.size === 0) return output;
+    /** The files of `hashes` one of whose keys in `calls` counts in them. */
+    const kept = (calls: CountRow["calls"], hashes: readonly string[]) =>
+      hashes.filter((hash) => (calls[hash] ?? []).some((key) => (owner.get(key) ?? hash) === hash));
+    let changed = false;
+    const rows = output.rows.map((row) => {
+      const hashes = kept(row.calls, row.hashes);
+      const unpaired = kept(row.unpaired_calls, row.unpaired_hashes);
+      if (hashes.length === row.hashes.length && unpaired.length === row.unpaired_hashes.length)
+        return row;
+      changed = true;
+      return {
+        ...row,
+        files: hashes.length,
+        hashes,
+        unpaired: unpaired.length,
+        unpaired_hashes: unpaired,
+      };
+    });
+    return changed ? { ...output, rows } : output;
+  });
+  return { outputs: counted, acrossQueries };
 }
 
 /** A query of the count that has no whole output, or that was split, and what happened to it. */
@@ -486,7 +645,8 @@ export interface ModelOutput {
  *  after the summary, a model with no source or a source with no model, a summary whose counts
  *  are not its rows', or no summary. */
 export function parseModelOutput(store: string, name: string, text: string): ModelOutput {
-  const { rows, summary } = queryRows(store, text, ModelQueryRow, "models.sql", (row, at) => {
+  const values = psqlRows(text);
+  const { rows, summary } = queryRows(store, values, ModelQueryRow, "models.sql", (row, at) => {
     if ((row.model === null) !== (row.source === null)) {
       throw new Error(`${at}: a model needs its source, and a source its model`);
     }
@@ -809,7 +969,12 @@ export interface StoreCount {
   readonly filesRead: number;
   readonly bytesRead: number;
   readonly badLines: number;
+  /** The call keys that two files of one query hold: its queries' `shared_call_ids`, summed. */
   readonly sharedCallIds: number;
+  /** The call keys that files of two of its queries hold (`countOnce`). */
+  readonly sharedAcrossQueries: number;
+  /** The pairs of files of two of its queries that hold one call key (`countOnce`). */
+  readonly filePairsAcrossQueries: number;
   readonly readSessions: number;
   readonly unpairedSessions: number;
   /** The first-read day of its earliest read in the window, or undefined with none. */
@@ -879,10 +1044,55 @@ function prefixTable(rows: readonly PrefixMatcher[]) {
 }
 
 /** What the checkout rule says of a copy-path prefix: the copy it places the read at, or
- *  undefined with the copies it cannot tell apart, and why, in the report's words. */
+ *  undefined with the copies it cannot tell apart, and why, in the report's words. `toContext`:
+ *  the path is inside a clone an installer makes and names none of the repositories whose skill
+ *  directory ends it, so the rule places nothing and the store's context rule decides. */
 export interface CheckoutDecision {
   readonly copy: string | undefined;
   readonly why: string;
+  readonly toContext?: true;
+}
+
+/** A copy of another repository that an installer writes, in a path's segments (`cloneAt`). */
+interface InstalledCopy {
+  readonly start: number;
+  readonly own: number;
+  readonly kind: "clone" | "package" | "plugin";
+}
+
+/**
+ * Where, in the segments `segments` of a path, the copy of another repository that an installer
+ * writes starts, of those that start before the segment `end`, after the last of these
+ * directories (the nearest to `end`): `vendor/<name>`, an `ensure_vendor` clone (copies.ts,
+ * `parseInstaller`: a clone of a repository at `vendor/<name>` of the installer's repository,
+ * `kind` "clone"); `node_modules/<name>` and `node_modules/@<scope>/<name>`, a package a plugins
+ * package.json installs (copies.ts's `**\/node_modules/<name>/` locations, "package"); and
+ * `plugins/cache/<dir>`, a plugin a marketplace installs (`**\/plugins/cache/…`, "plugin").
+ * `start` is the copy's first segment, `own` the last segment of its own directory (`<name>`,
+ * `@<scope>/<name>`, `<dir>`). Undefined when none starts before `end`.
+ */
+function cloneAt(segments: readonly string[], end: number): InstalledCopy | undefined {
+  let found: InstalledCopy | undefined;
+  for (let at = 0; at + 1 < end; at++) {
+    const segment = segments[at];
+    if (segment === "vendor") found = { start: at + 1, own: at + 1, kind: "clone" };
+    else if (segment === "node_modules") {
+      const scoped = segments[at + 1]?.startsWith("@") === true && at + 2 < end;
+      found = { start: at + 1, own: scoped ? at + 2 : at + 1, kind: "package" };
+    } else if (segment === "plugins" && segments[at + 1] === "cache" && at + 2 < end) {
+      found = { start: at + 2, own: at + 2, kind: "plugin" };
+    }
+  }
+  return found;
+}
+
+/** The directory of the `ensure_vendor` clone (`cloneAt`, kind "clone") that the copy-path
+ *  prefix `prefix` (`copyPrefix`, ending with the skill's own directory) is inside, or undefined
+ *  when it is inside none. */
+function cloneDirectory(prefix: string): string | undefined {
+  const segments = prefix.replace(/\/+$/, "").split("/");
+  const clone = cloneAt(segments, segments.length - 1);
+  return clone?.kind === "clone" ? segments.slice(0, clone.own + 1).join("/") : undefined;
 }
 
 /**
@@ -895,8 +1105,12 @@ export interface CheckoutDecision {
  * name (`.dotfiles` holds `dotfiles`). Copies of several repositories at that directory are told
  * apart by it: the one the path names most; any other tie is unattributed. A skill directory of
  * one segment (a skill at its repository's root) ends every path of a skill of that name, so it
- * matches only a path that names its repository. Undefined when no copy's directory ends the
- * prefix, and for a `skill://` prefix, which names no directory.
+ * matches only a path that names its repository. A path inside a copy of another repository that
+ * an installer writes (`cloneAt`: `<dir>/vendor/<name>/`, a package under `node_modules/`, a
+ * plugin under `plugins/cache/`) is no checkout of a repository that the path from that copy's
+ * own directory on does not name: such a directory matches only a repository named there, and
+ * when none is, the rule places nothing and the context rule decides (`toContext`). Undefined when
+ * no copy's directory ends the prefix, and for a `skill://` prefix, which names no directory.
  */
 export function checkoutRule(
   copies: readonly Pick<SkillCopiesRow, "repository" | "path">[]
@@ -913,7 +1127,10 @@ export function checkoutRule(
     const segments = prefix.replace(/\/+$/, "").split("/");
     for (let start = 0; start < segments.length && !prefix.startsWith("skill://"); start++) {
       const dir = segments.slice(start).join("/");
-      const before = segments.slice(0, start);
+      const clone = cloneAt(segments, start);
+      // Inside a clone, only the clone's own directories name a repository.
+      const before = segments.slice(clone?.start ?? 0, start);
+      const inside = clone === undefined ? "" : segments.slice(0, clone.own + 1).join("/");
       /** 2 when the path names the repository's owner and name, 1 its name, else 0. */
       const named = (repository: string) => {
         const [owner = "", name = ""] = repository.split("/");
@@ -922,20 +1139,31 @@ export function checkoutRule(
         return before.some((segment) => segment.includes(name)) ? 1 : 0;
       };
       const oneSegment = start === segments.length - 1;
-      const repositories = (byDir.get(dir) ?? []).filter(
-        (repository) => !oneSegment || named(repository) > 0
+      const ending = byDir.get(dir) ?? [];
+      const repositories = ending.filter(
+        (repository) => (!oneSegment && clone === undefined) || named(repository) > 0
       );
-      if (repositories.length === 0) continue;
+      if (repositories.length === 0) {
+        if (clone !== undefined && ending.length > 0) {
+          decision = {
+            copy: undefined,
+            why: `the path ends with ${dir}/, the skill directory of ${ending.join(", ")}, inside ${inside}/, a copy of another repository that an installer writes, which names none of them`,
+            toContext: true,
+          };
+          break;
+        }
+        continue;
+      }
       const best = Math.max(...repositories.map(named));
       const chosen = repositories.filter((repository) => named(repository) === best);
       const [only] = chosen;
       const ends = `the path ends with ${dir}/`;
       const naming = (repository: string) =>
-        `the path names ${best === 2 ? repository : `${repository.split("/")[1]} in a directory`}`;
+        `the path names ${best === 2 ? repository : `${repository.split("/")[1]} in a directory`}${clone === undefined ? "" : ` of the copy an installer writes at ${inside}/`}`;
       if (repositories.length === 1 && only !== undefined) {
         decision = {
           copy: copyKey(only, dir),
-          why: `to ${only} ${dir}: ${ends}, its skill directory${oneSegment ? `, and ${naming(only)}` : ""}`,
+          why: `to ${only} ${dir}: ${ends}, its skill directory${oneSegment || clone !== undefined ? `, and ${naming(only)}` : ""}`,
         };
       } else if (chosen.length === 1 && only !== undefined && best > 0) {
         decision = {
@@ -982,13 +1210,18 @@ export interface Placer {
   readonly members: ReadonlyMap<string, ReadonlySet<string>>;
   /** The copies some store's context installs. */
   readonly installedInContext: ReadonlySet<string>;
+  /** The count's rows with each read counted once across queries (`countOnce`): the rows this
+   *  places reads by, and `attribute` counts. */
+  readonly counted: CountedOnce;
 }
 
-/** The one place a read's copy is decided (the header's steps 1 to 4): `attribute` counts each
- *  row where this puts it, and build.ts keeps a session only when this puts its read at the cut's
- *  copy. Throws when a prefix-table.tsv row, or an installers.tsv row that installs a copy, names
- *  a copy that skill-copies.tsv does not hold. */
+/** The one place a read's copy is decided (the header's steps 1 to 4), on the rows of `outputs`
+ *  with each read counted once across queries (`countOnce`): `attribute` counts each row where
+ *  this puts it, and build.ts keeps a session only when this puts its read at the cut's copy.
+ *  Throws when a prefix-table.tsv row, or an installers.tsv row that installs a copy, names a copy
+ *  that skill-copies.tsv does not hold. */
 export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
+  const counted = countOnce(outputs);
   const copies = new Map<string, SkillCopiesRow>();
   for (const row of r4.copies) copies.set(copyKey(row.repository, row.path), row);
   const known = (key: string, where: string) => {
@@ -1029,7 +1262,7 @@ export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
 
   // Step 3's units: those each store's own mapped reads come from, with their sessions.
   const storeUnits = new Map<string, Map<string, Set<string>>>();
-  for (const output of outputs) {
+  for (const output of counted.outputs) {
     for (const row of output.rows) {
       if (row.hashes.length === 0) continue;
       const decision = decide(row.copy);
@@ -1074,12 +1307,24 @@ export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
         outcome: `checkout: ${byCheckout.why}`,
       };
     }
-    if (byCheckout !== undefined) {
+    if (byCheckout !== undefined && byCheckout.toContext === undefined) {
       return {
         prefix,
         copy: undefined,
         rule: undefined,
         outcome: `unattributed: ${table}${byCheckout.why}`,
+      };
+    }
+    // A read inside an `ensure_vendor` clone that no prefix row maps is of the clone, which the
+    // copies output does not hold at its end time; the copies the context installs then are
+    // others, so the context rule claims none of them for it.
+    const clone = cloneDirectory(prefix);
+    if (clone !== undefined) {
+      return {
+        prefix,
+        copy: undefined,
+        rule: undefined,
+        outcome: `unattributed: ${table}${byCheckout?.why ?? `no copy's skill directory ends the path, which is inside ${clone}/, a clone an installer makes`}; no prefix row maps it, and the context rule claims no copy for a read inside a clone`,
       };
     }
     const [only] = context;
@@ -1096,13 +1341,13 @@ export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
       copy: undefined,
       rule: undefined,
       outcome:
-        `unattributed: ${table}no copy's skill directory ends the path, and its context installs ` +
+        `unattributed: ${table}${byCheckout?.why ?? "no copy's skill directory ends the path"}, and its context installs ` +
         (context.length === 0
           ? `no copy of ${skill}`
           : `${context.length} copies of ${skill} (${context.map(shown).join(", ")})`),
     };
   };
-  return { place, storeUnits, members, installedInContext };
+  return { place, storeUnits, members, installedInContext, counted };
 }
 
 /** The attribution of the count's rows `outputs` to the copies output's copies, by the rules of
@@ -1113,7 +1358,7 @@ export function attribute(
   outputs: readonly QueryOutput[],
   r4: R4Tables
 ): Attribution {
-  const { place, storeUnits, members, installedInContext } = placer(outputs, r4);
+  const { place, storeUnits, members, installedInContext, counted } = placer(outputs, r4);
 
   // Each copy's sessions, and each skill name's sessions no copy got, by the row's kind.
   const copySessions = {
@@ -1147,7 +1392,7 @@ export function attribute(
       earliest: string | undefined;
     }
   >();
-  for (const output of outputs) {
+  for (const output of counted.outputs) {
     const store = entry(stats, output.store, () => ({
       outputs: 0,
       files: 0,
@@ -1302,6 +1547,8 @@ export function attribute(
         bytesRead: stat?.bytes ?? 0,
         badLines: stat?.bad ?? 0,
         sharedCallIds: stat?.shared ?? 0,
+        sharedAcrossQueries: counted.acrossQueries.get(store.name)?.keys ?? 0,
+        filePairsAcrossQueries: counted.acrossQueries.get(store.name)?.pairs ?? 0,
         readSessions: stat?.read.size ?? 0,
         unpairedSessions: stat?.unpaired.size ?? 0,
         earliestRead: stat?.earliest,
@@ -1763,7 +2010,7 @@ export function readCountMarkdown(report: Report): string {
   say(
     "# Skill read count",
     "",
-    `End time ${config.windowEnd}. The window is [${config.windowStart}, ${config.windowEnd}), ${windowDays} days. Each query read the files of one store whose mtime is in one UTC day (or one hour of a day whose query timed out), from the window's start on; a read counts when its call's timestamp is in the window. A session is one transcript file, so a subagent's file is a session of its own, and a file that two queries hold is one session.`,
+    `End time ${config.windowEnd}. The window is [${config.windowStart}, ${config.windowEnd}), ${windowDays} days. Each query read the files of one store whose mtime is in one UTC day (or one hour of a day whose query timed out), from the window's start on; a read counts when its call's timestamp is in the window. A session is one transcript file, so a subagent's file is a session of its own, and a file that two queries hold is one session. A read whose call id and timestamp two files hold (a forked session copies its parent's lines) counts in one of them, whichever queries hold the two.`,
     "",
     `${attribution.copies.length} copies of ${names.size} names in ${repositories.length} repositories: ` +
       STATUSES.map((status) => `${of(status).length} ${status}`).join(", ") +
@@ -1771,8 +2018,8 @@ export function readCountMarkdown(report: Report): string {
     "",
     "## Stores",
     "",
-    "| Store | Context | Earliest record | Files in the store | Earliest read in the window | Sessions with a read | Queries with output | Files read | Bytes read | Lines not JSON | Call ids in two files |",
-    "| --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |"
+    "| Store | Context | Earliest record | Files in the store | Earliest read in the window | Sessions with a read | Queries with output | Files read | Bytes read | Lines not JSON | Call ids in two files of one query | Call ids in files of two queries | File pairs of two queries with one call id |",
+    "| --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
   );
   for (const store of attribution.stores) {
     const span = spans.find((candidate) => candidate.store === store.store);
@@ -1783,7 +2030,7 @@ export function readCountMarkdown(report: Report): string {
           ? "no record"
           : iso(span.earliest_mtime_ms);
     say(
-      `| ${cell(store.store)} | ${cell(store.context)} | ${earliest} | ${span?.files ?? "not measured"} | ${store.earliestRead ?? "no read"} | ${store.readSessions} | ${store.outputs} | ${store.filesRead} | ${store.bytesRead} | ${store.badLines} | ${store.sharedCallIds} |`
+      `| ${cell(store.store)} | ${cell(store.context)} | ${earliest} | ${span?.files ?? "not measured"} | ${store.earliestRead ?? "no read"} | ${store.readSessions} | ${store.outputs} | ${store.filesRead} | ${store.bytesRead} | ${store.badLines} | ${store.sharedCallIds} | ${store.sharedAcrossQueries} | ${store.filePairsAcrossQueries} |`
     );
   }
   say("");
@@ -1834,8 +2081,8 @@ export function readCountMarkdown(report: Report): string {
     "## How a read is attributed",
     "",
     "1. The prefix table (prefix-table.tsv): a read goes to the copy that every row whose prefix matches its copy path maps to, when they map to one copy.",
-    "2. A checkout: a read whose path ends with a copy's skill directory in its repository (with a path boundary before it) is a read of that copy in a checkout of its repository; the longest such directory wins. Copies of several repositories at that directory are told apart by the path before it: the one whose owner and name are two directories of it in a row, else the one whose name a directory holds (`.dotfiles` holds `dotfiles`); a tie left is unattributed. A skill directory of one segment (a skill at its repository's root) counts only when the path names its repository.",
-    "3. The store's context: the units (packages, plugins, a host's user skills) that the store's own reads of step 1 come from are the units its context installs. Their copies are the copies their installers.tsv rows ship, stage, install, link or enable, and the copies of their prefix rows. When those hold exactly one copy of the read's skill name, the read goes to that copy.",
+    "2. A checkout: a read whose path ends with a copy's skill directory in its repository (with a path boundary before it) is a read of that copy in a checkout of its repository; the longest such directory wins. Copies of several repositories at that directory are told apart by the path before it: the one whose owner and name are two directories of it in a row, else the one whose name a directory holds (`.dotfiles` holds `dotfiles`); a tie left is unattributed. A skill directory of one segment (a skill at its repository's root) counts only when the path names its repository. A path inside a copy of another repository that an installer writes (`<dir>/vendor/<name>/`, an `ensure_vendor` clone; a package under `node_modules/`; a plugin under `plugins/cache/`) is a checkout only of a repository that the path from that copy's own directory on names; when it names none, step 3 decides.",
+    "3. The store's context: the units (packages, plugins, a host's user skills) that the store's own reads of step 1 come from are the units its context installs. Their copies are the copies their installers.tsv rows ship, stage, install, link or enable, and the copies of their prefix rows. When those hold exactly one copy of the read's skill name, the read goes to that copy. A read inside an `ensure_vendor` clone (`<dir>/vendor/<name>/`) that no prefix row maps goes to no copy by this step: the copies the context installs at the copies output's end time are other copies than that clone.",
     "4. Otherwise the read is unattributed for its skill name.",
     "",
     "Two copies of one name are a tie when their sessions differ by at most that name's unattributed sessions.",
