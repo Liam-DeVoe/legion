@@ -552,3 +552,43 @@ func TestSignOffMovesTheTaskToItsNextStepInTheGoParts(t *testing.T) {
 		})
 	}
 }
+
+// The architect's role parts say what its daemon parts say of a sign-off: it moves the task to its
+// next step, and to the retro only where the acceptance is the task's last step, so the retro
+// starts once the task's last step passes and the steps after the acceptance run without the
+// owner. Each role part is read alone, and each architect's composition is read whole and folded,
+// since the daemon parts join it. This shows the text is loaded, never that an architect follows
+// it.
+func TestSignOffMovesTheTaskToItsNextStepInTheRoleParts(t *testing.T) {
+	moves := "which moves the task to its next step, or to retro where your acceptance is its last step"
+	for _, tc := range []struct {
+		part       string
+		want, gone []string
+	}{
+		{
+			"architect.md",
+			[]string{
+				moves,
+				"the daemon starts the implementer on it once the task's last step passes",
+				"the steps after your acceptance in its task, its retro and its merge then run without you",
+			},
+			[]string{"which moves the child to retro", "once you sign off"},
+		},
+		{"architect-root.md", []string{moves}, []string{"(which moves it to retro)"}},
+	} {
+		t.Run(tc.part, func(t *testing.T) {
+			holdsAndRetires(t, "roles/"+tc.part, rolePart(t, tc.part), tc.want, tc.gone)
+		})
+	}
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, isRoot := range []bool{true, false} {
+		t.Run(fmt.Sprintf("composed, root %t", isRoot), func(t *testing.T) {
+			holdsAndRetires(t, fmt.Sprintf("the composed architect prompt (root %t)", isRoot),
+				composedText(t, composer, claim.RoleArchitect, isRoot), nil,
+				[]string{"and moves the issue to `retro`", "which moves the child to retro", "(which moves it to retro)"})
+		})
+	}
+}
