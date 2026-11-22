@@ -36,7 +36,7 @@ import { buildIssuePath, buildReferencePath, documentRoute } from "../refs/route
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
-import { ViewportAnchor } from "../shell/ViewportAnchor";
+import { scrollingAncestor, ViewportAnchor } from "../shell/ViewportAnchor";
 import { CutWords } from "./CutWords";
 import { DetailsErrorLine } from "./details-error";
 import { HistoryHandoff } from "./HistoryHandoff";
@@ -644,19 +644,6 @@ export function IssueHistory({
       ) : null}
     </section>
   );
-}
-
-/** The nearest box above `element` that scrolls its content, or null where the document does. */
-function scrollingAncestor(element: HTMLElement | null): HTMLElement | null {
-  for (
-    let node = element?.parentElement;
-    node && node !== document.body;
-    node = node.parentElement
-  ) {
-    const overflow = getComputedStyle(node).overflowY;
-    if (overflow === "auto" || overflow === "scroll") return node;
-  }
-  return null;
 }
 
 /** The day the entry `item` names is in: a thread's turn, root or reply. */
