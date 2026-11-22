@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
+	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -578,4 +579,68 @@ func TestATakeoverCopyPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing
 	if stored, _, ok := readKeptRoleCopy(t, harness.client, role); !ok || stored.EventID != item.EventID {
 		t.Fatalf("the lane holds %+v (held: %t), want event %s", stored, ok, item.EventID)
 	}
+}
+
+// A hand-off resend that reaches a three-copy stream while its earlier attempt is still being
+// stored is refused as still in process (bus.ErrDuplicateInProcess) under the hand-off's MsgId,
+// which every attempt of one envelope derives alike. The hand-off publishes again until the
+// earlier attempt is stored and the answer names that copy (publishPastInProcess), so the resend
+// is handed off as a duplicate and never fails: a failed hand-off is the send route's and the
+// role routes' 503 and the agent subject give-up's NAK. The earlier attempt is handed off as no
+// duplicate, and the stream holds one hand-off.
+func TestAHandoffResendWhoseEarlierAttemptIsStillInProcessIsAnsweredDuplicate(t *testing.T) {
+	rig := newInProcessRig(t)
+	agents, err := legionagents.Open(t.Context(), rig.harness.client.Conn, legionagents.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("open the legion agent registry: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := agents.Put(ctx, legionagents.Entry{
+		SessionID: handoffAgent, LegionProject: "infra", Issue: "INFRA-204", Role: "implementer",
+		RoleToken: "legion-infra-infra-204-implementer", Title: "Legion implementer · INFRA-204", Harness: "omp",
+		StartedAt: "2026-10-26T03:00:00Z",
+	}); err != nil {
+		t.Fatalf("record the stopped implementer: %v", err)
+	}
+	if _, err := agents.PutProject(ctx, "infra", legionagents.Project{
+		Answering: true, UpdatedAt: time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+	}); err != nil {
+		t.Fatalf("state that the project answers: %v", err)
+	}
+	// The registries are on the package's shared server, as the rig's other reads are, so a
+	// frozen route holds the hand-off's publish over the rig's listener and none of its reads.
+	handoff := &legionHandoff{client: rig.d.client, registry: rig.harness.registry, sessions: rig.harness.sessions,
+		agents: newLegionAgentRegistry(agents), logger: rig.logger}
+	subject := listenerwire.LegionHandoffSubject("infra", handoffAgent)
+	item := envelopeFor(contracts.LegacyAgentSubject(handoffAgent), "agent."+handoffAgent+"."+id.New(), "agent")
+	type handedOff struct {
+		handed *legionHandedOff
+		err    error
+	}
+	attempt := func() <-chan handedOff {
+		answer := make(chan handedOff, 1)
+		go func() {
+			handed, err := handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: item, session: handoffAgent})
+			answer <- handedOff{handed, err}
+		}()
+		return answer
+	}
+	rig.requireLeader(t)
+	heard, before := rig.hear(t, subject), rig.copies(t, subject)
+	thaw := rig.cluster.FreezeRoutes(t)
+	t.Cleanup(thaw)
+	earlier := attempt()
+	awaitHanded(t, heard, 1)
+	resend := attempt()
+	awaitHanded(t, heard, 1)
+	thaw()
+	if got := <-earlier; got.err != nil || got.handed == nil || got.handed.duplicate {
+		t.Errorf("the earlier hand-off = %+v, %v; want it handed off, no duplicate", got.handed, got.err)
+	}
+	if got := <-resend; got.err != nil || got.handed == nil || !got.handed.duplicate {
+		t.Errorf("the resend's hand-off = %+v, %v; want the earlier attempt's copy, answered duplicate: its first publish was refused as in process, and that attempt is stored",
+			got.handed, got.err)
+	}
+	rig.requireOneCopy(t, subject, before)
 }

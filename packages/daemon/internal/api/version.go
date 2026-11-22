@@ -3133,7 +3133,7 @@ package api
 // declared by #4175 and #4589 too, then 208 while main stood at 202, 203 being declared by #3993,
 // #4065, #4175, #4553, #4592, #4596 and #4661 too, then 217 while main stood at 205, 208 being
 // declared by #4175 too, then 211 while main stood at 205, 217 being declared by #4273, #4590 and
-// #4771 too, then 228 while main stood at 213 (#3995), then 229 while main stood at 213, 228
+// #4771 too, then 228 while main stood at 213 (#4553), then 229 while main stood at 213, 228
 // being declared by #4590 too. It took 198 because a census of every open
 // pull request at 2026-11-20T19:29Z, read with the `declared_by_open_pull_requests` of main's
 // .github/scripts/check-daemon-api-contract.sh, found 189 declared by #2402, #3512, #3995, #4184,
@@ -3156,9 +3156,9 @@ package api
 // #4180, #4182, #4193, #4259, #4932 and #4984, 217 by #4273, 218 by #3831, 219 by #4611, 220 by
 // #4930, 221 by #3993, #4049, #4392, #4432 and #4771, 222 by #4661, 223 by #4805, 224 by #4960,
 // 225 by #3712 and #4580, 226 by #4175, 227 by #4065 and 228 by #4590, and nothing at 229, so 229
-// is the lowest number above main's 213 that no open pull request declares. main held 213 at the
-// forward merge that last read this number, main's 51d1a21f; read main's own number and every
-// open pull request's again at the next merge rather than from this line. A renumber moves
-// `questionsForControllerContract` in shaping.go with it, the last number of answers.go's
-// SupportedContracts.)
+// is the lowest number above main's 213 that neither main nor any other open pull request declares.
+// main held 213 at the forward merge that last read this number, main's 51d1a21f; read main's own
+// number and every open pull request's again at the next merge rather than from this line. A
+// renumber moves `questionsForControllerContract` in shaping.go with it, the last number of
+// answers.go's SupportedContracts.)
 const DaemonAPIVersion = 229

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -99,7 +100,9 @@ type legionHandedOff struct {
 // answered nil the same way. The error is a publish that failed. The publish carries a MsgId built
 // from the envelope's dedupe key, so the copies every listener's durable hands off for one bus
 // message, and a send repeated under one idempotency key, are stored once, and every copy after
-// the first is answered duplicate.
+// the first is answered duplicate. A copy that meets an earlier one still in process under that
+// MsgId is published again until the stream names that copy, answered duplicate, or ctx ends
+// (publishPastInProcess).
 func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandoffTarget) (*legionHandedOff, error) {
 	if h == nil || target.optedOut || target.envelope.Source == "envoy" {
 		return nil, nil
@@ -138,10 +141,15 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 		return nil, fmt.Errorf("encode legion hand-off: %w", err)
 	}
 	subject := listenerwire.LegionHandoffSubject(agent.LegionProject, agent.SessionID)
-	handoff.duplicate, err = h.client.PublishRetained(ctx, subject, data, "legion.handoff."+handoff.Envelope.DedupeKey+":"+subject)
+	msgID := "legion.handoff." + handoff.Envelope.DedupeKey + ":" + subject
+	ack, err := publishPastInProcess(ctx, func() (bus.StoredAck, error) {
+		duplicate, err := h.client.PublishRetained(ctx, subject, data, msgID)
+		return bus.StoredAck{Duplicate: duplicate}, err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("publish legion hand-off to %s: %w", subject, err)
 	}
+	handoff.duplicate = ack.Duplicate
 	h.logger.Info("listener handed a message to its legion daemon",
 		slog.String("session_id", agent.SessionID), slog.String("topic", handoff.OriginalTopic), slog.String("event_id", handoff.Envelope.EventID), slog.String("subject", subject),
 		slog.Bool("duplicate", handoff.duplicate))
@@ -218,6 +226,13 @@ func (h *legionHandoff) answeringAgent(ctx context.Context, target legionHandoff
 	return &entry, nil
 }
 
+// legionHandoffGiveUpWindow bounds one hand-off the agent-subject give-up makes
+// (offerAgentDeliveryToLegion): its registry reads and its publish, retries of an id still in
+// process included. A publish takes milliseconds and each send is bounded by the bus's own
+// publish bound, so a window well inside the consumer's ack wait (consumerAckWait) leaves the
+// NAK room to ask for the redelivery before the server would send the message again by itself.
+const legionHandoffGiveUpWindow = 10 * time.Second
+
 // offerAgentDeliveryToLegion offers one agent-subject delivery this listener found no session
 // record for to the stopped Legion agent's daemon, and reports whether that offer was the
 // message's whole outcome. The unplaceable path's give-up reaches it once its deferrals are spent
@@ -240,8 +255,16 @@ func (h *legionHandoff) answeringAgent(ctx context.Context, target legionHandoff
 // that does not answer, a session that is not gone, a message that opted out, a registry that
 // could not be read (handOffToLegion) - having recorded nothing and finalized nothing, and the
 // caller answers exactly as it did before the hand-off existed.
+//
+// The give-up answers no request, so the hand-off takes a context of its own,
+// legionHandoffGiveUpWindow, rather than none: its publish is made again for as long as a
+// clustered stream refuses it as still in process under an earlier attempt
+// (publishPastInProcess), and a refusal that outlives the window is a hand-off that failed, NAKed
+// and tried again like any other.
 func offerAgentDeliveryToLegion(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string) bool {
-	handed, err := cfg.handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: item, session: sessionID})
+	ctx, cancel := context.WithTimeout(context.Background(), legionHandoffGiveUpWindow)
+	defer cancel()
+	handed, err := cfg.handoff.handOffToLegion(ctx, legionHandoffTarget{envelope: item, session: sessionID})
 	switch {
 	case err != nil:
 		applyDeliveryOutcome(cfg, item, deliveryOutcome{

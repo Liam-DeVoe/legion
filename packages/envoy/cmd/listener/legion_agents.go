@@ -318,12 +318,29 @@ func decodeLegionAgentBody(w http.ResponseWriter, r *http.Request, into any) boo
 	return true
 }
 
+// refuseRegistryWrite answers a write of the Legion agent registry with its refusal, if it has
+// one, and reports whether it answered. The edge refuses every such write 403
+// (edgeLegionWriteRefusal); elsewhere a caller whose credential names a session is refused 403
+// (registryWriteBySession), which logs that refusal to logger. The edge's rule is read first, so
+// a broker token at the edge gets the edge's answer. Each handler that writes the registry calls
+// it before it reads the body, so a refused write writes nothing.
+func refuseRegistryWrite(w http.ResponseWriter, r *http.Request, logger *logging.Logger) bool {
+	if refusal := edgeLegionWriteRefusal(r); refusal != nil {
+		refusal.write(w)
+		return true
+	}
+	if refusal := registryWriteBySession(r, logger); refusal != "" {
+		writeJSONError(w, http.StatusForbidden, refusal)
+		return true
+	}
+	return false
+}
+
 // legionAgentSessionHandler serves /v1/legion/agents/sessions/<session_id>. GET answers the
 // session's entry, its replacement within its role token, whether it is live and whether its
 // project answers, or `404 {"error":"unknown legion agent <id>"}` when the bucket holds no entry
 // for it. PUT records the one entry its body holds, whose session_id must be the path's, and
-// answers it as stored, and refuses a caller whose credential names a session 403
-// (registryWriteBySession).
+// answers it as stored, unless it is refused as every registry write may be (refuseRegistryWrite).
 func legionAgentSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sessionID := strings.TrimPrefix(r.URL.Path, "/v1/legion/agents/sessions/")
@@ -356,12 +373,7 @@ func legionAgentSessionHandler(d *listenerDeps, logger *logging.Logger) http.Han
 			}
 			writeJSON(w, http.StatusOK, answerLegionAgent(d.sessions, agent, answering))
 		case http.MethodPut:
-			if refusal := edgeLegionWriteRefusal(r); refusal != nil {
-				refusal.write(w)
-				return
-			}
-			if refusal := registryWriteBySession(r, logger); refusal != "" {
-				writeJSONError(w, http.StatusForbidden, refusal)
+			if refuseRegistryWrite(w, r, logger) {
 				return
 			}
 			if err := legionagents.ValidateSessionID(sessionID); err != nil {
@@ -431,8 +443,8 @@ func legionAgentRoleHandler(d *listenerDeps) http.HandlerFunc {
 // `{"entries":[…]}` of at most legionagents.MaxBatch entries in a body of at most
 // legionAgentBodyLimit bytes, all validated and checked before the first write, so one bad entry
 // refuses the batch with nothing written. A batch that fails after that answers how many entries
-// were written (writeLegionAgentError). A PUT whose credential names a session is refused 403
-// (registryWriteBySession).
+// were written (writeLegionAgentError). A PUT is first refused as every registry write may be
+// (refuseRegistryWrite).
 func legionAgentsHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -461,12 +473,7 @@ func legionAgentsHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFu
 			}
 			writeJSON(w, http.StatusOK, list)
 		case http.MethodPut:
-			if refusal := edgeLegionWriteRefusal(r); refusal != nil {
-				refusal.write(w)
-				return
-			}
-			if refusal := registryWriteBySession(r, logger); refusal != "" {
-				writeJSONError(w, http.StatusForbidden, refusal)
+			if refuseRegistryWrite(w, r, logger) {
 				return
 			}
 			var body listenerwire.LegionAgentBatch
@@ -496,22 +503,16 @@ func legionAgentsHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFu
 // legionProjectHandler serves PUT /v1/legion/projects/<legion_project>: the project's answering
 // record, `{"answering":<bool>,"updated_at":"<RFC 3339 UTC>"}`, which the Legion daemon writes at
 // boot and every minute while it answers for the project's stopped agents (legionagents.Project).
-// It answers the record as stored. The edge refuses it as it refuses every write of the Legion
-// agent registry (edgeLegionWriteRefusal); a caller whose credential names a session is refused
-// 403 (registryWriteBySession); a path that is not a Legion project token, a body without
-// answering, or an updated_at that is not an RFC 3339 UTC time is a 400; and none writes anything.
+// It answers the record as stored. It is refused as every registry write may be
+// (refuseRegistryWrite); a path that is not a Legion project token, a body without answering, or
+// an updated_at that is not an RFC 3339 UTC time is a 400; and none writes anything.
 func legionProjectHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-		if refusal := edgeLegionWriteRefusal(r); refusal != nil {
-			refusal.write(w)
-			return
-		}
-		if refusal := registryWriteBySession(r, logger); refusal != "" {
-			writeJSONError(w, http.StatusForbidden, refusal)
+		if refuseRegistryWrite(w, r, logger) {
 			return
 		}
 		project := strings.TrimPrefix(r.URL.Path, "/v1/legion/projects/")

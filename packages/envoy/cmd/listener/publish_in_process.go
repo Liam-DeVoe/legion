@@ -31,11 +31,12 @@ var errEarlierAttemptInProcess = errors.New("the request ended while an earlier 
 // id (bus.ErrDuplicateInProcess), since the next answer names the copy that publish stored. It is
 // the one handling of that refusal for every listener publish whose answer a request is answered
 // or charged by - the send route and the publish route's team and captured topics (sendHandler,
-// publishHandler), and a role forward (startRoleForward, which every role send, role-lane delivery
-// and kept-lane walk forwards through) - and for a keep (storeKeptRoleCopy) and a takeover's copy
-// (keepTakenRoleFrame). So a resend that meets its own earlier attempt still being stored, as a
-// hub failover leaves one, is answered with that attempt's copy rather than as a bus that did not
-// answer.
+// publishHandler), a role forward (startRoleForward, which every role send, role-lane delivery
+// and kept-lane walk forwards through), and a hand-off to a stopped Legion agent's daemon
+// (handOffToLegion, which a send, a role publish, a role send and an agent subject's give-up hand
+// off through) - and for a keep (storeKeptRoleCopy) and a takeover's copy (keepTakenRoleFrame).
+// So a resend that meets its own earlier attempt still being stored, as a hub failover leaves
+// one, is answered with that attempt's copy rather than as a bus that did not answer.
 //
 // Three publishes under a message id do not take it, since no request's answer or charge rides
 // on them and the earlier publish the refusal names stores the one copy all the same: the
