@@ -249,6 +249,10 @@ func main() {
 	// the private destination's, and no other proxy block binds that host or is of kind dpop;
 	// result entries need the profile, and a destination needs it to bind its host.
 	fatal(config.AirlockResultRules(proxyRules, cfg.AirlockPrivateUpstream, len(cfg.ExchangeResultWorkflows) > 0))
+	// And the results entry this broker grants and serves result grants under (resultEntryDigest):
+	// the profile and the destination the check above passed, hashed once, which the token
+	// endpoint records in each grant it makes and the request machine compares each grant with.
+	entryDigest := resultEntryDigest(profiles, cfg.AirlockPrivateUpstream)
 	// And the proxy's certificate authority, built in the same breath and refused the same way:
 	// the key beside the certificate, which the proxy port signs each bound host's certificate
 	// with, and the certificate itself, which every release of a name a proxy block holds back
@@ -634,7 +638,7 @@ func main() {
 		RefreshLifetime: credentialLifetime, VerificationURL: cfg.MachineLoginURL,
 		ProofSkew: time.Duration(cfg.ProofSkewSeconds) * time.Second,
 		Exchange:  exchangeConfig,
-		Airlock:   resultAirlock(cfg, proxyRules, airlockCACertificate),
+		Airlock:   resultAirlock(cfg, proxyRules, entryDigest, airlockCACertificate),
 	}, oauthStore)
 	fatal(err)
 	if provider.DeviceGrant() {
@@ -1141,11 +1145,11 @@ func refuseAirlockTestSettingsInProduction(cfg config.Config, fakeSecretsFile st
 
 // resultAirlock is what the token endpoint hands a result entry's run beside its placeholder
 // (oauth.AirlockSettings): the proxy's URL, the authority's certificate, the hosts the proxy block
-// of the profile DISPATCH_RESULTS_TOKEN binds, and the local stack's
-// BROKER_RESULT_GRANT_TEST_SECONDS. nil when no profile of that name has a proxy block, so the
-// provider grants no run a placeholder. Every proxy block binds at least one host
-// (proxyrules.Validate), so Lookup answers the bound entry.
-func resultAirlock(cfg config.Config, rules proxyrules.Rules, caCertificate string) *oauth.AirlockSettings {
+// of the profile DISPATCH_RESULTS_TOKEN binds, the local stack's BROKER_RESULT_GRANT_TEST_SECONDS,
+// and the results entry each grant records (resultEntryDigest). nil when no profile of that name
+// has a proxy block, so the provider grants no run a placeholder. Every proxy block binds at least
+// one host (proxyrules.Validate), so Lookup answers the bound entry.
+func resultAirlock(cfg config.Config, rules proxyrules.Rules, entryDigest, caCertificate string) *oauth.AirlockSettings {
 	entry := rules.Lookup(oauthwire.AirlockResultsName)
 	if entry == nil {
 		return nil
@@ -1153,6 +1157,7 @@ func resultAirlock(cfg config.Config, rules proxyrules.Rules, caCertificate stri
 	return &oauth.AirlockSettings{
 		ProxyURL: cfg.AirlockProxyURL, CACertificatePEM: caCertificate,
 		ResultHosts:   slices.Clone(entry.Hosts),
+		EntryDigest:   entryDigest,
 		GrantLifetime: time.Duration(cfg.ResultGrantTestSeconds) * time.Second,
 	}
 }

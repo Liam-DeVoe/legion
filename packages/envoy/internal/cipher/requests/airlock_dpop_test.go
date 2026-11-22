@@ -50,7 +50,7 @@ func resultGrant(t *testing.T, m *Machine, checkRunID string, expires time.Time)
 		Subject: "ci-results@example-org/example-repo", Session: "ci-results:example-org/example-repo/.github/workflows/ci-results.yaml",
 		Principal: "ci-results@example-org/example-repo", Scopes: []string{oauthwire.ScopeResults},
 		Extra:     map[string]any{"ci": oauthwire.CIRun{Repository: "example-org/example-repo", CheckRunID: checkRunID}},
-		ExpiresAt: expires.UTC().Truncate(time.Microsecond),
+		ExpiresAt: expires.UTC().Truncate(time.Microsecond), EntryDigest: resultEntryDigest,
 	}
 	if err := oauthstore.New(m.Store.Pool).CreateResultGrant(t.Context(), grant); err != nil {
 		t.Fatal(err)
