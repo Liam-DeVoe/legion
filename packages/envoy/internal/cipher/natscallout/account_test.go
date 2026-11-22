@@ -1,6 +1,7 @@
 package natscallout
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/natscred"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // envoyAccount is the account a private render keeps every client in, and jetStreamAccount the one
@@ -149,16 +151,24 @@ func TestTheAnswerNamesTheConfiguredAccount(t *testing.T) {
 }
 
 // TestAPrivateRenderAdmitsIntoEnvoy: on a hub in a private render's two accounts (privateRender),
-// whose bucket a static user of ENVOY made in JETSTREAM through ENVOY's imports, Dispatch's service,
-// admitted by the auth service with BROKER_NATS_ACCOUNT set to ENVOY, is placed in ENVOY, writes a
-// key of the bucket and reads it back, each call crossing to JETSTREAM by an import. The write is
-// the JetStream publish nats.go's KeyValue.Put sends, to $KV.<bucket>.<key>.
+// whose bucket a static user of ENVOY made in JETSTREAM through ENVOY's imports, the auth service,
+// with BROKER_NATS_ACCOUNT set to ENVOY, places Dispatch's service and the operator in ENVOY, and
+// each call below crosses to JETSTREAM by an import. Dispatch's service writes a key of the bucket
+// and reads it back; the write is the JetStream publish nats.go's KeyValue.Put sends, to
+// $KV.<bucket>.<key>. The operator, with the hold row reading held, reads the info of the same
+// bucket's stream, a protected bucket's, which its grant holds only while the row reads prepare
+// or held (natsgrant.Operator): the grant that follows the hold row works in ENVOY.
 //
-// The control is the setting left at $G, its default: the auth service places the same service in
-// $G, which holds no stream and imports nothing, so the same write gets no responders (nats.go's
-// ErrNoStreamResponse, its name for a JetStream publish no stream answers, js.go:619-622).
+// The control is the setting left at $G, its default: the auth service places the same clients in
+// $G, which holds no stream and imports nothing. So the same write gets no responders (nats.go's
+// ErrNoStreamResponse, its name for a JetStream publish no stream answers, js.go:619-622), and the
+// operator's read is answered by the server's JetStream for $G, refusing it with 10039,
+// "JetStream not enabled for account". With $G written for the operator's answer alone in admit,
+// the operator under ENVOY gets that refusal, and the test fails naming it; with the row reading
+// released, its grant refuses the read, which gets no answer, and the test fails naming it.
 func TestAPrivateRenderAdmitsIntoEnvoy(t *testing.T) {
 	bucket, key, value := bus.WebhookRedeliveryBucket, "probe", []byte("written in ENVOY")
+	heldRead := "$JS.API.STREAM.INFO." + kvBucket(bucket)
 	for _, row := range []struct {
 		setting  string
 		admitted bool
@@ -179,26 +189,57 @@ func TestAPrivateRenderAdmitsIntoEnvoy(t *testing.T) {
 			_, err = adminJS.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket})
 			require.NoError(t, err, "a static user of %s could not make the bucket through its import", envoyAccount)
 
+			now := time.Now()
+			tokens := dispatchToken(now)
+			tokens["operator-token"] = platformToken{account: operatorAccount, issued: now, expiry: now.Add(time.Hour)}
+			signer, hold := newHoldSigner(t), &holdStub{}
+			hold.set(rowOf(signer.reading(t, 1, natsgrant.OperatorPhaseHeld, "hold-1")))
 			settings := serviceSettings(t, url, keys)
 			settings.Account = row.setting
-			startServiceWith(t, settings, Deps{ServiceToken: serviceTokens(dispatchToken(time.Now()))}, Decide)
-			nc, err := connectWithServiceToken(t, url, "dispatch-token")
-			require.NoError(t, err, "the auth service did not admit Dispatch's service")
-			require.Equal(t, row.setting, testnats.ConnAccount(t, nc), "the hub placed the service in another account")
-			js, err := nc.JetStream(nats.MaxWait(5 * time.Second))
-			require.NoError(t, err)
+			settings.Services = holdServices
+			startServiceWith(t, settings, Deps{ServiceToken: serviceTokens(tokens), Hold: NewHoldView(hold.read, signer.HoldKeys, nil, nil)}, Decide)
 
-			_, err = js.Publish("$KV."+bucket+"."+key, value)
-			if !row.admitted {
-				require.ErrorIs(t, err, nats.ErrNoStreamResponse, "the service placed in %s had its KV write answered", row.setting)
-				return
-			}
-			require.NoError(t, err, "the service placed in %s could not write the key", row.setting)
-			kv, err := js.KeyValue(bucket)
-			require.NoError(t, err)
-			entry, err := kv.Get(key)
-			require.NoError(t, err, "the service placed in %s could not read the key back", row.setting)
-			require.Equal(t, string(value), string(entry.Value()))
+			t.Run("dispatch", func(t *testing.T) {
+				nc, err := connectWithServiceToken(t, url, "dispatch-token")
+				require.NoError(t, err, "the auth service did not admit Dispatch's service")
+				require.Equal(t, row.setting, testnats.ConnAccount(t, nc), "the hub placed the service in another account")
+				js, err := nc.JetStream(nats.MaxWait(5 * time.Second))
+				require.NoError(t, err)
+
+				_, err = js.Publish("$KV."+bucket+"."+key, value)
+				if !row.admitted {
+					require.ErrorIs(t, err, nats.ErrNoStreamResponse, "the service placed in %s had its KV write answered", row.setting)
+					return
+				}
+				require.NoError(t, err, "the service placed in %s could not write the key", row.setting)
+				kv, err := js.KeyValue(bucket)
+				require.NoError(t, err)
+				entry, err := kv.Get(key)
+				require.NoError(t, err, "the service placed in %s could not read the key back", row.setting)
+				require.Equal(t, string(value), string(entry.Value()))
+			})
+			t.Run("operator", func(t *testing.T) {
+				// The operator's one subscribe is its own inbox prefix, so its requests' replies are there.
+				nc, err := nats.Connect(url, nats.UserInfo(natscred.ServiceUser, "operator-token"),
+					nats.CustomInboxPrefix(natsgrant.OperatorInbox), nats.Timeout(10*time.Second), nats.NoReconnect())
+				require.NoError(t, err, "the auth service did not admit the operator")
+				t.Cleanup(nc.Close)
+				if row.admitted {
+					var info struct {
+						Config struct {
+							Name string `json:"name"`
+						} `json:"config"`
+					}
+					require.NoError(t, json.Unmarshal(succeeds(t, nc, heldRead, nil).raw, &info))
+					require.Equal(t, kvBucket(bucket), info.Config.Name, "the held operator placed in %s read another stream's info", row.setting)
+				} else {
+					answer := answered(t, nc, heldRead, nil)
+					require.NotNil(t, answer.Error, "the operator placed in %s read %s: %s", row.setting, heldRead, answer.raw)
+					require.Equal(t, int(nats.JSErrCodeJetStreamNotEnabledForAccount), answer.Error.ErrCode,
+						"the operator placed in %s was refused %s for another cause: %s", row.setting, heldRead, answer.raw)
+				}
+				require.Equal(t, row.setting, testnats.ConnAccount(t, nc), "the hub placed the operator in another account")
+			})
 		})
 	}
 }
