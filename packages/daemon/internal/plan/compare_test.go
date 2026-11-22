@@ -17,7 +17,7 @@ func planOf(t *testing.T, version int, blocks ...Block) Plan {
 
 // A later version changes a task when its block says anything else: its steps, its text, or an
 // attribute Legion reads, such as `needs`. A version that changes only the prose outside the task
-// blocks changes no task. A task the held plan has and the version does not is gone, and one the
+// and role blocks changes no task. A task the held plan has and the version does not is gone, and one the
 // version adds is new; both are changed, in the order of their ids.
 func TestChangedTasksReadsStepsTextAndAttributes(t *testing.T) {
 	intro := Block{ID: "intro", Type: "paragraph", Text: "Why the plan is so."}

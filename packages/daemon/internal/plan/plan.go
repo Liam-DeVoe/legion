@@ -19,8 +19,9 @@ import (
 )
 
 // Type is the type of work a role does. Legion records it on each step and reads it for the
-// return of a failed step's work, the commit a review step is given and the retro, and for
-// nothing else.
+// return of a failed step's work, the commit a review step is given and the retro, and, for a
+// role a plan defines, the App the role acts as (the implement App for implementation, the review
+// App for every other type or none), and for nothing else.
 type Type string
 
 // The types Legion's list starts with; a deployment adds its own in its `role_types`.
@@ -224,9 +225,9 @@ func LegionNames() []string {
 var legionNames = []string{"architect", "planner", "implementer", "tester", "reviewer", "merger", "controller", "acceptance"}
 
 // RunsAs is the phase a step of role runs as: each of Legion's five roles of a step its own phase,
-// and every other role, one the deployment defines, the phase step, where the role that works the
-// step is the one the plan names for it. It reads the role's name and nothing else, never its
-// type: a role of the deployment whose type is review still runs as step.
+// and every other role, one the deployment or the plan defines, the phase step, where the role that
+// works the step is the one the plan names for it. It reads the role's name and nothing else, never
+// its type: a role of the deployment or of the plan whose type is review still runs as step.
 func RunsAs(role string) phase.Phase {
 	switch role {
 	case "planner":
