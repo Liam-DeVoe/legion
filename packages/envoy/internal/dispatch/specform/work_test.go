@@ -152,6 +152,13 @@ func workTable() []workRow {
 			return func() []Finding { return Check(context, in) }
 		}
 	}
+	// built judges one text of kind whose words body writes for n units.
+	built := func(kind Kind, body func(n int) string) workJudgment {
+		return func(_ *testing.T, n int) func() []Finding {
+			in := Input{Texts: []Text{{Node: "n", Kind: kind, Body: body(n), Where: where}}}
+			return func() []Finding { return Check(context, in) }
+		}
+	}
 	// extracted reads the document that markdown writes for n units, and judges it.
 	extracted := func(markdown func(n int) string) workJudgment {
 		return func(t *testing.T, n int) func() []Finding {
@@ -337,6 +344,14 @@ func workTable() []workRow {
 					fmt.Fprintf(&markdown, "[^%d]: It checks Foo%[1]d.Validate at boot[^%d].\n\n", index, index+1)
 				}
 				return markdown.String()
+			})},
+		{"one sentence that holds in code font the words of many findings that stand in the sentences after it", ruleStopNoSpace, 25,
+			built(KindClaim, func(n int) string {
+				return units("It keeps", " `a%d.B`", " at boot.")(n) + units("", " It reads a%d.B now.", "")(n)
+			})},
+		{"many findings whose words one sentence after them holds in code font, as a document holds them", ruleStopNoSpace, 25,
+			extracted(func(n int) string {
+				return ":::check{#c}\n" + units("", "It reads N%d.Cfg at boot. ", "It logs")(n) + units("", " `N%d.Cfg`", " today.\n:::\n")(n)
 			})},
 	}
 }

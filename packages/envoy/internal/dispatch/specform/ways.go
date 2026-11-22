@@ -3,7 +3,6 @@ package specform
 import (
 	"fmt"
 	"iter"
-	"slices"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/specform/ste"
@@ -31,17 +30,11 @@ var pastNote = fmt.Sprintf("Dispatch offers ways out for the first %d findings o
 var wholeNote = fmt.Sprintf("Dispatch offers ways out for the first %d findings of a text that ste-lint reads as more than one line, so it offers none for this one, though one can exist",
 	maxJudgedInSentence)
 
-// elsewhereNote is what the detail of a finding says whose words stand in more than
-// maxJudgedInSentence sentences of its text where the finding does not stand (wayJudge.alsoAt), so
-// the writer knows that Dispatch offers no way out of it, not that none exists.
-var elsewhereNote = fmt.Sprintf("Dispatch offers ways out of words that stand in at most %d other sentences of the text, so it offers none for this one, though one can exist",
-	maxJudgedInSentence)
-
 // offer is the ways out that a judge offers a finding (ways), and what the finding says of the ways
 // out that the judge did not read (note): pastNote for a finding past the first
 // maxJudgedInSentence findings of its sentence, wholeNote for one past those of a text that the
-// judge reads whole, elsewhereNote for one whose words stand in too many other sentences, or
-// nothing.
+// judge reads whole, elsewhereNote for one whose way out would read a sentence past its charge
+// (sentenceReads), or nothing.
 type offer struct {
 	ways [maxWays]wayOut
 	note string
@@ -80,8 +73,10 @@ func (o offer) said(ways string) string {
 // place, with the way out written at each place of the finding's words in that sentence: it first
 // takes each place (survey), then judges.
 // A rule that reads more than one sentence, such as synonym-rotation, which reads the text whole,
-// the judge reads in the whole text that the way out writes at each place (wholeText). A nil judge
-// offers each way out unjudged: the judge's own reading of a sentence is one.
+// the judge reads in the whole text that the way out writes at each place (wholeText). Each reading
+// of a sentence asks its charge first (reads), so the judge reads one sentence a bounded number of
+// times however many findings read it. A nil judge offers each way out unjudged: the judge's own
+// reading of a sentence is one.
 type wayJudge struct {
 	c      Context
 	people [][]string
@@ -108,6 +103,9 @@ type wayJudge struct {
 	// (footnoteJudge.rotationCanChange).
 	whole     *wholeText
 	elsewhere func(before, after ste.Verbs) bool
+	// reads is the charge of each reading of a sentence of the text (sentenceReads), which the whole
+	// text and the places of the reference rules charge too.
+	reads sentenceReads
 }
 
 // unitKey is a place of a finding as the judge reads it: a sentence of the text, as the text holds
@@ -117,6 +115,12 @@ type wayJudge struct {
 type unitKey struct {
 	text           string
 	address, title bool
+}
+
+// placed reports whether the unit is a place that the judge found: sentencePlaces.of names a place
+// whose sentence it does not find by a unit of no text.
+func (u unitKey) placed() bool {
+	return u != unitKey{title: u.title}
 }
 
 // place is a finding, by the words that its ways out change, at one unit that holds it.
@@ -161,7 +165,8 @@ func newWayJudge(c Context, people [][]string, kind Kind, shown bool) *wayJudge 
 // the rule sentences, with those of its footnotes, how many stops with no space after them it
 // holds (joined), and the text itself as one line with the verbs of its footnotes (held), for the
 // rules that read more than one sentence (wholeText). The count of the judge of a footnote that a
-// statement holds stays the statement's (heldIn).
+// statement holds stays the statement's (heldIn). A judge judges one text, which each run of the
+// rules tells it the same, so it reads the line the first time that it is told.
 func (j *wayJudge) told(count, joined int, line string, held []ste.Verbs) {
 	if j == nil {
 		return
@@ -170,8 +175,8 @@ func (j *wayJudge) told(count, joined int, line string, held []ste.Verbs) {
 		j.count = count
 	}
 	j.joined = joined
-	if j.whole == nil || j.whole.line != line {
-		j.whole = newWholeText(line, held, j.elsewhere)
+	if j.whole == nil {
+		j.whole = newWholeText(line, held, j.elsewhere, &j.reads)
 	}
 }
 
@@ -203,7 +208,8 @@ func (j *wayJudge) survey(find func()) {
 // whole text that it writes at each place refuses (wholeText.passes). A finding
 // past maxJudgedInSentence of the findings of a unit that holds it gives none, and its offer says
 // so (pastNote), as does one past maxJudgedInSentence of the findings of a text that the judge
-// reads whole (wholeNote); so does one whose sentence is not known at some place (unit ""), with no
+// reads whole (wholeNote), and one whose way out would read a sentence past its charge
+// (elsewhereNote); so does one whose sentence is not known at some place (unit ""), with no
 // word of it, and one that survey did not see. A nil judge offers ways as they are, and so does
 // each judge a finding that gives none.
 func (j *wayJudge) offered(unit unitKey, rule Rule, from string, ways [maxWays]wayOut) offer {
@@ -224,7 +230,7 @@ func (j *wayJudge) offered(unit unitKey, rule Rule, from string, ways [maxWays]w
 		if j.rank[place{key, at}] >= maxJudgedInSentence {
 			given.note = pastNote
 		}
-		if at.text == "" || given.note != "" {
+		if !at.placed() || given.note != "" {
 			given.ways = [maxWays]wayOut{}
 		}
 	}
@@ -236,41 +242,47 @@ func (j *wayJudge) offered(unit unitKey, rule Rule, from string, ways [maxWays]w
 	// "Web.Config"), which is a finding of its own, or in an address that a colon makes a remote
 	// path there ("deploy@build.example.com:."), which is none. So the judge reads the way out in
 	// those sentences too (also), where it must give no new finding, and the finding's own rule
-	// need not give fewer. Each such reading reads a whole sentence, and one name can end every
-	// sentence of a text, so with no bound one finding's way out would read the whole text and a
-	// text of many such findings would cost the square of its length. The judge reads at most
-	// maxJudgedInSentence such sentences for a finding, so a way out reads at most that many beyond
-	// its own places, and a judgment at most that many for each finding, whose count the bound of
-	// a sentence's findings already holds in proportion to the text: the work stays linear, as the
-	// work table measures for the places themselves. Any fixed bound keeps it linear; this one is
-	// the bound of a sentence's findings, so the readings of the sentences where only the words
-	// stand are at most as many as those of the sentences that hold the finding can be.
+	// need not give fewer. One sentence can hold the words of many findings, as one sentence can
+	// hold in code font the names that many other sentences end with, so each such reading, as each
+	// reading of a sentence for any purpose, asks the sentence's charge first (sentenceReads): a
+	// judgment reads one sentence at most maxReadsOfSentence times, whatever reads it and for
+	// however many findings, so its work is at most that many readings of its text (the work
+	// table's rows of one sentence that holds the words of many findings). A finding whose way out
+	// would read a sentence past its charge gets no way out, and says so (elsewhereNote).
+	refuse := func(note string) { given.ways, given.note = [maxWays]wayOut{}, note }
 	var also []unitKey
 	if given.ways != ([maxWays]wayOut{}) {
-		if also = j.alsoAt(from, places); len(also) > maxJudgedInSentence {
-			given.ways, given.note = [maxWays]wayOut{}, elsewhereNote
+		var charged bool
+		if also, charged = j.alsoAt(from, places); !charged {
+			refuse(elsewhereNote)
 		}
 	}
 	for at, holds := range j.eachPlace(places, also) {
 		if given.ways == ([maxWays]wayOut{}) {
 			break
 		}
-		state := j.unit(at)
+		state, charged := j.unit(at, holds)
 		for index, way := range given.ways {
-			if way != (wayOut{}) && !j.passes(state, at, rule, way, holds) {
+			if !charged || way == (wayOut{}) {
+				continue
+			}
+			var passed bool
+			if passed, charged = j.passes(state, at, rule, way, holds); !passed {
 				given.ways[index] = wayOut{}
 			}
 		}
+		if !charged {
+			refuse(elsewhereNote)
+		}
 	}
 	if j.whole != nil {
-		written := slices.Concat(places, also)
 		for index, way := range given.ways {
 			if way == (wayOut{}) {
 				continue
 			}
-			passed, read := j.whole.passes(key, way, written)
-			if !read {
-				given.ways, given.note = [maxWays]wayOut{}, wholeNote
+			passed, note := j.whole.passes(key, way, places, also)
+			if note != "" {
+				refuse(note)
 				break
 			}
 			if !passed {
@@ -299,14 +311,19 @@ func (j *wayJudge) take(at place) {
 	j.places[at.way] = append(j.places[at.way], at.unit)
 }
 
-// unit is the judge's reading of unit, read once: how many sentences of the text stand outside it,
-// how many stops with no space after them it holds, and whether it ends at a stop of its own.
-func (j *wayJudge) unit(unit unitKey) *judgedUnit {
+// unit is the judge's reading of unit, read once, for a finding that stands in it (own) or for one
+// that does not: how many sentences of the text stand outside it, how many stops with no space
+// after them it holds, and whether it ends at a stop of its own. It reports false, and reads
+// nothing, where the unit's charge refuses the reading (sentenceReads.charge).
+func (j *wayJudge) unit(unit unitKey, own bool) (*judgedUnit, bool) {
 	if state, ok := j.units[unit]; ok {
-		return state
+		return state, true
 	}
 	state := &judgedUnit{findings: map[int]map[findingKey]int{}}
 	if prose(j.kind) && !unit.address {
+		if !j.reads.charge(unit, own) {
+			return nil, false
+		}
 		sentences := sentencesOf(unit.text)
 		state.joined = joinedIn(sentences)
 		state.others = max(0, j.count+j.joined-len(sentences)-state.joined)
@@ -316,39 +333,45 @@ func (j *wayJudge) unit(unit unitKey) *judgedUnit {
 		j.units = map[unitKey]*judgedUnit{}
 	}
 	j.units[unit] = state
-	return state
+	return state, true
 }
 
 // before is each finding of the unit that state reads, with how many times it stands, where each
 // stop with no space after it ends a sentence but the stops of the finding whose ways out the judge
-// reads, stops of them, read once for each count of such stops.
-func (j *wayJudge) before(state *judgedUnit, unit unitKey, stops int) map[findingKey]int {
+// reads, stops of them, read once for each count of such stops, for a finding that stands in the
+// unit (own) or for one that does not. It reports false, and reads nothing, where the unit's charge
+// refuses the reading.
+func (j *wayJudge) before(state *judgedUnit, unit unitKey, stops int, own bool) (map[findingKey]int, bool) {
 	if found, ok := state.findings[stops]; ok {
-		return found
+		return found, true
 	}
-	found := j.read(unit, state.others+state.joined-stops)
+	if !j.reads.charge(unit, own) {
+		return nil, false
+	}
+	found := j.read(unit.text, unit.address, state.others+state.joined-stops)
 	state.findings[stops] = found
-	return found
+	return found, true
 }
 
-// read is each finding of unit, with how many times it stands: for a sentence of prose, the form
-// rules, as a sentence of a text of the judge's kind that outside sentences of the text stand
-// beside; then the reference rules, for an address as an address, and for a sentence of a text
-// that the page shows with no code font as the page shows it (withoutCodeFont). It judges no way
-// out.
-func (j *wayJudge) read(unit unitKey, outside int) map[findingKey]int {
+// read is each finding of text, the text of a unit or what a way out writes in its place (an
+// address of a link or an image where address), with how many times it stands: for a sentence of
+// prose, the form rules, as a sentence of a text of the judge's kind that outside sentences of the
+// text stand beside; then the reference rules, for an address as an address, and for a sentence of
+// a text that the page shows with no code font as the page shows it (withoutCodeFont). It judges no
+// way out. Its callers charge the reading (before, passes).
+func (j *wayJudge) read(text string, address bool, outside int) map[findingKey]int {
 	findings := map[findingKey]int{}
-	if prose(j.kind) && !unit.address {
-		form, _, _ := formBreaks(j.kind, unit.text, footnotesHeld{count: outside}, nil)
+	if prose(j.kind) && !address {
+		form, _, _ := formBreaks(j.kind, text, footnotesHeld{count: outside}, nil)
 		for _, each := range form {
 			findings[findingKey{each.rule, each.detail}]++
 		}
 	}
-	words := unit.text
-	if j.shown && !unit.address {
+	words := text
+	if j.shown && !address {
 		words = withoutCodeFont(words)
 	}
-	for _, each := range referenceBreaks(j.c, j.people, words, unit.address, nil, nil) {
+	for _, each := range referenceBreaks(j.c, j.people, words, address, nil, nil) {
 		findings[findingKey{each.rule, each.detail}]++
 	}
 	return findings
@@ -358,30 +381,38 @@ func (j *wayJudge) read(unit unitKey, outside int) map[findingKey]int {
 // at each place of its words in the unit, as the writer who follows the finding writes it, writes a
 // unit that keeps where its last sentence ends (endsWithStop), gives no finding that the unit does
 // not give as many times, and, where the finding stands in the unit (holds), gives fewer findings
-// of rule. Each stop with no space after it of another finding ends a sentence in the count of both
-// readings: in the unit before the way out, all but the finding's own, which are the stops that the
-// way out takes away at each place; after it, each that is left.
-func (j *wayJudge) passes(state *judgedUnit, unit unitKey, rule Rule, way wayOut, holds bool) bool {
-	changed := unitKey{strings.ReplaceAll(unit.text, way.from, way.to), unit.address, unit.title}
-	if changed.text == unit.text {
-		return false
+// of rule (passed); and whether the unit's charge let the judge read it (charged). Each stop with
+// no space after it of another finding ends a sentence in the count of both readings: in the unit
+// before the way out, all but the finding's own, which are the stops that the way out takes away at
+// each place; after it, each that is left.
+func (j *wayJudge) passes(state *judgedUnit, unit unitKey, rule Rule, way wayOut, holds bool) (passed, charged bool) {
+	if !j.reads.charge(unit, holds) {
+		return false, false
+	}
+	changed := strings.ReplaceAll(unit.text, way.from, way.to)
+	if changed == unit.text {
+		return false, true
 	}
 	stops, outside := 0, state.others
 	if prose(j.kind) && !unit.address {
-		if endsWithStop(changed.text) != state.ends {
-			return false
+		if endsWithStop(changed) != state.ends {
+			return false, true
 		}
-		left := joinedIn(sentencesOf(changed.text))
+		left := joinedIn(sentencesOf(changed))
 		outside += left
 		if rule == ruleStopNoSpace {
 			stops = state.joined - left
 		}
 	}
-	before, after := j.before(state, unit, stops), j.read(changed, outside)
+	before, charged := j.before(state, unit, stops, holds)
+	if !charged {
+		return false, false
+	}
+	after := j.read(changed, unit.address, outside)
 	own, ownAfter := 0, 0
 	for key, count := range after {
 		if count > before[key] {
-			return false
+			return false, true
 		}
 		if key.rule == rule {
 			ownAfter += count
@@ -392,18 +423,18 @@ func (j *wayJudge) passes(state *judgedUnit, unit unitKey, rule Rule, way wayOut
 			own += count
 		}
 	}
-	return !holds || ownAfter < own
+	return !holds || ownAfter < own, true
 }
 
 // alsoAt is each sentence of the text, as the judge names a place (unitKey), that holds from where
-// no place of places stands, maxJudgedInSentence+1 at most: a place of the words of a finding where
-// the finding does not stand (offered). A judge told no text (told) knows no sentence beside
-// places.
-func (j *wayJudge) alsoAt(from string, places []unitKey) []unitKey {
+// no place of places stands: a place of the words of a finding where the finding does not stand
+// (offered); and whether the charge of each sentence that it read let it read it
+// (wholeText.holding). A judge told no text (told) knows no sentence beside places.
+func (j *wayJudge) alsoAt(from string, places []unitKey) ([]unitKey, bool) {
 	if j.whole == nil {
-		return nil
+		return nil, true
 	}
-	return j.whole.holding(from, places, maxJudgedInSentence)
+	return j.whole.holding(from, places)
 }
 
 // eachPlace is each unit of places, where the finding stands (true), then each of also, where only
@@ -430,14 +461,25 @@ func (j *wayJudge) eachPlace(places, also []unitKey) iter.Seq2[unitKey, bool] {
 // which are words with the marks of code font taken out, so each byte of shown stands at the next
 // byte of words that equals it; or words itself, for a text with no Shown and for a title, whose
 // places say so (title). One cursor walks shown and words once, and one the sentences, for places
-// asked in the order of shown.
+// asked in the order of shown. Its one reading of each sentence of words is charged to the
+// sentence (reads), and where a charge refuses it, it finds no place.
 type sentencePlaces struct {
 	words, shown     string
 	title            bool
+	reads            *sentenceReads
 	sentences        []sentence
-	read             bool
+	read, refused    bool
 	at               int
 	shownAt, wordsAt int
+}
+
+// placesIn is the sentencePlaces of words, as the page shows them (shown), a title's where title,
+// whose reading the judge's charge counts (reads); nil for a nil judge, which takes no place.
+func (j *wayJudge) placesIn(words, shown string, title bool) *sentencePlaces {
+	if j == nil {
+		return nil
+	}
+	return &sentencePlaces{words: words, shown: shown, title: title, reads: &j.reads}
 }
 
 // of is the sentence of words that holds the place of shown at offset, at or after the last place
@@ -446,6 +488,17 @@ type sentencePlaces struct {
 func (p *sentencePlaces) of(offset int, name string) unitKey {
 	if !p.read {
 		p.sentences, p.read = sentencesOf(p.words), true
+		charged := map[unitKey]bool{}
+		for _, each := range p.sentences {
+			unit := unitKey{text: each.in(p.words), title: p.title}
+			if !charged[unit] {
+				charged[unit] = true
+				p.refused = p.refused || !p.reads.charge(unit, true)
+			}
+		}
+	}
+	if p.refused {
+		return unitKey{title: p.title}
 	}
 	for p.shownAt < offset && p.wordsAt < len(p.words) {
 		if p.words[p.wordsAt] == p.shown[p.shownAt] {

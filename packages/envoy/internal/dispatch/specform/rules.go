@@ -324,10 +324,7 @@ func heldBreaks(c Context, people [][]string, body string, held Held, judge *way
 		shown = body
 	}
 	line := oneLine(shown)
-	var places *sentencePlaces
-	if judge != nil {
-		places = &sentencePlaces{words: oneLine(body), shown: line}
-	}
+	places := judge.placesIn(oneLine(body), line, false)
 	var found []broken
 	type also struct {
 		finding int
@@ -350,11 +347,7 @@ func heldBreaks(c Context, people [][]string, body string, held Held, judge *way
 	}
 	for _, title := range held.Titles {
 		line := oneLine(title)
-		var places *sentencePlaces
-		if judge != nil {
-			places = &sentencePlaces{words: line, shown: line, title: true}
-		}
-		found = append(found, referenceBreaks(c, people, line, false, judge, places)...)
+		found = append(found, referenceBreaks(c, people, line, false, judge, judge.placesIn(line, line, true))...)
 	}
 	return append(found, addressed...)
 }

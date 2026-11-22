@@ -63,7 +63,7 @@ func TestTheWholeTextReadsAsSteLintReadsTheLine(t *testing.T) {
 	read, joined, several := 0, 0, 0
 	for _, text := range lines {
 		line := oneLine(text)
-		whole := newWholeText(line, nil, nil)
+		whole := newWholeText(line, nil, nil, &sentenceReads{})
 		if len(whole.spans) == 0 {
 			continue
 		}
@@ -108,16 +108,18 @@ func TestTheWholeTextReadsAsSteLintReadsTheLine(t *testing.T) {
 // the change, from the sentences before it (left) and into those after it (runs), is read for each
 // way a piece can cross the changed sentence. Each line is one that the judge reads by its
 // sentences, with no backtick that nothing closes before a sentence (opened), which the judge
-// refuses a backtick after on purpose.
+// refuses a backtick after on purpose. Each change is read by a reading of its own, as a judgment
+// reads one finding's ways out, so the charge of a sentence (sentenceReads) holds each.
 func TestTheWholeTextReadsAChangeOfASentenceAsSteLintReadsTheTextItWrites(t *testing.T) {
 	verbs := []string{"checks", "verifies", "validated", "confirm", "deletes", "removed", "starts", "begin", "halted", "display"}
 	texts, ways, opened, closed, refused := 0, 0, 0, 0, 0
 	for _, text := range wholeTestLines(t) {
 		line := oneLine(text)
-		whole := newWholeText(line, nil, nil)
+		whole := newWholeText(line, nil, nil, &sentenceReads{})
 		if len(whole.spans) == 0 || whole.lines || strings.Count(line, "`")%2 == 1 {
 			continue
 		}
+		whole.load()
 		texts++
 		before, _ := lintedWhole(line, nil)
 		for index, each := range sentencesOf(line) {
@@ -147,9 +149,10 @@ func TestTheWholeTextReadsAChangeOfASentenceAsSteLintReadsTheTextItWrites(t *tes
 					// The judge keeps its reading of a way out by its finding and the way out, so the
 					// finding names the sentence: the same change in two sentences is two readings.
 					finding := wayKey{rule: Rule(fmt.Sprintf("probe of sentence %d", index)), from: way.from}
-					passed, read := whole.passes(finding, way, []unitKey{{text: place}})
-					if !read {
-						t.Fatalf("%q: the judge did not read %q to %q", line, way.from, way.to)
+					judged := newWholeText(line, nil, nil, &sentenceReads{})
+					passed, note := judged.passes(finding, way, []unitKey{{text: place}}, nil)
+					if note != "" {
+						t.Fatalf("%q: the judge did not read %q to %q: %s", line, way.from, way.to, note)
 					}
 					var written strings.Builder
 					for _, span := range whole.spans {

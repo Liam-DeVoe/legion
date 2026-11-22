@@ -462,7 +462,7 @@ func TestAWayOutThatKeepsItsFindingIsNoWayOut(t *testing.T) {
 	sentences := sentencesOf(line)
 	judge.told(len(sentences), joinedIn(sentences), line, nil)
 	unit := unitKey{text: line}
-	state := judge.unit(unit)
+	state, _ := judge.unit(unit, true)
 	for _, test := range []struct {
 		way  wayOut
 		want bool
@@ -472,7 +472,7 @@ func TestAWayOutThatKeepsItsFindingIsNoWayOut(t *testing.T) {
 		{stopNoSpaceWays("Web.Config")[0], true},
 		{stopNoSpaceWays("Web.Config")[1], true},
 	} {
-		if got := judge.passes(state, unit, ruleStopNoSpace, test.way, true); got != test.want {
+		if got, _ := judge.passes(state, unit, ruleStopNoSpace, test.way, true); got != test.want {
 			t.Errorf("%q: the judge passes %q to %q: %v, want %v", line, test.way.from, test.way.to, got, test.want)
 		}
 	}
@@ -612,31 +612,70 @@ func TestAFindingPastTheEighthOfATextReadWholeIsRefusedWithNoWayOutOffered(t *te
 }
 
 // The judge reads a way out also in each sentence where the finding's words stand and the finding
-// does not, as the name that ends another sentence (wayJudge.alsoAt), and reads at most
-// maxJudgedInSentence such sentences, so the work of a way out stays in proportion to the sentences
-// of its finding. A finding whose words stand in more is still refused and named, and the words of
-// its ways out say that Dispatch offers no way out of it, not that none exists (elsewhereNote).
-// Control: the same name ending eight other sentences gives its ways out.
-func TestAFindingWhoseWordsEndMoreThanEightOtherSentencesIsRefusedWithNoWayOutOffered(t *testing.T) {
-	const note = "Dispatch offers ways out of words that stand in at most 8 other sentences of the text, so it offers none for this one, though one can exist"
-	for _, others := range []int{maxJudgedInSentence, maxJudgedInSentence + 1} {
-		body := "Dispatch reads Web.Config at boot."
-		for index := 1; index <= others; index++ {
-			body += fmt.Sprintf(" Step %d logs Web.Config.", index)
-		}
-		ways, found := "", false
+// does not, as a name that ends another sentence or stands in code font there (wayJudge.alsoAt), and
+// each such reading, as every reading of a sentence, asks the sentence's charge (sentenceReads). So
+// one sentence that holds in code font the names that many sentences after it end with is read for
+// the ways out of the first of their findings, until its charge for the findings that stand
+// elsewhere (ownReads) is spent; each finding after them is still refused and named, and the words
+// of its ways out say that Dispatch offers no way out of it, not that none exists (elsewhereNote).
+// Controls: the same findings, each name in code font in a sentence of its own, each give their way
+// out; and a name that ends twenty other sentences gives its ways out, as no bound holds how many
+// sentences one finding reads.
+func TestAFindingWhoseWayOutWouldReadASentencePastItsChargeIsRefusedWithNoWayOutOffered(t *testing.T) {
+	const note = "Dispatch reads one sentence at most 63 times for the ways out of findings that stand elsewhere, and a way out of this one would read a sentence past that, so it offers none for this one, though one can exist"
+	const findings, space = 40, "Put a space after the stop"
+	shared, own := "It keeps", ""
+	for index := 1; index <= findings; index++ {
+		shared += fmt.Sprintf(" `a%d.B`", index)
+		own += fmt.Sprintf("It keeps `a%d.B` at boot. It reads a%[1]d.B now. ", index)
+	}
+	shared += " at boot."
+	for index := 1; index <= findings; index++ {
+		shared += fmt.Sprintf(" It reads a%d.B now.", index)
+	}
+	ways := func(body string) []string {
+		var said []string
 		for _, each := range Check(planted(), Input{Texts: []Text{claimOf(body)}}) {
-			if each.Rule == ruleStopNoSpace && each.Detail == stopNoSpace("Web.Config") {
-				ways, found = each.Ways, true
+			if each.Rule == ruleStopNoSpace {
+				said = append(said, each.Ways)
 			}
 		}
-		switch {
-		case !found:
-			t.Errorf("%q: no finding of %s names \"Web.Config\"", body, ruleStopNoSpace)
-		case others > maxJudgedInSentence && ways != note:
-			t.Errorf("%q: the finding of Web.Config gives the ways out %q, want %q", body, ways, note)
-		case others <= maxJudgedInSentence && (ways == "" || strings.Contains(ways, note)):
-			t.Errorf("%q: the finding of Web.Config gives the ways out %q, want its ways out and no note", body, ways)
+		if len(said) != findings {
+			t.Fatalf("%q: %d findings of %s, want %d", body, len(said), ruleStopNoSpace, findings)
+		}
+		return said
+	}
+	said := ways(shared)
+	offered, refused := 0, 0
+	for index, each := range said {
+		switch each {
+		case space:
+			offered++
+			if refused > 0 {
+				t.Errorf("%q: finding %d gives %q after a finding that the charge refused, want each refused finding after the last offered one", shared, index+1, each)
+			}
+		case note:
+			refused++
+		default:
+			t.Errorf("%q: finding %d gives the ways out %q, want %q or %q", shared, index+1, each, space, note)
+		}
+	}
+	t.Logf("one sentence that holds the names of %d findings: %d give their way out, %d say the note", findings, offered, refused)
+	if offered == 0 || refused == 0 {
+		t.Errorf("%q: %d findings give their way out and %d say %q, want both", shared, offered, refused, note)
+	}
+	for index, each := range ways(strings.TrimSpace(own)) {
+		if each != space {
+			t.Errorf("the control, each name in a sentence of its own: finding %d gives the ways out %q, want %q", index+1, each, space)
+		}
+	}
+	body := "Dispatch reads Web.Config at boot."
+	for index := 1; index <= 20; index++ {
+		body += fmt.Sprintf(" Step %d logs Web.Config.", index)
+	}
+	for _, each := range Check(planted(), Input{Texts: []Text{claimOf(body)}}) {
+		if each.Rule == ruleStopNoSpace && each.Detail == stopNoSpace("Web.Config") && (each.Ways == "" || strings.Contains(each.Ways, "Dispatch")) {
+			t.Errorf("the control, a name that ends 20 other sentences: the finding of Web.Config gives the ways out %q, want its ways out and no note", each.Ways)
 		}
 	}
 }
