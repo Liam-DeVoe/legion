@@ -25,8 +25,10 @@ working-copy commit you found at the turn's start. Do not change another phase's
 bookmark. Make only path-scoped logical commits with
 `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`. Each red test you write goes in the
 repository's own test suite as its own commit, and the `evidence` of its `failures` entry names
-the test and the command that shows it failing. Push your red tests before you complete, as the
-daemon part below says; your handoff is never a commit.
+the test, its commit and the command that shows it failing. You push nothing, not even for an
+update message: your token holds `contents: read`. Your red-test commits stay in the issue's
+workspace, which every role of the issue shares, and the implementer's next push carries them to
+the branch; your handoff is never a commit.
 
 ## GitHub attribution
 

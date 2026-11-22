@@ -218,7 +218,7 @@ describe("app-logins.ts", () => {
     holdsNoToken(stdout);
   });
 
-  test("a review App the config still names beside it is read for nothing, as the daemon reads it", async () => {
+  test("a second App the config still names beside it is read for nothing, as the daemon reads it", async () => {
     // The daemon warns about github_apps.review and runs nothing of it (internal/config,
     // warnedKeys): one App serves every role. So its command never runs here either, and GitHub
     // is asked about the implement App alone.
@@ -591,7 +591,7 @@ describe("app-logins.ts", () => {
     expect(stderr).toBe("");
     expect(code).toBe(0);
     expect(JSON.parse(stdout)).toEqual({ implement: "example-implement[bot]" });
-    // `review` too: one App serves every role, and the daemon reads no review App's credential.
+    // `review` too: one App serves every role, and the daemon reads no credential of a second App.
     for (const roles of ["merger", "review", "implement,review", "implement,implement", ""]) {
       const bad = Bun.spawnSync(["bun", script, "--roles", roles, path], {
         env: { PATH: process.env.PATH ?? "", HOME: home },

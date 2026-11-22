@@ -90,7 +90,7 @@ the task's steps go on at that head, a reviewer step's `approve` of it ends its 
 When it asks outside `implementing`, it tells you once by `checks-red`, naming the phase the issue stays in, the head, the base and why; in `implementing` no notice comes.
 You start nothing for the merge.
 
-Past review, where the task has a reviewer step, every push, a forward merge among them, has the daemon ask the reviewer for its verdict on the new head, which it sends with `review_verdict`.
+Past review, every push, a forward merge among them, has the daemon ask the agent of each review step that has passed for its verdict on the new head, which it sends with `review_verdict`: the reviewer, and you once your step `acceptance:owner` has passed.
 That verdict writes no handoff and sends you no notice: in `accepting`, wait before `sign_off` until the reviewer tells you on your role topic that it sent `approve` on the new head, and send the issue back with `request_backward_move` when its verdict is `changes`.
 A task with no reviewer step has no review to await.
 

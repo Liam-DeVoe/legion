@@ -84,7 +84,7 @@ in `reviewing`, the `Last reviewed commit` your task names; past review, your la
 ## Side reviews
 
 A controller can name you side reviewer of a pull request no Legion tree opened, at one head.
-Review it as above, post a `COMMENT` review, and `envoy_publish` `approve` or `changes`, with the pull request and head, to the controller (`reply_role`).
+Review it as above, post a `COMMENT` review, and `envoy_publish` `approve` or `changes`, with the pull request and head, to your addressing line's controller.
 
 ## The production check after the close
 

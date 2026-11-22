@@ -21,6 +21,7 @@ import {
   PhaseOpArguments,
   type PhaseOpRuntime,
   phaseOpParameters,
+  phaseOpsOf,
   STALE_ENTRY_INSTRUCTION,
 } from "./legion-phase-ops";
 
@@ -431,6 +432,19 @@ const owner: ClaimCapability = {
   role: "architect",
   claimToken: "legion-legion-legion-208-architect",
 };
+
+// The phase ops a host offers a claim's session are its role's (`phaseOpsOf`), one rule both hosts
+// read: every phase op for the reviewer and for the architect, whose claims run the review steps,
+// and every one but review_verdict for each other role.
+test("phaseOpsOf offers review_verdict to a review step's agent's role alone, and every other phase op to every role", () => {
+  for (const role of LEGION_ROLES) {
+    const offered =
+      role === "reviewer" || role === "architect"
+        ? [...PHASE_OPS]
+        : PHASE_OPS.filter((op) => op !== "review_verdict");
+    expect([...phaseOpsOf(role)], role).toEqual(offered);
+  }
+});
 
 // A head that moves while its issue stands past its review (accepting, retro or merging) gets a
 // verdict from the agent of each review step of its task that has passed: the reviewer, and the

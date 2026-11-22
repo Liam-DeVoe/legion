@@ -121,7 +121,7 @@ func (e approvalPending) Is(target error) bool { return target == ErrApprovalPen
 // waiting on a person (ErrApprovalPending). Each is a TransientError, since a later run may
 // pass, but it is about one owner's grant at the broker, never GitHub's rate limit or its own
 // trouble, so a caller that holds every owner's GitHub calls on GitHub's trouble holds none on it
-// (internal/daemon's reviewAppClient).
+// (internal/daemon's permissionClient).
 func Pending(err error) bool {
 	return errors.Is(err, ErrCommandPending) || errors.Is(err, ErrApprovalPending)
 }

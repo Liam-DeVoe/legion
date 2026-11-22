@@ -1,6 +1,8 @@
 package prompts
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -48,4 +50,57 @@ func TestReviewerPromptLeavesLegionVerdictOutOfTheChecksItWaitsFor(t *testing.T)
 			t.Errorf("the composed reviewer prompt omits %q", phrase)
 		}
 	}
+}
+
+// A side review has no phase, so its reviewer's verdict reaches the daemon only as the
+// controller's relay (pull_request_verdict), and the controller relays it only when the Envoy
+// delivery's sender is the reviewer it named. The requester that sent the reviewer the pull
+// request is a fan or a dev-box session, so the message's reply_role names that session or no
+// one, never the controller. merge-gate.md's part on side reviews therefore sends the verdict to
+// the controller topic the reviewer's own Legion addressing line names, and never to reply_role.
+// The part sending it to `reply_role`, or naming no topic, fails here. This shows the text is
+// there, never that a reviewer follows it.
+func TestTheSideReviewerSendsItsVerdictToTheControllerTopicOfItsAddressing(t *testing.T) {
+	part := skillPart(t, filepath.Join("legion-worker", "references", "merge-gate.md"), "Side reviews")
+	const destination = "`envoy_publish` `approve` or `changes`, with the pull request and head, to your addressing line's controller."
+	if !strings.Contains(part, destination) {
+		t.Errorf("merge-gate.md's part on side reviews omits %q: %q", destination, part)
+	}
+	if strings.Contains(part, "reply_role") {
+		t.Errorf("merge-gate.md's part on side reviews still sends the verdict to `reply_role`, which names the requester and not the controller: %q", part)
+	}
+}
+
+// Past review, the daemon asks the agent of each review step of the task that has passed for its
+// verdict on the new head: the reviewer, and the owner once its step `acceptance:owner` has
+// passed (go/architect-common.md, the `checks-red` paragraph). The architect's acceptance skill
+// says the same where it says who is asked, so an owner that read only the skill does not take
+// itself for no agent of a review step there. The sentence naming the reviewer alone fails here.
+// This shows the text is there, never that an architect follows it.
+func TestTheAcceptanceSkillNamesTheOwnerAmongTheAgentsAskedPastReview(t *testing.T) {
+	part := skillPart(t, filepath.Join("legion-architect", "references", "acceptance.md"), "A conflicting head")
+	const asked = "has the daemon ask the agent of each review step that has passed for its verdict on the new head, which it sends with `review_verdict`: the reviewer, and you once your step `acceptance:owner` has passed."
+	if !strings.Contains(part, asked) {
+		t.Errorf("acceptance.md's part on a conflicting head omits %q: %q", asked, part)
+	}
+	if retired := "has the daemon ask the reviewer for its verdict on the new head"; strings.Contains(part, retired) {
+		t.Errorf("acceptance.md's part on a conflicting head still names the reviewer alone as asked past review: %q", retired)
+	}
+}
+
+// skillPart is the part of a skill file under skills/ that the `## heading` line opens, up to the
+// next `## ` heading, with its white space folded.
+func skillPart(t *testing.T, file, heading string) string {
+	t.Helper()
+	skillPath := filepath.Join("..", "..", "..", "..", "skills", file)
+	body, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", skillPath, err)
+	}
+	_, after, found := strings.Cut(string(body), "\n## "+heading+"\n")
+	if !found {
+		t.Fatalf("%s has no part `## %s`", skillPath, heading)
+	}
+	part, _, _ := strings.Cut(after, "\n## ")
+	return foldWhitespace(part)
 }

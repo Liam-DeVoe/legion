@@ -53,6 +53,11 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
   },
   {
     file: "packages/daemon/internal/prompts/go/worker-common.md",
+    has: "for the implementer, a red-test commit the tester left there",
+    keep: "Whose commits the implementer's push carries, not a Dispatch check.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/go/worker-common.md",
     has: "It keeps each role's session",
     keep: "A released pod's state, not a Dispatch check.",
   },
@@ -244,11 +249,6 @@ const ENTRIES_LATER_FAIL: readonly Entry[] = [
     keep: "A root question, not a check result.",
   },
   {
-    file: "skills/legion-architect/references/acceptance.md",
-    has: "Do not wait for a reviewer phase the task does not have",
-    keep: "A required review that no step gave, not a check result.",
-  },
-  {
     file: "skills/legion-retro/SKILL.md",
     has: "A `ci_check` check has no pass standing at that head when",
     keep: "A CI-proved check's result, not the no-ci-check rule.",
@@ -312,11 +312,6 @@ const ENTRIES_ARCHITECT_LATER_FAIL: readonly Entry[] = [
     keep: "A root question, not a check result.",
   },
   {
-    file: "skills/legion-architect/references/acceptance.md",
-    has: "Do not wait for a reviewer phase the task does not have",
-    keep: "A required review that no step gave, not a check result.",
-  },
-  {
     file: "skills/legion-retro/SKILL.md",
     has: "A `ci_check` check has no pass standing at that head when",
     keep: "A CI-proved check's result, not the architect rule.",
@@ -373,8 +368,13 @@ const ENTRIES_STATES_READ: readonly Entry[] = [
     cut: "Delete what a tester's notice says of the testing move, which each check's state at the tested head decides.",
   },
   {
+    file: "packages/daemon/internal/prompts/go/architect-common.md",
+    has: "so read `dispatch results` at the new head before you accept",
+    cut: "Delete the read of the new head's results before an acceptance past review.",
+  },
+  {
     file: "packages/daemon/internal/prompts/go/reviewer.md",
-    has: "the evidence of each check is the line of your head in `dispatch results`",
+    has: "evidence of each check is the line of your head in `dispatch results`",
     cut: "Delete the sentence on the reviewer's evidence.",
   },
   {

@@ -20,7 +20,7 @@ import (
 )
 
 // controllerGitHubRefreshInterval is how often startControllerGitHubRefresh re-fetches the
-// controller's GitHub credential. The daemon's token source holds the review App's leases and
+// controller's GitHub credential. The daemon's token source holds the one App's read leases and
 // re-mints each as it nears its expiry, so most ticks render the hosts.yml files the controller's
 // directories already hold and write nothing; a minute keeps the time its gh runs on a token the
 // daemon has already replaced short against an installation token's hour, as tmux's and sandbox's
@@ -56,13 +56,13 @@ func controllerCredentialSuperseded(err error) bool {
 // /legion/v1/controller/github-credential: the controller capability secret proves which
 // controller is asking, defaultOwner names the owner whose directory its GH_CONFIG_DIR names (empty
 // on the first fetch, which the daemon answers with the first owner), and the daemon answers the
-// review App's read-only token for every owner that App is installed on, and for an owner a
+// one App's read-only token for every owner that App is installed on, and for an owner a
 // configured rename moved a repository away from, each rendered as the two files gh
 // reads, and the configured renames its gh routes a moved repository by, as a gh bundle
 // (ghconfig.Bundle) whose every owner carries the answer's App and its
 // expiry, parsed from the API's RFC 3339 nanosecond timestamp (time.RFC3339Nano, the format
 // api.ControllerCredentialResponse's ExpiresAt is written in). Beside the bundle it answers
-// installed, the owner accounts the daemon read the review App installed on as it built that
+// installed, the owner accounts the daemon read the App installed on as it built that
 // bundle, lowercased and sorted (api.ControllerCredentialResponse's Installed), which the
 // first fetch reads for the controller's addressing (controllerReach) and a refresh does not
 // read. An answer that is no valid bundle,
@@ -122,8 +122,8 @@ func controllerGHDir(stateDir string) string { return filepath.Join(stateDir, "g
 
 // controllerReach is the owners the controller's addressing names (daemon.RepositoriesSentence,
 // which says of each that the role's GitHub App is installed on it and that its token reaches
-// every repository of it): the owners of installed, the accounts the daemon read the review App
-// installed on, that bundle also holds a directory for, in installed's order, which is sorted.
+// every repository of it): the owners of installed, the accounts the daemon read the App installed
+// on, that bundle also holds a directory for, in installed's order, which is sorted.
 //
 // Both are consulted because each proves one half of that sentence and neither proves both.
 // The bundle's directories prove the token and not the installation: a bundle also holds a

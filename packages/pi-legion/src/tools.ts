@@ -25,6 +25,7 @@ import {
   PHASE_OP_SENTENCES,
   PHASE_OPS,
   phaseOpParameters,
+  phaseOpsOf,
   pluginBuildOf,
   readBuild,
   unknownFieldsRefusal,
@@ -59,11 +60,11 @@ export type LegionToolSession = LegionClaimToolSession | LegionControllerToolSes
 
 /** Each session kind's operations, in the order the tool's `op` enum lists them. The phase ops
  * (`PHASE_OPS` of `@legion/pi-shared/legion-phase-ops`) are an architect's too, as claude-envoy's
- * MCP tool serves them; the shared executor refuses the ones a claim's role may not run (a root
- * architect's completion, and review_verdict from every claim whose role runs no review step,
- * `REVIEW_STEP_ROLES` of `@legion/pi-shared/legion-phase-ops`). `read_build` is
- * every session's: the controller holds a claim like any other role and reads its own build the
- * same way. An operation two kinds hold is one `op` value, listed once (`toolSchema`). */
+ * MCP tool serves them; a claim's session is held to the phase ops of its role (`operationsOf`,
+ * `phaseOpsOf`), so review_verdict is a review step's agent's alone, and the shared executor
+ * refuses a root architect's completion. `read_build` is every session's: the controller holds a
+ * claim like any other role and reads its own build the same way. An operation two kinds hold is
+ * one `op` value, listed once (`toolSchema`). */
 const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
   architect: [
     "register_gate",
@@ -89,6 +90,16 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "pull_request_verdict",
   ],
 };
+
+/** The operations `active` may run: its kind's, less each phase op its claim's role does not run
+ * (`phaseOpsOf`). The schema lists every kind's operations once, for every session (`toolSchema`),
+ * so this is where a session is offered an operation: a call of one outside it is refused before
+ * any grant is minted. */
+function operationsOf(active: LegionToolSession): readonly string[] {
+  if (active.kind === "controller") return OPERATIONS.controller;
+  const runs: readonly string[] = phaseOpsOf(active.role);
+  return OPERATIONS[active.kind].filter((op) => !isPhaseOp(op) || runs.includes(op));
+}
 
 /** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'.
  * `read_build` is a phase op and has a line here too: a controller session runs it on this
@@ -446,8 +457,8 @@ function assertOperationInput(parameters: Record<string, unknown>, operation: st
  * `handoff_complete` is refused there only for the root architect's session, and finds what it
  * reports in the pane first (`handoffReport`); the daemon refuses an architect's completion
  * (ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first), so it is a phase worker's
- * operation. `review_verdict` is refused there to every session whose role runs no review step
- * (`REVIEW_STEP_ROLES`). The operations of `OPERATIONS.controller` belong to the controller. */
+ * operation. `review_verdict` is offered only to a session whose role runs a review step
+ * (`operationsOf`). The operations of `OPERATIONS.controller` belong to the controller. */
 export function createLegionTool(deps: {
   readonly pi: PiApi;
   readonly daemon: () => LegionDaemonClient;
@@ -668,7 +679,10 @@ export function createLegionTool(deps: {
       try {
         const active = session(context);
         const operation = requiredString(parameters, "legion", "op");
-        if (!OPERATIONS[active.kind].includes(operation)) {
+        if (!operationsOf(active).includes(operation)) {
+          if (active.kind !== "controller" && OPERATIONS[active.kind].includes(operation)) {
+            throw new Error(`${operation} is not available to the ${active.role}'s session`);
+          }
           // "an architect", "a phase-worker", "a controller": the article the kind's first sound takes.
           const article = /^[aeiou]/.test(active.kind) ? "an" : "a";
           throw new Error(`${operation} is not available to ${article} ${active.kind} session`);

@@ -34,7 +34,8 @@ If it prints `true`, run `jj -R "$LEGION_WORKSPACE" new @-`; if it prints `false
 your own resumed edits, so run `jj -R "$LEGION_WORKSPACE" new`. Never `jj describe` or `jj split`
 the working-copy commit you found at the turn's start: it can hold another role's edits, which a
 `jj describe` would put under your trailers. Every role of an issue shares the workspace, so every
-commit you push must be one you made in this turn.
+commit you push must be one you made in this turn, or, for the implementer, a red-test commit the
+tester left there.
 
 Push the issue branch yourself, with the plain `jj` of your pane (`git`, like `gh`, acts as your role's App from `GH_CONFIG_DIR`; `<issue>` is your `LEGION_ISSUE`): `cd -- "$LEGION_WORKSPACE" && jj -R "$LEGION_WORKSPACE" bookmark set legion/<issue> -r @- && jj -R "$LEGION_WORKSPACE" git push --bookmark legion/<issue>`. Only work goes to the branch — code, red tests, a forward merge, and the empty commit that carries the pull request onto the commit you pushed (below) — and never a handoff, which is a record on the Dispatch issue (below). No commit message carries a line or keyword that stops GitHub's workflows, such as GitHub's bracket keywords (`[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]`, `[actions skip]`), which start no workflow wherever they stand: every head you push needs its checks, and a base that requires a check will not merge a head whose checks never ran. `jj git push` refuses a remote branch that moved because another role pushed: report the refusal to the architect with its output, and never force. A pushed commit is never rewritten: answer a wrong one with a follow-up commit or a line in the pull request body (`skill://legion-worker/references/conflicts-and-rewrites.md`, "A wrong pushed commit").
 

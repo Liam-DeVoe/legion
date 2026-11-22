@@ -223,7 +223,7 @@ echo "defaults $default_implement_app_id $default_implement_app_secret \${defaul
       kind: "token_command",
       command: tokenCommand("LEGION_IMPLEMENT_APP"),
     });
-    // The block names the one App and no review App, which the daemon would only warn about.
+    // The block names the one App and no second one, which the daemon would only warn about.
     expect(block).not.toContain("review");
     // No key was resolved in token mode: --key-dir names a directory nothing writes.
     expect(existsSync(join(work, "app-key"))).toBe(false);
@@ -268,10 +268,10 @@ echo "read the inputs"`
     expect(existsSync(join(work, "github-apps.yaml"))).toBe(false);
   });
 
-  // A deployment's own workflow may still pass the review App's id and key command until it drops
-  // them: the rig reads neither, refuses neither, runs neither, and still keeps the key command out
-  // of every child it starts.
-  test("the review App's inputs a caller still passes are ignored, and the one App is proved", async () => {
+  // A deployment's own workflow may still pass the retired second App's id and key command until it
+  // drops them: the rig reads neither, refuses neither, runs neither, and still keeps the key
+  // command out of every child it starts.
+  test("the retired second App's inputs a caller still passes are ignored, and the one App is proved", async () => {
     const counter = join(dir, "review-key-command-runs");
     rmSync(counter, { force: true });
     for (const review of [
@@ -307,7 +307,7 @@ env "\${app_key_unsets[@]}" sh -c 'echo "child sees \${LEGION_E2E_REVIEW_APP_KEY
     // stale export of either retired review name reaches no process the run starts. The two key
     // commands are in the list for a reason of their own: a value that holds the key itself and
     // still runs is taken (a one-line `printf` of a PEM), and no child of the run reads either —
-    // the review App's one included, which the rig ignores but a caller may still pass.
+    // the retired second App's one included, which the rig ignores but a caller may still pass.
     const { code, stdout, stderr } = await githubApps(
       { ...appInputs, SOME_OTHER_APP_PRIVATE_KEY_B64: "irrelevant" },
       `export IMPLEMENT_APP=x IMPLEMENT_APP_READ=x

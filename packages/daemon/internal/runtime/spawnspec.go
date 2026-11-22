@@ -35,10 +35,10 @@ func SecretsDir(stateDir string) string { return filepath.Join(stateDir, "secret
 func SecretFilePath(stateDir, name string) string { return filepath.Join(SecretsDir(stateDir), name) }
 
 // GitHubCredential is the daemon's one function a runtime calls for a role's GitHub credential
-// files: a gh bundle (ghconfig.Bundle), one directory of gh files per owner account the role's
+// files: a gh bundle (ghconfig.Bundle), one directory of gh files per owner account the one
 // GitHub App is installed on, each holding that account's installation lease minted at the
-// role's own permissions — the implement App's write set, the review App's review set — and no
-// directory holding a narrower one, since a token reaches every repository its installation
+// role's own permission set (appauth.SetFor), and no directory holding a narrower one, since a
+// token reaches every repository its installation
 // holds and the daemon asks GitHub to narrow it no further (INFRA-2543). The bundle's default,
 // which GH_CONFIG_DIR names, is the directory repo routes to (ghconfig.RouteDir): its recorded
 // owner's, or, for a repository a configured rename moved, the directory of the owner it moved

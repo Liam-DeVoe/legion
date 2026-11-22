@@ -22,6 +22,7 @@ import {
   PHASE_OP_SENTENCES,
   PHASE_OPS,
   phaseOpParameters,
+  phaseOpsOf,
   pluginBuildOf,
 } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
@@ -631,10 +632,11 @@ test("the schema the Oh My Pi tool exposes carries every field the phase ops tak
 // The phase ops are defined once, in `PHASE_OPS`, and every host's `legion` tool serves that list:
 // this one and claude-envoy's MCP tool (`packages/claude-envoy/tests/legion-tool.test.ts` holds
 // the same of it), so the two list the same phase ops, review_verdict among them. Each claim
-// session's call of each is answered as the shared executor answers that claim's call: its
-// arguments, and who may run it, are the executor's to hold, never refused here as an operation
-// the session's kind has not.
-test("the tool's list of phase ops is PHASE_OPS, review_verdict among them, and each claim session's call of each reaches the shared executor", async () => {
+// session is offered the phase ops of its role (`phaseOpsOf`), so review_verdict is a review
+// step's agent's alone: each call of an offered one is answered as the shared executor answers
+// that claim's call, its arguments the executor's to hold, and a call of one its role does not
+// run is refused here as unavailable to that role's session, before any daemon request.
+test("the tool's list of phase ops is PHASE_OPS, and each claim session's call of its role's phase ops reaches the shared executor", async () => {
   const declared = z.toJSONSchema(toolFor(claimSession("reviewer")).parameters as z.ZodType);
   const listed = declared.properties?.op;
   const ops = (typeof listed === "object" ? listed.enum : undefined) ?? [];
@@ -642,7 +644,31 @@ test("the tool's list of phase ops is PHASE_OPS, review_verdict among them, and 
   for (const active of EVERY_SESSION) {
     if (active.kind === "controller") continue;
     const tool = toolFor(active);
+    const offered = phaseOpsOf(active.role);
     for (const op of PHASE_OPS) {
+      if (!offered.includes(op)) {
+        const { calls, daemon } = recordingDaemon({});
+        const refused = createLegionTool({
+          pi,
+          daemon,
+          controllerGrant: noControllerGrant,
+          onPhaseCompleted: () => undefined,
+          onUpdateAnswered: () => undefined,
+          handoffReport: noHandoffReport,
+          branchHead: noBranchHead,
+          resolveDocument: noDocumentLookup,
+          session: () => active,
+        });
+        expect(await refused.execute("", { op }, undefined, undefined, context())).toEqual({
+          content: [
+            { type: "text", text: `${op} is not available to the ${active.role}'s session` },
+          ],
+          details: {},
+          isError: true,
+        });
+        expect(calls).toEqual([]);
+        continue;
+      }
       const shared = await executePhaseOp(
         {
           daemon: recordingDaemon({}).daemon(),
@@ -1256,7 +1282,7 @@ test("review_verdict is taken from a review step's agent's session alone, and po
           text:
             active.kind === "controller"
               ? "review_verdict is not available to a controller session"
-              : `review_verdict is the verdict of a review step's agent, the reviewer or the architect that owns the issue, and this session is the ${active.role}'s`,
+              : `review_verdict is not available to the ${active.role}'s session`,
         },
       ],
       details: {},
