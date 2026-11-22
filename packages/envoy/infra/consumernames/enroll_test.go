@@ -108,6 +108,7 @@ func enrollNewDaemon(db *pgxpool.Pool, connect func(name string) (*nats.Conn, er
 		Store:    d.store,
 		Server:   enrollDaemonServer{d: d},
 		Prefix:   func(logical string) string { return logical },
+		Fixed:    selection.LogicalNaming().Fixed,
 		Floor:    func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
 		StreamID: d.streamID,
 		MissingRecord: func(ctx context.Context, logical string) error {

@@ -502,6 +502,7 @@ func TestConvertStartsAGoneCohortMemberAtItsSavedFloorAndStopsForANameWithNoStar
 		Store:    selection.NewKVStore(selection.ConnRequester{Conn: rig.writerConn}),
 		Server:   convertTestServer{rig},
 		Prefix:   func(string) string { return sessionFreshPrefix },
+		Fixed:    selection.SessionNaming().Fixed,
 		Floor:    func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
 		StreamID: func(context.Context) (string, error) { return "", nil },
 		Owner:    "the test's creator",

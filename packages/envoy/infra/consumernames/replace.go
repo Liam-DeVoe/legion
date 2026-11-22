@@ -89,7 +89,7 @@ func (r *run) replaceListener(ctx context.Context) error {
 	if err != nil {
 		return a.stopped(ctx, err, true, nothing)
 	}
-	names := replaceNames(nc, store, m, r.o.holdID)
+	names := replaceNames(nc, store, r.o.holdID)
 	var sel selection.Selection
 	var selected, read error
 	var before selection.Record
@@ -148,17 +148,20 @@ func (r *run) replaceListener(ctx context.Context) error {
 	return nil
 }
 
-// replaceNames is the selection protocol over the listener durable m's record in store, on the
+// replaceNames is the selection protocol over a listener durable's record in store, on the
 // operator's connection nc, as the listener runs it for its own durable
-// (cmd/listener/listener_durable_names.go, durableNames): the durable's own name as each fresh
-// name's prefix, its floor the ack floor, its key DurableKey's, and the metadata its consumers
-// carry, envoy.logical naming the durable itself (member.Metadata, the listener's durableMetadata),
-// which the protocol's owner check holds every consumer the record names to (selection.Names.Owns).
-func replaceNames(nc *nats.Conn, store selection.Store, m member, holdID string) *selection.Names {
+// (cmd/listener/listener_durable_names.go, durableNames): the naming of the library's table for a
+// durable's key (selection.DurableNaming: the durable's own name as each fresh name's prefix and as
+// its fixed name, envoy.logical naming the durable on each of its consumers, which the protocol's
+// owner check holds every consumer the record names to), its floor the ack floor, and its key
+// DurableKey's.
+func replaceNames(nc *nats.Conn, store selection.Store, holdID string) *selection.Names {
+	naming := selection.DurableNaming()
 	return selection.New(selection.Config{
 		Store:  store,
 		Server: replaceServer{nc: nc},
-		Prefix: func(string) string { return m.Prefix },
+		Prefix: naming.Prefix,
+		Fixed:  naming.Fixed,
 		Floor:  func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
 		StreamID: func(ctx context.Context) (string, error) {
 			info, err := streamInfo(ctx, nc, notifications)
@@ -168,7 +171,7 @@ func replaceNames(nc *nats.Conn, store selection.Store, m member, holdID string)
 			return selection.StreamIdentity(info), nil
 		},
 		CheckKey: selection.CheckDurableKey,
-		Metadata: func(string) map[string]string { return m.Metadata() },
+		Metadata: naming.Metadata,
 		Owner:    "envoy-infra consumer-names replace, hold " + holdID,
 	})
 }

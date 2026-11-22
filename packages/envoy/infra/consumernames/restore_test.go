@@ -443,11 +443,11 @@ func restoreH4Rig(t *testing.T) (*restoreRig, string, map[string]uint64, map[str
 // call that admits or refuses every consumer call (selection.Names.Resolve).
 func (rig *restoreRig) freshCreator(family string) *selection.Names {
 	nc, _ := rig.operator()
-	prefix := func(logical string) string { return logical }
+	naming := selection.LogicalNaming()
 	if family == familySession {
-		prefix = func(string) string { return sessionFreshPrefix }
+		naming = selection.SessionNaming()
 	}
-	return selection.New(selection.Config{Store: rig.familyStore(nc, family), Prefix: prefix})
+	return selection.New(selection.Config{Store: rig.familyStore(nc, family), Prefix: naming.Prefix, Fixed: naming.Fixed})
 }
 
 // TestCutoverRollbackThenUpgradeAgain (review H4): after the rollback every family's broker cutover
