@@ -7436,3 +7436,104 @@ test("the Inbox's agent narrowing draws the shared chip, as the row's other narr
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// SLOW(>=2s): eight pages opened at two widths over three seeded fixtures, with rows marked, the
+// reading column drawn and the Agents page's broadcast composer open.
+// INFRA-3135, round 24 (the tester's, from the architect's goal red team of 2026-11-22T11:06Z;
+// measured in builds Job infra-3135-s-h-z2mdn at 3fce6150): the pages R2 lists draw lists of
+// options as native `<select>` elements, whose list holds no text box that narrows it. At 1440
+// px the Inbox draws "Snooze selected asks" in its selection bar, and "Priority of <issue>" and
+// "Snooze <ask>" in the reading column's head; the Inbox drawer those three and a Priority and a
+// Snooze on each row; the project List a Priority on each row and its pager's "Rows per page";
+// the Board a Priority on each card; the Agents page's broadcast composer "Delivery mode"; the
+// Delivery page "Window" and "Color merges by", in its list and in its timeline. At 390 px the
+// same, the Inbox's own rows each drawing a Priority and a Snooze. The search bar and the
+// Artifacts tab's own panel draw none, and every other list of options on these pages opened
+// with a text box of its own: the filter panels' lists, the column filters, "Asked of" and
+// "Move to epic". Spec v8, R3: "Every list of options a reader picks from holds a text box that
+// narrows the options." The issue page above an Artifacts tab is not the tab (the architect's
+// ruling of 2026-11-22 11:1xZ), so on that page only the tab's own panel is read.
+test("no list of options on R2's pages lacks a text box: no page draws a native select, at 1440 and 390", async ({
+  page,
+}) => {
+  test.setTimeout(300_000);
+  const real = await seedRealStackSurfaces();
+  const scene = { ...(await seedSurfaces()), deliveryQuery: real.deliveryQuery };
+  /** The native selects `root` draws, each by its accessible name: its own label, or the words of
+   *  the `<label>` around it without the text of its options. */
+  const nativeSelects = (root: Locator) =>
+    root.evaluate((node) =>
+      [...node.querySelectorAll("select")]
+        .filter((select) => select.getClientRects().length > 0)
+        .map((select) => {
+          const label = select.labels?.[0];
+          const words =
+            label === undefined
+              ? ""
+              : [...label.childNodes]
+                  .filter((part) => part.nodeType === Node.TEXT_NODE)
+                  .map((part) => part.textContent ?? "")
+                  .join("")
+                  .trim();
+          return select.getAttribute("aria-label") || words || select.title || "unnamed";
+        })
+    );
+  const wrong: string[] = [];
+  /** Names the native selects one page draws. A row's own control names its row's issue, so the
+   *  names are folded at the issue's key and counted, and each page is one line. */
+  const refuse = (where: string, selects: readonly string[]) => {
+    const counted = new Map<string, number>();
+    for (const select of selects) {
+      const control = select.replace(/\b[A-Z][A-Z0-9]*-\d+\b.*$/, "<row>");
+      counted.set(control, (counted.get(control) ?? 0) + 1);
+    }
+    if (counted.size === 0) return;
+    const names = [...counted].map(([control, count]) =>
+      count > 1 ? `"${control}" x${count}` : `"${control}"`
+    );
+    wrong.push(`${where}: ${names.join(", ")} list options in a native select with no text box`);
+  };
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    for (const name of [
+      "Inbox",
+      "Inbox drawer",
+      "project List",
+      "project Board",
+      "Agents page",
+      "Delivery page",
+      "search bar",
+      "Artifacts tab",
+    ] as const) {
+      const surface = await openSurface(page, name, scene, { phone: size.width < 1280 });
+      // Each list the page holds is drawn: the Inbox's reading column for its selected row, the
+      // selection bar for a marked row, and the Agents page's broadcast composer.
+      if (name === "Inbox" && hasReadingPane(page)) {
+        await surface.firstRow.locator("time").first().click();
+        await expect(surface.firstRow).toHaveAttribute("data-inbox-selected", "true");
+      }
+      await surface.select?.();
+      if (name === "Agents page") {
+        await surface.root
+          .getByRole("checkbox", { exact: true, name: "Select all matching agents" })
+          .check();
+        await expect(surface.root.getByRole("region", { name: "Broadcast" })).toBeVisible();
+      }
+      const root = name === "Artifacts tab" ? page.locator("#issue-artifacts-panel") : surface.root;
+      // One read is the answer: the waits above found every list this page draws drawn.
+      refuse(`${name} at ${size.width}x${size.height}`, await nativeSelects(root));
+      // The Delivery page's timeline, beside the list `openSurface` opens it on.
+      if (name === "Delivery page") {
+        await page.goto(`/delivery?${real.deliveryQuery}`);
+        await expect(page.getByTestId("delivery-chart")).toBeVisible();
+        // One read is the answer: the chart is drawn, and the header's controls with it.
+        const timeline = await nativeSelects(surface.root);
+        refuse(`Delivery page timeline at ${size.width}x${size.height}`, timeline);
+      }
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
