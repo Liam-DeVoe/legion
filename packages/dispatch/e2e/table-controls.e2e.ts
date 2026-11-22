@@ -20,6 +20,7 @@ import {
   plannerSession,
   reviewerSession,
   seedAgents,
+  setInterests,
   setLiveSessions,
   shownAgentRows,
   toggleAgentGroup,
@@ -8325,6 +8326,137 @@ test("the Inbox card's Referenced by Retry keeps the keyboard focus while its re
     const landed = await focusPlace(page);
     if (landed.body) {
       wrong.push(`${where}: after the read Retry sent answers the focus is on the body`);
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): four questions seeded with a follower and a subscriber, and an Unfollow and an
+// Unsubscribe confirmed and held, at each of two widths.
+// INFRA-3135, round 24 (the tester's, measured in builds Jobs infra-3135-n-h2 and -n-b at 3fce6150
+// and da0804df, and this row in -n-red at 3fce6150): a question in the Inbox reaches its asker, a
+// session that replied to it, and a session subscribed to its issue, so its card reads Reaches 3
+// and lists an Unfollow for each follower and an Unsubscribe for the subscriber. The reader presses
+// Enter on the replier's Unfollow, or on the subscriber's Unsubscribe, and Enter on the dialog's
+// Confirm, with the write held. Confirm closes the dialog in the same press
+// (AskRecipients.tsx:484-485, :501-502), and the dialog gives the focus back to the control that
+// opened it (features/shell/useDialog.ts:180-184), which is natively disabled while the write is
+// out (`disabled={unfollow.isPending}`, features/inbox/AskRecipients.tsx:365, every Unfollow of the
+// card; `disabled={unsubscribe.isPending}`, :420), so the focus falls to the body and the page's
+// rescue lands it: after Unfollow on the subscriber's Unsubscribe, after Unsubscribe at 1440 on the
+// subscriber's own name link, and at 390 on another question's Select checkbox, outside the card,
+// in Chromium, Firefox and WebKit at both commits. When the Unsubscribe lands and the subscriber's
+// chip goes, the focus on its name link falls to the body at 1440 at 3fce6150: in Chromium in all
+// four runs, in Firefox in three of four and in WebKit in one of four (the probes and this row's
+// two runs; the others land on Unfollow), where da0804df lands it on Unfollow in all three; at 390
+// it stays on the other question's checkbox. Nothing scrolls. The rules: a control held while the
+// write its press started is out is held through components/held-press.ts, never natively disabled,
+// so it keeps the keyboard focus, and the dialog's hand-back finds it
+// (packages/dispatch/AGENTS.md:53); and a landing the reader's press caused is what the press drew
+// in its place, else the control now at the place, else the nearest control in sight before it,
+// else the region's stop (2026-11-22 12:16Z). A focused control disabled under the press, which
+// each engine moves to the body at its own time, and a focused control taken away, for which
+// Firefox and WebKit fire no `focusout`: the clause of the `webkit` and `firefox` projects that
+// names the page-own focus row (e2e/playwright.config.ts).
+test("Unfollow and Unsubscribe on an Inbox card's recipients keep the keyboard focus on a control through their write @firefox @webkit", async ({
+  page,
+}) => {
+  // Two widths by two removals, each with a question seeded and the Inbox opened for it.
+  test.setTimeout(150_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const asker = { id: "e2e-recipients-asker", kind: "session" as const };
+  const replier = { id: "e2e-recipients-replier", kind: "session" as const };
+  const watcher = "e2e-recipients-watcher";
+  await setLiveSessions([
+    { session_id: asker.id, title: "Asker (e2e)" },
+    { session_id: replier.id, title: "Replier (e2e)" },
+    { session_id: watcher, title: "Watcher (e2e)" },
+  ]);
+  // The removal the row presses is held until the row lets it through.
+  const writes = { held: [] as Route[], path: "" };
+  await page.route(
+    (url) => url.pathname === writes.path,
+    async (route) => {
+      if (route.request().method() !== "DELETE") return route.fallback();
+      writes.held.push(route);
+    }
+  );
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    for (const label of ["Unfollow", "Unsubscribe"] as const) {
+      const where = `Inbox at ${size.width}x${size.height}, ${label}`;
+      const issue = await createIssue({
+        project: "CORE",
+        title: `Who hears the ${label} at ${size.width}`,
+      });
+      await patchIssue(issue.key, { assignee: "alice" });
+      const ask = await createAsk(
+        issue.key,
+        {
+          options: [{ label: "Ship" }, { label: "Hold" }],
+          question: `Ship the ${label} at ${size.width}?`,
+        },
+        { actor: asker, as: "agent" }
+      );
+      await createComment(
+        issue.key,
+        { ask_id: ask.id, body: "Tests are green on my side." },
+        { actor: replier, as: "agent" }
+      );
+      await setInterests([
+        { session_id: watcher, topics: [`notifications.dispatch.issue.${issue.key}.>`] },
+      ]);
+      const who = label === "Unfollow" ? replier.id : watcher;
+      writes.path =
+        label === "Unfollow"
+          ? `/api/v1/asks/${ask.id}/followers/${replier.id}`
+          : `/api/v1/issues/${issue.key}/subscribers/${watcher}`;
+      await page.goto("/");
+      await expect(inboxRow(page, ask.id)).toBeVisible();
+      const card = await askCard(page, ask.id);
+      const inCard = `[data-testid="ask-${ask.id}"]`;
+      const recipients = card.getByRole("region", { name: "Recipients" });
+      const reaches = recipients.getByRole("button", { name: /^Reaches/ });
+      await expect(reaches).toHaveText(/^Reaches 3/);
+      await reaches.focus();
+      await page.keyboard.press("Enter");
+      const chip = recipients
+        .getByRole("listitem")
+        .filter({ has: page.locator(`[title="${who}"]`) });
+      const opener = chip.getByRole("button", { exact: true, name: label });
+      await opener.focus();
+      await page.keyboard.press("Enter");
+      const dialog = page.getByRole("dialog", { name: label });
+      await expect(dialog).toBeVisible();
+      await dialog.getByRole("button", { exact: true, name: "Confirm" }).focus();
+      await page.keyboard.press("Enter");
+      await expect.poll(() => writes.held.length, `${where}: Confirm sent no write`).toBe(1);
+      await expect(dialog).toHaveCount(0);
+      // The focus fixup of a disabled control runs in a rendering update; two frames hold one.
+      await nextFrames(page);
+      await nextFrames(page);
+      // One read is the answer: the write is held, and its press's renders have all run.
+      const holding = await focusPlace(page, inCard);
+      if (!holding.inside) {
+        wrong.push(
+          `${where}: with the write held the focus is on ${holding.name}, not on a control of the card`
+        );
+      }
+      for (const route of writes.held.splice(0)) await route.continue();
+      await expect(chip).toHaveCount(0);
+      await settledScrollTop(page);
+      await nextFrames(page);
+      // One read is the answer: the write has landed, its chip is gone, the window holds still.
+      const landed = await focusPlace(page, inCard);
+      if (!landed.inside) {
+        wrong.push(
+          `${where}: after the write lands the focus is on ${landed.name}, not on a control of the card`
+        );
+      }
     }
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
