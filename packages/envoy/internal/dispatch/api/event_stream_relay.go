@@ -191,15 +191,20 @@ type eventStreamRelay struct {
 	// the read's own: another reader's observation that raises H in that window must not lose
 	// the gap (TestARelayRereadsTheGapAnotherReaderProvedWhileItRead).
 	deciding func(safe int64)
+	// aroundRead runs before each read of a generation's loop (run), and the function it answers
+	// runs once that read has ended, its retries included; nil in production. A test holds the
+	// reads back and counts the ones under way through it, so it orders a reset of the log
+	// against them by what the relay is doing rather than by a sleep.
+	aroundRead func() (ended func())
 
 	// running counts every generation's goroutines. Add runs under mu and only while closed is
 	// false, so no Add can follow the Wait in wait.
 	running sync.WaitGroup
 
-	// mu guards closed, starting, generation, and the running generation's cursor and subscriber
-	// count. It is held across publishing a page and moving the cursor over it, and across a new
-	// subscription and its read of that cursor (subscribe), so the cursor a subscriber reads
-	// covers exactly the events published before its subscription existed.
+	// mu guards closed, starting, startsRead, generation, and the running generation's cursor and
+	// subscriber count. It is held across publishing a page and moving the cursor over it, and
+	// across a new subscription and its read of that cursor (subscribe), so the cursor a
+	// subscriber reads covers exactly the events published before its subscription existed.
 	mu sync.Mutex
 	// closed is set by wait: the lifetime has ended and no generation starts again.
 	closed bool
@@ -207,6 +212,10 @@ type eventStreamRelay struct {
 	// mu so that no other caller's subscribe waits on the database while holding it: that read
 	// waits for a safe horizon, which any open write on the instance can hold back.
 	starting chan struct{}
+	// startsRead counts the generation starts that have read the log (firstRelayCursor's newest id
+	// and gaps) and so await the horizon or are past it: an event that commits after a start's read
+	// stands above the cursor that start answers. A test orders its writes after that read by it.
+	startsRead int
 	// generation is the running generation, nil while nobody subscribes.
 	generation *relayGeneration
 }
@@ -322,7 +331,11 @@ func (r *eventStreamRelay) subscribe(ctx context.Context, buffer int) (relaySubs
 		var cursorAt time.Time
 		if err != nil {
 			err = fmt.Errorf("open the live event stream's pool: %w", err)
-		} else if cursor, cursorAt, err = r.server.firstRelayCursor(ctx, live); err != nil {
+		} else if cursor, cursorAt, err = r.server.firstRelayCursor(ctx, live, func() {
+			r.mu.Lock()
+			r.startsRead++
+			r.mu.Unlock()
+		}); err != nil {
 			err = fmt.Errorf("read the event stream relay's cursor: %w", err)
 		}
 
@@ -474,12 +487,22 @@ func (r *eventStreamRelay) run(ctx context.Context, g *relayGeneration) {
 			}
 		}
 		gaps.stop()
+		var ended func()
+		if r.aroundRead != nil {
+			ended = r.aroundRead()
+		}
 		safe, gap, ok := r.read(ctx, g, checkReset)
 		for !ok {
 			if !waitFor(ctx, eventRelayRetry) {
+				if ended != nil {
+					ended()
+				}
 				return
 			}
 			safe, gap, ok = r.read(ctx, g, checkReset)
+		}
+		if ended != nil {
+			ended()
 		}
 		gaps.schedule(safe, gap)
 	}
@@ -665,11 +688,11 @@ func (r *eventStreamRelay) window() time.Duration {
 // with the subscription's events_start not yet sent (feedEvents). The gap read covers the ids above
 // the floor, which are the ids written since a recent mark, however long the log. An event that
 // commits between the subscription's start and this read, a round trip apart, counts as committed
-// before it.
+// before it. read runs once the log has been read, before the wait.
 //
 // pool is the generation's own, the live pool (relayGeneration.live), as every read a generation
 // makes is; the horizon observes on the horizon pool, which is neither.
-func (s *server) firstRelayCursor(ctx context.Context, pool queryer) (int64, time.Time, error) {
+func (s *server) firstRelayCursor(ctx context.Context, pool queryer, read func()) (int64, time.Time, error) {
 	floor, err := s.firstRelayFloor(ctx)
 	if err != nil {
 		return 0, time.Time{}, err
@@ -678,6 +701,7 @@ func (s *server) firstRelayCursor(ctx context.Context, pool queryer) (int64, tim
 	if err != nil {
 		return 0, time.Time{}, err
 	}
+	read()
 	if _, err := s.horizon().Await(ctx); err != nil {
 		return 0, time.Time{}, err
 	}
