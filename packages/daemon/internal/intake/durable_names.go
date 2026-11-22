@@ -335,10 +335,14 @@ func (d *durableNames) recordLastFloor(ctx context.Context, logical, current str
 
 // info is the info of the consumer logical's record selects, read fresh on its own connection, for
 // a reader: the boot's reconcile (Consumers.DispatchPosition) and the state route (Consumers.Lag).
-// It creates nothing. Its Step 0 may abandon a create another boot left open, reading the
-// candidate on the candidate's own connection and retiring it, so it then closes the connections
-// of the names the record retired (closeNames). It closes no other: a repositories change may be
-// settling the same logical name beside it (open), whose candidate's connection it must not close.
+// It creates nothing. Its Step 0 may abandon a create left open, reading the candidate on the
+// candidate's own connection and retiring it, so it then closes the connections of the names the
+// record retired (closeNames), and no others: never the current's, nor the candidate of an open the
+// record still holds. A create of a repositories change beside it (open) that outlives the settle
+// age, 2 s, while a Lag read runs is abandoned and retired here too, so its connection closes as
+// well: that create ends on the closed connection, and its publish or reserve conflicts with the
+// abandon's write and Ensure tries again with a fresh candidate, the same end as before this
+// close, which then dials anew.
 func (d *durableNames) info(ctx context.Context, logical string) (*jetstream.ConsumerInfo, error) {
 	sel, err := d.names.Select(ctx, logical, nil)
 	d.closeNames(sel.Record.Current, sel.Record.Retired)
