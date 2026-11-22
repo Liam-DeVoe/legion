@@ -1010,9 +1010,8 @@ func engineHooks(hooks []config.Hook, prompts map[string]string) []workflow.Hook
 // connect opens Envoy's JetStream and this project's durable consumers, so a missing
 // notification stream refuses boot rather than leaving a daemon that reads no events. Boot runs it
 // before reconcile, whose Dispatch listing covers only what precedes a consumer created now. It
-// connects as nc, the credential readBoot chose (natsConnection): its platform identity token
-// through natsauth.ConnectService, which retries a refusal of the NATS auth service, else its seed
-// or none through natsauth.Connect. It logs what the server reports about
+// connects as nc, the credential readBoot chose (natsConnection), through the daemon's one dial
+// (dial). It logs what the server reports about
 // the connection: every permission it refuses at error, every disconnect at warn and every
 // reconnect at info (natsauth.LogEvents), under natsauth.ReconnectForever so a reconnect never
 // gives up: a NATS outage mid-run never closes the connection for good. A failed attempt here
@@ -1022,14 +1021,7 @@ func engineHooks(hooks []config.Hook, prompts map[string]string) []workflow.Hook
 // looks once the connection reports itself closed, and Close does not clear what the connection
 // last recorded.
 func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc natsConnection) error {
-	name, options := "legion-daemon "+cfg.Project, nc.options(w.log)
-	var conn *nats.Conn
-	var err error
-	if nc.tokenFile != "" {
-		conn, err = natsauth.ConnectService(cfg.NatsURLs, nc.tokenFile, name, options...)
-	} else {
-		conn, err = natsauth.Connect(cfg.NatsURLs, nc.seed, name, options...)
-	}
+	conn, err := w.dial(cfg, nc, "legion-daemon "+cfg.Project)
 	if err != nil {
 		return fmt.Errorf("connect Envoy NATS: %w", err)
 	}
@@ -1077,13 +1069,18 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 	return nil
 }
 
-// dial opens a NATS connection named name as nc, the user readBoot chose. It is the daemon's one
-// dial: its own connection (connect) and each fresh generation's (intake.ConsumerSpec.Connect) go
-// through it alone, so every credential and option the daemon's connection carries, each
-// generation's carries too. A credential the daemon learns to present, the NATS auth service's
-// service token among them, is added here, never at one call.
+// dial opens a NATS connection named name as nc, the credential readBoot chose: its platform
+// identity token through natsauth.ConnectService, which retries a refusal of the NATS auth
+// service, else its seed or none through natsauth.Connect, with nc's options (natsConnection.options).
+// It is the daemon's one dial: its own connection (connect) and each fresh generation's
+// (intake.ConsumerSpec.Connect) go through it alone, so every credential and option the daemon's
+// connection carries, each generation's carries too, and a generation's connection presents the
+// service token the NATS auth service decides, which grants it that one consumer.
 func (w *workflowRuntime) dial(cfg config.Config, nc natsConnection, name string) (*nats.Conn, error) {
-	return natsauth.Connect(cfg.NatsURLs, nc.seed, name, natsauth.LogEvents(w.log), natsauth.ReconnectForever())
+	if nc.tokenFile != "" {
+		return natsauth.ConnectService(cfg.NatsURLs, nc.tokenFile, name, nc.options(w.log)...)
+	}
+	return natsauth.Connect(cfg.NatsURLs, nc.seed, name, nc.options(w.log)...)
 }
 
 // phaseHolds answers supervise's Deps.PhaseHolds from the issue record: a task carries the phase
