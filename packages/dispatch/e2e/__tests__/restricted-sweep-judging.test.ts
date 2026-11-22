@@ -367,11 +367,12 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
   );
 
   // The control of the row above: each proxy read of the project's repository answered as one
-  // the App is not installed on, as the proxy answers it (503 GITHUB_TOKEN_UNAVAILABLE).
+  // the App is not installed on, as the proxy answers it (503 GITHUB_TOKEN_UNAVAILABLE). The full
+  // member's proxy reads are their cookie's, so the run is given it, or no read could fail.
   test(
     "each GitHub proxy read answered as a repository the App is not installed on is no FAIL",
     async () => {
-      const { stdout } = await sweep([], { rows: ["/api/v1/whoami"] });
+      const { stdout } = await sweep([], { env: served.env, rows: ["/api/v1/whoami"] });
       expect(failures(stdout)).toEqual([]);
       expect(proxyReads().length).toBeGreaterThan(0);
       for (const shape of proxyReads()) {
