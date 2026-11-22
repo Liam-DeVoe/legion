@@ -327,6 +327,28 @@ const schemas: Record<string, z.ZodType> = {
   // down as the route answered it, so that the case "the request schema takes exactly the ratings
   // the daemon takes" below, and the plugin's tool in packages/pi-shared, hold their own rule to it.
   "plan-rating-cases.json": PlanRatingCases,
+  // Nor this one: the directory of the working copy of each task's branch, or the refusal, that
+  // `workspace.TaskDir` answers for each case, written by `internal/workspace`'s
+  // TestTheTaskDirFixture so that `packages/pi-shared/src/handoff-record.test.ts` holds the
+  // plugin's own port of that rule (`stepCopy`) to the daemon's, case by case.
+  "task-dirs.json": z.strictObject({
+    cases: z.array(
+      z.union([
+        z.strictObject({
+          name: z.string().min(1),
+          workspace: z.string().min(1),
+          branch: z.string(),
+          dir: z.string().min(1),
+        }),
+        z.strictObject({
+          name: z.string().min(1),
+          workspace: z.string().min(1),
+          branch: z.string(),
+          refused: z.literal(true),
+        }),
+      ])
+    ),
+  }),
 };
 
 function fixture(name: string): unknown {
