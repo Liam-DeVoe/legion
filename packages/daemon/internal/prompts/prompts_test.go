@@ -101,6 +101,26 @@ func TestTheOwnerIsToldTheRolesOfItsDeployment(t *testing.T) {
 	}
 }
 
+// The owner's move back from accepting to `step` works only where it says which earlier step of
+// the task runs as `step`: the daemon refuses a move to `step` with two such steps and no
+// `return_to`. So each part that tells the owner of request_backward_move also tells it that
+// rule, naming the legion tool's own field, each read alone, since the composition joins one
+// architect part of go/ and one of roles/ to architect-common.md, and a part that keeps the words
+// before `return_to` would tell its reader the move goes through. This shows the text is loaded,
+// never that an owner follows it.
+func TestAMoveBackToStepIsToldWithReturnTo(t *testing.T) {
+	const rule = "`request_backward_move` to `step` works where one earlier step of the task runs as `step`; with two, name `return_to`."
+	for _, part := range []struct{ name, text string }{
+		{"go/architect-common.md", goPart(t, "architect-common.md")},
+		{"go/architect.md", goPart(t, "architect.md")},
+		{"go/architect-root.md", goPart(t, "architect-root.md")},
+		{"roles/architect.md", rolePart(t, "architect.md")},
+		{"roles/architect-root.md", rolePart(t, "architect-root.md")},
+	} {
+		holdsAndRetires(t, part.name, part.text, []string{rule}, nil)
+	}
+}
+
 // A broken role sequence drops the shared core, uses a root prompt for a child, or makes the Go
 // daemon's instructions win before the shared role instructions. The prompt paths are what every
 // launch concatenates into the one prompt file its agent reads, so their order is the contract. The

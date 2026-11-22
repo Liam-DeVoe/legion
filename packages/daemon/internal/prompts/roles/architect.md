@@ -144,6 +144,8 @@ each `unmet` finding there.
 Then accept with `sign_off`, which moves the task to its next step, or to retro where your
 acceptance is its last step, or send it back with
 `request_backward_move` (`issue`, `to` the phase of an earlier step of the task, and `reason`).
+`request_backward_move` to `step` works where one earlier step of the task runs as `step`; with
+two, name `return_to`.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
 `dispatch results --issue <issue>` shows. A result one of its children recorded against one of
