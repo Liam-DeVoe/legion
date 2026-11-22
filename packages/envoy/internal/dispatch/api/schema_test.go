@@ -60,9 +60,9 @@ func TestBlockSchemaRouteServesTheInstalledSchemaBesideTheStoresTypes(t *testing
 	for index, typ := range served.Types {
 		names[index] = typ.Name
 	}
-	want := []string{"callout", "ask", "requirement", "plan_task", "check", "decision", "reading", "criterion"}
-	if served.Version != 6 || !slices.Equal(names, want) {
-		t.Fatalf("schema = version %d, types %v; want version 6 and %v", served.Version, names, want)
+	want := []string{"callout", "ask", "requirement", "plan_task", "check", "decision", "reading", "criterion", "component"}
+	if served.Version != 7 || !slices.Equal(names, want) {
+		t.Fatalf("schema = version %d, types %v; want version 7 and %v", served.Version, names, want)
 	}
 	if parent, declared := served.Types[7].Attributes.Lookup(pmdoc.ParentAttribute); !declared || parent.Kind != pmdoc.BlockAttributeBlockList ||
 		!slices.Equal(parent.Items, []pmdoc.BlockItemKind{pmdoc.BlockItemAsk, pmdoc.BlockItemComment, pmdoc.BlockItemMessage}) {

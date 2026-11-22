@@ -30,172 +30,392 @@
 --
 -- The change is stated here as rows rather than read from the file, for the reason the seed
 -- copies its text in: a migration states what the database held at one version and must not
--- change when the file does. TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt holds the two
--- together field by field. Every value a row carries is also stated as the tuple it is.
+-- change when the file does. What it leaves is what the seed would build from the file as it
+-- stands at version 7, and TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt holds the two
+-- together field by field. Every value a row carries is also stated as the tuple it is, a `value`
+-- tuple whose kind is the attribute's name and whose far end is its value as text, since a node
+-- row's attributes column is the projection of its tuples (R1).
 --
 -- The runner applies a migration in one transaction, so the commit is the one moment the schema
--- changes, and the triggers of 20261109051232 announce it once, at that commit.
+-- changes, and the triggers of 20261109051232 announce it once, at that commit, so every running
+-- server installs the new types and the new version together.
 --
--- Running this file again writes the same rows: each node takes the values it already holds,
--- each tuple insert appends only a fact the node does not already carry, and the version is set
--- to the value it already holds. The migration records no event, so every tuple it writes carries
--- the `source_event` sentinel 0, and its rows carry a writer of their own.
-
--- The two supertags of the approved spec, written as the seed writes a supertag that declares no
--- block type: its node, carrying no attribute.
-with change as (
-  select now() as at, '{"kind": "system", "id": "block-schema-spec-change"}'::jsonb as writer
-)
-insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
-select 'supertag', names.name, 'supertag', 'project', 'live', '{}'::jsonb, change.at, change.writer, 0
-from change, (values ('spec_node'), ('spec_import_hold')) as names(name)
-order by names.name
-on conflict (kind, id) do update set
-  supertag = excluded.supertag,
-  visibility = excluded.visibility,
-  state = excluded.state,
-  attributes = excluded.attributes,
-  source_event = excluded.source_event;
+-- Every statement is one of the two shapes the pre-deploy census admits on a table past
+-- pgmigrate.CensusTableLimit, which graph_nodes and graph_tuples can be once the node store's
+-- backfill has filled them: an `insert … values` of literal rows, and an `update` that sets
+-- columns to literals on the rows its `where` names by their primary key, `(kind, id)`
+-- (20261109013400), in literal values. So no statement reads a row to write one: each node and
+-- each tuple is written out below as the row it is, a tuple states the value the node row above
+-- it carries, and an update sets a node's whole `attributes`, the value the node held before this
+-- migration with this migration's keys in it. Every row carries the migration's own stamp,
+-- 2026-11-22 06:01:00 UTC, as the moment it was made or stated, rather than the moment it runs,
+-- so the file states every value it writes and writes the same rows on every store.
+--
+-- The runner applies each version once and records it, so nothing here guards a second run: run
+-- again, the `insert` into graph_nodes meets the primary key of a row the first run wrote, the
+-- statement fails and the file's transaction rolls back, leaving the store as it was. The
+-- migration records no event, so every tuple it writes carries the `source_event` sentinel 0,
+-- and its rows carry a writer of their own, so a reader of the store can tell them from the
+-- seed's.
 
 -- The supertag node `component` becomes a block type: what the seed builds for a type of the file,
 -- its content rule, who draws it, the schema's version and its place among the types (callout,
 -- ask, requirement, plan_task, check, decision, reading and criterion hold 0 to 7, so component
--- holds 8), with its element versions. The node is changed in place and keeps the `made_at` and
--- `made_by` the seed gave it.
+-- holds 8), with its element versions. The seed gave it no attribute (20261109051232), so the value
+-- below is the whole of what the node carries. The node is changed in place and keeps the
+-- `made_at` and `made_by` the seed gave it.
 update graph_nodes
-set attributes = attributes || '{"block_type": true, "content": "paragraph+", "render": "host", "version": 7, "position": 8, "since": 7, "creatable_since": 7}'::jsonb
-where kind = 'supertag' and id = 'component';
+set attributes = '{"block_type": true, "content": "paragraph+", "render": "host", "version": 7, "position": 8, "since": 7, "creatable_since": 7}'::jsonb
+where (kind, id) in (('supertag', 'component'));
 
--- The attribute nodes. Each id is `<supertag>/<store name>`, and its attributes are what the seed
--- builds for an attribute of the file: the attribute's own JSON, with its name, its store name
--- and its position beside it. None is named for a base attribute, so each store name is its own
--- name (pmdoc/schemanodes.StoreName). A position is the attribute's place among its type's
--- attributes, counted from 0: requirement holds two before kind, check seven before statement.
-with change as (
-  select now() as at, '{"kind": "system", "id": "block-schema-spec-change"}'::jsonb as writer
-)
+-- The two supertags of the approved spec, written as the seed writes a supertag that declares no
+-- block type: its node, carrying no attribute. Then the attribute nodes. Each attribute node's id
+-- is `<supertag>/<store name>`, and its attributes are what the seed builds for an attribute of
+-- the file: the attribute's own JSON, with its name, its store name and its position beside it.
+-- None is named for a base attribute, so each store name is its own name
+-- (pmdoc/schemanodes.StoreName). A position is the attribute's place among its type's attributes,
+-- counted from 0: requirement holds two before kind, check seven before statement. The store holds
+-- none of the twenty-three before this runs.
 insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
-select 'attribute', attribute.type_name || '/' || attribute.name, 'attribute', 'project', 'live',
-       attribute.schema || jsonb_build_object('name', attribute.name, 'store_name', attribute.name, 'position', attribute.position),
-       change.at, change.writer, 0
-from change, (values
-  ('requirement', 'kind', 2, '{"kind": "enum", "choices": ["behavior", "structure", "property"], "since": 7, "creatable_since": 7}'::jsonb),
-  ('requirement', 'under', 3, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
-  ('requirement', 'supports', 4, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
-  ('requirement', 'about', 5, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
-  ('requirement', 'base', 6, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
-  ('requirement', 'removes', 7, '{"kind": "bool", "since": 7, "creatable_since": 7}'::jsonb),
-  ('check', 'statement', 7, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
-  ('check', 'subject', 8, '{"kind": "enum", "choices": ["code", "production", "graph"], "since": 7, "creatable_since": 7}'::jsonb),
-  ('check', 'procedure', 9, '{"kind": "enum", "choices": ["program", "query", "agent"], "since": 7, "creatable_since": 7}'::jsonb),
-  ('check', 'runner', 10, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
-  ('check', 'selector', 11, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
-  ('check', 'job', 12, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
-  ('check', 'time_limit', 13, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
-  ('check', 'base', 14, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
-  ('check', 'removes', 15, '{"kind": "bool", "since": 7, "creatable_since": 7}'::jsonb),
-  ('component', 'name', 0, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
-  ('component', 'kind', 1, '{"kind": "enum", "choices": ["interface"], "since": 7, "creatable_since": 7}'::jsonb),
-  ('component', 'under', 2, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
-  ('component', 'joins', 3, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
-  ('component', 'base', 4, '{"kind": "string", "since": 7, "creatable_since": 7}'::jsonb),
-  ('component', 'removes', 5, '{"kind": "bool", "since": 7, "creatable_since": 7}'::jsonb)
-) as attribute(type_name, name, position, schema)
-order by attribute.type_name, attribute.name
-on conflict (kind, id) do update set
-  supertag = excluded.supertag,
-  visibility = excluded.visibility,
-  state = excluded.state,
-  attributes = excluded.attributes,
-  source_event = excluded.source_event;
+values
+  ('supertag', 'spec_import_hold', 'supertag', 'project', 'live', '{}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('supertag', 'spec_node', 'supertag', 'project', 'live', '{}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'requirement/kind', 'attribute', 'project', 'live',
+   '{"kind": "enum", "choices": ["behavior", "structure", "property"], "since": 7, "creatable_since": 7, "name": "kind", "store_name": "kind", "position": 2}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'requirement/under', 'attribute', 'project', 'live',
+   '{"kind": "string", "since": 7, "creatable_since": 7, "name": "under", "store_name": "under", "position": 3}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'requirement/supports', 'attribute', 'project', 'live',
+   '{"kind": "string", "since": 7, "creatable_since": 7, "name": "supports", "store_name": "supports", "position": 4}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'requirement/about', 'attribute', 'project', 'live',
+   '{"kind": "string", "since": 7, "creatable_since": 7, "name": "about", "store_name": "about", "position": 5}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'requirement/base', 'attribute', 'project', 'live',
+   '{"kind": "string", "since": 7, "creatable_since": 7, "name": "base", "store_name": "base", "position": 6}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'requirement/removes', 'attribute', 'project', 'live',
+   '{"kind": "bool", "since": 7, "creatable_since": 7, "name": "removes", "store_name": "removes", "position": 7}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'check/statement', 'attribute', 'project', 'live',
+   '{"kind": "string", "since": 7, "creatable_since": 7, "name": "statement", "store_name": "statement", "position": 7}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'check/subject', 'attribute', 'project', 'live',
+   '{"kind": "enum", "choices": ["code", "production", "graph"], "since": 7, "creatable_since": 7, "name": "subject", "store_name": "subject", "position": 8}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'check/procedure', 'attribute', 'project', 'live',
+   '{"kind": "enum", "choices": ["program", "query", "agent"], "since": 7, "creatable_since": 7, "name": "procedure", "store_name": "procedure", "position": 9}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'check/runner', 'attribute', 'project', 'live',
+   '{"kind": "string", "since": 7, "creatable_since": 7, "name": "runner", "store_name": "runner", "position": 10}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'check/selector', 'attribute', 'project', 'live',
+   '{"kind": "string", "since": 7, "creatable_since": 7, "name": "selector", "store_name": "selector", "position": 11}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'check/job', 'attribute', 'project', 'live',
+   '{"kind": "string", "since": 7, "creatable_since": 7, "name": "job", "store_name": "job", "position": 12}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'check/time_limit', 'attribute', 'project', 'live',
+   '{"kind": "string", "since": 7, "creatable_since": 7, "name": "time_limit", "store_name": "time_limit", "position": 13}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'check/base', 'attribute', 'project', 'live',
+   '{"kind": "string", "since": 7, "creatable_since": 7, "name": "base", "store_name": "base", "position": 14}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'check/removes', 'attribute', 'project', 'live',
+   '{"kind": "bool", "since": 7, "creatable_since": 7, "name": "removes", "store_name": "removes", "position": 15}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'component/name', 'attribute', 'project', 'live',
+   '{"kind": "string", "since": 7, "creatable_since": 7, "name": "name", "store_name": "name", "position": 0}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'component/kind', 'attribute', 'project', 'live',
+   '{"kind": "enum", "choices": ["interface"], "since": 7, "creatable_since": 7, "name": "kind", "store_name": "kind", "position": 1}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'component/under', 'attribute', 'project', 'live',
+   '{"kind": "string", "since": 7, "creatable_since": 7, "name": "under", "store_name": "under", "position": 2}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'component/joins', 'attribute', 'project', 'live',
+   '{"kind": "string", "since": 7, "creatable_since": 7, "name": "joins", "store_name": "joins", "position": 3}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'component/base', 'attribute', 'project', 'live',
+   '{"kind": "string", "since": 7, "creatable_since": 7, "name": "base", "store_name": "base", "position": 4}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0),
+  ('attribute', 'component/removes', 'attribute', 'project', 'live',
+   '{"kind": "bool", "since": 7, "creatable_since": 7, "name": "removes", "store_name": "removes", "position": 5}',
+   '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0);
 
--- The two base attributes each new node carries, as the tuples they are, read back off the rows
--- just written, as the seed reads them.
+-- The two base attributes each new node carries, as the tuples they are, as the seed states them:
+-- at the time and by the writer of the node's row.
 insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
-select node.kind, node.id, fact.kind, 'value', fact.value, node.made_at, node.made_by, 0, null, true
-from graph_nodes node
-cross join lateral (values ('visibility', node.visibility), ('state', node.state)) as fact(kind, value)
-where ((node.kind = 'supertag' and node.id in ('spec_node', 'spec_import_hold'))
-   or (node.kind = 'attribute' and node.id in (
-     'requirement/kind', 'requirement/under', 'requirement/supports', 'requirement/about', 'requirement/base', 'requirement/removes',
-     'check/statement', 'check/subject', 'check/procedure', 'check/runner', 'check/selector', 'check/job', 'check/time_limit',
-     'check/base', 'check/removes',
-     'component/name', 'component/kind', 'component/under', 'component/joins', 'component/base', 'component/removes')))
-  and not exists (
-    select 1 from graph_tuples held
-    where held.from_kind = node.kind and held.from_id = node.id and held.kind = fact.kind
-      and held.to_kind = 'value' and held.to_id = fact.value
-      and held.source_event = 0 and held.asserted
-  )
-order by node.kind, node.id, fact.kind;
+values
+  ('attribute', 'check/base', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/base', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/job', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/job', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/procedure', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/procedure', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/removes', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/removes', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/runner', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/runner', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/selector', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/selector', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/statement', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/statement', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/subject', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/subject', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/time_limit', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/time_limit', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/base', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/base', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/joins', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/joins', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/kind', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/kind', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/name', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/name', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/removes', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/removes', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/under', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/under', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/about', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/about', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/base', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/base', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/kind', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/kind', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/removes', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/removes', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/supports', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/supports', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/under', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/under', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'spec_import_hold', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'spec_import_hold', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'spec_node', 'state', 'value', 'live', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'spec_node', 'visibility', 'value', 'project', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true);
 
 -- What ties each attribute to its type. A reader of the schema follows this tuple, never the
 -- spelling of the node's id, so without it a node is no attribute of any type.
 insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
-select node.kind, node.id, 'attribute_of', 'supertag', split_part(node.id, '/', 1), node.made_at, node.made_by, 0, null, true
-from graph_nodes node
-where node.kind = 'attribute'
-  and node.id in (
-    'requirement/kind', 'requirement/under', 'requirement/supports', 'requirement/about', 'requirement/base', 'requirement/removes',
-    'check/statement', 'check/subject', 'check/procedure', 'check/runner', 'check/selector', 'check/job', 'check/time_limit',
-    'check/base', 'check/removes',
-    'component/name', 'component/kind', 'component/under', 'component/joins', 'component/base', 'component/removes')
-  and not exists (
-    select 1 from graph_tuples held
-    where held.from_kind = node.kind and held.from_id = node.id and held.kind = 'attribute_of'
-      and held.to_kind = 'supertag' and held.to_id = split_part(node.id, '/', 1)
-      and held.source_event = 0 and held.asserted
-  )
-order by node.id;
+values
+  ('attribute', 'check/base', 'attribute_of', 'supertag', 'check', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/job', 'attribute_of', 'supertag', 'check', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/procedure', 'attribute_of', 'supertag', 'check', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/removes', 'attribute_of', 'supertag', 'check', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/runner', 'attribute_of', 'supertag', 'check', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/selector', 'attribute_of', 'supertag', 'check', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/statement', 'attribute_of', 'supertag', 'check', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/subject', 'attribute_of', 'supertag', 'check', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/time_limit', 'attribute_of', 'supertag', 'check', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/base', 'attribute_of', 'supertag', 'component', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/joins', 'attribute_of', 'supertag', 'component', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/kind', 'attribute_of', 'supertag', 'component', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/name', 'attribute_of', 'supertag', 'component', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/removes', 'attribute_of', 'supertag', 'component', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/under', 'attribute_of', 'supertag', 'component', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/about', 'attribute_of', 'supertag', 'requirement', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/base', 'attribute_of', 'supertag', 'requirement', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/kind', 'attribute_of', 'supertag', 'requirement', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/removes', 'attribute_of', 'supertag', 'requirement', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/supports', 'attribute_of', 'supertag', 'requirement', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/under', 'attribute_of', 'supertag', 'requirement', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true);
 
--- The values each node this migration writes or moves carries, as the tuples they are, read back
--- off the rows just written as the seed reads every type node's: a value the row holds as JSON is
--- written as that JSON's text and a string as itself. A value a node already states as its tuple
--- is left as the seed wrote it.
-with change as (
-  select now() as at, '{"kind": "system", "id": "block-schema-spec-change"}'::jsonb as writer
-)
+-- The values each node this migration writes or moves carries, as the tuples they are, as the
+-- seed states every type node's: a value the row holds as JSON is written as that JSON's text and
+-- a string as itself, so `version` is `7` and `choices` is `["code", "production", "graph"]`. The
+-- supertag node `component`, to which the seed gave no attribute, gains every value above.
 insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
-select node.kind, node.id, fact.kind, 'value', fact.value, change.at, change.writer, 0, null, true
-from change, graph_nodes node
-cross join lateral (
-  select attribute.key, attribute.value #>> '{}' from jsonb_each(node.attributes) as attribute
-) as fact(kind, value)
-where ((node.kind = 'supertag' and node.id = 'component')
-   or (node.kind = 'attribute' and node.id in (
-     'requirement/kind', 'requirement/under', 'requirement/supports', 'requirement/about', 'requirement/base', 'requirement/removes',
-     'check/statement', 'check/subject', 'check/procedure', 'check/runner', 'check/selector', 'check/job', 'check/time_limit',
-     'check/base', 'check/removes',
-     'component/name', 'component/kind', 'component/under', 'component/joins', 'component/base', 'component/removes')))
-  and not exists (
-    select 1 from graph_tuples held
-    where held.from_kind = node.kind and held.from_id = node.id and held.kind = fact.kind
-      and held.to_kind = 'value' and held.to_id = fact.value
-      and held.source_event = 0 and held.asserted
-  )
-order by node.kind, node.id, fact.kind;
+values
+  ('attribute', 'check/base', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/base', 'kind', 'value', 'string', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/base', 'name', 'value', 'base', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/base', 'position', 'value', '14', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/base', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/base', 'store_name', 'value', 'base', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/job', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/job', 'kind', 'value', 'string', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/job', 'name', 'value', 'job', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/job', 'position', 'value', '12', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/job', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/job', 'store_name', 'value', 'job', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/procedure', 'choices', 'value', '["program", "query", "agent"]', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/procedure', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/procedure', 'kind', 'value', 'enum', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/procedure', 'name', 'value', 'procedure', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/procedure', 'position', 'value', '9', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/procedure', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/procedure', 'store_name', 'value', 'procedure', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/removes', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/removes', 'kind', 'value', 'bool', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/removes', 'name', 'value', 'removes', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/removes', 'position', 'value', '15', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/removes', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/removes', 'store_name', 'value', 'removes', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/runner', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/runner', 'kind', 'value', 'string', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/runner', 'name', 'value', 'runner', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/runner', 'position', 'value', '10', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/runner', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/runner', 'store_name', 'value', 'runner', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/selector', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/selector', 'kind', 'value', 'string', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/selector', 'name', 'value', 'selector', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/selector', 'position', 'value', '11', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/selector', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/selector', 'store_name', 'value', 'selector', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/statement', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/statement', 'kind', 'value', 'string', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/statement', 'name', 'value', 'statement', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/statement', 'position', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/statement', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/statement', 'store_name', 'value', 'statement', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/subject', 'choices', 'value', '["code", "production", "graph"]', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/subject', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/subject', 'kind', 'value', 'enum', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/subject', 'name', 'value', 'subject', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/subject', 'position', 'value', '8', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/subject', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/subject', 'store_name', 'value', 'subject', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/time_limit', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/time_limit', 'kind', 'value', 'string', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/time_limit', 'name', 'value', 'time_limit', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/time_limit', 'position', 'value', '13', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/time_limit', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'check/time_limit', 'store_name', 'value', 'time_limit', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/base', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/base', 'kind', 'value', 'string', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/base', 'name', 'value', 'base', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/base', 'position', 'value', '4', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/base', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/base', 'store_name', 'value', 'base', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/joins', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/joins', 'kind', 'value', 'string', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/joins', 'name', 'value', 'joins', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/joins', 'position', 'value', '3', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/joins', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/joins', 'store_name', 'value', 'joins', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/kind', 'choices', 'value', '["interface"]', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/kind', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/kind', 'kind', 'value', 'enum', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/kind', 'name', 'value', 'kind', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/kind', 'position', 'value', '1', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/kind', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/kind', 'store_name', 'value', 'kind', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/name', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/name', 'kind', 'value', 'string', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/name', 'name', 'value', 'name', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/name', 'position', 'value', '0', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/name', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/name', 'store_name', 'value', 'name', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/removes', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/removes', 'kind', 'value', 'bool', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/removes', 'name', 'value', 'removes', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/removes', 'position', 'value', '5', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/removes', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/removes', 'store_name', 'value', 'removes', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/under', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/under', 'kind', 'value', 'string', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/under', 'name', 'value', 'under', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/under', 'position', 'value', '2', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/under', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'component/under', 'store_name', 'value', 'under', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/about', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/about', 'kind', 'value', 'string', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/about', 'name', 'value', 'about', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/about', 'position', 'value', '5', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/about', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/about', 'store_name', 'value', 'about', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/base', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/base', 'kind', 'value', 'string', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/base', 'name', 'value', 'base', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/base', 'position', 'value', '6', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/base', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/base', 'store_name', 'value', 'base', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/kind', 'choices', 'value', '["behavior", "structure", "property"]', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/kind', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/kind', 'kind', 'value', 'enum', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/kind', 'name', 'value', 'kind', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/kind', 'position', 'value', '2', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/kind', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/kind', 'store_name', 'value', 'kind', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/removes', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/removes', 'kind', 'value', 'bool', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/removes', 'name', 'value', 'removes', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/removes', 'position', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/removes', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/removes', 'store_name', 'value', 'removes', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/supports', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/supports', 'kind', 'value', 'string', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/supports', 'name', 'value', 'supports', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/supports', 'position', 'value', '4', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/supports', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/supports', 'store_name', 'value', 'supports', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/under', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/under', 'kind', 'value', 'string', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/under', 'name', 'value', 'under', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/under', 'position', 'value', '3', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/under', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('attribute', 'requirement/under', 'store_name', 'value', 'under', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'component', 'block_type', 'value', 'true', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'component', 'content', 'value', 'paragraph+', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'component', 'creatable_since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'component', 'position', 'value', '8', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'component', 'render', 'value', 'host', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'component', 'since', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'component', 'version', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true);
 
 -- The version. Every block type's supertag node carries the version of the schema the store
 -- holds, and the schema the nodes build takes the highest of them, so each one moves to 7, not
 -- the new type alone. A supertag that declares no block type carries no version and is left
--- alone.
+-- alone. The block types the store holds at this version are the eight below, and `component`,
+-- which took 7 with its values above. Each of the eight carries what 20261116082319 gave it at
+-- version 5, or, for criterion, what 20261116163700 gave it at version 6, now at version 7. No two
+-- carry the same value, so each is a statement of its own.
 update graph_nodes
-set attributes = jsonb_set(attributes, '{version}', to_jsonb(7))
-where kind = 'supertag' and coalesce((attributes->>'block_type')::boolean, false);
+set attributes = '{"block_type": true, "content": "block+", "render": "host", "version": 7, "position": 0}'::jsonb
+where (kind, id) in (('supertag', 'callout'));
 
--- The move, as the tuple it is: each block type's newest `version` tuple is the 7 its row now
--- carries and the 6 before it stays in its history.
-with change as (
-  select now() as at, '{"kind": "system", "id": "block-schema-spec-change"}'::jsonb as writer
-)
+update graph_nodes
+set attributes = '{"block_type": true, "content": "paragraph+ bullet_list?", "render": "host", "version": 7, "position": 1}'::jsonb
+where (kind, id) in (('supertag', 'ask'));
+
+update graph_nodes
+set attributes = '{"block_type": true, "content": "paragraph+", "render": "host", "version": 7, "position": 2, "since": 3, "creatable_since": 3}'::jsonb
+where (kind, id) in (('supertag', 'requirement'));
+
+update graph_nodes
+set attributes = '{"block_type": true, "content": "paragraph+", "render": "host", "version": 7, "position": 3, "since": 3, "creatable_since": 3}'::jsonb
+where (kind, id) in (('supertag', 'plan_task'));
+
+update graph_nodes
+set attributes = '{"block_type": true, "content": "paragraph+", "render": "host", "version": 7, "position": 4, "since": 3, "creatable_since": 3}'::jsonb
+where (kind, id) in (('supertag', 'check'));
+
+update graph_nodes
+set attributes = '{"block_type": true, "content": "block+", "render": "host", "version": 7, "position": 5, "since": 5, "creatable_since": 5}'::jsonb
+where (kind, id) in (('supertag', 'decision'));
+
+update graph_nodes
+set attributes = '{"block_type": true, "content": "paragraph+", "render": "host", "version": 7, "position": 6, "since": 5, "creatable_since": 5, "parents": ["decision", "ask"]}'::jsonb
+where (kind, id) in (('supertag', 'reading'));
+
+update graph_nodes
+set attributes = '{"block_type": true, "content": "paragraph+", "render": "host", "version": 7, "position": 7, "since": 6, "creatable_since": 6}'::jsonb
+where (kind, id) in (('supertag', 'criterion'));
+
+-- The move, as the tuple it is: a moved attribute is a later value appended under its name, so
+-- each block type's newest `version` tuple is the 7 its row now carries and the 6 before it stays
+-- in its history. `component` states its 7 among its values above.
 insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
-select node.kind, node.id, 'version', 'value', node.attributes->>'version', change.at, change.writer, 0, null, true
-from change, graph_nodes node
-where node.kind = 'supertag' and coalesce((node.attributes->>'block_type')::boolean, false)
-  and not exists (
-    select 1 from graph_tuples held
-    where held.from_kind = node.kind and held.from_id = node.id and held.kind = 'version'
-      and held.to_kind = 'value' and held.to_id = node.attributes->>'version'
-      and held.source_event = 0 and held.asserted
-  )
-order by node.id;
+values
+  ('supertag', 'ask', 'version', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'callout', 'version', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'check', 'version', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'criterion', 'version', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'decision', 'version', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'plan_task', 'version', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'reading', 'version', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
+  ('supertag', 'requirement', 'version', 'value', '7', '2026-11-22 06:01:00+00', '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true);

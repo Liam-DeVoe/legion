@@ -1,10 +1,13 @@
--- This migration writes the type nodes of the store alone: two `supertag` nodes, the supertag node
--- `component` moved to a block type, twenty-one `attribute` nodes, the version on the block-type
--- supertag nodes, and the tuples that state each value. A supertag write ships as a migration, in
--- the same release as the binary that handles it, and passes the pre-apply census. No route or
--- command writes a node of either kind (requireNoRouteOrCommandWritesAType in
--- cmd/dispatch/supertag_nodes_test.go), so every row it rewrites is a type node an earlier
--- migration wrote, and it states every value it gives. It refuses no row and rewrites no row a
--- person or an agent wrote, and it reads no existing row of another table. The number of existing
+-- This migration writes the type nodes of the store alone: it writes two `supertag` nodes and
+-- twenty-one `attribute` nodes, moves the supertag node `component` to a block type, sets the
+-- version on the block-type supertag nodes, and appends the tuples that state each value. Its
+-- ground is the node store's rule: "A supertag write ships as a migration, in the same release as
+-- the binary that handles it. It passes the pre-apply census." No route or command writes a node
+-- of either kind (requireNoRouteOrCommandWritesAType in cmd/dispatch/supertag_nodes_test.go), so
+-- every row it rewrites is a type node an earlier migration wrote, and it states every new value
+-- it gives one. It refuses no row and rewrites no row a person or an agent wrote, and it reads no
+-- existing row of another table. Each of its statements is an `insert … values` of literal rows
+-- or an `update` that sets literals on the rows its `where` names by their primary key in literal
+-- values, so it reads no row of its own tables beyond the ones it names. The number of existing
 -- rows this migration would refuse or rewrite is therefore 0.
 select 0;

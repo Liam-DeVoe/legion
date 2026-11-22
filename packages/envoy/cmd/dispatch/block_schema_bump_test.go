@@ -10,10 +10,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// issueTreeMigration is the name every migration of dispatch://INFRA-1253 takes,
-// <timestamp>_issue_tree_<what>.up.sql, as store's TestThisChildsMigrationsTouchNoTableAboveTheCensusLimit
-// finds them: the type migrations this branch adds are the ones of store.TypeMigrations it names.
-var issueTreeMigration = regexp.MustCompile(`^[0-9]{14}_issue_tree_[a-z0-9_]+\.up\.sql$`)
+// specChangeMigration is the name every type migration of the change whose approvals write the
+// approved spec takes, <timestamp>_spec_change_<what>.up.sql: the type migrations this branch adds
+// are the ones of store.TypeMigrations it names. The type migrations of the change before it,
+// <timestamp>_issue_tree_<what>.up.sql, which moved the block schema to version 6, are the ones
+// before this branch's.
+var specChangeMigration = regexp.MustCompile(`^[0-9]{14}_spec_change_[a-z0-9_]+\.up\.sql$`)
 
 // The branch moves the block schema one version, once (dispatch://INFRA-1253/spec R21): its
 // elements stand at the version after the one the type migrations before it carry, however many
@@ -41,7 +43,7 @@ func TestTheBlockSchemaMovesOneVersionPastTheTypeMigrationsBeforeThisBranch(t *t
 
 	var before, ours []string
 	for _, name := range store.TypeMigrations {
-		if issueTreeMigration.MatchString(name) {
+		if specChangeMigration.MatchString(name) {
 			ours = append(ours, name)
 			continue
 		}

@@ -43,21 +43,23 @@ const storeMigrations = "../../internal/dispatch/store/migrations"
 const blockSchemaFile = "../../internal/dispatch/pmdoc/schema/blocks.json"
 
 // closedSupertags is the root's closed list of types (R21 of the parent change's specification
-// and R6 of this change's): the twenty-seven this change creates, and the three of the later
+// and R6 of this change's): the twenty-seven this change creates, and the five of the later
 // changes this tree holds. `proposed` is a value of a node's state and no type, and the role is
 // the agent, so neither is a supertag. The store holds one supertag node for each and no other.
 // Each later change that creates a kind adds it to this list in its own pull request: the change
 // that moves lenses and lens kinds adds `lens_kind` (20261116123354_lens_catalogue), the change
 // that moves issues and their documents adds `query` and `query version`
-// (20261116121500_issue_tree_query_supertags), the change that moves handoffs adds `handoff`, and
-// the root adds `priority`, `step` and `plan`. The list is written here as the test's own copy, so
-// a seed that adds or drops a name has to be read by a person before this test agrees with it.
+// (20261116121500_issue_tree_query_supertags), the change whose approvals write the approved spec
+// adds `spec_node` and `spec_import_hold` (20261122060100_spec_change_block_schema), the change
+// that moves handoffs adds `handoff`, and the root adds `priority`, `step` and `plan`. The list is
+// written here as the test's own copy, so a seed that adds or drops a name has to be read by a
+// person before this test agrees with it.
 var closedSupertags = []string{
 	"issue", "document", "document version", "block", "callout", "ask", "requirement",
 	"plan_task", "check", "result", "decision", "reading", "criterion",
 	"constraint", "lens", "risk", "comment", "message", "person", "session", "role",
 	"page", "interaction", "delivery_attempt", "component", "supertag", "attribute",
-	"lens_kind", "query", "query version",
+	"lens_kind", "query", "query version", "spec_node", "spec_import_hold",
 }
 
 // TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt proves that a type is data: the seed
@@ -535,6 +537,7 @@ func (d *schemaDrift) report(t *testing.T) {
 // appended again. The runner applies a version once, so no store runs one twice.
 var literalTypeMigrations = []struct{ name, writer string }{
 	{"20261116082319_graph_supertags_decision_reading.up.sql", `{"kind": "system", "id": "block-schema-decision-reading"}`},
+	{"20261122060100_spec_change_block_schema.up.sql", `{"kind": "system", "id": "block-schema-spec-change"}`},
 }
 
 // shadowedTypeMigrations are the type migrations of store.TypeMigrations, by file name, each with
