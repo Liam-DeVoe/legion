@@ -1,0 +1,16 @@
+{
+  "recorded_at": "2026-11-22T20:47:35Z",
+  "commit": "c09ad14798e95e77dcde2fc6a256f07c65c4d8cc",
+  "corpus": "2000 blocks at depth 6; 10000 entries (5000 asks, 4000 threads, 1000 messages); 500 backlinks; 50 checks; 50000 unrelated rows; 200 readings",
+  "pod": {
+    "host": "infra1098-read-cost-sk9sn-9gvh7",
+    "cpus": 10,
+    "cpu_model": "unknown",
+    "memory_kib": 27262976,
+    "platform": "linux/amd64"
+  },
+  "runs": 200,
+  "p50_ms": 67.444,
+  "p95_ms": 79.013,
+  "p99_ms": 85.656
+}
