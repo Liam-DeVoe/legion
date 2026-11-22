@@ -221,10 +221,12 @@ A result at another commit of the linked repository names that repository.
   });
   // Neither commit is the issue's own repository's, so each is taken as the linked repository's,
   // whose open pull request the issue links, and the first record's read-through teaches the
-  // server that pull request's head.
+  // server that pull request's head. Each check is before_merge, so each pass states its
+  // negative control (400 NEGATIVE_CONTROL_REQUIRED without one).
   await recordCheckResult(issue.key, {
     check: "c-linked-head",
     commit: linkedHead,
+    negative_control: "Moved the linked pull request's head and this result was left behind.",
     observed: "41 passed",
     role: "tester",
     verdict: "pass",
@@ -232,6 +234,7 @@ A result at another commit of the linked repository names that repository.
   await recordCheckResult(issue.key, {
     check: "c-linked-other",
     commit: linkedOther,
+    negative_control: "Opened a pull request at this commit and the result stood at its head.",
     observed: "41 passed",
     role: "tester",
     verdict: "pass",

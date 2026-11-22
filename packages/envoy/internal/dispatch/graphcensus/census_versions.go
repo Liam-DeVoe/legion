@@ -274,27 +274,29 @@ type MissingVersionNodes struct {
 // index again). A bound of zero plans every one, and it answers true wherever it planned every
 // node it found missing.
 //
-// It is the drain of a block-index pass that drains a mark of its documents (docs'
-// indexRenderedVersion), over that document or, for an issue room, every document of the room the
-// pass covers a version of: the reconciliation's pass over a document or room it listed as owed
-// by either mark, this build's (store_owed_at) or the null version migration 0122's trigger sets,
-// and a request's pass that drains this build's mark (refs.BlockIndexing.Marked). The release
-// before this one writes no version node, so a version it writes during a roll holds none, and
-// once the marks are cleared no later pass reaches it: the reconciliation's drain writes every
-// such node, so it stands at the next tick and the census needs no second backfill, and a
+// It is the drain of a block-index pass that drains a mark of its documents, or that reads the
+// store's statement of its document as stale (docs' indexRenderedVersion), over that document or,
+// for an issue room, every document of the room the pass covers a version of: the
+// reconciliation's pass over a document or room it listed as owed by either mark, this build's
+// (store_owed_at) or the null version migration 0122's trigger sets, and a request's pass that
+// drains this build's mark or finds the store's statement stale (refs.BlockIndexing.Corrects).
+// The release before this one writes no version node, so a version it writes during a roll holds
+// none, and once the marks are cleared no later pass reaches it: the reconciliation's drain writes
+// every such node, so it stands at the next tick and the census needs no second backfill, and a
 // request's version write that drains the mark first writes every such node but its own
 // version's, which it writes after the pass (docs.WriteVersionNode). Its read is the anti-join of
 // those documents' versions alone, through artifact_versions' unique key, and never of the table.
 // The read runs before any write of the pass's transaction, which queues them all: a version this
 // transaction queued is not read, and it is the caller's own, which except leaves out.
 //
-// A version the release before writes reaches this drain only while a mark lists its document. A
-// version that release writes and indexes in one request, of a document this build has already
-// drained, leaves neither: that release's fence sets the block index's version to the new one,
-// and it sets no store_owed_at, so no tick lists the document and the version keeps no node until
-// the next backfill. That case reaches the drain only through the block-index tick's marking from
-// the event log, which a sibling branch of this one adds: it marks such a document store_owed_at,
-// a mark this drain fires on.
+// A version the release before writes and indexes in one request, of a document this build has
+// already drained, leaves no mark: that release's fence sets the block index's version to the new
+// one, and it sets no store_owed_at. The block-index tick's marking from the event log marks such a
+// document store_owed_at, a mark this drain fires on. Where a version of this build's is written
+// first, before any tick reads that release's event, the document then stands stated at its
+// version and the tick marks nothing; the writer's pass of that version reads the store's
+// statement of the document stale, since that release indexed a version the store never stated,
+// and drains it.
 //
 // It takes no lock of its own. Its caller holds the owner lock the documents stand under (docs'
 // lockArtifactOwner: their issue's, or the document's own where no issue owns it; for an issue

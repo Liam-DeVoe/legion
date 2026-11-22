@@ -255,7 +255,11 @@ func ownerDocuments(owner artifactOwner) (string, string) {
 // (graphstore.TuplePartOf, the record of where the ask is), read through graph_tuples_as_of_out,
 // which keys every tuple out of a node by kind, and the document's ref_key, or, for a row that
 // names no node yet, which the boot step's backfill marks, the document its block_artifact_id
-// names. A node holding no part_of names no document, and its columns are empty. The far end's
+// names. Where that is an issue room's tree artifact - an ask of an issue room is keyed by, and
+// part of, the room's tree - it is the document whose fragment of the room holds the ask's block
+// (refs.RoomBlockDocumentSQL), the document every reader of an ask names as its block's
+// (refs.AskBlockDocumentSQL), so a copy names the spec it copies and never the room. A node
+// holding no part_of names no document, and its columns are empty. The far end's
 // kind is held to a document outside the tuples' read, behind an offset 0 that keeps the planner
 // from pushing it in: bound inside it, it fits graph_tuples_as_of_in too, keyed on the far end's
 // kind and the tuple's kind alone, which reads every part_of into every document, and over an
@@ -269,12 +273,14 @@ func copiedAskSourcesQuery(owner artifactOwner) (string, string) {
 		join asks a on a.block_artifact_id = d.id
 			and block_id_key(a.block_id) = any(array(select block_id_key(id) from unnest($1::text[]) id))
 			and a.block_id = any($1)
-		left join artifacts place on place.id = case when a.node_kind is null then d.id else (
+		left join artifacts placed on placed.id = case when a.node_kind is null then d.id else (
 			select part_of.id from artifacts part_of
 			where part_of.ref_key = (
 				select part.to_id from (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.asserted, t.seq`,
 		`t.from_kind = '`+graphstore.KindAsk+`' and t.from_id = a.id::text and t.kind = '`+graphstore.TuplePartOf+`'`) + ` offset 0) part
 				where part.asserted and part.to_kind = '` + graphstore.KindArtifact + `' order by part.seq desc limit 1)) end
+		left join artifacts place on place.id = case when placed.kind = 'tree'
+			then coalesce(` + refs.RoomBlockDocumentSQL("placed.id", "a.block_id") + `, placed.id) else placed.id end
 		where ` + documents + ` and d.id <> ` + refs.DocumentRoomSQL("$2") + `
 		order by a.created_at, a.id
 	`, ownerKey

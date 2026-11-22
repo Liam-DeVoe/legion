@@ -725,12 +725,11 @@ export interface LinkedChecksSeed {
 /**
  * The issue row 3 of `e2e/issue-page-v.e2e.ts` reads: a spec of statements A (200 words), B and
  * C; a Verification document with one check that serves A and B, whose words hold a markdown
- * link to the runbook and the `dispatch://` address of B, with one pass an agent's session
- * recorded, which states its negative control, as the server asks of a pass of a before-merge
- * check (`NEGATIVE_CONTROL_REQUIRED`); and a child whose Verification document holds one check
- * that serves C. A `serves` is written as `verificationDocument` writes one,
- * `dispatch://<key>/spec#b-<id>`. The seed waits until the coverage read counts one check for
- * each statement, the child's included, so the row reads the view and not the indexing.
+ * link to the runbook and the `dispatch://` address of B, with one result an agent's session
+ * recorded; and a child whose Verification document holds one check that serves C. A `serves`
+ * is written as `verificationDocument` writes one, `dispatch://<key>/spec#b-<id>`. The seed
+ * waits until the coverage read counts one check for each statement, the child's included, so
+ * the row reads the view and not the indexing.
  */
 export async function seedLinkedChecks(): Promise<LinkedChecksSeed> {
   await createProject({ key: PROJECT, name: "Issue layout" });
@@ -788,12 +787,14 @@ export async function seedLinkedChecks(): Promise<LinkedChecksSeed> {
     }
     await pause(100);
   }
+  // A pass of a before_merge check states the negative control that would have caught its
+  // failure, which the record route requires of it (400 NEGATIVE_CONTROL_REQUIRED).
   await recordCheckResult(
     key,
     {
       check: LINKED_BLOCKS.check,
       commit: HEAD_SHA,
-      negative_control: "Drew the runbook link as plain words and the run failed.",
+      negative_control: "Dropped the check's links and the run failed.",
       observed: "1 passed",
       role: "tester",
       run: "bun run e2e -- e2e/issue-page-v.e2e.ts",

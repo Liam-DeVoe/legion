@@ -88,10 +88,10 @@ export interface OutlineReads {
    *  land on, and a failed read answers too, where `readsHeld` would wait for ever. */
   readonly readsSettled: boolean;
   /** The lines a view tells the stage by (`slots/refused-reads.ts`'s `useTellsAddressDrawn`), by
-  *  the key each is drawn under and whether rows come from its read: `failed`, and while the tree
-  *  read stands refused (`TreeRead.failed`) the tree read's own line, under the one key every
-  *  document's blocks stand on (`blocksKey`). The outline draws that line itself
-  *  (`TreeReadFailed`) and never among `failed`, so it is here alone. */
+   *  the key each is drawn under and whether rows come from its read: `failed`, and while the tree
+   *  read stands refused (`TreeRead.failed`) the tree read's own line, under the one key every
+   *  document's blocks stand on (`blocksKey`). The outline draws that line itself
+   *  (`TreeReadFailed`) and never among `failed`, so it is here alone. */
   readonly refused: readonly RefusedLine[];
   /** The whole tree (`useIssueTree`). */
   readonly root: TreeNode;

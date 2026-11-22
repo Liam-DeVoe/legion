@@ -165,8 +165,10 @@ func TestARemovalStatesItsDocumentGoneInTheStoreLockOrder(t *testing.T) {
 
 // laterImageVersion is the upload of an issue's image's second version: the issue's owner lock,
 // which statedVersionBytes takes again before it reads the image's own artifacts row, which it
-// locks no row of, the artifact.version event and the bytes it caused. Each run's image is
-// uploaded afresh, at its first version, before the run.
+// locks no row of, the artifact.version event and the bytes it caused. The bytes are tuples on the
+// node the row names and the write writes no node, so they are graphstore's plain tuple append
+// (plainTupleAppendStep). Each run's image is uploaded afresh, at its first version, before the
+// run.
 func (r *storeWriterRig) laterImageVersion() storeWriter {
 	route := "/api/v1/issues/" + r.issue + "/artifacts"
 	return storeWriter{
@@ -174,7 +176,7 @@ func (r *storeWriterRig) laterImageVersion() storeWriter {
 		steps: []storeStep{
 			ownerLockStep(store.IssueOwner(r.issue)),
 			eventAppendStep(),
-			tupleAppendStep(),
+			plainTupleAppendStep(),
 		},
 		ready: func(t *testing.T, _ context.Context) storeWriterRun {
 			name := r.fresh("lock-shot") + ".png"

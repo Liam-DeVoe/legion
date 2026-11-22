@@ -459,22 +459,27 @@ func offsetBlocks(offsets []pmdoc.BlockOffset, documents map[string]string) []mo
 // settles artifactID's re-index queue row, and for an issue room each document's the pass read is
 // settled beside it (settleRoomDocumentsOwed).
 //
-// A pass that drains a mark also writes, in this transaction, the node of each version of the
-// documents it covers that holds none (graphcensus.MissingVersionNodes), read here, in the read
-// phase, and queued after the pass's own write: the release before this one writes no version
-// node, and once the marks are cleared no later pass reaches such a version. tick is set by the
-// block-index reconciliation's passes (indexOwedDocument, indexOwedRoom), which run only on a
+// A pass that drains a mark, or that reads the store's statement of its document as stale, also
+// writes, in this transaction, the node of each version of the documents it covers that holds none
+// (graphcensus.MissingVersionNodes), read here, in the read phase, and queued after the pass's own
+// write: the release before this one writes no version node, and once the marks are cleared, or
+// the document stands stated at its version, no later pass reaches such a version. tick is set by
+// the block-index reconciliation's passes (indexOwedDocument, indexOwedRoom), which run only on a
 // document or a room they listed as owed by either mark - this build's (store_owed_at), or the
 // null version migration 0122's trigger
 // sets, which is all the release before leaves on a version whose blocks it deferred or which it
 // wrote with no rendering - so such a pass writes them wherever it wins, every one, and leaves
-// none out, since it writes no version. Any other pass is a writer's and drains this build's mark
-// alone (refs.BlockIndexing.Marked); written is the versions of versions its transaction wrote,
-// which are left out, each one's node being its writer's, written after the index with the
-// version's own writer, time and event (WriteVersionNode). A writer's pass writes at most
-// missingVersionNodesBound of them: where more are missing it writes none, and owes each document
-// the pass covers its block index again in this transaction (oweVersionsIndex), so the
-// reconciliation's next tick indexes them again and writes those nodes.
+// none out, since it writes no version. Any other pass is a writer's, and writes them where it
+// drains this build's mark or reads the store's statement of its document stale
+// (refs.BlockIndexing.Corrects): a version the release before wrote and indexed after this build
+// stated the document leaves no mark, and a version of this build's written before any tick reads
+// that release's event leaves the document stated at its version, which the tick's marking then
+// passes over. written is the versions of versions its transaction wrote, which are left out, each
+// one's node being its writer's, written after the index with the version's own writer, time and
+// event (WriteVersionNode). A writer's pass writes at most missingVersionNodesBound of them: where
+// more are missing it writes none, and owes each document the pass covers its block index again in
+// this transaction (oweVersionsIndex), so the reconciliation's next tick indexes them again and
+// writes those nodes.
 //
 // A pass that wins the fence and states a requirement node of the issue the documents belong to
 // marks that issue's spec its own, in this transaction, where ViewOf answers here that the issue
@@ -515,7 +520,7 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 			return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 		}
 	}
-	if tick && indexing.Won() || indexing.Marked() {
+	if tick && indexing.Won() || indexing.Corrects() {
 		bound := missingVersionNodesBound
 		if tick {
 			bound = 0
