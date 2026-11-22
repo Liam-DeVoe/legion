@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"slices"
@@ -17,7 +18,9 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // relayRefusedReplyLine is the line the relay writes for a reply whose subject names another
@@ -511,4 +514,56 @@ func TestTheRelayHoldsANotAdmittedFrameRatherThanAcknowledgingIt(t *testing.T) {
 		t.Fatalf("edgeWithholds for a session this replica admitted no registration of = action %d, reason %q; want it held (frameHold, unacknowledged), not acknowledged away",
 			verdict.action, verdict.reason)
 	}
+}
+
+// The relay loop holds a frame of a session this replica no longer admits rather than
+// acknowledging it: edgeWithholds answers frameHold, and the loop's `case frameHold: continue`
+// leaves the frame pending for the consumer to deliver it again once the session registers here.
+// The session is admitted when relayNATS passes its own not-admitted guard, and the admission is
+// forgotten during the restart's stored-row read, before the first frame is pulled, so the loop
+// reaches the hold with no admission - the window a prune opens before the relay applies the same
+// pass's lapse. This row fails if the loop acknowledges a held frame (acknowledgeWithheld in place
+// of the continue): the consumer's ack floor would then pass the frame.
+func TestTheRelayLoopHoldsAFrameWhoseAdmissionWasForgotten(t *testing.T) {
+	met := metrics.New()
+	grant, err := newEdgeGrant("edge-a", []string{"PRIV"}, met)
+	if err != nil {
+		t.Fatalf("the edge's grant: %v", err)
+	}
+	rig := newRelayRigUnownedAs(t, relayPauseFirst, relayPauseMax, grant)
+	rig.relays.repositories = &edgeRepositories{withheld: newEdgeWithheldCounter(met)}
+
+	const sessionID = "ses_relay_loop_hold"
+	agent := contracts.LegacyAgentSubject(sessionID)
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+	rig.requireConsumer(t, sessionID)
+	_, seq := rig.storeEvent(t, agent)
+
+	// Admit the session so relayNATS enters its loop, then forget the admission during the
+	// restart's stored-row read, before the first frame is pulled: the loop then judges the frame
+	// with no admission, as it does in the window between a prune and the relay applying the lapse.
+	rig.deps.consumers.admissions.admit(sessionID, []string{"PRIV"})
+	var once sync.Once
+	rig.deps.consumers.afterStoredRowRead = func() {
+		once.Do(func() {
+			rig.deps.consumers.admissions.prune(time.Now().Add(time.Hour), func(string) bool { return true })
+		})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		rig.relays.relayNATS(ctx, &relayRun{sessionID: sessionID, outstanding: map[string]*relayFrame{}})
+	}()
+	// Wait for the loop to pull the frame; it then holds it (or, under the mutation, acknowledges it).
+	testwait.Eventually(t, "the relay to pull the held frame", func() bool {
+		info, infoErr := rig.consumers.Info(context.Background(), sessionID)
+		return infoErr == nil && info.Delivered.Consumer >= 1
+	})
+	cancel()
+	<-done
+	// The held frame is still pending, acknowledged by nobody; a loop that acknowledged it would
+	// have advanced the consumer's ack floor past it.
+	requireStillPending(t, rig.consumers, sessionID, seq)
 }
