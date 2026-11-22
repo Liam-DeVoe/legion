@@ -1,9 +1,12 @@
 package supervise
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // The agents of two steps in the identities a start names them by (plan.Agent.ID): the agent of
@@ -161,6 +164,75 @@ func TestTheFirstTaskOfANewAgentOnAHeldNameSaysItIsNewOnTheStep(t *testing.T) {
 			if newOnTheStep != tc.another || repeats == tc.another {
 				t.Errorf("the first task says it is new on the step = %v and asks before repeating work = %v, want %v and %v:\n%s",
 					newOnTheStep, repeats, tc.another, !tc.another, first)
+			}
+		})
+	}
+}
+
+// A start that the admission refuses changes nothing of the claim, its session among it: a start
+// for another agent, and a retry that asks for a new session, leave the session behind only once
+// the claim is admitted. The admission refuses while the tree's cleanup is reserved; the claim
+// keeps its session, the agent of that session and no abandoned session, and that agent's own
+// start after the cleanup resumes the session. The fault: the session was dropped before the
+// admission, so the refused start left the claim with no session, and the agent's own return was
+// spawned in a new one and told its own session was another agent's.
+func TestARefusedAdmissionLeavesTheClaimsSessionWhereItWas(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stop  func(h *harness)
+		start Event
+	}{
+		{
+			name: "the rule's resume for another agent",
+			stop: func(h *harness) {
+				h.must(RequestSuspend{Claim: h.token, By: SuspendedByDaemon, Reason: "its task was stopped"})
+			},
+			start: RequestRuleResume{Claim: testToken, Reason: "start row 9", Start: StartWork{Agent: keyAgentB}},
+		},
+		{
+			name:  "the retry for another agent",
+			stop:  func(h *harness) { h.must(RequestStop{Claim: h.token}) },
+			start: RequestRetry{Claim: testToken, Start: StartWork{Agent: keyAgentB}},
+		},
+		{
+			name:  "the retry that asks for a new session",
+			stop:  func(h *harness) { h.must(RequestStop{Claim: h.token}) },
+			start: RequestRetry{Claim: testToken, FreshSession: true},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &epochStore{epoch: 1}
+			c := queuedClaim()
+			c.SessionAgent = stepAgentA
+			h := lifecycleHarness(t, store, c)
+			h.reach(StateIdle)
+			tc.stop(h)
+			stopped := h.claim().State
+			store.reserved = true
+
+			if err := h.handle(tc.start); !errors.Is(err, treelifecycle.ErrCleanupReserved) {
+				t.Fatalf("the start while the tree's cleanup is reserved = %v, want the reservation's refusal", err)
+			}
+			for _, got := range []struct {
+				where string
+				claim Claim
+			}{{"the machine", h.claim()}, {"the store", h.store.load(h.token)}} {
+				if got.claim.State != stopped || got.claim.Session != session || got.claim.SessionAgent != stepAgentA || got.claim.Abandoned != (AbandonedSession{}) {
+					t.Fatalf("after the refused start %s holds the claim %s in session %q of agent %q, abandoned %+v; want it %s in session %q of agent %q, nothing abandoned",
+						got.where, got.claim.State, got.claim.Session, got.claim.SessionAgent, got.claim.Abandoned, stopped, session, stepAgentA)
+				}
+			}
+
+			store.reserved = false
+			spawns, resumes := len(h.calls("Spawn")), len(h.calls("Resume"))
+			var own Event = RequestRetry{Claim: testToken, Start: StartWork{Agent: stepAgentA}}
+			if stopped == StateSuspended {
+				own = RequestRuleResume{Claim: testToken, Reason: "start row 10", Start: StartWork{Agent: stepAgentA}}
+			}
+			h.must(own)
+			if spawned, resumed := len(h.calls("Spawn"))-spawns, len(h.calls("Resume"))-resumes; spawned != 0 || resumed != 1 || h.claim().Session != session {
+				t.Fatalf("the agent's own start after the cleanup made %d spawns and %d resumes in session %q, want its session %q resumed",
+					spawned, resumed, h.claim().Session, session)
 			}
 		})
 	}

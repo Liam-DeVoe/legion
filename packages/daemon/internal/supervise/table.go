@@ -2455,17 +2455,18 @@ func noTurn(m *Machine, ctx context.Context, _ Event) error {
 }
 
 // spawn launches a queued claim. A claim queued again after a launch (ReleasedLaunch) can hold a
-// session, which a spawn for another step's agent leaves behind as every start does
-// (leaveAnotherAgentsSession).
+// session, which a spawn for another step's agent leaves behind once the claim is admitted, as
+// every start does (leaveAnotherAgentsSession).
 func spawn(m *Machine, ctx context.Context, ev Event) error {
 	start := ev.(RequestSpawn).Start
 	if err := m.startHolds(ctx, start); err != nil {
 		return err
 	}
-	if _, err := m.leaveAnotherAgentsSession(ctx, start, "spawn"); err != nil {
+	leave, err := m.leaveAnotherAgentsSession(ctx, start, "spawn")
+	if err != nil {
 		return err
 	}
-	return m.revive(ctx, exemptWake(ev), start, nil)
+	return m.revive(ctx, exemptWake(ev), start, leave)
 }
 
 // register records the session the agent became, once every name of it is held to this claim
@@ -2640,7 +2641,8 @@ func (m *Machine) resumeRefusal(ctx context.Context, request string) error {
 // failed claim is never resumed by rule. A claim recording a session it does not hold is not
 // resumed by rule either (resumeRefusal): it stays suspended, and the line says why. A resume for a
 // step's agent whose session the claim does not hold (RequestRuleResume.Start's Agent) leaves the
-// recorded session behind instead (leaveAnotherAgentsSession), so the launch spawns that agent.
+// recorded session behind instead, once the claim is admitted (leaveAnotherAgentsSession), so the
+// launch spawns that agent.
 func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 	resume := ev.(RequestRuleResume)
 	rule := resume.Reason
@@ -2651,18 +2653,18 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.startHolds(ctx, resume.Start); err != nil {
 		return err
 	}
-	left, err := m.leaveAnotherAgentsSession(ctx, resume.Start, "resume by rule")
+	leave, err := m.leaveAnotherAgentsSession(ctx, resume.Start, "resume by rule")
 	if err != nil {
 		return err
 	}
-	if !left {
+	if leave == nil {
 		if err := m.resumeRefusal(ctx, "resume by rule"); err != nil {
 			m.log.Info("supervise: not resumed by rule: the claim records a session it does not hold", "rule", rule, "error", err)
 			return nil
 		}
 	}
 	m.log.Info("supervise: resuming by rule", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
-	return m.revive(ctx, exemptWake(ev), resume.Start, nil)
+	return m.revive(ctx, exemptWake(ev), resume.Start, leave)
 }
 
 // retry is a failed or retired claim given another run: its budgets start over, and its session,
@@ -2675,7 +2677,8 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // (freshSession): relaunching a session every turn of which was refused would be refused again,
 // and the claim would fail its way through another budget having done nothing. So does the
 // workflow's retry for a step's agent whose session the claim does not hold
-// (leaveAnotherAgentsSession), which leaves that session first and asks nothing more.
+// (leaveAnotherAgentsSession), which leaves that session and asks nothing more. Either session is
+// left once the claim is admitted, with the failure record below.
 //
 // The failure record goes with the counts it names, and both go once the claim is admitted. A
 // reader is served that record built from the counts the claim holds now (api.FailureViewOf),
@@ -2686,7 +2689,8 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // unwritten. The claim being run again is what clears the record; the launch clearing it a
 // second time (launchNow) costs nothing.
 //
-// Nothing is cleared before Store.AdmitClaim admits the claim, because the admission can refuse
+// Nothing is cleared before Store.AdmitClaim admits the claim, the session a new one replaces
+// among it, because the admission can refuse
 // — the tree's cleanup is reserved — and a refused admission runs the claim no more than a
 // refused relaunch does (relaunchRefused): the claim is left exactly as it was, with the record of
 // the failure it still carries, which is what `legion claims list` reads off the live machine and
@@ -2703,25 +2707,28 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.startHolds(ctx, start); err != nil {
 		return err
 	}
-	left, err := m.leaveAnotherAgentsSession(ctx, start, "retry")
+	leave, err := m.leaveAnotherAgentsSession(ctx, start, "retry")
 	if err != nil {
 		return err
 	}
-	if fresh, why := freshSession(ev, m.claim, m.deps.Limits.LaunchFailures); fresh && !left {
+	if fresh, why := freshSession(ev, m.claim, m.deps.Limits.LaunchFailures); fresh && leave == nil {
 		// A session the claim does not hold is left behind only once its role no longer leads
 		// to the process under it (mayForget); the retry is refused, and the claim left as it
 		// was, until then.
 		if err := m.mayForget(ctx, "retry"); err != nil {
 			return err
 		}
-		m.log.Info("supervise: retrying in a new session", "why", why, "session", m.claim.Session,
-			"refusedRun", m.claim.RefusedRun())
 		// The failure the claim carries is the fuller answer where it has one — it names how many
 		// turns the provider refused and what it said about the newest of them — and the retry's
 		// own reason answers for a claim that failed nothing, an operator's retry of a worker it
-		// stopped.
-		m.forgetSession(cmp.Or(m.claim.Failure, why))
-	} else if !left {
+		// stopped. It is read now, before the admission clears the failure.
+		cause := cmp.Or(m.claim.Failure, why)
+		leave = func() {
+			m.log.Info("supervise: retrying in a new session", "why", why, "session", m.claim.Session,
+				"refusedRun", m.claim.RefusedRun())
+			m.forgetSession(cause)
+		}
+	} else if leave == nil {
 		// A retry that relaunches the recorded session is refused it the way a resume is
 		// (resumeRefusal), before the budgets start over.
 		if err := m.resumeRefusal(ctx, "retry"); err != nil {
@@ -2729,6 +2736,9 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 		}
 	}
 	return m.revive(ctx, exemptWake(ev), start, func() {
+		if leave != nil {
+			leave()
+		}
 		m.claim.Budgets, m.claim.PendingCause = Budgets{}, ""
 		m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt = "", "", time.Time{}
 		m.claim.LeakCheckCause = ""

@@ -74,13 +74,15 @@ func (m *Machine) startHolds(ctx context.Context, start StartWork) error {
 // admitted, where a caller gives one, runs once the admission has bound the claim and before
 // anything else of the start: it is where a caller puts what it may change only for a claim
 // that is being run again, since an admission the lifecycle refuses leaves the claim exactly as
-// it was (retry, whose failure record and budgets go there).
+// it was (retry, whose failure record and budgets go there). The session a start leaves behind
+// goes there too (leaveAnotherAgentsSession, retry's new session), so a refused admission keeps
+// the claim's session, and the agent that session is of still resumes it at its own next start.
 //
 // The admission is also where the claim takes start's agent as the agent of its session
 // (Claim.SessionAgent): the session it spawns or relaunches is that agent's from here, and a
-// refused admission leaves the record as it was, as it leaves the rest of the claim. Its caller has
-// already left another agent's session behind (leaveAnotherAgentsSession), so the session it takes
-// is one the claim held for this agent, one no agent's start recorded yet, or none.
+// refused admission leaves the record as it was, as it leaves the rest of the claim. Its caller
+// leaves another agent's session behind in admitted, so the session it takes is one the claim
+// held for this agent, one no agent's start recorded yet, or none.
 //
 // The claims it starts — spawned, resumed, retried, a suspended claim given a task — record no
 // process, so its launch lets none go and records nothing of one (noEnd).
@@ -106,32 +108,36 @@ func (c Claim) SessionOfAnotherAgent(agent string) bool {
 	return agent != "" && c.SessionAgent != "" && c.SessionAgent != agent
 }
 
-// leaveAnotherAgentsSession leaves the claim's session behind where it is the session of another
-// agent than the one start brings the claim back for (SessionOfAnotherAgent), so the launch spawns
-// that agent in a session of its own, and reports whether it did. It runs in the decision that
-// brings the claim back, before revive records start's agent, so the session is left and the new
-// agent recorded under one lock, and a start that never acts changes neither. A session the claim
-// does not hold is left only once its role no longer leads to the process under it (mayForget);
-// until then the decision is refused and the claim left as it was. request names the decision, for
-// that refusal and the line.
-func (m *Machine) leaveAnotherAgentsSession(ctx context.Context, start StartWork, request string) (bool, error) {
+// leaveAnotherAgentsSession is how the decision that brings the claim back leaves its session
+// behind where it is the session of another agent than the one start brings the claim back for
+// (SessionOfAnotherAgent), so the launch spawns that agent in a session of its own: leave, which
+// the decision runs once the claim is admitted (revive's admitted), and nil where the session is
+// not another agent's. The session is left in revive, under the one lock that records the new
+// agent, and only for a start the admission took, so a start that never acts changes neither. A
+// session the claim does not hold is left only once its role no longer leads to the process under
+// it (mayForget), which is judged here, before the admission; until then the decision is refused
+// and the claim left as it was. request names the decision, for that refusal and the line.
+func (m *Machine) leaveAnotherAgentsSession(ctx context.Context, start StartWork, request string) (leave func(), err error) {
 	if !m.claim.SessionOfAnotherAgent(start.Agent) {
-		return false, nil
+		return nil, nil
 	}
 	if err := m.mayForget(ctx, request); err != nil {
-		return false, err
+		return nil, err
 	}
-	m.log.Info("supervise: the step this start is for is another agent's than the one whose session the claim holds, so it starts in a new session",
-		"request", request, "agent", start.Agent, "sessionAgent", m.claim.SessionAgent, "session", m.claim.Session)
-	had := m.claim.Session != ""
-	m.forgetSession(fmt.Sprintf("the step it was started for is another agent's (%s) than the one whose session it held (%s)",
-		start.Agent, m.claim.SessionAgent))
-	// The agent that replaces the session is new on the step, and its first task says so rather
-	// than that a session of its own was lost (AbandonedSession.AnotherAgent, abandonedTask).
-	if had {
-		m.claim.Abandoned.AnotherAgent = true
-	}
-	return true, nil
+	held := m.claim.SessionAgent
+	return func() {
+		m.log.Info("supervise: the step this start is for is another agent's than the one whose session the claim holds, so it starts in a new session",
+			"request", request, "agent", start.Agent, "sessionAgent", held, "session", m.claim.Session)
+		had := m.claim.Session != ""
+		m.forgetSession(fmt.Sprintf("the step it was started for is another agent's (%s) than the one whose session it held (%s)",
+			start.Agent, held))
+		// The agent that replaces the session is new on the step, and its first task says so
+		// rather than that a session of its own was lost (AbandonedSession.AnotherAgent,
+		// abandonedTask).
+		if had {
+			m.claim.Abandoned.AnotherAgent = true
+		}
+	}, nil
 }
 
 // checkLaunch is the lifecycle recheck every launch makes first: a claim whose tree cleanup is
