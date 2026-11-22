@@ -99,15 +99,15 @@ var heldFreshContexts = map[string]heldFresh{
 	"(github.com/sjawhar/envoy/internal/bus.contextRequests).with -> the field github.com/sjawhar/envoy/internal/bus.contextRequests.ctx": {1,
 		"the start's own context (requestsUnder, ensureStreamReported), reached here only through the call graph's join of the JetStream interface: the takeover records' read uses the client's bound wrapper"},
 	"(github.com/sjawhar/envoy/internal/bus.streamMessageReads).read -> a JetStream call whose options carry no nats.Context (github.com/nats-io/nats.go.JetStreamContext.GetLastMsg)": {1,
-		"an edge listener's stream message get, on a raw JetStream context of the handle's connection (newStreamMessageReads), which waits for no reconnect (the reconnect buffer is off, so nats.go refuses a request on a connection that is not connected) and ends at the context's MaxWait (RequestTimeout). streamMessageReads implements nats.KeyValue, whose Get, GetRevision and Create take no options, so no context reaches the get. Each path into read is KeyValue.Get (internal/bus/kv.go:470), GetRevision (kv.go:550) or Create (kv.go:574), each through refusedAfterOn (kv.go:228) into kvRequest, whose RequestBounded (kv.go:479) runs the get on its own goroutine and returns to the caller at the caller's context or at the loss of the connection, so no lock is held across it past the drop. boundedReads holds that claim: the walk fails on any other caller of the handle's Get, GetRevision or Create, and on any caller of read but those three"},
+		"an edge listener's stream message get, on a raw JetStream context of the handle's connection (newStreamMessageReads), which waits for no reconnect (the reconnect buffer is off, so nats.go refuses a request on a connection that is not connected) and ends at the context's MaxWait (RequestTimeout). streamMessageReads implements nats.KeyValue, whose Get, GetRevision and Create take no options, so no context reaches the get. Each path into read is bus.KeyValue's Get, GetRevision or Create, each through refusedAfterOn into kvRequest, whose RequestBounded runs the get on its own goroutine and returns to the caller at the caller's context or at the loss of the connection, so no lock is held across it past the drop. boundedReads holds that claim: the walk fails on any other caller of the handle's Get, GetRevision or Create, and on any caller of read but those three"},
 	"(github.com/sjawhar/envoy/internal/bus.streamMessageReads).read -> a JetStream call whose options carry no nats.Context (github.com/nats-io/nats.go.JetStreamContext.GetMsg)": {1,
-		"the same stream message get of one revision, reached through GetRevision (internal/bus/kv.go:550) and the same RequestBounded (kv.go:479): the reasons of GetLastMsg's entry above, which boundedReads holds"},
+		"the same stream message get of one revision, reached through bus.KeyValue's GetRevision and the same refusedAfterOn, kvRequest and RequestBounded: the reasons of GetLastMsg's entry above, which boundedReads holds"},
 }
 
 // boundedReads are the functions that reach the two stream message gets heldFreshContexts lets
 // through ((bus.streamMessageReads).read), each with the only callers the walk may reach it from.
-// The exemption is sound only while every way into a get runs it under RequestBounded (kvRequest,
-// internal/bus/kv.go:479), whose wait ends at its caller's context and at the connection's loss:
+// The exemption is sound only while every way into a get runs it under RequestBounded (through
+// bus.kvRequest), whose wait ends at its caller's context and at the connection's loss:
 // bus.KeyValue's Get, GetRevision and Create hand the legacy handle's call to it in a closure
 // (Get$1, GetRevision$1, Create$1), and the handle's own methods are read's only callers. A walked
 // caller outside these - a call of the legacy handle got by KeyValue.Legacy, say - makes the get
