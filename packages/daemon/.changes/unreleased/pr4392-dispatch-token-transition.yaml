@@ -15,11 +15,25 @@ body: |-
   launch got it before. With no such file named, that launch is refused, naming the pod and the
   update round that replaces it. The claim is charged nothing, and the launch is tried again every
   minute. The update round opens over that pod even when no process of the issue runs in it, and
-  it waits on no answer of the refused claim. Where no claim runs a process in the pod, the daemon
-  replaces the pod through that claim, and the next try starts in the new pod. The replacement's
-  log line (`waitingOnThePodNotWaitedFor`) names a refused claim with a session that had not
-  answered, whether or not it records the round, as having lost its unpushed work, and a gone
-  pod's message on the issue names such a claim that records the round.
+  it waits on no answer of the refused claim.
+  Which roles each end of an update round names is a rule of every Kubernetes deployment, the
+  setting on or off, which this release's Changed entry on the update round states. By that
+  rule, a role refused for the pod with no session is named at no end: not the daemon's
+  replacement, not a refused claim's own next try that replaces the pod first, and not the
+  message that the pod went, also where the pod is recreated without the identity and refuses
+  the retry again, although the role has since started in a new pod and its agent may have
+  registered there.
+  The replacement's log line (`waitingOnThePodNotWaitedFor`) names a refused claim that had not
+  answered by the same rule, whether or not it records the round.
+  Where no claim runs a process in the pod, the daemon replaces the pod through the refused claim,
+  and the next try starts in the new pod. That replacement reads no workspace. Its message on the
+  issue says that no role process ran in the pod.
+  Where the process of another claim runs in the pod, the claim's next try cannot replace the
+  pod, and the daemon replaces it through that process.
+  Before that replacement, the daemon reads the issue workspace for a refused claim that records
+  the round and had not answered, by the same rule, as it does for a claim that the round passed
+  over.
+  The message on the issue names that claim if the read found work or failed.
   Each launch that carries the transition token is logged at Warn. `legion state --json`
   gains `dispatchCredential` under the setting: the daemon's session, the launches since the boot
   that carried the transition token with the time of the last one, and

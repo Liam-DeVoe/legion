@@ -259,6 +259,9 @@ func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Info("supervise: a suspension takes the suspended claim over", "reason", request.Reason,
 		"by", request.By, "suspendedBy", m.claim.SuspendedBy)
 	m.claim.SuspendedBy = request.By
+	// The source that took the claim over outranks a release's, so the suspension that stands is
+	// no idle release's any more (Machine.idleReleased).
+	m.idleReleased = false
 	return m.persist(ctx)
 }
 
@@ -414,9 +417,18 @@ func (m *Machine) suspendedFor(ctx context.Context, request RequestSuspend, laun
 // A process still recorded here is one whose stop the runtime refused and the suspension let go
 // all the same (endHeld, exit): what it ended is recorded as a suspension by by, as the stop that
 // did land records it (endSuspended, letGo), and the record goes to the store with this write.
+//
+// The suspension that stands is this one, so it writes whether it is an idle release's: by
+// released with no pause's stop (Machine.idleReleased). A mark an earlier resume left for a launch
+// this suspension stopped goes with it (Machine.restoringLaunch), with one exception: a pause's
+// stop of the first launch after an idle release, which went into no pod, keeps the claim the
+// release's, since the release's bundle is still unrestored and the claim's next launch, after the
+// pause, goes into the pod that restores it.
 func (m *Machine) suspended(ctx context.Context, by SuspendSource, stop *PauseStop) error {
 	m.letGo(ctx, endSuspended(by))
 	m.claim.State, m.claim.SuspendedBy = StateSuspended, by
+	m.idleReleased = (by == SuspendedByReleased && stop == nil) || (stop != nil && m.restoringLaunch)
+	m.restoringLaunch = false
 	if stop != nil {
 		return m.persistStop(ctx, *stop)
 	}

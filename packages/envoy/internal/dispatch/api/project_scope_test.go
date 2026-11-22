@@ -533,6 +533,18 @@ func TestAProjectScopedTokenCreatesAnIssueInAnotherProject(t *testing.T) {
 			t.Fatalf("the created issue is %s of project %q, want an issue of %s", issue.Key, issue.Project, project)
 		}
 	}
+
+	// An import names its project in the body, as every other create does: Dispatch finds no
+	// project from a repository, so one that names none is refused for that alone.
+	unnamed := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"external": "owner/repo#1",
+	}))
+	if unnamed.Code != http.StatusBadRequest {
+		t.Fatalf("importing an issue with no project: status=%d body=%s, want 400", unnamed.Code, unnamed.Body.String())
+	}
+	if refusal := decodeBody[refusalAnswer](t, unnamed); refusal.Code != "INVALID_ISSUE" || !strings.Contains(refusal.Error, "project is required when external is set") {
+		t.Fatalf("refusal = %+v, want INVALID_ISSUE naming project", refusal)
+	}
 }
 
 // TestAProjectScopedTokenCommentsOnAnotherProjectsIssue: a comment on another project's issue is

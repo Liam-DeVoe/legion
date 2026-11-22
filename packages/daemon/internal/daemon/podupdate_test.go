@@ -169,9 +169,15 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 // openSupervision hands the daemon's one limiter to its machines. A machine takes its deps when the
 // boot restores it, so the pacing is set before that, as beforeDecision is. The zero pace is the
 // pacing off: every launch runs where it is raised.
+//
+// paused is the project's pause flag every machine reads (supervise.Deps.Paused), as
+// openSupervision hands the daemon's pause service to its machines: the open pause's id, or
+// false while the project runs. It is set before the boot restores the first machine, as the
+// pacing is. nil is a project that is never paused.
 type podUpdateRigOptions struct {
 	beforeDecision func(claim.Token, supervise.Event)
 	wakePace       supervise.WakePace
+	paused         func() (int64, bool)
 }
 
 // newPodUpdateRigWith is newPodUpdateRig with the machines built with opts.
@@ -272,6 +278,7 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c) },
 		RefreshGate:        supervise.NewRefreshGate(0),
 		WakePace:           opts.wakePace,
+		Paused:             opts.paused,
 		// A firing timer and a prompt's send take a hold mark of their own, as openSupervision
 		// sets for the daemon, so the guard sees the machines as it does in production.
 		Worker: store.ForConcurrentWorker,

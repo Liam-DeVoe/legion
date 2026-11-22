@@ -129,6 +129,7 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 				Container: runtime.IssuePodContainer, Generation: 6,
 			},
 		},
+		RegisteredPods: supervise.RegisteredPods{Pods: []string{podUID}, Unknown: true},
 		PluginContract: DaemonAPIVersion, PluginRelaunchFor: DaemonAPIVersion - 1, AgentResumeGeneration: 3,
 		UpdateRound: "pod:" + podUID, UpdateReasons: "the pod template changed: the image moved",
 		UpdateOpenedAt: &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,
