@@ -585,7 +585,7 @@ func TestTwoReMarksOfOneSessionDoNotRunAtOnce(t *testing.T) {
 	}
 	const sessionID = "ses_remark_serial"
 	relays.scheduleReMark(sessionID)
-	<-entered // the first re-mark is in flight, held on release
+	<-entered                        // the first re-mark is in flight, held on release
 	relays.scheduleReMark(sessionID) // a second re-mark asked while the first runs
 	select {
 	case <-entered:
