@@ -15,7 +15,7 @@ import (
 // refused to encode a larger value, so each route answered 500, a fault of the server, for what
 // is the caller's input. Now the bound (fitsIntegerColumn) answers before the column is reached:
 // the results route refuses such a count with 400 RESULT_INPUT before it opens its transaction
-// (checkResultInput.refusal), and the state route refuses such a position with 400 INVALID_STATE
+// (checkResultInput.refusalFor), and the state route refuses such a position with 400 INVALID_STATE
 // before it makes a query with it. The test pins a 4xx refusal of 2147483648 against the 500. The
 // control of each is 2147483647, the largest number the column holds, which each route takes:
 // the result is recorded (201) and the position is stored (200).
