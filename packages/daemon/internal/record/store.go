@@ -572,10 +572,11 @@ func (s *Postgres) RunningSteps(ctx context.Context, tx pgx.Tx, issue Issue) ([]
 // StoppedStep is the step that the stop of issue's task ended while a task-stopped hold holds the
 // issue (HoldTaskStopped), read in tx from the plan rows of its generation as a running step is
 // read (pods.StoppedColumn, RunningOf): the step of its first stopped task, in task id order, whose
-// phase is the one the hold is from. A stopped task's step is no running step (Issue.Running), and
-// its role still answers for the step the stop ended: the role a stop stopped and that starts
-// again only with its task, and the role a late report, a failed claim and an operator's retry of
-// that step each meet the stop with. ok is false for any other issue, and for a stop at no act.
+// phase is the one the hold is from, or of the task a copy read for one task names
+// (Issue.ViewTask). A stopped task's step is no running step (Issue.Running), and its role still
+// answers for the step the stop ended: the role a stop stopped and that starts again only with its
+// task, and the role a late report, a failed claim and an operator's retry of that step each meet
+// the stop with. ok is false for any other issue, and for a stop at no act.
 func (s *Postgres) StoppedStep(ctx context.Context, tx pgx.Tx, issue Issue) (step RunningStep, ok bool, err error) {
 	if !HeldFor(issue, HoldTaskStopped) {
 		return RunningStep{}, false, nil
@@ -589,7 +590,7 @@ func (s *Postgres) StoppedStep(ctx context.Context, tx pgx.Tx, issue Issue) (ste
 		return RunningStep{}, false, err
 	}
 	for _, step := range RunningOf(Issue{}, true, rows) {
-		if step.Phase == issue.Hold.From {
+		if step.Phase == issue.Hold.From && (issue.ViewTask == "" || step.Task == issue.ViewTask) {
 			return step, true, nil
 		}
 	}

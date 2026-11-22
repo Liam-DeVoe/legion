@@ -140,6 +140,34 @@ func needsDone(stored *record.StoredPlan, task record.PlanTask) bool {
 	return true
 }
 
+// tasksWaitingOn is each task of stored, the plan of a run, that needs task, itself or through
+// other tasks, and is neither done nor left, in task id order: the tasks a stop of task holds,
+// while each other task goes on. None for no plan.
+func tasksWaitingOn(stored *record.StoredPlan, task string) []string {
+	if stored == nil {
+		return nil
+	}
+	needing := map[string]bool{task: true}
+	for grew := true; grew; {
+		grew = false
+		for _, row := range stored.Tasks {
+			if needing[row.Task] {
+				continue
+			}
+			if slices.ContainsFunc(row.Needs, func(need string) bool { return needing[need] }) {
+				needing[row.Task], grew = true, true
+			}
+		}
+	}
+	var waiting []string
+	for _, row := range stored.Tasks {
+		if row.Task != task && needing[row.Task] && row.State != record.TaskDone && row.State != record.TaskLeft {
+			waiting = append(waiting, row.Task)
+		}
+	}
+	return waiting
+}
+
 // startReady is the one place tasks of a plan of several start, in the caller's transaction: it
 // moves each task that waits and each of whose needs is done, in task id order, to its first step,
 // running (moveTask), gives it its branch (startTaskCopy), writes the issue (putIssue) and starts

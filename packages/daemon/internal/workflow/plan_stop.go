@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -34,6 +35,11 @@ import (
 // the row runs enters the first step and writes its agent on the role's row, and a row resolved when
 // it runs would stop that agent and leave the stopped step's running. The task's state is the
 // caller's to have read: a task done or left is no task to stop (StopTask refuses it).
+//
+// issue may be the copy read for the stopped task of a plan of several (view): the issue is then
+// written where its tasks put it (putIssue), held for the stop only while no other task runs, so
+// the stop holds the tasks that need the stopped one and each other task goes on; and the stop's
+// row names the agent of that task's step (stepToken).
 func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, why, said string, end StepEnd) (*intake.Refusal, error) {
 	if refusal := stopRefusal(issue, w.Task); refusal != nil {
 		return refusal, nil
@@ -74,7 +80,15 @@ func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 	if err != nil || role == "" {
 		return nil, err
 	}
-	agent, err := e.workerClaim(ctx, tx, issue, role)
+	// The agent of the stopped step: on a copy of the issue read for one task of a plan of
+	// several, the agent of that task's step (stepToken), since the role's phases row names the
+	// agent its latest entry reached, which may be another task's.
+	var agent claim.Token
+	if issue.ViewTask != "" {
+		agent, err = e.stepToken(issue, w, w.Place, role)
+	} else {
+		agent, err = e.workerClaim(ctx, tx, issue, role)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -195,9 +209,22 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 	if issue == nil {
 		return intake.Result{Refusal: intake.TaskNotFound(fact.Issue, fact.Task, nil)}, nil
 	}
-	w, err := e.walk(ctx, tx, *issue)
+	// The stopped task is read on the copy of the issue read for it (viewOn), which for a plan of
+	// one task, or none, is the issue itself, walking its one task.
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil {
 		return intake.Result{}, err
+	}
+	target, w, onPlan, err := viewOn(*issue, stored, fact.Task)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if !onPlan {
+		var tasks []string
+		for _, row := range stored.Tasks {
+			tasks = append(tasks, row.Task)
+		}
+		return intake.Result{Refusal: intake.TaskNotFound(issue.Key, fact.Task, tasks)}, nil
 	}
 	switch {
 	case !w.Stored && beforeItsWork(*issue):
@@ -235,18 +262,33 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 	if lingers {
 		return refusedLingering(*issue, fmt.Sprintf("the owner's stop of task %s", w.Task)), nil
 	}
-	from := record.StandsAt(*issue)
+	if target.ViewTask != "" {
+		// A copy read for one task stands in that task's phase: whether a hold can stand where the
+		// issue stands is the issue's own (a root waiting on a person before its first step).
+		if refusal := stopRefusal(*issue, w.Task); refusal != nil {
+			return intake.Result{Refusal: refusal}, nil
+		}
+	}
+	from := record.StandsAt(target)
 	why := fmt.Sprintf("task %s of %s was stopped by its owner", w.Task, issue.Key)
-	refusal, err := e.stopTask(ctx, tx, *issue, w, why, why, stepStopped)
+	refusal, err := e.stopTask(ctx, tx, target, w, why, why, stepStopped)
 	if err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
 	// The role of the step the stop ended, read on the issue as it stood before the stop: its running
-	// step where the issue stood (record.Issue.RunningAt), and where no step of it runs there, the
-	// role of that phase (RoleFor): the architect at admitted, before the task's first step.
+	// step where the issue stood (record.Issue.RunningAt), the stopped task's own of a plan of several,
+	// and where no step of it runs there, the role of that phase (RoleFor): the architect at admitted,
+	// before the task's first step. Where tasks of a plan of several wait on the stopped task, the
+	// notice names them: each other task goes on (tasksWaitingOn).
 	notice := record.Notice{Kind: "task-stopped", Role: RoleFor(from), Phase: from, StoppedBy: fact.By, Reason: why + ", the architect " + string(fact.By)}
-	if ended := issue.RunningAt(from); len(ended) > 0 {
-		notice.Role = ended[0].Role
+	for _, step := range target.RunningAt(from) {
+		if target.ViewTask == "" || step.Task == w.Task {
+			notice.Role = step.Role
+			break
+		}
+	}
+	if waiting := tasksWaitingOn(stored, w.Task); target.ViewTask != "" && len(waiting) > 0 {
+		notice.Reason += fmt.Sprintf(". Tasks %s need it and wait; each other task goes on.", strings.Join(waiting, ", "))
 	}
 	return intake.Result{}, e.notice(ctx, tx, issue.Key, notice)
 }
