@@ -22,7 +22,7 @@ Read, against the goal, every check and every requirement:
 
 4. where the task has a reviewer step, each claim of the reviewer's prose, against the code at that head;
 
-5. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head gets no CI (*A conflicting head*, below).
+5. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head whose checks passed is accepted as any other, and the merger merges the base forward (*A conflicting head*, below).
 
 - `sign_off` works only in `accepting`, where the Dispatch status reads `needs_review`; your `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`).
 
@@ -70,7 +70,7 @@ Retro runs, then the merger merges the last step's head under the repository's o
 A person's request after your sign-off is a requirement of this issue: the role that holds the phase makes the `request_backward_move`.
 When the merger reports:
 
-- a failed verification: tell it to move the issue back with `request_backward_move`, naming what failed;
+- the issue moved back with `request_backward_move`: its reason says why the fix is a change to the change's own logic that no merge of the base resolves; you start nothing;
 
 - a merge GitHub refuses for a repository setting or an App permission:
   open a `dispatch ask` naming the pull request, the head and GitHub's refusal, and never bypass a rule;
@@ -79,19 +79,20 @@ When the merger reports:
 
 - a squash into a base other than the default branch:
   tell the implementer of each open pull request of the tree built on that branch whose issue is yours and still in `implementing` to merge that base forward in its implementing round.
-  Past `implementing`, the daemon asks for that merge itself (*A conflicting head*, below).
+  Past `implementing`, the daemon asks for that merge itself, and past the review the merger makes it (*A conflicting head*, below).
 
 ## A conflicting head
 
 A head that conflicts with its base keeps the issue in its phase.
-The daemon asks the implementer to merge the base forward only when the next step needs a mergeable head (*The daemon's ask* in `skill://legion-worker/references/conflicts-and-rewrites.md`).
-A conflict it does not act on yet is recorded:
-the task's steps go on at that head, a reviewer step's `approve` of it ends its review round, and the daemon acts on entry to `accepting`, or `retro` without `acceptance:owner`.
-When it asks outside `implementing`, it tells you once by `checks-red`, naming the phase the issue stays in, the head, the base and why; in `implementing` no notice comes.
+Before the review the daemon asks the implementer to merge the base forward only when the next step needs a mergeable head (*The daemon's ask* in `skill://legion-worker/references/conflicts-and-rewrites.md`).
+A conflict it does not act on yet is recorded: the task's steps go on at that head, and a reviewer step's `approve` of it ends its review round.
+Past the review the merge is the merger's: in `accepting` and `retro` the conflict waits, so accept the head as any other, and once the issue enters `merging` the daemon asks the merger to merge the base forward; a check the base's newer code breaks is the merger's to fix in that merge too.
+When it asks, the daemon tells you once by `checks-red`, naming the phase the issue stays in, the role asked, the head, the base and why; in `implementing` no notice comes.
 You start nothing for the merge.
 
 Past review, every push, a forward merge among them, has the daemon ask the agent of each review step that has passed for its verdict on the new head, which it sends with `review_verdict`: the reviewer, and you once your step `acceptance:owner` has passed.
 That verdict writes no handoff and sends you no notice: in `accepting`, wait before `sign_off` until the reviewer tells you on your role topic that it sent `approve` on the new head, and send the issue back with `request_backward_move` when its verdict is `changes`.
+The merger merges the new head only once `legion-verdict` there is `success`.
 A task with no reviewer step has no review to await.
 
 ## A review thread GitHub will not resolve

@@ -307,9 +307,14 @@ func holdFromRetro(t *testing.T, pool *pgxpool.Pool) {
 func TestAnAskPastReviewIsDeliveredWhileItsHeadStands(t *testing.T) {
 	left := func(t *testing.T, pool *pgxpool.Pool, step record.MergeForwardStep, head, landed string) string {
 		t.Helper()
+		// The review goes to the reviewer and the ask to the implementer (record.MergeForwardReaches).
+		role := claim.RoleImplementer
+		if step == record.MergeForwardReview {
+			role = claim.RoleReviewer
+		}
 		var why string
 		seedRecord(t, pool, func(tx pgx.Tx) (err error) {
-			_, _, why, err = MergeForwardAt(t.Context(), record.NewStore(), tx, "LEGION-208", step, head, landed)
+			_, _, why, err = MergeForwardAt(t.Context(), record.NewStore(), tx, "LEGION-208", role, step, head, landed)
 			return err
 		})
 		return why

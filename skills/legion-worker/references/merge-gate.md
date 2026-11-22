@@ -10,7 +10,7 @@ Your role prompt gives the `COMMENT` review, the verdict, the thread rule, the C
    Each agent reviews only the diff its task supplies: name in each task the commit, the head and `git diff <sha> <head>`, or the whole change.
    The last two sentences of your task, `Last reviewed commit: <sha>.` and `Review entry: <n>.`, are the daemon's; your role prompt says how to read them.
 3. A result that carries no report, or that names another place for it, is a failed run, not a verdict: run that agent again, or read its transcript.
-   Reading the agent's diff yourself and recording that in its place is the same as answering the rubric from a bare verdict.
+   Reading its diff yourself in its place is the same as answering the rubric from a bare verdict.
    When you can do neither, that half of the round has no review: tell the architect, send no `approve`, and wait with a `WAITING` line naming what you wait on until it answers.
 4. A `CHANGES` from either half is answered in the review: its findings are carried into your `changes`, or each finding is recorded with why it does not stand.
    Your `approve` needs both halves run at the reviewed head, or both `Thermo` rows reading `not run` because the diff the round reads touches no runtime code.
@@ -53,8 +53,8 @@ Never send `approve` on a head while a required item has no run; sort it in this
 Cases 2, 3, 4 and 6 end: tell the architect, send no `approve`, and wait with a `WAITING` line naming what you wait on.
 
 1. Read `gh pr view <n> --repo <o>/<r> --json mergeable,mergeStateStatus` first.
-   `DIRTY` takes the implementer's forward merge: the daemon asks for it and names the new head.
-   `UNKNOWN`: read each minute for up to five minutes, then report it to the architect as a refused read.
+   `DIRTY` takes a forward merge, the implementer's or in `merging` the merger's: the daemon asks for it and names the new head.
+   `UNKNOWN`: read each minute for five minutes, then report a refused read to the architect.
 2. A fork head whose runs stand `action_required` waits on a maintainer.
 3. A check only a commit status reports, or a workflow another repository defines: nothing here starts it.
 4. A required workflow whose `paths` or `paths-ignore` filter, as the base holds it, skips every file of the change:
