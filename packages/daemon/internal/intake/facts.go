@@ -1033,8 +1033,10 @@ func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
 // architect's request from accepting (Requester claim.RoleArchitect, api's phaseBackward): the
 // claim of the architect, the issue's generation and the run of the step the issue stood in
 // (record.Store.OpenStep) as its route read them, which the workflow judges again under the fact
-// lock (ArchitectRequest, EnteredRequest). A phase worker's move carries none of the three, and
-// carries PhaseEntry instead, which the architect's move does not: each check reads its own field.
+// lock (ArchitectRequest, EnteredRequest). A phase worker's move carries By alone of the three,
+// the claim that asked it, which the workflow holds to the claim the role's row names on its step
+// (two claims of one issue can hold one role); it carries PhaseEntry too, which the architect's
+// move does not: each check reads its own field.
 type BackwardMove struct {
 	Issue      string
 	Requester  claim.Role

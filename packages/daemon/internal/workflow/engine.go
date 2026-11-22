@@ -2380,6 +2380,17 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if fact.PhaseEntry != 0 && fact.PhaseEntry < row.Entry {
 		return intake.Result{Refusal: staleBackwardMove(issue.Key, fact.Requester, issue.Phase, row.Entry, fact.PhaseEntry), Unspent: true}, nil
 	}
+	// A phase worker's move is its step's worker's decision: two claims of one issue can hold one
+	// role — the agent of a key on a step of another role, beside that role's own claim of an
+	// earlier version of the plan — and the move names the claim that asked it (By). A claim the
+	// role's row does not name on its step works nothing the move would send back, so its move is
+	// refused, unspent. A row that runs no step of the plan names no worker, and a move that names
+	// no claim, from a route before the claim was carried, is judged by its role as before.
+	if fact.Requester != claim.RoleArchitect && fact.By != "" && row.StepTask != "" && row.Claim != "" && fact.By != row.Claim {
+		return intake.Result{Refusal: refused("BACKWARD_REFUSED", fmt.Sprintf(
+			"%s is a claim of the %s of %s, and %s works its step: only that claim's move sends the step back; this move changed nothing",
+			fact.By, fact.Requester, issue.Key, row.Claim)).Refusal, Unspent: true}, nil
+	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
 		return intake.Result{}, err
