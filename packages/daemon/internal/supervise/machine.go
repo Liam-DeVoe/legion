@@ -86,9 +86,8 @@ func States() []ClaimState {
 
 // SuspendSource is who suspended a claim. The daemon resumes a suspended claim by rule on the
 // triggers main had — its phase's start, a workflow delivery, the controller keeper
-// (RequestRuleResume) — unless an operator, the project's controller or an architect that owns
-// the claim's issue suspended its agent: that suspension holds until a resume lifts it
-// (SuspendSource.Holds).
+// (RequestRuleResume) — unless an operator or the project's controller suspended its agent: that
+// suspension holds until a resume lifts it (SuspendSource.Holds).
 // The boot's resume by rule, which main did not have, acts only on a source ByRule names, so it
 // never overrides a drain recorded before the source existed, and it leaves a released claim to
 // the wake that brings its pod back.
@@ -106,20 +105,8 @@ const (
 	// does; it ranks below the operator's, so the controller can neither take over nor lift a
 	// suspension the operator holds (suspensionRank, ErrOperatorHolds).
 	SuspendedByController SuspendSource = "controller"
-	// SuspendedByArchitect: an architect's suspend of an agent of an issue it owns, through its
-	// `legion` tool (api's suspendAgent). It holds as the controller's does, and an architect's
-	// resume lifts it; it ranks below the controller's, so the controller's resume lifts it too,
-	// and an architect can neither take over nor lift a suspension the controller or the operator
-	// holds (suspensionRank, ErrControllerHolds, ErrOperatorHolds). A controller's suspension is
-	// project-wide work — a deploy, a merge hold, a stuck pod — which a tree's architect must not
-	// undo. Nor does an architect take over or lift the daemon's own suspension — a park, a linger,
-	// a close, a carry, a root's exit — which outranks it and takes an architect's suspension over
-	// where it reaches one (ErrNotTheArchitectsSuspension, suspendedAgain); a released agent, which
-	// any wake brings back, its suspension takes over.
-	SuspendedByArchitect SuspendSource = "architect"
 	// SuspendedByDaemon: the workflow's own suspend — the issue left the workflow, or its tree
-	// lingers. It takes over an architect's suspension of the agent, held or landed, so the agent
-	// is the daemon's own rules' to start again rather than the architect's (suspensionRank).
+	// lingers.
 	SuspendedByDaemon SuspendSource = "daemon"
 	// SuspendedByExit: the tree root's agent reported its own exit, which suspends a root.
 	SuspendedByExit SuspendSource = "exit"
@@ -141,15 +128,15 @@ const (
 // TestSuspendSourcesIsEveryDeclaredSourceOnce holds it to the constants the compiler sees in this
 // package, so a source added above and left out here fails that test.
 var allSuspendSources = []SuspendSource{
-	SuspendedByUnknown, SuspendedByOperator, SuspendedByController, SuspendedByArchitect,
+	SuspendedByUnknown, SuspendedByOperator, SuspendedByController,
 	SuspendedByDaemon, SuspendedByExit, SuspendedByReleased,
 }
 
 // SuspendSources is every source a suspended claim can record, in the order they are declared:
 // the one list a test outside this package walks to cover each source. They are the values the
 // store's check constraint allows beside the empty source of a claim that is not suspended
-// (internal/store/migrations/20261115083448_claim_suspended_by_architect.up.sql). It is a copy, so
-// no caller changes the package's own list.
+// (internal/store/migrations/20261115060739_claim_suspended_by_controller.up.sql). It is a copy,
+// so no caller changes the package's own list.
 func SuspendSources() []SuspendSource {
 	return slices.Clone(allSuspendSources)
 }
@@ -164,32 +151,23 @@ func (s SuspendSource) ByRule() bool {
 	return s == SuspendedByDaemon || s == SuspendedByExit
 }
 
-// Holds is whether a suspension by this source holds against the daemon's rules: an operator's,
-// the project's controller's or an architect's, each a decision a person or another agent made
-// about the suspended agent, which no start, delivery or resume the daemon queues gets past (Claim.RuleHolds,
-// Claim.RuleMayResume). Only a resume lifts it: the operator's lifts every one, the controller's
-// its own and an architect's, and an architect's an architect's alone (Claim.ResumeRefusal).
+// Holds is whether a suspension by this source holds against the daemon's rules: an operator's or
+// the project's controller's, each a decision a person or another agent made about the suspended
+// agent, which no start, delivery or resume the daemon queues gets past (Claim.RuleHolds,
+// Claim.RuleMayResume). Only a resume lifts it: the operator's lifts both, and the controller's
+// its own (Claim.HeldAgainst).
 func (s SuspendSource) Holds() bool {
-	return s == SuspendedByOperator || s == SuspendedByController || s == SuspendedByArchitect
+	return s == SuspendedByOperator || s == SuspendedByController
 }
 
 // RetiresPhaseTask is whether a suspension by this source ends the claim's phase, so a task queued
-// for that phase goes with it (settle): a suspension of the daemon's own does (daemonsOwn). Every
-// other source does not — an operator's, the controller's, an architect's, and a release. Each of
-// those has this same agent resumed in the same phase — the first three by their holder's resume,
-// a released agent at its role's next wake — so the pending task waits through the suspension and is sent on that
-// resume.
+// for that phase goes with it (settle): a suspension of the daemon's own does — the workflow's (a
+// park, a linger, a close), a root's exit, and one recorded before sources existed (unknown, or
+// none). Every other source does not — the two that hold (Holds), an operator's and the
+// controller's, and a release. Each of those has this same agent resumed in the same phase — the
+// first two by their holder's resume, a released agent at its role's next wake — so the pending
+// task waits through the suspension and is sent on that resume.
 func (s SuspendSource) RetiresPhaseTask() bool {
-	return s.daemonsOwn()
-}
-
-// daemonsOwn is whether a suspension by this source is one the daemon's own rules placed and
-// lift: every source but the three that hold (Holds) and a release — the workflow's (a park, a
-// linger, a close), a root's exit, and one recorded before sources existed (unknown, or none). It
-// is read off Holds and the release rather than listed again, so a source declared above is
-// placed by those two alone, for the phase's task (RetiresPhaseTask) and for an architect's
-// suspension or stop (Claim.daemonSuspended) alike.
-func (s SuspendSource) daemonsOwn() bool {
 	return !s.Holds() && s != SuspendedByReleased
 }
 
@@ -534,9 +512,8 @@ type Claim struct {
 	// branch at origin, and "" when it reported none (a planner before its first push). It is the
 	// worker's word, which nothing verifies.
 	UpdateHead string
-	// UpdateToldAt is when this round was last told to the controller, or to the architect that
-	// owns each hold an architect placed, so one round is not told again at every sweep that
-	// finds it open.
+	// UpdateToldAt is when this round was last told to the controller, so one round is not told
+	// again at every sweep that finds it open.
 	UpdateToldAt *time.Time
 	// UpdateLeftRound is the pod round this claim left, and "" when it has left none: the daemon
 	// started the claim's process again in another pod than the one that round was opened over
@@ -772,8 +749,8 @@ func (c Claim) LeftPodRound(round string) bool {
 func (c Claim) HoldsSession(session string) bool { return c.Session == storetext.Text(session) }
 
 // RuleMayResume says whether the rule may resume this suspended claim: every suspension but one
-// that holds (SuspendSource.Holds), which holds until a resume lifts it — the operator's, the
-// controller's, or for an architect's suspension an architect's (ResumeRefusal).
+// that holds (SuspendSource.Holds), which holds until a resume lifts it — the operator's, or for
+// the controller's suspension the controller's (HeldAgainst).
 func (c Claim) RuleMayResume() bool {
 	return c.State == StateSuspended && !c.SuspendedBy.Holds()
 }
@@ -795,15 +772,14 @@ func (c Claim) RuleMayResume() bool {
 // role wake, and the sweep asks a claim only once its agent is ready, when the claim is no longer
 // suspended.
 //
-// A suspension that holds (SuspendSource.Holds: the operator's, the controller's or an
-// architect's) is not passed over. A person's suspend route and the boot's session-conflict
-// suspension record the operator's. A fresh session records its caller's: the operator's for the
-// operator's `legion claims retry --fresh-session` (api's retryClaim), and the controller's or an
-// architect's for the fresh_session of their `legion` tool (api's claimFreshSession). The
-// controller's and an architect's suspend through that tool record theirs. Each holds the round
-// until a resume lifts it (dispatch://INFRA-2981 R5, RuleHolds). internal/daemon's roundAsks
-// (through roundClock.passesOver) and PublishUpdateAsk both read this method, so the ask, the
-// wait and the publish state R1's rule once.
+// A suspension that holds (SuspendSource.Holds: the operator's or the controller's) is not passed
+// over. A person's suspend route and the boot's session-conflict suspension record the operator's.
+// A fresh session records its caller's: the operator's for the operator's `legion claims retry
+// --fresh-session` (api's retryClaim), and the controller's for the fresh_session of its `legion`
+// tool (api's claimFreshSession). The controller's suspend through that tool records its own.
+// Each holds the round until a resume lifts it (dispatch://INFRA-2981 R5, RuleHolds).
+// internal/daemon's roundAsks (through roundClock.passesOver) and PublishUpdateAsk both read this
+// method, so the ask, the wait and the publish state R1's rule once.
 func (c Claim) PassedOverByRound() bool {
 	return c.RuleMayResume()
 }
@@ -819,78 +795,24 @@ func (c Claim) Released() bool {
 }
 
 // RuleHolds is whether a suspension that holds blocks a daemon rule: the claim is suspended by the
-// operator, the controller or an architect, or such a suspension is held for its agent's turn.
-// Holder says which of the three.
+// operator or the controller, or such a suspension is held for its agent's turn. Holder says which
+// of the two.
 func (c Claim) RuleHolds() bool {
 	return c.Holder().Holds()
 }
 
-// HeldAgainst is the refusal of a request the project's controller or an architect asks (by) that
-// a suspension outranking it stands over, held for the agent's turn or landed (suspensionRank):
-// ErrOperatorHolds under the operator's own suspension, which only the operator lifts, and
-// ErrControllerHolds under the controller's, which an architect may not lift. Such a request
-// would lift the hold (a resume), take it over or change nothing (a suspend), or end or restart
-// the agent under it (a stop, a retry, a fresh session), so it is refused with nothing of the
-// claim changed. It is nil for every other asker: the operator, whom nothing outranks, and the
-// daemon and a release, whose request suspendRequest hands a held suspension's own source. A
-// holder that outranks the asker and is neither of those two is no refusal this names: the error
-// names that holder rather than calling it the controller's or the operator's.
+// HeldAgainst is the refusal of a request the project's controller asks (by) that the operator's
+// own suspension stands over, held for the agent's turn or landed: ErrOperatorHolds, since only
+// the operator lifts that suspension. Such a request would lift the hold (a resume), take it over
+// or change nothing (a suspend), or end or restart the agent under it (a stop, a retry, a fresh
+// session), so it is refused with nothing of the claim changed. It is nil for every other asker:
+// the operator, whom nothing outranks, and the daemon and a release, whose request suspendRequest
+// hands a held suspension's own source.
 func (c Claim) HeldAgainst(by SuspendSource) error {
-	if by != SuspendedByController && by != SuspendedByArchitect {
-		return nil
-	}
-	switch holder := c.Holder(); {
-	case !holder.Holds() || suspensionRank(holder) <= suspensionRank(by):
-		return nil
-	case holder == SuspendedByOperator:
+	if by == SuspendedByController && c.Holder() == SuspendedByOperator {
 		return ErrOperatorHolds
-	case holder == SuspendedByController:
-		return ErrControllerHolds
-	default:
-		return fmt.Errorf("the claim is held by %q, which outranks %s and is no holder whose refusal this daemon names", holder, by)
-	}
-}
-
-// ResumeRefusal is the refusal of a resume of this claim's agent asked by by — the operator, the
-// controller or an architect — and nil when that resume may lift what the agent is suspended by.
-// A suspension outranking the asker refuses it as it refuses every request of that asker
-// (HeldAgainst). An architect's resume lifts only a suspension an architect placed
-// (ErrNotTheArchitectsSuspension): one the daemon placed — the workflow's, a released pod's, a
-// root's exit, or one recorded before sources existed — is lifted by the daemon's own rules, the
-// controller or the operator, and no architect's resume undoes it.
-func (c Claim) ResumeRefusal(by SuspendSource) error {
-	if err := c.HeldAgainst(by); err != nil {
-		return err
-	}
-	if by == SuspendedByArchitect && c.State == StateSuspended && c.SuspendedBy != SuspendedByArchitect {
-		return ErrNotTheArchitectsSuspension
 	}
 	return nil
-}
-
-// StopOrSuspendRefusal is the refusal of a suspension or a stop of this claim's agent asked by by,
-// nil when it may be asked. A suspension outranking the asker refuses it as it refuses every request
-// of that asker (HeldAgainst). An architect's suspension or stop of an agent the daemon's own
-// suspension holds, landed or held for the agent's turn, is refused too (ErrNotTheArchitectsSuspension,
-// daemonSuspended): that suspension outranks the architect's (suspensionRank), so a suspension
-// reaches nothing of it, and a stop would retire the agent for a retry to relaunch, which
-// restarts a worker on an issue the daemon parked, lingers or closed. A released agent is no such
-// agent: any wake brings it back, so an architect's suspension takes it over and holds it, and an
-// architect's stop retires it.
-func (c Claim) StopOrSuspendRefusal(by SuspendSource) error {
-	if err := c.HeldAgainst(by); err != nil {
-		return err
-	}
-	if by == SuspendedByArchitect && c.daemonSuspended() {
-		return ErrNotTheArchitectsSuspension
-	}
-	return nil
-}
-
-// daemonSuspended is whether the suspension over this claim's agent is one the daemon's own
-// rules placed and lift (SuspendSource.daemonsOwn), landed or held for the agent's turn.
-func (c Claim) daemonSuspended() bool {
-	return (c.SuspensionHeld || c.State == StateSuspended) && c.Holder().daemonsOwn()
 }
 
 // Holder is who the suspension over this claim's agent is for: the held one's asker while one is
@@ -908,14 +830,11 @@ func (c Claim) Holder() SuspendSource {
 }
 
 // RuleHoldError says why a start or outbox delivery waits: the suspension that holds, which only
-// a resume ends — the operator's for the operator's suspension, the controller's or the
-// operator's for the controller's, and an architect's, the controller's or the operator's for an
-// architect's. A holder none of those three is no wait this names: the error names that holder
-// rather than the resume of some other one.
+// a resume ends — the operator's for the operator's suspension, and the controller's or the
+// operator's for the controller's. A holder neither of those two is no wait this names: the error
+// names that holder rather than the resume of some other one.
 func (c Claim) RuleHoldError() error {
 	switch holder := c.Holder(); holder {
-	case SuspendedByArchitect:
-		return fmt.Errorf("the claim is suspended by %s; its agent waits for an architect's, the controller's or the operator's resume: %w", SuspendedByArchitect, ErrHeldByArchitect)
 	case SuspendedByController:
 		return fmt.Errorf("the claim is suspended by %s; its agent waits for the controller's or the operator's resume: %w", SuspendedByController, ErrHeldByController)
 	case SuspendedByOperator:
@@ -1436,32 +1355,13 @@ var ErrHeldByOperator = wait.New("the suspension holds until the operator resume
 // operator's. RuleHoldError wraps it for the outbox log.
 var ErrHeldByController = wait.New("the suspension holds until the controller or the operator resumes the agent")
 
-// ErrHeldByArchitect is ErrHeldByOperator for an architect's suspension, which holds as the
-// controller's does (SuspendSource.Holds): a wait, ended by an architect's resume, the
-// controller's or the operator's. RuleHoldError wraps it for the outbox log.
-var ErrHeldByArchitect = wait.New("the suspension holds until an architect, the controller or the operator resumes the agent")
-
-// ErrOperatorHolds is a request of the project's controller's or an architect's refused because
-// the operator's own suspension is over the agent (Claim.HeldAgainst): the resume would lift it,
-// the suspension would take it over, and the stop would end the agent under it, which a retry then
-// relaunches. Each overrides a decision the operator made and only the operator undoes, so each is
-// refused, and nothing of the claim changes. The refusal is no wait: nothing the daemon does ends
-// it, and the asker asks the operator instead.
+// ErrOperatorHolds is a request of the project's controller's refused because the operator's own
+// suspension is over the agent (Claim.HeldAgainst): the resume would lift it, the suspension would
+// take it over, and the stop would end the agent under it, which a retry then relaunches. Each
+// overrides a decision the operator made and only the operator undoes, so each is refused, and
+// nothing of the claim changes. The refusal is no wait: nothing the daemon does ends it, and the
+// controller asks the operator instead.
 var ErrOperatorHolds = errors.New("the operator's suspension holds the agent, and only the operator's resume lifts it")
-
-// ErrControllerHolds is ErrOperatorHolds for an architect's request under the project's
-// controller's suspension (Claim.HeldAgainst): the controller's suspension is project-wide work —
-// a deploy, a merge hold, a stuck pod — which a tree's architect must not undo, so the
-// architect's resume, suspend and stop of an agent it holds are refused, and nothing of the claim
-// changes. The refusal is no wait: the architect asks the controller, or the operator, instead.
-var ErrControllerHolds = errors.New("the controller's suspension holds the agent, and only the controller's or the operator's resume lifts it")
-
-// ErrNotTheArchitectsSuspension is an architect's request that would lift or take over a
-// suspension the daemon placed rather than an architect, or end the agent under it: its resume of
-// an agent the daemon suspended or released (Claim.ResumeRefusal), and its suspension or stop of an
-// agent the daemon's own suspension holds — a park, a linger, a close, a root's exit
-// (Claim.StopOrSuspendRefusal). Nothing of the claim changes.
-var ErrNotTheArchitectsSuspension = errors.New("the daemon's suspension is not an architect's to lift or take over")
 
 // ErrNoSuchDelivery is the store's refusal of a retirement of a delivery the claim's row no
 // longer holds. It is named here, rather than matched as a string where the refusal is read,
@@ -1987,14 +1887,13 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // nothing, since it stops nothing (pauseStopEnded, ErrPauseEnded): the start it would cut short
 // may be the very launch the resume let out.
 //
-// The controller's or an architect's suspension that its row refuses — a suspension outranking it
-// holds the agent, the operator's for either and the controller's for an architect's, or the
-// daemon's own holds it under an architect's (suspendRequest, Claim.StopOrSuspendRefusal) —
-// cancels nothing, and a refusal changes nothing of the claim, the start in flight included. The
-// hold is read off the published view (View), since the lock is the very thing a start in flight
-// holds. A view a decision then moves past is harmless either way: a resume published after it
-// leaves an agent this suspension is held over until it is ready, rather than one whose start it
-// cut short, and a suspension published after it stops that start itself, at its own arrival.
+// The controller's suspension that its row refuses — the operator's suspension holds the agent
+// (suspendRequest, Claim.HeldAgainst) — cancels nothing, and a refusal changes nothing of the
+// claim, the start in flight included. The hold is read off the published view (View), since the
+// lock is the very thing a start in flight holds. A view a decision then moves past is harmless
+// either way: a resume published after it leaves an agent this suspension is held over until it
+// is ready, rather than one whose start it cut short, and a suspension published after it stops
+// that start itself, at its own arrival.
 //
 // Handle gives ev through the store's rule first; the comment that opens its body says why.
 func (m *Machine) Handle(ctx context.Context, ev Event) error {
@@ -2004,7 +1903,7 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	// rule once, here, before anything reads it, as intake.ApplyFact gives every fact. Strings
 	// returns ev itself when nothing in it changes, and leaves its bytes as they are.
 	ev = storetext.Strings(ev)
-	if request, suspending := ev.(RequestSuspend); suspending && !m.pauseStopEnded(request) && m.View().StopOrSuspendRefusal(request.By) == nil {
+	if request, suspending := ev.(RequestSuspend); suspending && !m.pauseStopEnded(request) && m.View().HeldAgainst(request.By) == nil {
 		m.stopStart("a suspension of the claim is waiting for its start")
 	}
 	m.mu.Lock()
@@ -2093,11 +1992,10 @@ func (m *Machine) ReleaseUncertainLaunch(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// PodUpdateTold marks this claim's open update round as told to the controller, or to the
-// architect that owns each hold an architect placed, so the daemon's sweep (internal/daemon's
-// reconcilePodUpdates) tells one round once however many ticks find it still open. It is no
-// event: the sweep is what decides a round is stalled, and the mark is bookkeeping of that
-// decision, as StartedBy is of the row running against the claim.
+// PodUpdateTold marks this claim's open update round as told to the controller, so the daemon's
+// sweep (internal/daemon's reconcilePodUpdates) tells one round once however many ticks find it
+// still open. It is no event: the sweep is what decides a round is stalled, and the mark is
+// bookkeeping of that decision, as StartedBy is of the row running against the claim.
 //
 // It stamps nothing and reports false when the claim is no longer in round — the round ended, or
 // another opened — or when this round was already told: both are decisions already taken, not
@@ -2249,17 +2147,16 @@ func (c Claim) ReleasedLaunch() bool {
 // StartedBy records the outbox row of the start being run against this claim, so a stop written
 // before it can be told apart from one written after. A stop is retried until the runtime takes
 // it, and a retry that lands after this start would suspend the run this start began. That
-// includes a held suspension (holdSuspension), which the start drops — unless it is one that holds:
-// the claim of an agent the operator's, the controller's or an architect's suspension holds
-// records no start and answers that holder's wait (RuleHoldError), so the start waits for a resume
-// to lift it. A
-// project pause's hold whose pause is the open pause (Deps.Paused) is kept too, and the start is
-// recorded beside it: a start leased before the pause
-// began must not let the role it starts run past the pause's stop, which the outbox's pause rule
-// would otherwise have held back (record's outboxPauseFree). Its task waits as every task does
-// while the project is paused (sendPending). A pause's hold whose pause has ended is gone before
-// the start reads the hold, as it is at the start of every decision (dropEndedPauseHold): this is
-// the one decision that does not go through Handle.
+// includes a held suspension (holdSuspension), which the start drops — unless it is one that
+// holds: the claim of an agent the operator's or the controller's suspension holds records no
+// start and answers that holder's wait (RuleHoldError), so the start waits for a resume to lift
+// it. A project pause's hold whose pause is the open pause (Deps.Paused) is kept too, and the
+// start is recorded beside it: a start leased before the pause began must not let the role it
+// starts run past the pause's stop, which the outbox's pause rule would otherwise have held back
+// (record's outboxPauseFree). Its task waits as every task does while the project is paused
+// (sendPending). A pause's hold whose pause has ended is gone before the start reads the hold, as
+// it is at the start of every decision (dropEndedPauseHold): this is the one decision that does
+// not go through Handle.
 //
 // It is also what releases a task held because its root had no architect to hear it (sendPending,
 // Deps.RootHears): this start is the root running again, so the held task goes now, before the

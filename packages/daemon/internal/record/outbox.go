@@ -493,8 +493,7 @@ type Notice struct {
 	Decision DecisionKind `json:"decision,omitempty"`
 	Root     string       `json:"root,omitempty"`
 	// Update is an update-stalled notice's account of the round that is not finishing, and is
-	// absent from every other kind. Only an UpdateStalledNotice carries one, the controller's
-	// and an architect's alike (validateNoticeUpdate).
+	// absent from every other kind. Only an UpdateStalledNotice carries one.
 	Update *UpdateStalled `json:"update,omitempty"`
 	// Pause is a project-paused or project-resumed notice's account of the act, and is absent
 	// from every other kind. Only those two kinds carry one.
@@ -709,18 +708,17 @@ type FailureBudget struct {
 	Limit int `json:"limit"`
 }
 
-// UpdateStalled is what an update-stalled notice carries: the update round the daemon opened over
-// an issue's pod, and why something holds it past its bound. The controller is told it, or, for
-// the holds an architect placed, the architect that owns the held agent (the daemon's
+// UpdateStalled is what an update-stalled controller notice carries: the update round the daemon
+// opened over an issue's pod, and why something holds it past its bound (the daemon's
 // tellUpdateStalled). Round is the round's identity (supervise.Claim.UpdateRound), Pod the pod it
 // was opened over, and Reasons the drift the round was opened for, as the ask states it. Waiting is
 // every claim of the issue with a session that has not failed (the daemon's noticeClaims), each
 // with its role, its state and whether it answered. A claim the daemon suspended is listed too,
-// although the round neither asks it nor waits for it, unless a project's pause stopped its agent and
-// still owes that role a launch (internal/daemon's podHolds.owes). So the reader finds the claims
-// in the round, and which of them are suspended, without reading the whole claims list; the
-// notice's Reason names who holds each held agent and who may resume it. What each entry says is
-// UpdateWaiting's. The notice's issue is the outbox row's own.
+// although the round neither asks it nor waits for it, unless a project's pause stopped its agent
+// and still owes that role a launch (internal/daemon's podHolds.owes). So the controller finds the
+// claims in the round, and which of them are suspended, without reading the whole claims list;
+// the notice's Reason names who holds each held agent and who may resume it. What each entry says
+// is UpdateWaiting's. The notice's issue is the outbox row's own.
 //
 // Reasons is one string, never a list: a single reason carries ", " inside it already — a moved
 // address reads `<where> <held>, now <handed>`, a pod-shape drift `image <was>, now <now>`, and a
@@ -922,18 +920,13 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // replacement the runtime refused (ReplacePod, or ReplaceIssuePod for a pod with no role process
 // in it), no claim recording a process in the round's pod (or in any pod), claims recording two
 // pods, or a pod the runtime cannot read. No process in the round's pod holds the round past its
-// bound only where a suspension that holds (an operator's, the controller's or an architect's)
-// holds a role of it, where the runtime cannot say which pod the issue's Sandbox holds, or where
-// the replacement by issue is refused or not offered (runtime.IssuePodReplacer): otherwise the
-// daemon replaces that pod by issue at the bound. It is told once per round (the daemon's
-// reconcilePodUpdates). The holds an architect placed are told instead to the architect that
-// owns the held agent, in a notice row of the same kind, unless no architect can act on one:
-// that architect's claim has failed or retired or is one this daemon does not supervise, or the
-// hold is over the tree root's own architect, which no architect stands above
-// (validNoticeKinds, the daemon's tellUpdateStalled and architectHears). A provider-errors notice
-// names an issue whose role has ended six turns in a row in a provider error: its Role is that
-// role, and its Reason the model and the HTTP status the provider answered, where it answered
-// one, in words built from structured fields alone
+// bound only where a suspension that holds (an operator's or the controller's) holds a role of
+// it, where the runtime cannot say which pod the issue's Sandbox holds, or where the replacement
+// by issue is refused or not offered (runtime.IssuePodReplacer): otherwise the daemon replaces
+// that pod by issue at the bound. It is told once per round (the daemon's reconcilePodUpdates).
+// A provider-errors notice names an issue whose role has ended six turns in a row in a provider
+// error: its Role is that role, and its Reason the model and the HTTP status the provider
+// answered, where it answered one, in words built from structured fields alone
 // (supervise's tellOfProviderErrors). It is told once, and not again until a turn with
 // no error puts that run back to zero; nothing is held and nothing is bounded, because a chain's
 // bottom refusing deterministically costs one request every ten minutes. It is the one kind of
@@ -1255,15 +1248,6 @@ type SuperviseRequest struct {
 	Linger uint64 `json:"linger,omitempty"`
 	// Reason is why a suspend stops the claim, for the line the suspended claim logs.
 	Reason string `json:"reason,omitempty"`
-	// KeepsHold marks a suspend that never takes over a suspension that holds — the operator's,
-	// the controller's or an architect's (supervise.SuspendSource.Holds) — and leaves the claim
-	// suspended by its holder: a production check's suspend of its checking role between looks
-	// (workflow's endLookPending). That suspend only stops the process and keeps the session for
-	// the next look's start, so a hold it took over would buy it nothing and be lost. It still
-	// takes a released claim over. Every other suspend — a park, a linger, a close, a carry —
-	// takes over what it outranks on purpose (supervise's suspendedAgain), and a row written
-	// before the field reads false and acts as it did. Only a suspend carries it.
-	KeepsHold bool `json:"keepsHold,omitempty"`
 	// CheckLook is the look of the issue's production check a start starts, 0 for a phase start.
 	// A check start runs after the close, where the issue has no phase and its tree may linger, so
 	// the outbox fences it on the open check and its look (the row acts only while the check is
@@ -2373,8 +2357,8 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 				return err
 			}
 		}
-		if err := validateNoticeUpdate(value.Kind, value.Update); err != nil {
-			return err
+		if value.Update != nil {
+			return fmt.Errorf("a %s notice carries an update round; only the controller's update-stalled notice does", value.Kind)
 		}
 		if value.Pause != nil {
 			return fmt.Errorf("a %s notice carries a project pause; only the controller's project-paused and project-resumed notices do", value.Kind)
@@ -2402,8 +2386,11 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		} else if value.Decision != "" || value.Actor != "" || value.Ref != "" || value.Root != "" {
 			return fmt.Errorf("a %s controller notice carries a decision, an actor, a ref or a root; only a parked-decision does", value.Kind)
 		}
-		if err := validateNoticeUpdate(value.Kind, value.Update); err != nil {
-			return err
+		if (value.Kind == UpdateStalledNotice) != (value.Update != nil) {
+			return fmt.Errorf("a %s notice carries an update round only when it is one", value.Kind)
+		}
+		if update := value.Update; update != nil && (update.Round == "" || len(update.Waiting) == 0) {
+			return fmt.Errorf("an update-stalled notice requires its round and the claims it waits on")
 		}
 		if value.Kind != TickNotice && len(value.Held) > 0 {
 			return fmt.Errorf("a %s notice carries held issues only when it is a tick", value.Kind)
@@ -2459,9 +2446,6 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.CheckLook != 0 && (value.CheckLook < 0 || value.Op != "start" || !worksCheck(value.Role) || value.Phase != "") {
 			return fmt.Errorf("a supervise check look names a start of the implementer or the tester with no phase, and only a start carries one")
-		}
-		if value.KeepsHold && value.Op != "suspend" {
-			return fmt.Errorf("only a supervise suspend keeps a hold it would otherwise take over")
 		}
 		if value.News && (value.Op != "start" || value.Task != "" || value.Entry != 0 || value.RuleResume || value.CheckLook != 0 ||
 			(value.Phase == "") != (value.Role == claim.RoleArchitect)) {
@@ -2701,20 +2685,6 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // reach the failing session itself. A run of a child's own architect's claim is told to the
 // architect above that child (NoticeStartsAtParent).
 //
-// `update-stalled` is an update round held past its bound (UpdateStalled). The controller is told
-// of the round in a row of its own (ControllerNotice) for every reason that holds it, except the
-// holds an architect placed over agents of the round: those are told in a notice row (Notice) to
-// the architect that owns the held agent, which can resume them, and to the controller only where
-// no architect can act on one: that architect's claim has failed or retired or is one the daemon
-// does not supervise when the sweep reads it, there is no owning architect, the hold is over the
-// tree root's own architect, or the notice row to the architect finishes undelivered in a tree
-// that does not linger — that architect's claim ended before the delivery, its session does not
-// advertise the delivery mode, the listener's NATS grant denies the forward, or the notice was
-// queued again the most times a notice is (internal/daemon's tellUpdateStalled, architectHears
-// and relayUpdateStalled). A hold over a child's own architect claim is told to the architect
-// above that child (NoticeStartsAtParent). A row of either kind carries the round's account
-// (validateNoticeUpdate), so a controller's row an older daemon queued decodes as it did.
-//
 // `session-forgotten` is the worker whose claim forgot its recorded session because the pod's
 // launcher, older than the release that added the kind, could not look the session up by its id,
 // and Oh My Pi did not resume it by that id (workflow's sessionLost). It is a kind of its own and
@@ -2728,7 +2698,6 @@ var validNoticeKinds = []NoticeKind{
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
 	"session-lost", "session-forgotten", "session-store-fault", "merge-holds-changed", ProviderErrorsNotice,
-	UpdateStalledNotice,
 }
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left
@@ -2742,23 +2711,6 @@ const VolumeNearFullNotice NoticeKind = "volume-near-full"
 // validNoticeKind says whether kind is a notice an architect is told.
 func validNoticeKind(kind NoticeKind) bool {
 	return slices.Contains(validNoticeKinds, kind)
-}
-
-// validateNoticeUpdate holds an update round's account to the update-stalled notice, the one kind
-// that carries one, and requires that kind to carry one naming its round and the claims it asked.
-// Both arms of the switch above call it, because a round is told in rows of this one kind, to the
-// architect that owns the held agent for a hold an architect placed and to the controller for the
-// rest, and for such a hold where no architect can act on it (internal/daemon's
-// tellUpdateStalled and relayUpdateStalled), and a rule written in one arm alone would take the
-// row the other refused.
-func validateNoticeUpdate(kind NoticeKind, update *UpdateStalled) error {
-	if (kind == UpdateStalledNotice) != (update != nil) {
-		return fmt.Errorf("a %s notice carries an update round only when it is one", kind)
-	}
-	if update != nil && (update.Round == "" || len(update.Waiting) == 0) {
-		return fmt.Errorf("an update-stalled notice requires its round and the claims it waits on")
-	}
-	return nil
 }
 
 // validateNoticeFailure holds a notice's failure record to the two kinds that report a claim's
@@ -2806,8 +2758,8 @@ func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error 
 // architect's.
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
-	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, ParkedDecisionNotice, TreeStalledNotice, ArchitectStalledNotice,
-		ProjectPausedNotice, ProjectResumedNotice:
+	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, ParkedDecisionNotice, UpdateStalledNotice, TreeStalledNotice,
+		ArchitectStalledNotice, ProjectPausedNotice, ProjectResumedNotice:
 		return true
 	default:
 		return false

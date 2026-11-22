@@ -1801,10 +1801,7 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // the child is out of the workflow by its status or its phase (record.InWorkflow), whose next
 // launch writes a fresh one. A person's spec decision in either of the two cases a notice finishes
 // undelivered because nobody will hold the role (its architect stopped with its finished tree, or
-// will not hold its role again) goes to the controller instead (parkDecision), and so does an
-// update round held past its bound, in a tree that does not linger, whose architect's claim has
-// ended, whose notice the listener refuses on every attempt, or whose notice was queued again the
-// most times a notice is, whatever re-held it, as the answers below (relayUpdateStalled).
+// will not hold its role again) goes to the controller instead (parkDecision).
 // What the listener's answer to the publish then decides — a delivery the architect's session did
 // not confirm, a holder that cannot take the payload, a forward the listener's own NATS grant
 // denies, a holder only unresponsive, a role nobody holds — is the re-hold policy's
@@ -2562,15 +2559,15 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// A child of a closed tree re-admitted as a root of its own keeps its roles' claims, which
 		// still name the tree it left; each is re-pointed before anything else here, so it binds this
 		// tree's lifecycle and launches in this tree's resources, and so does whatever resumes its
-		// agent while this start waits (the resume that lifts a suspension the operator, the
-		// controller or an architect holds over that agent). The issue the supervisor keeps beside the machine
+		// agent while this start waits (the resume that lifts a suspension the operator or the
+		// controller holds over that agent). The issue the supervisor keeps beside the machine
 		// (volumeLost) never moves with it: a claim's issue is fixed for its life.
 		if found && machine.Claim().Tree != issue.Tree {
 			if err := machine.Retree(ctx, issue.Tree); err != nil {
 				return err
 			}
 		}
-		// A suspension that holds — the operator's, the controller's or an architect's — holds its
+		// A suspension that holds — the operator's or the controller's — holds its
 		// claim until a resume lifts it: the start, and the task it gives, wait on the row's
 		// backoff. StartedBy refuses the same in the claim's own decision. A check start does not
 		// wait: its look cannot run, and ends, its cause naming the holder (checkLookHeld).
@@ -2668,7 +2665,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			}
 		case supervise.StateSuspended:
 			// The role owns the issue's phase this start is for: the rule resumes it, unless the
-			// operator, the controller or an architect suspended it meanwhile (supervise's
+			// operator or the controller suspended it meanwhile (supervise's
 			// Claim.RuleHolds), when the task's delivery below waits instead. A check start resumes
 			// the role the check records the close or the linger suspended, in a Sandbox the resume
 			// relaunches (runtime/sandbox's relaunch).
@@ -2819,11 +2816,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				"row", row.ID, "issue", issue.Key, "role", payload.Role, "phase", issue.Phase, "start-row", last)
 			return nil
 		}
-		// A production check's suspend between looks keeps a hold it meets (KeepsHold): a role the
-		// operator, the controller or an architect suspended stays theirs, and a released claim is
-		// still taken over below (supervise's suspendedAgain).
-		if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByDaemon,
-			KeepsHold: payload.KeepsHold}); err != nil {
+		if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByDaemon}); err != nil {
 			return fmt.Errorf("suspend claim %s: %w", token, err)
 		}
 		// A linger, a park, a hand-over and a close all stop a claim through this one row, and
@@ -3848,7 +3841,7 @@ func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool
 //  1. A start queued for news alone (record.SuperviseRequest.News) reaches only a claim such a
 //     start may reach as the claim stands now (newsOnlyRefusal): one that exists and was given the
 //     entry its role's phases row names, has not ended, and that no suspension that holds (the
-//     operator's, the controller's or an architect's) is over. A root's architect is read so too,
+//     operator's or the controller's) is over. A root's architect is read so too,
 //     since it holds a phases row that states the work it is owed, as a phase worker does
 //     (dispatch://INFRA-2614): an architect behind its row's entry is owed that entry's start,
 //     which carries its summary. It never creates a claim, revives one or resumes an agent such a
@@ -3964,12 +3957,12 @@ func (r *outbox) checkLookHolds(ctx context.Context, row record.OutboxRow, paylo
 }
 
 // checkLookHeld is a check start that met a hold of the check's own role: a suspension of the
-// operator's, the controller's or an architect's (supervise.Claim.RuleHolds), holds naming whose
+// operator's or the controller's (supervise.Claim.RuleHolds), holds naming whose
 // (supervise.Claim.Holder). A phase start waits for the resume that lifts it, but a look cannot
 // run while the role is held, and its bound would end it anyway, so the look ends now as one
 // nobody reported (intake.CheckLookEnded, of check, the one checkLookHolds read) and the row
-// finishes without acting. Its cause names the holder — `operator hold`, `controller hold` or
-// `architect hold` — so the retry the look names says whose resume it waited on. The event is the
+// finishes without acting. Its cause names the holder — `operator hold` or `controller hold` —
+// so the retry the look names says whose resume it waited on. The event is the
 // issue, the check (record.ProductionCheck.ID) and the look: the same look held twice is one
 // fact, and a later check's look 1 another than the replaced check's.
 func (r *outbox) checkLookHeld(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, check record.ProductionCheck,

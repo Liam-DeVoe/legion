@@ -107,8 +107,8 @@ const (
 	// (pods.IdleClaim.HasProcess), so something the daemon started is still running there and a
 	// deletion would take it with the pod.
 	IdleHoldUnownedClaimProcess
-	// IdleHoldUnownedSuspensionHolds: a suspension that the operator, the controller or an
-	// architect holds over an agent of the pod (pods.IdleClaim.SuspensionHolds, read from
+	// IdleHoldUnownedSuspensionHolds: a suspension that the operator or the controller holds over
+	// an agent of the pod (pods.IdleClaim.SuspensionHolds, read from
 	// supervise's SuspendSource.Holds), which no daemon rule undoes, and whose holder's resume
 	// brings that role back into this pod. Its recorded name stays `unowned_operator_suspended`,
 	// from when the operator's was the one suspension that held: a release record holds the
@@ -397,8 +397,8 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //     read through issueStopFences), so a release marked for such an issue could never finish:
 //     the mark would stand while the teardown waited for a process nothing is going to stop;
 //
-//   - no claim is under a suspension that holds (pods.IdleClaim.SuspensionHolds): the operator's,
-//     the controller's or an architect's (supervise's SuspendSource.Holds). Those are the
+//   - no claim is under a suspension that holds (pods.IdleClaim.SuspensionHolds): the operator's
+//     or the controller's (supervise's SuspendSource.Holds). Those are the
 //     suspensions the daemon never ends by itself (supervise.Claim.RuleMayResume), and the one
 //     who suspended the role may want the workspace as its roles left it. Such a pod stands for
 //     as long as its holder leaves it standing: the holder ends it by resuming the agent, which

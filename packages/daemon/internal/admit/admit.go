@@ -3080,9 +3080,9 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 		// of a released claim is the boot's one-time repair of a merger the `awaiting_merge`
 		// cutover left stopped (workflow's cutoverMergerRepair), which no wake would start.
 
-		// An agent an operator, the project's controller or an architect suspended is passed
-		// over whatever entry its claim stands on: `legion claims suspend`, or the controller's or an
-		// architect's own suspend, suspended that worker, and each such suspension holds against
+		// An agent the operator or the project's controller suspended is passed over whatever
+		// entry its claim stands on: `legion claims suspend`, or the controller's own suspend,
+		// suspended that worker, and each such suspension holds against
 		// every rule of the daemon's until a resume lifts it (supervise's RuleHolds, which no
 		// start the daemon queues gets past). A claim the daemon itself suspended is repaired,
 		// which is what the idle rule's release and the daemon's own suspend both leave behind.

@@ -399,8 +399,8 @@ func (p *projectPause) resumeOwedSpawns(ctx context.Context, ended store.Pause) 
 // spawn that pause stopped owing a launch, which no start row can carry: the resume of the pause's
 // own (resumeOwedSpawns) or a stop that committed once that pause had ended (stopped). The machine
 // paces it (supervise's exemptWake exempts no rule's resume), finds a claim that already runs
-// nothing to do, and never resumes a claim a suspension that holds is over (the operator's, the
-// controller's or an architect's, supervise.Claim.RuleMayResume). The post only queues the event
+// nothing to do, and never resumes a claim a suspension that holds is over (the operator's or the
+// controller's, supervise.Claim.RuleMayResume). The post only queues the event
 // (supervisor.post), so a stop transaction, which runs inside its machine's own decision, may make
 // it.
 func (p *projectPause) resumeOwedSpawn(token claim.Token, pause int64) {

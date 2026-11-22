@@ -2,8 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -198,8 +196,8 @@ func TestACheckStartOfAnIssueRunningAgainFinishesWithoutActing(t *testing.T) {
 	}
 }
 
-// A suspension of the implementer that holds — the operator's, the controller's or an
-// architect's — holds a phase start on the row's backoff until a resume lifts it; a look cannot
+// A suspension of the implementer that holds — the operator's or the controller's — holds a phase
+// start on the row's backoff until a resume lifts it; a look cannot
 // wait that long, so the check start finishes without acting and ends the look as one nobody
 // reported, of the check the row's issue holds, with the hold as its cause named by its holder,
 // so the look's retry says whose resume it waited on.
@@ -210,7 +208,6 @@ func TestACheckStartOnAHeldImplementerEndsTheLook(t *testing.T) {
 	}{
 		{supervise.SuspendedByOperator, "operator hold"},
 		{supervise.SuspendedByController, "controller hold"},
-		{supervise.SuspendedByArchitect, "architect hold"},
 	} {
 		t.Run(tc.cause, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
@@ -234,76 +231,6 @@ func TestACheckStartOnAHeldImplementerEndsTheLook(t *testing.T) {
 			want := intake.CheckLookEnded{Issue: root.Key, Look: 1, Cause: tc.cause}
 			if got := facts.facts(); len(got) != 1 || !sameCheckFact(got[0], want, check) {
 				t.Fatalf("facts applied = %+v, want %+v of the check opened %s", got, want, check.OpenedAt)
-			}
-		})
-	}
-}
-
-// A look that ends while an architect's suspension has landed on the checking role — the check
-// start meeting that hold (checkLookHeld), or the look's own bound — leaves the role the
-// architect's. The workflow's suspend of the role between looks keeps the hold it meets
-// (record.SuperviseRequest.KeepsHold), so after that row runs the implementer is still suspended
-// by the architect, and the architect's resume lifts it rather than being refused the daemon's
-// suspension (SUSPENDED_BY_DAEMON at the agent door).
-//
-// The negative control is supervise's suspendedAgain without its KeepsHold read: the suspend row
-// then takes the agent over for the daemon, and the architect's resume is refused
-// ErrNotTheArchitectsSuspension.
-func TestALookEndingOverAnArchitectsSuspensionLeavesTheRoleTheArchitects(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		end  func(t *testing.T, root record.Issue, check record.ProductionCheck) record.OutboxRow
-	}{
-		{"the check start meets the hold", func(t *testing.T, root record.Issue, _ record.ProductionCheck) record.OutboxRow {
-			return checkStart(t, root, 1)
-		}},
-		{"the look's bound", func(t *testing.T, root record.Issue, check record.ProductionCheck) record.OutboxRow {
-			row := mustOutboxRow(t, root.Key, record.CheckLook{Look: 1, OpenedAt: check.OpenedAt}, time.Now())
-			row.ID = 61
-			return row
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			pool := isolatedOutboxPool(t)
-			records := record.NewStore()
-			root := checkRoot()
-			putOutboxIssue(t, pool, records, root)
-			check := openCheck(root, "a1b2c3d4")
-			putProductionCheck(t, pool, records, check)
-			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-			machine, token := suspendedImplementer(t, sup, root, supervise.SuspendedByArchitect)
-			engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
-			runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, tokens: outboxTokens{}, project: "legion",
-				stateDir: t.TempDir(), handlers: []intake.Handler{engine}, log: quietLogger(), now: time.Now}
-
-			if err := runner.execute(ctx, tc.end(t, root, check)); err != nil {
-				t.Fatalf("end the look = %v, want the look ended", err)
-			}
-			var id int64
-			var raw []byte
-			if err := pool.QueryRow(ctx, `select id, payload from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'suspend'`,
-				root.Key).Scan(&id, &raw); err != nil {
-				t.Fatalf("read the suspend the look's end wrote: %v", err)
-			}
-			var suspend record.SuperviseRequest
-			if err := json.Unmarshal(raw, &suspend); err != nil {
-				t.Fatalf("decode the suspend row %d: %v", id, err)
-			}
-			if !suspend.KeepsHold {
-				t.Fatalf("the look's end wrote the suspend %+v, want one that keeps the hold it meets", suspend)
-			}
-			row := mustOutboxRow(t, root.Key, suspend, time.Now())
-			row.ID = id
-			if err := runner.execute(ctx, row); err != nil {
-				t.Fatalf("run the suspend between looks = %v", err)
-			}
-
-			if got := machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByArchitect {
-				t.Fatalf("after the suspend between looks the implementer is %s by %q, want it suspended by the architect still", got.State, got.SuspendedBy)
-			}
-			if err := machine.Handle(ctx, supervise.RequestResume{Claim: token, By: supervise.SuspendedByArchitect}); errors.Is(err, supervise.ErrNotTheArchitectsSuspension) {
-				t.Fatalf("the architect's resume = %v, want it not refused the daemon's suspension", err)
 			}
 		})
 	}

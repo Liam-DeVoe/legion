@@ -959,8 +959,8 @@ func TestAHoldsLinesNameTheClaimOnce(t *testing.T) {
 // An operator's resume of a claim recording a session it does not hold is refused before
 // anything of the claim changes (resumeRefusal): a RefusedError, which the operator's route answers
 // 409 with its sentence, naming the operator's forget-session, after which the agent's next start
-// is in a new session, or the controller's or an architect's fresh_session, which starts the agent
-// in a new session, and the claim stays suspended with nothing launched and nothing charged.
+// is in a new session, or the controller's fresh_session, which starts the agent in a new session,
+// and the claim stays suspended with nothing launched and nothing charged.
 // Relaunched, its every launch would be refused by the hold at start and the claim would fail
 // within its launch budget (acceptance of #4220). A rule's resume leaves it suspended the same way.
 // A claim holding its session resumes as before (R9).
@@ -1006,7 +1006,7 @@ func TestAResumeOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
 
 // The controller's resume of an agent it suspended, whose claim records a session another claim holds, is
 // refused by the same check as the operator's (resumeRefusal), which runs after the controller's
-// own checks (askedBy, Claim.ResumeRefusal) admit it: a RefusedError naming the operator's
+// own checks (askedBy, Claim.HeldAgainst) admit it: a RefusedError naming the operator's
 // forget-session, after which the agent's next start is in a new session, or the controller's own
 // fresh_session, which starts the agent in a new session, the claim still suspended by the
 // controller, nothing launched and nothing charged.
@@ -1078,9 +1078,9 @@ func TestAReleaseReportsNoAbandonedSessionTheClaimRecordsAgain(t *testing.T) {
 }
 
 // freshSessionTool is the remedy a refusal of a session the claim does not hold names for the
-// controller and an architect (resumeRefusal), beside the operator's forget-session: neither holds
-// an operator's token, and their `legion` tool's fresh_session starts the agent in a new session.
-const freshSessionTool = "the `fresh_session` of the controller's or an architect's `legion` tool"
+// controller (resumeRefusal), beside the operator's forget-session: the controller holds no
+// operator's token, and its `legion` tool's fresh_session starts the agent in a new session.
+const freshSessionTool = "the `fresh_session` of the controller's `legion` tool"
 
 // wantRefusedResume is the outcome of an operator's resume of a claim recording a session it does
 // not hold (resumeRefusal): a RefusedError, which the operator's route answers 409, and the claim
@@ -1100,9 +1100,9 @@ func wantRefusedResume(t *testing.T, h *harness, err error) {
 
 // An operator's retry of a stopped claim, and an operator's delivery to a suspended one, relaunch
 // the session the claim records, so each is refused one the claim does not hold the way a resume is
-// (resumeRefusal): a RefusedError naming the operator's forget-session and the controller's or an
-// architect's fresh_session, nothing launched, nothing queued, and the claim left in the state it
-// was in (the side review of 47f29c476c).
+// (resumeRefusal): a RefusedError naming the operator's forget-session and the controller's
+// fresh_session, nothing launched, nothing queued, and the claim left in the state it was in (the
+// side review of 47f29c476c).
 //
 // The control (the pull request records the run): retry and deliverResuming without resumeRefusal:
 // each answers no refusal and relaunches the claim into the hold's refusal.

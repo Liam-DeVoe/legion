@@ -246,11 +246,8 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 		// lane is read from, beside the role's backend (noPluginInstall).
 		cfg: config.Config{Project: "LEGION", Runtime: config.Runtime{Name: "kubernetes"},
 			PodUpdateGrace: podUpdateGrace, WorkerSilence: podUpdateSilence},
-		log: log,
-		// The owner walk is the workflow's own, over the rig's store, as boot wires it
-		// (plan.owner): it is what says whether an architect's hold over a late round is told to
-		// an architect (tellUpdateStalled).
-		plan:    plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval, owner: w.owningArchitect},
+		log:     log,
+		plan:    plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
 		runtime: rt, supervisor: sup,
 		enqueue:         w.enqueueOutbox,
 		applySweepFacts: w.applySweepFacts,
@@ -991,23 +988,20 @@ func TestPodUpdateToldOnceAtTheBoundOfARoundAnOperatorsSuspensionHolds(t *testin
 	}
 }
 
-// A round the controller's suspension of one agent and an architect's suspension of another hold
-// past the bound is told once, at the bound, and the notice names each holder and who resumes
-// each agent. The issue has no architect claim, so no architect can be told of the architect's
-// hold: the sweep writes no architect notice row, and the controller reads both
-// (tellUpdateStalled): the hold of its own and the architect's are resumes it makes itself, where
-// a notice that called both the operator's would send it to the operator with a finding ask.
-// Nothing in it says "operator", since no operator holds either agent. The walk's line names each
-// holder the same way.
+// A round the controller's suspension of two agents holds past the bound is told once, at the
+// bound, and the notice names the holder and who resumes the agents: the controller, whose holds
+// are resumes it makes itself, where a notice that called them the operator's would send it to
+// the operator with a finding ask. Nothing in it says "operator", since no operator holds either
+// agent. The walk's line names each hold the same way.
 //
 // The negative control is the notice's old text, "An operator suspended … until the operator
 // resumes each of them" for every hold, which this test refuses.
-func TestPodUpdateNamesTheControllersAndAnArchitectsHoldInTheNotice(t *testing.T) {
+func TestPodUpdateNamesTheControllersHoldsInTheNotice(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true,
 			contract: api.DaemonAPIVersion, suspendedBy: supervise.SuspendedByController},
 		podUpdateRole{role: claim.RoleReviewer, state: supervise.StateSuspended, session: true,
-			contract: api.DaemonAPIVersion, suspendedBy: supervise.SuspendedByArchitect},
+			contract: api.DaemonAPIVersion, suspendedBy: supervise.SuspendedByController},
 		readyWorker(claim.RoleTester),
 	)
 	rig.drifts(podUpdateDrift)
@@ -1021,19 +1015,18 @@ func TestPodUpdateNamesTheControllersAndAnArchitectsHoldInTheNotice(t *testing.T
 	rig.tick()
 
 	if calls := rig.replacements(); len(calls) != 0 {
-		t.Fatalf("at the bound %s ReplacePod was called %d times under the controller's and an architect's holds", podUpdateBound, len(calls))
+		t.Fatalf("at the bound %s ReplacePod was called %d times under the controller's holds", podUpdateBound, len(calls))
 	}
 	notices := rig.notices()
 	if len(notices) != 1 {
 		t.Fatalf("at the bound %s the controller was told %d times, want once", podUpdateBound, len(notices))
 	}
 	if rows := rig.rows(record.OutboxKindNotice); len(rows) != 0 {
-		t.Fatalf("the sweep wrote %d architect notices, want none: the issue has no architect claim to tell of the architect's hold", len(rows))
+		t.Fatalf("the sweep wrote %d architect notices, want none: the controller alone is told of a held round", len(rows))
 	}
 	reason := notices[0].Reason
 	for _, want := range []string{
-		"The controller suspended implementer (suspended). The controller can resume it.",
-		"An architect suspended reviewer (suspended). An architect that owns the issue, or the controller, can resume it.",
+		"The controller suspended implementer (suspended), reviewer (suspended). The controller can resume them.",
 		"The daemon does not replace the pod until a resume lifts each of these suspensions.",
 	} {
 		if !strings.Contains(reason, want) {
@@ -1041,17 +1034,17 @@ func TestPodUpdateNamesTheControllersAndAnArchitectsHoldInTheNotice(t *testing.T
 		}
 	}
 	if strings.Contains(strings.ToLower(reason), "operator") {
-		t.Errorf("the notice says %q, which names the operator for holds the controller and an architect placed", reason)
+		t.Errorf("the notice says %q, which names the operator for holds the controller placed", reason)
 	}
 	wantWaiting(t, notices[0], map[claim.Role]bool{claim.RoleImplementer: false, claim.RoleReviewer: false, claim.RoleTester: true})
 	wantNoRefusedNotice(t, rig)
 
 	lines := loggedLines(t, rig.logs.String(), "a suspension that only a resume lifts holds this update round")
 	if len(lines) == 0 {
-		t.Fatalf("the walk logged no line of the hold, want one naming each holder")
+		t.Fatalf("the walk logged no line of the hold, want one naming each hold")
 	}
 	held, _ := lines[0]["held"].([]any)
-	if want := []any{"the controller's suspension holds implementer", "an architect's suspension holds reviewer"}; !slices.Equal(held, want) {
+	if want := []any{"the controller's suspension holds implementer", "the controller's suspension holds reviewer"}; !slices.Equal(held, want) {
 		t.Errorf("the walk's line names the holds %v, want %v", held, want)
 	}
 }
@@ -2863,7 +2856,7 @@ func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplace
 	rig.envoyTurn(claim.RoleImplementer)
 	rig.settleAll()
 	// Long past the bound the round's own stall is told at, so a sweep that waited for that
-	// turn would tell the controller or an architect of a pod that is gone.
+	// turn would tell the controller of a pod that is gone.
 	rig.clock.advance(podUpdateGrace + time.Hour)
 
 	rig.tick()

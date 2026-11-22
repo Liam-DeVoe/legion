@@ -30884,7 +30884,6 @@
         "working"
       ],
       "suspendedBy": [
-        "architect",
         "controller",
         "daemon",
         "exit",
@@ -30893,7 +30892,6 @@
         "unknown"
       ],
       "suspensionHeldBy": [
-        "architect",
         "controller",
         "daemon",
         "exit",

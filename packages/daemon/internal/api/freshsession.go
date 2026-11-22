@@ -105,17 +105,13 @@ var freshSessionOp = agentAction{
 
 // claimFreshSession is the agent door's fresh session (freshSession). The effect is the
 // operator's own, and so are its refusals; only the authentication differs (agentDoor), and the
-// suspension and the resume it runs are the caller's, so it is refused an agent a suspension it may
-// not lift holds: the operator's own for either caller (SUSPENDED_BY_OPERATOR), and for an
-// architect the controller's (SUSPENDED_BY_CONTROLLER) and one the daemon placed
-// (SUSPENDED_BY_DAEMON). An architect's fresh session of an agent that failed or that a stop
-// retired starts it as its retry does, so it too is refused while its issue is out of the
-// workflow or its tree lingers (ISSUE_OUT_OF_WORKFLOW, refuseStartOfStoppedWork). Its log line
-// says which of the two successes the effect reported: the agent started again, or stopped by
-// this request and not started, whose sentence rides the answer (notStartedAgain).
+// suspension and the resume it runs are the controller's, so it is refused an agent the
+// operator's own suspension holds (SUSPENDED_BY_OPERATOR). Its log line says which of the two
+// successes the effect reported: the agent started again, or stopped by this request and not
+// started, whose sentence rides the answer (notStartedAgain).
 func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 	target, ok := s.agentDoor(w, r, freshSessionOp)
-	if !ok || s.refuseStartOfStoppedWork(w, r, target, target.machine.View().State, freshSessionOp) {
+	if !ok {
 		return
 	}
 	_, notRestarted, started, ok := s.freshSession(w, r, target.machine, target.token, target.by)
@@ -182,10 +178,10 @@ func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 // contrast, leaves no way at all to drop the session the request was for.
 //
 // The resume goes before the phase's restart, so the agent is back in its new session before
-// anything the workflow may refuse is asked for. Only a suspension that holds, the operator's,
-// the controller's or an architect's, holds the start a restart queues (supervise's
-// Claim.RuleHolds, which the outbox's start row and supervise.Machine.StartedBy both answer with
-// a wait): a claim the daemon suspended, and one an idle release suspended, has no such hold. A
+// anything the workflow may refuse is asked for. Only a suspension that holds, the operator's or
+// the controller's, holds the start a restart queues (supervise's Claim.RuleHolds, which the
+// outbox's start row and supervise.Machine.StartedBy both answer with a wait): a claim the daemon
+// suspended, and one an idle release suspended, has no such hold. A
 // restart run first on such a claim wakes the outbox lane on the committed fact, the lane's start
 // row finds a claim the rule may resume and resumes it, and this route's own resume then meets a
 // launching claim, which the table ignores and the machine answers a refusal for (supervise's
@@ -204,29 +200,25 @@ func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 // rule of the daemon's lifts, which would stand until a resume lifted it.
 //
 // The suspension this route runs is its caller's: the operator's through `legion claims retry
-// --fresh-session`, and the controller's or an architect's through the agent door's
-// fresh_session (supervise.SuspendedByController, supervise.SuspendedByArchitect), whose resume
-// below is that caller's too (supervise.RequestResume.By). The agent door refuses its caller,
-// before anything is asked, an agent a suspension outranking it holds, held or landed (agentDoor,
-// supervise.Claim.HeldAgainst): the operator's for either caller (SUSPENDED_BY_OPERATOR), since
-// only the operator undoes it, and the controller's for an architect (SUSPENDED_BY_CONTROLLER).
-// This route then refuses, before anything is asked, an agent whose resume the caller may not
-// run (supervise.Claim.ResumeRefusal, refuseHold), which adds for an architect a suspension the
-// daemon placed (SUSPENDED_BY_DAEMON), since an architect's resume lifts an architect's
-// suspension alone.
+// --fresh-session`, and the controller's through the agent door's fresh_session
+// (supervise.SuspendedByController), whose resume below is that caller's too
+// (supervise.RequestResume.By). The agent door refuses the controller, before anything is asked,
+// an agent the operator's suspension holds, held or landed (agentDoor,
+// supervise.Claim.HeldAgainst: SUSPENDED_BY_OPERATOR), since only the operator undoes it, and
+// this route reads that hold again before anything is asked (refuseHold).
 //
-// Each step after those reads is a decision of its own, so a suspension outranking the caller
-// can still take the agent over under the request (supervise's suspendedAgain). Between the read
-// and the caller's suspension, the machine refuses that suspension (supervise.ErrOperatorHolds,
-// supervise.ErrControllerHolds). Between that suspension, or the read for an agent this route does
-// not suspend, and the forget, the forget reads the hold again in its own decision and is
-// refused for an agent whose resume the caller may not run (supervise.RequestForgetSession.By),
-// so the claim keeps the session it recorded and the caller is answered that hold's refusal,
-// which says whether this request's own suspension ran (refuseHold, itsSuspensionTakenOver).
-// The forget is never sent past such a hold: it would drop the session of an agent whose resume
-// the machine then refuses, under a hold the caller cannot lift. A suspension held over the
-// agent that does not outrank the caller is the held suspension's refusal, as at the operator's
-// door (refuseHeldSuspension).
+// Each step after those reads is a decision of its own, so the operator's suspension can still
+// take the agent over under the controller's request (supervise's suspendedAgain). Between the
+// read and the controller's suspension, the machine refuses that suspension
+// (supervise.ErrOperatorHolds). Between that suspension, or the read for an agent this route does
+// not suspend, and the forget, the forget reads the hold again in its own decision and is refused
+// for an agent whose resume the caller may not run (supervise.RequestForgetSession.By), so the
+// claim keeps the session it recorded and the caller is answered that hold's refusal, which says
+// whether this request's own suspension ran (refuseHold, itsSuspensionTakenOver). The forget is
+// never sent past such a hold: it would drop the session of an agent whose resume the machine
+// then refuses, under a hold the caller cannot lift. A suspension held over the agent that does
+// not outrank the caller is the held suspension's refusal, as at the operator's door
+// (refuseHeldSuspension).
 //
 // A forget refused for any other reason, and a start the machine refuses, after this route has
 // stopped the agent is answered the same way as each other and for the same reason: the
@@ -278,9 +270,9 @@ func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 //
 // While the project is paused, every other claim is refused PROJECT_PAUSED before anything is
 // asked of it, at both doors, and nothing of it changes: the start this operation ends in is a
-// launch the pause holds (refusedWhilePaused). The agent
-// door reads the suspensions that outrank its caller first (agentDoor), so an agent such a
-// suspension holds is refused in that hold's code whether or not the project is paused.
+// launch the pause holds (refusedWhilePaused). The agent door reads the operator's suspension
+// first (agentDoor), so an agent that suspension holds is refused in that hold's code whether or
+// not the project is paused.
 func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
 	by supervise.SuspendSource) (status int, notRestarted string, started, ok bool) {
 	c := m.Claim()
@@ -312,12 +304,12 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	// suspended reads it after the forget, since a refusal of the resume of an agent it stopped is a
 	// sentence of the answer.
 	outcome := nothingChanged
-	resumeRefusal := c.ResumeRefusal(by)
+	hold := c.HeldAgainst(by)
 	switch {
 	case view.SuspensionHeld:
-		return 0, "", false, s.refuseHeldSuspension(w, r, token, c.State, c.Role, freshSessionOp, resumeRefusal)
-	case resumeRefusal != nil:
-		s.refuseHold(w, r, token, freshSessionOp, by, resumeRefusal, nothingChanged)
+		return 0, "", false, s.refuseHeldSuspension(w, r, token, c.State, c.Role, freshSessionOp, hold)
+	case hold != nil:
+		s.refuseHold(w, r, token, freshSessionOp, by, hold, nothingChanged)
 		return 0, "", false, false
 	case storedWorking(c.State):
 		// Every claim stored working comes here, and the read is what tells them apart: the
@@ -612,14 +604,14 @@ func (s *server) refuseMovedClaim(w http.ResponseWriter, r *http.Request, token 
 // and neither says the hold will end or what state would follow it, which is the machine's and
 // no part of this answer (askAgainLater).
 //
-// hold is the caller's resume refusal (supervise.Claim.ResumeRefusal), nil where there is none.
-// A suspension that outranks the caller can be the one held here — the operator's under the
-// controller's compaction, which the agent door lets past it (compactOp.controllerPassesHold),
-// or one that arrived after the door's read — and the caller's fresh session is refused such a
-// suspension at the door, so the second sentence would send the caller to a door that refuses
-// it. Such an agent is named the holder's resume instead, in the words every refusal of a hold
-// gives it (holdSentences), and nothing of the states either operation reaches: once that hold
-// lands, only a resume the caller may not run starts the agent again.
+// hold is the refusal the caller's resume meets (supervise.Claim.HeldAgainst), nil where there is
+// none. The operator's suspension can be the one held here — under the controller's compaction,
+// which the agent door lets past it (compactOp.controllerPassesHold), or one that arrived after
+// the door's read — and the controller's fresh session is refused that suspension at the door,
+// so the second sentence would send the caller to a door that refuses it. Such an agent is named
+// the holder's resume instead, in the words every refusal of a hold gives it (holdSentences), and
+// nothing of the states either operation reaches: once that hold lands, only a resume the caller
+// may not run starts the agent again.
 //
 // The code follows the claim rather than the hold, so no caller's answer changes for a state
 // that was refused before this refusal read the hold at all: a claim stored working takes the
@@ -738,10 +730,10 @@ func storedWorking(state supervise.ClaimState) bool {
 // it — is answered the same way rather than read, since every read's answer says the claim "is
 // stored working", which it no longer is; a suspension held over the claim keeps the answer
 // every held agent takes (refuseHeldSuspension). A suspension refused by a landed suspension that
-// outranks the caller — the controller's or an architect's, met by a suspend outranking it that
-// landed under the request — is that hold's refusal (refuseHold). Every other refusal is the
-// machine's own answer, in the words operationFailure gives it. It reports false when it answered
-// the caller. by is the caller's own source (freshSession).
+// outranks the caller — the controller's, met by the operator's suspend that landed under the
+// request — is that hold's refusal (refuseHold). Every other refusal is the machine's own answer,
+// in the words operationFailure gives it. It reports false when it answered the caller. by is the
+// caller's own source (freshSession).
 func (s *server) suspendForFreshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
 	by supervise.SuspendSource) bool {
 	posted, err := s.postClaimEvent(w, r, m, token, "suspend", supervise.RequestSuspend{
@@ -770,7 +762,7 @@ func (s *server) suspendForFreshSession(w http.ResponseWriter, r *http.Request, 
 // another request posted between the route's view and that lock is held over the claim now,
 // and a held agent keeps the answer the door gives every held agent, which names the holder's
 // resume where that suspension outranks the caller, by (refuseHeldSuspension,
-// supervise.Claim.ResumeRefusal); a claim no longer stored working moved under the request
+// supervise.Claim.HeldAgainst); a claim no longer stored working moved under the request
 // (refuseMovedClaim); and a claim still stored working is read again, a process found gone once
 // more being the claim that moved (refuseWorkingClaim). It takes the view rather than reading
 // it, so the moment between the machine's refusal and that view is one a caller can hand it.
@@ -778,7 +770,7 @@ func (s *server) refuseSuspensionRefusedAsWorking(w http.ResponseWriter, r *http
 	token claim.Token, view supervise.ClaimView, by supervise.SuspendSource) {
 	switch {
 	case view.SuspensionHeld:
-		s.refuseHeldSuspension(w, r, token, view.State, view.Role, freshSessionOp, view.ResumeRefusal(by))
+		s.refuseHeldSuspension(w, r, token, view.State, view.Role, freshSessionOp, view.HeldAgainst(by))
 	case view.State != supervise.StateWorking:
 		s.refuseMovedClaim(w, r, token, freshSessionOp)
 	case !s.refuseWorkingClaim(w, r, m, token, view, freshSessionOp):

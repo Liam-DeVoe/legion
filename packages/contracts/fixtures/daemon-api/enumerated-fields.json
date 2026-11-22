@@ -2030,10 +2030,6 @@
     "keyPath": "suspendedBy",
     "values": [
       {
-        "value": "architect",
-        "since": 227
-      },
-      {
         "value": "controller",
         "since": 227
       },
@@ -2063,10 +2059,6 @@
     "answer": "agent-action",
     "keyPath": "suspensionHeldBy",
     "values": [
-      {
-        "value": "architect",
-        "since": 227
-      },
       {
         "value": "controller",
         "since": 227

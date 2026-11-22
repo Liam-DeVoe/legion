@@ -5,9 +5,9 @@ body: |-
   reasons that say the controller asked for the replacement. Each role of the pod is asked to push
   its work and answer `ready_for_update`, and the sweep replaces the pod once each has answered, no
   turn runs and each role's report since its last turn names no running background work, or at
-  the round's bound, whether or not the pod has drifted. A suspension by the operator, the
-  controller or an architect over a role the round asks keeps the pod past the bound until a resume
-  lifts it. The controller's own suspension counts too, so a controller that suspended a role and
+  the round's bound, whether or not the pod has drifted. A suspension by the operator or the
+  controller over a role the round asks keeps the pod past the bound until a resume lifts it. The
+  controller's own suspension counts too, so a controller that suspended a role and
   then asks for the replacement waits on itself, and the round comes back as `update-stalled`. The
   opening is held to `pod_update_max_open_rounds` and `pod_update_rounds_per_minute` as a drift's
   opening is, and a request they hold back is refused `409 POD_UPDATE_LIMITED`, naming the limit.

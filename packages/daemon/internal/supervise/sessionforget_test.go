@@ -12,10 +12,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
-// suspendTool is the stop a forget's refusal names for the controller and an architect
-// (mayForget), beside the operator's `legion claims suspend`: neither holds an operator's token,
-// and their `legion` tool's suspend stops the holder's process through the daemon.
-const suspendTool = "the `suspend` of the controller's or an architect's `legion` tool"
+// suspendTool is the stop a forget's refusal names for the controller (mayForget), beside the
+// operator's `legion claims suspend`: the controller holds no operator's token, and its `legion`
+// tool's suspend stops the holder's process through the daemon.
+const suspendTool = "the `suspend` of the controller's `legion` tool"
 
 // A session a claim records but does not hold is cleared only once the Envoy listener no longer
 // names it as the claim's role holder (mayForget, review rounds 16 and 17 of #4220). The outbox
@@ -74,8 +74,8 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 	}
 	// The bound and the remedy are spelled here rather than read from the code, so a wrong bound
 	// or a remedy that sends the operator to suspend a claim that runs nothing fails the rows
-	// (review round 16 of #4220, #60 and #61). The remedy names the controller's and an
-	// architect's suspend beside the operator's, since neither holds an operator's token.
+	// (review round 16 of #4220, #60 and #61). The remedy names the controller's suspend beside
+	// the operator's, since the controller holds no operator's token.
 	const suspendHolder, theBound, holderRunsNothing = "legion claims suspend --claim " + string(holder),
 		"max(min(ENVOY_SESSION_MAX_AGE, ENVOY_SESSION_GONE_HORIZON), ENVOY_SESSION_LIVE_WINDOW) + ENVOY_ROLE_CLAIM_REAP_INTERVAL",
 		"if " + string(holder) + " is suspended, retired or failed, no process of it runs"
@@ -205,7 +205,7 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 
 // The controller's forget of a session its claim records but does not hold waits for the claim's
 // role as the operator's does (mayForget), which runs after the controller's own checks (askedBy,
-// Claim.ResumeRefusal) admit it: refused as a wait, the session kept, while the Envoy listener
+// Claim.HeldAgainst) admit it: refused as a wait, the session kept, while the Envoy listener
 // names that session as the role's live holder, and admitted once no claim names the role, the
 // claim then recording that the controller asked (forgottenBy). The rig is
 // TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole's processless claim, its agent stopped

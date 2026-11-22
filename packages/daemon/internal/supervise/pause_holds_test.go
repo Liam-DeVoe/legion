@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// A suspension that holds — the operator's, the controller's or an architect's — that reaches an
+// A suspension that holds — the operator's or the controller's — that reaches an
 // agent whose turn a project pause's stop is held for takes that hold over, and the hold is its own
 // from then on: it names no pause, so the project's resume drops nothing of it
 // (dropEndedPauseHold), and the turn's end suspends the agent by that source, with no record of the
@@ -16,7 +16,7 @@ import (
 // `m.held.Pause = 0` undone): the resume's event drops the hold as the ended pause's, and the
 // claim runs on, idle, at its turn's end.
 func TestASuspensionThatHoldsTakesOverAPausesHeldStopAndKeepsItThroughTheResume(t *testing.T) {
-	for _, by := range []SuspendSource{SuspendedByOperator, SuspendedByController, SuspendedByArchitect} {
+	for _, by := range []SuspendSource{SuspendedByOperator, SuspendedByController} {
 		t.Run(string(by), func(t *testing.T) {
 			h, flag, stops := pauseHarness(t, queuedClaim())
 			h.reach(StateWorking)

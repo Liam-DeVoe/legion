@@ -19,7 +19,7 @@ func suspendedBy(h *harness, by SuspendSource) {
 // Every suspension records who asked for it, and the store keeps it while the claim is suspended:
 // the rule reads it after a restart as before one. A resume clears it.
 func TestASuspensionRecordsItsSource(t *testing.T) {
-	for _, by := range []SuspendSource{SuspendedByOperator, SuspendedByController, SuspendedByArchitect, SuspendedByDaemon, SuspendedByReleased} {
+	for _, by := range []SuspendSource{SuspendedByOperator, SuspendedByController, SuspendedByDaemon, SuspendedByReleased} {
 		t.Run(string(by), func(t *testing.T) {
 			h := newHarness(t)
 			suspendedBy(h, by)
@@ -56,7 +56,7 @@ func TestASuspensionNamingNoSourceIsRefused(t *testing.T) {
 		t.Run(string(by), func(t *testing.T) {
 			h := newHarness(t)
 			h.reach(StateIdle)
-			if err := h.handle(RequestSuspend{Claim: testToken, By: by}); err == nil || !strings.Contains(err.Error(), "not operator, controller, architect, daemon or released") {
+			if err := h.handle(RequestSuspend{Claim: testToken, By: by}); err == nil || !strings.Contains(err.Error(), "not operator, controller, daemon or released") {
 				t.Fatalf("suspend naming %q returned %v, want it refused", by, err)
 			}
 			h.wantState(StateIdle)
@@ -66,9 +66,9 @@ func TestASuspensionNamingNoSourceIsRefused(t *testing.T) {
 }
 
 // A resume, a stop and a forget of the session name who asks, as a suspension does, and one that
-// names none of the three that ask them — the operator, the controller and an architect — is a
-// wiring error refused before anything is asked (askedBy): read as the operator's, whom no
-// suspension refuses, it would get past every hold over the agent.
+// names neither of the two that ask them — the operator and the controller — is a wiring error
+// refused before anything is asked (askedBy): read as the operator's, whom no suspension refuses,
+// it would get past every hold over the agent.
 func TestAResumeAStopAndAForgetNamingNoAskerAreRefused(t *testing.T) {
 	for _, by := range []SuspendSource{"", SuspendedByDaemon, SuspendedByExit, SuspendedByReleased, "someone"} {
 		t.Run(string(by), func(t *testing.T) {
@@ -80,7 +80,7 @@ func TestAResumeAStopAndAForgetNamingNoAskerAreRefused(t *testing.T) {
 				RequestStop{Claim: testToken, By: by},
 				RequestForgetSession{Claim: testToken, Session: before.Session, By: by},
 			} {
-				if err := h.handle(ev); err == nil || !strings.Contains(err.Error(), "not operator, controller or architect") {
+				if err := h.handle(ev); err == nil || !strings.Contains(err.Error(), "not operator or controller") {
 					t.Fatalf("%T naming %q returned %v, want it refused", ev, by, err)
 				}
 			}
@@ -95,11 +95,10 @@ func TestAResumeAStopAndAForgetNamingNoAskerAreRefused(t *testing.T) {
 	}
 }
 
-// The rule resumes every suspension but the three that hold, the operator's, the controller's and
-// an architect's: the daemon's, a root's own exit, and one suspended before migration 0038
-// recorded its source (unknown, or none), as main resumed those on the same triggers. The
-// operator's holds until the operator resumes the agent, the controller's until the controller or
-// the operator does, and an architect's until an architect, the controller or the operator does.
+// The rule resumes every suspension but the two that hold, the operator's and the controller's:
+// the daemon's, a root's own exit, and one suspended before migration 0038 recorded its source
+// (unknown, or none), as main resumed those on the same triggers. The operator's holds until the
+// operator resumes the agent, and the controller's until the controller or the operator does.
 // (The boot's resume by rule, the one trigger main did not have, filters for daemon and exit
 // itself, leaving a released claim to its role's wake: workflow's booted.)
 func TestTheRuleResumesEverySuspensionButTheOperators(t *testing.T) {
@@ -129,7 +128,6 @@ func TestTheRuleResumesEverySuspensionButTheOperators(t *testing.T) {
 		}, resumed: true},
 		{name: "the operator's", suspend: func(h *harness) { suspendedBy(h, SuspendedByOperator) }},
 		{name: "the controller's", suspend: func(h *harness) { suspendedBy(h, SuspendedByController) }},
-		{name: "an architect's", suspend: func(h *harness) { suspendedBy(h, SuspendedByArchitect) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)

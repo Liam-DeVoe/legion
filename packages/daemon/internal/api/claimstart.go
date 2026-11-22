@@ -23,7 +23,7 @@ import (
 // The session is the claim's own either way: this start relaunches the recorded one, or a new one
 // once supervise's Machine.forgetSession has dropped it. A caller that wants a new session forgets
 // it before calling here (freshSession), which is also what reaches an agent this start refuses. by
-// is who asks — the operator, the controller or an architect — which the machine's retry names
+// is who asks — the operator or the controller — which the machine's retry names
 // (machineRetry).
 func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, fresh bool,
 	by supervise.SuspendSource) (int, bool) {

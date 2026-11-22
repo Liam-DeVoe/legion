@@ -85,7 +85,7 @@ func lastStartRow(run record.RoleRun) int64 {
 //
 // Stranded reads the same rule for a failed claim, and for a suspended one that no holding
 // suspension holds: a claim for which StartFor is true has no queued start that will wake it. A
-// suspension that holds — the operator's, the controller's or an architect's (supervise's
+// suspension that holds — the operator's or the controller's (supervise's
 // RuleHolds) — is woken by no start, queued or not, since each waits for a resume to lift it, so
 // Stranded lists it without asking. The architect's start names no phase, so its current is "".
 //
@@ -131,7 +131,7 @@ func startActs(queued record.QueuedSupervise, stop int64, current phase.Phase) b
 // Such a start names the member's phase only so that it finishes once the member has left that
 // phase. It carries no task of the phase and no entry. It reaches only a claim that was already
 // given the phase's current entry, and it finishes without acting at a claim that failed or
-// retired, or that a suspension that holds (the operator's, the controller's or an architect's) is
+// retired, or that a suspension that holds (the operator's or the controller's) is
 // over (the daemon's newsOnlyRefusal), and wherever the record owes nothing when it runs. So every
 // rule that asks whether a queued start will bring a role its phase's work reads the role's queued
 // rows through this: the ready worker's task (queuedRowCovers), a promotion's start and the report

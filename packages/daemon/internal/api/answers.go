@@ -205,9 +205,9 @@ var Answers = []Answer{
 	// version.go's 178: the pause the controller's resume ended and how many held rows it let out
 	// (`api.ProjectResumeResponse`), arrived with its route as the pause's answer did.
 	{ID: AnswerProjectResume, Routes: []string{"POST /legion/v1/project/resume"}, Since: pauseContract},
-	// version.go's 227: the claim's state after one of the four agent actions on the `agents/`
-	// routes, the controller's or an architect's (`api.AgentActionResponse`). The routes arrive with
-	// the answer, so no contract below 227 records either.
+	// version.go's 227: the claim's state after one of the controller's four agent actions on the
+	// `agents/` routes (`api.AgentActionResponse`). The routes arrive with the answer, so no
+	// contract below 227 records either.
 	{ID: AnswerAgentAction, Routes: []string{
 		"POST /legion/v1/agents/stop",
 		"POST /legion/v1/agents/retry",
@@ -593,13 +593,12 @@ var agentActionStates = valuesFrom(agentActionsContract,
 
 // suspendSources is every source a suspension can be recorded under (supervise.SuspendSource),
 // which the agent actions' `suspendedBy` and `suspensionHeldBy` share. Both arrived with that
-// answer at agentActionsContract, so the list is recorded there whole, `controller` and
-// `architect` among it. It names each constant rather than reading a roster, as failureCauses
-// does its causes, because a source added later arrives at its own contract.
+// answer at agentActionsContract, so the list is recorded there whole, `controller` among it. It
+// names each constant rather than reading a roster, as failureCauses does its causes, because a
+// source added later arrives at its own contract.
 var suspendSources = valuesFrom(agentActionsContract,
 	supervise.SuspendedByUnknown, supervise.SuspendedByOperator, supervise.SuspendedByController,
-	supervise.SuspendedByArchitect, supervise.SuspendedByDaemon, supervise.SuspendedByExit,
-	supervise.SuspendedByReleased)
+	supervise.SuspendedByDaemon, supervise.SuspendedByExit, supervise.SuspendedByReleased)
 
 // updateStates is every value of a claim view's `updateState`, recorded at
 // shapedAnswersContract, the contract that added the key. The words are the four the package

@@ -906,14 +906,14 @@ func TestTheControllersFreshSessionNeedsAControllerGrantAndAClaim(t *testing.T) 
 		http.StatusNotFound, "NO_CLAIM")
 }
 
-// Each step of a fresh session is a decision of its own, so a suspension that outranks the caller
-// can take the agent over between them: after the caller's own suspension of a live agent, and
-// after the read at the request of an agent the caller suspended earlier. The forget reads the
-// hold again in its own decision (supervise.RequestForgetSession.By) and is refused, so the
-// claim keeps the session it recorded under the holder's suspension, nothing is started, and the
-// caller is answered that hold's refusal, which says whether its own suspension ran. Let
-// through, the forget would drop the session of an agent whose resume the machine then refuses,
-// and the caller would read a 200 for an agent only the holder can start.
+// Each step of a fresh session is a decision of its own, so the operator's suspension can take the
+// agent over between them: after the controller's own suspension of a live agent, and after the
+// read at the request of an agent the controller suspended earlier. The forget reads the hold
+// again in its own decision (supervise.RequestForgetSession.By) and is refused, so the claim keeps
+// the session it recorded under the operator's suspension, nothing is started, and the controller
+// is answered that hold's refusal, which says whether its own suspension ran. Let through, the
+// forget would drop the session of an agent whose resume the machine then refuses, and the
+// controller would read a 200 for an agent only the operator can start.
 func TestAFreshSessionKeepsTheSessionOfAnAgentASuspensionAboveTheCallerTookOver(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -931,16 +931,6 @@ func TestAFreshSessionKeepsTheSessionOfAnAgentASuspensionAboveTheCallerTookOver(
 					"by the controller went no further than its own suspension of the agent, which that suspension then took over, " +
 					"and the agent keeps the session its claim recorded. Ask the operator: `legion claims resume --claim " + string(token) +
 					"` is theirs to run"
-			},
-		},
-		{
-			name: "the controller's over an architect's own suspension of a ready worker", start: readyImplementer,
-			by: supervise.SuspendedByArchitect, holder: supervise.SuspendedByController, code: suspendedByController,
-			want: func(token claim.Token) string {
-				return string(token) + " is held by the controller's suspension, which only the controller or the operator lifts, so " +
-					"a fresh session by the architect went no further than its own suspension of the agent, which that suspension " +
-					"then took over, and the agent keeps the session its claim recorded. Ask the controller: its `resume_agent` is its " +
-					"own to run"
 			},
 		},
 		{

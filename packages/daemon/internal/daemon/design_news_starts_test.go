@@ -72,7 +72,6 @@ func TestNoNewsOnlyStartGoesWhereTheRecordSaysNoNewsMay(t *testing.T) {
 		{name: "a failed claim", state: supervise.StateFailed, given: 1},
 		{name: "an operator-suspended claim", state: supervise.StateSuspended, by: supervise.SuspendedByOperator, given: 1},
 		{name: "an agent the controller suspended", state: supervise.StateSuspended, by: supervise.SuspendedByController, given: 1},
-		{name: "an agent an architect suspended", state: supervise.StateSuspended, by: supervise.SuspendedByArchitect, given: 1},
 		{name: "a lingering tree", state: supervise.StateIdle, given: 1, lingers: true},
 		{name: "an issue not at work", state: supervise.StateIdle, given: 1, held: true},
 	} {

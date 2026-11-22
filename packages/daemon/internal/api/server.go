@@ -781,14 +781,14 @@ func (s *server) stopRefusal(request string) string {
 
 // refusedWhilePaused refuses request for c's agent, answering PROJECT_PAUSED, while the project is
 // paused and c is not the controller's claim (decision 20): a turn a paused project's role would
-// start — a compaction or a fresh session the controller or an architect asks for, the
-// controller's or an architect's resume or retry, the operator's resume, retry, compaction, spawn
-// or delivery — waits for the resume, and nothing of the claim changes. The pause flag decides
-// (pause.Service.Paused), as it decides every launch the machines hold; the refusal names the
-// standing pause when the store's read finds it. A stop, a suspension, an issue's status and the
-// daemon's own status are not turns, and no caller of this asks of them. A claim of another
-// project's issue, which the operator's spawn makes under the daemon's own project token, is
-// refused as every other claim is, its spawn included: the daemon runs it.
+// start — a compaction, a fresh session, a resume or a retry the controller asks for, the
+// operator's resume, retry, compaction, spawn or delivery — waits for the resume, and nothing of
+// the claim changes. The pause flag decides (pause.Service.Paused), as it decides every launch the
+// machines hold; the refusal names the standing pause when the store's read finds it. A stop, a
+// suspension, an issue's status and the daemon's own status are not turns, and no caller of this
+// asks of them. A claim of another project's issue, which the operator's spawn makes under the
+// daemon's own project token, is refused as every other claim is, its spawn included: the daemon
+// runs it.
 func (s *server) refusedWhilePaused(w http.ResponseWriter, r *http.Request, request string, c supervise.Claim) bool {
 	if claim.IsController(c.Role, c.Issue, c.Tree) {
 		return false

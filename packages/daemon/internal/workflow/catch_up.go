@@ -378,7 +378,7 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 // root's architect is not asked to accept an issue whose own architect, or an architect between
 // the two, holds its role, and is asked to accept one whose architects up to the root have all
 // failed, retired, never started, or been suspended by anyone but the idle release — the workflow,
-// the operator, the controller or an architect alike — whose suspended claim still holds its role
+// the operator or the controller alike — whose suspended claim still holds its role
 // (record.HoldsRole). An issue whose key makes no claim token has no architect, so the walk makes
 // it the tree root's to accept. No claim is read when nothing waits.
 func awaitingAcceptance(ctx context.Context, tx pgx.Tx, store record.Store, issue record.Issue, accepting []record.Issue) ([]string, error) {

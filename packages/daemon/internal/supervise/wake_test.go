@@ -403,14 +403,14 @@ func TestAnOperatorsRetryRefusedByTheParkedClaimLeavesItsWakeItsTurn(t *testing.
 }
 
 // Only the operator's own resume and retry are let past the wake pacing, because a person is
-// waiting on each. The controller's and an architect's come through the agent door, which an
-// agent asks of as many agents at once as it decides to — a controller lifting its own holds
-// after a deploy asks it of every agent it held — so each takes its turn behind the wake ahead of
-// it, as every launch the pacing holds does, and launches at that turn.
+// waiting on each. The controller's come through the agent door, which it asks of as many agents
+// at once as it decides to — lifting its own holds after a deploy, it asks it of every agent it
+// held — so each takes its turn behind the wake ahead of it, as every launch the pacing holds
+// does, and launches at that turn.
 //
 // The negative control is exemptWake letting every RequestResume and RequestAskedRetry
-// through whoever names it, as it did: the controller's and the architects' rows then launch at
-// once, and this test reads that at the runtime's starts.
+// through whoever names it, as it did: the controller's rows then launch at once, and this test
+// reads that at the runtime's starts.
 func TestOnlyTheOperatorsResumeAndRetryAreLetPastThePacing(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -421,10 +421,8 @@ func TestOnlyTheOperatorsResumeAndRetryAreLetPastThePacing(t *testing.T) {
 	}{
 		{"the operator's resume", StateSuspended, SuspendedByDaemon, RequestResume{Claim: secondToken, By: SuspendedByOperator}, false},
 		{"the controller's resume", StateSuspended, SuspendedByDaemon, RequestResume{Claim: secondToken, By: SuspendedByController}, true},
-		{"an architect's resume", StateSuspended, SuspendedByArchitect, RequestResume{Claim: secondToken, By: SuspendedByArchitect}, true},
 		{"the operator's retry", StateFailed, "", RequestAskedRetry{Claim: secondToken, By: SuspendedByOperator}, false},
 		{"the controller's retry", StateFailed, "", RequestAskedRetry{Claim: secondToken, By: SuspendedByController}, true},
-		{"an architect's retry", StateFailed, "", RequestAskedRetry{Claim: secondToken, By: SuspendedByArchitect}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := pacedHarness(t, wakeRate)

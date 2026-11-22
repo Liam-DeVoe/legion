@@ -96,7 +96,7 @@ type OperatorClaim struct {
 	// Pending is the task the claim holds, until the turn it started ends.
 	Pending *DeliveryView `json:"pending,omitempty"`
 	// SuspendedBy is who suspended the agent while its claim is suspended: operator, controller,
-	// architect, daemon, exit, released (its idle pod was released), or unknown (a suspension
+	// daemon, exit, released (its idle pod was released), or unknown (a suspension
 	// recorded before migration 0038), supervise.SuspendSource's values; absent otherwise. These
 	// routes are the one surface that serves it: a session parses
 	// every body it reads with the schema of its own contract, so a key an older contract does not
@@ -793,7 +793,7 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 // alone. A request the claim's machine refused (409) writes its answer and logs no line. One that
 // fails otherwise logs its failure instead (operationFailure), and that line names who asked in
 // its `by` field, so the operator's failed requests are counted there, apart from the
-// controller's and the architects', whose requests the agent door fails through the same line.
+// controller's, whose requests the agent door fails through the same line.
 func (s *server) operatorDone(r *http.Request, token claim.Token) {
 	s.log.Info("api: operator request", "route", r.Pattern, "claim", token, "caller", r.RemoteAddr)
 }
@@ -853,11 +853,11 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 	s.writeUnparsedAnswer(w, r, http.StatusOK, OperatorClaims{Claims: views, PodUpdateRounds: &rounds})
 }
 
-// operationFailure answers an agent action its machine did not take, the operator's, the
-// controller's or an architect's (by): 409 with the machine's reason when the claim's state does
-// not allow it, and otherwise a 500 that says what failed — the caller is the one who has to act
-// on a launch the runtime refused. The line it logs names the caller in its `by` field, so the
-// operator's failures are told from the controller's and an architect's (operatorDone).
+// operationFailure answers an agent action its machine did not take, the operator's or the
+// controller's (by): 409 with the machine's reason when the claim's state does not allow it, and
+// otherwise a 500 that says what failed — the caller is the one who has to act on a launch the
+// runtime refused. The line it logs names the caller in its `by` field, so the operator's failures
+// are told from the controller's (operatorDone).
 func (s *server) operationFailure(w http.ResponseWriter, r *http.Request, by supervise.SuspendSource, request string,
 	token claim.Token, err error) {
 	var refused *supervise.RefusedError

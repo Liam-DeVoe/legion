@@ -33,16 +33,16 @@ import (
 // the pod goes is lost with the pod, unless the pod's disk is a kept volume that the issue's next
 // pod mounts (roundKeptVolume). An answer from every role the round asks ends the round early
 // once nothing else holds it (roundEnd.holding, dispatch://INFRA-4203 R1); no answer holds it past
-// the bound. A suspension that holds — the operator's, the controller's or an architect's
+// the bound. A suspension that holds — the operator's or the controller's
 // (supervise.SuspendSource.Holds) — is the one wait that outlasts the bound, and only over a pod
 // that is there: a gone pod ends its round whatever the hold (readReplacement).
 //
 // The round is the issue's, not the locator's: a suspended claim's locator is nil (supervise's
 // letGo), and before the bound no pod disk may be deleted before every worker the round asks has
-// signalled (roundAsks, waitingClaims). A claim under a suspension that holds (the operator's,
-// the controller's or an architect's) is one of them. So is a claim whose agent a project's pause
-// stopped, while the pause still owes that agent a launch: the one exception
-// (podHolds.owes, roundClock.passesOver). Any other claim the daemon suspended is not one of
+// signalled (roundAsks, waitingClaims). A claim under a suspension that holds (the operator's or
+// the controller's) is one of them. So is a claim whose agent a project's pause stopped, while
+// the pause still owes that agent a launch: the one exception (podHolds.owes,
+// roundClock.passesOver). Any other claim the daemon suspended is not one of
 // them: it runs no process and no turn in the pod (dispatch://INFRA-4109 R1). What such a claim
 // left unpushed goes with the pod (or, on a kept volume that the issue's next pod mounts, stays
 // there: roundKeptVolume), so the replacement first reads the issue's workspace through a role
@@ -279,9 +279,9 @@ func heldUntil(hold store.PausePodHold, now time.Time) time.Time {
 // (waitOnMachine). So no reading waits for a write that comes later, such as the let-out that the
 // daemon writes on a goroutine of its own after the park (pause.go). A role that came up in the pod
 // is owed nothing. A claim suspended by any other source than a release (the daemon's own rule, a
-// root's exit, an unknown source, the operator, the controller or an architect) is gone and not
-// released, and so is a failed or a retired claim. None of them is the pause's, whatever another
-// role of the pod still waits for. A hold that stands needs no case here: a round waits over a
+// root's exit, an unknown source, the operator or the controller) is gone and not released, and
+// so is a failed or a retired claim. None of them is the pause's, whatever another role of the
+// pod still waits for. A hold that stands needs no case here: a round waits over a
 // pod a hold stands on, and no round opens over it (held).
 func (h podHolds) owes(c supervise.Claim, round string) bool {
 	return h.owedLaunch(c.Role) && !answered(c, round) && (c.Released() || c.Locator == nil && !c.Gone())
@@ -388,8 +388,7 @@ func (s *supervision) podPauseHolds(ctx context.Context, claims []supervise.Clai
 // round opens over it and none ends (groupDrift, podUnread), and the next sweep reads it again.
 // Past the bound of a round open over it, that read holds the round, and the controller is told
 // of it once; where a suspension that holds is over an agent of the round, the notice names each
-// such hold and its holder in its place, told to the controller or, for an architect's hold, to
-// the architect that owns the held agent (tellUnreadPod, tellUpdateStalled).
+// such hold and its holder in its place (tellUnreadPod, tellUpdateStalled).
 //
 // A pod a launch replaced as its round's own replacement (roundPodEndsAtLaunch) is read gone by
 // the same readings, and the round it was the pod of ends at whichever comes first as the
@@ -470,10 +469,9 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	if reading != podRead {
 		// The unread pod decides nothing, and past the bound of a round open over it the
 		// controller is told of the round once; where holds are over its agents, each hold and its
-		// holder are told in its place, to the controller or, for an architect's hold, to the
-		// architect that owns the held agent (tellUnreadPod). The snapshot says first whether the
-		// bound has come and whether the round was told (lateRoundUntold), so a round before its
-		// bound costs no read of the machines. A sweep the daemon cancelled read nothing of the
+		// holder are told in its place (tellUnreadPod). The snapshot says first whether the bound
+		// has come and whether the round was told (lateRoundUntold), so a round before its bound
+		// costs no read of the machines. A sweep the daemon cancelled read nothing of the
 		// pod, and tells nothing.
 		if open != "" && ctx.Err() == nil && lateRoundUntold(group, open, clock) {
 			live := s.liveGroup(group)
@@ -590,8 +588,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 // hold keeps its place wherever the pod is there.
 //
 // Four readings hold a round past its bound, and each is told once, at the bound, naming the
-// reading (tellLateRound): a suspension that holds, named with its holder, to the controller or,
-// for an architect's hold, to the architect that owns the held agent (tellUpdateStalled); no
+// reading (tellLateRound): a suspension that holds, named with its holder (tellUpdateStalled); no
 // process in the round's pod; two pods at once; and a pod the runtime cannot read. No process in
 // the round's pod holds the round past its bound only where the runtime replaces no pod by issue
 // (runtime.IssuePodReplacer). Where it does, the pod is replaced at the bound, and only a
@@ -885,8 +882,8 @@ func (c roundClock) passesOver(of supervise.Claim, round string) bool {
 //
 // The order the readings are taken in is the rule. A hold comes first, because it is the one
 // wait the bound never steps over: the long-turn pod-update spec's rule R5 holds the pod for a
-// person's hold, which does not yield to a clock, and the controller's and an architect's hold as
-// the operator's does (heldClaims). It holds a pod that is there, and only that: a hold over a
+// person's hold, which does not yield to a clock, and the controller's hold as the operator's
+// does (heldClaims). It holds a pod that is there, and only that: a hold over a
 // round no live claim records a process in the pod of is read as no process in the round's pod,
 // carrying the agents the hold is over, so that its caller asks first whether the pod is there
 // at all. A round whose pod is gone ends whatever the hold says (endRoundOverAGonePod): there is
@@ -1041,8 +1038,8 @@ type podReplacement struct {
 // That read is no replacement for the daemon's last word inside the runtime (replacementDue),
 // which it stands in front of rather than in place of: ReplacePod takes the pod's launch turn
 // and waits it out, so a round complete at this read is still a round a worker can start a turn
-// in, or the operator, the controller or an architect can suspend an agent of, while the call
-// waits. The runtime asks that last word one statement before the write that ends every process
+// in, or the operator or the controller can suspend an agent of, while the call waits. The
+// runtime asks that last word one statement before the write that ends every process
 // in the pod, and a replacement no longer due is refused there, ends nothing and leaves the round
 // open for the next sweep.
 //
@@ -1435,34 +1432,29 @@ var (
 )
 
 // holdReason is the reason the late-round notice gives for a round a hold keeps past its bound,
-// naming each agent held, who holds it and who may resume it (holdSentences). It is given the
-// held agents the notice's own reader is told of (stallReason), so the controller's notice and an
-// architect's of one round each name their own holds.
+// naming each agent held, who holds it and who may resume it (holdSentences).
 func holdReason(held []supervise.Claim) string {
 	return boundPastReason + holdSentences(held) + " The daemon does not replace the pod until a resume lifts each of these suspensions."
 }
 
 // holdWords is each source whose suspension is a hold (heldClaims), in the words the late-round
-// notice and the log name it by, with who resumes an agent it holds
-// (supervise.Claim.ResumeRefusal). The controller is told the operator's holds and its own, and
-// answers a hold of the operator's with a finding ask for the operator. An architect's hold is
-// told to the architect that owns the held agent, which can lift it, and to the controller, which
-// can lift it too, only where no architect can be told (tellUpdateStalled). So each sentence
-// names the holder, and names the operator only for the operator's own hold, which only the
-// operator lifts: the operator's resume lifts the other two as well, but a notice that named it
-// there would send its reader to the operator for a resume it makes itself.
+// notice and the log name it by, with who resumes an agent it holds (supervise.Claim.HeldAgainst).
+// The controller is told the operator's holds and its own, and answers a hold of the operator's
+// with a finding ask for the operator. So each sentence names the holder, and names the operator
+// only for the operator's own hold, which only the operator lifts: the operator's resume lifts the
+// controller's as well, but a notice that named it there would send its reader to the operator for
+// a resume it makes itself.
 var holdWords = []struct {
 	by                               supervise.SuspendSource
 	suspended, resumes, suspensionOf string
 }{
 	{supervise.SuspendedByOperator, "An operator suspended", "Only the operator can resume", "an operator's suspension"},
 	{supervise.SuspendedByController, "The controller suspended", "The controller can resume", "the controller's suspension"},
-	{supervise.SuspendedByArchitect, "An architect suspended", "An architect that owns the issue, or the controller, can resume", "an architect's suspension"},
 }
 
 // holdSentences names, for each holder of an agent of held, the agents it holds and who may
-// resume them, in the order holdWords runs. The controller or an architect reads it in the
-// late-round notice, so it follows ASD-STE100.
+// resume them, in the order holdWords runs. The controller reads it in the late-round notice, so
+// it follows ASD-STE100.
 func holdSentences(held []supervise.Claim) string {
 	var sentences []string
 	for _, holder := range holdWords {
@@ -1507,9 +1499,9 @@ func holdsOf(held []supervise.Claim) []string {
 // as any far side's error text is (storetext.FarSideError); the caller's error line logs it
 // whole.
 func refusedReason(err error) stallReason {
-	return stallReason{words: func([]supervise.Claim) string {
+	return func() string {
 		return boundPastReason + "The runtime refused the pod replacement: " + storetext.FarSideError(err.Error())
-	}}
+	}
 }
 
 // roundWithNoProcessInItsPod decides a round, before or past its bound, whose live claims record
@@ -1610,12 +1602,11 @@ func (s *supervision) waitForResume(ctx context.Context, issue string, live []su
 // a person can find out why, so the controller is told of it once the bound has come
 // (tellLateRound, unreadPodReason; dispatch://INFRA-4109 R5).
 //
-// held is the agents of the round a suspension that holds is over (the operator's, the
-// controller's or an architect's), read in the same live group (heldClaims), and live is that
-// group. One round is told once (roundTold), so where a hold is over an agent of the round the
-// notice names each hold and its holder instead (holdReason), to the controller or, for an
-// architect's hold, to the architect that owns the held agent (tellUpdateStalled): only a resume
-// can end it, and a notice of the unread pod would hide it for as long as the round stays open. A
+// held is the agents of the round a suspension that holds is over (the operator's or the
+// controller's), read in the same live group (heldClaims), and live is that group. One round is
+// told once (roundTold), so where a hold is over an agent of the round the notice names each hold
+// and its holder instead (holdReason, tellUpdateStalled): only a resume can end it, and a notice
+// of the unread pod would hide it for as long as the round stays open. A
 // hold a project's pause has on the pod that stands is told to nobody, whatever the runtime reads
 // of the pod, as it is wherever it holds a round (waitsForPause, decision 12 of
 // dispatch://INFRA-3759).
@@ -1759,9 +1750,9 @@ func (s *supervision) replacementByIssue(issue string, live []supervise.Claim, r
 //
 // Four things hold the pod, read in this order:
 //
-//   - A suspension that holds over an agent the round asks (heldClaims): the operator's, the
-//     controller's or an architect's, whatever the round's bound. It is a decision a person or
-//     another agent made about that agent, which only a resume lifts (dispatch://INFRA-2981 R5).
+//   - A suspension that holds over an agent the round asks (heldClaims): the operator's or the
+//     controller's, whatever the round's bound. It is a decision a person or another agent made
+//     about that agent, which only a resume lifts (dispatch://INFRA-2981 R5).
 //   - A project's pause's hold that stands on the pod (roundClock.held), whatever the round's
 //     bound: the pause kept the pod for the work on its disk (decision 12 of
 //     dispatch://INFRA-3759).
@@ -2252,7 +2243,7 @@ func (s *supervision) liveGroup(group []supervise.Claim) []supervise.Claim {
 // noticeGroup is the group as the late-round notice tells of it: the same fresh read, unmasked.
 // The mask is a decision the replacement makes — a claim whose machine is deciding has not
 // answered, for the purpose of deleting a disk — and it is not a fact about the claim. Told to
-// the controller or an architect it would be a false one: the notice marks each claim the round
+// the controller it would be a false one: the notice marks each claim the round
 // asks with whether it answered (record.UpdateWaiting.Answered), and a masked claim would read as
 // one that said nothing although it answered.
 func (s *supervision) noticeGroup(group []supervise.Claim) []supervise.Claim {
@@ -2320,24 +2311,17 @@ func (s *supervision) roundGroup(group []supervise.Claim, mask bool) []supervise
 	return read
 }
 
-// tellLateRound tells of a round that has outlived its bound (roundBound) and still has not
-// replaced its pod: the architect that owns the held agent for a hold an architect placed, and the
-// controller for the rest (tellUpdateStalled), and for an architect's hold where no architect can
-// act on it: the owning architect's claim has failed or retired or is not supervised, no
-// architect owns the held agent, or the hold is over the tree root's own architect
-// (architectHears). It is the sweep's one writer of the late-round notice. Where the notice to
-// an architect finishes undelivered — its claim ended before the delivery, its session does not
-// advertise the delivery mode, the listener's NATS grant denies the forward, or the notice was
-// queued again the most times a notice is — the outbox relays a notice to the controller in its
-// place, and a tree that lingers is told nothing (relayUpdateStalled). It tells nothing before
-// the bound: a round waiting on its roles is no stall, because the bound ends that wait by
-// itself. Its callers are the readings that hold a round past its bound — a suspension that
-// holds, no process in the round's pod, two pods at once, a pod the runtime cannot read
-// (tellUnreadPod) — and the act of the replacement itself that holds it, a replacement the
-// runtime refused, through a process or by issue. why is the reason each notice gives, naming
-// that reading and the holds that notice's reader is told of, and the agents a hold is over, none
-// for a reading that is no hold (stallReason). The issue is written nothing: there is no
-// instruction for its roles here, and whoever can end what holds the round reads it in a notice.
+// tellLateRound tells the controller of a round that has outlived its bound (roundBound) and
+// still has not replaced its pod (tellUpdateStalled). It is the sweep's one writer of the
+// late-round notice. It tells nothing before the bound: a round waiting on its roles is no stall,
+// because the bound ends that wait by itself. Its callers are the readings that hold a round past
+// its bound — a suspension that holds, no process in the round's pod, two pods at once, a pod the
+// runtime cannot read (tellUnreadPod) — and the act of the replacement itself that holds it, a
+// replacement the runtime refused, through a process or by issue. why is the reason the notice
+// gives, naming that reading and, for a suspension that holds, each agent held and its holder
+// (stallReason). The issue is written nothing: there is no instruction for its roles here, and
+// the controller, which can end what holds the round or ask the operator to, reads it in a
+// notice.
 //
 // The bound runs from the round's opening and from nothing else, so one round is told at one
 // moment whatever its roles did before it: an answer moves the round's end earlier and never its
@@ -2439,18 +2423,17 @@ func (s *supervision) podlessRound(ctx context.Context, issue string, group []su
 // bound has come (roundBound), the same clock as every other late-round notice (tellLateRound).
 // Such a round reaches no replacement through a process: no drift can be read, and it waits for
 // one of the issue's workers to run again. Past the bound it waits only where it cannot be ended:
-// a suspension that holds (the operator's, the controller's or an architect's) is over a claim of
+// a suspension that holds (the operator's or the controller's) is over a claim of
 // it, the runtime cannot say where its pod is, or the runtime replaces no pod by issue
 // (runtime.IssuePodReplacer). Where the runtime says the round's own pod is there and replaces
 // pods by issue, nothing but such a suspension or a pause's hold keeps that pod past the bound
 // (roundPodEnds), and the replacement by issue ends the round instead. The notice names the
 // reading of a claim that records no process in the round's pod. Where a hold is over an agent of
-// the round (heldClaims) — a lone worker the operator, the controller or an architect suspended
-// is the common shape, since a suspension lets the process go (letGo clears the locator) — only a
-// resume can end the wait, and the notice names each suspension and who may lift it instead
-// (podlessReason), to the controller or to the architect that owns an architect's hold
-// (tellUpdateStalled). No other path here would ever tell them: this round reaches no
-// replacement decision.
+// the round (heldClaims) — a lone worker the operator or the controller suspended is the common
+// shape, since a suspension lets the process go (letGo clears the locator) — only a resume can
+// end the wait, and the notice names each suspension and who may lift it instead (podlessReason,
+// tellUpdateStalled). No other path here would ever tell them: this round reaches no replacement
+// decision.
 //
 // A round with no unanswered claim (unansweredClaims) and no agent a hold is over is told
 // nothing, and that is the ordinary end of a phase rather than a hold: the workers answered, the
@@ -2706,16 +2689,15 @@ func (s *supervision) openPodUpdateUnderLimits(ctx context.Context, sweep *podUp
 // and no other, and its wait set is the same claims (waitingClaims, dispatch://INFRA-4109 R2). The
 // replacement also waits for a claim that a project's pause still keeps and that the round does
 // not ask (unansweredClaims, dispatch://INFRA-4109 R8). An agent a suspension that holds is over
-// (the operator's, the controller's or an architect's) holds the round until a resume lifts the
-// hold, whatever the round's bound, which is this issue's own rule (readReplacement's
-// waitsForResume), as long as the round's pod is there: a gone pod ends its round whatever the
-// hold (roundWithNoProcessInItsPod). The late-round notice is what tells of it, naming each
-// holder, to the controller or, for a hold an architect placed, to the architect that owns the
-// held agent (tellLateRound, tellPodlessRound, tellUpdateStalled). A failed claim and a claim the
-// daemon suspended run no turn on the pod and are asked nothing, so the round does not wait for
-// them (roundAsks, dispatch://INFRA-4109 R1). A claim that a project's pause still keeps is the
-// one exception (podHolds.owes, roundClock.passesOver): the round waits for it and asks it once
-// its agent is ready. A worker whose plugin has no ready_for_update op is asked like any other.
+// (the operator's or the controller's) holds the round until a resume lifts the hold, whatever the
+// round's bound, which is this issue's own rule (readReplacement's waitsForResume), as long as the
+// round's pod is there: a gone pod ends its round whatever the hold (roundWithNoProcessInItsPod).
+// The late-round notice is what tells the controller of it, naming each holder (tellLateRound,
+// tellPodlessRound, tellUpdateStalled). A failed claim and a claim the daemon suspended run no
+// turn on the pod and are asked nothing, so the round does not wait for them (roundAsks,
+// dispatch://INFRA-4109 R1). A claim that a project's pause still keeps is the one exception
+// (podHolds.owes, roundClock.passesOver): the round waits for it and asks it once its agent is
+// ready. A worker whose plugin has no ready_for_update op is asked like any other.
 //
 // It tells nobody. A round that waits on its roles is no stall: its bound ends the wait whatever
 // they say, and the readings that hold a round past its bound are told where they are read.
@@ -2743,10 +2725,10 @@ func (s *supervision) openPodUpdate(ctx context.Context, issue string, group []s
 // updateStall is one round that has outlived its bound, as it is told: the issue and round it is
 // of, the pod it was opened over (none where no claim of the issue records one,
 // tellPodlessRound), what the round was opened for, every claim the notice lists (noticeClaims)
-// with whether it answered, the reason that names what holds the round with the agents a hold is
-// over (stallReason), and the group whose claims mark the round told. Nothing is written on the
-// issue: a round held past its bound asks nothing of its workers that they have not already been
-// asked, and whoever can end what holds it reads it in a notice (tellUpdateStalled).
+// with whether it answered, the reason that names what holds the round (stallReason), and the
+// group whose claims mark the round told. Nothing is written on the issue: a round held past its
+// bound asks nothing of its workers that they have not already been asked, and the controller
+// reads it in a notice (tellUpdateStalled).
 //
 // reasons is the one string the round records and the ask states (supervise.Claim.UpdateReasons),
 // never a list: each reason carries ", " inside it already, so nothing here may cut one up
@@ -2761,192 +2743,72 @@ type updateStall struct {
 	group   []supervise.Claim
 }
 
-// stallReason is the reason a late-round notice gives: held, the agents a hold is over (none for
-// a reading that is no hold), and words, which builds the sentence from the held agents one
-// notice's reader is told of: the controller's notice names the holds it is told of and an
-// architect's notice the holds an architect placed. Only tellUpdateStalled calls words, and only
-// for a round past its bound that no claim records as told: once for each notice row it writes,
-// and once for the reason its log line names — the line of a deployment with no workflow to tell
-// through, or the line that says who was told. So a round before its bound or one told already
+// stallReason is the reason a late-round notice gives, built when it is asked for. Only
+// tellUpdateStalled asks it, and only for a round past its bound that no claim records as told,
+// once for the notice row and its log line. So a round before its bound or one told already
 // builds no sentence, whichever reading holds it.
-type stallReason struct {
-	held  []supervise.Claim
-	words func(held []supervise.Claim) string
-}
+type stallReason func() string
 
 // fixedReason is the stallReason of a reading that is no hold — no process in the round's pod,
-// two pods at once, a pod the runtime cannot read: why, whatever it is given, over no held
-// claims. A replacement the runtime refused words its own, naming the runtime's error
-// (refusedReason).
+// two pods at once, a pod the runtime cannot read: why. A replacement the runtime refused words
+// its own, naming the runtime's error (refusedReason).
 func fixedReason(why string) stallReason {
-	return stallReason{words: func([]supervise.Claim) string { return why }}
+	return func() string { return why }
 }
 
 // reasonOver is the stallReason of a round with held, the agents a hold is over, worded by words
-// (holdReason, podlessReason) for each reader's share of them.
+// (holdReason, podlessReason).
 func reasonOver(held []supervise.Claim, words func(held []supervise.Claim) string) stallReason {
-	return stallReason{held: held, words: words}
+	return func() string { return words(held) }
 }
 
-// tellUpdateStalled tells a round held past its bound (the update-stalled notice,
-// record.UpdateStalledNotice) to whoever can end what holds it. The holds an architect placed go
-// to the architect that owns each held agent, which can resume them (architectHolds), in a notice
-// row the outbox routes as it routes every notice of the issue (deliverNotice): to the architect
-// the owner walk names from the claim's issue, or from its parent for a hold over the issue's own
-// architect (record.NoticeStartsAtParent), as a provider-errors or a worker-stalled notice
-// reaches it. The controller is told the rest in a row of its own: the operator's holds, which it
-// asks the operator to lift, and its own; an architect's hold no architect can be told of; and
-// every reading that is no hold. Each row names its own reader's holds (stallReason) and carries
-// the round's account whole: the round, its pod and its reasons, and every claim the notice lists
-// (noticeClaims) with its role, its state and whether it answered (record.UpdateStalled).
+// tellUpdateStalled tells the controller that a round is held past its bound (the update-stalled
+// notice, record.UpdateStalledNotice), in a row of its own, whatever holds it: the operator's
+// holds, which it asks the operator to lift, its own, and every reading that is no hold. The row
+// names each hold and its holder (stallReason) and carries the round's account whole: the round,
+// its pod and its reasons, and every claim the notice lists (noticeClaims) with its role, its
+// state and whether it answered (record.UpdateStalled).
 //
 // One round is told once however many ticks find it open: the telling is marked on every claim
-// of the round (UpdateToldAt), and a round already marked is told nothing more. Every row of the
-// round goes in one enqueue, and the mark is written after it, so a row the store refuses, or an
-// owner the store could not read, tells the whole round again at the next tick rather than
-// swallowing it or telling one reader without the other.
+// of the round (UpdateToldAt), and a round already marked is told nothing more. The mark is
+// written after the row is enqueued, so a row the store refuses is written again at the next
+// tick rather than swallowed.
 //
 // A round over the pod of a claim of another project's issue, which the operator's spawn makes,
-// queues no notice: its rows would be keyed by that issue, which only that project's daemon runs
+// queues no notice: its row would be keyed by that issue, which only that project's daemon runs
 // (supervision.enqueue). Its line is then the whole of its telling, as the stall backstop's line
-// is for a claim no owner can be told of (tellStallBackstopped), and says that neither the
-// controller nor an architect is told; the round is marked told, so the line is written once
-// rather than at every tick.
+// is for a claim no owner can be told of (tellStallBackstopped), and says that the controller is
+// told nothing; the round is marked told, so the line is written once rather than at every tick.
 func (s *supervision) tellUpdateStalled(ctx context.Context, stall updateStall) {
 	if roundTold(stall.group, stall.round) {
 		return
 	}
-	why := stall.reason
+	reason := stall.reason()
 	if s.enqueue == nil {
-		s.log.Warn("supervise: an update round is held past its bound, and this deployment has no workflow to tell the controller or an architect through",
-			"issue", stall.issue, "round", stall.round, "reason", why.words(why.held))
+		s.log.Warn("supervise: an update round is held past its bound, and this deployment has no workflow to tell the controller through",
+			"issue", stall.issue, "round", stall.round, "reason", reason)
 		return
 	}
-	architects, controller, err := s.architectHolds(ctx, why.held)
+	written, err := s.enqueue(ctx, stall.issue, record.ControllerNotice{
+		Kind:   record.UpdateStalledNotice,
+		Reason: reason,
+		Update: &record.UpdateStalled{Round: stall.round, Pod: stall.pod, Reasons: stall.reasons, Waiting: stall.waiting},
+	})
 	if err != nil {
 		if ctx.Err() == nil {
-			s.log.Error("supervise: read the architect that owns an agent an architect's suspension holds in an update round held past its bound; telling the round again at the next sweep",
-				"issue", stall.issue, "round", stall.round, "error", err)
-		}
-		return
-	}
-	update := &record.UpdateStalled{Round: stall.round, Pod: stall.pod, Reasons: stall.reasons, Waiting: stall.waiting}
-	rows := make([]record.OutboxPayload, 0, len(architects)+1)
-	var toldArchitect []supervise.Claim
-	for _, part := range architects {
-		rows = append(rows, record.Notice{Kind: record.UpdateStalledNotice, Role: part.role, Reason: why.words(part.held), Update: update})
-		toldArchitect = append(toldArchitect, part.held...)
-	}
-	toldController := len(why.held) == 0 || len(controller) > 0
-	if toldController {
-		rows = append(rows, record.ControllerNotice{Kind: record.UpdateStalledNotice, Reason: why.words(controller), Update: update})
-	}
-	written, err := s.enqueue(ctx, stall.issue, rows...)
-	if err != nil {
-		if ctx.Err() == nil {
-			s.log.Error("supervise: tell the controller or an architect that an update round is held past its bound; telling again at the next sweep",
+			s.log.Error("supervise: tell the controller that an update round is held past its bound; telling again at the next sweep",
 				"issue", stall.issue, "round", stall.round, "error", err)
 		}
 		return
 	}
 	if written {
-		s.log.Warn("supervise: an update round is held past its bound; the controller, or the architect that owns each hold an architect placed, is told",
-			"issue", stall.issue, "round", stall.round, "pod", stall.pod, "reason", why.words(why.held), "waiting", stall.waiting,
-			"controllerTold", toldController, "architectToldOf", holdsOf(toldArchitect))
+		s.log.Warn("supervise: an update round is held past its bound; the controller is told",
+			"issue", stall.issue, "round", stall.round, "pod", stall.pod, "reason", reason, "waiting", stall.waiting)
 	} else {
-		s.log.Warn("supervise: an update round is held past its bound; its issue is another project's, whose rows this daemon writes none of, so neither the controller nor an architect is told and this line is the whole of the telling",
-			"issue", stall.issue, "round", stall.round, "pod", stall.pod, "reason", why.words(why.held), "waiting", stall.waiting)
+		s.log.Warn("supervise: an update round is held past its bound; its issue is another project's, whose rows this daemon writes none of, so the controller is told nothing and this line is the whole of the telling",
+			"issue", stall.issue, "round", stall.round, "pod", stall.pod, "reason", reason, "waiting", stall.waiting)
 	}
 	s.markUpdateTold(ctx, stall.group, stall.round)
-}
-
-// architectHold is the part of a round held past its bound that one architect is told of
-// (architectHolds): the claims of the round an architect's suspension holds whose owner walk
-// starts at one issue, and the role the notice row names, which is what starts the outbox's walk
-// there too (record.NoticeStartsAtParent). That role is claim.RoleArchitect for a hold over the
-// issue's own architect, whose walk starts at the issue's parent, and none for the holds over the
-// issue's phase workers, whose walk starts at the issue and which can be of several roles at
-// once; the row's Reason and its round's account name each held agent and its role.
-type architectHold struct {
-	role claim.Role
-	held []supervise.Claim
-}
-
-// architectHolds splits held, the agents a hold is over in a round held past its bound, between
-// the architects told of them and the controller. The holds an architect placed go, a part per
-// walk start, to the architect the owner walk names (architectHears): the phase workers' holds,
-// and a hold over the issue's own architect. The rest stay with the controller in held's order:
-// the operator's and the controller's holds, and an architect's hold no architect can be told of.
-// Where no hold goes to an architect, the controller keeps held itself.
-func (s *supervision) architectHolds(ctx context.Context, held []supervise.Claim) ([]architectHold, []supervise.Claim, error) {
-	workers, own := architectHold{}, architectHold{role: claim.RoleArchitect}
-	for _, c := range held {
-		if c.Holder() != supervise.SuspendedByArchitect {
-			continue
-		}
-		if c.Role == claim.RoleArchitect {
-			own.held = append(own.held, c)
-		} else {
-			workers.held = append(workers.held, c)
-		}
-	}
-	var told []architectHold
-	for _, part := range []architectHold{workers, own} {
-		if len(part.held) == 0 {
-			continue
-		}
-		hears, err := s.architectHears(ctx, part.held[0])
-		if err != nil {
-			return nil, nil, err
-		}
-		if hears {
-			told = append(told, part)
-		}
-	}
-	if len(told) == 0 {
-		return nil, held, nil
-	}
-	toldOf := map[claim.Token]bool{}
-	for _, part := range told {
-		for _, c := range part.held {
-			toldOf[c.Token] = true
-		}
-	}
-	controller := slices.DeleteFunc(slices.Clone(held), func(c supervise.Claim) bool { return toldOf[c.Token] })
-	return told, controller, nil
-}
-
-// architectHears is whether an architect can be told of an architect's hold over c: the owner
-// walk from c's issue, or from its parent where c is the issue's own architect (plan.owner,
-// workflowRuntime.owningArchitect, read as the store records the claims now), names an architect
-// claim other than c that this daemon supervises and that has neither failed nor retired
-// (claimEnded). The outbox finishes undelivered a notice whose architect's claim has ended
-// (noticeAnswered's architectEnded), so such a hold is the controller's to hear, and the
-// controller's resume_agent lifts an architect's suspension too. The tree root's own architect
-// has no architect above it: the walk from its parent ends at that claim itself, so a hold over
-// it is the controller's as well. A supervision with no owner reader has no workflow to walk,
-// and tells the controller.
-//
-// The outbox walks again when the row runs, over the machines' live view (noticeArchitect), so a
-// notice whose architect ends between the two finishes undelivered, as every notice of the issue
-// does then, and so does one the listener refuses on every attempt, the architect's session not
-// advertising the delivery mode or the listener's own grant denying the forward, and one queued
-// again the most times a notice is, whatever re-held it; in each, the outbox tells the controller
-// of the round in its place (relayUpdateStalled): the round is marked told once its rows are
-// queued, so no later sweep would tell it.
-func (s *supervision) architectHears(ctx context.Context, c supervise.Claim) (bool, error) {
-	if s.plan.owner == nil {
-		return false, nil
-	}
-	owner, err := s.plan.owner(ctx, s.plan.project, c)
-	if err != nil {
-		return false, err
-	}
-	if owner == c.Token {
-		return false, nil
-	}
-	m, ok := s.supervisor.Machine(owner)
-	return ok && !claimEnded(m.View().State), nil
 }
 
 // markUpdateTold records on every claim of the round that this round was told, so no later tick
@@ -2995,8 +2857,8 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 // claim, or ends with nothing marked, and the sweep after that asks again. The cost of a ready
 // claim whose session does not hold its topic is one row and one log line a sweep at most, for
 // as long as that lasts: until the round's bound, or, while a suspension that holds (the
-// operator's, the controller's or an architect's) is over a claim of the round, which keeps the
-// round open past its bound (readReplacement's waitsForResume), until a resume lifts it.
+// operator's or the controller's) is over a claim of the round, which keeps the round open past
+// its bound (readReplacement's waitsForResume), until a resume lifts it.
 //
 // Every row of the round goes in one enqueue, so the round's asks land together or not at all
 // (workflowRuntime.enqueueOutbox). An enqueue that fails, or a read of the queued asks that
@@ -3007,8 +2869,8 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 //
 // A claim whose agent has not said it is ready (supervise.SaidReady) is asked at a later tick.
 // Such a claim is queued, launching, registered but not ready, under a suspension that holds (the
-// operator's, the controller's or an architect's), or records an agent a project's pause stopped
-// and still owes a launch, by the one exception (podHolds.owes; the round asks no other claim the daemon
+// operator's or the controller's), or records an agent a project's pause stopped and still owes a
+// launch, by the one exception (podHolds.owes; the round asks no other claim the daemon
 // suspended: roundAsks, roundClock.passesOver). No live session of it holds the role's topic, so
 // the publish would end at notify.ErrNoHolder at every sweep, and the machine refuses the ask of an
 // agent the pause stopped before any publish (supervise's UpdateAskSuspended): a row and a log
@@ -3355,7 +3217,7 @@ func answeredClaims(group []supervise.Claim, round string, clock roundClock) []s
 }
 
 // heldClaims is every agent the round asks (roundAsks) that a hold is over: a suspension of the
-// operator's, the controller's or an architect's, each of which holds against every rule
+// operator's or the controller's, each of which holds against every rule
 // (supervise's Claim.RuleHolds, SuspendSource.Holds), landed or held for the agent's turn to end;
 // supervise's Claim.Holder says whose. It is the one wait of a round that outlasts the round's
 // bound, because it is a decision a person or another agent made about that agent (the long-turn
@@ -3501,9 +3363,9 @@ func awaitsAnswer(c supervise.Claim, round string, clock roundClock) bool {
 // A claim the round asks is asked once its agent says it is ready (askRound reads
 // supervise.SaidReady), and it is waited for until then. So a queued, launching or registered
 // claim is in, and so is a claim that records another round or none: the round asks it at the
-// tick after its post lands. A claim under a suspension that holds (the operator's, the
-// controller's or an architect's) is in, and so is a claim whose such suspension waits for its
-// agent's turn to end: the round waits for a resume that lifts it, whatever its bound
+// tick after its post lands. A claim under a suspension that holds (the operator's or the
+// controller's) is in, and so is a claim whose such suspension waits for its agent's turn to end:
+// the round waits for a resume that lifts it, whatever its bound
 // (heldClaims, dispatch://INFRA-2981 R5). A claim that a project's pause still keeps is in, by
 // the one exception (podHolds.owes, roundClock.passesOver): the pause kept the pod for the work
 // on its disk, and the round waits for its answer before the bound the hold moved.
@@ -3775,9 +3637,9 @@ func holdsUnansweredAsk(c supervise.Claim, round string) bool {
 	return c.UpdateRound == round && c.UpdateTaskedAt != nil && !answered(c, round) && !c.LeftPodRound(round)
 }
 
-// waitingOf is the claims as the late-round notice lists them, to the controller or to an
-// architect (tellUpdateStalled), so its reader can retry or resume an agent, or ask the operator
-// to act on one. Each claim is marked with whether its agent has already answered this round.
+// waitingOf is the claims as the late-round notice lists them to the controller
+// (tellUpdateStalled), so it can retry or resume an agent, or ask the operator to act on one. Each
+// claim is marked with whether its agent has already answered this round.
 //
 // Every late-round notice lists every claim noticeClaims keeps with this mark (tellLateRound,
 // tellPodlessRound), a claim the daemon suspended included. So the list is never empty while the

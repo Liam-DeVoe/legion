@@ -2,8 +2,49 @@ package supervise
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
+
+// The ranks run released, daemon, controller, operator, weakest first: the controller's suspension
+// outranks the daemon's, which is a park, a linger, a close or a carry of the claim's issue, since
+// it holds against every rule, and ranks under the operator's.
+func TestSuspensionRankPutsTheControllerUnderTheOperator(t *testing.T) {
+	ordered := []SuspendSource{SuspendedByReleased, SuspendedByDaemon, SuspendedByController, SuspendedByOperator}
+	for i, source := range ordered {
+		if got, want := suspensionRank(source), i+1; got != want {
+			t.Errorf("suspensionRank(%q) = %d, want %d", source, got, want)
+		}
+	}
+}
+
+// A start or a delivery that meets a suspension that holds waits, and RuleHoldError says why: it
+// names the source that holds the agent, landed or held for its turn, and wraps that holder's own
+// wait, which says whose resume lifts it. A controller's hold named as the operator's would send
+// its reader to the operator for a resume the controller makes.
+//
+// The negative control is RuleHoldError without its controller's arm: its rows then wrap the
+// operator's wait.
+func TestARuleHoldErrorNamesTheSuspensionThatHolds(t *testing.T) {
+	for _, tc := range []struct {
+		by   SuspendSource
+		wait error
+	}{
+		{SuspendedByOperator, ErrHeldByOperator},
+		{SuspendedByController, ErrHeldByController},
+	} {
+		for _, c := range []Claim{
+			{State: StateSuspended, SuspendedBy: tc.by},
+			{State: StateWorking, SuspensionHeld: true, SuspensionHeldBy: tc.by},
+		} {
+			err := c.RuleHoldError()
+			if want := "the claim is suspended by " + string(tc.by) + ";"; !errors.Is(err, tc.wait) || !strings.HasPrefix(err.Error(), want) {
+				t.Errorf("RuleHoldError of a claim %s with a suspension held %t, held by %q, suspended by %q = %v; want it to begin %q and wrap %v",
+					c.State, c.SuspensionHeld, c.SuspensionHeldBy, c.SuspendedBy, err, want, tc.wait)
+			}
+		}
+	}
+}
 
 // The controller's suspension holds as the operator's does: the rule resumes it no more, the
 // workflow's task waits it out (ErrHeldByController), and the phase's task goes through it kept,
@@ -33,7 +74,7 @@ func TestTheControllersSuspensionHoldsAsTheOperatorsDoes(t *testing.T) {
 // (ErrOperatorHolds) with nothing of the claim changed; the operator's resume lifts the
 // controller's as it lifts every other.
 func TestTheControllersResumeLiftsEverySuspensionButTheOperators(t *testing.T) {
-	for _, by := range []SuspendSource{SuspendedByController, SuspendedByArchitect, SuspendedByDaemon, SuspendedByReleased} {
+	for _, by := range []SuspendSource{SuspendedByController, SuspendedByDaemon, SuspendedByReleased} {
 		t.Run(string(by), func(t *testing.T) {
 			h := newHarness(t)
 			suspendedBy(h, by)
@@ -180,20 +221,18 @@ func TestTheControllersStopOfAnAgentTheOperatorHoldsIsRefused(t *testing.T) {
 	})
 }
 
-// A forget of the session asked by the controller or an architect — the step of its fresh session
-// that drops the session it means to leave behind — is refused, with the session kept, for an
-// agent a suspension above the asker took over after the asker's own suspension (suspendedAgain,
-// RequestForgetSession.By, Claim.ResumeRefusal): the asker's resume would be refused that hold,
-// so a forget let through would drop the session of an agent the asker could then not start. The
-// holder's own forget drops it.
+// A forget of the session asked by the controller — the step of its fresh session that drops the
+// session it means to leave behind — is refused, with the session kept, for an agent the
+// operator's suspension took over after the controller's own (suspendedAgain,
+// RequestForgetSession.By, Claim.HeldAgainst): the controller's resume would be refused that hold,
+// so a forget let through would drop the session of an agent the controller could then not start.
+// The operator's own forget drops it.
 func TestAForgetIsRefusedForAnAgentASuspensionAboveTheAskerTookOver(t *testing.T) {
 	for _, tc := range []struct {
 		asker, holder SuspendSource
 		want          error
 	}{
 		{SuspendedByController, SuspendedByOperator, ErrOperatorHolds},
-		{SuspendedByArchitect, SuspendedByController, ErrControllerHolds},
-		{SuspendedByArchitect, SuspendedByOperator, ErrOperatorHolds},
 	} {
 		t.Run(string(tc.holder)+" over "+string(tc.asker), func(t *testing.T) {
 			h := newHarness(t)
@@ -217,6 +256,34 @@ func TestAForgetIsRefusedForAnAgentASuspensionAboveTheAskerTookOver(t *testing.T
 			}
 		})
 	}
+}
+
+// The daemon's own suspension — a park, a linger, a close, a carry, a production check's suspend
+// between looks — takes over no source that holds: an agent the controller or the operator
+// suspended stays that holder's, and its resume still lifts it. A released agent is taken over, as
+// every daemon suspension takes it over.
+func TestTheDaemonsSuspensionTakesOverNoSourceThatHolds(t *testing.T) {
+	daemons := RequestSuspend{Claim: testToken, Reason: "LEGION-209's production check waits for its next look", By: SuspendedByDaemon}
+	for _, by := range []SuspendSource{SuspendedByController, SuspendedByOperator} {
+		t.Run(string(by), func(t *testing.T) {
+			h := newHarness(t)
+			suspendedBy(h, by)
+			h.must(daemons)
+			if got := h.store.load(testToken); got.State != StateSuspended || got.SuspendedBy != by {
+				t.Fatalf("after the daemon's suspend the store records %s by %q, want suspended by %q", got.State, got.SuspendedBy, by)
+			}
+			h.must(RequestResume{Claim: testToken, By: by})
+			h.wantState(StateLaunching)
+		})
+	}
+	t.Run("released", func(t *testing.T) {
+		h := newHarness(t)
+		suspendedBy(h, SuspendedByReleased)
+		h.must(daemons)
+		if got := h.store.load(testToken).SuspendedBy; got != SuspendedByDaemon {
+			t.Fatalf("after the daemon's suspend the store records the released agent suspended by %q, want the daemon", got)
+		}
+	})
 }
 
 // startInFlight places a start in flight on h's claim as far as a suspension can see one: the

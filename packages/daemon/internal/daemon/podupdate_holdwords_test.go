@@ -17,11 +17,11 @@ import (
 // holdWords, and no other source has one. A holding source with no row would drop its claims out
 // of the late-round notice (holdSentences) and the log line (holdsOf) while those claims kept the
 // round past its bound, and a second row would name them twice. The sources are read from
-// supervise's own source rather than listed here, so a fourth holding source declared there and
+// supervise's own source rather than listed here, so a third holding source declared there and
 // given no row fails this test instead of passing it.
 //
-// The negative control is holdWords without its architect row: the architect's source then holds
-// with no row.
+// The negative control is holdWords without its controller row: the controller's source then
+// holds with no row.
 func TestEverySuspendSourceThatHoldsHasOneHoldWordsRow(t *testing.T) {
 	declared := declaredSuspendSources(t)
 	holding := 0
@@ -43,7 +43,7 @@ func TestEverySuspendSourceThatHoldsHasOneHoldWordsRow(t *testing.T) {
 		}
 	}
 	if holding == 0 {
-		t.Fatalf("no source of %v holds, want the operator's, the controller's and an architect's", declared)
+		t.Fatalf("no source of %v holds, want the operator's and the controller's", declared)
 	}
 	for _, row := range holdWords {
 		if !slices.Contains(declared, row.by) {

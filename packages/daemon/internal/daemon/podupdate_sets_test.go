@@ -42,8 +42,8 @@ type roundShape struct {
 // nobody asked for: that is how a claim the daemon suspended held BET-1182's, OSSV-300's and
 // OSSV-313's pods to their bounds. A claim the daemon suspended (daemon, exit, released, unknown)
 // is in neither set, because it runs no process and no turn in the pod (R1). A suspension that
-// holds (the operator's, the controller's or an architect's) is in both, as dispatch://INFRA-2981
-// R5 made the operator's.
+// holds (the operator's or the controller's) is in both, as dispatch://INFRA-2981 R5 made the
+// operator's.
 //
 // A claim a project's pause stopped is suspended released, and it is the pause's, not R1's,
 // while the pause still owes its role a launch: the pause kept the pod for the work on its disk
@@ -127,7 +127,6 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 		{name: "retired", claim: member(supervise.StateRetired), want: inNeither},
 		{name: "suspended by operator", claim: suspendedBy(supervise.SuspendedByOperator), want: inBoth},
 		{name: "suspended by controller", claim: suspendedBy(supervise.SuspendedByController), want: inBoth},
-		{name: "suspended by architect", claim: suspendedBy(supervise.SuspendedByArchitect), want: inBoth},
 		{name: "suspended by daemon", claim: suspendedBy(supervise.SuspendedByDaemon), want: inNeither},
 		{name: "suspended by exit", claim: suspendedBy(supervise.SuspendedByExit), want: inNeither},
 		{name: "suspended by released", claim: suspendedBy(supervise.SuspendedByReleased), want: inNeither},
@@ -319,11 +318,10 @@ func TestEveryClaimShapeOfARoleThePauseOwesALaunchIsReadByOneRule(t *testing.T) 
 		{state: supervise.StateSuspended, by: supervise.SuspendedByDaemon},
 		{state: supervise.StateSuspended, by: supervise.SuspendedByExit},
 		{state: supervise.StateSuspended, by: supervise.SuspendedByUnknown},
-		// A suspension that holds (the operator's, the controller's or an architect's) holds the
-		// pod for its holder, never for the pause.
+		// A suspension that holds (the operator's or the controller's) holds the pod for its
+		// holder, never for the pause.
 		{state: supervise.StateSuspended, by: supervise.SuspendedByOperator, sets: true, answeredAsked: true},
 		{state: supervise.StateSuspended, by: supervise.SuspendedByController, sets: true, answeredAsked: true},
-		{state: supervise.StateSuspended, by: supervise.SuspendedByArchitect, sets: true, answeredAsked: true},
 		{state: supervise.StateFailed},
 		{state: supervise.StateRetired},
 	}

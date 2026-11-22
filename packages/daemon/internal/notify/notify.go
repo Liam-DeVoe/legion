@@ -148,9 +148,8 @@ const RoleTopicPrefix = "notifications.role."
 // claimFailed), and the stall of that architect whose replacement failed its claim over a stop
 // the runtime did not confirm (`worker-stalled`, the daemon's enqueueStallNotice), both because
 // every other notice of the tree reaches that architect; an issue whose pod an update round
-// cannot replace (`update-stalled`, the daemon's reconcilePodUpdates), but for a hold an
-// architect placed, which the architect that owns the held agent is told unless no architect can
-// act on it; a start the session store could not answer (`session-store-fault`, workflow's
+// cannot replace (`update-stalled`, the daemon's reconcilePodUpdates); a start the session store
+// could not answer (`session-store-fault`, workflow's
 // sessionStoreFault); a claim whose turns keep ending in a provider error (`provider-errors`,
 // supervise's tellOfProviderErrors), which the issue's architect is told as well, unless the run
 // is the tree root's architect's own, and a child's own architect's run is told to the architect

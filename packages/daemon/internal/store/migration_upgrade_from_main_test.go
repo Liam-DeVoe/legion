@@ -62,8 +62,8 @@ import (
 // (migration_20261113090512_test.go reads both). Store.Migrate applies every embedded migration a
 // database has not recorded, so a database that took INFRA-2981's two before this one takes it
 // in its next upgrade all the same.
-// This change's two rewrites of claims_suspended_by_check (20261115060739, 20261115083448) stand
-// above main's newest too, and no row of this test reaches that check. So does this change's
+// This change's rewrite of claims_suspended_by_check (20261115060739) stands above main's newest
+// too, and no row of this test reaches that check. So does this change's
 // delete of the queued controller notices of the two kinds the daemon no longer writes
 // (20261115121838), which takes no row of this test either, since each controller notice here
 // carries no kind.
@@ -160,7 +160,7 @@ var thisBranchsMigrations = []int{
 	20261111091500, 20261111181500,
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
-	20261114061900, 20261115060739, 20261115083448, 20261115121838, 20261115194357,
+	20261114061900, 20261115060739, 20261115121838, 20261115194357,
 	20261116144907, 20261116165926, 20261116234034, 20261117000528, 20261117004117,
 	20261117023932, 20261117064152, 20261117112334, 20261117200337, 20261119003157,
 	20261119203047, 20261119211852, 20261120012547, 20261120042902, 20261120055717,
@@ -183,8 +183,7 @@ var thisBranchsMigrations = []int{
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902 and
 // dispatch://INFRA-4729's 20261120055717. That is why the loop below holds the list rather than
 // counting it, so that a version added above any of them is named here rather than read as main's.
-// This change's own 20261115060739, 20261115083448, 20261115121838 and 20261119211852 are in
-// the list as well.
+// This change's own 20261115060739, 20261115121838 and 20261119211852 are in the list as well.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
@@ -316,13 +315,13 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 // Dispatch's issues (cybermonklabs/legion#4598, 20261120055717) and marked a launch that had Oh My
 // Pi resume a claim's session by its id (cybermonklabs/legion#4581, 20261120042902), and every
 // other embedded version, the step record's three, 20261119003157, 20261120042902 and
-// 20261120055717 among them, is one main's run applied. Two rewrite claims_suspended_by_check, one
-// deletes the controller notices of two kinds the daemon no longer writes, and 20261119211852
-// rewrites outbox_kind_check over the rows main's daemon left. All four stand below main's newest,
-// 20261120055717, and the upgrade applies them all the same: Store.apply asks each migration
-// whether its own version is recorded.
+// 20261120055717 among them, is one main's run applied. One rewrites claims_suspended_by_check,
+// one deletes the controller notices of two kinds the daemon no longer writes, and 20261119211852
+// rewrites outbox_kind_check over the rows main's daemon left. All three stand below main's
+// newest, 20261120055717, and the upgrade applies them all the same: Store.apply asks each
+// migration whether its own version is recorded.
 var thisBranchsMigrationsMainLacks = map[int]bool{
-	20261115060739: true, 20261115083448: true, 20261115121838: true, 20261119211852: true,
+	20261115060739: true, 20261115121838: true, 20261119211852: true,
 }
 
 // A daemon of this release is also deployed over a database main migrated once main recorded each

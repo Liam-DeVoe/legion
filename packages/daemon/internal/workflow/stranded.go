@@ -79,7 +79,7 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 //     (record.Issue.WorkingPhase), which a held issue keeps from the phase it left. Only a start
 //     of that phase brings back a failed or a retired worker, so either is stranded once no such
 //     start is queued (StartFor, the rule promotion reads). A suspended one is stranded when the
-//     operator, the controller or an architect suspended it, or when its suspension was recorded
+//     operator or the controller suspended it, or when its suspension was recorded
 //     before migration 0038 (unknown) and no start is queued for it: the boot resumes neither,
 //     and a start queued for an unknown one resumes it. The daemon resumes one it or its own exit
 //     suspended by rule (supervise's ByRule), at boot (DaemonBooted) and at the phase's next
@@ -98,8 +98,8 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // (internal/supervise/table.go), so the kept session relaunches with fresh budgets, or a new one
 // once supervise's Machine.forgetSession has dropped it. What nothing does by itself is queue that
 // start: no rule the daemon runs starts a retired claim this report names, the boot's repair reads
-// only a suspension, and a caller's retry — the operator's, the controller's or an architect's —
-// which reaches an agent a stop retired as well as one that failed, is a person's or an agent's move, not a
+// only a suspension, and a caller's retry — the operator's or the controller's — which reaches an
+// agent a stop retired as well as one that failed, is a person's or an agent's move, not a
 // rule's (supervise.RequestAskedRetry). So the rule this report states is unchanged in meaning — a
 // claim no queued start will reach — and what was wrong was the states it read.
 //
@@ -112,7 +112,7 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // role switch: a running tree whose architect a close retired has nothing but its own tree's
 // admission to start it, so it is stranded while no admission start is queued.
 //
-// A claim under a suspension that holds — the operator's, the controller's or an architect's
+// A claim under a suspension that holds — the operator's or the controller's
 // (supervise.SuspendSource.Holds) — is stranded whatever starts are queued for it: each one waits,
 // on its row's backoff, until a resume lifts that suspension (the outbox's start answers its
 // holder's wait, supervise.Claim.RuleHoldError), so a queued start wakes nothing. The claim is
@@ -208,9 +208,9 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		// to the architect above it (Engine.claimFailed), and the daemon starts it again at its
 		// child's next phase start (Engine.reviveArchitect). A stranded claim goes to the
 		// controller, whose remedy is an operator's retry, which a claim the daemon starts again
-		// does not need. A claim whose agent the operator, the controller or an architect above that
-		// agent stopped or suspended is that caller's own move: a retry undoes the stop, and the suspension
-		// waits for its holder's resume or one that outranks it (supervise.Claim.ResumeRefusal). One the
+		// does not need. A claim whose agent the operator or the controller stopped or suspended
+		// is that caller's own move: a retry undoes the stop, and the suspension waits for its
+		// holder's resume or one that outranks it (supervise.Claim.HeldAgainst). One the
 		// child's leave suspended or retired comes back at the child's next first phase start. One
 		// that its own exit retired is reported nowhere, as Stranded's comment says.
 		var current phase.Phase

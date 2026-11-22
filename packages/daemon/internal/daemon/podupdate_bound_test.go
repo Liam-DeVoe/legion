@@ -32,7 +32,7 @@ const (
 	// words the production check reads (R8).
 	podUpdateBoundLine = "supervise pod update replaced at the bound"
 	// podUpdateRefusedNotice is what the sweep logs when the store will not take a notice's row.
-	podUpdateRefusedNotice = "supervise: tell the controller or an architect that an update round is held past its bound; telling again at the next sweep"
+	podUpdateRefusedNotice = "supervise: tell the controller that an update round is held past its bound; telling again at the next sweep"
 )
 
 // podUpdateBound is the bound of a round the rig opens at its start: the moment the round ends
@@ -802,7 +802,7 @@ func TestAnUnreadablePodIsToldOncePastItsBound(t *testing.T) {
 		rig.rt.FailPodDrift(unread)
 
 		notice := toldOnce(t, rig, claim.RoleImplementer, rig.tick)
-		if want := unreadPodReason.words(nil); notice.Reason != want {
+		if want := unreadPodReason(); notice.Reason != want {
 			t.Errorf("the notice says %q, want %q", notice.Reason, want)
 		}
 		wantWaiting(t, notice, map[claim.Role]bool{claim.RoleImplementer: true, claim.RoleTester: false})
@@ -822,7 +822,7 @@ func TestAnUnreadablePodIsToldOncePastItsBound(t *testing.T) {
 		rig, sweep := withNoProcess(t, supervise.SuspendedByDaemon)
 
 		notice := toldOnce(t, rig, claim.RoleImplementer, sweep)
-		if want := unreadPodReason.words(nil); notice.Reason != want {
+		if want := unreadPodReason(); notice.Reason != want {
 			t.Errorf("the notice says %q, want %q", notice.Reason, want)
 		}
 		wantWaiting(t, notice, map[claim.Role]bool{claim.RoleImplementer: false})

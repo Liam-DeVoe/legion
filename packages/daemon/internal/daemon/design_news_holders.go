@@ -274,8 +274,8 @@ func readOwedHolders(ctx context.Context, tx pgx.Tx, records record.Store, claim
 // guard). A claim the start reaches that holds such a task gets no start until a turn takes it, so
 // its news waits for that turn (workflow.NewsWaitsForTask). Otherwise by the next start of its
 // phase: a claim behind its phase's current entry, owed that entry's start, no claim at all, one
-// that retired or failed, or one a suspension that holds (the operator's, the controller's or an
-// architect's) is over, since the start that brings its agent back carries the news.
+// that retired or failed, or one a suspension that holds (the operator's or the controller's) is
+// over, since the start that brings its agent back carries the news.
 func holderTold(run record.RoleRun, entry int64) workflow.NewsState {
 	switch {
 	case !recordedClaimTakesNews(run.Claim, entry):
@@ -330,9 +330,9 @@ func holdsUntakenTask(held *record.RoleClaim) bool {
 // carries the news — a root's architect among them, whose start of an entry carries its summary
 // as a phase worker's carries its news (dispatch://INFRA-2614); it has not ended (claimEnded),
 // since a failed or retired claim is revived by its phase's own repair, whose start carries the
-// news; and no suspension that holds is over its agent (suspensionHolds): the operator's, the
-// controller's or an architect's (supervise.SuspendSource.Holds), which no start the daemon queues
-// gets past. A claim an idle pod release suspended takes the news, and the start that carries it
+// news; and no suspension that holds is over its agent (suspensionHolds): the operator's or the
+// controller's (supervise.SuspendSource.Holds), which no start the daemon queues gets past. A
+// claim an idle pod release suspended takes the news, and the start that carries it
 // wakes the claim as any start wakes one. Both readers state it through this: the reconcile and
 // the architect's summary over the claim the record holds (recordedClaimTakesNews), and the start
 // over the claim its machine holds (newsOnlyRefusal).

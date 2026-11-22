@@ -89,11 +89,10 @@ func TestThePodUpdateNeedsAControllerGrantAnIssueKeyAndAnIssueOfTheDaemonsProjec
 	}
 }
 
-// An architect's grant is refused 403 CONTROLLER_REQUIRED, as a phase worker's is, though it opens
-// the six agent actions for the agents of the issues it owns: the pod update is the
-// controller's alone, and the daemon is asked nothing. The architect is LEGION-208's root
-// architect, built as the agent door's tests build it (treeArchitect), asking for the pod of its
-// own issue.
+// An architect's grant is refused 403 CONTROLLER_REQUIRED, as a phase worker's is and as it is at
+// each of the six agent actions: the pod update is the controller's alone, and the daemon is asked
+// nothing. The architect is LEGION-208's root architect, built as the agent door's tests build it
+// (treeArchitect), asking for the pod of its own issue.
 //
 // The negative control is the route taking any grant (no grant.Controller check): the daemon is
 // asked for the pod of LEGION-208, and the route answers the round with 200.
