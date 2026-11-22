@@ -571,8 +571,10 @@ func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]Phase
 
 // PhaseEntries reads the entry of every phases row of issues, the moment it was raised, whether
 // its task is one to send as written, and the claim and step the row names, in one statement,
-// keyed by issue and role. The rows of an issue the record holds none of are simply absent, which
-// every reader takes as the zero entry.
+// keyed by issue and role: for a role that stands at two steps, the row PhaseRowOf picks from the
+// issue's rows, the one whose entry was raised last (RaisedLater), read in the order Phases reads
+// them, so the two readings take one row. The rows of an issue the record holds none of are
+// simply absent, which every reader takes as the zero entry.
 // entry_raised_at is the row's one nullable column (PutPhase), null on a row no entry has been
 // raised on, and reads back as the zero moment.
 func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error) {
@@ -580,7 +582,8 @@ func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string)
 	if len(issues) == 0 {
 		return entries, nil
 	}
-	rows, err := tx.Query(ctx, `select issue, role, entry, entry_raised_at, entry_verbatim, claim, step_task from phases where issue = any($1)`, issues)
+	rows, err := tx.Query(ctx, `select issue, role, entry, entry_raised_at, entry_verbatim, claim, step_task from phases where issue = any($1)
+		order by issue, role, step_task, step_place`, issues)
 	if err != nil {
 		return nil, fmt.Errorf("list the phase entries of %d issues: %w", len(issues), err)
 	}
@@ -597,7 +600,9 @@ func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string)
 			entry.RaisedAt = raisedAt.UTC()
 		}
 		key.Role, entry.Claim = claim.Role(role), claim.Token(token)
-		entries[key] = entry
+		if kept, ok := entries[key]; !ok || RaisedLater(entry.RaisedAt, entry.Entry, kept.RaisedAt, kept.Entry) {
+			entries[key] = entry
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list the phase entries of %d issues: %w", len(issues), err)
@@ -650,6 +655,18 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 	)
 	if err != nil {
 		return fmt.Errorf("put %s phase on %s: %w", phase.Role, phase.Issue, err)
+	}
+	return nil
+}
+
+// MovePhaseToStep writes task and place on role's row of no step on issue, where the role has
+// one and no row of that step stands; it writes nothing otherwise.
+func (s *Postgres) MovePhaseToStep(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, task string, place int) error {
+	if _, err := tx.Exec(ctx, `update phases set step_task = $3, step_place = $4
+		where issue = $1 and role = $2 and step_task = '' and step_place = 0
+		and not exists (select 1 from phases where issue = $1 and role = $2 and step_task = $3 and step_place = $4)`,
+		issue, string(role), task, place); err != nil {
+		return fmt.Errorf("move the %s's row of no step on %s to step %d of task %s: %w", role, issue, place, task, err)
 	}
 	return nil
 }

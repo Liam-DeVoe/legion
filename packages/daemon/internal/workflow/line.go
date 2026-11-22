@@ -149,6 +149,21 @@ func (w Walk) placeIn(p phase.Phase) (record.TaskPlace, bool) {
 	return w.Place, true
 }
 
+// phaseRowOf is role's row of rows where w's task stands (record.PhaseRowAt): w's place, or, for a
+// stored task at no act whose issue stands in standsIn, the first place of standsIn on its line
+// (PlaceOf), as placeIn reads it. A walk with no plan rows has one row for each role
+// (record.PhaseRowOf).
+func (w Walk) phaseRowOf(rows []record.PhaseRow, role claim.Role, standsIn phase.Phase) record.PhaseRow {
+	if !w.Stored {
+		return record.PhaseRowOf(rows, role)
+	}
+	at := w.Place
+	if at.Kind == "" {
+		at, _ = w.PlaceOf(standsIn)
+	}
+	return record.PhaseRowAt(rows, role, w.Task, at, w.Steps)
+}
+
 // steps is the part of the line each step runs: all of it but the retro and the merge.
 func (w Walk) steps() []phase.Phase {
 	if len(w.Line) < 2 {
@@ -488,24 +503,46 @@ func (w Walk) endingRole(from phase.Phase) claim.Role {
 	return phase.RoleFor(from)
 }
 
-// placeOfRole is the place of the step of w's task whose role is role, ok false where none is: a
-// role runs at most one step of a task.
-func (w Walk) placeOfRole(role claim.Role) (record.TaskPlace, bool) {
-	for i, step := range w.Steps {
-		if claim.Role(step.Role) == role {
-			return record.TaskPlace{Kind: record.PlaceStep, Position: i + 1}, true
+// placeRunning is the place of w's task that runs as at, and at step the one whose role is role,
+// nearest where the task stands: the latest such place at or before w.Place, else the first after
+// it. A role can stand at two steps of a task, so a phase can run at two places, and the one a
+// reader of a run that ended means is the one the task left last, or, after a return before it,
+// the one it returned from: the run a late completion of role reports (reportEndedStep), and the
+// acceptance the task stands at (acceptedRole). A walk with no plan rows holds each phase once
+// (PlaceOf).
+func (w Walk) placeRunning(at phase.Phase, role claim.Role) (record.TaskPlace, bool) {
+	if !w.Stored {
+		return w.PlaceOf(at)
+	}
+	var first, before record.TaskPlace
+	var hasFirst, hasBefore bool
+	for i, p := range w.Line {
+		if p != at || at == phase.Step && (i >= len(w.Steps) || claim.Role(w.Steps[i].Role) != role) {
+			continue
+		}
+		place := placeAt(w.Line, i)
+		if !hasFirst {
+			first, hasFirst = place, true
+		}
+		if placeRank(place) <= placeRank(w.Place) {
+			before, hasBefore = place, true
 		}
 	}
-	return record.TaskPlace{}, false
+	if hasBefore {
+		return before, true
+	}
+	return first, hasFirst
 }
 
 // backwardPlace is the place a move back of w's task to the phase to reaches, ok false where none
 // serves it: for a walk with no plan rows the place of to on today's line, whose phases each stand
-// once (PlaceOf); for a stored walk the one place before w.Place whose step, retro or merge runs
-// as to. Where no earlier place runs as to, or more than one does (two steps that run as step), no
-// backward row serves the move. Where to is step and two or more places before w.Place run as
-// step, its third answer is the two of them nearest w.Place, the lower first, which the move's
-// refusal names (backwardRefusal); it is nil in every other case.
+// once (PlaceOf); for a stored walk the place before w.Place whose step, retro or merge runs as to,
+// the nearest of them where a role that stands at two steps runs to at two places before w.Place,
+// as a failed step's work returns to the nearest step of the type implementation before it
+// (returnOf). Where no earlier place runs as to, no backward row serves the move. Where to is step
+// and two or more places before w.Place run as step, they are steps of roles the move does not
+// tell apart, and its third answer is the two of them nearest w.Place, the lower first, which the
+// move's refusal names (backwardRefusal); it is nil in every other case.
 func (w Walk) backwardPlace(to phase.Phase) (record.TaskPlace, bool, []record.TaskPlace) {
 	if !w.Stored {
 		place, ok := w.PlaceOf(to)
@@ -518,10 +555,10 @@ func (w Walk) backwardPlace(to phase.Phase) (record.TaskPlace, bool, []record.Ta
 		}
 	}
 	switch {
-	case len(found) == 1:
-		return found[0], true, nil
 	case len(found) >= 2 && to == phase.Step:
 		return record.TaskPlace{}, false, found[len(found)-2:]
+	case len(found) >= 1:
+		return found[len(found)-1], true, nil
 	}
 	return record.TaskPlace{}, false, nil
 }
