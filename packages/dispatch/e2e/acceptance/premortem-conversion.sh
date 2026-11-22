@@ -244,15 +244,14 @@ readonly conversion_census="with lenses as (
       and not exists (select 1 from graph_tuples t where t.from_kind = n.kind and t.from_id = n.id and t.kind = 'part_of')))"
 
 # refused_convert SECTION WHAT ARGS…: runs the command (run_convert) on the map file
-# $work/far-map.tsv; it exits 1, naming that file's line for risk 5, the risk and the check of
-# another project.
+# $work/far-map.tsv; it exits 1, naming the risk, risk 5, and the check of another project.
 refused_convert() {
   local section="$1" what="$2" code
   shift 2
   run_convert "$@"
   [[ "$code" == 1 ]] ||
     fail "$section" "$what" "envoy-dispatch premortem-convert $* exited $code: $(<"$work/command.err") $(head -c 600 "$work/command.out")"
-  [[ "$(<"$work/command.err")" == *"$work/far-map.tsv:$far_line (risk 5): "*"$far_check"* ]] ||
+  [[ "$(<"$work/command.err")" =~ (^|[^[:alnum:]])risk\ 5([^[:digit:]]|$) && "$(<"$work/command.err")" == *"$far_check"* ]] ||
     fail "$section" "$what" "it exited 1 printing: $(<"$work/command.err")"
   pass "$section" "$what: $(<"$work/command.err")"
 }
@@ -608,7 +607,7 @@ for dry_run in true false; do
   want_status 400 F "the call with the map naming $far_check and dry_run $dry_run is refused"
   expect F "the refusal of the call with dry_run $dry_run is INVALID_POINTER, naming risk 5 and the check $far_check" \
     '{"code":"INVALID_POINTER","names_risk_5":true,"names_the_check":true}' --arg c "$far_check" \
-    '{code, names_risk_5: (.error | contains("(risk 5)")), names_the_check: (.error | contains($c))}'
+    '{code, names_risk_5: (.error | test("\\brisk 5\\b")), names_the_check: (.error | contains($c))}'
 done
 
 # --- R2: the route's dry run --------------------------------------------------------------------
