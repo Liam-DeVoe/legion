@@ -204,7 +204,9 @@ func TestAReadEndsAfterGitExitsThoughAProcessKeepsWritingToThePipe(t *testing.T)
 // main, where exec copies both outputs; a read that waited a second WaitDelay after Wait would
 // take two more. The bound is one and a half WaitDelays above that baseline, measured in the same
 // test, and the WaitDelay is 20 s, so a slow machine's cost lands in both pushes and one and two
-// WaitDelays stay 10 s from the bound either way.
+// WaitDelays stay 10 s from the bound either way. The baseline itself is bound to half a
+// WaitDelay, so a read that waits on nothing, such as one whose own copy of the pipe's write end
+// stays open, fails here rather than passing in both pushes alike.
 func TestAReadEndsOneWaitDelayAfterGitExitsThoughAProcessHoldsBothOutputs(t *testing.T) {
 	const delay = 20 * time.Second
 	push := aPushOf(t, map[string]string{"notes.md": "a line of nothing\nthe runner answers at " + theHost + "\n"})
@@ -218,6 +220,9 @@ func TestAReadEndsOneWaitDelayAfterGitExitsThoughAProcessHoldsBothOutputs(t *tes
 		return guard
 	}
 	baseline, _ := timedPush(withHolder(":"), push.req)
+	if baseline >= delay/2 {
+		t.Errorf("the push with no holding process took %s, past half a WaitDelay of %s: a read waits on something with no process holding the pipe", baseline.Round(time.Second), delay)
+	}
 	took, err := timedPush(withHolder("sleep 60 &"), push.req)
 	if took-baseline >= delay*3/2 {
 		t.Errorf("the push was answered after %s, %s past the same push with no holding process: past one and a half WaitDelays of %s, the read waited a second one", took.Round(time.Second), (took - baseline).Round(time.Second), delay)
@@ -244,6 +249,9 @@ func TestAReadEndsOneWaitDelayAfterAFailedGitExitsThoughAProcessHoldsBothOutputs
 		return guard
 	}
 	baseline, _ := timedPush(withHolder(":"), push.req)
+	if baseline >= delay/2 {
+		t.Errorf("the push with no holding process took %s, past half a WaitDelay of %s: a read waits on something with no process holding the pipe", baseline.Round(time.Second), delay)
+	}
 	took, err := timedPush(withHolder("sleep 60 &"), push.req)
 	if took-baseline >= delay*3/2 {
 		t.Errorf("the push was answered after %s, %s past the same failing push with no holding process: past one and a half WaitDelays of %s, the read waited a second one", took.Round(time.Second), (took - baseline).Round(time.Second), delay)
