@@ -3778,8 +3778,14 @@ try:
 except ValueError as exc:
     print(exc)
 ' "$root" "$spelling") )
+  # The refusal names the spelling as Python's repr writes it ({directory!r}), which escapes a
+  # quote the path holds, and $root is under TMPDIR, which can hold one. So the text looked for
+  # names it the same way, and is matched as it is written, not as a regex: the path can hold a
+  # character a regex reads as an operator.
+  named=$(python3 -c 'import sys; print(repr(sys.argv[1]))' "$spelling")
+  wanted="files_but_tests is given $named, which is not a path relative to the repository root in normal form"
   check "refuses the directory spelled $spelling, naming the spelling" \
-    "$(contains "$refusal" "files_but_tests is given '$spelling', which is not a path relative to the repository root in normal form")"
+    "$([[ $refusal == *"$wanted"* ]] && echo true || echo false)"
 done
 
 # The header's run recipe, run as the header writes it, from a fixture's root and over a module
