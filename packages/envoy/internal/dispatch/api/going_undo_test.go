@@ -249,7 +249,7 @@ func TestUndoOfOneRun(t *testing.T) {
 			"project": "DEMO", "title": "Suggested on", "spec": "The spec says hello to everyone.\n", "force": true,
 		})).Key
 		run := rig.ran(t, "suggest hi on Suggested on",
-			goingChange("dispatch_suggest", map[string]any{"issue": issue, "quote": "says hello", "replace_with": "says hi"}))
+			goingChange("dispatch_suggest", map[string]any{"issue": issue, "artifact": "spec", "quote": "says hello", "replace_with": "says hi"}))
 		line := rig.undone(t, run, "dispatch_suggest")[0]
 		read := decodeBody[struct {
 			Comment struct {
@@ -499,7 +499,7 @@ var goingUndoRuns = map[string]func(t *testing.T, rig goingPlanRig){
 			"project": "DEMO", "title": "Suggested on and undone", "spec": "The spec says hello to everyone.\n", "force": true,
 		})).Key
 		line := rig.undoneOnce(t, "suggest hi on Suggested on and undone",
-			goingChange("dispatch_suggest", map[string]any{"issue": issue, "quote": "says hello", "replace_with": "says hi"}))
+			goingChange("dispatch_suggest", map[string]any{"issue": issue, "artifact": "spec", "quote": "says hello", "replace_with": "says hi"}))
 		if accepted := rig.textOf(t, `select coalesce(suggestion->>'accepted', 'open') from comments where id = $1::uuid`, line.Item); accepted != "false" {
 			t.Fatalf("the suggestion the run posted is %s after Undo, want it rejected", accepted)
 		}

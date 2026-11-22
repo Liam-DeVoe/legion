@@ -10,10 +10,11 @@ import type { SchemaApi, SchemaNode } from "../src/tool-schema";
 // whether it is required, the names an enum allows, and the bounds it states. gen-go runs every
 // dispatch tool's arguments through a SchemaApi that records these calls instead of building zod,
 // so the Go the server validates a call with is the TypeScript declaration itself rather than a
-// second copy of it. A bound (min, max) is a text's length, a list's count of items or a number's
-// value. The server's own handler enforces each bound and names it in its refusal; the catalogue
-// serves it beside the field, and the server's test of every write tool's schema against its route
-// sends a call at each edge.
+// second copy of it. A bound (min, max) is a text's length in UTF-16 units, as a JavaScript string
+// counts it, a list's count of items or a number's value. The server's own handler enforces each
+// bound and names it in its refusal; the command bar's check of a call holds each one too, the
+// catalogue serves it beside the field, and the server's test of every write tool's schema against
+// its route sends a call at each edge.
 type RecordedField = {
   kind: "string" | "number" | "boolean" | "enum" | "array" | "object" | "any";
   optional: boolean;
@@ -53,9 +54,11 @@ function recordedFields(shape: Record<string, RecordedNode>): [string, RecordedF
 }
 
 // The facade the tool specs' arguments are written against, recording what each call declares.
-// `refineObject` records the object alone: a cross-field rule is the tool's and the route
-// handler's to enforce, and the catalogue's check is of the arguments an action names, not of
-// how they agree.
+// `refineObject` records the object alone: a tool's own cross-field rule (`DispatchToolSpec.
+// validation`) is a function no recording can carry, so the generator writes the rule's words
+// (`DispatchTool.Validation`) and the server holds each write tool marked so to a Go port of it,
+// which its test holds to the marks; an object argument's own rule (`componentsArgument`) is the
+// route handler's to enforce.
 const recordingApi: SchemaApi<RecordedNode> = {
   string: (opts = {}) => recordedNode({ kind: "string", min: opts.min, max: opts.max }),
   number: (opts = {}) => recordedNode({ kind: "number", min: opts.min, max: opts.max }),
@@ -123,10 +126,10 @@ function renderToolRoute(route: DispatchToolRoute): string {
 }
 
 // The Go the action catalogue is built from: every dispatch tool with its own description, its
-// own arguments and a call those arguments accept, then the person tools the command bar alone
-// calls (personToolSpecs). Which of them the catalogue holds is the server's to decide from its
-// own route table, so nothing here says which tool writes: this is what the TypeScript knows and
-// the Go cannot read.
+// own arguments, the words of its cross-field rule where its spec states one, and a call those
+// arguments accept, then the person tools the command bar alone calls (personToolSpecs). Which of
+// them the catalogue holds is the server's to decide from its own route table, so nothing here
+// says which tool writes: this is what the TypeScript knows and the Go cannot read.
 export function renderDispatchTools() {
   const specs: readonly DispatchToolSpec[] = [...dispatchToolSpecs, ...personToolSpecs];
   const tools = specs
@@ -140,6 +143,9 @@ export function renderDispatchTools() {
         `Arguments: []ToolField{\n${fields}\n}`,
         `Example: json.RawMessage(${goString(JSON.stringify(spec.example))})`,
       ];
+      if (spec.validation !== undefined) {
+        parts.push(`Validation: ${goString(spec.validation.message)}`);
+      }
       const routes: readonly DispatchToolRoute[] = spec.routes ?? [];
       if (routes.length > 0) {
         parts.push(
@@ -174,7 +180,7 @@ const (
 
 // ToolField is one argument a tool takes: an element of an array carries no name, and an
 // object's own arguments hang from Fields. Min and Max are the bounds the spec states, nil for
-// none: a text's length in characters, a list's count of items, or a number's value.
+// none: a text's length in UTF-16 units, a list's count of items, or a number's value.
 type ToolField struct {
 	Name        string        \`json:"name,omitempty"\`
 	Kind        ToolFieldKind \`json:"kind"\`
@@ -190,13 +196,16 @@ type ToolField struct {
 
 // DispatchTool is one tool of the \`dispatch\` CLI as its spec states it: the name it is called
 // by, the whole description a model chooses it on, the arguments it takes, a call those
-// arguments accept, and, for a tool that calls one route of the table as it stands, that route's
-// binding (Routes), empty for a tool whose command is written by hand.
+// arguments accept, the whole words of the cross-field rule its spec states beside its arguments
+// (Validation, DispatchToolSpec.validation's message), empty for a spec that states none, and, for
+// a tool that calls one route of the table as it stands, that route's binding (Routes), empty for
+// a tool whose command is written by hand.
 type DispatchTool struct {
 	Name        string          \`json:"name"\`
 	Description string          \`json:"description"\`
 	Arguments   []ToolField     \`json:"arguments"\`
 	Example     json.RawMessage \`json:"example"\`
+	Validation  string          \`json:"validation,omitempty"\`
 	Routes      []ToolRoute     \`json:"routes,omitempty"\`
 }
 

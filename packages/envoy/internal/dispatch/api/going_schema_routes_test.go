@@ -30,10 +30,12 @@ import (
 )
 
 // goingSchemaSet is one call a tool's schema takes: what it varies from the call of the required
-// fields alone, and its arguments.
+// fields alone, and its arguments. byID is a call naming its document by id, built whole rather
+// than from the schema (goingSchemaItemsOf.byID), which the test requires to write.
 type goingSchemaSet struct {
 	name      string
 	arguments map[string]any
+	byID      bool
 }
 
 // goingSchemaValue gives one field its value in a call. path names the field from the call's top
@@ -292,13 +294,16 @@ type goingSchemaItemsOf struct {
 	sessionReply    string
 	group, priority string
 	// document is a document of the issue that a call may rename, rebuild or remove. editable is
-	// an issue whose spec is goingSchemaDocumentText, which an edit works on, with that spec's
-	// token and blocks as read, and projectDocumentSlug a project's document of the same text.
+	// an issue whose spec is goingSchemaDocumentText, which an edit works on, with that spec's id,
+	// token and blocks as read, and projectDocumentSlug and projectDocumentID a project's document
+	// of the same text.
 	document                 string
 	editable                 string
+	editableSpec             string
 	documentToken            string
 	blocks                   []model.ArtifactBlock
 	projectDocumentSlug      string
+	projectDocumentID        string
 	decisions, decisionBlock string
 	decisionSHA              string
 }
@@ -467,15 +472,32 @@ func (s *goingSchemaSeed) newDocument() string {
 	return uploadDocument(s.t, s.rig.mux, "/api/v1/issues/"+s.shared.issue, fmt.Sprintf("draft-%d.md", s.next()), goingSchemaDocumentText).Artifact.ID
 }
 
-// newEditable makes one more issue whose spec is goingSchemaDocumentText, reads that spec's token
-// and blocks, and uploads one more project document of the same text.
+// newEditable makes one more issue whose spec is goingSchemaDocumentText, reads that spec's id,
+// token and blocks, and uploads one more project document of the same text.
 func (s *goingSchemaSeed) newEditable(items *goingSchemaItemsOf) {
 	items.editable = s.newIssue(goingSchemaDocumentText)
-	spec := s.rig.issueRead(s.t, items.editable).PrimaryArtifactID
-	items.documentToken = readDocumentPrecondition(s.t, s.rig.mux, spec).Token
-	items.blocks = goingSchemaWrite[[]model.ArtifactBlock](s, http.MethodGet, "/api/v1/artifacts/"+spec+"/blocks", nil)
+	items.editableSpec = s.rig.issueRead(s.t, items.editable).PrimaryArtifactID
+	items.documentToken = readDocumentPrecondition(s.t, s.rig.mux, items.editableSpec).Token
+	items.blocks = goingSchemaWrite[[]model.ArtifactBlock](s, http.MethodGet, "/api/v1/artifacts/"+items.editableSpec+"/blocks", nil)
 	project := uploadDocument(s.t, s.rig.mux, "/api/v1/projects/DEMO", fmt.Sprintf("draft-%d.md", s.next()), goingSchemaDocumentText)
-	items.projectDocumentSlug = project.Artifact.Slug
+	items.projectDocumentSlug, items.projectDocumentID = project.Artifact.Slug, project.Artifact.ID
+}
+
+// byID is the calls of tool that name its document by id beside the owner its rule requires: an
+// edit of the issue's spec and one of the project's document. Each takes the document's own row,
+// since the owner's slug routes read a slug or a filename and never an id; before, each took its
+// owner's slug route and was 404, though the plan's row read the document by its id and showed it.
+func (items goingSchemaItemsOf) byID(tool string) []goingSchemaSet {
+	if tool != "dispatch_doc_edit" {
+		return nil
+	}
+	ops := func() []any {
+		return []any{map[string]any{"op": "replace", "find": "first line", "with": "opening line"}}
+	}
+	return []goingSchemaSet{
+		{name: "the issue's spec by id", byID: true, arguments: map[string]any{"issue": items.editable, "artifact": items.editableSpec, "ops": ops()}},
+		{name: "the project's document by id", byID: true, arguments: map[string]any{"project": "DEMO", "artifact": items.projectDocumentID, "ops": ops()}},
+	}
 }
 
 // goingSchemaFresh is the items each tool's write spoils for the next call, which the seed makes
@@ -1117,9 +1139,10 @@ var goingSchemaStateOnly = map[string]string{
 // no route refuses one for its shape (goingSchemaShapeRefusal). Any other answer passes: a 404 for
 // an item the call did not make, a 409 for a state the seed did not set up, a 403 for a person
 // who may not. A call the bar never sends as written (goingUnsendable: a picture, a file, a link
-// where the bar names the place) is refused before any request, by design, and passes. Every tool
-// but goingSchemaStateOnly's writes at least one of its calls, and the log tallies what each
-// tool's calls were answered.
+// where the bar names the place) is refused before any request, by design, and passes. A call
+// naming its document by id (goingSchemaItemsOf.byID) writes, or fails the test. Every tool but
+// goingSchemaStateOnly's writes at least one of its calls, and the log tallies what each tool's
+// calls were answered.
 func TestEveryWriteToolsSchemaTakesOnlyWhatItsRouteTakes(t *testing.T) {
 	rig := newGoingSchemaRig(t)
 	seed := newGoingSchemaSeed(t, rig)
@@ -1158,12 +1181,14 @@ func TestEveryWriteToolsSchemaTakesOnlyWhatItsRouteTakes(t *testing.T) {
 			answered := map[string]int{}
 			for index := 0; ; index++ {
 				items := seed.items(spec.Name)
-				sets := goingSchemaSets(spec.Arguments, items.value(seed, spec.Name))
+				sets := append(goingSchemaSets(spec.Arguments, items.value(seed, spec.Name)), items.byID(spec.Name)...)
 				if index >= len(sets) {
 					break
 				}
 				set := sets[index]
-				items.repair(spec.Name, set.arguments)
+				if !set.byID {
+					items.repair(spec.Name, set.arguments)
+				}
 				calls++
 				sent, _ := json.Marshal(set.arguments)
 				doer := rig.served.goingDoer(caller, testServerURL)
@@ -1177,7 +1202,7 @@ func TestEveryWriteToolsSchemaTakesOnlyWhatItsRouteTakes(t *testing.T) {
 					continue
 				case errors.As(err, &read):
 					answered[fmt.Sprintf("a read refused %d %s", read.Status, read.Code)]++
-					if goingSchemaShapeRefusal(read.Status, read.Code) {
+					if set.byID || goingSchemaShapeRefusal(read.Status, read.Code) {
 						t.Errorf("%s (%s) %s: a read its translation made was refused: status=%d body=%s", spec.Name, set.name, sent, read.Status, read.body)
 					}
 					continue
@@ -1194,6 +1219,9 @@ func TestEveryWriteToolsSchemaTakesOnlyWhatItsRouteTakes(t *testing.T) {
 				if response.StatusCode < http.StatusMultipleChoices {
 					answered["2xx"]++
 					continue
+				}
+				if set.byID {
+					t.Errorf("%s (%s) %s: status=%d body=%s, want the document its id names written", spec.Name, set.name, sent, response.StatusCode, answer.String())
 				}
 				answered[fmt.Sprintf("%d %s", response.StatusCode, refusal.Code)]++
 				if goingSchemaShapeRefusal(response.StatusCode, refusal.Code) {

@@ -46,6 +46,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -112,6 +113,12 @@ type GoingAction struct {
 	Request []contracts.ToolField `json:"request"`
 	// Example is a call this action's schema accepts, the tool spec's own.
 	Example json.RawMessage `json:"example"`
+
+	// rule is the whole words of the cross-field rule the tool spec states beside its
+	// arguments (contracts.DispatchTool.Validation), "" for none: the refusal of the action's
+	// Go port of that rule where the spec words none of its own (goingToolRules). It is the
+	// caller's, and not served.
+	rule string
 }
 
 // GoingCatalogue is every write tool GoingCaller runs, and the actions of them an agent may
@@ -229,6 +236,7 @@ func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 			Routes:      make([]GoingRoute, 0, len(rows)),
 			Request:     tool.Arguments,
 			Example:     tool.Example,
+			rule:        tool.Validation,
 		}
 		for _, row := range rows {
 			name := row.Method + " " + row.Pattern
@@ -366,11 +374,12 @@ type GoingDoer interface {
 
 // GoingCaller performs an action an agent already chose. It holds the catalogue to the proposal
 // before it builds anything: an action the catalogue does not hold, a call the action's schema
-// refuses, a call no row of the action takes, and a call the bar can never send as written
-// (goingUnsendable), each answer an error of their own with no request made. What the chosen
-// row's route takes is that row's translation's to say (goingToolRoute.Translate), and every read
-// the translation makes to say it - a document's id from its slug, a session's id from its title -
-// goes through the same Doer as the write.
+// refuses - a value outside its bounds among them - a call the bar can never send as written
+// (goingUnsendable), a call that breaks the rule the tool's spec states beside its arguments
+// (goingToolRules), and a call no row of the action takes, each answer an error of their own with
+// no request made. What the chosen row's route takes is that row's translation's to say
+// (goingToolRoute.Translate), and every read the translation makes to say it - a document's id
+// from its slug, a session's id from its title - goes through the same Doer as the write.
 type GoingCaller struct {
 	Catalogue GoingCatalogue
 	// BaseURL is the Dispatch server the action is performed against, without a trailing slash;
@@ -408,11 +417,11 @@ func (e GoingUnknownActionError) Error() string {
 	return fmt.Sprintf("%q is no action of the catalogue: GET %s lists every action", e.Action, goingCataloguePath)
 }
 
-// GoingArgumentError is the refusal of a call the action's own schema does not accept, that no row
-// of the action takes, or that the bar can never send as written (goingUnsendable, a translation's
-// goingUntranslatable), raised before any request for the same reason. Reason is the refusal
-// alone, which the bar's panel shows as it stands; Error names the action before it, for a caller
-// that holds no line naming the action.
+// GoingArgumentError is the refusal of a call the action's own schema or its spec's rule does not
+// accept, that no row of the action takes, or that the bar can never send as written
+// (goingUnsendable, a translation's goingUntranslatable), raised before any request for the same
+// reason. Reason is the refusal alone, which the bar's panel shows as it stands; Error names the
+// action before it, for a caller that holds no line naming the action.
 type GoingArgumentError struct {
 	Action string
 	Reason string
@@ -445,9 +454,11 @@ func (c GoingCaller) Do(ctx context.Context, action string, arguments map[string
 	return response, err
 }
 
-// prepare holds a call to the catalogue and the action's schema, chooses its row, refuses a call
-// the bar can never send (goingUnsendable) and translates it, reading what the translation needs
-// through the Doer, and sends no write.
+// prepare holds a call to the catalogue and the action's schema, refuses a call the bar can never
+// send (goingUnsendable), in the words its person reads, and one that breaks the tool's rule
+// (goingToolRules), in the spec's, chooses its row and translates it, reading what the
+// translation needs through the Doer, and sends no write. Each row of a plan is prepared when the
+// agent proposes it, when the person approves it and when it runs (goingReadRow, routeSends).
 func (c GoingCaller) prepare(ctx context.Context, action string, arguments map[string]any) (goingPrepared, error) {
 	entry, held := c.Catalogue.Lookup(action)
 	if !held {
@@ -455,6 +466,14 @@ func (c GoingCaller) prepare(ctx context.Context, action string, arguments map[s
 	}
 	if reason := checkGoingArguments(entry.Request, arguments); reason != "" {
 		return goingPrepared{}, GoingArgumentError{Action: action, Reason: reason}
+	}
+	if why := goingUnsendable(action, arguments); why != "" {
+		return goingPrepared{}, GoingArgumentError{Action: action, Reason: why}
+	}
+	if rule := goingToolRules[action]; rule != nil {
+		if reason := rule(arguments, entry.rule); reason != "" {
+			return goingPrepared{}, GoingArgumentError{Action: action, Reason: reason}
+		}
 	}
 	choosing := arguments
 	if c.sendIssue != "" {
@@ -465,9 +484,6 @@ func (c GoingCaller) prepare(ctx context.Context, action string, arguments map[s
 	route, values, chosen := chooseGoingRoute(entry, choosing, c.Session)
 	if !chosen {
 		return goingPrepared{}, GoingArgumentError{Action: action, Reason: goingNoRouteReason(entry)}
-	}
-	if why := goingUnsendable(action, arguments); why != "" {
-		return goingPrepared{}, GoingArgumentError{Action: action, Reason: why}
 	}
 	call, err := route.translate(ctx, c.reader(), goingCallInput{arguments: arguments, path: values, session: c.Session, resumed: c.resumeAfter})
 	if err != nil {
@@ -566,9 +582,17 @@ func chooseGoingRoute(entry GoingAction, arguments map[string]any, session strin
 }
 
 // takes reports whether a call's arguments satisfy the row's guard: a row nothing guards takes
-// every call, and a guarded row only the calls naming its guard's value.
+// every call, a row guarded by goingAnID only the calls naming a whole id in its guard's
+// argument, and any other guarded row only the calls naming its guard's value.
 func (route GoingRoute) takes(arguments map[string]any) bool {
-	return route.whenArgument == "" || arguments[route.whenArgument] == route.whenValue
+	switch {
+	case route.whenArgument == "":
+		return true
+	case route.whenValue == goingAnID:
+		reference, _ := arguments[route.whenArgument].(string)
+		return goingIsID(reference)
+	}
+	return arguments[route.whenArgument] == route.whenValue
 }
 
 // goingPath is pattern with each placeholder replaced by its value, escaped for a path.
@@ -581,7 +605,8 @@ func goingPath(pattern string, values map[string]string) string {
 }
 
 // goingNoRouteReason says what each of the action's rows wanted and the call did not name, so a
-// proposal missing the one argument that chooses a row is told which.
+// proposal missing the one argument that chooses a row is told which. A row that binds two
+// placeholders to one argument names it once.
 func goingNoRouteReason(entry GoingAction) string {
 	wants := make([]string, 0, len(entry.Routes))
 	for _, route := range entry.Routes {
@@ -596,6 +621,7 @@ func goingNoRouteReason(entry GoingAction) string {
 			named = append(named, argument)
 		}
 		sort.Strings(named)
+		named = slices.Compact(named)
 		want := route.Method + " " + route.Pattern
 		if len(named) > 0 {
 			want += " needs " + strings.Join(named, ", ")
@@ -609,8 +635,9 @@ func goingNoRouteReason(entry GoingAction) string {
 }
 
 // checkGoingArguments holds a proposed call to one action's schema: every required argument is
-// named, every named argument is one the action takes, and each value is what its field holds.
-// The answer is the refusal, empty for a call the schema accepts.
+// named, every named argument is one the action takes, and each value is what its field holds,
+// within the bounds its field states. The answer is the refusal, empty for a call the schema
+// accepts.
 func checkGoingArguments(fields []contracts.ToolField, arguments map[string]any) string {
 	// The names first, whole: the "takes no argument" check below reads every field, not the
 	// ones a refusal did not stop at.
@@ -643,7 +670,8 @@ func checkGoingArguments(fields []contracts.ToolField, arguments map[string]any)
 	return ""
 }
 
-// checkGoingValue answers why value is not what field holds, empty where it is.
+// checkGoingValue answers why value is not what field holds, empty where it is: of another kind,
+// or outside the bounds field states (goingTextBound, goingCountBound, goingNumberBound).
 func checkGoingValue(field contracts.ToolField, value any) string {
 	if value == nil {
 		if field.Nullable {
@@ -653,20 +681,22 @@ func checkGoingValue(field contracts.ToolField, value any) string {
 	}
 	switch field.Kind {
 	case contracts.ToolFieldString:
-		if _, ok := value.(string); !ok {
+		text, ok := value.(string)
+		if !ok {
 			return "must be a string"
 		}
+		return goingTextBound(field, itemblocks.Units16(text))
 	case contracts.ToolFieldEnum:
 		text, ok := value.(string)
 		if !ok || !slices.Contains(field.Values, text) {
 			return "must be one of " + strings.Join(field.Values, ", ")
 		}
 	case contracts.ToolFieldNumber:
-		switch value.(type) {
-		case float64, float32, int, int64, json.Number:
-		default:
+		number, ok := goingNumber(value)
+		if !ok {
 			return "must be a number"
 		}
+		return goingNumberBound(field, number)
 	case contracts.ToolFieldBoolean:
 		if _, ok := value.(bool); !ok {
 			return "must be true or false"
@@ -675,6 +705,9 @@ func checkGoingValue(field contracts.ToolField, value any) string {
 		items, ok := value.([]any)
 		if !ok {
 			return "must be an array"
+		}
+		if reason := goingCountBound(field, len(items)); reason != "" {
+			return reason
 		}
 		for index, item := range items {
 			if reason := checkGoingValue(*field.Item, item); reason != "" {
@@ -692,4 +725,74 @@ func checkGoingValue(field contracts.ToolField, value any) string {
 	case contracts.ToolFieldAny:
 	}
 	return ""
+}
+
+// goingTextBound is why a text of length UTF-16 units, as its spec and every route count a text
+// (itemblocks.Units16), is outside the bounds field states, "" where it is within them: over its
+// most, in the words a route refuses a text over its cap with (capExceededError).
+func goingTextBound(field contracts.ToolField, length int) string {
+	switch {
+	case field.Min != nil && float64(length) < *field.Min:
+		return fmt.Sprintf("is %s long, and must be at least %s", goingCount(length, "character"), goingNumberText(*field.Min))
+	case field.Max != nil && float64(length) > *field.Max:
+		limit := int(*field.Max)
+		return fmt.Sprintf("is %d characters over the %d-character limit (%d/%d)", length-limit, limit, length, limit)
+	}
+	return ""
+}
+
+// goingCountBound is why a list of count items is outside the bounds field states, "" where it
+// is within them.
+func goingCountBound(field contracts.ToolField, count int) string {
+	switch {
+	case field.Min != nil && float64(count) < *field.Min:
+		return fmt.Sprintf("holds %s, and must hold at least %s", goingCount(count, "item"), goingNumberText(*field.Min))
+	case field.Max != nil && float64(count) > *field.Max:
+		return fmt.Sprintf("holds %s, and may hold at most %s", goingCount(count, "item"), goingNumberText(*field.Max))
+	}
+	return ""
+}
+
+// goingNumberBound is why number is outside the bounds field states, "" where it is within them.
+func goingNumberBound(field contracts.ToolField, number float64) string {
+	switch {
+	case field.Min != nil && number < *field.Min:
+		return fmt.Sprintf("is %s, and must be at least %s", goingNumberText(number), goingNumberText(*field.Min))
+	case field.Max != nil && number > *field.Max:
+		return fmt.Sprintf("is %s, and may be at most %s", goingNumberText(number), goingNumberText(*field.Max))
+	}
+	return ""
+}
+
+// goingCount is count of unit, the unit plural for any count but one.
+func goingCount(count int, unit string) string {
+	if count == 1 {
+		return "1 " + unit
+	}
+	return strconv.Itoa(count) + " " + unit + "s"
+}
+
+// goingNumberText is number in its shortest decimal form.
+func goingNumberText(number float64) string {
+	return strconv.FormatFloat(number, 'f', -1, 64)
+}
+
+// goingNumber is value as a number, and whether it is one, whatever Go type decoded it: a JSON
+// number decodes to float64, or json.Number, and a call a test or the server builds may hold an
+// int.
+func goingNumber(value any) (float64, bool) {
+	switch number := value.(type) {
+	case float64:
+		return number, true
+	case float32:
+		return float64(number), true
+	case int:
+		return float64(number), true
+	case int64:
+		return float64(number), true
+	case json.Number:
+		parsed, err := number.Float64()
+		return parsed, err == nil
+	}
+	return 0, false
 }

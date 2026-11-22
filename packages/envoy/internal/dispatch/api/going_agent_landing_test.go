@@ -207,6 +207,57 @@ func TestALandedRequestIsNotSentAgain(t *testing.T) {
 	})
 }
 
+// TestASecondTryOfALandedCallAnswersItsLanding: a call key whose own request landed answers that
+// landing when it is tried again - the run resumed after the write committed and before its answer
+// reached the agent - replayed, and sends nothing. dispatch_set_issue_state reads the person's
+// state before it writes, so a second try that prepared the call again read the seq its first try
+// wrote and built the write under the next one, another request than the one that landed: the
+// call was refused CALL_CHANGED though its change stood.
+func TestASecondTryOfALandedCallAnswersItsLanding(t *testing.T) {
+	rig := newGoingAgentRig(t, nil)
+	issue := rig.issue(t, "Holds an event to dismiss")
+	run, token := rig.working(t, "alice", "dismiss an event of "+issue)
+	arguments := map[string]any{"issue": issue, "dismissed": []any{"event:15"}}
+	rig.approve(t, run, "dispatch_set_issue_state", arguments)
+	var writes atomic.Int32
+	rig.hooks.set(t, http.MethodPut, "/api/v1/me/issues/"+issue+"/state", func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+		writes.Add(1)
+		inner.ServeHTTP(w, r)
+	})
+	stored := func() string {
+		t.Helper()
+		var state string
+		if err := rig.database.Pool.QueryRow(context.Background(), `
+			select jsonb_build_object('dismissed', dismissed, 'seq', seq)::text from user_issue_state where issue_key = $1
+		`, issue).Scan(&state); err != nil {
+			t.Fatalf("read the person's state of %s: %v", issue, err)
+		}
+		return state
+	}
+	first, err := rig.call(goingRouteCall(run, token, 3, 1, "dispatch_set_issue_state", arguments))
+	if err != nil || first.Status != http.StatusOK || first.Replayed {
+		t.Fatalf("the first try answered %d %s (replayed %v), %v; want the write answered 200", first.Status, first.Body, first.Replayed, err)
+	}
+	written := stored()
+	second, err := rig.call(goingRouteCall(run, token, 3, 1, "dispatch_set_issue_state", arguments))
+	if err != nil || !second.Replayed || second.Status != first.Status || !goingJSONEqual(second.Body, first.Body) {
+		t.Fatalf("the second try answered %d %s (replayed %v), %v; want the first try's %d %s replayed",
+			second.Status, second.Body, second.Replayed, err, first.Status, first.Body)
+	}
+	if sent := writes.Load(); sent != 1 {
+		t.Fatalf("the state's route was sent %d writes, want the first try's alone", sent)
+	}
+	if now := stored(); now != written {
+		t.Fatalf("after the second try the person's state of %s is %s, want it as the first try wrote it: %s", issue, now, written)
+	}
+	if landed := rig.count(t, `select count(*) from going_landings where run_id = $1::uuid and step = 3 and call = 1`, run); landed != 1 {
+		t.Fatalf("the call's key holds %d landings, want its one write", landed)
+	}
+	if done := rig.count(t, `select count(*) from going_plan_rows where run_id = $1::uuid and state = 'done'`, run); done != 1 {
+		t.Fatalf("after the second try %d rows of the plan are done, want its one row", done)
+	}
+}
+
 // goingAnswerMembers is the members of the JSON object encoded, its numbers as written.
 func goingAnswerMembers(t *testing.T, encoded []byte) map[string]any {
 	t.Helper()

@@ -1881,13 +1881,16 @@ func judgeUndeclaredMembers(r *http.Request, value any, body []byte) error {
 
 // decodeJSONBody is decodeJSON for a route that reads its body's bytes again for what the decoded
 // value cannot say, such as whether a member was there at all (replaceFieldsRefusal); it answers
-// them.
+// them. It judges the members value does not declare as decodeJSON does (judgeUndeclaredMembers):
+// a request the command bar sends in-process is refused one, and any other is logged.
 func decodeJSONBody(r *http.Request, value any) ([]byte, error) {
 	body, err := readJSONBody(r, value, maxJSONRequestBytes, errJSONTooLarge)
 	if err != nil {
 		return nil, err
 	}
-	logUndeclaredMembers(r, value, body)
+	if err := judgeUndeclaredMembers(r, value, body); err != nil {
+		return nil, err
+	}
 	return body, nil
 }
 

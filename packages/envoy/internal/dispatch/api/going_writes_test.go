@@ -373,7 +373,7 @@ func goingRowCases(f goingRowFixtures) map[string]goingRowCase {
 			"mentions": []any{"session:s-guide", "role:legion-reviewer"},
 		}},
 		"dispatch_suggest POST /api/v1/issues/{key}/comments": {arguments: map[string]any{
-			"issue": f.issue, "quote": "says hello", "replace_with": "says hi",
+			"issue": f.issue, "artifact": "spec", "quote": "says hello", "replace_with": "says hi",
 		}},
 		"dispatch_suggest POST /api/v1/artifacts/{id}/comments": {arguments: map[string]any{
 			"project": "DEMO", "artifact": f.guideSlug, "quote": "Read this", "replace_with": "Read that",
@@ -395,7 +395,7 @@ func goingRowCases(f goingRowFixtures) map[string]goingRowCase {
 			"project": "DEMO", "artifact": f.guideSlug, "ops": []any{map[string]any{"op": "replace", "find": "first", "with": "before anything"}},
 		}},
 		"dispatch_doc_edit POST /api/v1/artifacts/{id}/edits": {arguments: map[string]any{
-			"artifact": f.notesID, "ops": []any{map[string]any{"op": "replace", "find": "Notes", "with": "Jottings"}},
+			"issue": f.issue, "artifact": f.notesID, "ops": []any{map[string]any{"op": "replace", "find": "Notes", "with": "Jottings"}},
 		}},
 		"dispatch_request_approval POST /api/v1/artifacts/{id}/approval-requests by issue": {arguments: map[string]any{
 			"issue": f.issue, "artifact": "spec", "summary": "Ready for review.",

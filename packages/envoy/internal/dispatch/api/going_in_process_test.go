@@ -34,11 +34,13 @@ func goingInProcessSend(t *testing.T, doer GoingDoer, spec goingSend) (int, stri
 // where the same body off the network is taken with the member ignored. A translator that sent
 // the ask a reply answers under `reply_to_ask` rather than the route's `ask_id` would otherwise
 // post the reply as a plain comment; a row whose translation is removed, so that it sends the
-// tool's own arguments, is refused by its route; and an upload's JSON member and multipart field
-// are held to the same.
+// tool's own arguments, is refused by its route; an upload's JSON member and multipart field are
+// held to the same; and so is a document edit, whose route reads its body's bytes again
+// (decodeJSONBody), on its slug route and its id route alike.
 func TestGoingInProcessRequestsRefuseAMemberTheirRouteDoesNotDeclare(t *testing.T) {
 	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "An issue to reply on", "The spec.\n").Key
+	created := createInteractionIssue(t, rig.mux, "DEMO", "An issue to reply on", "The spec.\n")
+	issue := created.Key
 	ask := rig.ask(t, issue, "Ship it on Friday?")
 	doer := rig.served.goingDoer(goingCallerOf(t, rig, false), testServerURL)
 	comments := func(t *testing.T, body string) (all, underTheAsk int) {
@@ -155,6 +157,38 @@ func TestGoingInProcessRequestsRefuseAMemberTheirRouteDoesNotDeclare(t *testing.
 			path: "/api/v1/agents/" + goingPlanner + "/artifacts", contentType: contentType, body: body})
 		if status != http.StatusCreated {
 			t.Fatalf("the in-process multipart upload with its own fields answered %d %s, want 201", status, answer)
+		}
+	})
+
+	t.Run("an edit's misspelt member", func(t *testing.T) {
+		edit := map[string]any{
+			"ops":    []any{map[string]any{"op": "replace", "find": "The spec.", "with": "The edited spec."}},
+			"sumary": "A summary under a misspelt member.",
+		}
+		before := documentMarkdown(t, rig.mux, created.PrimaryArtifactID)
+		for _, path := range []string{
+			goingIssuePath(issue, "artifacts", "spec", "edits"),
+			goingArtifactPath(created.PrimaryArtifactID, "edits"),
+		} {
+			spec, err := goingJSONRequest(http.MethodPost, path, edit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			status, answer := goingInProcessSend(t, doer, spec)
+			if status != http.StatusBadRequest || !strings.Contains(answer, "INVALID_JSON") || !strings.Contains(answer, "sumary") {
+				t.Fatalf("the in-process edit at %s naming sumary answered %d %s, want 400 INVALID_JSON naming sumary", path, status, answer)
+			}
+			if markdown := documentMarkdown(t, rig.mux, created.PrimaryArtifactID); markdown != before {
+				t.Fatalf("the refused in-process edit at %s left the spec %q, want it as it was: %q", path, markdown, before)
+			}
+		}
+		// Off the network the member is ignored and the edit is made: the refusal is the
+		// in-process request's alone.
+		if response := rig.browser(t, "alice", http.MethodPost, goingArtifactPath(created.PrimaryArtifactID, "edits"), edit); response.Code != http.StatusOK {
+			t.Fatalf("the same edit from the browser answered %d %s, want 200 with the member ignored", response.Code, response.Body.String())
+		}
+		if markdown := documentMarkdown(t, rig.mux, created.PrimaryArtifactID); !strings.Contains(markdown, "The edited spec.") {
+			t.Fatalf("the browser's edit left the spec %q, want it edited", markdown)
 		}
 	})
 }

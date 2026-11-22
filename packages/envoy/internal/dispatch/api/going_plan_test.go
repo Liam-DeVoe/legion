@@ -682,11 +682,7 @@ func TestARowApprovedAgainAfterItsReasonLandedSaysSoWhenItsIssueClosedMeanwhile(
 		!strings.HasPrefix(row.Result.Message, "the reason posted on "+issue+" was written; the close was not sent: "+issue+" closed at ") {
 		t.Fatalf("the row is %s with %+v, want it failed, refused, saying the reason on %s was written and the close was not sent", row.State, row.Result, issue)
 	}
-	for _, internal := range []string{"POST", "/api/v1/", "ISSUE_CLOSED", "409"} {
-		if strings.Contains(row.Result.Message, internal) {
-			t.Errorf("the row says %q, which names %q", row.Result.Message, internal)
-		}
-	}
+	goingNamesNone(t, "the row", row.Result.Message, "POST", "/api/v1/", "ISSUE_CLOSED", "409")
 	if reasons := rig.goingReasonsOn(t, issue, reason); reasons != 1 {
 		t.Errorf("%s holds %d reasons, want the one", issue, reasons)
 	}
@@ -699,6 +695,30 @@ func goingReasonOnlyLine(t *testing.T, line goingUndoLine, issue string) {
 	t.Helper()
 	if line.Plan != 1 || line.Row != 0 || line.Undo != goingUndoNotUndone || !line.Outcome.OK || line.Item != issue {
 		t.Fatalf("the reason's undo line is %+v, want row 0 of plan 1 on %s, sent, not undone", line, issue)
+	}
+}
+
+// goingNamesNone fails t where text names one of tokens as a whole token: a token that begins or
+// ends with a letter, a digit or an underscore is not found inside a longer run of them, so the
+// digits of a time the words carry, 08:37:52.516409Z, never name 409, while a status code the
+// words give still does. A token that ends with an underscore, dispatch_, names each word it
+// begins.
+func goingNamesNone(t *testing.T, what, text string, tokens ...string) {
+	t.Helper()
+	word := func(b byte) bool {
+		return b == '_' || '0' <= b && b <= '9' || 'a' <= b && b <= 'z' || 'A' <= b && b <= 'Z'
+	}
+	for _, token := range tokens {
+		pattern := regexp.QuoteMeta(token)
+		if word(token[0]) {
+			pattern = `\b` + pattern
+		}
+		if last := token[len(token)-1]; word(last) && last != '_' {
+			pattern += `\b`
+		}
+		if regexp.MustCompile(pattern).MatchString(text) {
+			t.Errorf("%s says %q, which names %q", what, text, token)
+		}
 	}
 }
 
@@ -1354,14 +1374,6 @@ func TestARowWhoseRouteCrashedPartwaySaysWhatWasWritten(t *testing.T) {
 // the undo of a write whose record holds nothing of what it left says nothing was put back.
 func TestARowAndAnUndoLineSayWhatHappenedInWords(t *testing.T) {
 	rig := newGoingPlanRig(t)
-	namesNone := func(t *testing.T, what, text string, names ...string) {
-		t.Helper()
-		for _, name := range names {
-			if strings.Contains(text, name) {
-				t.Errorf("%s says %q, which names %q", what, text, name)
-			}
-		}
-	}
 	t.Run("a row its translation refused", func(t *testing.T) {
 		issue := rig.issue(t, "Closed meanwhile")
 		const words = "close Closed meanwhile, saying why"
@@ -1382,7 +1394,7 @@ func TestARowAndAnUndoLineSayWhatHappenedInWords(t *testing.T) {
 		if row.State != "failed" || row.Result == nil || row.Result.Code != agentwire.CodeCallRefused || !strings.Contains(row.Result.Message, issue+" closed at") {
 			t.Fatalf("the row is %s with %+v, want it failed, refused, saying %s closed", row.State, row.Result, issue)
 		}
-		namesNone(t, "the row", row.Result.Message, "dispatch_", "409", "ISSUE_CLOSED")
+		goingNamesNone(t, "the row", row.Result.Message, "dispatch_", "409", "ISSUE_CLOSED")
 	})
 	t.Run("an undo line of a write whose record holds nothing of what it left", func(t *testing.T) {
 		issue := rig.issue(t, "Renamed unrecorded")
@@ -1392,7 +1404,7 @@ func TestARowAndAnUndoLineSayWhatHappenedInWords(t *testing.T) {
 		if line.Outcome.OK || line.Outcome.Code != codeGoingUndoAfterUnread || rig.title(t, issue) != "Renamed" {
 			t.Fatalf("Undo answered %+v and the title is %q, want nothing put back, %s", line.Outcome, rig.title(t, issue), codeGoingUndoAfterUnread)
 		}
-		namesNone(t, "the undo line", line.Outcome.Message, "dispatch_", "PATCH", "/api/v1/")
+		goingNamesNone(t, "the undo line", line.Outcome.Message, "dispatch_", "PATCH", "/api/v1/")
 	})
 }
 

@@ -148,13 +148,14 @@ func (e goingUntranslatable) Error() string { return string(e) }
 // that does not close the issue, which the update posts only before a close; and a sync's source
 // repository not written as owner/name, the two segments its route's path takes. An ask's `ref`
 // is none of these: the question carries it as a line of its own (goingAskBody). None needs a
-// read, so GoingCaller refuses such a call before its row's translation (prepare), with words no
-// translator repeats. Each is worded for the person reading the bar's panel - what the bar cannot
-// send, and what that person can do there - and names no tool, no argument, no command line and
-// no flag, none of which that person holds. A picture list, a link or a file path written empty
-// names no picture, link or file, so it counts as absent, as null does (which the action's schema
-// refuses first): no translator sends any of the three on, and the call is sent as it would be
-// without it.
+// read or a row, so GoingCaller refuses such a call before it holds the call to the tool's rule
+// and chooses its row (prepare), with words neither the rule nor a translator repeats. Each is
+// worded for the person reading the bar's panel - what the bar cannot send, and what that person
+// can do there - and names no tool, no argument, no command line and no flag, none of which that
+// person holds. A link or a file path written empty names no link or file, so it counts as
+// absent, as null does (which the action's schema refuses first), and a picture list written
+// empty is refused by the schema first too, since it holds one picture at least: no translator
+// sends any of the three on, and the call is sent as it would be without it.
 func goingUnsendable(action string, arguments map[string]any) string {
 	named := func(argument string) bool {
 		switch value := arguments[argument].(type) {
@@ -954,10 +955,13 @@ func goingReasonWhat(key string) string {
 // dismissed, so a call that sent its own items alone would delete every earlier one. The
 // translation reads the person's state as GET /api/v1/me/state answers it and sends the stored
 // list with the call's items added after it, each once, and the next seq of the row it read: the
-// route writes only a seq larger than the row's, so a write another tab made between the read and
-// this one is refused 409 STATE_STALE rather than written over. An issue the person holds no state
-// of reads as the row the route would create, nothing in the list and seq 0. pinned and
-// last_read_seq are sent as the call names them.
+// route refuses a write whose seq is not larger than the row's, 409 STATE_STALE, so a write
+// between the read and this one that carried a seq - every write of the list carries one - is
+// refused rather than written over. The issue page's pin toggle carries no seq and leaves the
+// row's as it was, so a pin or an unpin made there in between is not refused, and a call that
+// names pinned writes over it. An issue the person holds no state of reads as the row the route
+// would create, nothing in the list and seq 0. pinned and last_read_seq are sent as the call names
+// them.
 func goingTranslateIssueState(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
 	var state userState
 	if err := read.get(ctx, "/api/v1/me/state", &state); err != nil {
@@ -1183,8 +1187,8 @@ func goingTranslateSendOnIssue(ctx context.Context, read goingReader, call going
 	return posted, nil
 }
 
-// goingTranslateDocEdit sends the edit's operations, its precondition and its summary; the project
-// row takes the document's slug in its path as the call names it.
+// goingTranslateDocEdit sends the edit's operations, its precondition and its summary; the
+// document's own row takes its id in its path, and the project row its slug, as the call names it.
 func goingTranslateDocEdit(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	return goingCall{path: call.path, body: goingPick(call.arguments, "ops", "precondition", "summary")}, nil
 }

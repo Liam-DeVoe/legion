@@ -22,7 +22,7 @@ const (
 
 // ToolField is one argument a tool takes: an element of an array carries no name, and an
 // object's own arguments hang from Fields. Min and Max are the bounds the spec states, nil for
-// none: a text's length in characters, a list's count of items, or a number's value.
+// none: a text's length in UTF-16 units, a list's count of items, or a number's value.
 type ToolField struct {
 	Name        string        `json:"name,omitempty"`
 	Kind        ToolFieldKind `json:"kind"`
@@ -38,13 +38,16 @@ type ToolField struct {
 
 // DispatchTool is one tool of the `dispatch` CLI as its spec states it: the name it is called
 // by, the whole description a model chooses it on, the arguments it takes, a call those
-// arguments accept, and, for a tool that calls one route of the table as it stands, that route's
-// binding (Routes), empty for a tool whose command is written by hand.
+// arguments accept, the whole words of the cross-field rule its spec states beside its arguments
+// (Validation, DispatchToolSpec.validation's message), empty for a spec that states none, and, for
+// a tool that calls one route of the table as it stands, that route's binding (Routes), empty for
+// a tool whose command is written by hand.
 type DispatchTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	Arguments   []ToolField     `json:"arguments"`
 	Example     json.RawMessage `json:"example"`
+	Validation  string          `json:"validation,omitempty"`
 	Routes      []ToolRoute     `json:"routes,omitempty"`
 }
 
@@ -115,7 +118,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "before", Kind: ToolFieldString, Description: "Move the issue above this issue on its project's board: an issue key in the same project. With after, the issue lands between the two. The server refuses a key that does not exist, one in another project, this issue itself, an empty value, and a pair the board does not hold in that order."},
 			{Name: "after", Kind: ToolFieldString, Description: "Move the issue below this issue on its project's board: an issue key in the same project. With before, the issue lands between the two. The server refuses a key that does not exist, one in another project, this issue itself, an empty value, and a pair the board does not hold in that order."},
 		},
-		Example: json.RawMessage("{\"issue\":\"DSP-1\",\"priority\":1,\"before\":\"DSP-2\"}"),
+		Example:    json.RawMessage("{\"issue\":\"DSP-1\",\"priority\":1,\"before\":\"DSP-2\"}"),
+		Validation: "Issue update requires at least one field besides issue: status, title, labels, priority, assignee, external_links, route, parent, blocked_by, advances, components, repo, before, or after. status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note; reason goes only with status done.",
 	},
 	{
 		Name:        "dispatch_claim",
@@ -148,7 +152,8 @@ var DispatchTools = []DispatchTool{
 			}},
 			{Name: "images", Kind: ToolFieldArray, Description: "Optional local picture files to show inline: PNG, JPEG, GIF or WebP (by their bytes, not their name), each at most 25 MiB. Each is uploaded to the issue (or the project document's project) and appended after a blank line as one ![<file name>](dispatch://…@vN) line, in this order; those lines count toward the bound Dispatch holds the text to, which it names in its refusal.", Min: new(float64(1)), Item: &ToolField{Kind: ToolFieldString, Required: true, Min: new(float64(1))}},
 		},
-		Example: json.RawMessage("{\"issue\":\"DSP-1\",\"question\":\"Release 4.2 ships Friday. Tuesday's plan change makes its migration drop the sessions.legacy_token column, and nobody has reviewed that change. Shipped unreviewed, a wrong drop signs out the 1,240 users still on legacy tokens. Held for review, 4.2 ships Monday. Ship Friday unreviewed, or hold to Monday? Recommendation: hold to Monday; no user waits on 4.2, and 1,240 forced sign-ins cost more than three days.\",\"options\":[{\"label\":\"Hold to Monday\",\"description\":\"4.2 ships three days late, with the column drop reviewed.\"},{\"label\":\"Ship Friday\",\"description\":\"On time; a wrong drop signs out 1,240 users.\"}]}"),
+		Example:    json.RawMessage("{\"issue\":\"DSP-1\",\"question\":\"Release 4.2 ships Friday. Tuesday's plan change makes its migration drop the sessions.legacy_token column, and nobody has reviewed that change. Shipped unreviewed, a wrong drop signs out the 1,240 users still on legacy tokens. Held for review, 4.2 ships Monday. Ship Friday unreviewed, or hold to Monday? Recommendation: hold to Monday; no user waits on 4.2, and 1,240 forced sign-ins cost more than three days.\",\"options\":[{\"label\":\"Hold to Monday\",\"description\":\"4.2 ships three days late, with the column drop reviewed.\"},{\"label\":\"Ship Friday\",\"description\":\"On time; a wrong drop signs out 1,240 users.\"}]}"),
+		Validation: "Exactly one of issue and project is required; with project, artifact names the document.",
 	},
 	{
 		Name:        "dispatch_edit_ask",
@@ -163,7 +168,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "multiple", Kind: ToolFieldBoolean, Description: "Whether multiple choices may be selected."},
 			{Name: "urgency", Kind: ToolFieldEnum, Description: "Replacement decision urgency.", Values: []string{"low", "med", "high", "blocking"}},
 		},
-		Example: json.RawMessage("{\"ask\":\"01234567-0000-4000-8000-000000000001\",\"question\":\"Release 4.2 ships Friday. Tuesday's plan change makes its migration drop the sessions.legacy_token column, and nobody has reviewed that change. Shipped unreviewed, a wrong drop signs out the 1,240 users still on legacy tokens. Held for review, 4.2 ships Monday. Ship Friday unreviewed, or hold to Monday? Recommendation: hold to Monday; no user waits on 4.2, and 1,240 forced sign-ins cost more than three days.\",\"options\":[{\"label\":\"Hold to Monday\",\"description\":\"4.2 ships three days late, with the column drop reviewed.\"},{\"label\":\"Ship Friday\",\"description\":\"On time; a wrong drop signs out 1,240 users.\"}]}"),
+		Example:    json.RawMessage("{\"ask\":\"01234567-0000-4000-8000-000000000001\",\"question\":\"Release 4.2 ships Friday. Tuesday's plan change makes its migration drop the sessions.legacy_token column, and nobody has reviewed that change. Shipped unreviewed, a wrong drop signs out the 1,240 users still on legacy tokens. Held for review, 4.2 ships Monday. Ship Friday unreviewed, or hold to Monday? Recommendation: hold to Monday; no user waits on 4.2, and 1,240 forced sign-ins cost more than three days.\",\"options\":[{\"label\":\"Hold to Monday\",\"description\":\"4.2 ships three days late, with the column drop reviewed.\"},{\"label\":\"Ship Friday\",\"description\":\"On time; a wrong drop signs out 1,240 users.\"}]}"),
+		Validation: "Ask edit requires at least one field besides ask.",
 	},
 	{
 		Name:        "dispatch_resolve_ask",
@@ -209,7 +215,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "mentions", Kind: ToolFieldArray, Description: "Optional targets the comment mentions: role:<name> (lowercase letters, digits and -), which reaches the session holding that role, or session:<id> (letters, digits, _ and -); at most 10, none named twice. Dispatch delivers the comment to each target, retries a send that does not go through, and records every attempt on the comment.", Item: &ToolField{Kind: ToolFieldString, Required: true}},
 			{Name: "images", Kind: ToolFieldArray, Description: "Optional local picture files to show inline: PNG, JPEG, GIF or WebP (by their bytes, not their name), each at most 25 MiB. Each is uploaded to the issue (or the project document's project) and appended after a blank line as one ![<file name>](dispatch://…@vN) line, in this order; those lines count toward the bound Dispatch holds the text to, which it names in its refusal.", Min: new(float64(1)), Item: &ToolField{Kind: ToolFieldString, Required: true, Min: new(float64(1))}},
 		},
-		Example: json.RawMessage("{\"issue\":\"DSP-1\",\"body\":\"Looks good.\"}"),
+		Example:    json.RawMessage("{\"issue\":\"DSP-1\",\"body\":\"Looks good.\"}"),
+		Validation: "Exactly one of issue and project is required; with project, artifact names the document. turn requires reply_to_ask: turn says who holds an open ask's thread after the reply. Pass reply_to_ask with the open ask's id, or drop turn. mentions allow at most 10 targets, each mention target must be role:<name> or session:<id>, and mentions must not repeat a target.",
 	},
 	{
 		Name:        "dispatch_suggest",
@@ -224,7 +231,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "body", Kind: ToolFieldString, Description: "Optional rationale. Each block (a paragraph, list, quote, table or code block) holds at most 32000 characters and a body at most 32768 blocks; Dispatch refuses a longer one and names it, and `dispatch limits` prints the bounds. A body holding a decision block (`:::ask`) is refused however short it is, since nobody can answer a question put in a comment or a message: ask the question in the issue's own document, as a decision block there, or open an ask with `dispatch ask`."},
 			{Name: "occurrence", Kind: ToolFieldNumber, Description: "Optional zero-based occurrence of quote.", Min: new(float64(0))},
 		},
-		Example: json.RawMessage("{\"issue\":\"DSP-1\",\"artifact\":\"spec\",\"quote\":\"old wording\",\"replace_with\":\"new wording\"}"),
+		Example:    json.RawMessage("{\"issue\":\"DSP-1\",\"artifact\":\"spec\",\"quote\":\"old wording\",\"replace_with\":\"new wording\"}"),
+		Validation: "Exactly one of issue and project is required; artifact or ref must name the document.",
 	},
 	{
 		Name:        "dispatch_message",
@@ -235,7 +243,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "in_reply_to", Kind: ToolFieldString, Description: "Optional message id or dispatch://KEY/message/<id> reference to reply to, threading this message under it so the reply stays with the original in the Conversation. A block reference to one block of the message (dispatch://KEY/message/<id>#b-<block id>) replies to that message and names the passage the reply answers. A bare id with no issue answers a human's direct message to this session; a dispatch://KEY/message/<id> names the issue its message lives on, so that form is a reply on that issue."},
 			{Name: "images", Kind: ToolFieldArray, Description: "Optional local picture files to show inline: PNG, JPEG, GIF or WebP (by their bytes, not their name), each at most 25 MiB. Each is uploaded to the issue (a reply to a direct message: your own conversation, dispatch://agent/<your session id>) and appended after a blank line as one ![<file name>](dispatch://…@vN) line, in this order; those lines count toward the bound Dispatch holds the text to, which it names in its refusal.", Min: new(float64(1)), Item: &ToolField{Kind: ToolFieldString, Required: true, Min: new(float64(1))}},
 		},
-		Example: json.RawMessage("{\"issue\":\"DSP-1\",\"body\":\"Implementation started.\"}"),
+		Example:    json.RawMessage("{\"issue\":\"DSP-1\",\"body\":\"Implementation started.\"}"),
+		Validation: "issue is required unless in_reply_to names a message delivered to this session, which is the one message with no issue.",
 	},
 	{
 		Name:        "dispatch_send_to_agent",
@@ -278,7 +287,8 @@ var DispatchTools = []DispatchTool{
 			}},
 			{Name: "summary", Kind: ToolFieldString, Description: "Optional named-version summary."},
 		},
-		Example: json.RawMessage("{\"issue\":\"DSP-1\",\"artifact\":\"spec\",\"ops\":[{\"op\":\"delete_column\",\"block\":\"table-123\",\"index\":1}],\"precondition\":{\"blocks\":[{\"id\":\"table-123\",\"token\":\"sha256:current-table-token\"}]}}"),
+		Example:    json.RawMessage("{\"issue\":\"DSP-1\",\"artifact\":\"spec\",\"ops\":[{\"op\":\"delete_column\",\"block\":\"table-123\",\"index\":1}],\"precondition\":{\"blocks\":[{\"id\":\"table-123\",\"token\":\"sha256:current-table-token\"}]}}"),
+		Validation: "Exactly one of issue and project is required; with project, artifact names the document. A precondition selects exactly one of document or blocks. A replace names with and takes find, with and occurrence alone: with \"\" deletes the match on purpose, and a replace without with, or with its new text under another key such as markdown, would delete the match too.",
 	},
 	{
 		Name:        "dispatch_doc_read",
@@ -291,7 +301,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "blocks", Kind: ToolFieldBoolean, Description: "List the live document's blocks, with a typed block's serves and needs and each table's rows and cells, instead of its markdown; refused with a version, or for an uploaded file."},
 			{Name: "ref", Kind: ToolFieldString, Description: "Optional dispatch:// document reference; a picture in a conversation on the Agents page is dispatch://agent/<session id>/artifact/<slug>@vN."},
 		},
-		Example: json.RawMessage("{\"issue\":\"DSP-1\"}"),
+		Example:    json.RawMessage("{\"issue\":\"DSP-1\"}"),
+		Validation: "Exactly one of issue and project is required; with project, artifact names the document.",
 	},
 	{
 		Name:        "dispatch_request_approval",
@@ -303,7 +314,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "summary", Kind: ToolFieldString, Required: true, Description: "What the human is approving, in one to three sentences, and nothing else: no commentary on itself or the conversation, and no question; after an earlier approval, one sentence naming what changed since it, since the card shows that approval and a diff. A Legion architect adds one last sentence with its two spec reviews' results. Request approval only once the human has agreed to every point in the document.", Min: new(float64(1))},
 			{Name: "include_verification", Kind: ToolFieldBoolean, Description: "Ask for the issue's Verification document in the same request, beside this one: one Inbox card names both at their current versions, and the answer records the human's review on each. 409 NO_VERIFICATION_DOCUMENT when the issue has no verification.md. Without it the request names this document alone and records nothing on the Verification document."},
 		},
-		Example: json.RawMessage("{\"issue\":\"DSP-1\",\"summary\":\"A live sync replaces the nightly export.\"}"),
+		Example:    json.RawMessage("{\"issue\":\"DSP-1\",\"summary\":\"A live sync replaces the nightly export.\"}"),
+		Validation: "Exactly one of issue and project is required; with project, artifact names the document.",
 	},
 	{
 		Name:        "dispatch_plan_approve",
@@ -325,7 +337,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "verdict", Kind: ToolFieldEnum, Required: true, Description: "approved records an approval; changes_requested records a request for changes and requires reason.", Values: []string{"approved", "changes_requested"}},
 			{Name: "reason", Kind: ToolFieldString, Description: "What must change before the document can be approved. changes_requested requires it; an approval may carry one."},
 		},
-		Example: json.RawMessage("{\"issue\":\"DSP-1\",\"version\":2,\"verdict\":\"approved\"}"),
+		Example:    json.RawMessage("{\"issue\":\"DSP-1\",\"version\":2,\"verdict\":\"approved\"}"),
+		Validation: "verdict changes_requested requires reason, a non-empty note saying what must change before the document can be approved.",
 	},
 	{
 		Name:        "dispatch_result",
@@ -347,7 +360,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "retract", Kind: ToolFieldString, Description: "The id of a result recorded before. It records that the result is wrong, and it takes reason alone beside it."},
 			{Name: "reason", Kind: ToolFieldString, Description: "Why the retracted result is wrong. It goes with retract and with nothing else."},
 		},
-		Example: json.RawMessage("{\"issue\":\"DSP-1\",\"check\":\"k1\",\"role\":\"implementer\",\"verdict\":\"pass\",\"commit\":\"1111111111111111111111111111111111111111\"}"),
+		Example:    json.RawMessage("{\"issue\":\"DSP-1\",\"check\":\"k1\",\"role\":\"implementer\",\"verdict\":\"pass\",\"commit\":\"1111111111111111111111111111111111111111\"}"),
+		Validation: "Pass retract with the id of a result recorded before, and reason with why that result is wrong, to retract it. A call with retract takes reason and no other argument. A call without retract records a result, and it takes issue, check, role, verdict and commit.",
 	},
 	{
 		Name:        "dispatch_results",
@@ -374,7 +388,8 @@ var DispatchTools = []DispatchTool{
 			}},
 			{Name: "summary", Kind: ToolFieldString, Description: "Optional version summary."},
 		},
-		Example: json.RawMessage("{\"issue\":\"DSP-1\",\"name\":\"design.md\",\"content\":\"# Design\\n\"}"),
+		Example:    json.RawMessage("{\"issue\":\"DSP-1\",\"name\":\"design.md\",\"content\":\"# Design\\n\"}"),
+		Validation: "Give at most one of path and content. A call with neither makes an empty document under the name, which a person or an agent writes in afterwards with dispatch doc-edit. Exactly one of issue and project is required; with project, artifact names the document. content is stored as a Markdown document, which rewrites other text (a JSONL file's lines come back joined into one paragraph), so a document's name ends in .md or .markdown or has no extension, under content and under neither flag alike; upload any other file (.jsonl, .tsv, .json, .txt) with path (--path <file>), which stores a file whose path does not end in .md or .markdown as its bytes, unchanged.",
 	},
 	{
 		Name:        "dispatch_read",
@@ -388,7 +403,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "events", Kind: ToolFieldNumber, Description: "How many of the issue's newest events an issue read or its dispatch://KEY/log lists, oldest first; default 10. Name no --all-events with it.", Min: new(float64(1))},
 			{Name: "all_events", Kind: ToolFieldBoolean, Description: "List every one of the issue's events, oldest first, on an issue read or its dispatch://KEY/log, in place of the last 10. Name no --events with it."},
 		},
-		Example: json.RawMessage("{\"issue\":\"DSP-1\"}"),
+		Example:    json.RawMessage("{\"issue\":\"DSP-1\"}"),
+		Validation: "Exactly one of issue and project is required; project alone lists its documents, and with artifact names one. message stands alone: it names the conversation, so name no issue, project, artifact, or ref with it.",
 	},
 	{
 		Name:        "dispatch_search",
@@ -399,7 +415,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "limit", Kind: ToolFieldNumber, Description: "Maximum results, 1-50; default 20.", Min: new(float64(1)), Max: new(float64(50))},
 			{Name: "offset", Kind: ToolFieldNumber, Description: "Results to skip before the page; nonnegative integer; default 0.", Min: new(float64(0))},
 		},
-		Example: json.RawMessage("{\"query\":\"astrolabe\"}"),
+		Example:    json.RawMessage("{\"query\":\"astrolabe\"}"),
+		Validation: "project is not a project key: an uppercase letter, then 1 to 9 uppercase letters or digits, such as CORE",
 	},
 	{
 		Name:        "dispatch_related",
@@ -411,7 +428,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "exclude_issues", Kind: ToolFieldArray, Description: "Optional issue keys in the project whose own items are left out of the results; at most 50.", Item: &ToolField{Kind: ToolFieldString, Required: true}},
 			{Name: "keywords_only", Kind: ToolFieldBoolean, Description: "Search by keywords only, skipping meaning search."},
 		},
-		Example: json.RawMessage("{\"project\":\"CORE\",\"title\":\"Retry failed webhook deliveries\"}"),
+		Example:    json.RawMessage("{\"project\":\"CORE\",\"title\":\"Retry failed webhook deliveries\"}"),
+		Validation: "project is not a project key: an uppercase letter, then 1 to 9 uppercase letters or digits, such as CORE",
 	},
 	{
 		Name:        "dispatch_issues",
@@ -461,7 +479,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "project", Kind: ToolFieldString, Required: true, Description: "Project key whose architecture sources to sync, such as CORE."},
 			{Name: "repo", Kind: ToolFieldString, Description: "One source repository of the project to sync alone, owner/name; omit it to sync every source."},
 		},
-		Example: json.RawMessage("{\"project\":\"CORE\",\"repo\":\"acme/infra\"}"),
+		Example:    json.RawMessage("{\"project\":\"CORE\",\"repo\":\"acme/infra\"}"),
+		Validation: "repo is not a repository: give it as owner/name, such as acme/infra.",
 	},
 	{
 		Name:        "dispatch_open_asks",
@@ -497,7 +516,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "phase", Kind: ToolFieldString, Required: true, Description: "The phase the handoff ends: a lowercase slug such as plan, implement, test or review."},
 			{Name: "body", Kind: ToolFieldString, Required: true, Description: "The handoff: one JSON object, at most 262144 bytes, stored and read back exactly as sent.", Min: new(float64(1))},
 		},
-		Example: json.RawMessage("{\"issue\":\"DSP-1\",\"phase\":\"implement\",\"body\":\"{\\\"schemaVersion\\\":1,\\\"phase\\\":\\\"implement\\\",\\\"issue\\\":\\\"DSP-1\\\"}\"}"),
+		Example:    json.RawMessage("{\"issue\":\"DSP-1\",\"phase\":\"implement\",\"body\":\"{\\\"schemaVersion\\\":1,\\\"phase\\\":\\\"implement\\\",\\\"issue\\\":\\\"DSP-1\\\"}\"}"),
+		Validation: "phase is not a handoff phase: a lowercase letter, then up to 31 lowercase letters, digits or hyphens, such as implement; the body is one JSON object.",
 	},
 	{
 		Name:        "dispatch_handoff_read",
@@ -507,7 +527,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "phase", Kind: ToolFieldString, Required: true, Description: "The handoff's phase: a lowercase slug such as plan, implement, test or review."},
 			{Name: "version", Kind: ToolFieldNumber, Description: "The version to read, from 1; omit it to read the newest.", Min: new(float64(1))},
 		},
-		Example: json.RawMessage("{\"issue\":\"DSP-1\",\"phase\":\"implement\"}"),
+		Example:    json.RawMessage("{\"issue\":\"DSP-1\",\"phase\":\"implement\"}"),
+		Validation: "phase is not a handoff phase: a lowercase letter, then up to 31 lowercase letters, digits or hyphens, such as implement; the body is one JSON object.",
 	},
 	{
 		Name:        "dispatch_steps",
@@ -525,7 +546,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "since", Kind: ToolFieldString, Description: "Optional RFC 3339 time; only issues closed at or after it."},
 			{Name: "until", Kind: ToolFieldString, Description: "Optional RFC 3339 time; only issues closed before it."},
 		},
-		Example: json.RawMessage("{\"project\":\"INFRA\"}"),
+		Example:    json.RawMessage("{\"project\":\"INFRA\"}"),
+		Validation: "project is not a project key: an uppercase letter, then 1 to 9 uppercase letters or digits, such as CORE",
 	},
 	{
 		Name:        "dispatch_inbox",
@@ -572,7 +594,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "exclude_issues", Kind: ToolFieldArray, Description: "Issues of the project the check leaves out of its results, by key: at most 50.", Max: new(float64(50)), Item: &ToolField{Kind: ToolFieldString, Required: true, Min: new(float64(1))}},
 			{Name: "keywords_only", Kind: ToolFieldBoolean, Description: "Search by keywords alone, without the meaning search."},
 		},
-		Example: json.RawMessage("{\"project\":\"DSP\",\"title\":\"Search misses renamed issues\"}"),
+		Example:    json.RawMessage("{\"project\":\"DSP\",\"title\":\"Search misses renamed issues\"}"),
+		Validation: "title and text together are at most 1000 characters, each trimmed, with a line break between them; dispatch related checks a longer text.",
 		Routes: []ToolRoute{
 			{Method: "GET", Pattern: "/api/v1/projects/{key}/related", Path: map[string]string{"key": "project"}, Query: []string{"title", "text", "exclude_issues", "keywords_only"}},
 		},
@@ -905,7 +928,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "description", Kind: ToolFieldString, Description: "What the priority is, in markdown."},
 			{Name: "owner", Kind: ToolFieldString, Description: "The person who owns the priority."},
 		},
-		Example: json.RawMessage("{\"title\":\"Ship the command bar\"}"),
+		Example:    json.RawMessage("{\"title\":\"Ship the command bar\"}"),
+		Validation: "A title over 200 characters names id as well: the id the title would give is longer than an id may be.",
 		Routes: []ToolRoute{
 			{Method: "POST", Pattern: "/api/v1/priorities", Body: []string{"title", "id", "description", "owner"}},
 		},
@@ -923,7 +947,8 @@ var DispatchTools = []DispatchTool{
 				{Name: "after", Kind: ToolFieldString, Description: "The priority this one lands below."},
 			}},
 		},
-		Example: json.RawMessage("{\"priority\":\"ship-the-command-bar\",\"title\":\"Ship the command bar to everyone\"}"),
+		Example:    json.RawMessage("{\"priority\":\"ship-the-command-bar\",\"title\":\"Ship the command bar to everyone\"}"),
+		Validation: "A call names at least one of title, description, owner and rank, and rank names before, after, or both.",
 		Routes: []ToolRoute{
 			{Method: "PATCH", Pattern: "/api/v1/priorities/{id}", Path: map[string]string{"id": "priority"}, Body: []string{"title", "description", "owner", "rank"}},
 		},
@@ -1169,7 +1194,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "issue", Kind: ToolFieldString, Description: "One issue's threads alone; not with artifact."},
 			{Name: "artifact", Kind: ToolFieldString, Description: "One document's threads alone, by its whole id; not with issue."},
 		},
-		Example: json.RawMessage("{\"read_through\":\"2026-11-19T00:00:00Z\"}"),
+		Example:    json.RawMessage("{\"read_through\":\"2026-11-19T00:00:00Z\"}"),
+		Validation: "Name issue or artifact, not both.",
 		Routes: []ToolRoute{
 			{Method: "POST", Pattern: "/api/v1/me/inbox/read", Body: []string{"read_through", "kind", "priority", "urgency", "project", "issue", "artifact"}},
 		},
@@ -1189,7 +1215,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "artifact", Kind: ToolFieldString, Description: "One document's threads alone, by its whole id; not with issue."},
 			{Name: "restore", Kind: ToolFieldBoolean, Description: "Put the threads back instead of taking them out."},
 		},
-		Example: json.RawMessage("{\"threads\":[\"reply:0190c7d2-1111-7222-8333-444444444444\"],\"seen_replies\":{\"reply:0190c7d2-1111-7222-8333-444444444444\":{\"version\":3}}}"),
+		Example:    json.RawMessage("{\"threads\":[\"reply:0190c7d2-1111-7222-8333-444444444444\"],\"seen_replies\":{\"reply:0190c7d2-1111-7222-8333-444444444444\":{\"version\":3}}}"),
+		Validation: "Name rows in threads, or the narrowing with dismiss_through, never both. Taking named rows out carries seen_replies; a restore carries none. Name issue or artifact, not both.",
 		Routes: []ToolRoute{
 			{Method: "POST", Pattern: "/api/v1/me/inbox/dismiss", Body: []string{"threads", "seen_replies", "dismiss_through", "kind", "priority", "urgency", "project", "issue", "artifact", "restore"}},
 		},
@@ -1342,7 +1369,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "text", Kind: ToolFieldString, Description: "The answer's words."},
 			{Name: "expected_answer_at", Kind: ToolFieldString, Description: "The time of the answer this one replaces, when the ask holds one."},
 		},
-		Example: json.RawMessage("{\"ask\":\"0190c7d2-1111-7222-8333-444444444444\",\"expected_edited_at\":null,\"selected\":[\"Hold to Monday\"]}"),
+		Example:    json.RawMessage("{\"ask\":\"0190c7d2-1111-7222-8333-444444444444\",\"expected_edited_at\":null,\"selected\":[\"Hold to Monday\"]}"),
+		Validation: "An answer names selected, text, or both.",
 		Routes: []ToolRoute{
 			{Method: "POST", Pattern: "/api/v1/asks/{id}/answer", Path: map[string]string{"id": "ask"}, Body: []string{"expected_edited_at", "selected", "text", "expected_answer_at"}},
 		},
@@ -1416,7 +1444,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "reply_to_block", Kind: ToolFieldString, Description: "The block of the comment the reply's body answers; only with body."},
 			{Name: "target", Kind: ToolFieldString, Description: "The mention the reply answers, exactly as the comment stores it and dispatch read-comment's deliveries name it: session:<session id> or role:<role name>; required when the comment has several.", Min: new(float64(1))},
 		},
-		Example: json.RawMessage("{\"comment\":\"0190c7d2-1111-7222-8333-444444444444\",\"attempt\":1,\"body\":\"Done.\",\"target\":\"session:session-0123456789abcdef\"}"),
+		Example:    json.RawMessage("{\"comment\":\"0190c7d2-1111-7222-8333-444444444444\",\"attempt\":1,\"body\":\"Done.\",\"target\":\"session:session-0123456789abcdef\"}"),
+		Validation: "A reply carries exactly one of body and error, and reply_to_block goes with a body alone.",
 		Routes: []ToolRoute{
 			{Method: "POST", Pattern: "/api/v1/comments/{id}/reply", Path: map[string]string{"id": "comment"}, Body: []string{"attempt", "body", "error", "reply_to_block", "target"}},
 		},
@@ -1465,7 +1494,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "order", Kind: ToolFieldEnum, Description: "Oldest first (asc, the default) or newest first (desc); desc takes no after.", Values: []string{"asc", "desc"}},
 			{Name: "limit", Kind: ToolFieldNumber, Description: "How many events a page holds, 1 to 200; 200 by default.", Min: new(float64(1)), Max: new(float64(200))},
 		},
-		Example: json.RawMessage("{\"document\":\"0190c7d2-1111-7222-8333-444444444444\"}"),
+		Example:    json.RawMessage("{\"document\":\"0190c7d2-1111-7222-8333-444444444444\"}"),
+		Validation: "after takes neither before nor order desc.",
 		Routes: []ToolRoute{
 			{Method: "GET", Pattern: "/api/v1/artifacts/{id}/events", Path: map[string]string{"id": "document"}, Query: []string{"after", "before", "order", "limit"}},
 		},
@@ -1569,7 +1599,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "state", Kind: ToolFieldEnum, Required: true, Description: "approved, or changes_requested with a reason.", Values: []string{"approved", "changes_requested"}},
 			{Name: "reason", Kind: ToolFieldString, Description: "What must change, at most 32000 characters; changes_requested requires it.", Max: new(float64(32000))},
 		},
-		Example: json.RawMessage("{\"document\":\"0190c7d2-1111-7222-8333-444444444444\",\"state\":\"approved\"}"),
+		Example:    json.RawMessage("{\"document\":\"0190c7d2-1111-7222-8333-444444444444\",\"state\":\"approved\"}"),
+		Validation: "state changes_requested requires reason, a non-empty note saying what must change.",
 		Routes: []ToolRoute{
 			{Method: "POST", Pattern: "/api/v1/artifacts/{id}/reviews", Path: map[string]string{"id": "document"}, Body: []string{"state", "reason"}},
 		},
@@ -1643,7 +1674,8 @@ var DispatchTools = []DispatchTool{
 			{Name: "read_through", Kind: ToolFieldString, Description: "Mark it read up to this time. An RFC 3339 time, such as 2026-11-19T00:00:00Z."},
 			{Name: "read_replies", Kind: ToolFieldArray, Description: "The session's replies read, by message id.", Item: &ToolField{Kind: ToolFieldString, Required: true, Min: new(float64(1))}},
 		},
-		Example: json.RawMessage("{\"session\":\"session-0123456789abcdef\",\"pinned\":true}"),
+		Example:    json.RawMessage("{\"session\":\"session-0123456789abcdef\",\"pinned\":true}"),
+		Validation: "Name at least one of pinned, cleared_before, read_through and read_replies (one reply or more).",
 		Routes: []ToolRoute{
 			{Method: "PUT", Pattern: "/api/v1/me/agents/{session_id}/state", Path: map[string]string{"session_id": "session"}, Body: []string{"pinned", "cleared_before", "read_through", "read_replies"}},
 		},
@@ -1720,7 +1752,7 @@ var DispatchTools = []DispatchTool{
 	},
 	{
 		Name:        "dispatch_set_issue_state",
-		Description: "Change the dashboard state of the person you act for on one issue: pin or unpin the issue, move the event they read up to, or add items to the issue's list of the items pinned on its page and dismissed. That list holds a marker for each item pinned on the issue's page, pinned_items:<kind>:<id> with kind event, ask, comment, message or handoff. The items named are added and every item already in the list stays, so this tool takes no item out. Dispatch reads the person's state of the issue and writes it back with the change, and refuses the write (409 STATE_STALE) where another write changed that state in between. Undo does not change it back.",
+		Description: "Change the dashboard state of the person you act for on one issue: pin or unpin the issue, move the event they read up to, or add items to the issue's list of the items pinned on its page and dismissed. That list holds a marker for each item pinned on the issue's page, pinned_items:<kind>:<id> with kind event, ask, comment, message or handoff. The items named are added and every item already in the list stays, so this tool takes no item out. Dispatch reads the person's state of the issue and writes it back with the change under the next seq, and refuses the write (409 STATE_STALE) where another write that carried a seq changed that state in between: every write of the list carries one. The issue page's pin toggle carries none, so a pin or an unpin made there in between is not refused, and a call that names pinned writes over it. Undo does not change it back.",
 		Arguments: []ToolField{
 			{Name: "issue", Kind: ToolFieldString, Required: true, Description: "Issue key, such as DSP-1."},
 			{Name: "pinned", Kind: ToolFieldBoolean, Description: "Pin or unpin the issue."},

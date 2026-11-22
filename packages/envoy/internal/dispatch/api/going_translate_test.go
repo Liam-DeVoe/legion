@@ -109,10 +109,10 @@ func goingGuardValue(field contracts.ToolField, n int) any {
 }
 
 // goingGuardBase is an argument map that makes chooseGoingRoute pick route and that route's
-// translator build a request without error: the row's own path arguments, its guard, and a few
-// enablers (content for an upload, a quote and a document for an anchor, a done status for a
-// reason) added only where they do not divert the row. The session the caller acts as is returned
-// beside it.
+// translator build a request without error: the row's own path arguments, its guard - a whole id
+// for a row guarded by goingAnID - and a few enablers (content for an upload, a quote and a
+// document for an anchor, a done status for a reason) added only where they do not divert the
+// row. The session the caller acts as is returned beside it.
 func goingGuardBase(entry GoingAction, route GoingRoute) (map[string]any, string, bool) {
 	const session = "11111111-0000-4000-8000-000000000000"
 	args := map[string]any{}
@@ -135,6 +135,9 @@ func goingGuardBase(entry GoingAction, route GoingRoute) (map[string]any, string
 	}
 	if route.whenArgument != "" {
 		args[route.whenArgument] = route.whenValue
+		if route.whenValue == goingAnID {
+			args[route.whenArgument] = goingGuardUUID(n)
+		}
 	}
 	selects := func(candidate map[string]any) bool {
 		got, _, ok := chooseGoingRoute(entry, candidate, session)

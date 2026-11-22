@@ -40,7 +40,9 @@ type goingToolRoute struct {
 	Path map[string]string
 	// WhenArgument and WhenValue pick this row among the tool's: a claim and its release are
 	// one tool and two rows, told apart by `release`, as a follow and its unfollow are by
-	// `action`. An empty WhenArgument is a row nothing guards.
+	// `action`. WhenValue goingAnID picks the row for a call whose WhenArgument is a whole id, as
+	// an edit of a document named by id is told apart from one named by slug. An empty
+	// WhenArgument is a row nothing guards.
 	WhenArgument string
 	WhenValue    any
 	// Relations are the graph relations this row's write makes, each a structural edge kind
@@ -55,6 +57,16 @@ type goingToolRoute struct {
 	// a write that is not undone (goingWriteTool.Undo).
 	UndoRoutes []string
 }
+
+// goingIDGuard is the type of goingAnID.
+type goingIDGuard struct{}
+
+// goingAnID, as a row's WhenValue, picks the row for a call whose WhenArgument is a whole id
+// (goingIsID) rather than a name.
+var goingAnID goingIDGuard
+
+// String is how a refusal that names the row's guard says it (goingNoRouteReason).
+func (goingIDGuard) String() string { return "a whole id" }
 
 // The routes the undos write through beside the catalogue's own rows, named once each, and the
 // three an upload writes through, whose owner a write reads before it (goingRouteUploadOwner).
@@ -481,12 +493,22 @@ var goingWriteTools = map[string]goingWriteTool{
 		Class: goingClassMessage, Event: "message.created", Proposed: true,
 	},
 	// A document's content is written back by an upload of the content read before the edit,
-	// under the document's own name, through its owner's upload route. The issue row binds both
-	// its placeholders to the issue, so a call naming the issue alone takes it and edits the
-	// issue's spec, as the tool's spec says; the translation reads the document's slug from
-	// artifact (goingTranslateIssueDocEdit).
+	// under the document's own name, through its owner's upload route. A call naming the
+	// document by id, beside the issue or the project its spec requires, takes the first row,
+	// the document's own route, since the owner's slug routes read a slug or a filename and
+	// never an id. The issue row binds both its placeholders to the issue, so a call naming the
+	// issue alone takes it and edits the issue's spec, as the tool's spec says; the translation
+	// reads the document's slug from artifact (goingTranslateIssueDocEdit).
 	"dispatch_doc_edit": {
 		Routes: []goingToolRoute{
+			{
+				Method: http.MethodPost, Pattern: "/api/v1/artifacts/{id}/edits",
+				Path:         map[string]string{"id": "artifact"},
+				WhenArgument: "artifact", WhenValue: goingAnID,
+				Relations:  []string{"mentions", "needs", "serves"},
+				Translate:  goingTranslateDocEdit,
+				UndoRoutes: []string{goingIssueUploadRoute, goingProjectUploadRoute},
+			},
 			{
 				Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/artifacts/{slug}/edits",
 				Path:       map[string]string{"key": "issue", "slug": "issue"},
@@ -501,21 +523,14 @@ var goingWriteTools = map[string]goingWriteTool{
 				Translate:  goingTranslateDocEdit,
 				UndoRoutes: []string{goingProjectUploadRoute},
 			},
-			{
-				Method: http.MethodPost, Pattern: "/api/v1/artifacts/{id}/edits",
-				Path:       map[string]string{"id": "artifact"},
-				Relations:  []string{"mentions", "needs", "serves"},
-				Translate:  goingTranslateDocEdit,
-				UndoRoutes: []string{goingIssueUploadRoute, goingProjectUploadRoute},
-			},
 		},
 		Observe: goingObserver.documentEditedBy, Undo: goingUndoWriteBack,
 		Class: goingClassText, Event: "artifact.version", Proposed: true,
 	},
 	// An approval request opens an ask, so its undo is that ask's retraction. The first row binds
 	// the request's document to the issue the call names, whose spec, or whose document the call
-	// names, the translation reads; the second takes a call naming the document alone, by id or
-	// by slug on the project the call names.
+	// names, the translation reads; the second takes a call naming the project, whose document
+	// the call names by id or by slug.
 	"dispatch_request_approval": {
 		Routes: []goingToolRoute{
 			{

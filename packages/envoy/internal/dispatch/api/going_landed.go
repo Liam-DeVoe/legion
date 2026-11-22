@@ -69,13 +69,13 @@ type goingSunkAnswer struct {
 // what its route answered of it commit together or not at all. The routes whose answer says what
 // they found and left call it just before their commit - an issue's update, create, claim and
 // release, an ask's edit and open, a thread's resolve, a follow, a document's edit and upload, an
-// approval request, and a send to an agent, whose answer names the message it stored - and
-// nothing else is changed of them: off the bar's in-process path it does nothing. The landing
-// calls answer in the commit step, after the transaction's queued writes have run, so a value
-// holding what that write phase fills in - the id of the event it queued, as an opened ask's
-// opened_event_id, or the last_seq an issue update's events leave - is recorded as the route
-// answers it once its Commit has run. A route whose answer holds such a value builds it in one
-// local function it hands here and calls again for its own response, so the record and the
+// approval request, a person's state of an issue, and a send to an agent, whose answer names the
+// message it stored - and nothing else is changed of them: off the bar's in-process path it does
+// nothing. The landing calls answer in the commit step, after the transaction's queued writes
+// have run, so a value holding what that write phase fills in - the id of the event it queued, as
+// an opened ask's opened_event_id, or the last_seq an issue update's events leave - is recorded as
+// the route answers it once its Commit has run. A route whose answer holds such a value builds it
+// in one local function it hands here and calls again for its own response, so the record and the
 // response are one value. A value that does not encode is logged and recorded as none, which
 // leaves the undo of the call with what it left unread.
 func goingRecordAnswer(ctx context.Context, status int, answer func() any) {
