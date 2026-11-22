@@ -6038,15 +6038,16 @@ func (p *dispatchProcess) relayedAwareness(t *testing.T, artifactID string, clie
 // one the reader's own process relayed. A room counts no entry it dropped as stale, so an earlier
 // state still in flight when before was read never counts as this one.
 //
-// A removal has that expiry as its one other carrier: a removal notified while the process's
-// listener had no connection reached nobody there, and nothing after the next LISTEN sends it
-// again, so the room keeps the client until it expires it. A listener redials when its ping times
-// out, which a loaded machine can cause, so where the process stood up a LISTEN again after before
-// was read (ListenStands), a removal wait also ends at the room's own expiry of the client
-// (docs.RelayedAwarenessChanges.Expired), and logs that a redial carried the removal. A process
-// that loses removals with no redial still fails it. A state has no such carrier: a state lost to
-// a redial never reaches the reader's view either, so the wait for the view, before this one,
-// fails first. It fails, naming what, at the shared wait's give-up.
+// A removal has one other carrier, the room's own removal of the client: a removal notified while
+// the process's listener had no connection reached nobody there, and nothing after the next
+// LISTEN sends it again, so the room keeps the client until it expires it or a local peer's frame
+// removes it. A listener redials when its ping times out, which a loaded machine can cause, so
+// where the process stood up a LISTEN again after before was read (ListenStands), a removal wait
+// also ends at the room's own removal of the client (docs.RelayedAwarenessChanges.Expired: its
+// expiry of the client, or a local peer's frame that removes it), and logs that a redial carried
+// the removal. A process that loses removals with no redial still fails it. A state has no such
+// carrier: a state lost to a redial never reaches the reader's view either, so the wait for the
+// view, before this one, fails first. It fails, naming what, at the shared wait's give-up.
 func (p *dispatchProcess) awaitRelayedAwareness(t *testing.T, artifactID string, client uint64, removed bool, before awarenessBase, what string) {
 	t.Helper()
 	if !removed {
@@ -6057,7 +6058,7 @@ func (p *dispatchProcess) awaitRelayedAwareness(t *testing.T, artifactID string,
 			})
 		return
 	}
-	reached := testwait.Until(t, fmt.Sprintf("%s to be carried by the other process's awareness relay (a relayed removal of client %d past %d), or by the room's own expiry of it after a redial (expiries past %d with LISTENs stood past %d)",
+	reached := testwait.Until(t, fmt.Sprintf("%s to be carried by the other process's awareness relay (a relayed removal of client %d past %d), or by the room's own removal of it after a redial, its expiry of the client or a local peer's frame that removes it (own removals counted as Expired past %d with LISTENs stood past %d)",
 		what, client, before.taken.Removals, before.taken.Expired, before.listenStands),
 		func() (awarenessBase, bool) {
 			now := p.relayedAwareness(t, artifactID, client)
@@ -6067,7 +6068,7 @@ func (p *dispatchProcess) awaitRelayedAwareness(t *testing.T, artifactID string,
 			return now, now.listenStands > before.listenStands && now.taken.Expired > before.taken.Expired
 		})
 	if reached.taken.Removals <= before.taken.Removals {
-		t.Logf("%s was carried by the room's own expiry of client %d after the process's listener redialed (LISTENs stood %d, then %d; expiries %d, then %d): the removal's notification reached no listener of the process",
+		t.Logf("%s was carried by the room's own removal of client %d, its expiry of the client or a local peer's frame that removes it, after the process's listener redialed (LISTENs stood %d, then %d; own removals counted as Expired %d, then %d): the removal's notification reached no listener of the process",
 			what, client, before.listenStands, reached.listenStands, before.taken.Expired, reached.taken.Expired)
 	}
 }
@@ -6125,17 +6126,18 @@ func (p *dispatchProcess) awaitNotifiedIssueClose(t *testing.T, artifactID strin
 // awaitRemovalReachesReader waits for client, removed on another process, to leave reader's view:
 // the tab reader is, connected to the process's room of the document. Where the process's listener
 // stood up a LISTEN again after before was read (relayedAwareness), it also ends at the room's own
-// expiry of the client (docs.RelayedAwarenessChanges.Expired), and logs that a redial carried the
-// removal: a removal notified while the listener had no connection reached nobody there, and ygo
-// tells a room's peers of no expiry. A browser drops a client it stops hearing from by its own
-// timeout (y-protocols' outdatedTimeout, 30 s), which docstest.Peer does not do, so the room's
-// expiry is the last of that removal the test can see. With no redial the client must leave the
-// view. It fails, naming what, when the reader's connection ends first or at the shared wait's
-// give-up; awaitRelayedAwareness then says what carried the removal.
+// removal of the client (docs.RelayedAwarenessChanges.Expired: its expiry of the client, or a
+// local peer's frame that removes it), and logs that a redial carried the removal: a removal
+// notified while the listener had no connection reached nobody there, and ygo tells a room's peers
+// of no expiry. A browser drops a client it stops hearing from by its own timeout (y-protocols'
+// outdatedTimeout, 30 s), which docstest.Peer does not do, so the room's own removal is the last
+// of that removal the test can see. With no redial the client must leave the view. It fails,
+// naming what, when the reader's connection ends first or at the shared wait's give-up;
+// awaitRelayedAwareness then says what carried the removal.
 func (p *dispatchProcess) awaitRemovalReachesReader(t *testing.T, artifactID string, client uint64, reader *docstest.Peer, before awarenessBase, what string) {
 	t.Helper()
 	expired := false
-	testwait.Until(t, fmt.Sprintf("%s: client %d to leave the reader's view, or the reader's process to expire it after a redial (expiries past %d with LISTENs stood past %d)",
+	testwait.Until(t, fmt.Sprintf("%s: client %d to leave the reader's view, or the reader's process to remove it itself after a redial, by its expiry of the client or a local peer's frame that removes it (own removals counted as Expired past %d with LISTENs stood past %d)",
 		what, client, before.taken.Expired, before.listenStands),
 		func() (string, bool) {
 			select {
@@ -6151,7 +6153,7 @@ func (p *dispatchProcess) awaitRemovalReachesReader(t *testing.T, artifactID str
 			return fmt.Sprintf("still in the reader's view; the reader's process holds %+v", now), expired
 		})
 	if expired {
-		t.Logf("%s: the reader's process expired client %d after its listener redialed, and the reader's browser drops it by its own timeout", what, client)
+		t.Logf("%s: the reader's process removed client %d itself after its listener redialed, by its expiry of the client or a local peer's frame that removes it, and the reader's browser drops it by its own timeout", what, client)
 	}
 }
 

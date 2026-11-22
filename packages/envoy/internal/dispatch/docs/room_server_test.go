@@ -155,7 +155,7 @@ func TestACancelledEvictionLeavesTheFailedRoomForItsOwnEviction(t *testing.T) {
 		letGo()
 		recoverRoom()
 		testwait.Receive(t, "server.Apply to return once it was released", applied)
-		service.evictWG.Wait()
+		testwait.Returns(t, "the failed room's eviction goroutine to return", service.evictWG.Wait)
 		if err := server.Shutdown(testwait.Context(t)); err != nil {
 			t.Errorf("shutdown: %v", err)
 		}

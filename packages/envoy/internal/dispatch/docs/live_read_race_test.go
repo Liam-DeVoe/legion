@@ -333,7 +333,7 @@ func TestColdReadsRunBesideStoredWrites(t *testing.T) {
 				readCount.Add(1)
 			}()
 		}
-		readers.Wait()
+		testwait.Returns(t, fmt.Sprintf("write %d's four cold readers to return", write), readers.Wait)
 		if err := testwait.Receive(t, "AppendUpdate to return", appended); err != nil {
 			t.Fatalf("append write %d: %v", write, err)
 		}

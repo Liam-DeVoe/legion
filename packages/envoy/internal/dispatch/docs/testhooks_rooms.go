@@ -69,14 +69,16 @@ type RoomCounters struct {
 	// NotifiedHead is the highest version of the document this process's room held every update
 	// through (roomCursor.heldThrough) after a catch-up that another process's notification asked
 	// for (roomCatchUps.headNotified, changed) brought the room to the stored head or found it
-	// there - that catch-up itself, or its retry after a try that reached no verdict; 0 before any.
-	// A catch-up the sweep after a LISTEN asked for raises SweptHead instead, and a room instance's
-	// start (schedule), the retry of a catch-up neither asked for, and a catch-up asked again after
-	// a replaced history the locked read did not confirm (closeReplaced) raise neither.
+	// there - that catch-up itself, its retry after a try that reached no verdict, or the catch-up
+	// asked again in its place after a replaced history the locked read did not confirm
+	// (closeReplaced), and that one's retries; 0 before any. A room instance's start (schedule)
+	// and its retries raise neither this nor SweptHead.
 	NotifiedHead int64 `json:"notified_head"`
 	// SweptHead is NotifiedHead for the sweep each LISTEN that stands runs (roomCatchUps.sweep):
 	// what carries a change whose notification was sent while this process's listener had no
-	// connection, and so reached nobody here.
+	// connection, and so reached nobody here. A catch-up that carries both causes - a sweep's
+	// asked again and a notification's it absorbed while queued (roomCatchUps.request) - raises
+	// both.
 	SweptHead int64 `json:"swept_head"`
 	// ListenStands counts the LISTENs this process's listener has stood up, each followed by the
 	// sweep (roomSync.connected): the first as room sync starts, and one more for each redial. It
@@ -142,7 +144,8 @@ const (
 	// relayedRemoval: another process's notification took the client away.
 	relayedRemoval
 	// ownRemoval: the room took the client away by itself - a peer of this process leaving, a
-	// close's removal of this process's clients, or an expiry.
+	// close's removal of this process's clients, an expiry (awarenessExpiry), or a local peer's
+	// frame that removes the client.
 	ownRemoval
 )
 
@@ -334,7 +337,8 @@ func (h *testHooks) countRoomClose(artifactID string) {
 }
 
 // recordCaughtUpHead records that a catch-up of a room of artifactID that cause asked for left
-// the room holding every update through head (RoomCounters.NotifiedHead, SweptHead).
+// the room holding every update through head: as NotifiedHead where a notification asked for it,
+// and as SweptHead where a sweep did.
 func (h *testHooks) recordCaughtUpHead(artifactID string, cause catchUpCause, head int64) {
 	if h == nil {
 		return
@@ -342,10 +346,10 @@ func (h *testHooks) recordCaughtUpHead(artifactID string, cause catchUpCause, he
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	counters := h.countersLocked(artifactID)
-	switch cause {
-	case catchUpNotified:
+	if cause&catchUpNotified != 0 {
 		counters.NotifiedHead = max(counters.NotifiedHead, head)
-	case catchUpSwept:
+	}
+	if cause&catchUpSwept != 0 {
 		counters.SweptHead = max(counters.SweptHead, head)
 	}
 }
@@ -383,9 +387,9 @@ func (h *testHooks) countRecheckedIssueClose(artifactID string) {
 }
 
 // countAwarenessChange counts change, which a room of artifactID's awareness made to client
-// (RoomCounters.RelayedAwareness). A removal the room made itself counts only for a client the
-// hooks have counted a relayed state of, as that client's expiry; this process's own clients
-// take no entry.
+// (RoomCounters.RelayedAwareness). A removal the room made itself counts, as Expired, only for a
+// client the hooks have counted a relayed state of: the room's expiry of that client, or a local
+// peer's frame that removes it. This process's own clients take no entry.
 func (h *testHooks) countAwarenessChange(artifactID string, client uint64, change awarenessChange) {
 	if h == nil {
 		return

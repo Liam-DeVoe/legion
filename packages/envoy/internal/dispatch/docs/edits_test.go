@@ -265,7 +265,7 @@ func TestConditionalEditAdmissionBoundsQueuedRequests(t *testing.T) {
 		t.Fatalf("overflow conditional edit = %v, want ErrPreconditionBusy", err)
 	}
 	cancel()
-	queued.Wait()
+	testwait.Returns(t, fmt.Sprintf("the %d queued conditional edits to return once their context was cancelled", maxQueuedConditionalEdits-1), queued.Wait)
 	release()
 	if _, exists := service.conditionalGates.Load(artifactID); exists {
 		t.Fatal("idle conditional edit gate was retained")

@@ -340,7 +340,8 @@ func TestAnIssueClosedWhileASocketLoadsAdmitsItReadOnly(t *testing.T) {
 }
 
 // warmRooms loads each document's room through the service, a few at a time, as API reads warm
-// them.
+// them. The hand-out goes through the shared wait with the join: a load that never returns holds
+// its worker, and once every worker is held the hand-out too, and the wait then fails naming it.
 func warmRooms(t *testing.T, service *Service, ids []string) {
 	t.Helper()
 	work := make(chan string)
@@ -357,11 +358,13 @@ func warmRooms(t *testing.T, service *Service, ids []string) {
 			}
 		}()
 	}
-	for _, id := range ids {
-		work <- id
-	}
-	close(work)
-	workers.Wait()
+	testwait.Returns(t, fmt.Sprintf("the loads of %d rooms to return", len(ids)), func() {
+		for _, id := range ids {
+			work <- id
+		}
+		close(work)
+		workers.Wait()
+	})
 	failures.Range(func(id, err any) bool {
 		t.Fatalf("warm the room of document %s: %v", id, err)
 		return false
@@ -455,6 +458,17 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 		refusals = map[int]int{}
 		start := make(chan struct{})
 		var dials sync.WaitGroup
+		// Registered before the burst, so the sockets admitted are closed even when the wait below
+		// gives up; a dial that ends after that closes its own.
+		closed := false
+		t.Cleanup(func() {
+			mu.Lock()
+			defer mu.Unlock()
+			closed = true
+			for _, connection := range admitted {
+				_ = connection.Close()
+			}
+		})
 		for i := range burst {
 			dials.Add(1)
 			go func() {
@@ -464,6 +478,10 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 				mu.Lock()
 				defer mu.Unlock()
 				if err == nil {
+					if closed {
+						_ = connection.Close()
+						return
+					}
 					admitted = append(admitted, connection)
 					return
 				}
@@ -475,12 +493,7 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 			}()
 		}
 		close(start)
-		dials.Wait()
-		t.Cleanup(func() {
-			for _, connection := range admitted {
-				_ = connection.Close()
-			}
-		})
+		testwait.Returns(t, fmt.Sprintf("the %d sockets opened at once to be admitted or refused", burst), dials.Wait)
 		return admitted, refusals
 	}
 	serve := func(t *testing.T, rooms, connections int) (*Service, string) {
