@@ -1255,3 +1255,40 @@ test("a grandchild's document version marks its grandparent's outline and views 
   refreshQueries(client, eventRefreshTargets(version, "alice"));
   expect(marks(), "the grandparent's outline and every view").toEqual(EVERY_ANSWER);
 });
+
+// The parent's held outline still holds the child's node - the child was moved away - when its
+// refetch goes out and the child's document version lands. The page places the child under the
+// parent from that answer, and the parent's outline holds its own node, as every outline does.
+// The refetch answers with no node of the child: nothing the event moves is in the parent's
+// answer, so neither the outline nor any view of it is read again for the event.
+test("an outline whose refetch answers no node of the issue it was placed above is not read again, nor any view of it", async () => {
+  const client = new QueryClient();
+  const { marks } = parentBeforeTheCheck(
+    client,
+    treeAnswer([
+      treeNode("CORE-1", "issue", null),
+      PARENT_REQUIREMENT,
+      treeNode("CORE-2", "issue", "CORE-1", { ...CHILD, text: "Draw each child" }),
+    ])
+  );
+  const response = Promise.withResolvers<unknown>();
+  const read = client.fetchQuery({
+    queryFn: () => response.promise,
+    queryKey: issueTreeKey("CORE-1"),
+    staleTime: 0,
+  });
+  const version = eventOf("artifact.version", { artifact_id: "artifact-2", number: 2 }, "CORE-2");
+  refreshQueries(client, eventRefreshTargets(version, "alice"));
+  response.resolve(treeAnswer([treeNode("CORE-1", "issue", null), PARENT_REQUIREMENT]));
+  await read;
+  await Promise.resolve();
+  expect(
+    marks(),
+    "the parent's outline and every view, after a response with no node of the child"
+  ).toEqual({
+    outline: false,
+    plan: false,
+    spec: false,
+    verification: false,
+  });
+});
