@@ -13,6 +13,7 @@ import { urlForText } from "@legion/contracts/log-text";
 import type { ActiveDispatchConfig } from "../dispatch-config";
 import type { DispatchHost, ExecFn } from "../dispatch-cwd";
 import {
+  DISPATCH_WRITE_RETRY,
   DispatchClient,
   type DispatchClientOptions,
   type DispatchWriteRetry,
@@ -131,8 +132,23 @@ export interface DryRunContext {
  *  inside the 20 s an AskGate older than DISPATCH_DRY_RUN_LOCAL gives a dry run, so a slow Dispatch
  *  passes that gate's dry run with a warning rather than failing it. AskGate now sets the
  *  variable, under which no step runs. The call of `dispatch artifact` asks its check of a
- *  Markdown file within the same bound, as its dry run asks it (`artifactCommand`). */
+ *  Markdown file within the same bound, through the same client options as its dry run
+ *  (`askOnceWithinDryRun`). */
 export const DRY_RUN_DEADLINE_MS = 5_000;
+
+/**
+ * The options of a client that asks Dispatch once within the dry run's bound, `deadlineMs`
+ * (DRY_RUN_DEADLINE_MS, or a shorter one a test sets): its own deadline is that bound, it asks no
+ * request again that Dispatch answered with no route, and it sends no second attempt after a
+ * failed one (no pauses), so no wait outlasts the bound. A fresh token is still presented once
+ * where Dispatch says the token is no longer live. The dry run's client and the client of the
+ * call's check of a Markdown file both take these, so the two ask alike. The pacing is
+ * DISPATCH_WRITE_RETRY's, its pauses removed: the dry run has no session pacing of its own, and the
+ * call's is DISPATCH_WRITE_RETRY wherever a test does not replace it.
+ */
+export function askOnceWithinDryRun(deadlineMs = DRY_RUN_DEADLINE_MS): DispatchClientOptions {
+  return { deadlineMs, retryNoRoute: false, writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [] } };
+}
 
 /**
  * What a dry-run step found, which the dry run answers with the call's own output and exit code:
@@ -310,7 +326,7 @@ export interface SessionContext {
    * resolves the origin (a subprocess) before it needs a client. `options` are laid over the
    * session's own (its signal, its write pacing and its sleep), for a request that runs under a
    * budget of its own: the call of `dispatch artifact` asks its check of a Markdown file once,
-   * within DRY_RUN_DEADLINE_MS (`artifactCommand`).
+   * within DRY_RUN_DEADLINE_MS, as its dry run asks it (`askOnceWithinDryRun`).
    */
   newClient(options?: DispatchClientOptions): DispatchClient;
 }

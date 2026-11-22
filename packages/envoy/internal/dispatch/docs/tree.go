@@ -204,8 +204,8 @@ func parseWrittenReplacing(live *pmdoc.Node, markdown string) (*pmdoc.Node, pmdo
 // markdown, as a write takes it, or the write's refusal of parseErr, that parse's own: the ask
 // rule's where the parse refused a rendering that does not read back and the markdown holds an
 // ask that breaks its content rule (askRefusalInstead), and otherwise uploadedInput's.
-// seedRendering reads parseErr itself too, for whether only a new document makes its refusal, and
-// parseWrittenReplacing serves every other write.
+// parseWrittenReplacing serves every write, and ReplacementRendering the most permissive
+// replacement's answer.
 func writtenInput(markdown string, parsed *pmdoc.Node, parseErr error) (*pmdoc.Node, error) {
 	// The ask rule reads the parse's own refusal, before uploadedInput names it the caller's
 	// (ErrInvalidMarkdown), since that naming does not carry the refusal it wraps.

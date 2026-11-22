@@ -16,8 +16,6 @@ import {
   type SearchResult,
   type TablePosition,
   TEXT_REFUSAL_HEADER,
-  TEXT_REFUSAL_NEW_DOCUMENT,
-  TEXT_REFUSAL_UPLOAD,
   zodSchemaApi,
 } from "@legion/contracts";
 import {
@@ -12292,37 +12290,34 @@ describe("executeDispatchTool", () => {
     expect(failure instanceof Error ? failure.cause : undefined).toBeInstanceOf(Error);
   });
 
-  // A round trip Dispatch marks as its refusal of the text (TEXT_REFUSAL_HEADER) is the call's
-  // refusal, in Dispatch's own words, whatever its status, where its scope holds for the call: an
-  // upload's check for every upload, a new document's for an upload without --force. The route
-  // marks so every refusal of the checks the upload of a new document makes of the text alone, at
-  // the status the upload answers it with, a 5xx for a failure of the seed on the text among them.
-  // So the call refuses the text as its upload would be refused, under every name, asks nothing
-  // again, and uploads nothing.
+  // A round trip Dispatch marks as its refusal of the text (TEXT_REFUSAL_HEADER, which Dispatch
+  // values `text`) is the call's refusal, in Dispatch's own words, whatever its status. The route
+  // marks so every refusal of the checks the upload makes of the text alone, at the status the
+  // upload answers it with, a 5xx for a failure of the seed on the text among them, and makes a
+  // new document's checks only for a request that asks for them, as the call does without
+  // --force. So the call refuses the text as its upload would be refused, under every name, asks
+  // nothing again, and uploads nothing.
   test.each([
     [
       "notes.md",
       413,
       "CAP_EXCEEDED",
       "document too large to store: this write's markdown makes more than 65536 elements",
-      TEXT_REFUSAL_NEW_DOCUMENT,
     ],
     [
       "Design notes",
       413,
       "CAP_EXCEEDED",
       "document too large to store: this write's markdown makes more than 65536 elements",
-      TEXT_REFUSAL_NEW_DOCUMENT,
     ],
-    ["notes.md", 500, "INTERNAL", "internal server error", TEXT_REFUSAL_NEW_DOCUMENT],
+    ["notes.md", 500, "INTERNAL", "internal server error"],
     [
       "notes.md",
       400,
       "NUL_CHARACTER",
       "content holds a NUL character (U+0000) at character 11, which Dispatch cannot store",
-      TEXT_REFUSAL_UPLOAD,
     ],
-  ])("refuses with Dispatch's own refusal when Dispatch marks the round trip's answer as a refusal of the text (%s, %i)", async (name, status, code, error, scope) => {
+  ])("refuses with Dispatch's own refusal when Dispatch marks the round trip's answer as a refusal of the text (%s, %i)", async (name, status, code, error) => {
     const posts: string[] = [];
     let asked = 0;
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -12334,7 +12329,7 @@ describe("executeDispatchTool", () => {
         asked += 1;
         return Response.json(
           { error, code },
-          { status, headers: { [TEXT_REFUSAL_HEADER]: scope } }
+          { status, headers: { [TEXT_REFUSAL_HEADER]: "text" } }
         );
       }
       posts.push(pathname);
@@ -12365,7 +12360,7 @@ describe("executeDispatchTool", () => {
         code,
         status,
         message: error,
-        textRefusal: scope,
+        textRefusal: true,
       })
     );
     expect(asked).toBe(1);

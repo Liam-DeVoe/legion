@@ -24,9 +24,15 @@ body: |-
   text itself, it is now the rendering, and such a text whose rendering no reader reads back is
   now refused for that. So a client that refuses its upload on any failure of the round trip is
   not refused a replacement the store takes, and compares the spelling that replacement stores; a
-  Dispatch that does not know the member ignores it. Each refusal, whatever its status, carries
-  the response header `Dispatch-Text-Refusal`, valued with its scope: `upload` for one every
-  upload makes, and `new-document` for one only a new document's seed makes.
+  Dispatch that does not know the member ignores it. Main's `dispatch` CLI, and any client that
+  refuses its upload on any failure of the round trip, now meets the round trip's refusal of a
+  text every upload refuses and prints it inside its own refusal, "Dispatch could not say how it
+  would store this text, so nothing was uploaded: … failed with <CODE>: <message>", with exit 1
+  and nothing stored, where it used to send the upload and print the upload's refusal; the advice
+  that refusal adds ("Send the upload again once that call is answered", or for a 413 the advice
+  about the 1 MiB one document holds) does not fit such a text. Each refusal, whatever its
+  status, carries the response header `Dispatch-Text-Refusal`, valued `text`: a mark that the
+  answer is the refusal of the text, which a client reads for its presence alone.
   No other answer of the route carries it. Its body is `{markdown, new_document}`; a body naming no
   markdown asks about the empty text and is answered `""`, as before. An upload that replaces a
   document and is refused for its parse or its render now gives that refusal in the same words as

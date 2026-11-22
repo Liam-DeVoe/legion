@@ -4,30 +4,33 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
-// A text a replacement upload refuses for the text alone is refused by the round trip asked
-// without new_document, the most permissive replacement's answer, with that upload's own status,
-// code and words. `dispatch artifact --force --path` over a held document takes the file round
-// trip's refusal in its dry run and the upload's refusal in its call, so the two print one refusal
-// only where the two answers are one. The tester found at 5a574bff, on real servers, that the
-// upload of such a replacement refuses block HTML and markdown no reader reads back as
-// "INVALID_MARKDOWN: replace live document: markdown is not a Proof document: ...", where the file
-// round trip answers "INVALID_MARKDOWN: markdown is not a Proof document: ...", so the dry run and
-// the call printed two refusals (INFRA-4224 tester round 16).
+// A text every upload refuses alike, a replacement included - each row of textRefusalsFile whose
+// scope is upload - is refused by a replacement upload over a held document, naming that
+// document's token, inline and as a file as the row's sent allows, with the status, code and words
+// the round trip asked without new_document answers, the most permissive replacement's answer. So
+// a row the list scopes upload that a replacement answers otherwise fails here. `dispatch
+// artifact --force` asks that round trip first, in its dry run and in its call, and the call
+// throws the round trip's refusal before it uploads, so the upload's own words reach only a
+// client that skips that check: an older `dispatch`, a call whose check got no answer, or a caller
+// of the API itself. Those words are the round trip's. The tester found at 5a574bff, on real
+// servers, that the upload of such a replacement refused block HTML and markdown no reader reads
+// back as "INVALID_MARKDOWN: replace live document: markdown is not a Proof document: ...", where
+// the file round trip answered "INVALID_MARKDOWN: markdown is not a Proof document: ...", and the
+// call then printed the upload's refusal, so the dry run and the call printed two refusals
+// (INFRA-4224 tester round 16).
 func TestARoundTripWithoutNewDocumentRefusesInTheReplacementUploadsOwnWords(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	uploads := "/api/v1/issues/" + issue.Key + "/artifacts"
-	for index, test := range []struct{ name, text string }{
-		{"block HTML", "<details>x</details>"},
-		{"markdown whose rendering no reader reads back", "2. [^N]:\n       12. *\n       --\n"},
-		{"12,000 list items", strings.Repeat("- a\n", 12_000)},
-	} {
+	for index, test := range roundTripRefusals(t) {
+		if test.scope != uploadScope {
+			continue
+		}
 		t.Run(test.name, func(t *testing.T) {
-			for _, kind := range []string{"inline", "file"} {
+			for _, kind := range test.sent {
 				name := fmt.Sprintf("held-%d-%s.md", index, kind)
 				held := dispatchRequest(t, handler, http.MethodPost, uploads, map[string]string{"name": name, "content": "Held.\n"}, "alice")
 				if held.Code != http.StatusCreated {

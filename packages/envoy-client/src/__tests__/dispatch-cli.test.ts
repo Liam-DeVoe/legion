@@ -8,8 +8,6 @@ import {
   MARKDOWN_DOCUMENT_MAX_BYTES,
   PROJECT_KEY_RULE,
   TEXT_REFUSAL_HEADER,
-  TEXT_REFUSAL_NEW_DOCUMENT,
-  TEXT_REFUSAL_UPLOAD,
 } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -743,13 +741,9 @@ const UNREADABLE_RENDERING_REFUSED = {
     "markdown is not a Proof document: the markdown the document would be stored as cannot be read back: outside Proof schema: an empty list item followed by a blank line inside another list item, where goldmark ends the outer item and the browser editor does not",
 };
 /** The round trip's refusal of a text, as Dispatch answers it: `answer` at `status`, marked as a
- *  refusal of the text (TEXT_REFUSAL_HEADER) with `scope`: a new document's seed's refusal unless
- *  a test names an upload's. */
-const textRefusal = (
-  answer: { code: string; error: string },
-  status: number,
-  scope: string = TEXT_REFUSAL_NEW_DOCUMENT
-): Response => Response.json(answer, { status, headers: { [TEXT_REFUSAL_HEADER]: scope } });
+ *  refusal of the text (TEXT_REFUSAL_HEADER, which Dispatch values `text`). */
+const textRefusal = (answer: { code: string; error: string }, status: number): Response =>
+  Response.json(answer, { status, headers: { [TEXT_REFUSAL_HEADER]: "text" } });
 
 /** The stderr line of an upload's dry run against a Dispatch with no round-trip route. */
 const routeAbsent = (answer: string): string =>
@@ -1448,7 +1442,6 @@ describe("the dispatch CLI", () => {
       bytes: Buffer.from("# Notes\n\nA\u0000B\n"),
       code: "NUL_CHARACTER",
       error: "file holds a NUL character (U+0000) at character 11, which Dispatch cannot store",
-      scope: TEXT_REFUSAL_UPLOAD,
     },
     {
       holding: "a byte that is not UTF-8",
@@ -1456,24 +1449,21 @@ describe("the dispatch CLI", () => {
       code: "INVALID_UTF8",
       error:
         "file holds a byte that is not UTF-8 (0xFF) at character 11, which Dispatch cannot store",
-      scope: TEXT_REFUSAL_UPLOAD,
     },
     {
       holding: "an ask block that breaks its content rule",
       bytes: Buffer.from(ASK_AFTER_OPTIONS),
       ...ASK_AFTER_OPTIONS_REFUSED,
-      scope: TEXT_REFUSAL_NEW_DOCUMENT,
     },
     {
       holding: "markdown the parser refuses",
       bytes: Buffer.from(BLOCK_HTML),
       ...BLOCK_HTML_REFUSED,
-      scope: TEXT_REFUSAL_UPLOAD,
     },
   ]) {
     test(`a markdown --path file holding ${refusal.holding} is refused by the call as by its dry run, and neither uploads`, async () => {
       const answer = { code: refusal.code, error: refusal.error };
-      roundTrip = () => textRefusal(answer, 400, refusal.scope);
+      roundTrip = () => textRefusal(answer, 400);
       writeFileSync(join(stateDir, "refused.md"), refusal.bytes);
       const argv = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--path", "refused.md"];
 
@@ -1570,7 +1560,7 @@ describe("the dispatch CLI", () => {
   // would send, with and without --force, as its dry run does, and throws Dispatch's refusal
   // before it uploads. This fake's upload refuses the file in other words, which neither prints.
   test("the call of a markdown --path file whose file round trip Dispatch refuses prints that refusal as its dry run does, and uploads nothing", async () => {
-    roundTrip = () => textRefusal(BLOCK_HTML_REFUSED, 400, TEXT_REFUSAL_UPLOAD);
+    roundTrip = () => textRefusal(BLOCK_HTML_REFUSED, 400);
     uploadRefusal = () =>
       Response.json(
         { code: "INVALID_MARKDOWN", error: "the upload's own words, which the call never reaches" },
@@ -1611,7 +1601,7 @@ describe("the dispatch CLI", () => {
     writeFileSync(join(stateDir, "refused.md"), BLOCK_HTML);
     writeFileSync(join(stateDir, "notes.md"), NOTES);
     const owner = ["artifact", "--issue", "DSP-1", "--name", "notes.md"];
-    const refusedText = () => textRefusal(BLOCK_HTML_REFUSED, 400, TEXT_REFUSAL_UPLOAD);
+    const refusedText = () => textRefusal(BLOCK_HTML_REFUSED, 400);
     const textRefused = `${BLOCK_HTML_REFUSED.code}: ${BLOCK_HTML_REFUSED.error}\n`;
     const cases: {
       argv: string[];
@@ -1714,9 +1704,7 @@ describe("the dispatch CLI", () => {
   // file alike. This fake refuses the text only where the request asks.
   test("under --force the round trip asks for no new document's refusals: the call uploads and the dry run passes", async () => {
     roundTrip = (markdown, body) =>
-      body.new_document === true
-        ? textRefusal(ASK_AFTER_OPTIONS_REFUSED, 400, TEXT_REFUSAL_NEW_DOCUMENT)
-        : keptText(markdown);
+      body.new_document === true ? textRefusal(ASK_AFTER_OPTIONS_REFUSED, 400) : keptText(markdown);
     writeFileSync(join(stateDir, "asks.md"), ASK_AFTER_OPTIONS);
     const owner = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--force"];
     for (const [argv, stdin, args, asked, upload] of [
@@ -1773,11 +1761,10 @@ describe("the dispatch CLI", () => {
     ]);
   });
 
-  // A refusal every upload makes before its write (TEXT_REFUSAL_UPLOAD), a NUL character here,
-  // holds under --force too: the dry run and the call each refuse it from the round trip, inline
-  // and for a --path file alike, with the same stdout and exit 1, naming the field each upload
-  // names (`content`, `file`). This fake's upload stores what it is sent, so a call that reached
-  // it would pass.
+  // A refusal every upload makes before its write, a NUL character here, holds under --force too:
+  // the dry run and the call each refuse it from the round trip, inline and for a --path file
+  // alike, with the same stdout and exit 1, naming the field each upload names (`content`,
+  // `file`). This fake's upload stores what it is sent, so a call that reached it would pass.
   test("under --force an upload's refusal is still the call's: the dry run and the call refuse a NUL alike", async () => {
     const text = "# Notes\n\nA\u0000B\n";
     writeFileSync(join(stateDir, "nul.md"), text);
@@ -1790,7 +1777,7 @@ describe("the dispatch CLI", () => {
         code: "NUL_CHARACTER",
         error: `${field} holds a NUL character (U+0000) at character 11, which Dispatch cannot store`,
       };
-      roundTrip = () => textRefusal(answer, 400, TEXT_REFUSAL_UPLOAD);
+      roundTrip = () => textRefusal(answer, 400);
       const dry = await run([...argv, "--dry-run"], omp, stdin);
       expect(dry, argv.join(" ")).toEqual({
         code: 1,

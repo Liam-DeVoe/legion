@@ -46,7 +46,8 @@
     "status": 413,
     "code": "CAP_EXCEEDED",
     "words": "more than 65536 elements",
-    "scope": "upload"
+    "scope": "new-document",
+    "replaced": { "status": 413, "code": "CAP_EXCEEDED", "words": "more than 65536 elements" }
   },
   {
     "name": "text holding U+0000",

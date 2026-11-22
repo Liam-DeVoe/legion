@@ -206,30 +206,38 @@ func ParseForWrite(markdown string, live *Node) (*Node, error) {
 // for its blocks - shares this parse rather than making a second one of the same markdown. A
 // refused parse answers the zero read-back.
 func ParseWritten(markdown string, live *Node) (*Node, WrittenReadBack, error) {
-	return parseWritten(markdown, live, false)
+	doc, err := parseForWrite(markdown, live, true, NewWriteBudget())
+	if err != nil {
+		return nil, WrittenReadBack{}, err
+	}
+	return withWrittenReadBack(doc)
 }
 
 // ParseWrittenAsReplacement is ParseWritten of markdown as the most permissive replacement of a
 // whole document parses it: one whose live document holds every block id the markdown names on
-// two blocks and every element in it this build cannot create yet, so that neither refusal a live
-// document relaxes (RefusedUnlessLiveHolds) is made. It is the parse a replacement makes when its
-// live document holds the same, and every refusal it makes is one every replacement of a whole
-// document makes too. Every other step is ParseWritten's, as a replacement makes it: the write
-// budget, the schema, the ids, where a block id named twice stays on its first block and each
-// later block naming it is minted another (EnsureBlockIDs), and the read-back. The live document
-// it stands for is no document in particular, so it carries no id onto a block the markdown
-// leaves unchanged (carryBlockIDs); a block naming none is minted one, as a new document's is.
+// two blocks and every element in it this build cannot create yet, so that it makes neither
+// refusal of a repeated id (RepeatedBlockID) nor of an element this build cannot create
+// (refuseUncreatable), which ParseWritten over no live document makes. It is the parse a
+// replacement makes when its live document holds the same, and every refusal it makes is one
+// every replacement of a whole document makes too. Every other step is ParseWritten's, as a
+// replacement makes it: the write budget, the schema, the ids, where a block id named twice stays
+// on its first block and each later block naming it is minted another (EnsureBlockIDs), and the
+// read-back. The live document it stands for is no document in particular, so it carries no id
+// onto a block the markdown leaves unchanged (carryBlockIDs), and a block naming none is minted
+// one, as a new document's is.
 func ParseWrittenAsReplacement(markdown string) (*Node, WrittenReadBack, error) {
-	return parseWritten(markdown, nil, true)
-}
-
-// parseWritten is the parse ParseWritten and ParseWrittenAsReplacement share, with the read-back
-// of the document it makes; liveHoldsAll is parseForWrite's.
-func parseWritten(markdown string, live *Node, liveHoldsAll bool) (*Node, WrittenReadBack, error) {
-	doc, err := parseForWrite(markdown, live, liveHoldsAll, true, NewWriteBudget())
+	doc, err := parseUnstamped(LineFeeds(markdown), fromStart, true, NewWriteBudget())
 	if err != nil {
 		return nil, WrittenReadBack{}, err
 	}
+	EnsureBlockIDs(doc)
+	return withWrittenReadBack(doc)
+}
+
+// withWrittenReadBack is doc, the tree a write parsed, with the read-back of the markdown it is
+// stored as (WrittenReadBack), or the refusal of a document that reads back otherwise
+// (RefuseMisreadDocument), which ParseWritten and ParseWrittenAsReplacement share.
+func withWrittenReadBack(doc *Node) (*Node, WrittenReadBack, error) {
 	read, misread, refused, err := documentMisread(doc)
 	if err := refuseMisread(misread, refused, err); err != nil {
 		return nil, WrittenReadBack{}, err
@@ -243,51 +251,28 @@ func parseWritten(markdown string, live *Node, liveHoldsAll bool) (*Node, Writte
 // front-matter block opening the markdown is front matter, as Parse reads it. Its tables' short
 // rows are padded on budget, the caller write's, which its other fragments share.
 func ParseFragment(markdown string, opensDocument bool, budget *WriteBudget) (*Node, error) {
-	return parseForWrite(markdown, nil, false, opensDocument, budget)
+	return parseForWrite(markdown, nil, opensDocument, budget)
 }
 
 // parseForWrite is the parse ParseForWrite and ParseFragment share. The markdown's tree is judged
 // for repeated ids (RepeatedBlockID) with only the ids it names, then takes the ids of the blocks
 // of live it leaves unchanged (carryBlockIDs), and only then is an id minted for each block still
 // without one (EnsureBlockIDs), so the refusal and the carry see only the ids the markdown named.
-// Those two refusals are the ones live relaxes, and each is marked so (RefusedUnlessLiveHolds).
-// With liveHoldsAll, live is taken to hold every id the markdown repeats and every element it
-// holds that this build cannot create, so neither refusal is made (ParseWrittenAsReplacement).
-func parseForWrite(markdown string, live *Node, liveHoldsAll, readFrontmatter bool, budget *WriteBudget) (*Node, error) {
+func parseForWrite(markdown string, live *Node, readFrontmatter bool, budget *WriteBudget) (*Node, error) {
 	doc, err := parseUnstamped(LineFeeds(markdown), fromStart, readFrontmatter, budget)
 	if err != nil {
 		return nil, err
 	}
-	if !liveHoldsAll {
-		if err := RepeatedBlockID(live, doc, doc); err != nil {
-			return nil, &liveHeldRefusal{fmt.Errorf("%w: %w", ErrSchema, err)}
-		}
-		// A write may keep an element live holds that this build cannot create, never add one.
-		if err := refuseUncreatable([]*Node{doc}, func() *Node { return live }); err != nil {
-			return nil, &liveHeldRefusal{err}
-		}
+	if err := RepeatedBlockID(live, doc, doc); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrSchema, err)
+	}
+	// A write may keep an element live holds that this build cannot create, never add one.
+	if err := refuseUncreatable([]*Node{doc}, func() *Node { return live }); err != nil {
+		return nil, err
 	}
 	carryBlockIDs(doc, live)
 	EnsureBlockIDs(doc)
 	return doc, nil
-}
-
-// liveHeldRefusal is a refusal of the markdown a write parses that the document the write
-// replaces would not make where it holds the same already (RefusedUnlessLiveHolds). Its text and
-// what it wraps are the refusal's own. It is used by pointer, as unknownElementError is, so a
-// caller that compares two errors with == never compares the errors it wraps.
-type liveHeldRefusal struct{ error }
-
-func (r *liveHeldRefusal) Unwrap() error { return r.error }
-
-// RefusedUnlessLiveHolds reports whether err, a refusal of ParseWritten or ParseForWrite, is one
-// the document a write replaces relaxes where it holds the same already: a block id the markdown
-// names on two blocks (RepeatedBlockID), and an element this build cannot create yet
-// (refuseUncreatable). A new document holds nothing, so its parse makes every one of them, and a
-// replacement only those its live document does not hold.
-func RefusedUnlessLiveHolds(err error) bool {
-	var held *liveHeldRefusal
-	return errors.As(err, &held)
 }
 
 // LineFeeds is text with each CR LF and each lone carriage return written as a line feed. Both

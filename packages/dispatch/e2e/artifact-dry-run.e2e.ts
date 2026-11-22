@@ -24,15 +24,16 @@ import { expect, test } from "./test";
  * file, inline on stdin, and as a `--path` Markdown file, as the row's `sent` and `command` allow),
  * `--force` or not, and a new name or a name the issue already holds.
  *
- * A refusal every upload makes (`scope` upload) is the call's in every combination: the dry run
- * and the call exit 1 and print the same stdout, byte for byte, naming the row's code and words,
- * and nothing is stored. A new document's refusal (`scope` new-document) is the same without
- * `--force`. With `--force` the command's check asks for none of a new document's refusals, and
- * Dispatch answers it as the most permissive replacement takes the text, which the row's
- * `replaced` says. Where that replacement refuses the text too, the dry run and the call are
- * refused alike, in its code and words; where it stores an inline text under another spelling,
- * they are refused alike for that spelling, exit 2, as the call refuses any such text, and print
- * the same stdout but for the id the parse mints, anew on each run, for a block whose id another
+ * A text every upload refuses alike, a replacement included (`scope` upload), is refused by the
+ * call in every combination: the dry run and the call exit 1 and print the same stdout, byte for
+ * byte, naming the row's code and words, and nothing is stored. A text a replacement need not
+ * refuse alike (`scope` new-document) is refused the same way without `--force`. With `--force`
+ * the command's check asks for none of a new document's refusals, and Dispatch answers it as the
+ * most permissive replacement takes the text, which the row's `replaced` says. Where that
+ * replacement refuses the text too, the dry run and the call are refused alike, in its code and
+ * words; where it stores an inline text under another spelling, they are refused alike for that
+ * spelling, exit 2, as the call refuses any such text, and print the same stdout but for the id
+ * the parse mints, anew on each run, for a block whose id another
  * block names. Everywhere else the dry run passes and the call is refused: the one gap the dry run
  * documents ("What the dry run cannot give" in the pull request, and the `--dry-run` help of
  * `dispatch artifact`).

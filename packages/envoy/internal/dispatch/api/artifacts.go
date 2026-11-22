@@ -234,18 +234,18 @@ var errMarkdownDocumentTooLarge = errorf(http.StatusRequestEntityTooLarge, "CAP_
 //
 // The upload (uploadArtifactFor) and the two round trips (markdownRoundTrip) make these checks
 // through it, and `dispatch artifact` and its dry run take a round trip's refusal of them as
-// the call's for every upload, a replacement included (contracts.TextRefusalUpload). So a check of
-// the text alone that every upload of a markdown document makes before its write is made here, and
-// the round trips make it too.
+// the call's for every upload, a replacement included. So a check of the text alone that every
+// upload of a markdown document makes before its write is made here, and the round trips make it
+// too.
 //
 // The upload's other refusals of the text alone are its write's. A new document's seed parses the
 // text, holds its asks to their content rule, renders it, weighs that rendering against the bytes
 // and the elements one document holds and holds its checks CI proves to the rules their
 // attributes keep (docs' SeedText); a replacement makes some of these against the document it
 // replaces (docs' ReplaceText). The upload makes them once, in that write (storeArtifact); the
-// round trips make the seed's through the same steps (docs.SeedRendering), each marked with the
-// scope it holds for, and make those only a new document's seed makes for a request that asks for
-// them.
+// round trips make the seed's through the same steps (docs.SeedRendering) for a request that asks
+// for a new document's refusals, and otherwise those every replacement makes
+// (docs.ReplacementRendering).
 func documentTextRefusal[T string | []byte](content T, file bool) error {
 	if len(content) > maxDocumentMarkdownBytes {
 		return errMarkdownDocumentTooLarge

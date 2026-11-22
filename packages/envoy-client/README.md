@@ -1186,19 +1186,19 @@ to make its own refusal. Text past the 1 MiB of UTF-8 one document holds is refu
 it before it reads whether the owner holds the name, so the two answer alike under a held name
 too, and the dry run builds no client for it, so it refuses it with no Dispatch configured too. A
 round trip answer Dispatch marks as its refusal of the text (the `Dispatch-Text-Refusal` header,
-`TEXT_REFUSAL_HEADER`), at any status, is refused with Dispatch's own refusal (`<CODE>: <message>`)
-and exit 1, as the call refuses it. The route makes, in the order, status, code and words of an
-upload, every check that upload makes of the text alone, and marks each refusal with its scope.
-`upload` marks the checks every upload makes, a replacement included: a NUL character
-(`NUL_CHARACTER`), a byte that is not UTF-8 (`INVALID_UTF8`), the bytes, and the parse's own
-refusals - its element budget (`CAP_EXCEEDED`), markdown it refuses or that reads back otherwise
-(`INVALID_MARKDOWN`), and an ask that breaks its content rule in markdown whose rendering does not
-read back, which that refusal names instead (`INVALID_ASK_BLOCK`).
-`new-document` marks the checks only a new document's seed makes, which a replacement relaxes: a
-block id written twice and an element this build cannot create yet (`INVALID_MARKDOWN`), an ask
-block that breaks its content rule (`INVALID_ASK_BLOCK`), a rendering past the bytes or the
-elements (`CAP_EXCEEDED`), and a check proved by CI that breaks the rules its attributes keep
-(`INVALID_CI_CHECK`). The route makes those only for a request that asks for them
+`TEXT_REFUSAL_HEADER`, which the client reads for its presence alone), at any status, is refused
+with Dispatch's own refusal (`<CODE>: <message>`) and exit 1, as the call refuses it. The route
+makes, in the order, status, code and words of an upload, every check that upload makes of the
+text alone, and marks each refusal. Every upload makes some of them, a replacement included: a
+NUL character (`NUL_CHARACTER`), a byte that is not UTF-8 (`INVALID_UTF8`), the bytes, and the
+parse's own refusals - its element budget (`CAP_EXCEEDED`), markdown it refuses or that reads
+back otherwise (`INVALID_MARKDOWN`), and an ask that breaks its content rule in markdown whose
+rendering does not read back, which that refusal names instead (`INVALID_ASK_BLOCK`). Only a new
+document's seed makes the rest, which a replacement relaxes: a block id written twice and an
+element this build cannot create yet (`INVALID_MARKDOWN`), an ask block that breaks its content
+rule (`INVALID_ASK_BLOCK`), a rendering past the bytes or the elements (`CAP_EXCEEDED`), and a
+check proved by CI that breaks the rules its attributes keep (`INVALID_CI_CHECK`). The route
+makes those only for a request that asks for them
 (`new_document: true`). It answers any other as the most permissive replacement takes the text,
 one over a document already holding what the text holds: with the rendering that replacement
 stores, or with a refusal every replacement makes, the parse's own, the ask refusal it names
@@ -1221,8 +1221,9 @@ stores a Markdown file as the store spells it. The call throws that refusal befo
 the two print the same refusal and exit alike; on any other answer, a spelling or none (no answer
 in time, a failure, or a Dispatch without the route, which answers 404 or 405), the call uploads
 the file, and its upload makes its own refusal. Since the file goes up whatever the round trip
-failed with, the call asks it as the dry run does: once, within the same 5 s, with no wait before
-asking a route again. A file Dispatch stores as its bytes is asked nothing, by the call as by
+failed with, the call asks it with the dry run's own client options (`askOnceWithinDryRun`):
+once, within the same 5 s, with no wait before asking a route again. A file Dispatch stores as
+its bytes is asked nothing, by the call as by
 the dry run. What only the call checks, since it needs more than the
 text, stays the call's: whether the owner holds the name, the token of a replacement, a
 replacement's own rules, a block pointer's target, whether a check proved by CI holds a recorded

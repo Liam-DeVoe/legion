@@ -274,7 +274,7 @@ async function askRoundTrip(
     return { kind: "stored", stored: await ask(dispatch) };
   } catch (error) {
     const routeAbsent = roundTripRouteAbsent(error);
-    if (!routeAbsent && error instanceof DispatchServiceError && error.textRefusal !== undefined) {
+    if (!routeAbsent && error instanceof DispatchServiceError && error.textRefusal) {
       return { kind: "refused", refusal: error };
     }
     return {
@@ -390,9 +390,10 @@ async function storedFileCheck(
  * holding neither - a file Dispatch stores as its bytes, or a name alone - is asked nothing
  * (undefined). The call hands its own client for inline text, since a failed check of such text
  * refuses the upload, so the check asks again as every request of the call does; for a file it
- * hands a client that asks once within DRY_RUN_DEADLINE_MS, since the file goes up whatever its
- * check failed with. The dry run hands its own client for both. The check is returned unasked, so
- * its caller decides what becomes of an error building a client throws.
+ * hands a client that asks once within DRY_RUN_DEADLINE_MS (`askOnceWithinDryRun`), since the
+ * file goes up whatever its check failed with. The dry run hands its own client for both. The
+ * check is returned unasked, so its caller decides what becomes of an error building a client
+ * throws.
  */
 export function artifactTextCheck(upload: {
   readonly tool: string;

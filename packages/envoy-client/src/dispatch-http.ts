@@ -99,8 +99,6 @@ import {
   type Sleep,
   sleep,
   TEXT_REFUSAL_HEADER,
-  TEXT_REFUSAL_NEW_DOCUMENT,
-  TEXT_REFUSAL_UPLOAD,
 } from "@legion/contracts";
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
@@ -128,18 +126,6 @@ export interface ArtifactFileVersion {
   readonly bytes: Uint8Array;
 }
 
-/** The scope of a refusal Dispatch marks as its refusal of a text for the text alone
- *  (`TEXT_REFUSAL_HEADER`): one every upload of a markdown document makes, or one only a new
- *  document's seed makes. */
-export type TextRefusalScope = typeof TEXT_REFUSAL_UPLOAD | typeof TEXT_REFUSAL_NEW_DOCUMENT;
-
-/** The scope `response` marks it with as Dispatch's refusal of a text for the text alone, or
- *  undefined for an answer that carries no such mark, or a value this client does not know. */
-function markedTextRefusal(response: Response): TextRefusalScope | undefined {
-  const scope = response.headers.get(TEXT_REFUSAL_HEADER);
-  return scope === TEXT_REFUSAL_UPLOAD || scope === TEXT_REFUSAL_NEW_DOCUMENT ? scope : undefined;
-}
-
 export class DispatchServiceError extends Error {
   override readonly name = "DispatchServiceError";
   /**
@@ -156,12 +142,12 @@ export class DispatchServiceError extends Error {
     readonly current?: DispatchServiceErrorShape["current"],
     readonly mismatches?: DispatchServiceErrorShape["mismatches"],
     /**
-     * The scope Dispatch marked the answer with as its refusal of a text for the text alone
+     * Whether Dispatch marked the answer as its refusal of a text for the text alone
      * (`TEXT_REFUSAL_HEADER`), whatever its status: the refusals of the two markdown round trips,
-     * inline and of a file, which are an upload's refusals of the same text. Undefined for any
-     * other answer.
+     * inline and of a file, which are an upload's refusals of the same text. False for any other
+     * answer.
      */
-    readonly textRefusal?: TextRefusalScope
+    readonly textRefusal: boolean = false
   ) {
     super(message);
   }
@@ -782,7 +768,7 @@ function answerEvent(
     return "no-route";
   }
   const textRefusal =
-    answer.error !== undefined && markedTextRefusal(answer.response) !== undefined;
+    answer.error !== undefined && answer.response.headers.has(TEXT_REFUSAL_HEADER);
   if (!textRefusal && retriesUnderKey(status, answer.code)) {
     if (status === 409) return "in-flight";
     return status >= 500 ? "server-error" : "try-later";
@@ -2714,7 +2700,7 @@ export class DispatchClient {
           error.candidates,
           error.current,
           error.mismatches,
-          markedTextRefusal(response)
+          response.headers.has(TEXT_REFUSAL_HEADER)
         );
       }
       throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON");

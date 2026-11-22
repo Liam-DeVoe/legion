@@ -19,10 +19,9 @@ body: |-
   `MARKDOWN_DOCUMENT_MAX_BYTES` (1 MiB) and `MARKDOWN_DOCUMENT_TOO_LARGE` are the most bytes of
   markdown one document may hold and the text of Dispatch's `413 CAP_EXCEEDED` for an upload past
   it, generated into Go for the server. `TEXT_REFUSAL_HEADER` (`Dispatch-Text-Refusal`) is the
-  header the markdown round trips put on their refusal of a text for the text alone, valued with
-  its scope, `TEXT_REFUSAL_UPLOAD` (`upload`) or `TEXT_REFUSAL_NEW_DOCUMENT` (`new-document`); the
-  three are generated into Go as `contracts.TextRefusalHeader`, `contracts.TextRefusalUpload` and
-  `contracts.TextRefusalNewDocument`. The round trip's request type, `MarkdownRoundTripInput`,
+  header the markdown round trips put on their refusal of a text for the text alone, a mark with
+  one value that a client reads for its presence alone; it is generated into Go as
+  `contracts.TextRefusalHeader`. The round trip's request type, `MarkdownRoundTripInput`,
   takes `new_document` beside `markdown`, which asks for the refusals only a new document makes,
   and `FileRoundTripInput` is the body of the file round trip, a file's bytes as base64 in `file`
   with the same `new_document`.

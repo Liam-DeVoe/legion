@@ -10,28 +10,22 @@ import (
 
 // markdownRoundTrip is the round trip's answer to content, the text an upload would store as a
 // markdown document - inline, as a JSON upload's `content`, or with file, a file's bytes, as a
-// multipart upload's file part: the refusal that upload makes of it for the text alone, with the
-// scope that refusal holds for (contracts.TextRefusalHeader's value), or else the markdown it
-// stores. The refusals are the upload's own, in its order, served as the upload serves them:
+// multipart upload's file part: the refusal that upload makes of it for the text alone, or else
+// the markdown it stores. The refusals are the upload's own, in its order, served as the upload
+// serves them: first documentTextRefusal's, which every upload of a markdown document makes before
+// its write - the text's bytes, and a file's encoding - and then its write's.
 //
-//   - documentTextRefusal's, which every upload of a markdown document makes before its write -
-//     the text's bytes, and a file's encoding - scoped contracts.TextRefusalUpload;
-//   - then the seed's, docs.SeedRendering, the steps of SeedText that read the text alone, each
-//     with the scope it holds for: contracts.TextRefusalUpload for a rule a replacement keeps
-//     too, and contracts.TextRefusalNewDocument for one a replacement, judged against the document
-//     it replaces (docs' ReplaceText), relaxes.
-//
-// With newDocument the answer is a new document's: its seed's rendering, or its seed's refusal.
-// Without it, the answer is the most permissive replacement's (docs.SeedRendering): the rendering
-// a replacement stores over a document that already holds what the text holds, or the refusal
+// With newDocument the write is a new document's seed (docs.SeedRendering), the steps of SeedText
+// that read the text alone: the answer is its rendering, or its refusal. Without it, the write is
+// the most permissive replacement (docs.ReplacementRendering), one over a document that already
+// holds what the text holds: the answer is the rendering that replacement stores, or the refusal
 // every replacement makes of the text - the parse's own, the ask refusal the parse's read-back
-// names instead (askRefusalInstead), and a render that fails - each scoped
-// contracts.TextRefusalUpload. So a client that does not ask for a new document's refusals, and
-// refuses its upload on any failure of the round trip but the route's absence, is refused no
-// replacement the store takes, and compares the spelling that replacement stores. For a text
-// main's parse takes, that rendering is main's answer, storedMarkdown's; for one it refused, a
-// block id named twice or an element this build cannot create yet, main answered the text itself,
-// and this answers the rendering.
+// names instead (askRefusalInstead), and a render that fails. So a client that does not ask for a
+// new document's refusals, and refuses its upload on any failure of the round trip but the route's
+// absence, is refused no replacement the store takes, and compares the spelling that replacement
+// stores. For a text main's parse takes, that rendering is main's answer, storedMarkdown's; for one
+// it refused, a block id named twice or an element this build cannot create yet, main answered
+// the text itself, and this answers the rendering.
 //
 // Text `strings.TrimSpace` empties is answered "", as the near-copy gate's storedMarkdown answers
 // it, once nothing has refused it. That answer is not always what the upload stores: the seed
@@ -40,22 +34,23 @@ import (
 // (measured through the upload route on 2026-11-21). The route answers "" so that its answer to
 // every text within the limits is the one it gave before it read the seed, and `dispatch artifact`
 // takes only a refusal from it for such inline text (goBlankPattern) and for a file.
-func markdownRoundTrip[T string | []byte](content T, file, newDocument bool) (stored, scope string, err error) {
+func markdownRoundTrip[T string | []byte](content T, file, newDocument bool) (string, error) {
 	if refusal := documentTextRefusal(content, file); refusal != nil {
-		return "", contracts.TextRefusalUpload, refusal
+		return "", refusal
 	}
 	text := string(content)
-	seeded, newDocumentOnly, err := docs.SeedRendering(text, newDocument)
+	rendering := docs.ReplacementRendering
+	if newDocument {
+		rendering = docs.SeedRendering
+	}
+	stored, err := rendering(text)
 	if err != nil {
-		if newDocumentOnly {
-			return "", contracts.TextRefusalNewDocument, err
-		}
-		return "", contracts.TextRefusalUpload, err
+		return "", err
 	}
 	if strings.TrimSpace(text) == "" {
-		return "", "", nil
+		return "", nil
 	}
-	return seeded, "", nil
+	return stored, nil
 }
 
 // markdownRoundTripPattern is the inline round trip's pattern and markdownRoundTripRoute that
@@ -153,14 +148,13 @@ type markdownRoundTripResponse struct {
 // made in the seed's order, so such a body is refused a text that breaks two rules with the first.
 // A body without it is answered with the rendering the most permissive replacement stores, or
 // with the first refusal every upload makes of the text. Each refusal, whatever its status,
-// carries contracts.TextRefusalHeader, valued with its scope (markdownRoundTrip):
-// TextRefusalUpload for a refusal every upload makes, TextRefusalNewDocument for one only a new
-// document's seed makes. No other answer of either route carries it. `dispatch artifact` and its
-// dry run ask for a new document's refusals where the call makes a new document, without --force,
-// and take an answer carrying the header as the call's refusal, so they refuse such text as the
-// upload would, inline or from a markdown file, and a check the upload makes of the text alone
-// before its write (documentTextRefusal) or in the steps of its seed that read the text alone
-// (docs.SeedRendering) reaches them with no change to the client.
+// carries contracts.TextRefusalHeader, valued textRefusalMark. No other answer of either route
+// carries it. `dispatch artifact` and its dry run ask for a new document's refusals where the call
+// makes a new document, without --force, and take an answer carrying the header as the call's
+// refusal, so they refuse such text as the upload would, inline or from a markdown file, and a
+// check the upload makes of the text alone before its write (documentTextRefusal) or in the steps
+// of its seed or its replacement that read the text alone (docs.SeedRendering,
+// docs.ReplacementRendering) reaches them with no change to the client.
 //
 // The inline body is decoded without the JSON routes' own refusal of U+0000 (decodeJSONBody): the
 // text it carries is checked as the upload checks its own, under the upload's name for it,
@@ -175,11 +169,11 @@ func (s *server) postMarkdownRoundTrip(w http.ResponseWriter, r *http.Request) {
 	// (unstorableJSON), so this route makes that refusal first, in those words; a JSON string
 	// holds no byte that is not UTF-8, since decoding writes each as U+FFFD.
 	if refusal := unstorableText("content", input.Markdown); refusal != nil {
-		s.writeTextRefusal(w, contracts.TextRefusalUpload, refusal)
+		s.writeTextRefusal(w, refusal)
 		return
 	}
-	stored, scope, err := markdownRoundTrip(input.Markdown, false, input.NewDocument)
-	s.writeRoundTrip(w, stored, scope, err)
+	stored, err := markdownRoundTrip(input.Markdown, false, input.NewDocument)
+	s.writeRoundTrip(w, stored, err)
 }
 
 // postFileRoundTrip answers POST /api/v1/markdown/file-round-trip (postMarkdownRoundTrip).
@@ -188,8 +182,8 @@ func (s *server) postFileRoundTrip(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeRoundTrip(w, r, fileRoundTripPattern, &input) {
 		return
 	}
-	stored, scope, err := markdownRoundTrip(input.File, true, input.NewDocument)
-	s.writeRoundTrip(w, stored, scope, err)
+	stored, err := markdownRoundTrip(input.File, true, input.NewDocument)
+	s.writeRoundTrip(w, stored, err)
 }
 
 // decodeRoundTrip decodes the body of the round trip at pattern into input, within that route's
@@ -208,20 +202,24 @@ func (s *server) decodeRoundTrip(w http.ResponseWriter, r *http.Request, pattern
 	return true
 }
 
-// writeRoundTrip writes a round trip's answer: err, the refusal of the text with its scope, or the
-// markdown stored.
-func (s *server) writeRoundTrip(w http.ResponseWriter, stored, scope string, err error) {
+// writeRoundTrip writes a round trip's answer: err, the refusal of the text, or the markdown
+// stored.
+func (s *server) writeRoundTrip(w http.ResponseWriter, stored string, err error) {
 	if err != nil {
-		s.writeTextRefusal(w, scope, err)
+		s.writeTextRefusal(w, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, markdownRoundTripResponse{Markdown: stored})
 }
 
+// textRefusalMark is the one value of contracts.TextRefusalHeader: the header marks a round trip's
+// answer as the refusal of the text, and a client reads only that the header is there.
+const textRefusalMark = "text"
+
 // writeTextRefusal writes refusal, an upload's refusal of a text for the text alone, marked as
-// such with the scope it holds for (contracts.TextRefusalHeader). Every error a round trip answers
-// after its body is read is one: its checks read the text and nothing else.
-func (s *server) writeTextRefusal(w http.ResponseWriter, scope string, refusal error) {
-	w.Header().Set(contracts.TextRefusalHeader, scope)
+// such (contracts.TextRefusalHeader). Every error a round trip answers after its body is read is
+// one: its checks read the text and nothing else.
+func (s *server) writeTextRefusal(w http.ResponseWriter, refusal error) {
+	w.Header().Set(contracts.TextRefusalHeader, textRefusalMark)
 	s.writeHandlerError(w, refusal)
 }

@@ -254,13 +254,13 @@ func TestRepeatedBlockIDJudgesOnlyWhatTheWriteAdds(t *testing.T) {
 }
 
 // ParseWrittenAsReplacement is the parse a replacement makes over a live document that holds what
-// its markdown holds. It makes neither refusal such a document relaxes (RefusedUnlessLiveHolds) -
-// a block id named on two blocks and an element this build cannot create yet - which ParseWritten
-// over no live document makes, and which ParseWritten over a live document holding the same does
-// not make either. A repeated id stays on its first block and the next is minted another, as any
-// write's ids are (EnsureBlockIDs), and an element this build cannot create is rendered as it is
-// written. Every other refusal of ParseWritten it makes alike: the read-back's among them, which
-// the relaxed refusal no longer comes before.
+// its markdown holds. It makes neither refusal such a document relaxes - a block id named on two
+// blocks and an element this build cannot create yet - which ParseWritten over no live document
+// makes, and which ParseWritten over a live document holding the same does not make either. A
+// repeated id stays on its first block and the next is minted another, as any write's ids are
+// (EnsureBlockIDs), and an element this build cannot create is rendered as it is written. Every
+// other refusal of ParseWritten it makes alike: the read-back's among them, which the relaxed
+// refusal no longer comes before.
 func TestParseWrittenAsReplacementMakesNoRefusalALiveDocumentRelaxes(t *testing.T) {
 	restore, err := UseStagedBlockForTest("future", false)
 	if err != nil {
@@ -289,7 +289,7 @@ func TestParseWrittenAsReplacementMakesNoRefusalALiveDocumentRelaxes(t *testing.
 		{name: "an element this build cannot create yet", markdown: future, refusal: "cannot write it yet", rendering: future, live: held},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, _, err := ParseWritten(test.markdown, nil); !RefusedUnlessLiveHolds(err) || !strings.Contains(err.Error(), test.refusal) {
+			if _, _, err := ParseWritten(test.markdown, nil); err == nil || !strings.Contains(err.Error(), test.refusal) {
 				t.Fatalf("ParseWritten over no live document = %v, want the refusal a live document relaxes, naming %q", err, test.refusal)
 			}
 			if _, _, err := ParseWritten(test.markdown, test.live); err != nil {
@@ -300,7 +300,7 @@ func TestParseWrittenAsReplacementMakesNoRefusalALiveDocumentRelaxes(t *testing.
 				t.Fatalf("ParseWrittenAsReplacement = %q, %v; want %q", read.Markdown, err, test.rendering)
 			}
 			_, _, err := ParseWrittenAsReplacement(test.markdown + "\n" + misread)
-			if !errors.Is(err, ErrRenderingRefused) || RefusedUnlessLiveHolds(err) {
+			if !errors.Is(err, ErrRenderingRefused) || strings.Contains(err.Error(), test.refusal) {
 				t.Fatalf("ParseWrittenAsReplacement beside a rendering no reader reads back = %v, want ErrRenderingRefused", err)
 			}
 		})

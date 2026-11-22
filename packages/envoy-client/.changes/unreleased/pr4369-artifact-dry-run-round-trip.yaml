@@ -27,9 +27,10 @@ body: |-
   the upload refuses it, and takes its refusal alone, never a spelling, since the call stores a
   Markdown file as the store spells it; a file stored as its bytes is asked nothing. Each of these
   refusals exits 1. The call of such a Markdown file asks the same file round trip as its dry run
-  asks it - once, within 5 s, with no wait before asking a route again - about the bytes it then
-  uploads, and refuses what it refuses before it uploads, with the dry run's refusal and exit
-  code; on any other answer, or none (no answer in time, a failure, or a Dispatch without the
+  asks it, with the dry run's own client options - once, within 5 s, with no wait before asking a
+  route again - about the bytes it then uploads, and refuses what it refuses before it uploads,
+  with the dry run's refusal and exit code; on any other answer, or none (no answer in time, a
+  failure, or a Dispatch without the
   route), it uploads the file as before, and the dry run's warning for such a file says that the
   call asks once more and uploads the file unchecked if it gets no answer either. The call checks
   the text, inline or a file's, before it reads whether the owner holds the name, so a text

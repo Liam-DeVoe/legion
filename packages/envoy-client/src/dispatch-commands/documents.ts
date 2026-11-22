@@ -31,9 +31,9 @@ import { decisionBlockLines, declinedAskLines } from "../related-check";
 import { ToolInputError } from "../tool-input-errors";
 import { otherAdviceLines, renderAdvice } from "./advice";
 import {
+  askOnceWithinDryRun,
   type CommandContext,
   type DispatchToolResult,
-  DRY_RUN_DEADLINE_MS,
   type DryRunContext,
   type DryRunVerdict,
   numberArg,
@@ -751,8 +751,8 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // Inline text is asked through the call's own client, which asks again after a failed attempt,
   // since a failed check of text that is not blank refuses the upload. A file goes up whatever its
   // check failed with, so asking again would only delay the upload: its check goes through a
-  // client of its own that asks once, as the dry run asks it - no second attempt after a failed
-  // one, no wait before asking a route again, and the dry run's bound (DRY_RUN_DEADLINE_MS).
+  // client of its own that asks once within the dry run's bound, with the dry run's own client
+  // options (askOnceWithinDryRun).
   const check = artifactTextCheck({
     tool: input.tool,
     name,
@@ -760,12 +760,7 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
     bytes: documentBytes,
     force,
     textClient: () => client,
-    fileClient: () =>
-      newClient({
-        deadlineMs: DRY_RUN_DEADLINE_MS,
-        retryNoRoute: false,
-        writeRetry: { ...client.writeRetry, pausesMs: [] },
-      }),
+    fileClient: () => newClient(askOnceWithinDryRun()),
   });
   const stored = await check?.();
   if (stored?.kind === "refused") throw stored.refusal;

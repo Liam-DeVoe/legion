@@ -16,7 +16,7 @@ import {
   type ParsedCommand,
   parseCommand,
 } from "./dispatch-command";
-import { DRY_RUN_DEADLINE_MS, defined } from "./dispatch-commands/context";
+import { askOnceWithinDryRun, DRY_RUN_DEADLINE_MS, defined } from "./dispatch-commands/context";
 import { loginCommand } from "./dispatch-commands/login";
 import { type DispatchToolName, dispatchCommands } from "./dispatch-commands/table";
 import type { ActiveDispatchConfig } from "./dispatch-config";
@@ -27,7 +27,7 @@ import {
   dryRunAsksDispatch,
   executeDispatchTool,
 } from "./dispatch-execute";
-import { DISPATCH_WRITE_RETRY, DispatchClient, DispatchWriteLandedError } from "./dispatch-http";
+import { DispatchClient, DispatchWriteLandedError } from "./dispatch-http";
 import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
 import {
   appendResult,
@@ -422,18 +422,16 @@ export async function runDispatchCli(
           if (!settings.enabled) {
             throw new Error(file.path === null ? file.error : dispatchOffText(settings));
           }
-          // The client stops at the dry run's deadline, and its own deadline is the same budget,
-          // so a failure after the budget is the deadline's and a credential is given that budget
-          // less the request's reserve. The waits before asking a route again, and before sending
-          // the round trip again after a failed attempt, would outlast the deadline: the step
-          // sends no second attempt after a failed one (it still presents a fresh token once where
-          // Dispatch says the token is no longer live), says what Dispatch answered, and has an
-          // answer of its own to a Dispatch that holds no such route.
+          // The client stops at the dry run's deadline, and asks once within it
+          // (askOnceWithinDryRun): its own deadline is the same budget, so a failure after the
+          // budget is the deadline's and a credential is given that budget less the request's
+          // reserve, and it sends no second attempt after a failed one and asks no route again,
+          // since those waits would outlast the deadline. It still presents a fresh token once
+          // where Dispatch says the token is no longer live, says what Dispatch answered, and has
+          // an answer of its own to a Dispatch that holds no such route.
           return new DispatchClient(settings.url, settings.credential, io.fetchImpl ?? fetch, {
             signal: deadline,
-            deadlineMs,
-            retryNoRoute: false,
-            writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [] },
+            ...askOnceWithinDryRun(deadlineMs),
           });
         },
       });
