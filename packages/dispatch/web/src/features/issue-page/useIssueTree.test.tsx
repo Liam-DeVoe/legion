@@ -1,7 +1,7 @@
 import { beforeAll, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, waitFor } from "@testing-library/react";
-import { type ReactNode, useMemo } from "react";
+import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
 import { eventRefreshTargets } from "../../api/event-refresh";
@@ -19,14 +19,13 @@ import type {
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
-  type PublishedReferences,
   type ReferenceNameReading,
   ReferenceNamesProvider,
   useKnownReferences,
-  usePublishReferenceNames,
 } from "../refs/reference-names";
 import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
+import { Publisher, publishedNames } from "./projection-fixture";
 import { nodesInOrder } from "./tree-keys";
 import { useIssueTree } from "./useIssueTree";
 
@@ -550,33 +549,10 @@ test("the page publishes an ambiguous reference a comment cites as ambiguous, a 
   }
 });
 
-/** What one surface publishes: the names it read and the references it read as ambiguous. */
-interface Published {
-  readonly ambiguous: ReadonlySet<string>;
-  readonly names: ReadonlyMap<string, string>;
-}
-
 /** What a link under the provider read on its latest render. */
 interface Seen {
   ambiguous?: ReadonlySet<string>;
   names?: ReadonlyMap<string, string>;
-}
-
-/** A surface that publishes `published` for as long as it is mounted: each name as words the
- *  store draws as they stand, beside the references it read as ambiguous. */
-function Publisher({ published }: { readonly published: Published }): ReactNode {
-  const value = useMemo<PublishedReferences>(
-    () => ({
-      ambiguous: published.ambiguous,
-      asked: new Set(published.names.keys()),
-      gone: new Set(),
-      readings: new Map([...published.names].map(([reference, words]) => [reference, { words }])),
-      unnamed: new Set(),
-    }),
-    [published]
-  );
-  usePublishReferenceNames(value);
-  return null;
 }
 
 /** A link under the provider, which writes what it reads into `seen` on every render. */
@@ -597,25 +573,32 @@ test("one publisher leaving keeps the names and ambiguous references another pub
   const other = "dispatch://CORE-7";
   const pageAmbiguous = `dispatch://${KEY}/comment/c0b271c7`;
   const sheetAmbiguous = `dispatch://${KEY}/ask/a5`;
-  const page: Published = {
+  // What each surface read - the names, and the references it read as ambiguous - and what it
+  // publishes of that, made once, so a render in which no surface reads again publishes the
+  // same value.
+  const page = {
     ambiguous: new Set([pageAmbiguous]),
     names: new Map([
       [TASK_REF, TASK_WORDS],
       [shared, "Hold the deploy."],
     ]),
   };
-  const sheet: Published = {
+  const sheet = {
     ambiguous: new Set([sheetAmbiguous]),
     names: new Map([
       [other, "Another issue"],
       [shared, "Hold the deploy until Friday."],
     ]),
   };
+  const published = {
+    page: publishedNames(page.names, { ambiguous: page.ambiguous }),
+    sheet: publishedNames(sheet.names, { ambiguous: sheet.ambiguous }),
+  };
   const seen: Seen = {};
   const surfaces = (mounted: { readonly page: boolean; readonly sheet: boolean }) => (
     <ReferenceNamesProvider>
-      {mounted.page && <Publisher published={page} />}
-      {mounted.sheet && <Publisher published={sheet} />}
+      {mounted.page && <Publisher published={published.page} />}
+      {mounted.sheet && <Publisher published={published.sheet} />}
       <Reader seen={seen} />
     </ReferenceNamesProvider>
   );

@@ -1200,31 +1200,22 @@ interface MemberChain {
   readonly root: ts.Identifier | undefined;
 }
 
-/** The member chain `expression` reads (`MemberChain`), through `!`, `?.`, brackets and casts
- *  (`as`, `satisfies` and `<T>`): `edge.excerpt?.text` is `edge`, then `excerpt` and `text`, and
- *  so is `(edge as Edge).excerpt!.text`. */
+/** The member chain `expression` reads (`MemberChain`), through `?.` and what `uncast` takes
+ *  off: `edge.excerpt?.text` is `edge`, then `excerpt` and `text`, and so is
+ *  `(edge as Edge).excerpt!.text`. */
 function memberChain(expression: ts.Expression): MemberChain {
   const path: (string | undefined)[] = [];
-  let at = expression;
+  let at = uncast(expression);
   for (;;) {
     if (ts.isPropertyAccessExpression(at)) {
       path.unshift(at.name.text);
-      at = at.expression;
     } else if (ts.isElementAccessExpression(at)) {
       const key = uncast(at.argumentExpression);
       path.unshift(ts.isStringLiteral(key) || ts.isNumericLiteral(key) ? key.text : undefined);
-      at = at.expression;
-    } else if (
-      ts.isNonNullExpression(at) ||
-      ts.isParenthesizedExpression(at) ||
-      ts.isAsExpression(at) ||
-      ts.isSatisfiesExpression(at) ||
-      ts.isTypeAssertionExpression(at)
-    ) {
-      at = at.expression;
     } else {
       break;
     }
+    at = uncast(at.expression);
   }
   return { path, root: ts.isIdentifier(at) ? at : undefined };
 }
@@ -1249,15 +1240,32 @@ function importsOf(tree: ts.SourceFile): Map<string, string> {
   return names;
 }
 
-/** `expression` with the casts and parentheses around it taken off: `{ … } as const` is the
- *  object literal it casts. */
+/** An expression that holds the value of the one inside it: brackets, a cast (`as`,
+ *  `satisfies` or `<T>`) or `!`. */
+type Cast =
+  | ts.AsExpression
+  | ts.NonNullExpression
+  | ts.ParenthesizedExpression
+  | ts.SatisfiesExpression
+  | ts.TypeAssertion;
+
+/** Whether `node` is a `Cast`: the one list of them, which `uncast` takes off going down and a
+ *  walk up from a value (`memberReadOf`, `passesOn`) goes through. */
+function isCast(node: ts.Node): node is Cast {
+  return (
+    ts.isAsExpression(node) ||
+    ts.isNonNullExpression(node) ||
+    ts.isParenthesizedExpression(node) ||
+    ts.isSatisfiesExpression(node) ||
+    ts.isTypeAssertionExpression(node)
+  );
+}
+
+/** `expression` with every `Cast` around it taken off: `{ … } as const` is the object literal
+ *  it casts, and `(LINES as Lines)!` is `LINES`. */
 function uncast(expression: ts.Expression): ts.Expression {
   let value = expression;
-  while (
-    ts.isAsExpression(value) ||
-    ts.isSatisfiesExpression(value) ||
-    ts.isParenthesizedExpression(value)
-  ) {
+  while (isCast(value)) {
     value = value.expression;
   }
   return value;
@@ -1443,10 +1451,9 @@ function namesNoValue(name: ts.Identifier): boolean {
   return "name" in parent && parent.name === name;
 }
 
-/** The member read `name` is the root of, at its whole length, through the casts, `!` and
- *  parentheses inside it (`memberChain`): `LINES.absent.heading` for `LINES` there, and
- *  `(LINES as Lines)!["absent"]` for `LINES` there. `undefined` where `name` roots no member
- *  read. */
+/** The member read `name` is the root of, at its whole length, through every `Cast` inside it
+ *  (`memberChain`): `LINES.absent.heading` for `LINES` there, and `(LINES as Lines)!["absent"]`
+ *  for `LINES` there. `undefined` where `name` roots no member read. */
 function memberReadOf(name: ts.Identifier): ts.Expression | undefined {
   let at: ts.Node = name;
   let read: ts.Expression | undefined;
@@ -1457,13 +1464,7 @@ function memberReadOf(name: ts.Identifier): ts.Expression | undefined {
       parent.expression === at
     ) {
       read = parent;
-    } else if (
-      !ts.isAsExpression(parent) &&
-      !ts.isSatisfiesExpression(parent) &&
-      !ts.isTypeAssertionExpression(parent) &&
-      !ts.isNonNullExpression(parent) &&
-      !ts.isParenthesizedExpression(parent)
-    ) {
+    } else if (!isCast(parent)) {
       return read;
     }
     at = parent;
@@ -1488,11 +1489,7 @@ function passesOn(value: ts.Expression): boolean {
     const binary = ts.isBinaryExpression(parent) ? parent : undefined;
     const operator = binary?.operatorToken.kind;
     const answers =
-      ts.isParenthesizedExpression(parent) ||
-      ts.isAsExpression(parent) ||
-      ts.isSatisfiesExpression(parent) ||
-      ts.isTypeAssertionExpression(parent) ||
-      ts.isNonNullExpression(parent) ||
+      isCast(parent) ||
       (ts.isConditionalExpression(parent) && parent.condition !== at) ||
       operator === ts.SyntaxKind.QuestionQuestionToken ||
       operator === ts.SyntaxKind.BarBarToken ||

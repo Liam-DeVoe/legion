@@ -244,9 +244,20 @@ export function PlanFilterBody({
   // switch, having nothing to switch between, and draws its own tree (below), with the line the
   // slot hands on (`emptyLine`) once the reads have answered.
   const empty = inView.size === 0;
-  // Each read that failed before it first answered, which the body says over the tree in the
-  // order the slot hands them on.
+  // The lines the body says over the tree: each read that failed before it first answered, in
+  // the order the slot hands them on, then the names' line (`namesLine`), as the outline draws
+  // it after the lines of the reads its rows come from (`outline-reads.ts`'s `useOutlineReads`).
   const unreadable = reads.state === "failed" ? reads.failed : [];
+  const failedLines = [
+    ...unreadable.map(({ failure, read, retry, retrying }) => ({
+      failure,
+      key: read,
+      message: UNREADABLE_LINES[read],
+      retry,
+      retrying,
+    })),
+    ...namesLine,
+  ];
   // Whether the empty tree says the view holds no task: once the reads have answered, in the
   // slot's line, which describes the tree.
   const saysEmpty = empty && answered && emptyLine !== undefined;
@@ -273,24 +284,12 @@ export function PlanFilterBody({
       className="mt-3 mb-[120px] flex w-full min-w-0 flex-col max-[761px]:mt-0"
       data-plan-body=""
     >
-      {/* Each read that failed before it first answered, one line in the page's words with a
-          Retry that asks that read alone again, in the order the slot hands them on, over the
-          tree (`FailedReadLine`). The stage the view is drawn in keeps the focus in the view when
-          a line leaves with the focus in it, and hands a focus on the empty tree to a Retry or to
-          the rows once they come (`slots/stage.tsx`). */}
-      {unreadable.map(({ failure, read, retry, retrying }) => (
-        <div className="mb-2.5" data-plan-unreadable={read} key={read}>
-          <FailedReadLine
-            failure={failure}
-            message={UNREADABLE_LINES[read]}
-            onRetry={retry}
-            retrying={retrying}
-          />
-        </div>
-      ))}
-      {/* The names' line, the outline's own (`namesLine`), after the view's own reads' lines and
-          over the tree, in an element that names it as each of those names its read. */}
-      {namesLine.map((line) => (
+      {/* Each line, one in the page's words with a Retry that asks its read alone again, over
+          the tree (`FailedReadLine`), each in an element that names its read. The stage the view
+          is drawn in keeps the focus in the view when a line leaves with the focus in it, and
+          hands a focus on the empty tree to a Retry or to the rows once they come
+          (`slots/stage.tsx`). */}
+      {failedLines.map((line) => (
         <div className="mb-2.5" data-plan-unreadable={line.key} key={line.key}>
           <FailedReadLine
             failure={line.failure}

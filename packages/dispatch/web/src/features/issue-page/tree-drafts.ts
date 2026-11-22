@@ -342,7 +342,8 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
     if (route?.kind === "spec") {
       return { words: documentWord(reads.issue, route.key === key ? spec : undefined) };
     }
-    if (route?.kind === "artifact" && route.block === undefined) {
+    // A block of it returned above, so this is the document itself.
+    if (route?.kind === "artifact") {
       const document = route.key === key ? documents.get(route.slug) : undefined;
       return { words: documentWord(reads.issue, document) };
     }

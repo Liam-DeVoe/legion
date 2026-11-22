@@ -1,4 +1,5 @@
 import type { DispatchReferenceRoute } from "../refs/routes";
+import { referenceTargetKind } from "../refs/target-id";
 import { NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
 
 /**
@@ -41,11 +42,9 @@ export function chipWords(name: string): string {
  * publishes for a document all name it by this one word (`tree-drafts.ts`'s `treeContext`).
  */
 export function documentWord(route: DispatchReferenceRoute | undefined): string | undefined {
-  if (route === undefined) return undefined;
-  if (route.kind === "spec") return route.block === undefined ? PRESET_NAMES.spec : undefined;
-  const document =
-    route.kind === "artifact" || route.kind === "document" || route.kind === "agent-artifact";
-  return document && !("block" in route && route.block !== undefined)
+  if (route === undefined || referenceTargetKind(route) === "block") return undefined;
+  if (route.kind === "spec") return PRESET_NAMES.spec;
+  return route.kind === "artifact" || route.kind === "document" || route.kind === "agent-artifact"
     ? NODE_TYPE_NAMES.document
     : undefined;
 }

@@ -94,7 +94,7 @@ import {
   type Preset,
   STATE_LINES,
 } from "./page-words";
-import { nodeLineOf, publishedNames, publishedTree } from "./projection-fixture";
+import { nodeLineOf, Publisher, publishedNames, publishedTree } from "./projection-fixture";
 import { EditorBox } from "./StagedDocument";
 import type { SlotProps } from "./slot-props";
 import { BodySlot } from "./slots/body";
@@ -236,14 +236,6 @@ function FocusedNodeProbe({ seen }: { seen: { node?: FocusedNode } }): ReactNode
  *  (`lineOrKindWord`); `""` where nothing has the focus. */
 function panelWords(focused: FocusedNode | undefined): string {
   return focused === undefined ? "" : lineOrKindWord(nodeLineOf(focused), focused.type);
-}
-
-/** Publishes `published` to the names store, as the page's body publishes its batched read
- *  beside the outline it draws (`slots/body.tsx`, `useIssueTree.ts`): in the layout phase of the
- *  commit that draws the tree, after its rows have rendered. */
-function Publisher({ published }: { published: PublishedReferences | undefined }): ReactNode {
-  usePublishReferenceNames(published);
-  return null;
 }
 
 /** How the page's row editor reports what a document's room admitted the page to
