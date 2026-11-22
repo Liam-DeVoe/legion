@@ -94,6 +94,10 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		ConflictConfirm{Number: 42, Head: "c0de", FirstReadAt: now.Add(-time.Minute)},
 		MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Implementing, PullRequest: 42, Why: ConflictCheckNotGreen,
 			MergeState: MergeStateDirty, StateReadAt: now.Add(-30 * time.Second)},
+		// In merging the merger is asked (cybermonklabs/legion#4979); the hold to the merger above is a
+		// row a daemon before it queued, which still reads after the upgrade.
+		MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext,
+			MergeState: MergeStateDirty, StateReadAt: now.Add(-30 * time.Second)},
 		MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext,
 			MergeState: MergeStateDirty, StateReadAt: now.Add(-30 * time.Second)},
 		MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictRulesUnread},
@@ -502,6 +506,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a conflict confirm with no time of the first read", payload: ConflictConfirm{Number: 42, Head: "c0de"}, reason: "a conflict confirm names when the first read it reads again was made"},
 		{name: "a merge-forward message of no step", payload: MergeForwardMessage{Role: claim.RoleImplementer, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictCheckNotGreen}, reason: "is an ask, a hold, a landed or a review"},
 		{name: "a merge-forward ask to the tester", payload: MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictCheckNotGreen}, reason: "a merge-forward ask goes to the implementer"},
+		{name: "a merge-forward ask to the merger in accepting", payload: MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Accepting, PullRequest: 42, Why: ConflictMergeNext}, reason: "a merge-forward ask goes to the merger only while the issue stands in merging"},
+		{name: "a merge-forward ask to the merger in retro", payload: MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Retro, PullRequest: 42, Why: ConflictMergeNext}, reason: "a merge-forward ask goes to the merger only while the issue stands in merging"},
 		{name: "a merge-forward hold to the implementer", payload: MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Retro, PullRequest: 42, Why: ConflictMergeNext}, reason: "a merge-forward ask goes to the implementer"},
 		{name: "a merge-forward hold to the architect", payload: MergeForwardMessage{Role: claim.RoleArchitect, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Accepting, PullRequest: 42, Why: ConflictMergeNext}, reason: "a merge-forward ask goes to the implementer"},
 		{name: "a merge-forward landed to the architect", payload: MergeForwardMessage{Role: claim.RoleArchitect, Step: MergeForwardLanded, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Accepting, PullRequest: 42}, reason: "a merge-forward ask goes to the implementer"},
@@ -759,7 +765,7 @@ func TestAMergeForwardAskAndHoldNameGitHubsMergeStateAndWhenItWasRead(t *testing
 		" Merge main forward in the issue workspace, $LEGION_WORKSPACE. Every role of the issue shares that one workspace." +
 		" First do the working-copy check of skill://legion-worker/references/foreign-path.md." +
 		" Then merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch." +
-		" Write no handoff and make no completion for this merge."
+		" Write no handoff and make no completion for this forward merge."
 	if got := ask.Message("LEGION-208", "sjawhar/legion"); got != want {
 		t.Fatalf("Message of the ask =\n%q\nwant\n%q", got, want)
 	}
@@ -776,6 +782,22 @@ func TestAMergeForwardAskAndHoldNameGitHubsMergeStateAndWhenItWasRead(t *testing
 		" A result you recorded at head c0de stays a result of head c0de."
 	if got := hold.Message("LEGION-208", "sjawhar/legion"); got != want {
 		t.Fatalf("Message of the hold =\n%q\nwant\n%q", got, want)
+	}
+
+	// In merging the merger is asked (cybermonklabs/legion#4979), and its ask names the same read.
+	merger := MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Merging,
+		PullRequest: 42, Why: ConflictMergeNext, MergeState: MergeStateDirty, StateReadAt: read}
+	want = "LEGION-208: pull request sjawhar/legion#42 at head c0de conflicts with its base branch main, and a second read of GitHub confirmed it." +
+		" GitHub answered mergeState=dirty for head c0de at 2026-11-19T02:01:00Z." +
+		" The issue stays in merging. The next step of the issue is the merge, and GitHub cannot merge a head that conflicts with its base." +
+		" Merge main forward in the issue workspace, $LEGION_WORKSPACE. Every role of the issue shares that one workspace." +
+		" First do the working-copy check of skill://legion-worker/references/foreign-path.md." +
+		" Then merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch." +
+		" Write no handoff and make no completion for this forward merge." +
+		" The merge and its conflict are yours to resolve, as your role says." +
+		" When your merge lands, the daemon asks the reviewer to read it and approve the new head."
+	if got := merger.Message("LEGION-208", "sjawhar/legion"); got != want {
+		t.Fatalf("Message of the merger's ask =\n%q\nwant\n%q", got, want)
 	}
 
 	stateless := ask

@@ -108,7 +108,12 @@ type taskRelayed struct {
 // beside them (natsgrant.Listener and natsgrant.ListenerHost), so a listener connecting as a host
 // or Dispatch user never opens the bucket, and logs nothing of it. The edge listener's grant holds
 // the session consumers' calls and none of the bucket's reads (natsgrant.Edge), so an edge listener
-// runs no task relay at all (startTaskRelay).
+// runs no task relay at all (startTaskRelay). So no task frame reaches an edge session's relay
+// socket (relay_socket.go): no listener publishes one on its relay subject, since the edge runs no
+// task relay and every other listener relays only the sessions whose consumer it relays
+// (sessionRelays.wanted), which an edge session's entry does not name; and the socket forwards only
+// a frame whose reply is a relay receipt naming its session (relayReceiptOf), which a task frame's
+// reply, under a shared listener's own reply inbox (taskFrameReplyToken), is not.
 //
 // It opens the bucket and never creates it (bus.OpenKeyValue): the Legion daemons create it. A
 // bucket that does not exist yet is waited for quietly, looked up again every interval, with one

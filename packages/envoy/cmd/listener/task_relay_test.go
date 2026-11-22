@@ -366,16 +366,23 @@ func TestTaskRelayRelaysTheCurrentValueWhenTheRoleIsClaimed(t *testing.T) {
 
 // An edge listener runs no task relay, since its grant holds none of the task bucket's reads
 // (natsgrant.Edge): a session of its own that holds a claim's role, with the claim's value written,
-// is relayed no task value, and the listener logs nothing of the task relay. The same steps through
-// a listener without the edge's grant relay the value, which shows the rig sees a relay when one is
-// made.
+// is relayed no task value, and the listener logs nothing of the task relay. The session's relay
+// socket (relay_socket.go, cybermonklabs/legion#4819), which an edge replica serves on the same
+// server and the session's client subscribes to its relay subject, is sent no frame either, and
+// nothing at all is published on that subject for it to pass over. The same steps through a
+// listener without the edge's grant relay the value, which shows the rig sees a relay when one is
+// made: the session's stand-in takes the task frame, and the socket, offered that frame on the
+// relay subject, passes it over, since its reply is no relay receipt naming the session
+// (relayReceiptOf), and sends its client nothing.
 func TestTaskRelayDoesNotRunAtTheEdge(t *testing.T) {
 	const sessionID = "ses_task_edge"
 	claim := "legion-priv-priv-1-1-implementer"
 	// start is a listener under edge on a server of its own, holding its machine's durable
-	// binding, whose session sessionID holds the role of claim, whose value is task 3. It returns
-	// the rig, the session's stand-in, the bucket's epoch and the value's revision.
-	start := func(t *testing.T, edge *edgeGrant) (*taskRig, *taskStandIn, string, uint64) {
+	// binding, whose session sessionID holds the role of claim, whose value is task 3, with the
+	// session's relay socket open on an edge replica of that server and subscribed to its relay
+	// subject before the role is claimed. It returns the rig, the session's stand-in, the socket
+	// replica, the socket's client, the bucket's epoch and the value's revision.
+	start := func(t *testing.T, edge *edgeGrant) (*taskRig, *taskStandIn, *relaySocketRig, *relaySocketClient, string, uint64) {
 		t.Helper()
 		url := testnats.URL(t)
 		rig := newTaskRigAs(t, url, "test-machine", taskRelayReadInterval, edge)
@@ -383,20 +390,32 @@ func TestTaskRelayDoesNotRunAtTheEdge(t *testing.T) {
 		js, kv := createTaskBucket(t, url)
 		revision := putTask(t, kv, claim, 3)
 		session := startTaskStandIn(t, url, sessionID)
+		replica := newRelaySocketReplica(t, url, relaySocketRigConfig{checkEvery: relaySocketTestCheck})
+		socket, _ := replica.open(t, sessionID)
+		socket.subscribeOwn(sessionID)
 		rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 		claimTaskRole(t, rig.sessionConsumerRig, sessionID, claim)
-		return rig, session, taskEpoch(t, js), revision
+		return rig, session, replica, socket, taskEpoch(t, js), revision
 	}
+	const passedOver = "the relay socket passed over a message on its relay subject"
 	t.Run("at the edge", func(t *testing.T) {
-		rig, session, _, _ := start(t, testEdgeGrant(t, metrics.New()))
+		rig, session, replica, socket, _, _ := start(t, testEdgeGrant(t, metrics.New()))
 		session.none(t, 2*time.Second)
+		socket.none(500*time.Millisecond, "the edge session's relay socket")
 		if logs := rig.harness.logs.String(); strings.Contains(logs, taskRelayName) {
 			t.Fatalf("the edge listener logged of the task relay, which it does not run:\n%s", logs)
 		}
+		if logs := replica.logs.String(); strings.Contains(logs, passedOver) {
+			t.Fatalf("the socket replica was offered a message on the edge session's relay subject, want none published there:\n%s", logs)
+		}
 	})
 	t.Run("without the edge's grant", func(t *testing.T) {
-		_, session, epoch, revision := start(t, nil)
+		_, session, replica, socket, epoch, revision := start(t, nil)
 		session.next(t, 5*time.Second).require(t, claim, legiontasks.OpPut, epoch, revision, encodedTask(t, 3))
+		waitFor(t, 5*time.Second, "the socket replica passing over the task frame", func() bool {
+			return strings.Contains(replica.logs.String(), passedOver) && strings.Contains(replica.logs.String(), taskFrameReplyToken)
+		})
+		socket.none(500*time.Millisecond, "the relay socket offered a task frame")
 	})
 }
 
