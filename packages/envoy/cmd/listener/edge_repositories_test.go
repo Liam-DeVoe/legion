@@ -303,6 +303,12 @@ func TestAClearAfterAHandoverLeavesTheMarkOfALaterWithheldEvent(t *testing.T) {
 // repositoryGapSent before this row), the stalled write never ends and the stalled leader read ends
 // only at bus.RequestTimeout, and both subtests fail.
 func TestARelaysGapMarkWritesEndWhileTheSessionBucketDoesNotAnswer(t *testing.T) {
+	// The row's limit lies between the relay's own bound and a read's own, so it can tell them apart
+	// only while the first is the shorter: a bound raised past bus.RequestTimeout would otherwise set
+	// a limit as long as the bound it guards.
+	if repositoryGapWriteTimeout >= bus.RequestTimeout {
+		t.Fatalf("repositoryGapWriteTimeout is %s, not under bus.RequestTimeout (%s): the relay's gap writes are bounded no tighter than a read with no deadline of its own", repositoryGapWriteTimeout, bus.RequestTimeout)
+	}
 	for _, stall := range []struct {
 		name string
 		// apply makes the session bucket stop answering the step the subtest names, for sessionID.

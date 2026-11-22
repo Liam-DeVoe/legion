@@ -524,8 +524,16 @@ func sendEndingInProcess(t *testing.T, rig *edgeRig, role, holder, project, move
 		if !testwait.Holds(5*time.Second, testwait.Poll, func() bool { entry, _ := rig.deps.sessions.Lookup(movedTo); return entry.Title == movedTo }) {
 			t.Fatalf("%s's entry never reached this listener's copy", movedTo)
 		}
-		if named, err := scope.namesHolderConfirmed(context.Background(), rig.deps.sessions, movedTo); err != nil || !named {
-			t.Fatalf("UNKNOWN: the scope names %s as a holder: %t (%v); want true, so the row tells the holder the forward went to from the one the send resolved last", movedTo, named, err)
+		// The send judges the holder it resolves on the record its resolution reads
+		// (roleHolderSessions.Holder, which reads the bucket for a holder past the live window) through
+		// edgeScope.holderConfirmed, so the guard reads the record and judges it the same way.
+		read, err := roleHolderSessions{rig.deps.sessions}.Holder(context.Background(), movedTo)
+		if err != nil {
+			t.Fatalf("UNKNOWN: the resolution's read of %s: %v", movedTo, err)
+		}
+		judged, err := scope.holderConfirmed(context.Background(), rig.deps.sessions, roles.Resolution{State: roles.Lapsed, Holder: movedTo, Entry: read})
+		if err != nil || judged.Holder != movedTo {
+			t.Fatalf("UNKNOWN: the scope names %+v for %s, the holder the send resolves last (%v); want %s, so the row tells the holder the forward went to from the one the send resolved last", judged, movedTo, err, movedTo)
 		}
 	}
 	var forwards atomic.Int32
