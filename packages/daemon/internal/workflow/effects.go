@@ -202,9 +202,12 @@ func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload
 // promoted worker's and the owed entry's - comes with that fact already, and is queued as it is
 // before any read: it holds the sentences already. That is a fact the start carries and never a
 // reading of the task's text, which can quote either sentence, a retry's reason among it.
+//
+// It is also where each start that carries a task names the branch of its step's task
+// (record.SuperviseRequest.Branch, startBranch), so the agent adopts that task's working copy.
 func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.OutboxPayload, at time.Time) (record.OutboxRow, error) {
 	start, ok := payload.(record.SuperviseRequest)
-	if !ok || start.Op != "start" || start.Task == "" || !namesTheRound(start.Role) || start.RoundNamed {
+	if !ok || start.Op != "start" || start.Task == "" {
 		return record.NewOutboxRow(issue, payload, at)
 	}
 	standing, err := store.Issue(ctx, tx, issue)
@@ -212,18 +215,22 @@ func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string,
 		return record.OutboxRow{}, err
 	}
 	// An issue the record does not hold stands in no phase and holds no row, so its reviewer's
-	// task names neither a commit nor an entry.
+	// task names neither a commit nor an entry, and its start names no branch.
 	var standsIn phase.Phase
-	var row record.PhaseRow
+	var rows []record.PhaseRow
 	if standing != nil {
-		rows, err := store.Phases(ctx, tx, issue)
-		if err != nil {
+		if rows, err = store.Phases(ctx, tx, issue); err != nil {
 			return record.OutboxRow{}, err
 		}
-		standsIn, row = standing.Phase, record.PhaseRowOf(rows, start.Role)
+		standsIn = standing.Phase
+		if start.Branch, err = startBranch(ctx, tx, store, *standing, start, rows); err != nil {
+			return record.OutboxRow{}, err
+		}
 	}
-	start.Task = namingTheReviewRound(start.Task, start.Role, standsIn, row)
-	start.RoundNamed = true
+	if namesTheRound(start.Role) && !start.RoundNamed {
+		start.Task = namingTheReviewRound(start.Task, start.Role, standsIn, record.PhaseRowOf(rows, start.Role))
+		start.RoundNamed = true
+	}
 	return record.NewOutboxRow(issue, start, at)
 }
 

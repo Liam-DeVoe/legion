@@ -82,8 +82,15 @@ type Delivery struct {
 	// look the claim's worker took (Claim.ServingCheck), and the report is of that look rather
 	// than of whichever look the check has reached (api/handoff.go, checkReport). The zero value
 	// is a task of no look: every phase task, an operator's own, a resume.
-	CheckLook   CheckLook
-	Phase       phase.Phase
+	CheckLook CheckLook
+	Phase     phase.Phase
+	// Branch is the GitHub branch of the task whose step this task is of, from the start row that
+	// queued it (record.SuperviseRequest.Branch), and "" for the issue's own branch: every task of
+	// an issue with no plan rows, of the task that holds the issue's branch, and of no start at all.
+	// Each send's adoption takes the working copy of that branch (adopt, Runtime.AdoptWorkingCopy),
+	// and a fresh session after an abandoned one is told to read it (abandonedTask). It is
+	// persisted with the delivery, so a send after a restart of the daemon adopts the same copy.
+	Branch      string
 	QueuedAt    time.Time
 	DeliveredAt time.Time
 	// MarkedBy is the delivery id the marking prompt carried: the prompt whose acknowledgement set
@@ -282,7 +289,7 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	if c.Abandoned.Tells() {
 		// The task's instruction ends the last sentence before the task, so the abandoned
 		// session's carries it only where no record's sentence follows it.
-		prefix, carried.abandoned = abandonedTask(c, !relaunch && !c.EndedWork.Tells()), true
+		prefix, carried.abandoned = abandonedTask(c, d.Branch, !relaunch && !c.EndedWork.Tells()), true
 	}
 	// oldTurn is whether a turn this task was taken back from is the abandoned session's, whose
 	// sentence stands in place of the notes of that turn: an abandoned session still tells, and
@@ -512,7 +519,7 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 		id = rand.Text()
 	}
 	d := Delivery{ID: id, Task: request.Task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
-		Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed}
+		Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed, Branch: request.Branch}
 	if request.Row > 0 || request.Entry > 0 {
 		// The claim records the row, the entry and its handshake only once the store has them
 		// with the delivery: a write that failed leaves the row undelivered and the entry ungiven,
@@ -1317,11 +1324,11 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 		return fmt.Errorf("%w: the git identity of %s: %w", runtime.ErrIdentityUnavailable, m.claim.Token, err)
 	}
 	started := m.deps.Clock.Now()
-	if err := m.deps.Runtime.AdoptWorkingCopy(ctx, *loc, id, ""); err != nil {
+	if err := m.deps.Runtime.AdoptWorkingCopy(ctx, *loc, id, d.Branch); err != nil {
 		return err
 	}
 	m.log.Info("supervise: the working copy was adopted for the phase task",
-		"delivery", d.ID, "phase", string(d.Phase), "identity", id.Name, "took", m.deps.Clock.Now().Sub(started))
+		"delivery", d.ID, "phase", string(d.Phase), "branch", d.Branch, "identity", id.Name, "took", m.deps.Clock.Now().Sub(started))
 	return nil
 }
 
@@ -1494,12 +1501,15 @@ func interruptedTask(cause string) string {
 // (workflow's namedConclusions): the quotes bound it, and a newline or a quote inside it is
 // escaped rather than ending the sentence that carries it, so no refusal text can read as an
 // instruction of the daemon's own. The abandoned session's id is quoted the same way, with %q.
-func abandonedTask(c Claim, last bool) string {
+func abandonedTask(c Claim, branch string, last bool) string {
 	read := "read the issue"
+	if branch == "" {
+		branch = claim.IssueBranch(c.Issue)
+	}
 	if c.Role != claim.RoleController {
 		read = fmt.Sprintf("read the issue, then your branch %s and the handoff records its phases wrote on "+
 			"the issue, which `dispatch handoff-read --issue %s --phase <word>` reads (%s)",
-			claim.IssueBranch(c.Issue), c.Issue, handoffWords())
+			branch, c.Issue, handoffWords())
 	}
 	sentence := fmt.Sprintf("The session this claim ran before this one, %q, was abandoned where it stood: %q. "+
 		"This session is a new one: the turns, tool calls, subagents and background jobs of that session are "+

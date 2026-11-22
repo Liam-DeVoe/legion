@@ -1283,6 +1283,15 @@ type SuperviseRequest struct {
 	// a moved phase took the role over while the row waited (decision 10).
 	// A start that is no wake, and every request of another op, carries none.
 	WakeKind string `json:"wakeKind,omitempty"`
+	// Branch is the GitHub branch of the task whose step a start starts, where that task's branch is
+	// not the issue's own (claim.IssueBranch): the step's agent adopts that task's working copy
+	// (supervise.Delivery.Branch, runtime.Runtime.AdoptWorkingCopy). The queue names it
+	// (workflow's queuedRow) on each start that carries a task, and "" is the issue's own working
+	// copy, which every start of an issue with no plan rows, and of the task that holds the issue's
+	// branch, adopts as every start did before tasks had branches of their own. The release before
+	// refuses a row that carries it (DisallowUnknownFields): the way back of
+	// migrations/20261122131321_delivery_branch.up.sql takes it off every supervise row.
+	Branch string `json:"branch,omitempty"`
 }
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
@@ -2474,6 +2483,13 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.WakeKind == pods.WakePause && value.Pause == 0 {
 			return fmt.Errorf("a start for a %s wake names the pause that owed it", value.WakeKind)
+		}
+		if value.Branch != "" {
+			key, slug, ok := claim.BranchTask(value.Branch)
+			if value.Op != "start" || value.Task == "" || !ok || slug == "" || key != issue {
+				return fmt.Errorf("a supervise %s on %s names the branch %q; only a start with a task names one, and it is the branch of a task of its issue other than the issue's own",
+					value.Op, issue, value.Branch)
+			}
 		}
 	case RoleMessage:
 		if value.Role == "" {

@@ -35,3 +35,52 @@ func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, issue record.Issu
 	}
 	return e.enqueue(ctx, tx, issue.Key, record.TaskBranch{Generation: issue.Generation, Task: task})
 }
+
+// stepOfStart is the running step start starts on issue (record.Issue.Running): the step of the
+// agent its claim names, or, for a start that names none, of the agent of the claim the row then
+// reaches, worker, the claim of the worker on the start's role's step (record.WorkerClaim). An
+// agent runs at most one step, and a step that waits runs none, so a step of another task that
+// waits for the same agent is never the answer. False where the claim names no agent of the issue
+// or its agent runs no step.
+func stepOfStart(issue record.Issue, start record.SuperviseRequest, worker claim.Token) (record.RunningStep, bool) {
+	token := start.Claim
+	if token == "" {
+		token = worker
+	}
+	if _, agent, ok := token.Cut(); ok {
+		return issue.StepOfAgent(agent)
+	}
+	return record.RunningStep{}, false
+}
+
+// startBranch is the branch start names (record.SuperviseRequest.Branch): the branch of the task of
+// the step it starts (stepOfStart, record.PlanTask.BranchOf), and "" where that branch is the
+// issue's own, where the start starts no running step, and where the issue has no plan rows at its
+// generation, so each such start reads as every start did before tasks had branches of their own.
+// rows is the issue's phases rows.
+func startBranch(ctx context.Context, tx pgx.Tx, store record.Store, issue record.Issue, start record.SuperviseRequest, rows []record.PhaseRow) (string, error) {
+	stored, err := store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil || stored == nil {
+		return "", err
+	}
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return "", err
+	}
+	worker, err := record.WorkerClaim(project, issue.Key, start.Role, rows)
+	if err != nil {
+		return "", err
+	}
+	step, ok := stepOfStart(issue, start, worker)
+	if !ok {
+		return "", nil
+	}
+	at := slices.IndexFunc(stored.Tasks, func(row record.PlanTask) bool { return row.Task == step.Task })
+	if at < 0 {
+		return "", nil
+	}
+	if branch := stored.Tasks[at].BranchOf(issue.Key); branch != claim.IssueBranch(issue.Key) {
+		return branch, nil
+	}
+	return "", nil
+}

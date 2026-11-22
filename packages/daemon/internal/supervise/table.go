@@ -618,6 +618,10 @@ type RequestDeliver struct {
 	// is what holds those rows until the delivery tells them (Delivery.Kept). Empty for a task
 	// that names none.
 	Kept []byte
+	// Branch is the GitHub branch of the task whose step the start of this task starts, from the
+	// start row (record.SuperviseRequest.Branch), "" for the issue's own: the delivery carries it
+	// and its adoption takes that task's working copy (Delivery.Branch).
+	Branch string
 }
 
 // RequestExit is the agent reporting its own end.
