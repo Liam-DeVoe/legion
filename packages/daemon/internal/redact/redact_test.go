@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"net/url"
 	"reflect"
 	"slices"
@@ -239,14 +240,28 @@ var urlCredentialsCases = []struct {
 // HostShown writes a URL's host as the mark in an error that names it, and prints no error for a
 // host that is not ASCII, whose ASCII form (`xn--…`) the error names instead. The hosts are made up.
 func TestHostShownPrintsNoHostOfAURLWithCredentials(t *testing.T) {
-	if got := HostShown("madeuptail0123.invalid", "dial tcp: lookup madeuptail0123.invalid: no such host"); got != "dial tcp: lookup "+URLWithCredentials+": no such host" {
+	lookup := errors.New("dial tcp: lookup madeuptail0123.invalid: no such host")
+	if got := HostShown("madeuptail0123.invalid", "", lookup); got != "dial tcp: lookup "+URLWithCredentials+": no such host" {
 		t.Errorf("an ASCII host = %q, want it written as the mark", got)
 	}
-	if got := HostShown("madeuptail0123\u00f6.invalid", "dial tcp: lookup xn--madeuptail0123-8ib.invalid: no such host"); got != NotASCIIHostError {
+	if got := HostShown("madeuptail0123\u00f6.invalid", "", errors.New("dial tcp: lookup xn--madeuptail0123-8ib.invalid: no such host")); got != NotASCIIHostError {
 		t.Errorf("a host that is not ASCII = %q, want %q", got, NotASCIIHostError)
 	}
-	if got := HostShown("", "dial tcp: connect: connection refused"); got != "dial tcp: connect: connection refused" {
+	if got := HostShown("", "", errors.New("dial tcp: connect: connection refused")); got != "dial tcp: connect: connection refused" {
 		t.Errorf("no host = %q, want the text as it is", got)
+	}
+	// A password's head of digits that url.Parse read as the port: the dialer's connect error names
+	// it after the resolved address, and its refusal of an out-of-range port quotes it.
+	connect := errors.New("dial tcp 192.0.2.7:48213: connect: connection refused")
+	if got := HostShown("legion", "48213", connect); got != "dial tcp 192.0.2.7:"+URLWithCredentials+": connect: connection refused" {
+		t.Errorf("a port = %q, want it written as the mark", got)
+	}
+	if got := HostShown("legion", "1", errors.New("dial tcp 192.0.2.7:12345: connect: connection refused")); got != "dial tcp 192.0.2.7:12345: connect: connection refused" {
+		t.Errorf("a port that begins another = %q, want the other kept", got)
+	}
+	invalid := &net.OpError{Op: "dial", Net: "tcp", Err: &net.AddrError{Err: "invalid port", Addr: "98765432"}}
+	if got := HostShown("legion", "98765432", invalid); got != AddressError {
+		t.Errorf("an address the dialer refused = %q, want %q", got, AddressError)
 	}
 }
 

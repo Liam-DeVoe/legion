@@ -259,6 +259,16 @@ func TestProbeLogsNoCredentialOfTheEnvoyURL(t *testing.T) {
 	if lower := strings.ToLower(asciiLog.String()); strings.Contains(lower, "madeuptail") || strings.Contains(lower, "xn--") {
 		t.Errorf("a password holding an @ and a tail that is not ASCII: the log %q names the password's tail", asciiLog.String())
 	}
+	// A password whose part after its "@" ends in ":<digits>" leaves them where the port goes, and
+	// the dialer's refusal of an out-of-range port quotes them: the error is not printed.
+	var portLog bytes.Buffer
+	portURL := "http://legion:p" + "@madeuptail0123.invalid:98765432"
+	if got := newTestProber(portURL, "envoy-bearer", &portLog).Probe(context.Background(), "ses_ctl"); got != Unknown {
+		t.Fatalf("a password ending in digits read as the port: Probe = %s, want unknown", got)
+	}
+	if strings.Contains(portLog.String(), "98765432") || strings.Contains(portLog.String(), "madeuptail") {
+		t.Errorf("a password ending in digits read as the port: the log %q names part of the password", portLog.String())
+	}
 	var log bytes.Buffer
 	newTestProber(withUser(served, quotedUserinfo), "", &log).Probe(context.Background(), "ses_ctl")
 	if user, password, ok := (&http.Request{Header: http.Header{"Authorization": {l.bearer}}}).BasicAuth(); !ok || user+":"+password != quotedUserinfo {

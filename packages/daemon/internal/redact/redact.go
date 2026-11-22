@@ -36,6 +36,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"strings"
 	"unicode"
@@ -59,35 +60,78 @@ const URLWithCredentials = "[a URL with credentials]"
 // ASCII (HostShown).
 const NotASCIIHostError = "(the request failed; its error is not printed: it names the host of an address that holds a credential, and that host is not ASCII)"
 
-// HostShown is text, the error of a request to host, the host of a URL that holds a user name or a
-// password, as a line prints it. A dial's or a resolver's error names the host (`lookup <host>: no
-// such host`), and a password holding an unencoded "@" leaves its tail where the host goes, so the
-// host is written as URLWithCredentials. A host that is not ASCII is dialed by its ASCII form
-// (`xn--…`, its ASCII letters kept, lower-cased), which no replacement of the host as written
-// finds, so such an error is NotASCIIHostError alone. A host of "" (no credential, or none parsed)
-// leaves text as it is.
-func HostShown(host, text string) string {
-	switch {
-	case host == "":
+// AddressError stands for the error of a request to a URL with credentials whose address the
+// dialer refused as no host and port (*net.AddrError, `address <port>: invalid port`): the part it
+// quotes can be a password's head that url.Parse read as the port (HostShown).
+const AddressError = "(the request failed; its error is not printed: the address holds a credential, and the dialer refused it as no valid host and port)"
+
+// HostShown is err, the error of a request to host and port, the address of a URL that holds a
+// user name, a password or an "@" past its host, as a line prints it: through the URL rule
+// (URLCredentials), with the host and the port written as URLWithCredentials. A dial's or a
+// resolver's error names the host (`lookup <host>: no such host`) and the port (`dial tcp
+// <ip>:<port>`), and either can be part of the credential: a password holding an unencoded "@"
+// leaves its tail where the host goes, and a credential holding a "/" whose head is digits leaves
+// that head where the port goes (`http://user:4821/<tail>@host`). A host that is not ASCII is dialed
+// by its ASCII form (`xn--…`, its ASCII letters kept, lower-cased), which no replacement of the host
+// as written finds, so such an error is NotASCIIHostError alone; and an address the dialer refused
+// as no host and port is AddressError alone, since *net.AddrError quotes the part it refused. A host
+// and port of "" (no credential, or none parsed) leave the text as the URL rule writes it.
+func HostShown(host, port string, err error) string {
+	text := URLCredentials(err.Error())
+	if host == "" && port == "" {
 		return text
+	}
+	var address *net.AddrError
+	switch {
 	case strings.IndexFunc(host, func(r rune) bool { return r > unicode.MaxASCII }) >= 0:
 		return NotASCIIHostError
+	case errors.As(err, &address):
+		return AddressError
 	}
-	return strings.ReplaceAll(text, host, URLWithCredentials)
+	if host != "" {
+		text = strings.ReplaceAll(text, host, URLWithCredentials)
+	}
+	if port != "" {
+		text = portShown(text, port)
+	}
+	return text
+}
+
+// portShown is text with each ":"+port that no further digit follows written as
+// ":"+URLWithCredentials, so a port of `1` leaves `:12345` as it is.
+func portShown(text, port string) string {
+	var out strings.Builder
+	needle := ":" + port
+	for {
+		i := strings.Index(text, needle)
+		if i < 0 {
+			out.WriteString(text)
+			return out.String()
+		}
+		end := i + len(needle)
+		out.WriteString(text[:i])
+		if end < len(text) && '0' <= text[end] && text[end] <= '9' {
+			out.WriteString(needle)
+		} else {
+			out.WriteString(":" + URLWithCredentials)
+		}
+		text = text[end:]
+	}
 }
 
 // RequestError is err, the error of a request of route that got no answer (http.Client.Do's, a
 // body read's, or http.NewRequest's), as a line, a refusal or a stored error prints it. route is
 // a URL the daemon was configured with, and it can carry a credential: a user name and a password,
 // one holding an unencoded "@" whose tail url.Parse reads as the host, or a credential holding a
-// "/", "?" or "#" whose head it reads as the host. So the error names route through URL, never as
-// *url.Error quotes it (only a password masked); the error under it through the URL rule
-// (URLCredentials), and, when route holds a user name, a password or an "@" past its host, through
-// HostShown, since a dial's or a resolver's error names the host (`lookup <the password's tail>: no
-// such host`, or its `xn--` form); and a route that does not parse in fixed words naming server,
-// since url.Parse's error quotes what it could not read (`invalid port ":<the password's head>"`).
-// The error unwraps to err, so errors.Is and errors.As (a deadline, a refused certificate, a TLS
-// alert) still read the request's own error.
+// "/", "?" or "#" whose head it reads as the host and the port. So the error names route through
+// URL, never as *url.Error quotes it (only a password masked); the error under it through the URL
+// rule (URLCredentials), and, when route holds a user name, a password or an "@" past its host,
+// through HostShown, since a dial's or a resolver's error names the host and the port (`lookup
+// <the password's tail>: no such host`, its `xn--` form, or `address <the password's head>: invalid
+// port`); and a route that does not parse in fixed words naming server, since url.Parse's error
+// quotes what it could not read (`invalid port ":<the password's head>"`). The error unwraps to
+// err, so errors.Is and errors.As (a deadline, a refused certificate, a TLS alert) still read the
+// request's own error.
 func RequestError(server, route string, err error) error {
 	shown := err
 	var transport *url.Error
@@ -97,11 +141,11 @@ func RequestError(server, route string, err error) error {
 		}
 		shown = transport.Err
 	}
-	text := URLCredentials(shown.Error())
+	host, port := "", ""
 	if u, parseErr := url.Parse(route); parseErr == nil && (u.User != nil || natsurl.UserinfoPastHost(u)) {
-		text = HostShown(u.Hostname(), text)
+		host, port = u.Hostname(), u.Port()
 	}
-	return &requestError{URL(route) + ": " + text, err}
+	return &requestError{URL(route) + ": " + HostShown(host, port, shown), err}
 }
 
 // requestError is RequestError's error: its text, and the error it stands for.

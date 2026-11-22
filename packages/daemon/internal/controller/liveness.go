@@ -61,13 +61,13 @@ type Prober struct {
 	// URL's own). shown is the lookup as every log line names it, through redact.URL: an envoy_url
 	// with userinfo is its scheme, the mark of a URL with credentials and the lookup's path, since a
 	// password holding an unencoded "@" leaves its tail where the host is read (`http://u:p@ssword`
-	// sends the lookup to `ssword`). host is that host when userinfo was there, which an error's
-	// text names in the mark's place too ("" when there was none).
-	lookup, shown, host string
-	user                *url.Userinfo
-	token               string
-	log                 *slog.Logger
-	client              *http.Client
+	// sends the lookup to `ssword`). host and port are that address when userinfo was there, which
+	// an error's text names in the mark's place too ("" when there was none).
+	lookup, shown, host, port string
+	user                      *url.Userinfo
+	token                     string
+	log                       *slog.Logger
+	client                    *http.Client
 }
 
 // NewProber is a Prober over opts. An envoy_url that does not parse, which the loader refuses
@@ -84,7 +84,7 @@ func NewProber(opts ProberOptions) *Prober {
 	if parsed, err := url.Parse(envoyURL); err == nil {
 		path := "/v1/roles/" + url.PathEscape(string(claim.ControllerToken(opts.Project)))
 		if parsed.User != nil {
-			p.host = parsed.Hostname()
+			p.host, p.port = parsed.Hostname(), parsed.Port()
 		}
 		p.user, parsed.User = parsed.User, nil
 		p.lookup = parsed.String() + path
@@ -98,14 +98,15 @@ func NewProber(opts ProberOptions) *Prober {
 
 // errorShown is err, a lookup that got no answer, as a log line prints it: *url.Error's own quote
 // of the lookup left out, and, when envoy_url carried userinfo, through redact.HostShown, since a
-// dial or a resolver's error names the host (`lookup ssword: no such host`), and a host that is
-// not ASCII is dialed by an ASCII form no replacement finds.
+// dial or a resolver's error names the host and the port (`lookup ssword: no such host`), a host
+// that is not ASCII is dialed by an ASCII form no replacement finds, and a port that is a
+// password's head is refused by the dialer in words that quote it.
 func (p *Prober) errorShown(err error) string {
 	var transport *url.Error
 	if errors.As(err, &transport) {
 		err = transport.Err
 	}
-	return redact.HostShown(p.host, err.Error())
+	return redact.HostShown(p.host, p.port, err)
 }
 
 // The listener's live-holder answer is listenerwire.RoleHolder (roleGetHandler,
