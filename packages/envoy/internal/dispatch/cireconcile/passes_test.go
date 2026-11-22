@@ -18,10 +18,12 @@ import (
 // nothing else can; and beside them the pass its caller cancelled, which the record tells from
 // a pass that finished and the pass's own line does not.
 
-// registerProcess writes the row processes.Register writes for a live server process, at this
-// build's owner lock protocol (store.OwnerLockProtocol), with a heartbeat of the given age, and
-// answers the instance id. Written here rather than by calling Register because these tests need
-// a heartbeat older than the live window, which a registration that keeps beating cannot have.
+// registerProcess writes the row processes.Register writes for a live server process, with a
+// heartbeat of the given age, and answers the instance id. Written here rather than by calling
+// Register because these tests need a heartbeat older than the live window, which a registration
+// that keeps beating cannot have. It names this build's owner lock protocol, as Register does: a
+// row at the column's default, 0, is an earlier build's arrival, whose insert waits for the owner
+// lock gate (fleetProcess in internal/dispatch/docs says why).
 func registerProcess(t *testing.T, pool *store.Pool, heartbeatAge time.Duration) string {
 	t.Helper()
 	var instance string
