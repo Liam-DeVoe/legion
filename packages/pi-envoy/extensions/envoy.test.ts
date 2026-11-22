@@ -17648,10 +17648,11 @@ console.log(JSON.stringify(args));
         // A hang guard, not a bound on work: what can hang is the wait for the answer
         // (`clock.wait`), which has no bound of turns, because its trade reads the pod's token
         // from disk, real I/O.
-        // Worst measured cost: 13 304.07 ms over 20 runs at the 96 rung in the Job
-        // infra-1580-krows-k1-bwwd4 of the cluster's `builds` namespace, two CPUs and 8 GiB (177
-        // busy loops, at which row A's runs took 37.7 s against the calibration's 31.2 s),
-        // 2026-11-22T07:52Z to 08:10Z. 90_000 is 6.8 times the worst.
+        // Worst measured cost: 14 205.94 ms over 20 runs at the 96 rung in the Job
+        // infra-1580-krows-k6-fhhlx of the cluster's `builds` namespace, two CPUs and 8 GiB (224
+        // busy loops, at which row A's runs took 37.5 s against the calibration's 31.2 s),
+        // 2026-11-22T10:36Z to 10:50Z, and 13 304.07 ms in the Job infra-1580-krows-k1-bwwd4 (177
+        // busy loops, row A at 37.7 s), 2026-11-22T07:52Z to 08:10Z. 90_000 is 6.3 times the worst.
       }, 90_000);
     });
 
@@ -22694,11 +22695,12 @@ console.log(JSON.stringify(args));
     // A hang guard, not a bound on work: what can hang is the wait for the start, the follow's
     // reconnect or the switch (`clock.wait`), which has no bound of turns, because the start's
     // and the follow's trades read the pod's token from disk, real I/O.
-    // Worst measured cost: 9 388.74 ms over 20 runs at the 96 rung in the Job
-    // infra-1580-krows-k4-hvx8t of the cluster's `builds` namespace, two CPUs and 8 GiB (129 busy
-    // loops, at which row A's runs took 31.5 s against the calibration's 31.2 s), 2026-11-22T06:33Z
-    // to 06:40Z. 60_000 is 6.4 times the worst.
-  }, 60_000);
+    // Worst measured cost: 16 302.04 ms over 20 runs at the 96 rung in the Job
+    // infra-1580-krows-k6-fhhlx of the cluster's `builds` namespace, two CPUs and 8 GiB (224 busy
+    // loops, at which row A's runs took 37.5 s against the calibration's 31.2 s), 2026-11-22T10:52Z
+    // to 11:08Z, and 9 388.74 ms in the Job infra-1580-krows-k4-hvx8t (129 busy loops, row A at
+    // 31.5 s), 2026-11-22T06:33Z to 06:40Z. 120_000 is 7.4 times the worst.
+  }, 120_000);
 
   test("the keeper's warning of a refused token reaches the session as a notice, once", async () => {
     // A token the server refuses though it is live is a session that stops receiving, which the
@@ -23041,9 +23043,12 @@ console.log(JSON.stringify(args));
     });
     // A hang guard, not a bound on work: what can hang is the wait for the start's follow, the
     // start, the keeper's reconnect or the shutdown (`clock.wait`), which has no bound of turns,
-    // because each waits on a trade that reads the pod's token from disk, real I/O.
-    // MEASUREMENT-PROVISIONAL
-  }, 120_000);
+    // because each waits on a trade that reads the pod's token from disk, real I/O. Worst measured
+    // cost: 21 887.67 ms over 20 runs at the 96 rung in the Job infra-1580-krows-k6-fhhlx of the
+    // cluster's `builds` namespace, two CPUs and 8 GiB (224 busy loops, at which row A's runs took
+    // 37.5 s against the calibration's 31.2 s), 2026-11-22T10:04Z to 10:17Z. 150_000 is 6.9 times
+    // the worst.
+  }, 150_000);
 
   test("rebinds the direct subscription after an in-process session switch", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
@@ -25751,12 +25756,14 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
     // message that never comes. The row's cost is the freeze's own recovery, about 30 s of
     // nats.js's ping and dial timers: 30 192.92, 30 182.69, 30 213.03 and 30 247.69 ms in CI's
     // `envoy-session-stall` job at d92de35e, 688f9be7, 4410f2a3 and d7aa4f9b (runs 44935616558,
-    // 44962624014, 44966869218 and 44984499551). Worst measured cost: 53 995.87 ms over 20 runs
-    // at the 96 rung in the Job infra-1580-krows-kfh-tgvmp of the cluster's `builds` namespace,
-    // two CPUs and 8 GiB (218 busy loops, at which row A's runs took 33.5 s against the
-    // calibration's 31.2 s), 2026-11-22T08:32Z to 09:41Z. 330_000 is 6.1 times the worst, and
-    // with the stack's slowest start, 249 s, it stays inside the 659 s that job leaves.
-  }, 330_000);
+    // 44962624014, 44966869218 and 44984499551). Worst measured cost: 55 599.76 ms over 20 runs
+    // at the 96 rung in the Job infra-1580-krows-kf2-9tp5g of the cluster's `builds` namespace,
+    // two CPUs and 8 GiB (152 busy loops, at which row A's runs took 37.7 s against the
+    // calibration's 31.2 s), 2026-11-22T11:58Z to 13:44Z, and 53 995.87 ms in the Job
+    // infra-1580-krows-kfh-tgvmp (218 busy loops, row A at 33.5 s), 2026-11-22T08:32Z to 09:41Z.
+    // 360_000 is 6.5 times the worst, and with the stack's slowest start, 249 s, it stays inside
+    // the 659 s that job leaves.
+  }, 360_000);
 });
 
 // What the envoy_send and envoy_publish tools tell the model about where a message went
