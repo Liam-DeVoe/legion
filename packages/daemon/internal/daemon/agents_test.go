@@ -344,8 +344,8 @@ func (r *ownerStepsRig) entryRose(c *stepClaimant, entered, before claim.Role) {
 // An issue that ran under the release before keeps its claims (R20). The plan `implementer
 // reviewer` reaches reviewing on this release; the daemon stops, and the store is taken back to the
 // schema the release before leaves by the way backs its migrations' headers give, newest first: the
-// claims an idle release suspended, the agent of a claim's session, one open resume per claim, the
-// claim of each backstop, the key of a phases row by its step, whose way back writes the key
+// agent of a claim's session, one open resume per claim, the claim of each backstop, the key of a
+// phases row by its step, whose way back writes the key
 // (issue, role) that release writes its phases rows by (docs/kubernetes.md, "Rolling back the
 // release that keys a phases row by its step"), the claim of each resume and the name of each
 // step's agent, so its plan rows name no agent, as that release wrote them. This release then
@@ -360,9 +360,8 @@ func TestAnIssueThatRanUnderTheReleaseBeforeKeepsItsClaims(t *testing.T) {
 	r.work(claim.RoleImplementer, "implement", implementCompletion, phase.Reviewing)
 	r.worker(claim.RoleReviewer)
 	r.restartWith(func() {
-		for _, migration := range []string{"_issue_release_suspended_claims.up.sql", "_claim_session_agent.up.sql",
-			"_one_open_resume_per_claim.up.sql", "_pod_wake_backstop_claim.up.sql", phaseStepKeyMigration,
-			"_pod_resume_claim.up.sql", planStepAgentMigration} {
+		for _, migration := range []string{"_claim_session_agent.up.sql", "_one_open_resume_per_claim.up.sql",
+			"_pod_wake_backstop_claim.up.sql", phaseStepKeyMigration, "_pod_resume_claim.up.sql", planStepAgentMigration} {
 			r.exec(strings.ReplaceAll(r.headerTransaction(migration), "<PROJECT>", r.cfg.Project))
 		}
 		if key := r.phasesKey(); key != releaseBeforesPhasesKey {
