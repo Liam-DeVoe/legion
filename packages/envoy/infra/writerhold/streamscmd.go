@@ -544,12 +544,13 @@ func leftBy(r streams.Report, barriers map[string]uint64, err error) error {
 // `RECONCILED daemon/<P>: stream_id "id" unchanged`, or `RECONCILED daemon/<P>: no stream_id
 // recorded, unchanged` for one that records none yet, named in no output, since the census wrote
 // nothing there. The stores are the daemons' own databases, no stream of the hub, so the
-// postcheck counts none of these writes. With no stores, an error of theirs (a malformed
-// --daemon-database, a listing of the Deployments it cannot read, a stream with no identity), a
-// store the writer marks gone at an instance other than the one the operator's file states (or at
-// none), or any store left unreconciled, which it names with why, it is UNKNOWN and the census
-// writes no done entry; a store changed before that is then named as what the run left (a *Left),
-// so the stop does not record the run as unchanged.
+// postcheck counts none of these writes. With no stores, or an error of theirs (a malformed
+// --daemon-database, a listing of the Deployments it cannot read, a stream with no identity), it
+// is UNKNOWN. A store the writer marks gone at an instance other than the one the operator's file
+// states (or at none) is left unreconciled and not printed gone. With any store left unreconciled,
+// which it names with why, it is UNKNOWN and the census writes no done entry; a store changed
+// before that is then named as what the run left (a *Left), so the stop does not record the run as
+// unchanged.
 func reconcileStreamIDs(ctx context.Context, nc *nats.Conn, stores StreamIDWriter, deployments DaemonDeployments, families, daemonDatabases []string, stdout io.Writer) (map[string]string, error) {
 	if stores == nil {
 		return nil, unknownf(StepPostcheck, ErrNoStoreWriter, "reconcile the daemon stores' stream ids")
@@ -561,17 +562,19 @@ func reconcileStreamIDs(ctx context.Context, nc *nats.Conn, stores StreamIDWrite
 	if err := result.Covers(families); err != nil {
 		return nil, unknownf(StepPostcheck, err, "reconcile the daemon stores' stream ids")
 	}
-	// A store is gone only at the instance its Deployment names and the operator's file states,
+	// A store is gone only at the instance its one source names and the operator's file states,
 	// both: a 3D000 from another server is no evidence that the live store is gone. The writer
-	// refuses such a store before it connects; this check stands beside it.
-	var elsewhere []string
+	// refuses such a store before it connects; this check stands beside it, and leaves the store
+	// unreconciled.
+	unreconciled := slices.Clone(result.Unreconciled)
+	var gone []GoneStore
 	for _, g := range result.Gone {
 		if g.Instance == "" || g.Instance != g.StatedInstance {
-			elsewhere = append(elsewhere, fmt.Sprintf("%s%s is gone at instance %q, and the operator's file states %q", daemonFamilyPrefix, g.Project, g.Instance, g.StatedInstance))
+			unreconciled = append(unreconciled, UnreconciledStore{Project: g.Project, Reason: fmt.Sprintf(
+				"gone at instance %q, and the operator's file states %q: a store is gone only at the instance both name", g.Instance, g.StatedInstance)})
+			continue
 		}
-	}
-	if len(elsewhere) > 0 {
-		return nil, unknownf(StepPostcheck, nil, "reconcile the daemon stores' stream ids: a store is gone only at the instance both name: %s", strings.Join(elsewhere, "; "))
+		gone = append(gone, g)
 	}
 	outputs := map[string]string{}
 	var changed []string
@@ -581,7 +584,7 @@ func reconcileStreamIDs(ctx context.Context, nc *nats.Conn, stores StreamIDWrite
 		outputs["stream_id."+daemonFamilyPrefix+c.Project] = line
 		changed = append(changed, "stream_id of "+line)
 	}
-	for _, g := range result.Gone {
+	for _, g := range gone {
 		text := fmt.Sprintf("database %s on instance %s (the operator's file states %s): %s", g.Database, g.Instance, g.StatedInstance, g.Answer)
 		fmt.Fprintf(stdout, "GONE %s%s: %s\n", daemonFamilyPrefix, g.Project, text)
 		outputs["gone."+daemonFamilyPrefix+g.Project] = text
@@ -593,20 +596,20 @@ func reconcileStreamIDs(ctx context.Context, nc *nats.Conn, stores StreamIDWrite
 		}
 		fmt.Fprintf(stdout, "RECONCILED %s%s: %s unchanged\n", daemonFamilyPrefix, s.Project, recorded)
 	}
-	if len(result.Unreconciled) == 0 {
+	if len(unreconciled) == 0 {
 		return outputs, nil
 	}
-	reasons := make([]string, len(result.Unreconciled))
-	for i, u := range result.Unreconciled {
+	reasons := make([]string, len(unreconciled))
+	for i, u := range unreconciled {
 		reasons[i] = daemonFamilyPrefix + u.Project + ": " + u.Reason
 	}
 	// Each store found gone is named beside the stores left unreconciled, with the server's answer
 	// and its address, so the stop that records this run records them too.
-	gone := ""
-	for _, g := range result.Gone {
-		gone += fmt.Sprintf("; found gone: %s%s: %s", daemonFamilyPrefix, g.Project, outputs["gone."+daemonFamilyPrefix+g.Project])
+	goneText := ""
+	for _, g := range gone {
+		goneText += fmt.Sprintf("; found gone: %s%s: %s", daemonFamilyPrefix, g.Project, outputs["gone."+daemonFamilyPrefix+g.Project])
 	}
-	err = unknownf(StepPostcheck, nil, "reconcile the daemon stores' stream ids: left unreconciled: %s%s", strings.Join(reasons, "; "), gone)
+	err = unknownf(StepPostcheck, nil, "reconcile the daemon stores' stream ids: left unreconciled: %s%s", strings.Join(reasons, "; "), goneText)
 	if len(changed) > 0 {
 		return nil, &Left{What: strings.Join(changed, "; "), Err: err}
 	}
