@@ -1539,6 +1539,12 @@ func (m *Machine) askRestoredTurn(ctx context.Context) {
 //     that names its number by the report of that turn, which the relaunch waits for
 //     (refreshPlugin, relaunchWaitsForReport); one no turn ran is given back with no note.
 //
+// Either answer is applied to the claim by the one rule of every answer (applyTurnAnswer), so an
+// answer of no turn over a claim still read in a turn would end that turn first. No order reaches
+// that here: the stream reads an answer only on the connection that asked, behind every frame
+// that connection carried, so a start the replay showed is followed there by its end or by an
+// answer of a turn, and a hello over a working claim asks nothing for this relaunch.
+//
 // The reconnect deadline the unanswered ask armed goes with the answer, and the connection's view
 // is whole again (connview.go). Over a view a reconnect hello left waiting for an answer, any
 // answer on that connection makes it whole and is read against the claim (answerView). Any other
@@ -1566,9 +1572,9 @@ func turnAnswered(m *Machine, ctx context.Context, ev Event) error {
 	m.disarm(TimerRegistration)
 	if answer.Streaming && !m.busy() {
 		m.log.Info("supervise: the agent of a claim the daemon's start restored is in a turn its shim's replay did not show begin; the claim is working")
-		if err := turnStarted(m, ctx, ev); err != nil {
-			return err
-		}
+	}
+	if err := m.applyTurnAnswer(ctx, answer.Streaming, ev); err != nil {
+		return err
 	}
 	if !answer.Streaming {
 		m.markRestoredTurnUnseen()
@@ -1621,11 +1627,11 @@ const unansweredAsksWarn = 3
 // sweep asks again. Taken as "not streaming", it would end a turn still running and set the claim
 // idle, and the sweep would then write the value of a task into the busy agent every interval.
 //
-// A turn that is over is ended through turnEnded, which clears askFirst with the turn. The end is
-// counted as every end is (TurnsEnded), so the daemon posts it to the issue's other claims, whose
-// phase tasks may have been held for this turn (its wakeIssue). An answer either way makes the
-// connection's view whole again, the ask a reconnect hello would make served by this one
-// (connview.go).
+// A turn that is over is ended by the rule every answer is applied by (applyTurnAnswer,
+// turnEnded), which clears askFirst with the turn. The end is counted as every end is
+// (TurnsEnded), so the daemon posts it to the issue's other claims, whose phase tasks may have
+// been held for this turn (its wakeIssue). An answer either way makes the connection's view whole
+// again, the ask a reconnect hello would make served by this one (connview.go).
 func (m *Machine) askTurnOver(ctx context.Context, ev Event) error {
 	if !m.askFirst {
 		return nil
@@ -1652,10 +1658,10 @@ func (m *Machine) askTurnOver(ctx context.Context, ev Event) error {
 		// The agent is still in the turn an earlier daemon saw start. Its agent_end ends it
 		// (turnEnded).
 		m.askFirst = false
-		return nil
+	} else {
+		m.log.Info("supervise: the turn an earlier daemon saw start is over")
 	}
-	m.log.Info("supervise: the turn an earlier daemon saw start is over")
-	return turnEnded(m, ctx, ev)
+	return m.applyTurnAnswer(ctx, state.IsStreaming, ev)
 }
 
 // closed is the claim's connection closing: the connection's view of the worker's turns is cut,
@@ -1972,23 +1978,43 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 		// end-frame bound armed as at any turn's end (runHeldAtEnd).
 		return m.runHeldAtEnd(ctx, StateIdle, m.armEndFrameBound)
 	}
+	return m.endNothingHeld(ctx, StateIdle, m.armEndFrameBound)
+}
+
+// endNothingHeld is the end of the turn, or of the compaction, the claim is still stored working
+// for (turnEnded, compactEnded), with no suspension held over it (runHeldAtEnd serves one that
+// is): the claim goes back in back, the state that end gives it back in, and is written.
+//
+// Over a take whose turn ran, the end-frame bound is armed for the finish that end makes — a
+// plugin that names no number, or a report's finish the store refused (armEndFrameBound) —
+// through armFinish, as runHeldAtEnd arms it: whole at a turn's end (turnEnded passes
+// armEndFrameBound), and at a compaction's only where none stands (compactEnded passes
+// armEndFrameBoundUnlessArmed), so a bound armed at the take's turn's end keeps its time. A
+// finish the store refused while the compaction ran (finishTask, Machine.finishOwed) is made
+// again by that bound, which the refusal armed for no working claim.
+//
+// What is held for the turn runs now (afterTurn) only where the task the turn may have been of is
+// settled already. Where it is not, it runs where the task settles instead, one rule for both
+// ends: at the end-frame bound's finish over a take whose turn ran (finishAtTurnsEnd), and at the
+// report over a take whose report is still to come (reportedTask, reportwait.go) — its turn over,
+// or the take put back while the turn or the compaction ran, which waits for its own turn
+// (putBack). A stale-plugin relaunch run at the end would let the process go before that finish
+// or that report: its take-back would cut a take whose turn ran whole, or one whose start is on
+// its way. A relaunch held for this end that now begins to wait for the report is logged so,
+// once (Machine.staleForEnd); one that waited for it already is not logged again.
+func (m *Machine) endNothingHeld(ctx context.Context, back ClaimState, armFinish func(id string)) error {
 	p := m.claim.Pending
 	finishes := m.takesTurnRan()
-	m.claim.State = StateIdle
+	m.claim.State = back
 	if err := m.persist(ctx); err != nil {
 		return err
 	}
 	if finishes {
-		m.armEndFrameBound(p.ID)
+		armFinish(p.ID)
 	}
 	if owed := m.takePhase().reportToCome(); finishes || owed {
-		// The task's turn is over and its report is what finishes it, or the end-frame bound for
-		// a plugin that names no number; what is held for the turn runs at its finish instead
-		// (finishTask, reportedTask, finishAtTurnsEnd). A stale-plugin relaunch held for the
-		// turn of a take only its report settles now waits for that report, and one held over a
-		// take a report put back while this turn ran waits for that take's own turn
-		// (reportwait.go).
-		if held := m.staleRelaunch; held != nil && owed {
+		if held := m.staleRelaunch; held != nil && owed && m.staleForEnd {
+			m.staleForEnd = false
 			m.log.Info(reportWaitsLine, "task", p.Number, "held", "relaunch", "trigger", *held)
 		}
 		return nil
@@ -2049,9 +2075,20 @@ func (m *Machine) afterTurn(ctx context.Context, heldWaited bool) error {
 // It is a turn's end like any other for the bound of the wait for a take's report, too: the turn
 // that ran was a start the bound would have been disarmed by, so it is armed whole again from this
 // end (reportwait.go, armReportWait).
+//
+// Over a take awaiting its turn (takePhase, waitTake), the turn that ended may have been the
+// take's own: its start frame can have been lost in the socket's send buffer as the connection
+// broke, and a hello that says the shim's backlog is whole cannot show it missing, since the shim
+// keeps only a frame whose write failed. So the take is marked as one whose turn may have run
+// unseen (Machine.turnUnseen), and a let-go before that turn's report takes it back as a turn cut
+// off, with its note (recordEnd, interrupted, takeBackUnstarted). A start of the take's own turn
+// that comes after reads as one, and the mark then says nothing (turnMayHaveRunUnseen).
 func blindTurnEnded(m *Machine, ctx context.Context, _ Event) error {
 	m.log.Info("supervise: a turn this daemon never saw begin has ended")
 	m.disarm(TimerReport)
+	if m.takePhase() == waitTake {
+		m.turnUnseen = true
+	}
 	count := m.counted()
 	count.ended++
 	if !count.known || m.reportedAhead.sequence <= count.ended {

@@ -878,49 +878,73 @@ func TestTakeOfARestoredClaimReadiedWithNoHelloIsEndedByTheReconnectDeadline(t *
 	})
 }
 
+// retiredByTheOperator is the operator's stop of the claim, which retires it (retire).
+func retiredByTheOperator(t *testing.T, h *harness) {
+	t.Helper()
+	h.must(RequestStop{Claim: h.token})
+	h.wantState(StateRetired)
+}
+
+// retriedAfterRetirement is the operator's retry of the retired claim, the process it relaunches
+// brought up to ready and its take accepted.
+func retriedAfterRetirement(h *harness) {
+	h.t.Helper()
+	h.must(RequestOperatorRetry{Claim: h.token})
+	h.relaunched()
+	h.mustTake()
+}
+
+// relaunchedAndTaken is the process a relaunch started brought up to ready, its take accepted.
+func relaunchedAndTaken(h *harness) {
+	h.t.Helper()
+	h.relaunched()
+	h.mustTake()
+}
+
 // Row 26: a take awaiting its turn while the claim's connection does not show every frame of its
 // turns — no hello since a close or a daemon start, or no answer since the hello — taken back by a
-// let-go that is no reconnect deadline: a retirement, a held suspension's deadline, or a death,
-// the one the close's own probe finds among them. Its turn may have run unseen, its start frame
-// lost with the connection, so it goes back as a turn cut off, and the next process takes it told
-// its turn on it may have run, as row 8 takes it back. The negative control is the commit under
-// this change, where each gave the take back unstarted with no note: only the reconnect deadline
-// marked such a take (turnUnseen), and the close probed its process before it cut the view.
+// let-go that is no reconnect deadline: a retirement, a held suspension's deadline, a death, the
+// one the close's own probe finds among them, or a relaunch of a process still running, for a
+// stale plugin or a stale address. Its turn may have run unseen, its start frame lost with the
+// connection, so it goes back as a turn cut off, and the next process takes it told its turn on it
+// may have run, as row 8 takes it back. The negative control is the commit under this change,
+// where each gave the take back unstarted with no note: only the reconnect deadline marked such a
+// take (turnUnseen), the close probed its process before it cut the view, and a relaunch's
+// take-back, made before its let-go records anything, read the mark alone (interrupted).
 func TestTakeAwaitingItsTurnIsTakenBackAsACutTurnWhileTheViewIsCut(t *testing.T) {
-	retire := func(t *testing.T, h *harness) {
-		h.must(RequestStop{Claim: h.token})
-		h.wantState(StateRetired)
-	}
-	retried := func(h *harness) {
-		h.must(RequestOperatorRetry{Claim: h.token})
-		h.relaunched()
-		h.mustTake()
-	}
-	relaunched := func(h *harness) {
-		h.relaunched()
-		h.mustTake()
-	}
 	for _, tc := range []struct {
 		name  string
 		cut   func(h *harness)
 		letGo func(t *testing.T, h *harness)
 		next  func(h *harness)
 	}{
-		{name: "a retirement after a close", cut: (*harness).reconnectLater, letGo: retire, next: retried},
-		{name: "a retirement after a daemon start, before the hello", cut: (*harness).restart, letGo: retire, next: retried},
+		{name: "a retirement after a close", cut: (*harness).reconnectLater, letGo: retiredByTheOperator, next: retriedAfterRetirement},
+		{name: "a retirement after a daemon start, before the hello", cut: (*harness).restart, letGo: retiredByTheOperator, next: retriedAfterRetirement},
 		{name: "a retirement after a hello no answer followed", cut: func(h *harness) {
 			h.reconnectLater()
 			h.helloOf(true, false)
-		}, letGo: retire, next: retried},
+		}, letGo: retiredByTheOperator, next: retriedAfterRetirement},
 		{name: "a death the close's own probe finds", cut: func(*harness) {}, letGo: func(t *testing.T, h *harness) {
 			h.rt.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
 			h.reconnectLater()
 			h.wantState(StateLaunching)
-		}, next: relaunched},
+		}, next: relaunchedAndTaken},
 		{name: "a death after a daemon start, before the hello", cut: (*harness).restart, letGo: func(t *testing.T, h *harness) {
 			h.observe(runtime.Gone)
 			h.wantState(StateLaunching)
-		}, next: relaunched},
+		}, next: relaunchedAndTaken},
+		{name: "a stale-plugin relaunch after a hello no answer followed", cut: func(h *harness) {
+			h.reconnectLater()
+			h.helloOf(true, false)
+		}, letGo: func(t *testing.T, h *harness) {
+			h.deps.PluginContract, h.m.deps.PluginContract, h.m.deps.PluginRelaunchable = TaskTakeContract+1, TaskTakeContract+1, true
+			h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
+			h.wantState(StateLaunching)
+		}, next: relaunchedAndTaken},
+		{name: "a stale address's relaunch after a close", cut: (*harness).reconnectLater, letGo: func(t *testing.T, h *harness) {
+			h.observe(runtime.StaleAddress)
+			h.wantState(StateLaunching)
+		}, next: relaunchedAndTaken},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := boundsHarness(t)
@@ -950,7 +974,45 @@ func TestTakeAwaitingItsTurnIsTakenBackAsACutTurnWhileTheViewIsCut(t *testing.T)
 		h.wantTakenBackWithItsNote(number)
 		h.wantTakenOnceMore(number, func(h *harness) {
 			h.must(RequestResume{Claim: h.token})
-			relaunched(h)
+			relaunchedAndTaken(h)
 		})
 	})
+}
+
+// Row 28: a take awaiting its turn, its turn's start frame lost in the socket's send buffer as the
+// connection broke. The shim keeps only a frame whose write failed, so its hello says the backlog
+// is whole, and the replay carries that turn's end alone, a turn this daemon never saw begin
+// (blindTurnEnded); the agent then answers that it is in no turn, which makes the view whole. A
+// let-go before that turn's report — a retirement or a death — takes the take back as a cut turn,
+// and the next process takes it told its turn on it may have run: the blind end over a take
+// awaiting its turn marked it as one whose turn may have run unseen (Machine.turnUnseen). The
+// negative control is the commit under this change, where the blind end marked nothing, and the
+// let-go over the whole view gave the take back unstarted with no note.
+func TestTakeAwaitingItsTurnBehindAnEndNeverSeenBegunIsTakenBackAsACutTurn(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		letGo func(t *testing.T, h *harness)
+		next  func(h *harness)
+	}{
+		{"a retirement", retiredByTheOperator, retriedAfterRetirement},
+		{"a death", func(t *testing.T, h *harness) {
+			h.observe(runtime.Gone)
+			h.wantState(StateLaunching)
+		}, relaunchedAndTaken},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := boundsHarness(t)
+			number := h.takeOf("implement the plan")
+			h.reconnectLater()
+			h.helloOf(true, false)
+			h.mustQuiet(StreamTurnEnd{Claim: h.token})
+			h.answerAsk(false)
+			h.wantAwaitingItsTurn(number, "after the answer")
+
+			tc.letGo(t, h)
+
+			h.wantTakenBackWithItsNote(number)
+			h.wantTakenOnceMore(number, tc.next)
+		})
+	}
 }

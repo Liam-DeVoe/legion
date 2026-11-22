@@ -79,9 +79,9 @@ func TestAHeldDeadlineDuringACompactionAfterTheTakesTurnIsTheReportsBound(t *tes
 // The stale-plugin relaunch of the controller's claim waits out no turn and no compaction
 // (refreshPlugin), but it waits for the report of its take's turn as every claim's does: over a
 // compaction with no turn under it, begun after that turn ended with its report still to come,
-// the relaunch waits, the compaction's end leaves it waiting for the report (afterTurn), and the
-// report finishes the task once before the relaunch runs. The relaunched process takes nothing of
-// the task.
+// the relaunch waits, the compaction's end leaves it waiting for the report (endNothingHeld), and
+// the report finishes the task once before the relaunch runs. The relaunched process takes nothing
+// of the task.
 //
 // The negative control is the report's wait read only where the claim is not stored working
 // (`m.claim.State != StateWorking && m.reportHolds()` before this change): the relaunch runs
@@ -113,4 +113,90 @@ func TestTheControllersStaleRelaunchDuringACompactionWaitsForTheReport(t *testin
 	h.wantCalls("Resume", 1)
 	h.wantFinishedOnce(finishedByReport)
 	h.wantTakenNoMore(number, relaunchedToReady)
+}
+
+// A stale-plugin relaunch held for the turn of a migrated worker's take — a plugin below
+// TaskTakeContract, whose end frame finishes its task (endFrameFinishes) — waits past that turn's
+// end for the end-frame finish, and a compaction begun after that end and ended before the finish
+// does not run it: the end of the compaction decides what was held as the end of a turn does
+// (endNothingHeld). The task is finished once by its end frame, and the relaunch runs at that
+// finish and hands the new process nothing.
+//
+// The negative control is the commit under this change, whose compaction's end ran what was held
+// whatever the take (compactEnded's afterTurn): the relaunch ran at the compaction's end, before
+// the end-frame bound, and its take-back finished the task there.
+func TestTakeOfAMigratedWorkerFinishesBeforeTheStaleRelaunchACompactionEndFinds(t *testing.T) {
+	h := restoreMigrated(t, false)
+	h.must(StreamTurnStart{Claim: h.token})
+	h.deps.PluginContract, h.m.deps.PluginContract, h.m.deps.PluginRelaunchable = 25, 25, true
+	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	h.reportActivity()
+	number := h.pending().Number
+	release, compacted := h.compactHeld()
+	release()
+	if err := <-compacted; err != nil {
+		t.Fatalf("the compaction answered %v, want the claim given back", err)
+	}
+	h.m.Wait()
+
+	h.wantState(StateIdle)
+	h.wantCalls("Resume", 0)
+	h.wantTakesTurnStanding(number, "at the compaction's end")
+
+	h.advance(testRPC)
+
+	h.wantFinishedOnceAndRelaunchedEmpty()
+}
+
+// The line of work that begins to wait for the report of the take's turn (reportWaitsLine) is
+// written once for a stale-plugin relaunch: where it begins to wait — at the end of the turn or of
+// the compaction it was held for — and not again at a later end that leaves it waiting as it was.
+// Two orders, on a plugin that names its task's number: the relaunch held for the take's turn, then
+// a compaction begun after that turn's end and ended before its report; and the relaunch held for
+// such a compaction, whose end begins its wait. The report then finishes the task once, and the
+// relaunch runs at that finish.
+//
+// The negative control is the commit under this change, whose compaction's end ran what was held
+// whatever the take (compactEnded's afterTurn): in the first order the relaunch was decided again
+// there and began to wait for the report a second time, writing the line twice.
+func TestTakesReportWaitIsLoggedOnceForAStaleRelaunchAcrossACompaction(t *testing.T) {
+	stale := func(h *harness) {
+		h.deps.PluginContract, h.m.deps.PluginContract, h.m.deps.PluginRelaunchable = TaskTakeContract+1, TaskTakeContract+1, true
+		h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
+	}
+	for _, tc := range []struct {
+		name             string
+		turn, compaction func(h *harness)
+	}{
+		{"held for the take's turn", stale, func(*harness) {}},
+		{"held for the compaction", func(*harness) {}, stale},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarnessOf(t, queuedClaim(), currentPlugin)
+			h.reach(StateReady)
+			h.taskTheAgentTook()
+			number := h.pending().Number
+			h.must(StreamTurnStart{Claim: h.token})
+			tc.turn(h)
+			h.mustQuiet(StreamTurnEnd{Claim: h.token})
+			release, compacted := h.compactHeld()
+			tc.compaction(h)
+			release()
+			if err := <-compacted; err != nil {
+				t.Fatalf("the compaction answered %v, want the claim given back", err)
+			}
+			h.m.Wait()
+
+			if lines := h.logs.lines(reportWaitsLine, "held=relaunch"); len(lines) != 1 {
+				t.Fatalf("logged %q, want the relaunch's wait for the report once", lines)
+			}
+			h.wantStillAwaitingItsReport(number, 0)
+			h.mustReport(nil)
+			h.wantState(StateLaunching)
+			h.wantCalls("Resume", 1)
+			h.wantFinishedOnce(finishedByReport)
+			h.wantTakenNoMore(number, relaunchedToReady)
+		})
+	}
 }

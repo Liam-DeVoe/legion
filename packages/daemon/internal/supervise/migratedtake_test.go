@@ -74,8 +74,10 @@ func (h *harness) relaunchedTakes() {
 //     a take whose turn is over taken back whatever the contract (interrupted's gate) — the new
 //     process runs it again.
 //   - A relaunch before any turn: the take is given back before the process is let go, and the
-//     new process's take is decided afresh. Negative control: no take-back at a launch that runs
-//     now (launchReplacing's takeBack) — the new process is answered the old take from the record.
+//     new process's take is decided afresh. The agent has not answered the ask its shim's hello
+//     made, so the turn may have run unseen, and the take goes back as a cut turn with its note
+//     (turnMayHaveRunUnseen). Negative control: no take-back at a launch that runs now
+//     (launchReplacing's takeBack) — the new process is answered the old take from the record.
 func TestRelaunchOfAMigratedTakeRunsItOnce(t *testing.T) {
 	t.Run("a parked relaunch with the old turn in the wait", func(t *testing.T) {
 		h := restoreMigrated(t, true)
@@ -154,13 +156,15 @@ func TestRelaunchOfAMigratedTakeRunsItOnce(t *testing.T) {
 		h.reportActivity()
 
 		h.observe(runtime.StaleAddress)
-		if p := h.pending(); p.taken() || p.Interrupted {
-			t.Fatalf("the task after the relaunch is %+v, want the take given back with no note: no turn of it ran", p)
+		if p := h.pending(); p.taken() || !p.Interrupted {
+			t.Fatalf("the task after the relaunch is %+v, want the take given back as a cut turn: no answer followed the hello, so its turn may have run unseen", p)
 		}
 		h.relaunchedTakes()
 
-		if again := h.wantPrompts(1)[0]; again.Message != "the task" {
-			t.Fatalf("the new process took %+v, want the task alone", again)
+		again := h.wantPrompts(1)[0]
+		wantSays(t, again.Message, saysTaskTurn)
+		if !strings.HasSuffix(again.Message, "the task") {
+			t.Fatalf("the new process took %+v, want the task behind the word of its cut turn", again)
 		}
 		answered := h.records.of(answeredLine)
 		wantAttr(t, answered[len(answered)-1], "repeat", "false")

@@ -124,7 +124,13 @@ func (m *Machine) turnOutcomeWindow() int { return m.deps.Limits.LaunchFailures 
 // run of refused turns ends with the newest entry (RefusedRun). One whose write failed (Unapplied)
 // stays until it is sent again and applied, however old: dropped, it would fall under the
 // watermark, and the report sent again, which is its first application, would be answered as a
-// repeat.
+// repeat. So does the report that named the pending take's number with no provider error while
+// the finish it decided is owed (Machine.finishOwed, keptForOwedFinish): a daemon start reads it to
+// make that finish (owedReport), and dropped, the start would read a later provider error's report
+// naming that number, which takes the task to the ladder, or none, which leaves it unfinished. It
+// is held beside the bound rather than in it, so the run of refused turns still reads the newest
+// reports the bound keeps: in the bound, it would cut a run of refusals one short of the limit
+// for as long as the finish stayed owed.
 func (m *Machine) recordTurnOutcome(o TurnOutcome) (repeat bool) {
 	window, mark := m.claim.TurnOutcomes, m.claim.TurnOutcomeMark
 	at, found := slices.BinarySearchFunc(window, o, compareTurnOutcomes)
@@ -137,8 +143,14 @@ func (m *Machine) recordTurnOutcome(o TurnOutcome) (repeat bool) {
 	} else {
 		window = slices.Insert(window, at, o)
 	}
-	for len(window) > m.turnOutcomeWindow() {
-		oldest := slices.IndexFunc(window, func(o TurnOutcome) bool { return !o.Unapplied })
+	bound := m.turnOutcomeWindow()
+	for _, kept := range window {
+		if m.keptForOwedFinish(kept) {
+			bound++
+		}
+	}
+	for len(window) > bound {
+		oldest := slices.IndexFunc(window, func(o TurnOutcome) bool { return !o.Unapplied && !m.keptForOwedFinish(o) })
 		if oldest < 0 {
 			break
 		}
@@ -152,6 +164,14 @@ func (m *Machine) recordTurnOutcome(o TurnOutcome) (repeat bool) {
 	}
 	m.claim.TurnOutcomes, m.claim.TurnOutcomeMark = window, mark
 	return repeat
+}
+
+// keptForOwedFinish is whether o is the report whose finish the store refused and is owed
+// (Machine.finishOwed): applied, of the pending take's turn (reportOfTake), with no provider error.
+// The window keeps it past its bound while that finish is owed (recordTurnOutcome), for a daemon
+// start to read (owedReport).
+func (m *Machine) keptForOwedFinish(o TurnOutcome) bool {
+	return m.finishOwed && !o.Unapplied && !o.ProviderError && m.claim.reportOfTake(o.Generation, o.Task)
 }
 
 // turnOutcomeGapBound is how many reports the window holds while a report of their generation
@@ -222,36 +242,50 @@ func (m *Machine) unappliedTurnOutcome(o TurnOutcome) {
 
 // owedReport is the report whose effect on the claim's pending task the store does not hold, read
 // from the claim as the store keeps it, for the machine a daemon start builds over it
-// (NewMachine): the newest applied report of the claim's current generation that names the
-// pending task's number, while that task's take stands accepted, its turn started or not. Such a
-// report is of the take's turn (reportOfTake), and the daemon that applied it decided there what
-// became of the task, which a store that took the report and refused the writes after it does not
-// hold: the turn's start (startedUnseen) and then the task's finish, for a report that carried no
-// provider error — a finish that landed would have retired the task — or the take-back and the
-// ladder's step, for one that carried a provider error (providerErrored). That daemon kept what
-// it owed in memory alone, and nothing else makes it: the worker's report sent again is a repeat,
-// which applies nothing (recordTurnOutcome), and a plugin that names its task's number is given no
+// (NewMachine): an applied report of the claim's current generation that names the pending task's
+// number, while that task's take stands accepted, its turn started or not. Such a report is of the
+// take's turn (reportOfTake), and the daemon that applied it decided there what became of the
+// task, which a store that took the report and refused the writes after it does not hold: the
+// turn's start (startedUnseen) and then the task's finish, for a report that carried no provider
+// error — a finish that landed would have retired the task — or the take-back and the ladder's
+// step, for one that carried a provider error (providerErrored). That daemon kept what it owed in
+// memory alone, and nothing else makes it: the worker's report sent again is a repeat, which
+// applies nothing (recordTurnOutcome), and a plugin that names its task's number is given no
 // end-frame bound (endFrameFinishes).
+//
+// A report that carried no provider error is read before any later one that did: its finish,
+// refused, was owed from then on (Machine.finishOwed), and a later report naming the number with
+// a provider error finished the task by it rather than take it to the ladder (takeToLadder,
+// waitFinish), so that later report decided nothing of its own. The window keeps such a report
+// while its finish is owed for this read (recordTurnOutcome). Otherwise the newest report naming
+// the number is the one owed.
 //
 // A report that carried a provider error is owed only while the delivery does not record its
 // ladder step (TurnOutcome.ProviderErrorRetries above Delivery.ProviderErrorRetries): once that
 // step is written, the task was taken back, and a take of it standing now is the next take, given
-// after the ladder's wait, whose turn the report is not of. A report of another generation is of
-// a turn of another process than the one whose take this is, and a task of no number
-// (Delivery.Number) is named by no report (reportOfTake), so an entry stored before the window
-// kept a report's number (TurnOutcome.Task) owes nothing.
+// after the ladder's wait, whose turn neither that report nor any before it is of. A report of
+// another generation is of a turn of another process than the one whose take this is, and a task
+// of no number (Delivery.Number) is named by no report (reportOfTake), so an entry stored before
+// the window kept a report's number (TurnOutcome.Task) owes nothing.
 func (c Claim) owedReport() (TurnOutcome, bool) {
+	var errored TurnOutcome
+	found := false
 	for i := len(c.TurnOutcomes) - 1; i >= 0; i-- {
 		o := c.TurnOutcomes[i]
 		if o.Unapplied || !c.reportOfTake(o.Generation, o.Task) {
 			continue
 		}
-		if o.ProviderError && o.ProviderErrorRetries <= c.Pending.ProviderErrorRetries {
-			return TurnOutcome{}, false
+		if !o.ProviderError {
+			return o, true
 		}
-		return o, true
+		if o.ProviderErrorRetries <= c.Pending.ProviderErrorRetries {
+			break
+		}
+		if !found {
+			errored, found = o, true
+		}
 	}
-	return TurnOutcome{}, false
+	return errored, found
 }
 
 // RefusedRun is the run of refused turns the claim's reports end with, in the order the turns ran.

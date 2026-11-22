@@ -1174,10 +1174,14 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // outOfMemoryTask, and it is written on every such call, true or false, so a second interruption
 // of the same task for another reason clears a note that no longer describes it. A take whose
 // turn had not started goes back with no note, since the worker ran nothing of it, except one
-// whose turn may have run with no frame of it reaching the machine (Machine.turnUnseen: marked so
-// by the reconnect deadline, by a stale relaunch decided behind a cut backlog, or by the record of
-// a death or a displacement the claim met while its connection did not show every frame of its
-// turns, recordEnd): it goes back as a turn cut off, since the worker may have run it whole. The
+// whose turn may have run with no frame of it reaching the machine (turnMayHaveRunUnseen): the
+// claim's connection does not show every frame of its turns — no hello since a daemon start or a
+// close, or neither the agent's answer nor a turn frame since the hello — or the take is marked so
+// (Machine.turnUnseen), by the reconnect deadline, by a stale relaunch decided behind a cut
+// backlog, by a turn's end the daemon never saw begin, or by the record of a let-go made while the
+// view was not whole (recordEnd). It goes back as a turn cut off, since the worker may have run it
+// whole; so a relaunch of a live process, whose take-back comes before its let-go records anything
+// (replaceNow), reads the view as every let-go does (row 26 of dispatch://INFRA-2811's plan). The
 // task is neither retired nor its run marked served, since the turn never finished; the claim's
 // TaskTaken stays, since the worker read it. A task no take holds is left as it is. An older
 // daemon's ask of an update round is the one task no take is accepted for again: it keeps its
@@ -1238,7 +1242,7 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 		}
 		inTurn = true
 	}
-	inTurn = inTurn || (m.turnUnseen && p.awaitsTurn())
+	inTurn = inTurn || m.turnMayHaveRunUnseen()
 	m.log.Warn("supervise: "+why+"; the task waits for the relaunch", "task", p.Number, "delivery", p.ID)
 	next := *p
 	handshake := m.claim.Handshake

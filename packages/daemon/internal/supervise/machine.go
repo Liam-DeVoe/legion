@@ -1578,6 +1578,14 @@ type Machine struct {
 	// a claim still stale (refreshStalePlugins in internal/daemon), so a restart that forgets this
 	// mark finds the same claim again, and letGo drops it with the process it was made for.
 	staleRelaunch *string
+	// staleForEnd is whether the held stale-plugin relaunch (staleRelaunch) was held for the end of
+	// a turn or of a compaction (holdStaleRelaunch) and has not begun to wait for the report of the
+	// take's turn since: the end that leaves it waiting for that report writes reportWaitsLine for
+	// it, and clears this (endNothingHeld). A relaunch that began to wait for the report where it
+	// arrived (relaunchWaitsForReport) wrote that line there, so it is false for it, and a later end
+	// that leaves it waiting as it was writes none. Each newly held relaunch sets it, so it says
+	// nothing while staleRelaunch is nil.
+	staleForEnd bool
 	// turnsTask is the number of the task the turn now running is the turn of, as that turn's own
 	// start line named it, and 0 for a turn that is no task's. It is set where the machine learns a
 	// turn started (startTurn), read where that turn ends (endTurn), and cleared with the turn, so
@@ -1613,14 +1621,15 @@ type Machine struct {
 	// frame of it reaching the machine: the stale-plugin relaunch of a restored claim was decided,
 	// at its agent's answer of no turn or at the reconnect deadline with no answer, behind a replay
 	// whose hello did not say the shim's backlog is whole (markRestoredTurnUnseen, turnCount.cut),
-	// and a trim of that backlog can drop a whole turn; or a reconnect deadline passed, or a
-	// let-go was recorded — a death's, a displacement's, a retirement's, a suspension's — while the
-	// claim's connection did not show its turns whole (reconnectDeadline, recordEnd,
-	// turnMayHaveRunUnseen, connview.go). The take-back that follows takes such a take back with
-	// the note of a cut turn rather than unstarted (interrupted, takeBackUnstarted), so the next
-	// process is told its turn on the task may have run. It stays through the let-go, for the
-	// take-back made after it, where the view reads whole again; the next accepted take clears it
-	// (accept), and it is memory only.
+	// and a trim of that backlog can drop a whole turn; or a turn this daemon never saw begin ended
+	// over the take, which may have been the take's own, its start frame lost as the connection
+	// broke (blindTurnEnded); or a reconnect deadline passed, or a let-go was recorded — a
+	// death's, a displacement's, a retirement's, a suspension's — while the claim's connection did
+	// not show its turns whole (reconnectDeadline, recordEnd, turnMayHaveRunUnseen, connview.go).
+	// The take-back that follows takes such a take back with the note of a cut turn rather than
+	// unstarted (interrupted, takeBackUnstarted), so the next process is told its turn on the task
+	// may have run. It stays through the let-go, for the take-back made after it, where the view
+	// reads whole again; the next accepted take clears it (accept), and it is memory only.
 	turnUnseen bool
 	// rewrite is the pending task whose value the next write at a hold's end (offerPending) logs
 	// under a cause of its own, and that cause: TaskValueRetake for a task taken back in this

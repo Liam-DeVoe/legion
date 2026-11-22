@@ -429,6 +429,63 @@ func TestTakeWhoseFinishIsOwedIsFinishedByALaterReportWithAProviderError(t *test
 	}
 }
 
+// Row 22a: as row 22, with the later report's own finish refused too, and the daemon restarted
+// before a finish lands; in a second case, three newer reports, of the host's own turns after the
+// take's, land before the restart. While the finish is owed the window keeps the clean report that
+// named the take, as it keeps a report never applied (recordTurnOutcome), and the restored machine
+// reads that report rather than the later provider error's (owedReport): the task is finished
+// once, by that report, nothing goes on the ladder, and no value of it is left to take again.
+//
+// The negative control is the commit under this change. With no newer report, the restore read
+// the newest report naming the take, the 429, and took the task to the ladder; with three, the
+// window had dropped both reports naming the take, so the restore owed nothing and no bound
+// finished the task.
+func TestTakeWhoseFinishIsOwedAcrossARestartIsFinishedByItsCleanReportNotALaterProviderError(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		newer int
+	}{
+		{"a restart after the later report", 0},
+		{"three newer reports, then a restart", 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarnessOf(t, queuedClaim(), currentPlugin, withWaits)
+			h.manualTakes()
+			h.reach(StateReady)
+			number := h.takeOf("the task whose report's finish the store refused")
+			h.must(StreamTurnStart{Claim: h.token})
+			h.mustQuiet(StreamTurnEnd{Claim: h.token})
+			h.store.fail("RetireDelivery", errBoom)
+			if err := h.reportTurn(number, nil); err == nil {
+				t.Fatal("the report whose finish the store refused answered no failure")
+			}
+			if err := h.reportTurn(number, &ProviderError{Status: 429, Retryable: true}); err == nil {
+				t.Fatal("the later report with a 429, whose finish the store refused too, answered no failure")
+			}
+			for range tc.newer {
+				h.hostsRun()
+				if err := h.reportTurn(0, nil); err != nil {
+					t.Fatalf("the report of a turn of the host's own answered %v", err)
+				}
+			}
+			h.store.fail("RetireDelivery", nil)
+
+			h.restart()
+			h.connect()
+			h.advance(testRPC)
+
+			h.wantOwedFinishMade(number)
+			h.wantUnarmed("after the restart", TimerPromptRetry)
+			h.advance(promptRetryMax)
+			if value, held := h.values.value(h.token); held && value.Number == number {
+				t.Fatalf("the bucket holds %+v past the ladder's longest wait, want no value of task %d to take again", value, number)
+			}
+			h.wantPrompts(1)
+			h.wantCharges()
+		})
+	}
+}
+
 // Row 23: a take whose finish is owed reads, to every reader of whether the take's turn ran, as a
 // take whose turn ran, since the report that came decides (takesTurnRan, takeAwaitsTurn). Over a
 // take still awaiting its turn — Q1's state, made by hand as rows 17 to 19 make it, since no live

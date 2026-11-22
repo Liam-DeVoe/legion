@@ -148,7 +148,7 @@ const reportMissedLine = "supervise: the report of the take's turn did not come 
 // in (reportWaitNow) where a turn may run: whether work joins the wait (reportHolds), the wait's own
 // bound (reportBounded), R5's second wait (secondWaitNow), the held suspension's deadline
 // (suspendAtTimeout), the refusal of a suspension that may not be held (holdSuspension), the end of
-// a turn and of a compaction (runHeldAtEnd, turnEnded), and every take-back (interrupted,
+// a turn and of a compaction (runHeldAtEnd, endNothingHeld), and every take-back (interrupted,
 // takeBackUnstarted, takeBack).
 type waitPhase uint8
 
@@ -192,8 +192,8 @@ func (m *Machine) reportWaitNow() waitPhase {
 // not a turn runs: the one rule of where the take stands. A finish the store refused comes before
 // the take's own turn, since the report that came decides: a take awaiting its turn whose finish is
 // owed is in waitFinish, not waitTake. The end of a turn and of a compaction read it directly
-// (runHeldAtEnd, turnEnded), since the claim they end is still stored working, which reportWaitNow
-// reads as the turn.
+// (runHeldAtEnd, endNothingHeld), since the claim they end is still stored working, which
+// reportWaitNow reads as the turn.
 func (m *Machine) takePhase() waitPhase {
 	p := m.claim.Pending
 	switch {
@@ -212,7 +212,7 @@ func (m *Machine) takePhase() waitPhase {
 // its finish (waitFinish), whichever turn the take awaits, since that report decides. Every reader
 // of whether the take's turn ran asks it: the serving credit a finish earns (retireTask), the
 // settle of a claim no turn runs in (settle), and the end-frame bound armed again at the end of a
-// turn or a compaction (turnEnded, runHeldAtEnd, compactEnded).
+// turn or a compaction (runHeldAtEnd, endNothingHeld).
 func (m *Machine) takesTurnRan() bool {
 	p := m.claim.Pending
 	return p != nil && (p.turnStarted() || m.takePhase() == waitFinish)

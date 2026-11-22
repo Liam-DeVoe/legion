@@ -121,10 +121,12 @@ func TestABacklogCutLeavesNoMarkSoTheNextTakeKeepsItsOwnTurnStart(t *testing.T) 
 // shim replayed after its hello: where its agent answers it is in no turn (turnAnswered), or at the
 // reconnect deadline that hello armed again where its agent answers nothing (reconnectDeadline).
 // A take whose turn no replayed frame showed is given back unstarted, with no note, where that
-// hello said the backlog is whole: no turn of it ran. Where it did not, the backlog may have
-// dropped the take's whole turn, run while no daemon was connected, so the take goes back with the
-// note of a cut turn (interrupted), as a take whose report never came does (reportMissed), and the
-// next process is told its turn on the task may have run.
+// hello said the backlog is whole and the agent answered: no turn of it ran. Where the hello did
+// not say so, the backlog may have dropped the take's whole turn, run while no daemon was
+// connected, so the take goes back with the note of a cut turn (interrupted), as a take whose
+// report never came does (reportMissed), and the next process is told its turn on the task may
+// have run. So does a take whose agent answered nothing since the hello, whatever the hello said:
+// the view is not whole when the relaunch is decided (turnMayHaveRunUnseen, row 26 of the plan).
 //
 // The negative control is the head before this change (1d8f65eb), which gives the take back
 // unstarted after either hello, at the answer and at the deadline alike: the next process runs a
@@ -134,14 +136,15 @@ func TestAStaleRelaunchBehindABacklogCutTakesTheTakeBackAsACutTurn(t *testing.T)
 	for _, decided := range []struct {
 		name           string
 		before, decide func(h *harness)
+		viewCut        bool
 	}{
-		{"the agent answers it is in no turn", func(*harness) {}, func(h *harness) { h.answer(false) }},
+		{"the agent answers it is in no turn", func(*harness) {}, func(h *harness) { h.answer(false) }, false},
 		{"the agent answers nothing by the reconnect deadline",
 			func(h *harness) { h.conn.FailGetState(errBoom) },
 			func(h *harness) {
 				h.advance(deadline)
 				h.conn.FailGetState(nil)
-			}},
+			}, true},
 	} {
 		for _, tc := range []struct {
 			name  string
@@ -160,16 +163,17 @@ func TestAStaleRelaunchBehindABacklogCutTakesTheTakeBackAsACutTurn(t *testing.T)
 
 				decided.decide(h)
 
-				if p := h.pending(); p.Number != number || p.taken() || p.Interrupted != tc.cut {
-					t.Fatalf("after the relaunch the claim holds %+v, want task %d taken back, the note of a cut turn %t", p, number, tc.cut)
+				cut := tc.cut || decided.viewCut
+				if p := h.pending(); p.Number != number || p.taken() || p.Interrupted != cut {
+					t.Fatalf("after the relaunch the claim holds %+v, want task %d taken back, the note of a cut turn %t", p, number, cut)
 				}
 				h.relaunchedTakes()
 				again := h.wantPrompts(1)[0]
 				if again.Number != number {
 					t.Fatalf("the new process took %+v, want task %d", again, number)
 				}
-				if told := strings.Contains(again.Message, saysTaskTurn); told != tc.cut {
-					t.Fatalf("the new process took %q, which tells of a cut turn %t, want %t", again.Message, told, tc.cut)
+				if told := strings.Contains(again.Message, saysTaskTurn); told != cut {
+					t.Fatalf("the new process took %q, which tells of a cut turn %t, want %t", again.Message, told, cut)
 				}
 			})
 		}

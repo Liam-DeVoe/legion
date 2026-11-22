@@ -574,9 +574,9 @@ func (m *Machine) suspendHeldAtEnd(ctx context.Context, back ClaimState) error {
 // which is tried again at the probe interval (suspendHeld), and the claim goes back in back over a
 // task whose turn is over: its report finishes it, or the end-frame bound where that bound does — a
 // plugin that names no number, or a report's finish the store refused (armEndFrameBound). armFinish
-// arms that bound as the same end arms it with nothing held: whole at a turn's end (turnEnded
-// passes armEndFrameBound), and at a compaction's only where none stands (compactEnded passes
-// armEndFrameBoundUnlessArmed).
+// arms that bound as the same end arms it with nothing held (endNothingHeld): whole at a turn's
+// end (turnEnded passes armEndFrameBound), and at a compaction's only where none stands
+// (compactEnded passes armEndFrameBoundUnlessArmed).
 func (m *Machine) runHeldAtEnd(ctx context.Context, back ClaimState, armFinish func(id string)) error {
 	if m.takePhase().reportToCome() {
 		m.claim.State = back

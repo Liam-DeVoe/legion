@@ -202,8 +202,8 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 	// worker would run again a task whose turn ran whole. The controller's claim is no exception,
 	// since what it is spared is the wait for its turn or its compaction, not the run of a task
 	// twice: over a compaction with no turn started under it, after the take's turn ended, it waits
-	// for the report as an idle claim does, and the compaction's end runs it (compactEnded,
-	// afterTurn).
+	// for the report as an idle claim does, the compaction's end leaves it waiting (compactEnded,
+	// endNothingHeld), and the report's finish runs it (afterTurn).
 	if m.reportHolds() {
 		m.relaunchWaitsForReport(trigger)
 		return nil
@@ -251,11 +251,17 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 // call carrying a credit is exactly that window, and the end of this decision gives the credit
 // straight back, since it leaves no refresh wake waiting (endRefreshLane). The window costs the
 // claim one sweep, which is what an imperfect skip costs the pass everywhere else it makes one.
+//
+// A relaunch newly held here waits for the end of that turn or compaction, and the end that leaves
+// it waiting for the report of the take's turn writes the line of that wait (Machine.staleForEnd,
+// endNothingHeld). One held already keeps what it waits for: a pass that finds it again over a
+// turn of the host's own, while it waits for that report, starts no second wait.
 func (m *Machine) holdStaleRelaunch(trigger string) {
 	if m.staleRelaunch == nil {
 		m.log.Info("supervise: the process speaks another plugin contract; its relaunch waits for the agent's turn to end",
 			"incarnation", m.claim.Locator.Incarnation, "pluginContract", m.claim.PluginContract,
 			"daemonApiVersion", m.deps.PluginContract, "trigger", trigger)
+		m.staleForEnd = true
 	}
 	m.staleRelaunch = &trigger
 }
@@ -273,11 +279,13 @@ func (m *Machine) holdStaleRelaunch(trigger string) {
 // ever, and a report that is only slow lands inside the bound. A pass that posts the claim again
 // meanwhile replaces the trigger and moves the bound nothing. Like the relaunch held for a turn,
 // it is memory only: a restart forgets it, and the restarted daemon's own stale-plugin pass asks
-// again.
+// again. A relaunch newly held here has its wait's line written here, so no end writes it again
+// (Machine.staleForEnd).
 func (m *Machine) relaunchWaitsForReport(trigger string) {
 	if m.staleRelaunch == nil {
 		m.log.Info(reportWaitsLine, "task", m.claim.Pending.Number, "held", "relaunch", "trigger", trigger,
 			"pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract)
+		m.staleForEnd = false
 	}
 	m.staleRelaunch = &trigger
 }

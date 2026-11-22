@@ -30,8 +30,9 @@ import (
 //
 // "In a turn" is read as a turn start, over a take awaiting its turn as the take's own turn
 // (turnStarted): no bound runs over a turn, and its end arms them whole. "Not in a turn" over a
-// claim read in a turn is read as that turn's end (turnEnded), as askTurnOver reads it, so a lost
-// end frame leaves no claim working for ever, and the bounds are armed whole from the answer.
+// claim read in a turn is read as that turn's end (turnEnded), so a lost end frame leaves no claim
+// working for ever, and the bounds are armed whole from the answer. Every answer the daemon reads
+// is applied by that one rule (applyTurnAnswer): this ask's, and a daemon start's own.
 //
 // The ask is made once on each reconnect hello, never again at a sweep. Its one bound is the
 // reconnect deadline (TimerRegistration, reconnectBound), armed at the hello and disarmed by the
@@ -196,30 +197,43 @@ func (m *Machine) seeView() {
 // turnMayHaveRunUnseen is whether the pending take, awaiting its turn (takeAwaitsTurn), may have
 // had that turn run with no frame of it reaching the machine: the view is not whole (connSeen) —
 // no hello since a daemon start or a close, or since the hello neither the agent's answer nor a
-// turn frame — or the take is marked so (Machine.turnUnseen). The record of a let-go reads it
-// into the mark and the record alike (recordEnd: letGo, died, displaced), so the take-back of that
-// let-go takes the take back as a turn cut off and its next text carries that note, as the
-// reconnect deadline takes it back (interrupted; takeBackUnstarted for a retirement, a suspension
-// and a held suspension's deadline).
+// turn frame — or the take is marked so (Machine.turnUnseen). Every let-go reads it, so its
+// take-back takes the take back as a turn cut off and its next text carries that note, as the
+// reconnect deadline takes it back: the record of a let-go reads it into the mark and the record
+// alike (recordEnd: letGo, died, displaced), for a take-back made after the let-go has made the
+// view whole for the next process (takeBackUnstarted for a retirement, a suspension and a held
+// suspension's deadline; interrupted for a death and a displacement), and the take-back of a
+// relaunch of a live process, made before its let-go records anything, reads it directly
+// (interrupted, replaceNow).
 func (m *Machine) turnMayHaveRunUnseen() bool {
 	return (m.turnUnseen || m.connSeen != viewWhole) && m.takeAwaitsTurn()
 }
 
 // answerView is the agent's answer to whether it is in a turn, over a view a reconnect hello left
 // waiting for it (turnAnswered): the view is whole, the reconnect deadline goes, and the answer is
-// read against the claim with every frame the shim replayed applied — a turn running over a claim
-// not busy is a turn start, the take's own over a take awaiting its turn (turnStarted), and no turn
-// over a claim in one is that turn's end (turnEnded). The bounds are armed whole from here at the
-// end of this decision, or at the end of the turn the answer started.
+// applied to the claim with every frame the shim replayed applied already (applyTurnAnswer). The
+// bounds are armed whole from here at the end of this decision, or at the end of the turn the
+// answer started.
 func (m *Machine) answerView(ctx context.Context, answer StreamTurnAnswered) error {
 	m.connSeen = viewWhole
 	m.disarm(TimerRegistration)
 	m.log.Info(viewAnsweredLine, "streaming", answer.Streaming)
+	return m.applyTurnAnswer(ctx, answer.Streaming, answer)
+}
+
+// applyTurnAnswer applies the agent's answer to whether it is in a turn to the claim, read behind
+// every frame its shim sent before it: a turn running over a claim not busy is a turn start, the
+// take's own over a take awaiting its turn (turnStarted), and no turn over a claim in one is that
+// turn's end (turnEnded), so an end frame the connection lost leaves no claim working for ever. An
+// answer the claim already agrees with changes nothing. It is the one rule of every answer the
+// daemon reads: the ask a reconnect hello makes (answerView), and a daemon start's own two — of a
+// claim restored working (askTurnOver) and of a restored take on a stale plugin (turnAnswered).
+func (m *Machine) applyTurnAnswer(ctx context.Context, streaming bool, ev Event) error {
 	switch {
-	case answer.Streaming && !m.busy():
-		return turnStarted(m, ctx, answer)
-	case !answer.Streaming && m.inTurn():
-		return turnEnded(m, ctx, answer)
+	case streaming && !m.busy():
+		return turnStarted(m, ctx, ev)
+	case !streaming && m.inTurn():
+		return turnEnded(m, ctx, ev)
 	}
 	return nil
 }
