@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { matchQuery, type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createContext,
   createElement,
@@ -6,16 +6,18 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useSyncExternalStore,
 } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 import { writeRequest } from "../../../api/client";
 import { primarySpec } from "../../../api/issue-cache";
 import { issueCoverageQuery, issueTreeKey } from "../../../api/queries";
-import { refreshQueries } from "../../../api/query-refresh";
+import { type RefreshTarget, refreshQueries } from "../../../api/query-refresh";
 import type { IssueDetails } from "../../../api/types";
 import { type IssueRoute, parseIssuePath, parseNodeReference } from "../../refs/routes";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
+import { writesOf } from "../../writes/write-store";
 import { type AddressTarget, issueAddress, pathToTarget, presetPath } from "../issue-address";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { CONTROL_LABELS } from "../page-words";
@@ -75,11 +77,132 @@ export function useSettleIssue(): string | undefined {
   return useContext(SettleIssue);
 }
 
+/** One press's watch of the reads of the tree, for the read that tells of its landing
+ *  (`SettleLandings.watch`): the node's act takes no press while it runs. */
+interface LandingWatch {
+  /** The tree's query, whose reads the watch reads. */
+  readonly tree: RefreshTarget;
+  readonly stop: () => void;
+}
+
+/**
+ * The settles of one client's page that the act of their node waits on (`useSettle`), by the
+ * node's reference, as the write's target `settle:<reference>` names the node: each from its
+ * press until the read of the tree that tells of its landing has ended, or its refusal. One for
+ * each node, whichever act made the press, since `NodeRow` draws a row's acts on the focused row
+ * alone, and a reader who moves the focus off the row and back meanwhile finds a new act, which
+ * reads the settle already waited on (`useSettleWaits`).
+ */
+class SettleLandings {
+  readonly #client: QueryClient;
+  /** The newest press's watch of each node, by the node's reference. */
+  readonly #watches = new Map<string, LandingWatch>();
+  readonly #listeners = new Set<() => void>();
+
+  constructor(client: QueryClient) {
+    this.#client = client;
+  }
+
+  readonly subscribe = (listener: () => void): (() => void) => {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  };
+
+  /** Whether a settle of the node `reference` names is waited on: its watch runs. */
+  waits(reference: string): boolean {
+    return this.#watches.has(reference);
+  }
+
+  /**
+   * Watches, from a press of the settle of the node `reference` names, in place of an earlier
+   * press's watch of that node, for the read of the tree of issue `issue` that tells of the
+   * press's landing: the first read of it to begin with no write of that issue out, so after
+   * Dispatch answered the press's own write, which is one of that issue's. A read out at the
+   * press, or one begun while a write of the issue was out - a first load, the reader's Retry -
+   * may read the tree from before the settle, and is passed over. The watch ends once that read
+   * has ended, answered or refused, or once the cache lets the tree go, which no read then
+   * answers.
+   */
+  watch(reference: string, issue: string): LandingWatch {
+    this.end(reference, this.#watches.get(reference));
+    const cache = this.#client.getQueryCache();
+    const writes = writesOf(this.#client);
+    const tree = { exact: true, queryKey: issueTreeKey(issue) };
+    // Whether the read out began with no write of the issue out.
+    let tells = false;
+    const watch: LandingWatch = {
+      stop: cache.subscribe((event) => {
+        if (!matchQuery(tree, event.query)) return;
+        if (event.type === "updated" && event.action.type === "fetch") {
+          tells = writes.writesOutOf(issue).length === 0;
+        } else if (
+          event.type === "removed" ||
+          (tells && event.query.state.fetchStatus === "idle")
+        ) {
+          this.end(reference, watch);
+        }
+      }),
+      tree,
+    };
+    this.#watches.set(reference, watch);
+    this.#publish();
+    return watch;
+  }
+
+  /** The press `watch` is of has landed: where the cache holds no tree for a read to tell of the
+   *  landing, the watch ends there; else it runs on to that read's end. */
+  land(reference: string, watch: LandingWatch | undefined): void {
+    if (watch !== undefined && this.#client.getQueryCache().find(watch.tree) === undefined) {
+      this.end(reference, watch);
+    }
+  }
+
+  /** Ends `watch`, where it is still the watch of the node `reference` names. */
+  end(reference: string, watch: LandingWatch | undefined): void {
+    if (watch === undefined || this.#watches.get(reference) !== watch) return;
+    watch.stop();
+    this.#watches.delete(reference);
+    this.#publish();
+  }
+
+  #publish(): void {
+    for (const listener of this.#listeners) listener();
+  }
+}
+
+/** Each client's settles that wait (`SettleLandings`), as `writesOf` keeps its store: one for
+ *  each app, as there is one client. */
+const settleLandings = new WeakMap<QueryClient, SettleLandings>();
+
+function landingsOf(client: QueryClient): SettleLandings {
+  let landings = settleLandings.get(client);
+  if (landings === undefined) {
+    landings = new SettleLandings(client);
+    settleLandings.set(client, landings);
+  }
+  return landings;
+}
+
+/** Whether the act of the node `reference` names waits on a settle of it (`useSettle`): from the
+ *  press until the read of the tree that tells of its landing has ended, or its refusal. Read from
+ *  the client's settles, not the act's own press, so an act drawn again for the row meanwhile -
+ *  the reader moved the focus off it and back - reads a settle already pressed. */
+export function useSettleWaits(reference: string): boolean {
+  const landings = landingsOf(useQueryClient());
+  return useSyncExternalStore(landings.subscribe, () => landings.waits(reference));
+}
+
 /**
  * The settle of the proposed node `reference` names, under the issue `key`: one keyed write
  * per press, which the act that makes it shows refused itself (`inline`), so the shell's
  * indicator names it only while it is out, and the settles of one node go in press order. A 5xx
  * is made again under its key, so the write stays out while it is tried again.
+ *
+ * From the press until the read of the tree that tells of its landing has ended, or its refusal,
+ * the node's settle is waited on (`SettleLandings`): `useSettleWaits` answers true for the
+ * node, so its act, and an act drawn again for its row meanwhile, says it is settling and takes
+ * no press. A press then would go after this one, or settle a node Dispatch holds settled, and be
+ * refused.
  *
  * A landing - a 200, or `null` for `409 KEY_COMMITTED` - tells `landed` first, so the act puts
  * the focus on its row before anything is read again. It then reads the coverage again, reads
@@ -96,16 +219,25 @@ export function useSettleIssue(): string | undefined {
  * issue its path names, since the subscription holds for the writes of its own issue alone;
  * `subscribeTreeFreshness` says what it holds while the write is out.
  * A refusal reads nothing again.
+ *
+ * The read that tells of the landing is the first read of the tree of `drawn` to begin with no
+ * write of `drawn` out; `subscribeTreeFreshness` (in `tree-read/tree-read.ts`) says when the reads
+ * go. That read may go out before this callback runs, so the watch of the tree's reads begins at
+ * the press (`onMutate`); where the cache holds no tree at the landing, the wait ends there.
  */
 export function useSettle(key: string, reference: string, landed: () => void) {
   const queryClient = useQueryClient();
   const drawn = useSettleIssue() ?? key;
+  const landings = landingsOf(queryClient);
   return useKeyedWrite({
     inline: true,
     issue: drawn,
     label: () => CONTROL_LABELS.settle,
-    onSuccess: () => {
+    onError: (_refusal, _variables, watch) => landings.end(reference, watch),
+    onMutate: () => landings.watch(reference, drawn),
+    onSuccess: (_answer, _variables, watch) => {
       landed();
+      landings.land(reference, watch);
       const coverage = queryClient.invalidateQueries({
         exact: true,
         queryKey: issueCoverageQuery(key).queryKey,

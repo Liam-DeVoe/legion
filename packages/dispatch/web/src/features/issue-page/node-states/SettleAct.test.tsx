@@ -113,6 +113,10 @@ interface DrawnRow {
   readonly row: () => HTMLElement;
   /** A control outside the row, where a test puts the focus before a press. */
   readonly elsewhere: () => HTMLButtonElement;
+  /** Draws the row unfocused and then focused again, as the tree does when the reader moves the
+   *  focus to another row and back (`j`, then `k`): an unfocused row draws no act, so the focused
+   *  row draws a new one. */
+  readonly refocus: () => void;
   readonly unmount: () => void;
 }
 
@@ -149,7 +153,8 @@ interface RowOptions {
 /** The focused proposed row `options.node`, drawn in the tree of `KEY` as `IssueTree` draws its
  *  rows (`SettleIssueProvider`), its settle answered by `answer` at each attempt, the first
  *  `options.failedCoverage` reads of the coverage failing, each other read of it answered
- *  `options.covered`, and each read of the tree answered by `options.tree`. */
+ *  `options.covered`, and each read of the tree answered by `options.tree`. `refocus` draws it
+ *  unfocused and focused again. */
 function drawRow(
   answer: (attempt: number) => Promise<unknown>,
   options: RowOptions = {}
@@ -191,7 +196,7 @@ function drawRow(
   }) as typeof api.send);
   const endFeed = options.feed === "down" ? () => undefined : liveFeedOn(client);
   const unsubscribe = subscribeTreeFreshness(client, KEY);
-  const view = render(
+  const page = (focused: boolean) => (
     <QueryClientProvider client={client}>
       <MemoryRouter>
         <NoTooltips>
@@ -204,7 +209,7 @@ function drawRow(
               author={{ kind: "person", name: "bob", reader: false }}
               body={false}
               context={false}
-              focused
+              focused={focused}
               isClosed={false}
               level={1}
               node={options.node ?? PROPOSED}
@@ -221,6 +226,7 @@ function drawRow(
       </MemoryRouter>
     </QueryClientProvider>
   );
+  const view = render(page(true));
   const found = <E extends Element>(selector: string): E => {
     const element = view.container.querySelector<E>(selector);
     if (element === null) throw new Error(`the page draws no ${selector}`);
@@ -232,6 +238,10 @@ function drawRow(
     keys,
     onRowAtRead,
     reads,
+    refocus: () => {
+      view.rerender(page(false));
+      view.rerender(page(true));
+    },
     row: () => found<HTMLElement>("[data-node-row]"),
     sent,
     sentence: () => view.container.querySelector("[data-settle-answer]"),
@@ -547,6 +557,75 @@ test("after a 200 Settling… is said until the tree read answers", async () => 
     expect(drawn.settle().disabled).toBe(false);
     expect(drawn.row().querySelector('[data-node-mark="proposed"]')).not.toBeNull();
     expect(drawn.sentence()).toBeNull();
+  } finally {
+    drawn.unmount();
+  }
+});
+
+// The wait after a landing is the node's, not the act's: an unfocused row draws no act, so a
+// reader who moves the focus off the row and back before the tree read answers (`j`, then `k`)
+// finds a new act, which goes on saying "Settling…" and takes no press, as the act it replaces
+// did, until the tree read answers. A press then would settle a node Dispatch holds settled, and
+// be refused. Where the tree read answers with the node still proposed, the act takes a press.
+test("after a 200 an act drawn again says Settling… until the tree read answers", async () => {
+  const user = userEvent.setup();
+  const answer = Promise.withResolvers<TreeAnswer>();
+  const drawn = drawRow(async () => settled(), { tree: () => answer.promise });
+  const tree = () => drawn.client.getQueryState(issueTreeQuery(KEY).queryKey);
+  try {
+    await user.click(drawn.settle());
+    await waitFor(() => expect(drawn.client.isMutating(), "the write is still out").toBe(0));
+    expect(tree()?.fetchStatus, "the tree read answered").toBe("fetching");
+    const before = drawn.settle();
+    drawn.refocus();
+    expect(drawn.settle(), "the act was not drawn again").not.toBe(before);
+    expect(drawn.settle().textContent).toBe(SETTLE_ANSWERS.settling);
+    expect(drawn.settle().disabled).toBe(true);
+
+    await act(async () => answer.resolve(treeAnswer()));
+    await waitFor(() => expect(tree()?.fetchStatus).toBe("idle"));
+    await waitFor(() => expect(drawn.settle().textContent).toBe(CONTROL_LABELS.settle));
+    expect(drawn.settle().disabled).toBe(false);
+    expect(drawn.row().querySelector('[data-node-mark="proposed"]')).not.toBeNull();
+    expect(drawn.sentence()).toBeNull();
+  } finally {
+    drawn.unmount();
+  }
+});
+
+// The wait is the node's from the press: a reader who moves the focus off the row and back while
+// the write is out finds a new act, which says "Settling…" and takes no press, as the act it
+// replaces did - a press then would go after the first, and be refused - and goes on saying it
+// once the write has landed, until the tree read answers. Where that read draws the node still
+// proposed, the act takes a press again.
+test("an act drawn again while the write is out says Settling… until the tree read answers", async () => {
+  const user = userEvent.setup();
+  const landing = Promise.withResolvers<unknown>();
+  const answer = Promise.withResolvers<TreeAnswer>();
+  const drawn = drawRow(() => landing.promise, { tree: () => answer.promise });
+  const tree = () => drawn.client.getQueryState(issueTreeQuery(KEY).queryKey);
+  try {
+    await user.click(drawn.settle());
+    await waitFor(() => expect(drawn.sent).toHaveLength(1));
+    const before = drawn.settle();
+    drawn.refocus();
+    expect(drawn.settle(), "the act was not drawn again").not.toBe(before);
+    expect(drawn.settle().textContent).toBe(SETTLE_ANSWERS.settling);
+    expect(drawn.settle().disabled).toBe(true);
+
+    await act(async () => landing.resolve(settled()));
+    await waitFor(() => expect(drawn.client.isMutating(), "the write is still out").toBe(0));
+    expect(tree()?.fetchStatus, "the tree read answered").toBe("fetching");
+    expect(drawn.settle().textContent).toBe(SETTLE_ANSWERS.settling);
+    expect(drawn.settle().disabled).toBe(true);
+
+    await act(async () => answer.resolve(treeAnswer()));
+    await waitFor(() => expect(tree()?.fetchStatus).toBe("idle"));
+    await waitFor(() => expect(drawn.settle().textContent).toBe(CONTROL_LABELS.settle));
+    expect(drawn.settle().disabled).toBe(false);
+    expect(drawn.row().querySelector('[data-node-mark="proposed"]')).not.toBeNull();
+    expect(drawn.sentence()).toBeNull();
+    expect(drawn.sent).toHaveLength(1);
   } finally {
     drawn.unmount();
   }
