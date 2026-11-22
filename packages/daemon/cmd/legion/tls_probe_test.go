@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // servedTLSSiteNames are the fixture listener's sites, in the probe's order (tlsServer.sites).
@@ -2191,6 +2192,74 @@ func tlsRunsLogged(t *testing.T, dir string) []string {
 	return strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
 }
 
+// tlsRunLogLines is how many runs the stand-ins sharing dir have logged (shTLSClient), and whether
+// the log could be read: a log not yet written holds none, and a read that fails says nothing.
+func tlsRunLogLines(dir string) (int, bool) {
+	raw, err := os.ReadFile(filepath.Join(dir, "runs"))
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, true
+	}
+	return strings.Count(string(raw), "\n"), err == nil
+}
+
+// tlsStandInStart bounds the wait for a stand-in's log line (fromTheRunsLogLine,
+// deadlineAtTheFirstLogLine): longer than any loaded machine takes to start a shell, and only a
+// stand-in that never starts waits it out.
+const tlsStandInStart = time.Minute
+
+// fromTheRunsLogLine is the limit clock (tlsCommandClient.limitClock) of stand-ins that log to
+// dir/runs (shTLSClient): each run's limit, its real length, is counted from the moment the run's
+// own line is in the log, which is the stand-in's first act, and not from before its shell
+// starts, and then ends the run as the client's own limit does, with errTLSRunLimit. A loaded
+// machine can take longer than a stand-in's one-second limit to start a shell, and a limit that
+// counted that start would end a run that answers, or a run before it has logged itself; past its
+// log line, a stand-in that answers runs nothing but shell builtins. The probe runs one run at a
+// time, so a line past those the log held when the run began is that run's own. A read of the log
+// that fails changes nothing, and a run that logs nothing within tlsStandInStart has its limit
+// counted from then.
+func fromTheRunsLogLine(dir string) func(context.Context, time.Duration) (context.Context, context.CancelFunc) {
+	return func(ctx context.Context, limit time.Duration) (context.Context, context.CancelFunc) {
+		var before int
+		testwait.Holds(tlsStandInStart, testwait.Poll, func() bool {
+			n, read := tlsRunLogLines(dir)
+			before = n
+			return read
+		})
+		run, cancel := context.WithCancelCause(ctx)
+		go func() {
+			testwait.Holds(tlsStandInStart, testwait.Poll, func() bool {
+				n, read := tlsRunLogLines(dir)
+				return run.Err() != nil || read && n > before
+			})
+			limited := time.NewTimer(limit)
+			defer limited.Stop()
+			select {
+			case <-limited.C:
+				cancel(errTLSRunLimit)
+			case <-run.Done():
+			}
+		}()
+		return run, func() { cancel(context.Canceled) }
+	}
+}
+
+// deadlineAtTheFirstLogLine is a probe context that the probe's deadline ends once the first run
+// of the stand-ins sharing dir has logged itself: it ends with the cause context.DeadlineExceeded,
+// which is how a run tells the probe's deadline from its own limit (tlsCommandClient.run), at a
+// moment of that run rather than at a time a loaded machine can reach before the run's shell has
+// started. Its cancel ends it with context.Canceled where the deadline has not come.
+func deadlineAtTheFirstLogLine(dir string) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	go func() {
+		testwait.Holds(tlsStandInStart, testwait.Poll, func() bool {
+			n, read := tlsRunLogLines(dir)
+			return ctx.Err() != nil || read && n > 0
+		})
+		cancel(context.DeadlineExceeded)
+	}()
+	return ctx, func() { cancel(context.Canceled) }
+}
+
 // timedTLSClient is a client that sums the time its runs at each site took, by the site's name.
 type timedTLSClient struct {
 	tlsClient
@@ -2841,11 +2910,19 @@ func TestTLSProbeLineNamesWhatEndedARunAndAfterHowLong(t *testing.T) {
 // times the client's limit: the runs' log shows aws's second run at emSign after the last client's
 // control run, and its line names a 2s limit where the first named 1s. A run the probe's deadline
 // ended gets no second run, nor does any run after it, which never starts.
+//
+// Each limit is counted from the stand-in's own start (fromTheRunsLogLine), and the deadline falls
+// once aws's emSign run has logged itself (deadlineAtTheFirstLogLine): a loaded machine took 1.2 s
+// to start node's shell at emSign, whose one-second limit then ended a run that answers, and longer
+// than the subtest's 300 ms deadline to start aws's, which the deadline ended before it had logged
+// itself. Each limit still ends its run as the client's own does, after its whole length, so a run
+// that answers and that its limit ends still fails the probe here.
 func TestTLSProbeRunsARunWithNoVerdictAgainAfterEveryOtherRunAtTwiceItsLimit(t *testing.T) {
 	dir := t.TempDir()
 	aws := shTLSClient("aws", dir, tlsSleepsAtEmSign, awsAnswer)
 	aws.applicationSeen = awsResponseSeen
 	node := shTLSClient("node", dir, tlsAnswers, nodeAnswer)
+	aws.limitClock, node.limitClock = fromTheRunsLogLine(dir), fromTheRunsLogLine(dir)
 
 	observations, noVerdict, err := probeTLSClients(context.Background(), []tlsClient{aws, node}, servedTLSSites(), compromisedTLSSites())
 
@@ -2871,7 +2948,8 @@ func TestTLSProbeRunsARunWithNoVerdictAgainAfterEveryOtherRunAtTwiceItsLimit(t *
 		dir := t.TempDir()
 		aws := shTLSClient("aws", dir, tlsSleepsAtEmSign, awsAnswer)
 		node := shTLSClient("node", dir, tlsAnswers, nodeAnswer)
-		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		aws.limitClock, node.limitClock = fromTheRunsLogLine(dir), fromTheRunsLogLine(dir)
+		ctx, cancel := deadlineAtTheFirstLogLine(dir)
 		defer cancel()
 
 		observations, noVerdict, err := probeTLSClients(ctx, []tlsClient{aws, node}, servedTLSSites(), compromisedTLSSites())
@@ -2888,6 +2966,32 @@ func TestTLSProbeRunsARunWithNoVerdictAgainAfterEveryOtherRunAtTwiceItsLimit(t *
 			}
 		}
 	})
+}
+
+// A run's own limit, where no test sets a clock, is counted from before its command starts: the
+// context runLimit gives a run ends limit after the call, with the cause errTLSRunLimit, which is
+// how the run tells its limit from the probe's deadline. The stand-ins of
+// TestTLSProbeRunsARunWithNoVerdictAgainAfterEveryOtherRunAtTwiceItsLimit count theirs from their
+// own start instead (fromTheRunsLogLine), and this holds the clock they stand beside.
+func TestATLSRunsOwnLimitIsCountedFromBeforeItsCommandStarts(t *testing.T) {
+	const limit = 7 * time.Second
+	before := time.Now()
+	run, cancel := tlsCommandClient{}.runLimit(context.Background(), limit)
+	defer cancel()
+	after := time.Now()
+	if deadline, ok := run.Deadline(); !ok || deadline.Before(before.Add(limit)) || deadline.After(after.Add(limit)) {
+		t.Errorf("the run's deadline is %s (one set: %t), want %s after the call, between %s and %s",
+			deadline.Format(time.RFC3339Nano), ok, limit, before.Add(limit).Format(time.RFC3339Nano), after.Add(limit).Format(time.RFC3339Nano))
+	}
+
+	passed, stop := tlsCommandClient{}.runLimit(context.Background(), time.Millisecond)
+	defer stop()
+	if !testwait.Holds(tlsStandInStart, testwait.Poll, func() bool { return passed.Err() != nil }) {
+		t.Fatalf("a run whose 1ms limit passed was still running after %s", tlsStandInStart)
+	}
+	if cause := context.Cause(passed); !errors.Is(cause, errTLSRunLimit) {
+		t.Errorf("a run whose limit passed ended with the cause %v, want %v", cause, errTLSRunLimit)
+	}
 }
 
 // A failure seen before the probe's deadline stands, also inside a step that returns after it: the
