@@ -1058,6 +1058,40 @@ func TestIssueReferencesAnswerWithoutTheTreesHeaderIsTheBytesBefore(t *testing.T
 	}
 }
 
+// A caller that asks for the rows' name trees and one that sends no header never share a
+// validator of an issue's references: the reading is hashed into the ETag (referencesETag), so
+// neither can be answered 304 against the other's.
+func TestIssueReferencesTreesRequestAndOneWithoutNeverShareAnETag(t *testing.T) {
+	handler, issueKey, _ := issueReferencesNameFixture(t)
+	target := "/api/v1/issues/" + issueKey + "/references"
+	with := listETagOf(t, listRead(t, handler, target, listReadOptions{trees: true}), "GET "+target+" with trees")
+	without := listETagOf(t, listRead(t, handler, target, listReadOptions{}), "GET "+target+" without trees")
+	if with == without {
+		t.Fatalf("GET %s answers one ETag %s for both readings", target, with)
+	}
+	crossed := listRead(t, handler, target, listReadOptions{etag: with})
+	if crossed.Code != http.StatusOK {
+		t.Errorf("GET %s without trees, holding the trees reading's ETag: status=%d, want 200", target, crossed.Code)
+	}
+}
+
+// A deploy that reads markdown differently moves an issue's references validator, however the
+// answer itself comes out: the display parser version is hashed into it, so no ETag the build
+// before it gave is matched by this one.
+func TestADeployOfANewDisplayParserVersionChangesTheIssueReferencesETag(t *testing.T) {
+	handler, issueKey, _ := issueReferencesNameFixture(t)
+	target := "/api/v1/issues/" + issueKey + "/references"
+	before := listETagOf(t, listRead(t, handler, target, listReadOptions{trees: true}), "GET "+target)
+
+	restore := pmdoc.SetDisplayTreeVersionForTest(pmdoc.DisplayTreeVersion + 1)
+	defer restore()
+	answered := listRead(t, handler, target, listReadOptions{trees: true, etag: before})
+	what := fmt.Sprintf("GET %s at display parser version %d", target, pmdoc.DisplayTreeVersionNow())
+	if got := listETagOf(t, answered, what); got == before {
+		t.Errorf("%s answers the ETag %s the version before it gave", what, before)
+	}
+}
+
 func graphRequest(t *testing.T, handler http.Handler, query url.Values) *httptest.ResponseRecorder {
 	t.Helper()
 	return dispatchRequest(t, handler, http.MethodGet, "/api/v1/references?"+query.Encode(), nil, "alice")
