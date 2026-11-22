@@ -425,7 +425,8 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // workflow — so a tree of many members costs a handful of reads at most.
 //
 // What the close does around the hand-over, for a member handed over under either rule: the same
-// expiry still queues a tree_close for every role of every member and a workspace removal for
+// expiry still queues a tree_close for each claim of every member — one for each stored claim, and
+// one by role for each role whose worker claim is none of those — and a workspace removal for
 // every member, handed over or not (lingerExpired), so a handed member's claims are retired, their
 // sessions kept, and its workspace removed here with the rest of the tree. Its workspace comes
 // back when the first start of its new generation reaches one of those retired claims (the
