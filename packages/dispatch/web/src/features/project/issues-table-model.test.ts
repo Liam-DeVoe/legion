@@ -973,16 +973,15 @@ test("a view's layout shows its own columns in its order, with each header and i
   expect(viewLayoutColumns(viewColumns(viewFor("open"), true), false)).toBe(open);
 });
 
-test("Time per phase keeps a minimum that holds its label, its Share and Hours control and its filter, on a phone too", () => {
+test("Time per phase keeps a minimum that holds its label, its Share and Hours control and its filter on one line, and on a phone the two lines of its stacked header", () => {
   // Measured in a browser, sorted: the label and its mark, the Share and Hours control and the
   // filter fill 268 px with 44 px buttons and 256 px with 32 px ones. A cell adds 16 px of
   // padding from `md`, 12 px below it.
   expect(columnMinimums(true).phase_hours).toBe(268 + 16);
   expect(columnMinimums(false).phase_hours).toBe(256 + 16);
-  // A phone has 44 px buttons too, and no narrower minimum of its own for this header.
-  const touchMinimum = columnMinimums(true).phase_hours;
-  if (touchMinimum === undefined) throw new Error("Time per phase has no minimum");
-  expect(phoneMin("phase_hours")).toBe(touchMinimum);
+  // A phone stacks the label (118 px with its mark) over the control and the filter, so the
+  // wider line decides: the 94 px control with 44 px buttons, a 4 px gap and the 44 px filter.
+  expect(phoneMin("phase_hours")).toBe(94 + 4 + 44 + 16);
 });
 
 test("a view's widths give way at Title first, down to 240 px, then at the other columns", () => {

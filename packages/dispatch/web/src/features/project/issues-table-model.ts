@@ -668,11 +668,15 @@ export const COLUMNS: readonly ColumnSpec[] = [
     id: "phase_hours",
     size: 284,
     min: 284,
+    // On a phone its header stacks its name over its Share and Hours control and its filter
+    // (`STACKED_HEADERS` in `IssuesTable.tsx`), so it holds the wider of those two lines: not the
+    // label with its sort mark (118 px) but the control (94 px with 44 px buttons), a 4 px gap
+    // and the 44 px filter button, with the cell's 16 px of padding from `md` (12 px below it).
+    compactMin: 158,
     facts: true,
     // Its minimum holds, on one line, its label with its sort mark (118 px drawn), the Share and
     // Hours control and the filter button, with 44 px buttons and the cell's padding; from 1280
-    // px, with 32 px filter buttons, 12 px less. A phone, whose buttons are 44 px, draws it at
-    // that minimum too.
+    // px, with 32 px filter buttons, 12 px less.
     filter: {
       kind: "picks",
       values: factsPicks((item) => phaseHoursPicks(item.facts?.hours_by_phase)),

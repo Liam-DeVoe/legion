@@ -210,6 +210,9 @@ const PR_NOUN: RowNoun = {
 const NO_GROUPING: GroupingState = [];
 const ONE_PAGE: PaginationState = { pageIndex: 0, pageSize: Number.MAX_SAFE_INTEGER };
 
+/** The header that stacks its sort over its filter in a box under 640 px. */
+const STACKED_HEADERS: readonly string[] = ["title"];
+
 const DEPLOYED_TONE: Record<DeliveryPR["deployed_status"], string> = {
   deployed: successText,
   waiting: inlineWarningText,
@@ -607,7 +610,7 @@ export function PRList({
         />
       )}
       scrollTestId="delivery-pr-list"
-      stackColumn="title"
+      stackColumns={STACKED_HEADERS}
     />
   );
 }

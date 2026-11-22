@@ -6,7 +6,7 @@ import {
   legionPhaseFill,
   surfaceMutedBg,
   surfaceMutedHoverBg,
-  tableFilterActive,
+  surfaceMutedStrongBg,
   textMutedOnCanvas,
   textMutedOnSurface,
   textSecondaryOnCanvas,
@@ -61,7 +61,8 @@ const hoursText = (hours: number): string =>
   `${hours < 10 ? hours.toFixed(1) : Math.round(hours)} h`;
 
 /** The tooltip's lines: one per phase with hours, in the board's order with Other last, each
- *  with its swatch, its name, its hours and its share of the row's total. */
+ *  with its swatch, its name, its hours and its share of the row's total. The lines share their
+ *  columns, each as wide as its widest entry, 8 px apart and 8 px inside the tooltip's edges. */
 function PhaseHoursLines({
   phases,
   total,
@@ -70,21 +71,21 @@ function PhaseHoursLines({
   total: number;
 }): ReactNode {
   return (
-    <ul className="space-y-0.5">
+    <ul className="grid grid-cols-[repeat(4,auto)] gap-x-2 gap-y-0.5 px-2 py-0.5">
       {phases.map(([phase, hours]) => (
         <li
-          className="flex items-center gap-2 whitespace-nowrap"
+          className="col-span-full grid grid-cols-subgrid items-center whitespace-nowrap"
           data-phase-hours-line={phase}
           key={phase}
         >
           <span
             aria-hidden="true"
-            className={`size-2.5 shrink-0 rounded-sm ${legionPhaseFill[phase]}`}
+            className={`size-2.5 rounded-sm ${legionPhaseFill[phase]}`}
             data-phase-swatch={phase}
           />
-          <span className="flex-1">{workPhaseTitle(phase)}</span>
-          <span className="w-12 text-right tabular-nums">{hoursText(hours)}</span>
-          <span className={`w-9 text-right tabular-nums ${textMutedOnSurface}`}>
+          <span>{workPhaseTitle(phase)}</span>
+          <span className="text-right tabular-nums">{hoursText(hours)}</span>
+          <span className={`text-right tabular-nums ${textMutedOnSurface}`}>
             {Math.round((hours / total) * 100)}%
           </span>
         </li>
@@ -183,7 +184,7 @@ export function PhaseHoursModeControl({
           aria-pressed={mode === option.value}
           className={`min-h-6 rounded px-1 text-[10px] font-medium ${
             mode === option.value
-              ? tableFilterActive
+              ? `${surfaceMutedStrongBg} ${textSecondaryOnCanvas}`
               : `${textMutedOnCanvas} ${surfaceMutedHoverBg}`
           }`}
           key={option.value}

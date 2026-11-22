@@ -590,6 +590,11 @@ const phoneOrder = (ids: readonly string[]): string[] => [
 /** The one column of `PHONE_LEAD` a phone does not pin, which no drag moves from after Key. */
 const PHONE_FIXED: readonly string[] = ["title"];
 
+/** The headers that stack in a box under 640 px (`DataTable`'s `stackColumns`): Title's sort over
+ *  its filter, and Time per phase's name over its Share and Hours switch and its filter, which
+ *  side by side pass a phone's window. A table another page draws has no Time per phase. */
+const STACKED_HEADERS: readonly string[] = ["title", "phase_hours"];
+
 /**
  * The table of one view of the Issues tab, laid out by the view's columns: the address's `cols=`
  * for this load, else the view's own, with no board-fed column in a project with no daemon.
@@ -1522,7 +1527,7 @@ function IssueTableBody({
               />
             )}
             scrollTestId="issues-table-scroll"
-            stackColumn="title"
+            stackColumns={STACKED_HEADERS}
             trailingWidth={ACTION_WIDTH}
           />
 

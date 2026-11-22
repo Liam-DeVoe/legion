@@ -35,6 +35,10 @@ import { priorityTableGrammar } from "./priority-table-view";
 import { usePriorityWrites } from "./priority-writes";
 
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
+
+/** The header that stacks its sort over its filter in a box under 640 px. */
+const STACKED_HEADERS: readonly string[] = ["title"];
+
 /** What a row of this table is, which its filters, its pager and its group headings count in. */
 const NOUN: RowNoun = {
   group: { one: "group", many: "groups" },
@@ -298,7 +302,7 @@ export function PrioritiesTable({
           />
         )}
         scrollTestId="priorities-table-scroll"
-        stackColumn="title"
+        stackColumns={STACKED_HEADERS}
       />
 
       {open === undefined ? null : (

@@ -151,7 +151,7 @@ function Deploys({
   rowHeight,
   rows = DEPLOYS,
   serverPage,
-  stackColumn,
+  stackColumns,
   trailingWidth,
 }: {
   columns?: ColumnDef<Deploy>[];
@@ -180,7 +180,7 @@ function Deploys({
   rows?: Deploy[];
   /** The rows are one page a server answered, of this many rows in all. */
   serverPage?: { readonly rowCount: number };
-  stackColumn?: string;
+  stackColumns?: readonly string[];
   /** The width of the action cell each row draws after its columns. */
   trailingWidth?: number;
 }): ReactNode {
@@ -264,7 +264,7 @@ function Deploys({
           </tr>
         )}
         scrollTestId={`${layoutKey}-scroll`}
-        stackColumn={stackColumn}
+        stackColumns={stackColumns}
         trailingWidth={trailingWidth}
       />
     </section>
@@ -765,16 +765,38 @@ test("a header cell draws the filter its caller gives it, not one of its own", a
   expect(listed(table)).toEqual(["d3"]);
 });
 
-// The caller that asked for it: the project List stacks `title`, and the priorities page stacks
-// a column of its own. The core holds no column name of any page.
-test("the column the caller names stacks its controls in a box under 640 px", async () => {
-  draw(<Deploys stackColumn="service" />, 390);
+// The callers that asked for it: the project List stacks `title` and its Time per phase, and the
+// priorities page stacks a column of its own. The core holds no column name of any page. A
+// stacked header's own control stands under its name with the filter, not beside the name.
+test("the columns the caller names stack their controls in a box under 640 px", async () => {
+  const columns = COLUMNS.map((column) =>
+    column.id === "service"
+      ? {
+          ...column,
+          meta: {
+            text: true,
+            headerControl: (
+              <button aria-pressed={false} type="button">
+                Bars
+              </button>
+            ),
+          },
+        }
+      : column
+  );
+  draw(<Deploys columns={columns} stackColumns={["service", "region"]} />, 390);
 
   const table = await screen.findByRole("table", { name: "Deploys deploys" });
   const controls = (name: RegExp) =>
     within(table).getByRole("columnheader", { name }).querySelector("span")?.className ?? "";
   expect(controls(/Service/)).toContain("flex-col");
+  expect(controls(/Region/)).toContain("flex-col");
   expect(controls(/Minutes/)).not.toContain("flex-col");
+  // Service's name, then its control and its filter together on the line under it.
+  const name = within(table).getByRole("button", { name: "Service" });
+  const under = name.nextElementSibling;
+  expect(under).toContainElement(within(table).getByRole("button", { name: "Bars" }));
+  expect(under).toContainElement(within(table).getByRole("button", { name: "Filter Service" }));
 });
 
 const SORT_HINT = "Sort (shift-click to add a second sort)";

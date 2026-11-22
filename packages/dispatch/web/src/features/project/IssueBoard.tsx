@@ -424,7 +424,7 @@ function BoardColumnView({
         data-testid="board-column-header"
       >
         <div
-          className={`flex items-center justify-between gap-2 text-base font-semibold ${textPrimaryOnSurface}`}
+          className={`flex items-center justify-between gap-2 text-sm font-semibold ${textPrimaryOnSurface}`}
         >
           {by === "status" ? <StatusPill>{title}</StatusPill> : <span>{title}</span>}
           <Pill>{cell.items.length}</Pill>

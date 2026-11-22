@@ -25,7 +25,7 @@ import type { ActiveView, BuiltInView, SavedView, ViewLayout, ViewNameCheck } fr
  * the Table and Board switch, the Board's toggles). None of them narrows the rows.
  */
 
-const countClass = `rounded-full px-1.5 text-[11px] font-medium tabular-nums ${surfaceMutedBg} ${textSecondaryOnCanvas}`;
+const countClass = `rounded-full px-1 text-[11px] font-medium tabular-nums md:py-0.5 ${surfaceMutedBg} ${textSecondaryOnCanvas}`;
 
 /** The face of the layout switch's options and of a Board toggle: filled while pressed. */
 const toggleFace = (pressed: boolean) =>
@@ -58,10 +58,11 @@ function ViewTab({
       aria-label={`${name}${counted}${changed ? ", changed" : ""}`}
       aria-selected={active}
       // On a phone a tab's count stands under its name, so the tabs keep their row whatever
-      // their counts; from `md` up the count follows the name on its line.
-      className={`inline-flex min-h-11 shrink-0 flex-col items-center justify-center border-b-2 px-2 py-1 text-[13px] leading-tight whitespace-nowrap md:min-h-9 md:flex-row md:gap-1.5 md:py-2 ${focusVisibleRing} ${
+      // their counts; from `md` up the count follows the name on its line, and the open tab's
+      // name is bold.
+      className={`inline-flex min-h-11 shrink-0 flex-col items-center justify-center border-b-2 px-1.5 py-1 text-[13px] leading-tight whitespace-nowrap md:min-h-9 md:flex-row md:gap-1 md:px-1 md:py-2 ${focusVisibleRing} ${
         active
-          ? `font-semibold ${activeTabIndicatorBorder} ${activeTabIndicatorText}`
+          ? `md:font-semibold ${activeTabIndicatorBorder} ${activeTabIndicatorText}`
           : `${borderTransparent} ${textSecondaryOnCanvas}`
       }`}
       onClick={onSelect}

@@ -466,11 +466,13 @@ export interface DataTableProps<Row> {
    *  they were drawn here. A caller that names none, or names a column that is hidden or
    *  pinned, draws every column at its own width. */
   readonly fillColumn?: string;
-  /** The column whose header stacks its sort and its filter one above the other in a box under
-   *  640 px, where the two side by side leave the name of a narrow column unreadable. The List,
-   *  the priorities table and the Delivery list each name their `title`; a caller that names none
-   *  stacks none, and every header keeps the two side by side at every width. */
-  readonly stackColumn?: string;
+  /** The columns whose headers stack their sort over their filter, and over a control of their
+   *  own (`meta.headerControl`), in a box under 640 px, where side by side they leave the name of
+   *  a narrow column unreadable or push the control out of the window. The List, the priorities
+   *  table and the Delivery list each name their `title`, and the Issues tab's List its Time per
+   *  phase too; a caller that names none stacks none, and every header keeps them side by side
+   *  at every width. */
+  readonly stackColumns?: readonly string[];
   /** The width of a last, unheaded column that each row draws itself (`DataTableCells`'
    *  `trailing`). */
   readonly trailingWidth?: number;
@@ -516,8 +518,8 @@ function TableHeaderCell<TData>({
   setDragColumn: (id: string | undefined) => void;
   setOpenFilter: (id: string | undefined) => void;
   setOrder: (next: string[]) => void;
-  /** Whether this header stacks its sort and its filter one above the other: the caller's
-   *  `stackColumn`, in a box under 640 px. */
+  /** Whether this header stacks its sort over its filter and its own control: one of the
+   *  caller's `stackColumns`, in a box under 640 px. */
   stacked: boolean;
 }): ReactNode {
   const column = header.column;
@@ -653,7 +655,7 @@ export function DataTable<Row>({
   renderGroup,
   renderRow,
   scrollTestId,
-  stackColumn,
+  stackColumns,
   trailingWidth = 0,
 }: DataTableProps<Row>): ReactNode {
   const { displayRows, layout, names, table, virtualizer } = model;
@@ -756,7 +758,9 @@ export function DataTable<Row>({
                       setDragColumn={setDragColumn}
                       setOpenFilter={onOpenFilterChange}
                       setOrder={layout.setOrder}
-                      stacked={layout.boxWidth < 640 && header.column.id === stackColumn}
+                      stacked={
+                        layout.boxWidth < 640 && (stackColumns?.includes(header.column.id) ?? false)
+                      }
                     />
                   ))}
                   {trailingWidth === 0 ? null : (

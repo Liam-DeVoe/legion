@@ -67,7 +67,7 @@ export function IssueStatusBar({
           />
         ))}
       </span>
-      <div className="flex flex-wrap gap-x-1">
+      <div className="flex flex-wrap gap-x-0.5">
         {segments.map(({ count, status }) => (
           <button
             aria-pressed={isPicked(status)}
