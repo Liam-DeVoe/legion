@@ -12,6 +12,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -22,16 +24,26 @@ import (
 // cost nothing.
 const idleTickInterval = time.Minute
 
-// issuePods is what the idle pass asks the runtime about an issue's pod, which is everything
-// about a release the daemon's own Postgres does not hold: whether the pod runs the image the
-// configuration names (sandbox.Runtime.IssuePodRunsConfiguredImage), and whether the runtime
-// still holds the issue's Sandbox and under what name (sandbox.Runtime.IssueSandbox). A runtime
-// that runs no pods implements neither, and the daemon then releases nothing, which is also what
-// `runtime: tmux` wants.
+// issuePods is what the daemon asks a runtime that runs a pod per issue about an issue's pod,
+// which is everything about it the daemon's own Postgres does not hold: whether the pod runs the
+// image the configuration names (sandbox.Runtime.IssuePodRunsConfiguredImage), whether the runtime
+// still holds the issue's Sandbox and under what name (sandbox.Runtime.IssueSandbox), which pod
+// that Sandbox holds, or that the runtime cannot say (runtime.IssuePodReader), and whether the
+// runtime keeps the issue's volume for its next pod (runtime.IssueVolumeReader). It is the one
+// test of whether a runtime runs a pod per issue, so every rule that asks it gives one answer: the
+// idle pass and its release (attachIdleRelease, outbox.issueSandboxName), whether an issue holds
+// its workspace (workspaceHeldBy) and the rename pass's live-pod rules (bootKeep, podEndKeep).
+// The Kubernetes runtime implements it; a runtime that runs no pods implements none of it, and the
+// daemon then releases nothing, which is also what `runtime: tmux` wants.
 type issuePods interface {
 	IssuePodRunsConfiguredImage(issue string) bool
 	IssueSandbox(issue string) (name string, present bool)
+	runtime.IssuePodReader
+	runtime.IssueVolumeReader
 }
+
+// Without it, a sandbox.Runtime missing a method fails the rt.(issuePods) checks with no error.
+var _ issuePods = (*sandbox.Runtime)(nil)
 
 // tickIdle decides every pod of the project on the daemon's own period (idleTickInterval),
 // under both release rules: the release of a pod no claim owns, whose every claim is failed,
@@ -447,7 +459,8 @@ func (r *outbox) recordPodHold(ctx context.Context, issue string, hold workflow.
 //     the first role process of the pod — which is what R4's cancel is read against, so a
 //     delivery queued while the save ran is still below it and cancels the whole release;
 //  3. the teardown (record.IssueRelease): it deletes the pod, its disk and its Sandbox, and
-//     records the release with the size the save stored.
+//     records the release with the size the save stored. A Sandbox that owns the issue's kept
+//     volume stays, Suspended, with that volume: its pod and its Secrets go (runtime.IssueReleaser).
 func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
 	mark := store.IdleReleaseMark{Generation: view.Generation, Role: decision.Roles[0]}
 	rows := make([]store.IdleReleaseRow, 0, len(decision.Roles)+2)
@@ -478,11 +491,12 @@ func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now tim
 }
 
 // unownedReleaseRows is the release of a pod no claim owns as outbox rows: one act and one row,
-// the teardown (record.IssueRelease), which deletes the pod, its disk and its Sandbox. The two
-// acts the idle release runs before its own teardown have nothing to do here. There is no save,
-// because no shim is left to build a bundle and no role is coming back to a workspace that
-// would need one, and there are no role stops, because every claim of the issue is already
-// failed, retired or suspended.
+// the teardown (record.IssueRelease), which deletes the pod, its disk and its Sandbox, or, for a
+// Sandbox that owns the issue's kept volume, the pod and the Secrets alone
+// (runtime.IssueReleaser). The two acts the idle release runs before its own teardown have
+// nothing to do here. There is no save, because no shim is left to build a bundle and no role is
+// coming back to a workspace that would need one, and there are no role stops, because every
+// claim of the issue is already failed, retired or suspended.
 //
 // That one row carries the release's boundary flag. The store requires some row of a release to
 // be its boundary (store.ReleaseIdleIssue), and no reader of this release reads it: the
