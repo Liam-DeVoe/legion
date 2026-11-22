@@ -113,7 +113,7 @@
 //
 // Beside the seeded issue the corpus holds the two copied issues, replayed from the captures
 // acme-1115.json and acme-1042.json by the agent session that wrote them: each spec, each section
-// of decisions.md as a `decision` block of the spec's `## Decisions` part, as the API asks a
+// of the decisions document as a `decision` block of the spec's `## Decisions` part, as the API asks a
 // decision to be written (api's decisionsAreNodes), and each ask as an asks row, answered by the
 // capture's answerer, resolved or left open as the capture holds it. An approval opens no ask of a
 // spec that stands approved at its current version, and each captured approval after an approved

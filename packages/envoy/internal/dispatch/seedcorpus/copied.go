@@ -11,7 +11,7 @@ import (
 )
 
 // replayCopiedIssue replays one captured issue through the API as recorderSession, the agent
-// that wrote it: the issue with its spec, each section of its decisions.md as a `decision` block of
+// that wrote it: the issue with its spec, each section of its decisions document as a `decision` block of
 // the spec's `## Decisions` part (decisionBlocks), and each captured ask as an asks row in the
 // state the capture holds it in (replayAsk). An ask whose block the spec holds is the row that
 // block settles into; any other is asked again through its own route.
@@ -40,7 +40,7 @@ func (s *seeder) replayCopiedIssue(ctx context.Context, capture copiedCapture) e
 	return nil
 }
 
-// decisionBlocks writes each section of a decisions.md as one `decision` block, in document order:
+// decisionBlocks writes each section of a decisions document as one `decision` block, in document order:
 // each `##` heading outside `## Replaced` and each `###` heading under it, as the decisions step
 // cuts one (docs' decisionSection), its title the block's first paragraph in bold and every line
 // after the heading up to the next heading of its level or above the rest of its words, word for

@@ -184,7 +184,7 @@ func modelClauses(key, handover string) []clause {
 }
 
 // copiedClause holds one copied issue to its capture: an asks row for each captured ask, in the
-// captured state, and a decision node for each section of the captured decisions.md.
+// captured state, and a decision node for each section of the captured decisions document.
 func copiedClause(capture copiedCapture, key string) clause {
 	states := map[string]int{}
 	for _, ask := range capture.Asks {
@@ -194,7 +194,7 @@ func copiedClause(capture copiedCapture, key string) clause {
 	for _, state := range []string{"answered", "resolved", "open"} {
 		reads = append(reads, count("asks rows "+state, `from asks where issue_key = $1 and state = $2`, states[state], key, state))
 	}
-	reads = append(reads, count("decision nodes of its decisions.md's sections",
+	reads = append(reads, count("decision nodes of its decisions document's sections",
 		`from graph_nodes where kind = 'block' and id like $1 || '/tree#decision-%' and supertag = 'decision'`,
 		len(decisionBlocks(capture.Documents.Decisions.Markdown)), key))
 	return clause{name: "copied issue " + strings.TrimSuffix(capture.file, ".json") + " (" + key + ")", reads: reads}

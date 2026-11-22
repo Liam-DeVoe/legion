@@ -22,7 +22,7 @@ type captures struct {
 }
 
 // copiedCapture is one copied issue as its capture holds it: the issue's key and title where it
-// was captured, its spec's and its decisions.md's markdown, and one row per ask.
+// was captured, the markdown of its spec and of its decisions document, and one row per ask.
 type copiedCapture struct {
 	file      string
 	Issue     string `json:"issue"`

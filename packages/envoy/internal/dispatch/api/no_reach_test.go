@@ -402,15 +402,43 @@ type committedOpenAPIShapes struct {
 }
 
 // openAPISchema is one schema of the committed document, as far as an answer is held to it: the
-// fields an object declares and the ones it always carries, the schema of an array's rows, the
-// branches of a union, and the component a reference names.
+// fields an object declares and the ones it always carries, what it takes for a field it does
+// not declare, the schema of an array's rows, the branches of a union, and the component a
+// reference names. Type is read only to tell the empty schema, which takes every value, from one
+// that declares something.
 type openAPISchema struct {
-	Ref        string                   `json:"$ref"`
-	Properties map[string]openAPISchema `json:"properties"`
-	Required   []string                 `json:"required"`
-	Items      *openAPISchema           `json:"items"`
-	AnyOf      []openAPISchema          `json:"anyOf"`
-	OneOf      []openAPISchema          `json:"oneOf"`
+	Ref                  string                   `json:"$ref"`
+	Type                 json.RawMessage          `json:"type"`
+	Properties           map[string]openAPISchema `json:"properties"`
+	AdditionalProperties json.RawMessage          `json:"additionalProperties"`
+	Required             []string                 `json:"required"`
+	Items                *openAPISchema           `json:"items"`
+	AnyOf                []openAPISchema          `json:"anyOf"`
+	OneOf                []openAPISchema          `json:"oneOf"`
+}
+
+// anyValue reports whether s is the empty schema, which takes every value: the document's
+// rendering of a field Go answers as raw JSON or as any, an event's payload among them.
+func (s openAPISchema) anyValue() bool {
+	return s.Ref == "" && len(s.Type) == 0 && s.Properties == nil && len(s.AdditionalProperties) == 0 &&
+		s.Items == nil && len(s.AnyOf) == 0 && len(s.OneOf) == 0
+}
+
+// additional is the schema an object's field s does not declare is held to, and whether s takes
+// such a field at all: additionalProperties true or {} takes any value, a schema takes values of
+// that schema, and false or nothing takes none.
+func (s openAPISchema) additional() (openAPISchema, bool) {
+	switch raw := strings.TrimSpace(string(s.AdditionalProperties)); raw {
+	case "", "false":
+		return openAPISchema{}, false
+	case "true":
+		return openAPISchema{}, true
+	}
+	var inner openAPISchema
+	if err := json.Unmarshal(s.AdditionalProperties, &inner); err != nil {
+		return openAPISchema{}, false
+	}
+	return inner, true
 }
 
 // committedDocument is the OpenAPI document the contracts package is generated from, held to a
@@ -1573,13 +1601,17 @@ type answerWalk struct {
 	paths    map[string]bool
 }
 
-// value holds the value at path to schema. A null holds no field; an array holds each row to the
-// schema of its rows; an object holds its fields to the ones schema declares.
+// value holds the value at path to schema. A null holds no field, and neither does a value the
+// empty schema takes; an array holds each row to the schema of its rows; an object holds its
+// fields to the ones schema declares.
 func (w *answerWalk) value(path string, value any, schema openAPISchema) {
 	if value == nil {
 		return
 	}
 	schema, name := w.resolve(path, schema, value)
+	if schema.anyValue() {
+		return
+	}
 	switch typed := value.(type) {
 	case map[string]any:
 		w.object(path, typed, schema, name)
@@ -1615,7 +1647,8 @@ func (w *answerWalk) resolve(path string, schema openAPISchema, value any) (open
 	_, isList := value.([]any)
 	for _, branch := range slices.Concat(schema.AnyOf, schema.OneOf) {
 		resolved, name := w.resolve(path, branch, value)
-		if (isList && resolved.Items != nil) || (!isList && resolved.Properties != nil) {
+		_, open := resolved.additional()
+		if (isList && resolved.Items != nil) || (!isList && (resolved.Properties != nil || open)) {
 			return resolved, name
 		}
 	}
@@ -1624,7 +1657,8 @@ func (w *answerWalk) resolve(path string, schema openAPISchema, value any) (open
 
 // object holds one object to its schema. A field of a component schema is held to the fields
 // the contracts module declares for that component as well as to the document's, so what a
-// consumer imports is what the answer carries.
+// consumer imports is what the answer carries. A field the schema does not declare is held to
+// what its additionalProperties takes, where it takes one.
 func (w *answerWalk) object(path string, object map[string]any, schema openAPISchema, name string) {
 	holder := name
 	if holder == "" {
@@ -1636,6 +1670,11 @@ func (w *answerWalk) object(path string, object map[string]any, schema openAPISc
 			fieldPath = path + "." + field
 		}
 		fieldSchema, held := schema.Properties[field]
+		if extra, open := schema.additional(); !held && open {
+			w.paths[fieldPath] = true
+			w.value(fieldPath, object[field], extra)
+			continue
+		}
 		if !held || (name != "" && !slices.Contains(w.declared[name], field)) {
 			w.t.Errorf("the answer carries %s, which %s does not declare for %s", fieldPath, contractsGenerated, holder)
 			continue

@@ -71,8 +71,16 @@ type writersRig struct {
 
 func newWritersRig(t *testing.T) *writersRig {
 	t.Helper()
+	return newWritersRigOn(t, storetest.Open(t))
+}
+
+// newWritersRigOn is newWritersRig on database, for a test that needs the rig's pool to carry a
+// tracer of its own (storetest.TracedStore), as TestEveryGraphKindHasOneWriter reads which writer
+// issued each statement it drives.
+func newWritersRigOn(t *testing.T, database *store.Store) *writersRig {
+	t.Helper()
 	ctx := context.Background()
-	rig := &writersRig{arrived: make(chan struct{}, 1)}
+	rig := &writersRig{arrived: make(chan struct{}, 1), database: database}
 	released := make(chan struct{})
 	var once sync.Once
 	rig.release = func() { once.Do(func() { close(released) }) }
@@ -133,7 +141,6 @@ func newWritersRig(t *testing.T) *writersRig {
 	}))
 	t.Cleanup(listener.Close)
 
-	rig.database = storetest.Open(t)
 	people := store.NewPgPeopleStore(rig.database.Pool, auth.SingleSigningKey("signing-key"), nil)
 	if err := people.Record(ctx, "alice"); err != nil {
 		t.Fatalf("record alice: %v", err)
@@ -832,7 +839,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			}
 		},
 		Counts: map[graphcensus.StoredKind][]string{},
-	}}, slices.Concat(askDrives(t, r), externalDrives(t, r))...)
+	}}, slices.Concat(askDrives(t, r), externalDrives(t, r), corpusDrives(t))...)
 }
 
 // The terms that count what several drives here append: a block a version states afresh, with its
