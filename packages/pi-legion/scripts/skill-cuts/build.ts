@@ -97,9 +97,10 @@
  *    so a session such a check drops costs no reader spend: the placement; the model and thinking
  *    level, when none the session sets from the read on can give its step a model, a level Oh My
  *    Pi takes, or a model the gateway serves (each the drop the step's own check makes); the
- *    session's role or subagent context; the lines a case may name (step 4); and the profile at
- *    the session's start (below), built from every read the reader can reach: when no unit of
- *    those reads ships the cut repository's copy of the skill, no step's profile installs it. The
+ *    session's role or subagent context; the lines a case may name (step 4); and the profile
+ *    (below), built from every read the reader can reach, at each prompt build a step in its reach
+ *    can run under: when no unit of those reads ships the cut repository's copy of the skill at any
+ *    of them, no step's profile installs it. The
  *    checks of the step and its line (its model, the compaction and by-path reads before it, the
  *    line in the base text and in the read, a quote or restatement of it, and the profile of the
  *    reads before it) need the reader's answer, so they run after it and before the restatement
@@ -217,7 +218,13 @@
  *
  * **The profile**, from the files of the copies output (`copies --out`: prefix-table.tsv,
  * installers.tsv, manifests.tsv, repositories.tsv), the session's own reads and
- * each unit's repositories at the session's start, each part with its evidence in the case:
+ * each unit's repositories at the time it is read, each part with its evidence in the case. That
+ * time (the `read times` item) is a subagent's root's last prompt build before its start
+ * (PARENT_LOAD_RULE); for a top-level session, the build its step ran under (TOP_BUILD_RULE): the
+ * time of that build's `system-prompt-digest` line, from the session's own lines (the transcript,
+ * or digest-times.sql for `--reprofile`) and the step's message time, or the session's start for
+ * its first build. Below, "the session's start" means that time (a subagent's pools are read at
+ * its own start):
  * - The units installed: each unit (`via`) of each prefix row that a `[Skill file: <path>]` of a
  *   read result before the step is under; for a path no row maps, each unit of the prefix rows of
  *   the copy attribute.ts's rules place the read at (a checkout, the store's context); and, for a
@@ -315,7 +322,9 @@
  * case and its session's head: its store, the `[Skill file: …]` lines of its messages, its start,
  * whether it carries a recorded prompt, and the working directory the header in the session's head
  * names (capture.ts's `sessionHeads`: session-head.sql through the store command, one query per
- * store, each head saved under `<out>.sessions/`). It pulls no transcript and calls no reader. For
+ * store, each head saved under `<out>.sessions/`), at the time the profile is read: its root's
+ * prompt builds (digest-times.sql, one query per store), with a top-level case's step's message
+ * time and digest (TOP_BUILD_RULE). It pulls no transcript and calls no reader. For
  * a case whose session the store no longer holds, the evidence says so (`no session head`), and
  * the session repository is the one the old case's evidence names (`session repository <repo>`,
  * or `no session repository`); a case built before that evidence was written is taken to be in
@@ -352,12 +361,15 @@
  *
  * **--profiles-out** (both modes): each task runs in the rebuilt context of the session it came
  * from. For each task from a session, the session is pulled again and its profile rebuilt as
- * build-cases rebuilds a case's at the session's start (`sessionProfile`: the context,
- * `caseProfile` from every read of its branch with `--copies` and `--count`, a subagent's
- * recorded system prompt and tools), less the tested skill, and written to `<dir>/<task id>.json`
- * (load.ts's LoadProfile); the task line's `profile` is its path. A written task takes the
- * profile of `--context-session <store>:<hash>` (required in the reader's mode; rebuilt before any
- * reader call, and a session that gives none fails the build). The summary's `profiles` records
+ * build-cases rebuilds a case's (`sessionProfile`: the context, `caseProfile` from every read of
+ * its branch with `--copies` and `--count`, a subagent's recorded system prompt and tools), a
+ * top-level session's at its first build (the session's start: a task runs as its first message),
+ * less the tested skill, and written to `<dir>/<task id>.json` (load.ts's LoadProfile); the task
+ * line's `profile` is its path. A written task takes the profile of `--context-session
+ * <store>:<hash>` (required in the reader's mode; rebuilt before any reader call, and a session
+ * that gives none fails the build), read at the build its listing measure's subagent was spawned
+ * under (TOP_BUILD_RULE: that subagent, the earliest whose recorded prompt holds a listing, found
+ * first with subagents.sql). The summary's `profiles` records
  * the context session, each task's profile and its evidence, why a task has none, and the GitHub
  * reads sent again after a transient failure by reason (`githubRetries`). A finished build gets no
  * profiles from `--profiles-out` afterwards; `--reprofile` (below) builds them again from its
@@ -2312,8 +2324,10 @@ interface ProfileInput {
   readonly cwd: string | undefined;
   readonly recordedPrompt: boolean;
   readonly checkout?: Checkout;
-  /** For a subagent, when its repositories are read (PARENT_LOAD_RULE). */
-  readonly parentLoad?: ParentLoad;
+  /** When its repositories are read: a subagent's at its root's last prompt build before its
+   *  start (PARENT_LOAD_RULE), a top-level session's at the build its step ran under
+   *  (TOP_BUILD_RULE); every one at the session's start when absent. */
+  readonly readTime?: ReadTime;
 }
 
 /** The items of the profile's evidence that name the session repository, and that say there is
@@ -2439,121 +2453,327 @@ export const ListingMeasure = z.strictObject({
 });
 export type ListingMeasure = z.infer<typeof ListingMeasure>;
 
+/** The times a top-level session's subagents spawned under the prompt build its profile is read
+ *  at fall in (TOP_BUILD_RULE): at or after `from` and before `to`, each null for no bound, and in
+ *  words (`words`); or, when no prompt build of the session is known, why (`unknown`). */
+type BuildWindow =
+  | { readonly from: string | null; readonly to: string | null; readonly words: string }
+  | { readonly unknown: string };
+
 /** What a listing measure of one session is made from: the names its rebuilt profile lists, its
- *  recorded system prompt when it has one (a subagent's), and its first system-prompt digest. */
+ *  recorded system prompt when it has one (a subagent's), its first system-prompt digest, and,
+ *  for a top-level session, the window of the build its profile is read at. */
 interface ListingInput {
   readonly listed: readonly string[];
   readonly recorded: readonly string[] | undefined;
   readonly sessionDigest: string | null;
+  readonly build?: BuildWindow;
 }
 
-/** A subagent of a top-level session whose recorded prompt holds a skill listing (subagents.sql):
- *  its path hash, its agent, its prompt's blocks, and how many subagents the session has and how
- *  many of them record a listing. */
-interface SubagentListing {
-  readonly pathHash: string;
-  readonly agent: string;
-  readonly blocks: readonly string[];
+/** What subagents.sql found of a top-level session's subagents between two times: the earliest
+ *  whose recorded prompt holds a skill listing (`listing`: its path hash, agent, prompt's blocks
+ *  and start), if one is, and how many subagents the session has, how many of them record a
+ *  listing, and how many of those started between the times (`under`). */
+interface SubagentsFound {
+  readonly listing?: {
+    readonly pathHash: string;
+    readonly agent: string;
+    readonly blocks: readonly string[];
+    readonly start: string | null;
+  };
   readonly subagents: number;
   readonly recorded: number;
+  readonly under: number;
 }
 
 const SubagentRow = z.strictObject({
   parent: z.string(),
-  hash: z.string(),
+  from: z.string().nullable(),
+  to: z.string().nullable(),
+  hash: z.string().nullable(),
   start: z.string().nullable(),
-  init: z.string(),
+  init: z.string().nullable(),
   subagents: z.number(),
   recorded: z.number(),
+  under: z.number(),
 });
 
-/** The subagent with a recorded listing of each session of `pathHashes` in the store `store`
- *  that has one, by the session's path hash: one subagents.sql query, none for no hash. */
+/** The times of a subagents.sql query of one session: those of its build's window, else none. */
+type Between = { readonly from: string | null; readonly to: string | null };
+
+/** The key of a session's path hash and the times of its query in `subagentListings`'s map. */
+const betweenKey = (hash: string, between: Between) =>
+  `${hash}\0${between.from ?? ""}\0${between.to ?? ""}`;
+
+/** What subagents.sql finds of each session of `sessions` (its path hash and the times its
+ *  subagent's start must fall between) in the store `store` that has a subagent, by `betweenKey`:
+ *  one query, none for no session. */
 async function subagentListings(
   command: string,
   store: string,
-  pathHashes: readonly string[]
-): Promise<Map<string, SubagentListing>> {
-  const found = new Map<string, SubagentListing>();
-  if (pathHashes.length === 0) return found;
-  for (const row of await storeRows(command, store, subagentsSql([...new Set(pathHashes)]))) {
+  sessions: readonly ({ readonly hash: string } & Between)[]
+): Promise<Map<string, SubagentsFound>> {
+  const found = new Map<string, SubagentsFound>();
+  if (sessions.length === 0) return found;
+  const wanted = new Map(sessions.map((each) => [betweenKey(each.hash, each), each]));
+  const query = subagentsSql(
+    [...wanted.values()].map(({ hash, from, to }) => ({ hash, from, to }))
+  );
+  for (const row of await storeRows(command, store, query)) {
     const parsed = SubagentRow.safeParse(row);
-    const init = parsed.success ? SessionInit.safeParse(parseJson(parsed.data.init)) : undefined;
-    if (!parsed.success || init?.success !== true) continue;
-    found.set(parsed.data.parent, {
-      pathHash: parsed.data.hash,
-      agent: init.data.agent,
-      blocks: init.data.systemPrompt,
-      subagents: parsed.data.subagents,
-      recorded: parsed.data.recorded,
+    if (!parsed.success) continue;
+    const { parent, from, to, hash, start, init, subagents, recorded, under } = parsed.data;
+    const session = init === null ? undefined : SessionInit.safeParse(parseJson(init));
+    found.set(betweenKey(parent, { from, to }), {
+      ...(hash === null || session?.success !== true
+        ? {}
+        : {
+            listing: {
+              pathHash: hash,
+              agent: session.data.agent,
+              blocks: session.data.systemPrompt,
+              start,
+            },
+          }),
+      subagents,
+      recorded,
+      under,
     });
   }
   return found;
+}
+
+/** The times a session's subagents.sql query takes from its listing input: its build's window, or
+ *  undefined when the session needs no query (it recorded its own listing, or no build of it is
+ *  known). */
+function betweenOf(input: ListingInput): Between | undefined {
+  if (input.recorded !== undefined || input.build === undefined || "unknown" in input.build) {
+    return undefined;
+  }
+  return { from: input.build.from, to: input.build.to };
+}
+
+/** Why the store is not asked for a session's subagents when `betweenOf` gives no times. */
+function unasked(input: ListingInput): SubagentRead {
+  return {
+    unread:
+      input.recorded !== undefined
+        ? "it recorded its own listing, so no subagent of it is asked for"
+        : input.build !== undefined && "unknown" in input.build
+          ? input.build.unknown
+          : "no prompt build of it is known, so no subagent of it is asked for",
+  };
 }
 
 /** When a subagent's skills were loaded, and where Oh My Pi's source says so. */
 const PARENT_LOAD_RULE =
   "Oh My Pi 18.18.6 gives a subagent the skills its parent loaded (task/structured-subagent.ts, lines 806-818 and 895-902), and a subagent of a subagent its parent's, so from its root session's last prompt build before its start (each build writes one system-prompt-digest line: session/session-tools.ts, lines 1795-1830); the subagent rescans only the skill directories an extension names (session/session-tools.ts, lines 2350-2560). So a subagent's profile reads each repository at the root's last prompt build before the subagent's start (digest-times.sql), but a pool's (a repository of an extension's skills-sources pool: copies.ts's pool units) at the subagent's start, and every repository at the subagent's start when the store holds no prompt build of its root before it";
 
-/** When the repositories of a subagent's profile are read (PARENT_LOAD_RULE): `at`, the root's
- *  last prompt build before the subagent's start, for each but a pool's (undefined when there is
- *  none, so every repository is read at the subagent's start), and the evidence that says both
- *  times and which is used. */
-interface ParentLoad {
+/** When a session's repositories are read (PARENT_LOAD_RULE for a subagent, TOP_BUILD_RULE for a
+ *  top-level session): at `at`, `words` saying what that time is, or every one at the session's
+ *  start when `at` is undefined; a pool's at the session's start when `poolsAtStart` (a
+ *  subagent's, which rescans its pools as it starts); and the `read times` evidence item that says
+ *  which times and why. */
+interface ReadTime {
   readonly at: string | undefined;
+  readonly words: string;
+  readonly poolsAtStart: boolean;
   readonly line: Evidence;
 }
 
+/** A system-prompt-digest line of a session's file: when Oh My Pi wrote it, and the digest. */
+const DigestLine = z.strictObject({ at: z.string(), digest: z.string() });
+type DigestLine = z.infer<typeof DigestLine>;
+
 const DigestRow = z.strictObject({
   hash: z.string(),
-  root: z.string().nullable(),
+  root: z.string(),
   rootHeld: z.boolean(),
-  before: z.string(),
-  digests: z.array(z.string()),
+  digests: z.array(DigestLine),
 });
+type DigestRow = z.infer<typeof DigestRow>;
 
-/** The ParentLoad of each subagent session of `sessions` (its path hash and start) in the store
- *  `store`, by path hash: one digest-times.sql query, none for no session. A session the store
- *  no longer holds is read at its start. */
-async function parentLoads(
+/** The digest-times.sql row of each session of `pathHashes` the store `store` holds, by path
+ *  hash: one query, none for no session. */
+async function digestRows(
   command: string,
   store: string,
-  sessions: readonly { readonly hash: string; readonly before: string }[]
-): Promise<Map<string, ParentLoad>> {
-  const rows = new Map<string, z.infer<typeof DigestRow>>();
-  if (sessions.length > 0) {
-    for (const row of await storeRows(command, store, digestTimesSql(sessions))) {
-      const parsed = DigestRow.safeParse(row);
-      if (parsed.success) rows.set(parsed.data.hash, parsed.data);
-    }
+  pathHashes: readonly string[]
+): Promise<Map<string, DigestRow>> {
+  const rows = new Map<string, DigestRow>();
+  if (pathHashes.length === 0) return rows;
+  for (const row of await storeRows(command, store, digestTimesSql([...new Set(pathHashes)]))) {
+    const parsed = DigestRow.safeParse(row);
+    if (parsed.success) rows.set(parsed.data.hash, parsed.data);
   }
-  const loads = new Map<string, ParentLoad>();
-  for (const { hash, before } of sessions) {
-    const row = rows.get(hash);
-    const at = row?.digests.at(-1);
-    const why =
-      row === undefined
-        ? `the store ${store} holds no file of the subagent now`
-        : row.root === null
-          ? "its path names no root session's directory"
-          : !row.rootHeld
-            ? `the store ${store} holds no file of its root (${row.root.slice(0, 12)})`
-            : at === undefined
-              ? `its root (${row.root.slice(0, 12)}) holds no system-prompt-digest line before it`
-              : `its root (${row.root.slice(0, 12)}) built its prompt last at ${at} before it (${row.digests.length} builds)`;
-    loads.set(hash, {
-      at,
+  return rows;
+}
+
+/** The ReadTime of a subagent session of the store `store` that started at `before`, from its
+ *  digest-times.sql row `row` (undefined when the store holds no file of it now): its root's last
+ *  prompt build before its start (PARENT_LOAD_RULE), else its start. */
+function parentLoad(row: DigestRow | undefined, before: string, store: string): ReadTime {
+  const builds = row?.digests.filter((each) => Date.parse(each.at) < Date.parse(before)) ?? [];
+  const at = builds.at(-1)?.at;
+  const why =
+    row === undefined
+      ? `the store ${store} holds no file of the subagent now`
+      : !row.rootHeld
+        ? `the store ${store} holds no file of its root (${row.root.slice(0, 12)})`
+        : at === undefined
+          ? `its root (${row.root.slice(0, 12)}) holds no system-prompt-digest line before it`
+          : `its root (${row.root.slice(0, 12)}) built its prompt last at ${at} before it (${builds.length} builds)`;
+  return {
+    at,
+    words: "the root's last prompt build",
+    poolsAtStart: true,
+    line: {
+      item: "read times",
+      source: `the subagent started at ${before}; ${why}, so ${
+        at === undefined
+          ? `each repository is read at the subagent's start ${before}`
+          : `each repository is read at ${at}, and a pool's at the subagent's start ${before}`
+      }: ${PARENT_LOAD_RULE}`,
+    },
+  };
+}
+
+/** When a top-level session's skills were loaded, and where Oh My Pi's source says so. */
+const TOP_BUILD_RULE =
+  "Oh My Pi 18.18.6 writes a system-prompt-digest line in a session's file when its prompt changes, just before the first reply under the new prompt (session/session-tools.ts, lines 1818-1827), and a top-level session reads every skill directory again, a pool's among them, as it starts and on each reload that rebuilds its prompt (session/session-tools.ts, lines 2321-2337, 2466-2506 and 2530-2547), each before the line of the build it makes. So a top-level session's profile reads each repository, a pool's too, at the line of the prompt build its step ran under: the last line at or before the step's message, or the line after that one when it holds the case's digest and that one does not (the step was the first reply under its build, whose line Oh My Pi writes as that reply ends, after the message's time); and at the session's start for its first build, which Oh My Pi makes as the session starts. A task, which runs as its session's first message, takes the session's first build; a context session takes the build its measured subagent was spawned under (the last line before that subagent's start)";
+
+/** The digest lines of a transcript, of every branch, earliest first, as digest-times.sql gives a
+ *  root's. */
+function digestLines(t: Transcript): DigestLine[] {
+  return t.entries
+    .flatMap((entry) =>
+      entry.type === "custom" &&
+      entry.customType === "system-prompt-digest" &&
+      typeof entry.data === "string" &&
+      typeof entry.timestamp === "string" &&
+      entryTime(entry) > 0
+        ? [{ at: entry.timestamp, digest: entry.data }]
+        : []
+    )
+    .sort(
+      (a, b) =>
+        Date.parse(a.at) - Date.parse(b.at) ||
+        (a.digest < b.digest ? -1 : a.digest > b.digest ? 1 : 0)
+    );
+}
+
+/** The time of a message as an ISO time, from its `timestamp` (epoch milliseconds, as Oh My Pi
+ *  records a message's), or undefined. */
+function messageTime(message: SessionMessage): string | undefined {
+  const ms = message.timestamp;
+  return typeof ms === "number" && Number.isFinite(ms) ? new Date(ms).toISOString() : undefined;
+}
+
+/** The index in `lines` (a top-level session's digest lines, earliest first) of the build a step
+ *  whose message is at `stepAt` ran under, the case's digest being `digest` (TOP_BUILD_RULE): the
+ *  last line at or before it, or the line after that one when it holds `digest` and that one does
+ *  not; -1 for none. */
+function stepLine(lines: readonly DigestLine[], stepAt: string, digest: string | null): number {
+  const step = Date.parse(stepAt);
+  const last = lines.findLastIndex((line) => Date.parse(line.at) <= step);
+  const own = last >= 0 && digest !== null && lines[last]?.digest !== digest;
+  return own && lines[last + 1]?.digest === digest ? last + 1 : last;
+}
+
+/** The ReadTime and BuildWindow of a top-level session that started at `start` and whose digest
+ *  lines are `lines`, at the build `index` of them (TOP_BUILD_RULE): the build of that line, which
+ *  `words` names, or the first build for an index below 1; `how` says how the build was found.
+ *  With `lines` a text, no build is known, and that text says why: every repository is read at the
+ *  session's start. */
+function topBuild(
+  lines: readonly DigestLine[] | string,
+  start: string,
+  index: number,
+  how: string,
+  words = "the prompt build its step ran under"
+): { readonly read: ReadTime; readonly window: BuildWindow } {
+  const first = (source: string): ReadTime => ({
+    at: undefined,
+    words: "the session's start",
+    poolsAtStart: false,
+    line: { item: "read times", source: `${source}: ${TOP_BUILD_RULE}` },
+  });
+  if (typeof lines === "string") {
+    return {
+      read: first(
+        `${lines}, so no prompt build of it is known, and each repository is read at the session's start ${start}`
+      ),
+      window: { unknown: `no prompt build of the session is known (${lines})` },
+    };
+  }
+  const line = lines[index];
+  const next = lines[index + 1];
+  const count = `the session's ${lines.length} system-prompt-digest line${lines.length === 1 ? "" : "s"}`;
+  if (index < 1 || line === undefined) {
+    const second = lines[1];
+    return {
+      read: first(
+        `${how}; so it is the session's first build (${
+          lines[0] === undefined
+            ? "the session holds no system-prompt-digest line"
+            : `its line is the first of ${count}, at ${lines[0].at}, digest ${lines[0].digest}`
+        }), and each repository, a pool's too, is read at the session's start ${start}`
+      ),
+      window: {
+        from: null,
+        to: second?.at ?? null,
+        words: `under the session's first prompt build, the one its profile is read at (${
+          second === undefined ? "no later line" : `before the second line, at ${second.at}`
+        })`,
+      },
+    };
+  }
+  return {
+    read: {
+      at: line.at,
+      words,
+      poolsAtStart: false,
       line: {
         item: "read times",
-        source: `the subagent started at ${before}; ${why}, so ${
-          at === undefined
-            ? `each repository is read at the subagent's start ${before}`
-            : `each repository is read at ${at}, and a pool's at the subagent's start ${before}`
-        }: ${PARENT_LOAD_RULE}`,
+        source: `${how}; so it is the build of line ${index + 1} of ${count}, at ${line.at}, digest ${line.digest}, and each repository, a pool's too, is read at ${line.at}: ${TOP_BUILD_RULE}`,
       },
-    });
+    },
+    window: {
+      from: line.at,
+      to: next?.at ?? null,
+      words: `under the prompt build its profile is read at (from its line, at ${line.at}, ${
+        next === undefined ? "with no later line" : `to the next line, at ${next.at}`
+      })`,
+    },
+  };
+}
+
+/** The build of a top-level case's step (TOP_BUILD_RULE) from its session's digest lines `lines`
+ *  (a text when none are known: why), its start, its step's message time `stepAt` (undefined when
+ *  the case records none) and its digest. */
+function stepBuild(
+  lines: readonly DigestLine[] | string,
+  start: string,
+  stepAt: string | undefined,
+  digest: string | null
+): { readonly read: ReadTime; readonly window: BuildWindow } {
+  if (typeof lines === "string" || stepAt === undefined) {
+    return topBuild(
+      lines,
+      start,
+      -1,
+      "the case records no time of its step's message, so its step is taken to run under the session's first build"
+    );
   }
-  return loads;
+  const index = stepLine(lines, stepAt, digest);
+  const last = lines.findLastIndex((line) => Date.parse(line.at) <= Date.parse(stepAt));
+  const how =
+    index < 0
+      ? `the step's message is at ${stepAt}, before every system-prompt-digest line of the session`
+      : index === last
+        ? `the step's message is at ${stepAt}, and the last system-prompt-digest line at or before it is at ${lines[index]?.at}`
+        : `the step's message is at ${stepAt}; the last system-prompt-digest line at or before it, at ${lines[last]?.at}, holds ${lines[last]?.digest}, not the case's digest ${digest}, and the next, at ${lines[index]?.at}, holds it: the step was the first reply under that build`;
+  return topBuild(lines, start, index, how);
 }
 
 /** The names of the `<skills>` listing of the recorded prompt `blocks`, as capture.ts's
@@ -2576,24 +2796,34 @@ const SUBAGENT_LISTING_RULE =
 const NAMES_ONLY =
   "names are compared, not descriptions: Oh My Pi lists under each name a model's hint for the skill or a preview of its description (system-prompt.ts, lines 981-983; extensibility/skill-descriptions.ts, lines 448-476)";
 
+/** What the store gave of a session's subagents: what one subagents.sql query found (`found`,
+ *  undefined when the session has no subagent), or why no query answered (`unread`: the session
+ *  needs none, is gone, or the query failed). The measure never says what the store holds unless
+ *  it was asked. */
+type SubagentRead = { readonly found: SubagentsFound | undefined } | { readonly unread: string };
+
 /** The listing measure of one session (LISTING_MEASURE): against its own recorded listing, else
- *  against `subagent`'s, else not measurable, `gone` saying why when the store holds the session
- *  no longer. */
-function listingMeasure(
-  input: ListingInput,
-  subagent: SubagentListing | undefined,
-  gone?: string
-): Evidence {
+ *  against the listing of the subagent `read` found, the earliest spawned under the build its
+ *  profile is read at (`input.build`), else not measurable, with why. */
+function listingMeasure(input: ListingInput, read: SubagentRead): Evidence {
   const listed = [...new Set(input.listed)].sort();
-  const against =
-    input.recorded !== undefined
-      ? input.recorded
-      : gone === undefined
-        ? subagent?.blocks
-        : undefined;
+  const build = input.build;
+  const unknown = build !== undefined && "unknown" in build ? build.unknown : undefined;
+  const words = build === undefined || "unknown" in build ? "at any time" : build.words;
+  const found = "found" in read ? read.found : undefined;
+  const subagent = unknown === undefined ? found?.listing : undefined;
+  const against = input.recorded ?? subagent?.blocks;
   const digest = `the session's first system-prompt-digest is ${input.sessionDigest ?? "none"}, and the rebuilt prompt has no digest: the build makes no prompt`;
   let measure: ListingMeasure;
   if (against === undefined) {
+    const none =
+      unknown !== undefined
+        ? `${unknown}, so no subagent of it can be tied to the build its profile is read at`
+        : "unread" in read
+          ? read.unread
+          : found === undefined
+            ? `the store holds no subagent of it (subagents.sql, asked for those spawned ${words})`
+            : `the store holds no subagent of it whose recorded prompt holds a skill listing spawned ${words} (subagents.sql: ${found.recorded} of its ${found.subagents} subagents record one, ${found.under} of them spawned then), and the listing of a subagent spawned under another build is never used`;
     measure = {
       kind: "not measurable",
       recorded: null,
@@ -2604,15 +2834,15 @@ function listingMeasure(
       sessionDigest: input.sessionDigest,
       rebuiltDigest: null,
       subagent: null,
-      why: `the session records no system prompt, only its digest; ${digest}; ${gone ?? "the store holds no subagent of it whose recorded prompt holds a skill listing (subagents.sql)"}`,
+      why: `the session records no system prompt, only its digest; ${digest}; ${none}`,
     };
   } else {
     const recorded = listingNames(against);
     const missing = recorded.filter((name) => !listed.includes(name));
     const from =
-      input.recorded !== undefined || subagent === undefined
+      input.recorded !== undefined || subagent === undefined || found === undefined
         ? "the session recorded its system prompt, and its capture sends it whole"
-        : `the session records only its prompt's digest, and ${digest}; the listing is the recorded one of its subagent ${subagent.pathHash} (agent ${subagent.agent}, the earliest of its ${subagent.recorded} of ${subagent.subagents} subagents whose recorded prompt holds a listing), since ${SUBAGENT_LISTING_RULE}`;
+        : `the session records only its prompt's digest, and ${digest}; the listing is the recorded one of its subagent ${subagent.pathHash} (agent ${subagent.agent}, started at ${subagent.start ?? "no recorded time"}), the earliest of the ${found.under} of its ${found.subagents} subagents whose recorded prompt holds a listing (${found.recorded} in all) spawned ${words}, since ${SUBAGENT_LISTING_RULE}`;
     measure = {
       kind: input.recorded !== undefined ? "session listing" : "subagent listing",
       recorded: recorded.length,
@@ -2623,13 +2853,13 @@ function listingMeasure(
       sessionDigest: input.sessionDigest,
       rebuiltDigest: null,
       subagent:
-        input.recorded !== undefined || subagent === undefined
+        input.recorded !== undefined || subagent === undefined || found === undefined
           ? null
           : {
               pathHash: subagent.pathHash,
               agent: subagent.agent,
-              subagents: subagent.subagents,
-              recorded: subagent.recorded,
+              subagents: found.subagents,
+              recorded: found.recorded,
             },
       why: `${from}; ${NAMES_ONLY}`,
     };
@@ -2947,9 +3177,9 @@ interface InstallPath {
   readonly namespace: string;
 }
 
-/** Why a profile is refused: it installs no copy of the cut repository's skill. */
-const notInstalled = (run: Pick<CaseRun, "skill" | "cut">) =>
-  `the profile installs no ${run.skill} of ${run.cut.repo} at the session's start`;
+/** Why a profile is refused: it installs no copy of the cut repository's skill at `when`. */
+const notInstalled = (run: Pick<CaseRun, "skill" | "cut">, when = "the session's start") =>
+  `the profile installs no ${run.skill} of ${run.cut.repo} at ${when}`;
 
 /** The profile of a case, with the evidence for each part. Throws when a GitHub read fails. */
 async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<ProfileResult> {
@@ -2959,12 +3189,13 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const checkout =
     input.checkout ?? sessionRepository(input.context, input.cwd, copies.branches.keys());
   evidence.push(checkout.line);
-  if (input.parentLoad !== undefined) evidence.push(input.parentLoad.line);
-  // The time each repository is read at (PARENT_LOAD_RULE): for a subagent whose root built its
-  // prompt before it, that build's, but each repository a skills-sources pool clones, which is
-  // read at the session's start, as for any other session. A pool's host (the repository that
-  // holds its skills-sources.json, the plugin lists and the installers) is read at the root's
-  // build too, and again at the subagent's start for its pool directories (`poolAt`, below).
+  if (input.readTime !== undefined) evidence.push(input.readTime.line);
+  // The time each repository is read at: a subagent's at its root's last prompt build before it
+  // (PARENT_LOAD_RULE), but each repository a skills-sources pool clones at the subagent's start,
+  // and a pool's host (the repository that holds its skills-sources.json, the plugin lists and
+  // the installers) at the root's build too, and again at the subagent's start for its pool
+  // directories (`poolAt`, below); a top-level session's every repository, a pool's too, at the
+  // build its step ran under (TOP_BUILD_RULE).
   const poolRows = copies.installers.filter((row) => (row.unit ?? "").startsWith("pool:"));
   const poolHosts = new Set(
     poolRows.map((row) => (row.manifest_repository ?? "").toLowerCase()).filter((r) => r !== "")
@@ -2974,9 +3205,10 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       .map((row) => (row.copy_repository ?? "").toLowerCase())
       .filter((repo) => repo !== "" && !poolHosts.has(repo))
   );
+  const { readTime } = input;
   const whenOf = (repo: string): { at: string; words: string } =>
-    input.parentLoad?.at !== undefined && !poolClones.has(repo.toLowerCase())
-      ? { at: input.parentLoad.at, words: "the root's last prompt build" }
+    readTime?.at !== undefined && !(readTime.poolsAtStart && poolClones.has(repo.toLowerCase()))
+      ? { at: readTime.at, words: readTime.words }
       : { at: input.sessionStart, words: "the session's start" };
   // The project skill directories Oh My Pi reads, in its order: each kind of PROJECT_SKILLS, under
   // the working directory and then under each parent up to the checkout's root.
@@ -3404,14 +3636,14 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // A subagent's pool hosts at its start: Oh My Pi rescans a pool's directories then, while the
   // host's plugin lists, installers and settings are what its root loaded (PARENT_LOAD_RULE).
   const poolAt = new Map<string, string>();
-  if (input.parentLoad?.at !== undefined) {
+  if (readTime?.at !== undefined && readTime.poolsAtStart) {
     for (const repo of [...held.keys()].sort()) {
       if (!poolHosts.has(repo.toLowerCase())) continue;
       const { branch } = await github.branch(repo);
       const sha = await github.commitAt(repo, branch, input.sessionStart);
       evidence.push({
         item: `read times of ${repo}`,
-        source: `its plugin lists, installers and settings at ${commits.get(repo)} (the root's last prompt build ${input.parentLoad.at}), its pool directories at ${sha}, the last commit of ${branch} at or before the subagent's start ${input.sessionStart}: ${PARENT_LOAD_RULE}`,
+        source: `its plugin lists, installers and settings at ${commits.get(repo)} (the root's last prompt build ${readTime.at}), its pool directories at ${sha}, the last commit of ${branch} at or before the subagent's start ${input.sessionStart}: ${PARENT_LOAD_RULE}`,
       });
       if (sha === commits.get(repo)) continue;
       poolAt.set(repo, sha);
@@ -4318,8 +4550,9 @@ const WrittenProfile = Profile.extend({ context: Case.shape.context });
 class ProfileRefused extends Error {}
 
 /** A load test's profile of one session (load.ts's LoadProfile: cases.ts's Profile and the
- *  context), the evidence for each part, the secrets taken out of it, and whether a load test of
- *  the skill in it lists the skill (`listsSkill`). */
+ *  context), the evidence for each part, the secrets taken out of it, whether a load test of the
+ *  skill in it lists the skill (`listsSkill`), and the session's store and path hash, by which its
+ *  subagents are asked for. */
 export interface SessionProfile {
   readonly profile: Profile & { readonly context: string };
   readonly evidence: Evidence[];
@@ -4327,6 +4560,8 @@ export interface SessionProfile {
   /** What its listing measure is made from (`listingMeasure`). */
   readonly listing: ListingInput;
   readonly listed: boolean;
+  readonly store: string;
+  readonly pathHash: string;
 }
 
 /**
@@ -4352,34 +4587,61 @@ function listsSkill(
 /**
  * The load test's profile of the session whose transcript is `t` (read from the file
  * `transcriptPath` of `store`; its caller parsed it, `readTranscript`), rebuilt as build-cases
- * rebuilds a case's at the session's start: its context (`sessionContext`), and `caseProfile` from
- * every read of its branch, so the units its host had, at their commits then, their plugins and
- * the context files; a subagent's recorded system prompt (its secrets taken out) and tools. Each
- * copy of the tested skill `skill`'s source (cases.ts's `testedCopy`) is left out of the skills,
- * since the load test installs it; a copy of another source that shares the name stays, under its
- * namespace. The evidence says where the session's host had the tested source at another install
- * path too (`held once`). Throws, naming why, when the session gives none.
+ * rebuilds a case's: its context (`sessionContext`), and `caseProfile` from every read of its
+ * branch, so the units its host had, at their commits then, their plugins and the context files; a
+ * subagent's recorded system prompt (its secrets taken out) and tools. A subagent's is read at its
+ * root's last prompt build before its start (PARENT_LOAD_RULE); a top-level session's at its first
+ * build (TOP_BUILD_RULE: a task runs as its first message), or, for a context session, at the
+ * build its subagent `spawned` (the one its listing measure uses: its path hash and start) was
+ * spawned under. Each copy of the tested skill `skill`'s source (cases.ts's `testedCopy`) is left
+ * out of the skills, since the load test installs it; a copy of another source that shares the
+ * name stays, under its namespace. The evidence says where the session's host had the tested
+ * source at another install path too (`held once`). Throws, naming why, when the session gives
+ * none.
  */
 async function sessionProfile(
   run: ProfileRun,
   store: StoreContext,
   transcriptPath: string,
   t: Transcript,
-  skill: string
+  skill: string,
+  spawned?: { readonly pathHash: string; readonly at: string }
 ): Promise<SessionProfile> {
   const header = sessionHeader(t);
   if ("drop" in header) throw new Error(`${header.drop}: ${header.detail}`);
   const rebuilt = sessionContext(store, t, transcriptPath);
   if ("drop" in rebuilt) throw new Error(`${rebuilt.drop}: ${rebuilt.detail}`);
   const { context, project, evidence, init } = rebuilt;
-  const parentLoad =
-    init === undefined
-      ? undefined
-      : (
-          await parentLoads(run.config.psqlCommand, store.name, [
-            { hash: pathHash(transcriptPath), before: header.sessionStart },
-          ])
-        ).get(pathHash(transcriptPath));
+  let readTime: ReadTime;
+  let build: BuildWindow | undefined;
+  if (init !== undefined) {
+    const hash = pathHash(transcriptPath);
+    const rows = await digestRows(run.config.psqlCommand, store.name, [hash]);
+    readTime = parentLoad(rows.get(hash), header.sessionStart, store.name);
+  } else if (spawned === undefined) {
+    ({ read: readTime, window: build } = topBuild(
+      digestLines(t),
+      header.sessionStart,
+      -1,
+      "a task runs as its session's first message, under the session's first prompt build"
+    ));
+  } else {
+    const lines = digestLines(t);
+    const index = lines.findLastIndex((line) => Date.parse(line.at) < Date.parse(spawned.at));
+    ({ read: readTime } = topBuild(
+      lines,
+      header.sessionStart,
+      index,
+      `its subagent ${spawned.pathHash}, the earliest whose recorded prompt holds a skill listing and the one its listing measure uses, started at ${spawned.at}, under the build of the last system-prompt-digest line before then (${index < 0 ? "none" : lines[index]?.at})`,
+      "the prompt build its measured subagent was spawned under"
+    ));
+    build = {
+      from: null,
+      to: null,
+      words:
+        "at any time, the profile being read at the build the earliest of them was spawned under",
+    };
+  }
   const profiled = await caseProfile(run, {
     store: store.name,
     context: store.context,
@@ -4388,7 +4650,7 @@ async function sessionProfile(
     cwd: header.cwd,
     recordedPrompt: init !== undefined,
     reads: shownReads(t.items.map((item) => item.slim)),
-    parentLoad,
+    readTime,
   });
   const secrets = scrubbed({ systemPrompt: init?.systemPrompt });
   const recorded =
@@ -4426,6 +4688,8 @@ async function sessionProfile(
           source: `${how} too, the same copy; a host that had it there at another commit than the first install's lists that one as ${namespace}/${skill} (NAMESPACE_RULE), and the profile, which reads ${copy.repo} at one commit, holds the tested skill once, so a recorded ${namespace}/${skill} is counted missing by the listing measure`,
         })),
     ],
+    store: store.name,
+    pathHash: pathHash(transcriptPath),
     secretsRemoved: secrets.removed,
     listed: listsSkill(recorded, profiled.profile.skills, skill),
     listing: {
@@ -4439,6 +4703,7 @@ async function sessionProfile(
             ? [entry.data]
             : []
         )[0] ?? null,
+      ...(build === undefined ? {} : { build }),
     },
   };
 }
@@ -4551,24 +4816,48 @@ async function caseOf(
     );
   }
 
-  // The profile at the session's start, before any reader reads the session. The case's profile
-  // is built from the reads before its step, which the reader has not found yet; those are among
-  // the reads the reader can reach, and fewer reads install fewer units. So when no unit of the
-  // reads it can reach ships the skill of the cut's repository, no step's profile installs it, and
-  // the session is dropped as the step's profile check would drop it. A GitHub read that fails
-  // here is the step's read too.
-  let parentLoad: ParentLoad | undefined;
-  try {
-    parentLoad =
-      init === undefined
-        ? undefined
-        : (
-            await parentLoads(run.config.psqlCommand, store.name, [
-              { hash: pathHash(transcriptPath), before: sessionStart },
-            ])
-          ).get(pathHash(transcriptPath));
-  } catch (error) {
-    return drop("profile-failed", messageFor(error));
+  // The profile of the reads the reader can reach, before any reader reads the session. The
+  // case's profile is built from the reads before its step, which the reader has not found yet;
+  // those are among the reads the reader can reach, and fewer reads install fewer units. A
+  // subagent's repositories are read at its root's last prompt build before its start
+  // (PARENT_LOAD_RULE); a top-level session's at the build its step ran under (TOP_BUILD_RULE),
+  // which is one of the builds from the skill's read to the last message the reader can read, or
+  // the one whose line comes next (the step's own), so the profile is built at each of those. When
+  // no unit of the reads it can reach ships the skill of the cut's repository at any of them, no
+  // step's profile installs it, and the session is dropped as the step's profile check would drop
+  // it. A GitHub read that fails here is the step's read too.
+  const lines = init === undefined ? digestLines(t) : [];
+  let reach: ReadTime[];
+  if (init !== undefined) {
+    try {
+      const hash = pathHash(transcriptPath);
+      const rows = await digestRows(run.config.psqlCommand, store.name, [hash]);
+      reach = [parentLoad(rows.get(hash), sessionStart, store.name)];
+    } catch (error) {
+      return drop("profile-failed", messageFor(error));
+    }
+  } else {
+    const readAt = entryTime(t.branch[firstAt] ?? {});
+    const endAt = entryTime(t.branch[readable.at(-1)?.at ?? firstAt] ?? {});
+    const from = Math.max(
+      lines.findLastIndex((line) => Date.parse(line.at) <= readAt),
+      0
+    );
+    const to = Math.min(
+      lines.findLastIndex((line) => Date.parse(line.at) <= endAt) + 1,
+      lines.length - 1
+    );
+    const builds = new Set([from < 1 ? 0 : from]);
+    for (let index = Math.max(from, 1); index <= to; index += 1) builds.add(index);
+    reach = [...builds].map(
+      (index) =>
+        topBuild(
+          lines,
+          sessionStart,
+          index,
+          "a build a step in the case reader's reach can run under"
+        ).read
+    );
   }
   const profileInput = {
     store: store.name,
@@ -4577,19 +4866,33 @@ async function caseOf(
     sessionStart,
     cwd: header.cwd,
     recordedPrompt: init !== undefined,
-    parentLoad,
   };
-  let reachable: ProfileResult;
-  try {
-    reachable = await caseProfile(run, {
-      ...profileInput,
-      reads: shownReads(readable.map((item) => item.slim)),
-    });
-  } catch (error) {
-    return drop("profile-failed", messageFor(error));
+  const reachableReads = shownReads(readable.map((item) => item.slim));
+  let ships = false;
+  for (const readTime of reach) {
+    try {
+      const reachable = await caseProfile(run, {
+        ...profileInput,
+        readTime,
+        reads: reachableReads,
+      });
+      ships = reachable.shipped.has(`${run.cut.repo}\0${run.skill}`);
+    } catch (error) {
+      return drop("profile-failed", messageFor(error));
+    }
+    if (ships) break;
   }
-  if (!reachable.shipped.has(`${run.cut.repo}\0${run.skill}`)) {
-    return drop("not-cut-copy", notInstalled(run));
+  if (!ships) {
+    const times = reach.map((each) => each.at ?? "the session's start");
+    return drop(
+      "not-cut-copy",
+      notInstalled(
+        run,
+        init !== undefined || reach.every((each) => each.at === undefined)
+          ? undefined
+          : `${times.join(" or ")}, the prompt builds a step in the case reader's reach can run under`
+      )
+    );
   }
   const hidden = skillReadResults(allMessages, run.skill);
   const shown = (index: number, message: SessionMessage): CaseInput["messages"][number] => ({
@@ -4746,11 +5049,25 @@ async function caseOf(
     );
   }
 
-  // The profile: from the reads before the step. Its GitHub reads were made for the reads the
-  // reader could reach, so they are made once.
+  const digest = lastBefore(t.branch, stepItem.at, (entry) =>
+    entry.type === "custom" &&
+    entry.customType === "system-prompt-digest" &&
+    typeof entry.data === "string"
+      ? entry.data
+      : undefined
+  );
+  // The profile: from the reads before the step, read at the root's last prompt build before a
+  // subagent's start (PARENT_LOAD_RULE), or at the build a top-level session's step ran under
+  // (TOP_BUILD_RULE). Its GitHub reads were made for the reads the reader could reach, so they
+  // are made once.
+  const step =
+    init === undefined
+      ? stepBuild(lines, sessionStart, messageTime(t.message(stepIndex)), digest ?? null)
+      : undefined;
+  const readTime = step?.read ?? reach[0];
   let profiled: ProfileResult;
   try {
-    profiled = await caseProfile(run, { ...profileInput, reads: shownReads(messages) });
+    profiled = await caseProfile(run, { ...profileInput, readTime, reads: shownReads(messages) });
   } catch (error) {
     return drop("profile-failed", messageFor(error));
   }
@@ -4760,16 +5077,17 @@ async function caseOf(
         each.name === run.skill && each.repo === run.cut.repo && each.namespace === undefined
     )
   ) {
-    return drop("not-cut-copy", notInstalled(run));
+    return drop(
+      "not-cut-copy",
+      notInstalled(
+        run,
+        readTime?.at === undefined || step === undefined
+          ? undefined
+          : `${readTime.words} ${readTime.at}`
+      )
+    );
   }
 
-  const digest = lastBefore(t.branch, stepItem.at, (entry) =>
-    entry.type === "custom" &&
-    entry.customType === "system-prompt-digest" &&
-    typeof entry.data === "string"
-      ? entry.data
-      : undefined
-  );
   const hash = pathHash(transcriptPath);
   const secrets = scrubbed({
     messages,
@@ -4906,6 +5224,7 @@ async function caseOf(
       listed: listedNames(profiled),
       recorded: init?.systemPrompt,
       sessionDigest: digest ?? null,
+      ...(step === undefined ? {} : { build: step.window }),
     },
   };
 }
@@ -5057,28 +5376,55 @@ async function reprofileCases(
     const hashes = cases.filter((c) => c.source.store === name).map((c) => c.source.pathHash);
     heads.set(name, await sessionHeads(config.psqlCommand, name, hashes, `${given.out}.sessions`));
   }
-  // A case whose session records no prompt is measured against a subagent of it whose recorded
-  // prompt holds a listing: one subagents.sql query a store, for the sessions the store holds.
-  const subagents = new Map<string, Map<string, SubagentListing>>();
+  // When each case's repositories are read: a subagent's at its root's last prompt build before
+  // its start (PARENT_LOAD_RULE), a top-level session's at the build its step ran under
+  // (TOP_BUILD_RULE), each from the digest lines of its root, a top-level session being its own:
+  // one digest-times.sql query a store, for the subagents' cases and the top-level sessions the
+  // store holds.
+  const reads = new Map<string, { readonly read: ReadTime; readonly window?: BuildWindow }>();
   for (const [name, saved] of heads) {
-    const hashes = cases
-      .filter(
-        (c) =>
-          c.source.store === name &&
-          c.profile.systemPrompt === undefined &&
-          saved.get(c.source.pathHash)?.head?.held === true
-      )
-      .map((c) => c.source.pathHash);
-    subagents.set(name, await subagentListings(config.psqlCommand, name, hashes));
+    const ofStore = cases.filter((c) => c.source.store === name);
+    const held = (c: Case) => saved.get(c.source.pathHash)?.head?.held === true;
+    const rows = await digestRows(
+      config.psqlCommand,
+      name,
+      ofStore
+        .filter((c) => c.profile.systemPrompt !== undefined || held(c))
+        .map((c) => c.source.pathHash)
+    );
+    for (const c of ofStore) {
+      const row = rows.get(c.source.pathHash);
+      reads.set(
+        c.id,
+        c.profile.systemPrompt !== undefined
+          ? { read: parentLoad(row, c.sessionStart, name) }
+          : stepBuild(
+              row === undefined
+                ? `the store ${name} holds no file of the session now`
+                : row.digests,
+              c.sessionStart,
+              messageTime(c.realStep),
+              c.sessionDigest
+            )
+      );
+    }
   }
-  // A case whose session recorded its prompt (a subagent's) reads its repositories at its root's
-  // last prompt build before its start (PARENT_LOAD_RULE): one digest-times.sql query a store.
-  const loads = new Map<string, Map<string, ParentLoad>>();
-  for (const name of heads.keys()) {
-    const sessions = cases
-      .filter((c) => c.source.store === name && c.profile.systemPrompt !== undefined)
-      .map((c) => ({ hash: c.source.pathHash, before: c.sessionStart }));
-    loads.set(name, await parentLoads(config.psqlCommand, name, sessions));
+  // A case whose session records no prompt is measured against the earliest subagent of it
+  // spawned under the build its profile is read at whose recorded prompt holds a listing: one
+  // subagents.sql query a store, for the sessions the store holds.
+  const subagents = new Map<string, Map<string, SubagentsFound>>();
+  for (const [name, saved] of heads) {
+    const sessions = cases.flatMap((c) => {
+      const window = reads.get(c.id)?.window;
+      return c.source.store === name &&
+        c.profile.systemPrompt === undefined &&
+        saved.get(c.source.pathHash)?.head?.held === true &&
+        window !== undefined &&
+        !("unknown" in window)
+        ? [{ hash: c.source.pathHash, from: window.from, to: window.to }]
+        : [];
+    });
+    subagents.set(name, await subagentListings(config.psqlCommand, name, sessions));
   }
   const rebuilt: Case[] = [];
   const records: Record<string, unknown>[] = [];
@@ -5124,6 +5470,7 @@ async function reprofileCases(
             }`,
           },
         ];
+    const reading = reads.get(c.id);
     let profiled: ProfileResult;
     try {
       profiled = await caseProfile(run, {
@@ -5138,7 +5485,7 @@ async function reprofileCases(
             ? undefined
             : `/legion/workspaces/${agents.repo}/`,
         recordedPrompt: c.profile.systemPrompt !== undefined,
-        parentLoad: loads.get(store.name)?.get(c.source.pathHash),
+        readTime: reading?.read,
         checkout:
           held || decided === undefined
             ? undefined
@@ -5159,7 +5506,14 @@ async function reprofileCases(
         (each) => each.name === c.skill && each.repo === cut.repo && each.namespace === undefined
       )
     ) {
-      leave(notInstalled({ skill: c.skill, cut }));
+      leave(
+        notInstalled(
+          { skill: c.skill, cut },
+          reading?.read.at === undefined || c.profile.systemPrompt !== undefined
+            ? undefined
+            : `${reading.read.words} ${reading.read.at}`
+        )
+      );
       continue;
     }
     const profileStart = old.findIndex((each) => !CONTEXT_EVIDENCE.test(each.item));
@@ -5178,11 +5532,22 @@ async function reprofileCases(
           listed: listedNames(profiled),
           recorded: c.profile.systemPrompt,
           sessionDigest: c.sessionDigest,
+          ...(reading?.window === undefined ? {} : { build: reading.window }),
         },
-        subagents.get(store.name)?.get(c.source.pathHash),
-        held
-          ? undefined
-          : "the store holds the session no longer (session-head.sql), so no subagent of it is read"
+        !held
+          ? {
+              unread:
+                "the store holds the session no longer (session-head.sql), so no subagent of it is read",
+            }
+          : reading?.window === undefined
+            ? { unread: "it recorded its own listing, so no subagent of it is asked for" }
+            : "unknown" in reading.window
+              ? { unread: reading.window.unknown }
+              : {
+                  found: subagents
+                    .get(store.name)
+                    ?.get(betweenKey(c.source.pathHash, reading.window)),
+                }
       ),
       ...old.filter((each) => each.item.startsWith(AUDIT_EVIDENCE)),
     ];
@@ -5684,21 +6049,26 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
       if (pulled.bytes === 0) return { drop: "pull-failed", detail: "the pull returned no row" };
       const made = await caseOf(run, store, transcriptPath, spool, record, wanted);
       if (!("case" in made)) return made;
-      // The listing measure: a top-level session's is against a subagent of it, read from the
-      // store one query at a time with the pulls; a failed read leaves it not measurable.
+      // The listing measure: a top-level session's is against the earliest subagent of it spawned
+      // under the build its profile is read at, read from the store one query at a time with the
+      // pulls; a failed read leaves it not measurable.
       const hash = made.case.source.pathHash;
-      let subagents = new Map<string, SubagentListing>();
-      let failed: string | undefined;
-      if (made.listing.recorded === undefined) {
+      const between = betweenOf(made.listing);
+      let read = unasked(made.listing);
+      if (between !== undefined) {
         try {
-          subagents = await oneAtATime(() =>
-            subagentListings(config.psqlCommand, store.name, [hash])
-          );
+          read = {
+            found: (
+              await oneAtATime(() =>
+                subagentListings(config.psqlCommand, store.name, [{ hash, ...between }])
+              )
+            ).get(betweenKey(hash, between)),
+          };
         } catch (error) {
-          failed = `subagents.sql failed: ${messageFor(error)}`;
+          read = { unread: `subagents.sql failed: ${messageFor(error)}` };
         }
       }
-      const measure = listingMeasure(made.listing, subagents.get(hash), failed);
+      const measure = listingMeasure(made.listing, read);
       return {
         ...made,
         case: { ...made.case, evidence: withMeasure(made.case.evidence ?? [], measure) },
@@ -6088,7 +6458,8 @@ async function pulledProfile(
   return sessionProfile(run, storeNamed(run.config, store), filePath, t, skill);
 }
 
-/** The context session of a run and its profile, the one each written task takes. */
+/** The context session of a run and its profile, the one each written task takes; its evidence
+ *  holds its listing measure. */
 interface ContextProfile {
   readonly store: string;
   readonly hash: string;
@@ -6113,7 +6484,10 @@ async function contextProfile(
 }
 
 /** The profile of the context session `session`, pulled into `spool` and rebuilt, or undefined
- *  when sessions.sql gives no file of its hash (its store holds it no longer). Throws, naming it
+ *  when sessions.sql gives no file of its hash (its store holds it no longer). A top-level context
+ *  session is read at the build its listing measure's subagent was spawned under (TOP_BUILD_RULE):
+ *  the earliest subagent whose recorded prompt holds a listing, found first (one subagents.sql
+ *  query), so the measure compares the profile with a listing of the same build. Throws, naming it
  *  `named`, when the session gives no profile, and when its profile does not list the skill,
  *  since a written task in it would test nothing: both are found after a store read, so the
  *  command fails (exit 1), not refuses. */
@@ -6128,9 +6502,29 @@ async function rebuiltContext(
   const { paths } = await resolvePaths(run.config.psqlCommand, store, [hash]);
   const filePath = paths.get(hash);
   if (filePath === undefined) return undefined;
+  const open = { from: null, to: null };
+  let found: SubagentsFound | undefined;
+  let unplaced: string | undefined;
   let built: SessionProfile;
   try {
-    built = await pulledProfile(run, store, filePath, spool, skill);
+    const listings = await subagentListings(run.config.psqlCommand, store, [
+      { hash: pathHash(filePath), ...open },
+    ]);
+    found = listings.get(betweenKey(pathHash(filePath), open));
+    const listing = found?.listing;
+    const placed = listing !== undefined && !Number.isNaN(Date.parse(listing.start ?? ""));
+    if (listing !== undefined && !placed) {
+      unplaced = `its earliest subagent whose recorded prompt holds a skill listing (${listing.pathHash}) records no start, so the build it was spawned under is not known (subagents.sql)`;
+    }
+    const t = await pulledTranscript(run.config.psqlCommand, store, filePath, spool);
+    built = await sessionProfile(
+      run,
+      storeNamed(run.config, store),
+      filePath,
+      t,
+      skill,
+      placed ? { pathHash: listing.pathHash, at: listing.start ?? "" } : undefined
+    );
   } catch (error) {
     throw new Error(`${named}: ${messageFor(error)}`);
   }
@@ -6141,6 +6535,9 @@ async function rebuiltContext(
       `${named}: its rebuilt context (${built.profile.context}) does not list ${skill}, so a written task in it would test nothing; give a session whose context lists it`
     );
   }
+  built.evidence.push(
+    listingMeasure(built.listing, unplaced === undefined ? { found } : { unread: unplaced })
+  );
   return { store, hash, pathHash: pathHash(filePath), built };
 }
 
@@ -6203,46 +6600,14 @@ async function writeProfiles<T extends TaskLine>(
     queries += resolved.queries;
     for (const [hash, filePath] of resolved.paths) paths.set(`${store}\0${hash}`, filePath);
   }
-  // A session that records no prompt is measured against a subagent of it whose recorded prompt
-  // holds a listing (`listingMeasure`): one subagents.sql query a store, for the session of each
-  // session task and the context session.
-  const sessionOf = (task: T) => {
-    const session = sessions.get(task.id);
-    const filePath =
-      session?.path ??
-      (session?.hash === undefined ? undefined : paths.get(`${session.store}\0${session.hash}`));
-    return session === undefined || filePath === undefined
-      ? undefined
-      : { store: session.store, pathHash: pathHash(filePath) };
-  };
-  const measured = [
-    ...tasks.flatMap((task) => {
-      const session = task.source === "session" ? sessionOf(task) : undefined;
-      return session === undefined ? [] : [session];
-    }),
-    ...(context === undefined ? [] : [{ store: context.store, pathHash: context.pathHash }]),
-  ];
-  const subagents = new Map<string, SubagentListing>();
-  for (const store of new Set(measured.map((each) => each.store))) {
-    const hashes = measured.filter((each) => each.store === store).map((each) => each.pathHash);
-    const found = await subagentListings(plan.run.config.psqlCommand, store, hashes);
-    queries += 1;
-    for (const [hash, listing] of found) subagents.set(`${store}\0${hash}`, listing);
-  }
-  if (context !== undefined && measureIn(context.built.evidence) === undefined) {
-    context.built.evidence.push(
-      listingMeasure(context.built.listing, subagents.get(`${context.store}\0${context.pathHash}`))
-    );
-  }
-  const measures: (ListingMeasure | undefined)[] = [];
-  const notes: Record<string, unknown>[] = [];
-  const out: T[] = [];
+  // Each task's profile: the context session's for a written task; for a task from a session, one
+  // rebuilt already, when the session was a candidate, else one rebuilt now; or why it has none.
+  const profiles = new Map<string, { built?: SessionProfile; failed: string }>();
   for (const task of tasks) {
     let built: SessionProfile | undefined;
     let failed = "no --context-session gives a written task its profile";
     if (task.source === "written") built = context?.built;
     else {
-      // A profile rebuilt already, when the session was a candidate, else one rebuilt now.
       built = known.get(task.id);
       const session = sessions.get(task.id);
       const filePath =
@@ -6260,6 +6625,35 @@ async function writeProfiles<T extends TaskLine>(
         }
       }
     }
+    profiles.set(task.id, { built, failed });
+  }
+  // A session that records no prompt is measured against the earliest subagent of it spawned
+  // under the build its profile is read at whose recorded prompt holds a listing
+  // (`listingMeasure`): one subagents.sql query a store, for the session of each session task,
+  // found by the store and path hash its profile was rebuilt from.
+  const measured = tasks.flatMap((task) => {
+    const built = task.source === "session" ? profiles.get(task.id)?.built : undefined;
+    const between = built === undefined || !built.listed ? undefined : betweenOf(built.listing);
+    return built === undefined || between === undefined
+      ? []
+      : [{ store: built.store, pathHash: built.pathHash, between }];
+  });
+  const subagents = new Map<string, SubagentsFound>();
+  for (const store of new Set(measured.map((each) => each.store))) {
+    const ofStore = measured.filter((each) => each.store === store);
+    const found = await subagentListings(
+      plan.run.config.psqlCommand,
+      store,
+      ofStore.map((each) => ({ hash: each.pathHash, ...each.between }))
+    );
+    queries += 1;
+    for (const [key, each] of found) subagents.set(`${store}\0${key}`, each);
+  }
+  const measures: (ListingMeasure | undefined)[] = [];
+  const notes: Record<string, unknown>[] = [];
+  const out: T[] = [];
+  for (const task of tasks) {
+    const { built, failed } = profiles.get(task.id) ?? { built: undefined, failed: "" };
     if (built === undefined) {
       notes.push({ task: task.id, from: task.source, profile: null, failed });
       io.err(`build-tasks: ${task.id}: no profile: ${failed}`);
@@ -6281,7 +6675,7 @@ async function writeProfiles<T extends TaskLine>(
     }
     const file = path.resolve(plan.dir, `${task.id}.json`);
     writeWhole(file, json(built.profile));
-    const session = sessionOf(task);
+    const between = betweenOf(built.listing);
     const evidence =
       task.source === "written"
         ? built.evidence
@@ -6289,9 +6683,11 @@ async function writeProfiles<T extends TaskLine>(
             built.evidence,
             listingMeasure(
               built.listing,
-              session === undefined
-                ? undefined
-                : subagents.get(`${session.store}\0${session.pathHash}`)
+              between === undefined
+                ? unasked(built.listing)
+                : {
+                    found: subagents.get(`${built.store}\0${betweenKey(built.pathHash, between)}`),
+                  }
             )
           );
     measures.push(measureIn(evidence));
@@ -6909,7 +7305,8 @@ async function reprofileTasks(
     const { store, hash } = contextSession;
     const label = `the context session ${store}:${hash}`;
     context = await rebuiltContext(run, contextSession, label, spool, skill);
-    sessionQueries += 1;
+    // Its path (sessions.sql), and its subagent whose build its profile is read at (subagents.sql).
+    sessionQueries += context === undefined ? 1 : 2;
     if (context === undefined) {
       contextGone = {
         item: NO_SESSION,
@@ -6927,28 +7324,54 @@ async function reprofileTasks(
     sessionQueries += resolved.queries;
     for (const [hash, filePath] of resolved.paths) paths.set(`${store}\0${hash}`, filePath);
   }
-  // A session that records no prompt is measured against a subagent of it whose recorded prompt
-  // holds a listing (`listingMeasure`): one subagents.sql query a store, for the session of each
-  // session task the store holds and the context session.
-  const measured = [
-    ...sessionTasks.flatMap((task) =>
-      paths.has(`${task.store}\0${task.pathHash}`)
-        ? [{ store: task.store, pathHash: task.pathHash }]
-        : []
-    ),
-    ...(context === undefined ? [] : [{ store: context.store, pathHash: context.pathHash }]),
-  ];
-  const subagents = new Map<string, SubagentListing>();
-  for (const store of new Set(measured.map((each) => each.store))) {
-    const hashes = measured.filter((each) => each.store === store).map((each) => each.pathHash);
-    const found = await subagentListings(config.psqlCommand, store, hashes);
-    sessionQueries += 1;
-    for (const [hash, listing] of found) subagents.set(`${store}\0${hash}`, listing);
-  }
-  if (context !== undefined && measureIn(context.built.evidence) === undefined) {
-    context.built.evidence.push(
-      listingMeasure(context.built.listing, subagents.get(`${context.store}\0${context.pathHash}`))
+  // Each session task's profile built again (`pulledProfile`), or why the task is left out: a
+  // profile load would refuse is not written, nor one whose context no longer lists the skill.
+  const pulled = new Map<string, SessionProfile | { readonly leftOut: string }>();
+  for (const task of sessionTasks) {
+    const filePath = paths.get(`${task.store}\0${task.pathHash}`);
+    if (filePath === undefined) continue;
+    let built: SessionProfile;
+    try {
+      built = await pulledProfile(run, task.store, filePath, spool, skill);
+    } catch (error) {
+      if (error instanceof ProfileRefused) {
+        pulled.set(task.id, { leftOut: error.message });
+        continue;
+      }
+      throw new Error(
+        `task ${task.id} (${task.store} ${task.pathHash.slice(0, 12)}): ${messageFor(error)}`
+      );
+    }
+    pulled.set(
+      task.id,
+      built.listed
+        ? built
+        : {
+            leftOut: `its rebuilt context ${built.profile.context} does not list ${skill}, so it would test nothing`,
+          }
     );
+  }
+  // A session that records no prompt is measured against the earliest subagent of it spawned
+  // under the build its profile is read at whose recorded prompt holds a listing
+  // (`listingMeasure`): one subagents.sql query a store, for the session of each session task the
+  // store holds.
+  const measured = sessionTasks.flatMap((task) => {
+    const built = pulled.get(task.id);
+    const between =
+      built === undefined || "leftOut" in built ? undefined : betweenOf(built.listing);
+    return between === undefined ? [] : [{ store: task.store, pathHash: task.pathHash, between }];
+  });
+  const subagents = new Map<string, SubagentsFound>();
+  for (const store of new Set(measured.map((each) => each.store))) {
+    const found = await subagentListings(
+      config.psqlCommand,
+      store,
+      measured
+        .filter((each) => each.store === store)
+        .map((each) => ({ hash: each.pathHash, ...each.between }))
+    );
+    sessionQueries += 1;
+    for (const [key, each] of found) subagents.set(`${store}\0${key}`, each);
   }
   /** The measure of a task that keeps its old profile `text`: not measurable, for `why`. */
   const keptMeasure = (text: string | undefined, why: string) => {
@@ -6959,8 +7382,7 @@ async function reprofileTasks(
         recorded: undefined,
         sessionDigest: null,
       },
-      undefined,
-      why
+      { unread: why }
     );
   };
   const measures: (ListingMeasure | undefined)[] = [];
@@ -6990,31 +7412,26 @@ async function reprofileTasks(
           source: `the store ${task.store} holds no file of the path hash ${task.pathHash} now (session-paths.sql), so the task keeps its old profile`,
         };
       } else {
-        let built: SessionProfile;
-        try {
-          built = await pulledProfile(run, task.store, filePath, spool, skill);
-        } catch (error) {
-          // A profile load would refuse is not written: the task is left out with why.
-          if (error instanceof ProfileRefused) {
-            leftOut.push({ task: task.id, why: error.message });
-            io.err(`build-tasks: ${task.id}: left out: ${error.message}`);
-            continue;
-          }
-          throw new Error(
-            `task ${task.id} (${task.store} ${task.pathHash.slice(0, 12)}): ${messageFor(error)}`
-          );
-        }
-        if (!built.listed) {
-          const why = `its rebuilt context ${built.profile.context} does not list ${skill}, so it would test nothing`;
+        const built = pulled.get(task.id);
+        if (built === undefined || "leftOut" in built) {
+          const why = built?.leftOut ?? "its profile was not rebuilt";
           leftOut.push({ task: task.id, why });
           io.err(`build-tasks: ${task.id}: left out: ${why}`);
           continue;
         }
+        const between = betweenOf(built.listing);
         rebuilt = {
           text: json(built.profile),
           evidence: withMeasure(
             built.evidence,
-            listingMeasure(built.listing, subagents.get(`${task.store}\0${task.pathHash}`))
+            listingMeasure(
+              built.listing,
+              between === undefined
+                ? unasked(built.listing)
+                : {
+                    found: subagents.get(`${task.store}\0${betweenKey(task.pathHash, between)}`),
+                  }
+            )
           ),
         };
       }
