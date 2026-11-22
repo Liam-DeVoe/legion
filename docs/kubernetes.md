@@ -8132,8 +8132,8 @@ each issue's pod (every role of it alike) and the image probe's.
   The listed models are `models`, then each model a role of `roles` names that `models` lacks, so a role of the deployment's model is listed whether or not `models` names it.
   Every architect is told them after the roles of this deployment, `legion config check` prints them on one line right after the project lines (`models: <m1>, <m2>`, or `models: none` where no model is named at all), and the served settings carry them as `settings.models`, absent where none is named.
   The loader refuses a value that is not a list (`models must be a list of model names, e.g. [anthropic/claude-sonnet-4]`), an entry that is not a string (`models[<i>] must be a model's name`), an empty entry (`models[<i>] is empty`), an entry that holds white space (`models[<i>] is <m>, which holds white space: a model's name is one word`) and a model named twice (`models names <m> twice`), each index counted from 0.
-  `register_plan` refuses a plan that defines a role whose `model` is not listed (`… whose model <m> the deployment does not list; it lists <m1>, <m2>.`, or `it lists none.`).
-  Give a role's model in the settings, as `roles.<name>.model` or as the `model` of a role block: Legion compares and lists only that model.
+  `register_plan` refuses a plan that defines a role whose `model` is not listed (`… the deployment does not list; it lists <m1>, <m2>.`, or `… it lists none.`).
+  Give a role of the deployment its model in the settings, as `roles.<name>.model`: Legion lists that model, and compares the `model` of a role block with the listed models.
   A model that only a role's Oh My Pi overlay names is neither compared nor listed; the step record shows the model that each session ran.
 
 - **The pace of the wakes the daemon causes** is the operator's, as two top-level `legion.yaml` keys:
