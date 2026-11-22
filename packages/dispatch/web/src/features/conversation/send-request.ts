@@ -10,7 +10,6 @@ import type {
 } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
 import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { carriedBlocks, type FollowedBlocks } from "./block-spans";
 import type {
   AcceptedMention,
   ComposerAnchor,
@@ -71,10 +70,10 @@ export interface SentRequest {
          *  written over another body is. */
         readonly base?: string;
         /** The block ids the save carries, worked out at the press from the blocks the editor
-         *  followed through the edit (`carriedIdsOf`), and kept with the send across a reload, so
-         *  every attempt under the send's key sends the same body. Undefined when the blocks
-         *  route did not answer them (it failed, or the comment is not indexed yet): the save then
-         *  carries no ids, and the server matches blocks by their text. */
+         *  followed through the edit (`carriedIdsOf`, `block-spans.ts`), and kept with the send
+         *  across a reload, so every attempt under the send's key sends the same body. Undefined
+         *  when the blocks route did not answer them (it failed, or the comment is not indexed
+         *  yet): the save then carries no ids, and the server matches blocks by their text. */
         readonly carried: CarriedBlockIds | undefined;
         readonly id: string;
         readonly save: SaveCommentEdit;
@@ -407,22 +406,6 @@ function attempt(
   return owner.kind === "issue"
     ? api.createComment(owner.issueKey, input, bounds)
     : api.createArtifactComment(owner.artifactId, input, bounds);
-}
-
-/** The block ids an edit's save carries, given `followed`, the comment's blocks as the editor
- *  followed them, and `body`, the text the save sends: the revision the blocks route answered,
- *  and where each carried id starts in `body` once trimmed. None when the blocks route never
- *  answered, or when the spans are no longer offsets into `body`; the server then matches blocks
- *  by their text.
- *  The one place they are worked out, so a send kept across a reload carries exactly what its
- *  first attempt did (`held-sends.ts`) and Dispatch reads one body under that send's key. */
-export function carriedIdsOf(
-  followed: FollowedBlocks | undefined,
-  body: string
-): CarriedBlockIds | undefined {
-  if (followed === undefined) return undefined;
-  const carried = carriedBlocks(followed.spans, followed.value, body.trim());
-  return carried === undefined ? undefined : { base_revision: followed.revision, blocks: carried };
 }
 
 /**

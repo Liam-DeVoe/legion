@@ -1,4 +1,5 @@
 import type { ItemBlock } from "../../api/types";
+import type { CarriedBlockIds } from "./send-request";
 
 /**
  * How the comment editor carries each block's id through an edit. The blocks route gives each
@@ -250,4 +251,25 @@ export function carriedBlocks(
     carried.push({ from, id: span.id });
   }
   return carried;
+}
+
+/** The block ids an edit's save carries, given `followed`, the comment's blocks as the editor
+ *  followed them, and `body`, the text the save sends: the revision the blocks route answered,
+ *  and where each carried id starts in `body` once trimmed. None when the blocks route never
+ *  answered, or when the spans are no longer offsets into `body`; the server then matches blocks
+ *  by their text.
+ *  The one place they are worked out, so a send kept across a reload carries exactly what its
+ *  first attempt did (`held-sends.ts`) and Dispatch reads one body under that send's key.
+ *  It is here and not in `send-request.ts`, whose type it answers, because that module is in the
+ *  entry chunk every page parses (the write store sends kept writes through it, `held-sends.ts`)
+ *  and the comment editor (`MentionComposer`), which loads with the pages that draw it, is the
+ *  only caller: imported from there, this whole module rode in the entry of a page that edits no
+ *  comment (dispatch://INFRA-1109, R13). */
+export function carriedIdsOf(
+  followed: FollowedBlocks | undefined,
+  body: string
+): CarriedBlockIds | undefined {
+  if (followed === undefined) return undefined;
+  const carried = carriedBlocks(followed.spans, followed.value, body.trim());
+  return carried === undefined ? undefined : { base_revision: followed.revision, blocks: carried };
 }

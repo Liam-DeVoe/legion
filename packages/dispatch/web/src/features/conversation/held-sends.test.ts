@@ -18,10 +18,11 @@ import {
   SendStoppedError,
 } from "../writes/keyed-write";
 import { KEPT_SEND_RESUME_MS } from "../writes/write-storage";
+import { carriedIdsOf } from "./block-spans";
 import { type HeldSend, type HeldSends, heldSends, stoppable } from "./held-sends";
 import { agentKey, agentSend, heldOf, request, signedIn, verdict } from "./held-sends-fixture";
 import { PendingSendTurn } from "./PendingSendTurn";
-import { carriedIdsOf, type SentRequest, saveCommentEdit } from "./send-request";
+import { type SentRequest, saveCommentEdit } from "./send-request";
 import { useSessionSends } from "./useSessionSends";
 
 const sentMessage = {

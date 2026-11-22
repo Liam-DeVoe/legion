@@ -75,6 +75,7 @@ import { composerReferences } from "../refs/routes";
 import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
 import {
+  carriedIdsOf,
   type FollowedBlocks,
   followEdit,
   spansFromBlocks,
@@ -108,7 +109,6 @@ import { KeptDraftOffers } from "./KeptDraftOffers";
 import { keptAwayLine } from "./KeptReply";
 import { ReplyQuote } from "./ReplyQuote";
 import {
-  carriedIdsOf,
   DELIVERY_COMMANDS,
   type DeliveryPlan,
   deliveryPlan,
