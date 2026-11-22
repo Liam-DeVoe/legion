@@ -15,11 +15,12 @@
 # `expect` carries a message, a string or a template literal, fails as it does without one, while
 # with a message a matcher, a property of the focused element, a read nested in a call and a read
 # inside an array or an object are still not counted; a kept site passes only with a
-# `// jest-dom: <reason>` line of at least four words as the nearest non-blank line above its
-# `expect(`, so an ordinary comment there fails, and so do a marker with code between it and the
-# read, a block comment, a marker on the read's own line or wrapped onto a second comment line, and
-# a marker whose reason is empty, one word or three, while a marker above a wrapped read, inside a
-# `waitFor` block body or with a blank line between passes;
+# `// jest-dom: <reason>` line of at least four words, each holding a letter, on the line directly
+# above its `expect(`, so an ordinary comment there fails, and so do a marker with code or a blank
+# line between it and the read, a block comment, a marker on the read's own line or wrapped onto a
+# second comment line, and a marker whose reason is empty, one word, three, or four runs of
+# punctuation, while a marker of four words directly above, above a wrapped read or inside a
+# `waitFor` block body passes;
 # jest-dom's own matchers, an asymmetric matcher among them, a read nested inside `expect`'s
 # argument and a read named in a comment are not counted; and one run reports both rules. The real
 # repository passes over a count of calls and of files it actually found, so a run that scanned
@@ -417,6 +418,28 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the read" "$(contains "$out" 'rows.test.tsx:4:')"
 
+# The nearest non-blank line once counted as the line above, so a marker a blank line off its
+# read passed while the rule's own words said it stands directly above.
+echo "case: a marker with a blank line between it and the read is refused"
+root=$(fixture marker_blank)
+rows "$root" <<'EOF'
+test("a row", async () => {
+  // jest-dom: `shown` may be missing, and `.not.toHaveAttribute` fails on no element.
+
+  expect(shown?.hasAttribute("hidden")).not.toBe(true);
+  await waitFor(() => {
+    // jest-dom: the message names the path, which Bun 1.4.4 prints for no jest-dom matcher.
+
+    expect(row.getAttribute("aria-expanded"), `${path} expands the row`).toBe("true");
+  });
+});
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "counts both" "$(contains "$out" '2 of 2 hand-written focus and attribute assertions')"
+check "names the read past the blank line" "$(contains "$out" 'rows.test.tsx:4:')"
+check "names the read past the blank line inside waitFor" "$(contains "$out" 'rows.test.tsx:8:')"
+
 echo "case: a marker whose reason is empty, one word or three words is refused"
 root=$(fixture marker_short)
 rows "$root" <<'EOF'
@@ -435,6 +458,33 @@ check "counts all three" "$(contains "$out" '3 of 3 hand-written focus and attri
 check "names the read under the empty marker" "$(contains "$out" 'rows.test.tsx:3:')"
 check "names the read under the one-word marker" "$(contains "$out" 'rows.test.tsx:5:')"
 check "names the read under the three-word marker" "$(contains "$out" 'rows.test.tsx:7:')"
+
+# `split()` once counted any run of non-blank characters as a word, so four dashes were a reason.
+echo "case: a marker whose four words are punctuation alone is refused"
+root=$(fixture marker_punctuation)
+rows "$root" <<'EOF'
+test("a row", () => {
+  // jest-dom: - - - -
+  expect(box.getAttribute("aria-describedby")).toBe(described);
+});
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the read" "$(contains "$out" 'rows.test.tsx:3:')"
+check "counts it against the total" "$(contains "$out" '1 of 1 hand-written focus and attribute assertions')"
+check "names the words the marker takes" "$(contains "$out" 'in at least 4 words that each hold a letter')"
+
+echo "case: a marker of exactly four words directly above the read passes"
+root=$(fixture marker_four)
+rows "$root" <<'EOF'
+test("a row", () => {
+  // jest-dom: `described` may be null.
+  expect(box.getAttribute("aria-describedby")).toBe(described);
+});
+EOF
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "reports the clean scan" "$(contains "$out" 'every one of the 1 hand-written focus and attribute assertions')"
 
 echo "case: a block comment, a marker on the read's line and a wrapped marker are refused"
 root=$(fixture marker_elsewhere)
@@ -460,7 +510,7 @@ check "names the read under the block comment" "$(contains "$out" 'rows.test.tsx
 check "names the read under the doc comment" "$(contains "$out" 'rows.test.tsx:8:')"
 check "names the read under the wrapped marker" "$(contains "$out" 'rows.test.tsx:11:')"
 
-echo "case: a marker above a wrapped read, inside a waitFor block or past a blank line passes"
+echo "case: a marker above a wrapped read or inside a waitFor block passes"
 root=$(fixture marked)
 rows "$root" <<'EOF'
 test("a row", async () => {
@@ -474,14 +524,11 @@ test("a row", async () => {
     // jest-dom: the message names the path, which Bun 1.4.4 prints for no jest-dom matcher.
     expect(row.getAttribute("aria-expanded"), `${path} expands the row`).toBe("true");
   });
-  // jest-dom: `shown` may be missing, and `.not.toHaveAttribute` fails on no element.
-
-  expect(shown?.hasAttribute("hidden")).not.toBe(true);
 });
 EOF
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
-check "reports the clean scan" "$(contains "$out" 'every one of the 3 hand-written focus and attribute assertions')"
+check "reports the clean scan" "$(contains "$out" 'every one of the 2 hand-written focus and attribute assertions')"
 
 echo "case: jest-dom's matchers, a read nested in the argument and a read in a comment are not counted"
 root=$(fixture matchers)

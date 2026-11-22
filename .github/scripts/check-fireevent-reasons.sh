@@ -60,16 +60,18 @@
 # such as the key or the path a loop is on, is a reason too: Bun 1.4.4 prints no `expect` message
 # for a matcher `expect.extend` registered, so only the hand-written form shows it.
 #
-# The marker is the only exemption. The nearest non-blank line above the read's `expect(` must
-# begin, after its indent, with `// jest-dom:`, and the reason after it must hold at least four
-# words. Nothing else counts: not a comment that says what the row checks, not a block comment, not
-# a marker with code between it and the read, not a marker on the read's own line, and not a marker
-# whose reason holds fewer than four words. A marker may run past the line width, as a `// @pr: `
-# line does, and any more a reader needs goes on comment lines above it. A read whose `expect(`
-# Biome moved onto the line after `waitFor(() =>` takes its marker inside a block body, between
-# `waitFor(() => {` and the `expect(`. The read once took any comment within the five lines above
-# it, as a `fireEvent` call does, and an ordinary comment that said what the row checks let a read
-# through whose reason nobody had written.
+# The marker is the only exemption. The line directly above the read's `expect(` must begin, after
+# its indent, with `// jest-dom:`, and the reason after it must hold at least four words, a word
+# being a run of non-blank characters with at least one letter in it, so punctuation alone
+# (`// jest-dom: - - - -`) is no reason. Nothing else counts: not a comment that says what the row
+# checks, not a block comment, not a marker with code or a blank line between it and the read, not
+# a marker on the read's own line, and not a marker whose reason holds fewer than four words. A
+# marker may run past the line width, as a `// @pr: ` line does, and any more a reader needs goes
+# on comment lines above it. A read whose `expect(` Biome moved onto the line after
+# `waitFor(() =>` takes its marker inside a block body, on the line between `waitFor(() => {` and
+# the `expect(`. The read once took any comment within the five lines above it, as a `fireEvent`
+# call does, and an ordinary comment that said what the row checks let a read through whose reason
+# nobody had written.
 #
 # Biome's formatter wraps a long assertion, so this rule reads each file whole: a site whose
 # `expect(` ends its line, with the read on the next, is the same site, and is named at the line of
@@ -111,10 +113,11 @@ from pathlib import Path
 ROOT = Path("packages/dispatch/web/src")
 CALL = re.compile(r"\bfireEvent\b\s*[.(]")
 WINDOW = 5
-# A kept read's marker, which must be the nearest non-blank line above its `expect(`, and the
-# fewest words its reason may hold.
+# A kept read's marker, which must be the line directly above its `expect(`, the fewest words its
+# reason may hold, and what makes a word one: a letter, so a run of punctuation is no word.
 MARKER = re.compile(r"^\s*// jest-dom:(.*)$")
 MARKER_WORDS = 4
+LETTER = re.compile(r"[^\W\d_]")
 # A comment line, and the only thing this reads as one: the trimmed text begins a comment. A `//`
 # or a `*` anywhere else on a line is code, which is what the two bypasses this closes relied on.
 COMMENT = re.compile(r"^\s*(//|/\*|\*|\{/\*)")
@@ -170,11 +173,10 @@ def reasoned(lines: list[str], index: int) -> bool:
 
 
 def marked(lines: list[str], index: int) -> bool:
-    for previous in reversed(lines[:index]):
-        if previous.strip():
-            marker = MARKER.match(previous)
-            return marker is not None and len(marker.group(1).split()) >= MARKER_WORDS
-    return False
+    marker = MARKER.match(lines[index - 1]) if index > 0 else None
+    if marker is None:
+        return False
+    return sum(1 for word in marker.group(1).split() if LETTER.search(word)) >= MARKER_WORDS
 
 
 files = 0
@@ -258,8 +260,9 @@ if bare_reads:
         "`expect.stringMatching(re)` for `.toContain(part)` or `.toMatch(re)`. Where the matcher "
         "cannot say the same thing — a value that may be null, a `.not` form over a part of an "
         "attribute or over an element that may be missing, a message that names what a failure "
-        "needs — write `// jest-dom: <why this read keeps its own form>` as the nearest non-blank "
-        "line above the assertion's `expect(`. No other comment counts.",
+        "needs — write `// jest-dom: <why this read keeps its own form>` on the line directly "
+        f"above the assertion's `expect(`, with no blank line between, in at least {MARKER_WORDS} "
+        "words that each hold a letter. No other comment counts.",
         file=sys.stderr,
     )
 

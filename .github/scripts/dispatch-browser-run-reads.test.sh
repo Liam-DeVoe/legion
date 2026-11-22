@@ -9,8 +9,8 @@
 # stand-in recorded and the lines the script printed. The ladder's waits are the case's own,
 # `retry_seconds` seconds for the first and twice that for the second, which `fixture` resets to
 # 0. A stand-in `sleep` records each wait the ladder asks for through the `sleep` on PATH, and
-# the cases read those records, not how long the drive took: two cases set the knob to 1 and read
-# the waits 1 s and 2 s, or 1 s. The control runs the drive of a gh answering at once under
+# the cases read those records, not how long the drive took: the cases that set the knob to 1
+# read the waits 1 s and 2 s, or 1 s. The control runs the drive of a gh answering at once under
 # strace and holds it to none of the calls TIMED_WAITS lists, the census of the kernel's calls
 # that wait out a time their caller gives them, arm a clock their caller sets, or wait for a
 # signal or a lock (a futex, an fcntl or an ioctl counted only where it waits, leases or sets a
@@ -894,6 +894,28 @@ check "which names the refusal" \
 check "and the one attempt made" "$(contains "$(error_line)" 'the ladder made 1 attempts')"
 check "and the ladder's line says the reset was past the cap" \
   "$(contains "$(ladder_line)" "x-ratelimit-reset $reset .* is [0-9]* s away, past the cap of 60 s")"
+
+echo "case: GitHub's rate limit whose reset is already past keeps the ladder's waits, without a wait loop"
+# A reset whose 3 s past it have gone by names no time to wait for. The ladder once waited 1 s for
+# it and asked again, one call a second until the cap; the stand-in refuses more calls than the
+# ladder's three attempts, so a ladder that spun would ask a fourth time and wait 1 s for it.
+fixture 9 "$rate_limited"
+rate_limit 0 -60
+retry_seconds=1
+wait_cap=5
+drive jobs "$work/out.json"
+check "fails the step" "$(is "$status" 1)"
+check "writes no out-file" "$(is "$(wrote_out_file)" no)"
+check "asked three times" "$(is "$(calls)" 3)"
+check "reading the rate limit once after each refusal" "$(is "$(rate_calls)" 3)"
+check "and waited the ladder's 1 s and 2 s and nothing else" "$(is "$(sleeps)" "1|2")"
+check "making no wait of the rate limit's" \
+  "$(is "$(grep -c 'so the ladder waits' <<<"$out" || true)" 0)"
+check "and the ladder's line says the reset names no time to wait for, each time" \
+  "$(is "$(grep -c "x-ratelimit-reset $reset (.*), whose 3 s past it have already gone by, so it names no time to wait for and the ladder keeps its own waits$" <<<"$out" || true)" 3)"
+check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "which names the last refusal" \
+  "$(contains "$(error_line)" 'attempt 3, which decided the failure, answered HTTP 403; the ladder made 3 attempts')"
 
 echo "case: a 403 that names no rate limit fails at once, without a wait"
 # A permission refusal: gh's words hold no rate limit, so the ladder neither reads the rate limit

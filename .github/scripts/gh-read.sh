@@ -53,9 +53,12 @@ gh_read() {
 #   spends. Where remaining is 0, the ladder prints one line naming that header, the time (UTC)
 #   and the cap, waits until GH_READ_RESET_MARGIN seconds past the reset, and asks again; such a
 #   wait takes none of the three attempts. A wait that would take the ladder's waits past the cap
-#   is not made: the ladder says so, naming the refusal and the reset, and fails. A rate limit
-#   with remaining above 0 is the secondary limit, whose `retry-after` header gh does not show,
-#   so it keeps the ladder's own waits and a line says so.
+#   is not made: the ladder says so, naming the refusal and the reset, and fails. A reset whose
+#   GH_READ_RESET_MARGIN seconds past it have already gone by names no time to wait for, so the
+#   refusal keeps the ladder's own waits and a line says so: a wait of its own there would ask
+#   again once a second until the cap. A rate limit with remaining above 0 is the secondary
+#   limit, whose `retry-after` header gh does not show, so it keeps the ladder's own waits and a
+#   line says so.
 # - Any other HTTP 403 - a permission refusal, a token without the scope - fails at once, with a
 #   line that says so: asking again is refused the same way.
 # - Anything else - a 5xx, a connection refused, the caller's own bound ending the attempt -
@@ -90,8 +93,13 @@ gh_read_waiting() {
       if [ "$remaining" = 0 ] && [[ $reset =~ ^[0-9]+$ ]]; then
         now=$(date +%s)
         seconds=$((reset + GH_READ_RESET_MARGIN - now))
-        [ "$seconds" -ge 1 ] || seconds=1
-        if [ $((waited + seconds)) -gt "$cap" ]; then
+        if [ "$seconds" -lt 1 ]; then
+          echo "gh_read: GitHub's rate limit refused this call ($status), and gh api rate_limit" \
+            "reads x-ratelimit-remaining 0 and x-ratelimit-reset $reset" \
+            "($(date -u -d "@$reset" +%Y-%m-%dT%H:%M:%SZ)), whose $GH_READ_RESET_MARGIN s past it" \
+            "have already gone by, so it names no time to wait for and the ladder keeps its own" \
+            "waits" >&2
+        elif [ $((waited + seconds)) -gt "$cap" ]; then
           echo "gh_read: GitHub's rate limit refused this call ($status), and its reset," \
             "x-ratelimit-reset $reset ($(date -u -d "@$reset" +%Y-%m-%dT%H:%M:%SZ)) with" \
             "x-ratelimit-remaining 0 as gh api rate_limit reads them, is $seconds s away, past" \
@@ -99,17 +107,17 @@ gh_read_waiting() {
             "the ladder does not wait for it" >&2
           rm -f "$err"
           return 1
+        else
+          echo "gh_read: GitHub's rate limit refused this call ($status); gh api rate_limit reads" \
+            "x-ratelimit-remaining 0 and x-ratelimit-reset $reset, so the ladder waits $seconds s," \
+            "until $(date -u -d "@$((now + seconds))" +%Y-%m-%dT%H:%M:%SZ), $GH_READ_RESET_MARGIN" \
+            "s past that reset, and asks again; the cap is $cap s (GH_READ_WAIT_CAP_SECONDS)," \
+            "$waited s of it waited before this" >&2
+          sleep "$seconds"
+          waited=$((waited + seconds))
+          continue
         fi
-        echo "gh_read: GitHub's rate limit refused this call ($status); gh api rate_limit reads" \
-          "x-ratelimit-remaining 0 and x-ratelimit-reset $reset, so the ladder waits $seconds s," \
-          "until $(date -u -d "@$((now + seconds))" +%Y-%m-%dT%H:%M:%SZ), $GH_READ_RESET_MARGIN" \
-          "s past that reset, and asks again; the cap is $cap s (GH_READ_WAIT_CAP_SECONDS)," \
-          "$waited s of it waited before this" >&2
-        sleep "$seconds"
-        waited=$((waited + seconds))
-        continue
-      fi
-      if [[ $remaining =~ ^[1-9][0-9]*$ ]]; then
+      elif [[ $remaining =~ ^[1-9][0-9]*$ ]]; then
         echo "gh_read: GitHub's rate limit refused this call ($status), and gh api rate_limit" \
           "reads x-ratelimit-remaining '$remaining', not 0: a secondary limit, whose retry-after" \
           "gh does not show, so the ladder keeps its own waits" >&2
