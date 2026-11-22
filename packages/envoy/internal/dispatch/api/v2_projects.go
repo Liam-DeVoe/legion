@@ -118,12 +118,13 @@ func (s *server) v2ProjectRows() []routeRow {
 				"spec in the order it gates them or [] for none, which needs no scope: the deployment's daemon writes it at " +
 				"every boot. default_repository sets " + projectDefaultRepositoryText + ": \"owner/name\" sets it, read " +
 				"lowercase with one trailing .git trimmed and stored under its new name where the repository was renamed, " +
-				"and null clears it; a value that is not a repository GitHub could hold is 400 INVALID_PROJECT. The default " +
+				"and null clears it. The default " +
 				"belongs to the deployment and needs no scope, so a credential scoped to one project is refused it (403 " +
 				"PROJECT_SCOPE_DEPLOYMENT), the project this path names included. A list or a default repository the " +
 				"project already holds changes nothing and appends no event; another appends project.updated. A body that " +
-				"names none of the three fields, a blank default_assignee, and a step that is none of the three or is named " +
-				"twice are 400 INVALID_PROJECT. Every field is written in one transaction. Answers the project as GET " +
+				"names none of the three fields, a blank default_assignee, a step that is none of the three or is named " +
+				"twice, and a default_repository that is not a repository GitHub could hold are 400 INVALID_PROJECT. " +
+				"Every field is written in one transaction. Answers the project as GET " +
 				"/api/v2/projects lists it, with default_assignee where the patch named it. 404 PROJECT_NOT_FOUND for a " +
 				"project that does not exist.",
 			Handler:  s.patchProjectV2,
