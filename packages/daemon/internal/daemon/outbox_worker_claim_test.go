@@ -25,7 +25,8 @@ import (
 // is published where that claim records the round, also where that claim is not the one the
 // record gives the role: a fresh tester an earlier version of the plan started still holds its
 // claim in the pod. An ask the release before wrote names no claim, and reaches the claim the
-// record gives the role.
+// record gives the role while that claim runs: once the step's stop suspended it, the round asks
+// it nothing (supervise's PassedOverByRound), so the ask runs before the stop.
 func TestARowOfATesterStepReachesItsAgent(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -83,17 +84,9 @@ func TestARowOfATesterStepReachesItsAgent(t *testing.T) {
 	if err := machine.Handle(ctx, supervise.RequestReady{Claim: keyed, Generation: launch, Session: "ses-a"}); err != nil {
 		t.Fatalf("ready key a's agent: %v", err)
 	}
-	stop := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "step_stop", Tree: issue.Tree, Role: claim.RoleTester, Generation: 1}, time.Now())
-	stop.ID = 58
-	if err := runner.execute(ctx, stop); err != nil {
-		t.Fatalf("the tester's step stop: %v", err)
-	}
-	if got := machine.Claim().State; got != supervise.StateSuspended {
-		t.Fatalf("key a's claim after the tester's step stop = %s, want suspended", got)
-	}
-
 	// A claim is asked once per round (the outbox marks it asked), so the ask the release before
-	// wrote, which names no claim, runs first: it reaches the claim the record gives the role.
+	// wrote, which names no claim, runs first: it reaches the claim the record gives the role. It
+	// runs before the step's stop, since a claim the daemon suspended is published no ask.
 	before := record.OutboxRow{ID: 60, Issue: issue.Key, Kind: record.OutboxKindUpdateAsk, NextAt: time.Now(),
 		Payload: json.RawMessage(`{"role":"tester","round":"r1","text":"Push your work."}`)}
 	if err := runner.execute(ctx, before); err != nil {
@@ -101,6 +94,15 @@ func TestARowOfATesterStepReachesItsAgent(t *testing.T) {
 	}
 	if published := publisher.publishes(); len(published) != 1 || published[0].topic != topic || published[0].message != "Push your work." {
 		t.Fatalf("the update ask of the release before was published as %+v, want it on %s", published, topic)
+	}
+
+	stop := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "step_stop", Tree: issue.Tree, Role: claim.RoleTester, Generation: 1}, time.Now())
+	stop.ID = 58
+	if err := runner.execute(ctx, stop); err != nil {
+		t.Fatalf("the tester's step stop: %v", err)
+	}
+	if got := machine.Claim().State; got != supervise.StateSuspended {
+		t.Fatalf("key a's claim after the tester's step stop = %s, want suspended", got)
 	}
 
 	// A fresh tester of an earlier version of the plan still holds its own claim in the pod, and
