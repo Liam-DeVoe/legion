@@ -598,7 +598,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     files: ["packages/dispatch/web/src/features/issue-page/IssueTree.tsx"],
     proof: {
       file: "packages/dispatch/web/src/features/issue-page/IssueTree.test.tsx",
-      test: "a crumb reads a reference in its node's line as its target's name, and as its author's words until it resolves",
+      test: "a reference in a node's line reads as its target's name in the panel and in its crumb, and as its author's words until it resolves",
     },
     reach:
       "/issues/<ISSUE> with the new issue page on, below 1024 px, the crumb line above a node zoomed into",
