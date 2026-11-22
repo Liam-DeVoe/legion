@@ -90,9 +90,8 @@ Where the gate is closed and not armed (`gate_open: false` and `gate_armed: fals
 A changes request asks you to revise the document as the person asks in its reason, except where the gate is open and armed: a person then approved the document after that review, so it asks for no revision now.
 A changes request made after the wait began that did not answer it (`later_changes_version`, with its reason in the `later_reason` block) asks the same revision.
 A newer version that handed the approval request back to you (`act: version`) asks you to read that version and the request's thread.
-Where nothing is with the person, nothing waits on you and the gate is open, continue the tree's work.
+Where nothing is still with the person and the gate is not both armed and closed, continue the tree's work, after you have replied to each ask that waits on you (`waiting_on_you`). That holds for a resume without `gate_open`, which is of a step with no gate yet, such as a question asked before any step of the design gate was registered, for an open gate, and for a closed gate that is not armed, whose document you register when it is ready.
 Where the gate is open (`gate_open: true`), an item that the task lists as still with the person (`with_person`) asks no hand-back of you, because the open gate moves the root on to planning, where a hand-back starts no wait: continue the tree's work.
-A resume that names no `gate_open` is of a step with no gate yet, such as a question asked before any step of the design gate was registered: where nothing is with the person and nothing waits on you, continue the tree's work.
 Your root holds its admission slot throughout, since a root in `awaiting_person` keeps the one the
 daemon gave it ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)), so that resume takes no slot
 and comes however full the cap is. An answered root stands in the admission line until the pass
