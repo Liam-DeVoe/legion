@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import {
   ARTIFACT_NAME_EXISTS_RULE,
@@ -11752,6 +11752,85 @@ describe("executeDispatchTool", () => {
         const [declared = ""] = (await uploadFrom(cwd, name, file, notes, false)).declared;
         const markdown = declared.split(";", 1)[0]?.trim().toLowerCase() === "text/markdown";
         if (held !== markdown) parted.push({ name, path: sent, held, declared });
+      }
+      expect(parted).toEqual([]);
+    });
+
+    // The names and paths are the matrix the tester ran through the head's own command under a
+    // live AskGate record (dispatch://INFRA-4071/artifact/tester-tools-r20-tgz-b64-txt,
+    // gate16/matrix.py). The test holds that the gate and the declared type agree on every pair.
+    // Every path is read in one working directory, where notes.md/, notes.md/. and notes.md/x/..
+    // resolve to notes.md, and each pair goes up both ways, read from the path and with the bytes
+    // AskGate read; each pair whose two answers part is named with both.
+    test("declares text/markdown exactly when AskGate holds the upload as a document, on the tester's matrix", async () => {
+      const names = [
+        "a.md",
+        "a.MD",
+        "a.Markdown",
+        "a.md.1",
+        "a.md.2026.11",
+        "a.MARKDOWN.0",
+        "a.mdown",
+        "a.mkd",
+        "a.txt",
+        "a.txt.1",
+        "a.json",
+        "a.jsonl",
+        "a.c++",
+        "a.tar.gz",
+        "a.данные",
+        "a.md\u200b",
+        "a.\uff4d\uff44",
+        "a.m d",
+        "a.",
+        "a.md/",
+        "a v1.2",
+        "a",
+        `a.${"x".repeat(32)}`,
+        `a.${"x".repeat(33)}`,
+        "a.md ",
+        " a.md",
+        "a.\u0661",
+        "a.md.\u0661",
+        "a.md..1",
+        "a.md.1.",
+        "dir/a.md",
+      ];
+      const paths = [
+        "x.md",
+        "x.txt",
+        "x.MD",
+        "x.mkd",
+        "dir/.md",
+        "notes.md/",
+        "notes.md/.",
+        "notes.md/x/..",
+        ".md",
+        "cases.txt",
+      ];
+      const notes = text("# Notes\n");
+      const cwd = makeDirectory();
+      mkdirSync(path.join(cwd, "dir"));
+      const files = ["x.md", "x.txt", "x.MD", "x.mkd", "dir/.md", "notes.md", ".md", "cases.txt"];
+      for (const file of files) {
+        writeFileSync(path.join(cwd, file), notes);
+      }
+      const parted: Array<{
+        name: string;
+        path: string;
+        gated: boolean;
+        held: boolean;
+        declared: string;
+      }> = [];
+      for (const name of names) {
+        for (const file of paths) {
+          const held = gatedWrite("dispatch_artifact", { issue: "DSP-42", name, path: file }, cwd);
+          for (const gated of [false, true]) {
+            const [declared = ""] = (await uploadFrom(cwd, name, file, notes, gated)).declared;
+            const markdown = declared.split(";", 1)[0]?.trim().toLowerCase() === "text/markdown";
+            if (held !== markdown) parted.push({ name, path: file, gated, held, declared });
+          }
+        }
       }
       expect(parted).toEqual([]);
     });
