@@ -102,15 +102,3 @@ func (l *recordingLog) matching(want func(loggedRecord) bool) []loggedRecord {
 	}
 	return matched
 }
-
-// relaunchStampOf is the relaunch an R6 controller line names (its relaunchedAt, the claim's
-// LastRelaunch as the daemon stamped it), read back as recordingLog keeps it; the zero time where
-// the line carries none or carries it in a form time.Parse(time.RFC3339Nano, ...) does not read.
-func relaunchStampOf(rec loggedRecord) time.Time {
-	text, _ := rec.Attrs["relaunchedAt"].(string)
-	stamped, err := time.Parse(time.RFC3339Nano, text)
-	if err != nil {
-		return time.Time{}
-	}
-	return stamped
-}

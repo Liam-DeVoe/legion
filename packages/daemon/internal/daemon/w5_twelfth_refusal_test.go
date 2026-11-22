@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // twelfthHold is the daemon's line that its relaunch guard holds its relaunch of w5's twelfth
@@ -57,10 +55,14 @@ func namedAt(reason, prefix string) (time.Time, bool) {
 	return named, err == nil
 }
 
+// guardWindow is the guard's 20 minutes (supervise.UnreachableAfter), written as a literal so the
+// file builds over the base's code, which w5's negative control lays it on.
+const guardWindow = 20 * time.Minute
+
 // inWindow is whether the guard can have named named before it wrote h: at or before the line, and
 // less than the guard's 20 minutes, plus the second the name cuts, before it.
 func (h twelfthHold) inWindow(named time.Time) bool {
-	return !named.After(h.at) && h.at.Sub(named) < supervise.UnreachableAfter+time.Second
+	return !named.After(h.at) && h.at.Sub(named) < guardWindow+time.Second
 }
 
 // seenAs is whether named, a daemon's stamp cut to the second, can be the stamp of one of seen,
