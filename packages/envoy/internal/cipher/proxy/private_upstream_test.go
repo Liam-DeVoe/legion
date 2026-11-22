@@ -38,7 +38,7 @@ import (
 // the address it has inside the cluster, the URL's host and port.
 const (
 	privateHost = "dispatch.test"
-	privateName = "dispatch.internal.test"
+	privateName = "dispatch.internal.example"
 	privatePort = "8766"
 )
 
@@ -50,7 +50,7 @@ var privateAddress = netip.MustParseAddr("10.0.0.5")
 // dials (100.64.0.0/10), as Dispatch's public name resolves inside the tailnet.
 var publicAddress = netip.MustParseAddr("100.100.1.1")
 
-// privateDestination is BROKER_AIRLOCK_PRIVATE_UPSTREAM=dispatch.test=http://dispatch.internal.test:8766.
+// privateDestination is BROKER_AIRLOCK_PRIVATE_UPSTREAM=dispatch.test=http://dispatch.internal.example:8766.
 func privateDestination() PrivateUpstream {
 	return PrivateUpstream{Host: privateHost, URL: &url.URL{Scheme: "http", Host: net.JoinHostPort(privateName, privatePort)}}
 }
@@ -264,7 +264,7 @@ func connectRefused(t *testing.T, r *rig, target, password string) (string, stri
 // TestThePrivateUpstreamTakesTheBoundRouteAlone: the allowed write to the destination's bound host
 // reaches Dispatch at its private address with Host dispatch.test, the run's token in place of the
 // placeholder, and a proof that Dispatch's own verifier accepts for its public origin, although the
-// write was sent to http://dispatch.internal.test:8766. Nothing else reaches that address or any
+// write was sent to http://dispatch.internal.example:8766. Nothing else reaches that address or any
 // other the proxy refuses: a request the rules do not allow, a CONNECT to the destination's name or
 // address, a plain-HTTP request to it, a CONNECT to each kind of private, loopback, link-local and
 // cluster address, and a grant whose names do not bind dispatch.test sending to it are each refused
