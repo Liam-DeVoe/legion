@@ -893,12 +893,28 @@ A machine holding a Google identity token — a Compute Engine VM, a pod on Goog
 Engine, or anything a workload identity pool mints one for — trades that token at the broker's
 token exchange for a Dispatch access token and the machine login that trade mints. It holds no
 stored credential and no person approves it. Set the Google audience and list each exchanging
-account as a VM service. A machine's, a person's or a workflow run's token whose key the broker
-cannot read, because its issuer's key set cannot be read now, is answered
-`503 OIDC_ISSUER_UNAVAILABLE` with `Retry-After: 1`, as a cluster's token is, and never refused
-as a token that does not verify. A token no wait can make valid is still refused
-`400 invalid_request` meanwhile: one that has expired, carries no `exp` or one further ahead than
-its type allows, or names another issuer. The remaining fleet settings are optional, subject to these checks:
+account as a VM service.
+
+Whether or not an issuer's key set can be read, the token exchange refuses with
+`400 invalid_request` a token that does not expire within the longest life its type's tokens
+have: an hour for GitHub's and Google's tokens, 24 hours for a cluster's. That is a token with no
+`exp`, an `exp` of null, of 0 or of any value under 1, and an `exp` further ahead than that life.
+No real issuer's token meets this; the library the exchange uses admits some of these tokens as
+never expiring.
+
+When a token names a key the broker does not hold and its issuer's key set cannot be read now,
+the exchange answers as follows. This covers a cluster's, a machine's, a person's and a workflow
+run's token, and in a person's sign-in the person's token as well as the machine's.
+
+- `400 invalid_request`, with no `Retry-After`, for a token the exchange refuses once it can read
+  the key, whatever key signed it: its `exp` is not a number or is past; its `iat` is older than
+  its type's life, or is not a number; its `nbf` is not a number; its `iss` is not its type's
+  issuer; or, for a workflow run's token, it carries no `jti` or one already presented.
+- `503 OIDC_ISSUER_UNAVAILABLE` with `Retry-After: 1` for any other token, including one whose
+  only fault is an `iat` or an `nbf` in the future, which a wait can make valid. It is never
+  refused as a token that does not verify.
+
+The remaining fleet settings are optional, subject to these checks:
 
 - `BROKER_GOOGLE_OIDC_AUDIENCE`: the audience the machines ask their metadata server for. The
   issuer is Google's, `https://accounts.google.com`, unless `BROKER_GOOGLE_OIDC_ISSUER` names a

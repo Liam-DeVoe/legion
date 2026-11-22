@@ -13,10 +13,20 @@ body: |-
   token, a machine's actor token and a GitHub workflow run's token whose issuer's key set cannot be
   read are answered that `503` too, where they were `400 invalid_request` as a token the exchange
   could not parse, which the broker's token clients take as final. A token signed by a key its
-  issuer never published is refused as before. While a key set cannot be read, the exchange still
-  refuses `400 invalid_request`, and does not answer 503, a token no wait can make valid: one that
-  has expired, carries no `exp` or one further ahead than its type allows, or names another
-  issuer than its type's.
+  issuer never published is refused as before. While a key set cannot be read, the exchange
+  refuses `400 invalid_request`, with no `Retry-After`, a token it refuses once it can read the
+  key, whatever key signed it: an `exp` that is not a number or is past, an `iat` older than its
+  type's lifetime or not a number, an `nbf` that is not a number, an `iss` that is not its type's
+  issuer, and for a workflow run's token a `jti` that is missing or already presented. That holds
+  for a person's token in a sign-in too, which the library reaches only after the machine's actor
+  token. A token whose only fault is an `iat` or an `nbf` in the future, which a wait can make
+  valid, is answered `503` until the key set can be read.
+  The exchange now refuses `400 invalid_request` a token that does not expire within the longest
+  life its type's tokens have, whether or not the key set can be read: an hour for GitHub's and
+  Google's tokens, 24 hours for a cluster's. That is a token with no `exp`, an `exp` of null, 0 or
+  any value under 1, and an `exp` further ahead than that life, such as 9223371974719179008. The
+  library the exchange uses admits some of these as tokens that never expire, and the broker
+  minted an access token for them. No real issuer's token meets this.
   The broker logs `broker: key set cannot be read` at WARN once when a read of a key set it checks
   callers' tokens against fails, and `broker: key set can be read again` at INFO once when a read
   of it succeeds after that, each naming the issuer and the key set's address, never a token: each
@@ -24,6 +34,9 @@ body: |-
   the reads, so a key set that cannot be read shows in the log while the keys the broker holds
   from its last good read still answer every token. They come in place of the token-driven
   `broker: kubernetes issuer cannot be read` line #4049 added.
+  `broker: kubernetes issuer can be read again` is now written only for an issuer the broker's
+  start could not read; an issuer read at the start logs `broker: key set can be read again` when
+  its key set can be read again.
   A token naming a key the broker's cached key set does not hold, arriving just as another token
   for the same key started the read that finds that key, could be refused as unverified before
   that read ended. It now waits for that read, or is answered from the set the read found.
