@@ -5,7 +5,7 @@ description: Use when dispatched as a per-process Legion phase worker — planne
 
 # Legion Phase Worker
 
-Your role prompt gives the workspace, the push, the handoff, `handoff_complete`, the waits and the pod release; this skill adds the rest.
+Your role prompt gives the workspace, the push, the handoff, the waits and the pod release; this skill adds the rest.
 Where it disagrees with the code or a command's `--help`, follow those and tell your architect which line is wrong.
 
 ## Every phase
@@ -75,24 +75,23 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 
 ## Pull request and merge gate
 
-- The implementer opens the pull request with the line `Dispatch: <KEY>` in its body.
-  Later phases push to that branch and edit that pull request.
+- An implementation step's agent opens the pull request with the line `Dispatch: <KEY>` in its body;
+  later steps push to that branch and edit that pull request; a task with no such step has none.
 
-- No deferrals.
+- No deferrals where the issue has a pull request.
   A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request.
   So is a wording nit or any clear fix in a file it touches: a later round costs a CI pass and a review.
   `Fast-follow:` reads `none` or names cleanup in files the pull request does not touch.
 
-- The merge gate follows the task's `Steps:` line: each named step runs in order, then retro and the merger.
+- The merge gate follows the task's `Steps:` line: each named step runs in order, then retro and, with a pull request, the merger.
   The default task has tester evidence, reviewer approval and architect acceptance.
-  With no tester step, the implementer's evidence serves;
-  with no reviewer step, no Legion approval is awaited; without `acceptance:owner`, the last step starts retro.
+  With no tester step, an implementation step's evidence serves;
+  with no reviewer step, no Legion approval is awaited; the last step's pass starts retro.
   Only the merger runs `gh pr merge`; nobody turns auto-merge on.
 
 - End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.
 
-- A Dispatch comment or message never carries the `<!-- legion: … -->` footer.
-  Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
+- A Dispatch comment or message never carries that footer: Dispatch records the session that wrote it.
 
 - Never run `gh config set` or `gh alias set`, and leave `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` unset:
   a set variable outranks the gh directory the daemon refreshes.
@@ -104,7 +103,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 
 They override this skill, except: no deferrals;
 the base merged forward only as `skill://legion-worker/references/conflicts-and-rewrites.md#reintegrating-the-base` allows;
-the implementer's own result for every `before_merge` check with no `ci_check` (`skill://legion-worker/references/results.md#what-a-result-is`);
+an implementation step's own result for every `before_merge` check with no `ci_check` (`skill://legion-worker/references/results.md#what-a-result-is`);
 and the production check after the close (`skill://legion-worker/references/merge-gate.md#the-production-check-after-the-close`).
 
 ## References

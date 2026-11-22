@@ -723,7 +723,10 @@ test("the architect's skill routes its own steps to the reference that names own
 
 test("an implementer and reviewer task has the implementer prove the surface and the reviewer read it", () => {
   expect([
-    ...lacks("legion-worker/SKILL.md", [/no tester step[^.;]*the implementer's evidence serves/]),
+    ...lacks("legion-worker/SKILL.md", [
+      /no tester step[^.;]*an implementation step's evidence serves/,
+      /implementation step's agent opens the pull request[^.]*a task with no such step has none/,
+    ]),
     ...lacks("legion-worker/references/ci-checks.md", [
       /implementer with no tester step[^.;]*real surface/,
     ]),
@@ -748,7 +751,7 @@ test("an implementer and tester task gives the reviewer's body lines and bot thr
     ]),
     ...lacks("legion-worker/SKILL.md", [
       /no reviewer step[^.;]*no Legion approval/,
-      /without `acceptance:owner`[^.;]*last step starts retro/,
+      /no Legion approval is awaited; the last step's pass starts retro/,
     ]),
   ]).toEqual([]);
   const merger = collapsed(
