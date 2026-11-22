@@ -135,7 +135,7 @@ func TestARedeliveredSettlementWhoseCheckNameHoldsNULAddsNoStepToTheHeadRun(t *t
 		var pr *record.PullRequest
 		seedRecord(t, pool, func(tx pgx.Tx) error {
 			var err error
-			pr, err = record.NewStore().PullRequest(t.Context(), tx, "LEGION-208")
+			pr, err = record.NewStore().MergePullRequest(t.Context(), tx, "LEGION-208")
 			return err
 		})
 		if pr == nil || pr.Run == nil {
@@ -586,7 +586,7 @@ func recordedPR(t *testing.T, pool *pgxpool.Pool, issue string) record.PullReque
 	t.Helper()
 	var pr *record.PullRequest
 	seedRecord(t, pool, func(tx pgx.Tx) (err error) {
-		pr, err = record.NewStore().PullRequest(t.Context(), tx, issue)
+		pr, err = record.NewStore().MergePullRequest(t.Context(), tx, issue)
 		return err
 	})
 	if pr == nil {

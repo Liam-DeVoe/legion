@@ -292,7 +292,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		intake.PullRequestSynchronized{Repo: "acme/widgets", Number: 7, Branch: claim.IssueBranch(movedIssue),
 			HeadSHA: "a1", UpdatedAt: at(26)})
 	inTx(t, pool, func(tx pgx.Tx) {
-		pr, err := record.NewStore().PullRequest(ctx, tx, movedIssue)
+		pr, err := record.NewStore().MergePullRequest(ctx, tx, movedIssue)
 		if err != nil || pr == nil {
 			t.Fatalf("read the pull request of %s = %+v, %v", movedIssue, pr, err)
 		}
@@ -327,7 +327,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		intake.PullRequestChecks{Repo: "acme/widgets", Number: 7, HeadSHA: "a1", Generation: 1, Snapshot: "settled-a1",
 			CheckRuns: []record.AttemptRun{{Name: "unit", ID: 70}}, Failing: []string{}, Cancelled: []string{}})
 	inTx(t, pool, func(tx pgx.Tx) {
-		pr, err := record.NewStore().PullRequest(ctx, tx, movedIssue)
+		pr, err := record.NewStore().MergePullRequest(ctx, tx, movedIssue)
 		if err != nil || pr == nil {
 			t.Fatalf("read the pull request of %s = %+v, %v", movedIssue, pr, err)
 		}
@@ -359,7 +359,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		t.Helper()
 		var got record.PullRequest
 		inTx(t, pool, func(tx pgx.Tx) {
-			pr, err := record.NewStore().PullRequest(ctx, tx, movedIssue)
+			pr, err := record.NewStore().MergePullRequest(ctx, tx, movedIssue)
 			if err != nil || pr == nil {
 				t.Fatalf("read the pull request of %s = %+v, %v", movedIssue, pr, err)
 			}
@@ -805,7 +805,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 			t.Helper()
 			var got record.PullRequest
 			inTx(t, pool, func(tx pgx.Tx) {
-				pr, err := record.NewStore().PullRequest(ctx, tx, issueKey)
+				pr, err := record.NewStore().MergePullRequest(ctx, tx, issueKey)
 				if err != nil || pr == nil {
 					t.Fatalf("read the pull request of %s = %+v, %v", issueKey, pr, err)
 				}

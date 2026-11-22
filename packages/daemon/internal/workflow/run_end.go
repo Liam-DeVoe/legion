@@ -604,7 +604,7 @@ func (e *Engine) mergeCanLand(ctx context.Context, tx pgx.Tx, runs *factRuns, me
 	if record.Lingering(root, e.now()) && !runs.closed[root.Tree] {
 		return true, nil
 	}
-	pr, err := e.store.PullRequest(ctx, tx, member.Key)
+	pr, err := e.store.MergePullRequest(ctx, tx, member.Key)
 	if err != nil {
 		return false, err
 	}

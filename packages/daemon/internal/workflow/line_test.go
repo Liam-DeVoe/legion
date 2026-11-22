@@ -329,7 +329,7 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			pr, err := engine.store.PullRequest(ctx, tx, issue.Key)
+			pr, err := engine.store.MergePullRequest(ctx, tx, issue.Key)
 			if err != nil {
 				return err
 			}

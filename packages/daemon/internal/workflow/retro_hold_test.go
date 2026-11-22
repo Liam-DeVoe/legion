@@ -41,7 +41,7 @@ func approveReview(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 		if err != nil {
 			return err
 		}
-		pr, err := engine.store.PullRequest(ctx, tx, "LEGION-208")
+		pr, err := engine.store.MergePullRequest(ctx, tx, "LEGION-208")
 		if err != nil {
 			return err
 		}

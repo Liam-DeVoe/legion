@@ -338,7 +338,7 @@ func handoffRecord(t *testing.T, h *harness, key string) (phase.Phase, *record.P
 			return err
 		}
 		at = issue.Phase
-		pr, err = records.PullRequest(context.Background(), tx, key)
+		pr, err = records.MergePullRequest(context.Background(), tx, key)
 		return err
 	}); err != nil {
 		t.Fatalf("read the records of %s: %v", key, err)

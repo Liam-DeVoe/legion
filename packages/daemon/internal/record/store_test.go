@@ -429,7 +429,7 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		if !reflect.DeepEqual(phases, []PhaseRow{phase}) {
 			t.Fatalf("phases = %#v, want %#v", phases, []PhaseRow{phase})
 		}
-		gotPR, err := records.PullRequest(ctx, tx, issue.Key)
+		gotPR, err := records.MergePullRequest(ctx, tx, issue.Key)
 		must(t, err)
 		if !samePullRequest(*gotPR, pr) {
 			t.Fatalf("pull request = %#v, want %#v", gotPR, pr)
@@ -498,7 +498,7 @@ func TestARowFromBeforeRepeatsReadsAsMovesNotPushed(t *testing.T) {
 		must(t, err)
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		got, err := records.PullRequest(ctx, tx, issue.Key)
+		got, err := records.MergePullRequest(ctx, tx, issue.Key)
 		must(t, err)
 		if want := []Move{{Before: "9f", SHA: "a0"}, {Before: "a0", SHA: "b1"}}; !reflect.DeepEqual(got.Moves, want) {
 			t.Fatalf("moves = %#v, want %#v", got.Moves, want)
@@ -538,7 +538,7 @@ func TestAPullRequestKeepsASkippedRunAndItsWordThroughTheStore(t *testing.T) {
 		must(t, records.PutPullRequest(ctx, tx, pr))
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		got, err := records.PullRequest(ctx, tx, issue.Key)
+		got, err := records.MergePullRequest(ctx, tx, issue.Key)
 		must(t, err)
 		if got == nil || !samePullRequest(*got, pr) {
 			t.Fatalf("pull request = %#v, want %#v: the skipped run and each word read back whole", got, pr)
@@ -553,7 +553,7 @@ func TestAPullRequestKeepsASkippedRunAndItsWordThroughTheStore(t *testing.T) {
 		must(t, err)
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		got, err := records.PullRequest(ctx, tx, issue.Key)
+		got, err := records.MergePullRequest(ctx, tx, issue.Key)
 		must(t, err)
 		want := pr
 		want.CheckRuns = []AttemptRun{{Name: "docs", ID: 117, Head: "b1", Conclusion: RunSucceeded}, {Name: "lint", ID: 110, Head: "b1", Conclusion: RunSucceeded}}
@@ -982,7 +982,7 @@ func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 		must(t, records.ClearGeneration(ctx, tx, issue.Key, time.Now().UTC()))
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		got, err := records.PullRequest(ctx, tx, issue.Key)
+		got, err := records.MergePullRequest(ctx, tx, issue.Key)
 		must(t, err)
 		if got == nil {
 			t.Fatal("the open pull request is gone, want it kept")
@@ -2422,7 +2422,7 @@ func TestReviewOrderMigrationCarriesTheReviewersMarkToThePullRequest(t *testing.
 	must(t, err)
 	records := NewStore()
 	inTx(t, st, func(tx pgx.Tx) {
-		pr, err := records.PullRequest(ctx, tx, "LEGION-208")
+		pr, err := records.MergePullRequest(ctx, tx, "LEGION-208")
 		must(t, err)
 		if pr == nil || pr.ReviewSeen.ID != 12 || !pr.ReviewSeen.SubmittedAt.IsZero() {
 			t.Fatalf("pull request after 0019 = %+v, want the reviewer's mark 12 with no submission time", pr)
@@ -2490,12 +2490,12 @@ func TestCheckedHeadMigrationKeepsARecordedVerdictStandingForItsHead(t *testing.
 	_, err = st.Migrate(ctx)
 	must(t, err)
 	inTx(t, st, func(tx pgx.Tx) {
-		pr, err := NewStore().PullRequest(ctx, tx, "LEGION-208")
+		pr, err := NewStore().MergePullRequest(ctx, tx, "LEGION-208")
 		must(t, err)
 		if pr == nil || pr.CheckedHead != "head" || len(pr.CheckRuns) != 1 {
 			t.Fatalf("pull request after 0028 = %+v, want checked head \"head\" with its settlement", pr)
 		}
-		unsettled, err := NewStore().PullRequest(ctx, tx, "LEGION-209")
+		unsettled, err := NewStore().MergePullRequest(ctx, tx, "LEGION-209")
 		must(t, err)
 		if unsettled == nil || unsettled.CheckedHead != "" {
 			t.Fatalf("never-settled pull request after 0028 = %+v, want no checked head", unsettled)

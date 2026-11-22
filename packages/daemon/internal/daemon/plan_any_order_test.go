@@ -186,7 +186,7 @@ func (r *ownerStepsRig) pullRequest() *record.PullRequest {
 	var pr *record.PullRequest
 	if err := r.st.Tx(context.Background(), func(tx pgx.Tx) error {
 		var err error
-		pr, err = r.records.PullRequest(context.Background(), tx, r.key)
+		pr, err = r.records.MergePullRequest(context.Background(), tx, r.key)
 		return err
 	}); err != nil {
 		r.t.Fatalf("read the pull request of %s: %v", r.key, err)

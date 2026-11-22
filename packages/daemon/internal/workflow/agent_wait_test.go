@@ -81,8 +81,10 @@ func assertNothingStarted(t *testing.T, pool *pgxpool.Pool, key, task string, pl
 // An agent does one step at a time: tasks x and y each have one step of the implementer keyed
 // k, and z, a reviewer's, needs both. At the first step x and y run, and the one start queued is
 // of x's step for agent k; y's step waits for its agent, with no start counted and no record of
-// it, and the log says that it waits, for agent k, which runs step 1 of x. x's step passes: in
-// that transaction y's step starts, for agent k, under k's claim. y passes: z starts.
+// it, and the log says that it waits, for agent k, which runs step 1 of x. x, the first to start,
+// works on the issue's branch, with its pull request #42, and y on a branch of its own. x's step
+// passes: in that transaction y's step starts, for agent k, under k's claim. y opens its pull
+// request #44 and passes: z starts.
 //
 // The fault it catches is one agent on two steps at one time (its control: the key taken off y's
 // step, so it is an implementer's of an agent of its own, which starts at the first step beside
@@ -123,6 +125,7 @@ func TestAStepWaitsForItsAgentInAnotherTask(t *testing.T) {
 	assertWaits(t, tasks, "y", atStep(1), record.StepWaitNone)
 	assertStartOf(t, newestStart(t, pool, root.Key, claim.RoleImplementer), root.Key, "y", "k")
 
+	seedTaskPR(t, pool, engine, root.Key, "y", 44)
 	taskMoves(t, pool, engine, root.Key, "y", TriggerImplementationReady, "")
 	joinsEnd(t, pool, engine, root.Key)
 
@@ -139,9 +142,9 @@ func TestAStepWaitsForItsAgentInAnotherTask(t *testing.T) {
 // x's tester's step starts, for agent k.
 //
 // The owner's move back of a task to a step of k while k works another task waits the same way:
-// task m runs its step of k, and w, `implementer:k reviewer`, stands at its review; the owner
-// moves w back to its first step, which waits for k with nothing of it started. m passes, and w's
-// step starts for k.
+// task m runs its step of k on the issue's branch, with its pull request #42, and w, `implementer:k
+// reviewer`, stands at its review on a branch of its own, with #45; the owner moves w back to its
+// first step, which waits for k with nothing of it started. m passes, and w's step starts for k.
 //
 // The fault it catches is a rule that only the first start of a task obeys (its control: the check
 // in startReady alone, the revision before, so the transition queues a second start of k).
@@ -191,9 +194,11 @@ func TestATransitionToTheNextStepOfABusyAgentWaits(t *testing.T) {
 			planTask{id: "m", steps: []string{"implementer:k"}, agents: []claim.Agent{"k"}, state: record.TaskRunning, place: atStep(1)},
 			planTask{id: "w", steps: []string{"implementer:k", "reviewer"}, agents: []claim.Agent{"k", "reviewer"}, state: record.TaskRunning, place: atStep(2)},
 			planTask{id: "z", steps: []string{"tester"}, agents: []claim.Agent{"tester"}, needs: []string{"m", "w"}, state: record.TaskWaiting})
+		seedTaskBranch(t, pool, root.Key, "w", "legion/"+root.Key+".w")
+		seedTaskPR(t, pool, engine, root.Key, "w", 45)
 
 		onTask(t, pool, engine, root.Key, "w", func(ctx context.Context, tx pgx.Tx, view record.Issue, w Walk) error {
-			pr, err := engine.store.PullRequest(ctx, tx, root.Key)
+			pr, err := engine.pullRequestOf(ctx, tx, view)
 			if err != nil {
 				return err
 			}
@@ -270,8 +275,9 @@ func TestAnAgentFreedByAMoveToANextStepGoesToItsWaiter(t *testing.T) {
 
 // A freed agent takes the step that waited longest for it, not the step a move makes ready in the
 // same act: the steps of tasks p and q wait for k, which does s's step, since t1 and t2, and r,
-// which needs s, has a first step of k. s passes: r is ready and runs in that act, and its step
-// waits for k behind p and q; p's step starts for k; q's and r's wait.
+// which needs s, has a first step of k. s works on a branch of its own, with its pull request #44.
+// s passes: r is ready and runs in that act, and its step waits for k behind p and q; p's step
+// starts for k; q's and r's wait.
 //
 // The fault it catches is a step that takes an agent ahead of steps that waited for it longer
 // (its control: start's check without the steps that wait, AgentWaiter, so r's step takes k and
@@ -286,6 +292,8 @@ func TestAFreedAgentTakesTheStepThatWaitedLongest(t *testing.T) {
 		planTask{id: "r", steps: []string{"implementer:k"}, agents: []claim.Agent{"k"}, needs: []string{"s"}, state: record.TaskWaiting},
 		planTask{id: "s", steps: []string{"implementer:k"}, agents: []claim.Agent{"k"}, state: record.TaskRunning, place: atStep(1)},
 		planTask{id: "z", steps: []string{"tester"}, agents: []claim.Agent{"tester"}, needs: []string{"p", "q", "r"}, state: record.TaskWaiting})
+	seedTaskBranch(t, pool, root.Key, "s", "legion/"+root.Key+".s")
+	seedTaskPR(t, pool, engine, root.Key, "s", 44)
 	t1, t2 := stepClock.Add(-2*time.Hour), stepClock.Add(-time.Hour)
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		if err := record.NewStore().SetStepWait(t.Context(), tx, root.Key, root.Generation, "p", record.StepWaitAgent, &t1); err != nil {

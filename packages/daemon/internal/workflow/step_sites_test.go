@@ -106,7 +106,7 @@ func onStored(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, writ
 func move(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, trigger TriggerKind, target record.TaskPlace, handoff record.PhaseRow) {
 	t.Helper()
 	onStored(t, pool, engine, key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-		pr, err := engine.store.PullRequest(ctx, tx, key)
+		pr, err := engine.store.MergePullRequest(ctx, tx, key)
 		if err != nil {
 			return err
 		}

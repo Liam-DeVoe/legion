@@ -78,13 +78,14 @@ func (e *Engine) viewsOf(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]
 
 // pullRequestOf is the pull request of the work issue is read for: for a copy read for one task
 // of a plan of several (view), that task's own row (record.Store.PullRequestOfTask), nil where it
-// has none; for the issue itself, the issue's (record.Store.PullRequest), as every reader read it
-// before tasks had pull requests of their own.
+// has none; for the issue itself, whose plan holds one task or none, the row of its merge
+// (record.Store.MergePullRequest), which is that one task's, or the row of an issue with no plan
+// rows.
 func (e *Engine) pullRequestOf(ctx context.Context, tx pgx.Tx, issue record.Issue) (*record.PullRequest, error) {
 	if issue.ViewTask != "" {
 		return e.store.PullRequestOfTask(ctx, tx, issue.Key, issue.ViewTask)
 	}
-	return e.store.PullRequest(ctx, tx, issue.Key)
+	return e.store.MergePullRequest(ctx, tx, issue.Key)
 }
 
 // viewOfPullRequest is the copy of issue read for the task whose branch pr is on
@@ -424,13 +425,15 @@ func (e *Engine) startReady(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 	if len(ready) == 0 {
 		return issue, nil
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
-	if err != nil {
-		return record.Issue{}, err
-	}
 	written := issue
 	for _, id := range ready {
 		view, w, err := e.view(ctx, tx, written, id)
+		if err != nil {
+			return record.Issue{}, err
+		}
+		// The step's text names the pull request of its own task (pullRequestOf on its copy), none
+		// for a task that has not opened one.
+		pr, err := e.pullRequestOf(ctx, tx, view)
 		if err != nil {
 			return record.Issue{}, err
 		}
@@ -530,7 +533,7 @@ func (e *Engine) restartViewed(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
 		return err
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := e.pullRequestOf(ctx, tx, issue)
 	if err != nil {
 		return err
 	}

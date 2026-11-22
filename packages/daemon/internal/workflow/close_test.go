@@ -387,7 +387,7 @@ func TestAMergeOfTheOpenPullRequestOfAClosedChildClosesNothing(t *testing.T) {
 	var pr *record.PullRequest
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		var err error
-		pr, err = record.NewStore().PullRequest(t.Context(), tx, "LEGION-209")
+		pr, err = record.NewStore().MergePullRequest(t.Context(), tx, "LEGION-209")
 		return err
 	})
 	if pr == nil || pr.State != record.PullRequestMerged || pr.MergeSHA != "merge-43" {

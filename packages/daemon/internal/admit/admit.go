@@ -1370,16 +1370,16 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 		}
 	}
 	var gates map[record.DesignStep]record.DesignGate
-	var pr *record.PullRequest
+	var prs []record.PullRequest
 	var err error
 	if orphan {
 		gates, err = a.store.GatesOf(ctx, tx, oldTree)
 		if err != nil {
 			return fmt.Errorf("read gate of re-admitted orphan %s: %w", stored.Key, err)
 		}
-		pr, err = a.store.PullRequest(ctx, tx, stored.Key)
+		prs, err = a.store.TaskPullRequests(ctx, tx, stored.Key)
 		if err != nil {
-			return fmt.Errorf("read pull request of re-admitted orphan %s: %w", stored.Key, err)
+			return fmt.Errorf("read the pull requests of re-admitted orphan %s: %w", stored.Key, err)
 		}
 	}
 	stored.Project = a.project
@@ -1463,12 +1463,13 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 		}
 	}
 	if orphan {
-		if pr != nil {
-			// The carried pull request starts the generation's fence; its head run goes, as with a
-			// new generation (record.ClearGeneration), since its replay would put the old fence back.
+		// Each carried pull request, of each task, starts the generation's fence; its head run goes,
+		// as with a new generation (record.ClearGeneration), since its replay would put the old
+		// fence back.
+		for _, pr := range prs {
 			pr.Generation, pr.Run = int64(stored.Generation), nil
-			if err := a.store.PutPullRequest(ctx, tx, *pr); err != nil {
-				return fmt.Errorf("carry pull request to re-admitted orphan %s: %w", stored.Key, err)
+			if err := a.store.PutPullRequest(ctx, tx, pr); err != nil {
+				return fmt.Errorf("carry pull request #%d to re-admitted orphan %s: %w", pr.Number, stored.Key, err)
 			}
 		}
 		// The carried run goes on at the step it stood at, so its plan goes with it, each task

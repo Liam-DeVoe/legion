@@ -68,7 +68,7 @@ func TestAPullRequestInAnotherSpellingOfTheIssuesRepositoryIsItsOwn(t *testing.T
 	var pr *record.PullRequest
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		var err error
-		pr, err = record.NewStore().PullRequest(context.Background(), tx, "LEGION-209")
+		pr, err = record.NewStore().MergePullRequest(context.Background(), tx, "LEGION-209")
 		return err
 	})
 	if pr == nil || pr.Number != 42 || pr.Repo != "Acme/Widgets" {
@@ -368,7 +368,7 @@ func snapshot(t *testing.T, pool *pgxpool.Pool) recordSnapshot {
 		if got.Issue, err = records.Issue(context.Background(), tx, "LEGION-209"); err != nil {
 			return err
 		}
-		if got.PR, err = records.PullRequest(context.Background(), tx, "LEGION-209"); err != nil {
+		if got.PR, err = records.MergePullRequest(context.Background(), tx, "LEGION-209"); err != nil {
 			return err
 		}
 		if got.Phases, err = records.Phases(context.Background(), tx, "LEGION-209"); err != nil {

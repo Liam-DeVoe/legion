@@ -109,7 +109,7 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 	}
 	position.pass = counts.Pass
 	if position.ofTask == "" && !position.noStep {
-		if position.pullRequest, err = s.records.PullRequest(ctx, tx, key); err != nil {
+		if position.pullRequest, err = s.records.MergePullRequest(ctx, tx, key); err != nil {
 			return completionPosition{}, err
 		}
 	}

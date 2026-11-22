@@ -43,7 +43,7 @@ func TestEveryMoveOutOfAStepNamesItsEnd(t *testing.T) {
 		var named StepEnd
 		var found bool
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			pr, err := engine.store.PullRequest(ctx, tx, key)
+			pr, err := engine.store.MergePullRequest(ctx, tx, key)
 			if err != nil {
 				return err
 			}

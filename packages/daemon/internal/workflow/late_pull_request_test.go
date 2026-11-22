@@ -64,7 +64,7 @@ func pullRequestAt(t *testing.T, pool *pgxpool.Pool) pullRequestView {
 		t.Fatalf("read the reviewer's decision: %v", err)
 	}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		pr, err := record.NewStore().PullRequest(t.Context(), tx, "LEGION-208")
+		pr, err := record.NewStore().MergePullRequest(t.Context(), tx, "LEGION-208")
 		if err != nil || pr == nil {
 			return fmt.Errorf("read pull request: %v", err)
 		}

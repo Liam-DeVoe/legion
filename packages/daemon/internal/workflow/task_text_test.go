@@ -165,13 +165,15 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 // The step of a task whose branch is not the issue's own is told the working copy of its own
 // task (R4): the line names the task's branch and the directory the runtime places that branch's
 // working copy at, beside the issue's, in the start of its step, in a resume of its worker and in
-// the retro of the task.
+// the retro of the task. The task's pull request #44 is on its own branch.
 func TestAStepOfASecondTaskNamesItsOwnWorkingCopy(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
 	storeTaskBranch(t, pool, root.Key, root.Generation, "legion/LEGION-208.b")
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Repo: "sjawhar/legion", Number: 44,
+		Branch: "legion/LEGION-208.b", HeadSHA: "head-b", Failing: []string{}})
 	const working = " Working copy: branch legion/LEGION-208.b, directory /work/LEGION-208.b."
 
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})

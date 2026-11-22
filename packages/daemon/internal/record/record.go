@@ -2049,11 +2049,6 @@ type Store interface {
 	// transition has ever handed work on.
 	PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error)
 	PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error
-	// PullRequest is the pull request of issue when the record holds one row for it, which every
-	// issue whose tasks have no pull requests of their own does; of an issue that holds several it
-	// is the first by task (TaskPullRequests). A reader of one task's reads PullRequestOfTask, of
-	// the issue's merge MergePullRequest, and of each TaskPullRequests.
-	PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
 	// PullRequestOfTask is the pull request of task of issue, the one on the branch task holds
 	// (PullRequest.Task), nil for none ("" is the task of an issue with no plan rows).
 	PullRequestOfTask(ctx context.Context, tx pgx.Tx, issue, task string) (*PullRequest, error)

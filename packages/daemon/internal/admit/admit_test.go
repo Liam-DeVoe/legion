@@ -781,7 +781,7 @@ func TestReadmissionStartsTheNewGenerationWithoutTheOldGenerationsFacts(t *testi
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
-		if pr, err := records.PullRequest(context.Background(), tx, key); err != nil || pr != nil {
+		if pr, err := records.MergePullRequest(context.Background(), tx, key); err != nil || pr != nil {
 			t.Fatalf("generation 2 pull request = %#v, %v; want none", pr, err)
 		}
 		if gates, err := records.GatesOf(context.Background(), tx, key); err != nil || len(gates) != 0 {
@@ -1038,7 +1038,7 @@ func TestReadmissionClearsTheGenerationOfEveryIssueOfTheTree(t *testing.T) {
 				t.Errorf("the child kept the last generation's handoff: %#v", row)
 			}
 		}
-		pr, err := records.PullRequest(context.Background(), tx, "LEGION-CHILD")
+		pr, err := records.MergePullRequest(context.Background(), tx, "LEGION-CHILD")
 		if err != nil {
 			t.Fatalf("read the child's pull request: %v", err)
 		}

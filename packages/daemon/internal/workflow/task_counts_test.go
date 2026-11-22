@@ -76,7 +76,8 @@ func TestAnIssueWithNoPlanRowsNamesNoTaskInItsCapNoticeOrHookPrompt(t *testing.T
 }
 
 // Two tasks of one issue keep their own counts of returns: of tasks a and b, each `implementer
-// reviewer` with agents of their own, both at their review, b's review requests changes once and
+// reviewer` with agents of their own, both at their review, a on the issue's branch with its pull
+// request #42 and b on legion/LEGION-208.b with #45, b's review requests changes once and
 // a's three times. a counts 3 rounds and 3 passes, b 1 and 1; the owner is told review_round_cap
 // once, in a notice that names task a, and nothing of b. With the hook a deployment runs that
 // names none (config.DefaultHooks), a's fifth return prompts the implementer and the reviewer of
@@ -93,6 +94,8 @@ func TestTwoTasksOfOneIssueKeepTheirOwnCounts(t *testing.T) {
 		planTask{id: "a", steps: []string{"implementer:a", "reviewer:ar"}, agents: []claim.Agent{"impl-a", "rev-a"}, state: record.TaskRunning, place: atStep(2)},
 		planTask{id: "b", steps: []string{"implementer:b", "reviewer:br"}, agents: []claim.Agent{"impl-b", "rev-b"}, state: record.TaskRunning, place: atStep(2)},
 		planTask{id: "c", steps: []string{"implementer:c"}, agents: []claim.Agent{"impl-c"}, needs: []string{"a", "b"}, state: record.TaskWaiting})
+	seedTaskBranch(t, pool, root.Key, "b", "legion/LEGION-208.b")
+	seedTaskPR(t, pool, engine, root.Key, "b", 45)
 
 	taskMoves(t, pool, engine, root.Key, "b", TriggerReviewRejected, changesBody)
 	taskMoves(t, pool, engine, root.Key, "a", TriggerReviewRejected, changesBody)

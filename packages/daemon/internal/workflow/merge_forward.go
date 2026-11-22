@@ -122,9 +122,9 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 // implementing - an ask in reviewing, then the round's end into accepting - asks nothing more.
 func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase) error {
 	if issue.Phase == phase.Implementing {
-		return e.clearMergeForward(ctx, tx, issue.Key)
+		return e.clearMergeForward(ctx, tx, issue)
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := e.pullRequestOf(ctx, tx, issue)
 	if err != nil || pr == nil || !classify.ConflictRound(*pr) {
 		return err
 	}
@@ -142,15 +142,34 @@ func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue recor
 // clearMergeForward drops the merge forward the record holds for issue's pull request
 // (record.PullRequest.MergeForward), on a move into implementing (mergeForwardOnEntry) and when
 // the issue leaves the workflow (leave): the ask, its landing and the review it asked for are of
-// a stretch of work that is over, and a later conflict is asked about afresh. A record that holds
-// none is not written.
-func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string) error {
-	pr, err := e.store.PullRequest(ctx, tx, issue)
-	if err != nil || pr == nil || pr.MergeForward == nil {
-		return err
+// a stretch of work that is over, and a later conflict is asked about afresh. A copy of the issue
+// read for one task (view) drops its task's own; the issue itself drops each of its pull
+// requests' (record.Store.TaskPullRequests), since its leave ends the work of every task. A record
+// that holds none is not written.
+func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	var prs []record.PullRequest
+	if issue.ViewTask != "" {
+		pr, err := e.store.PullRequestOfTask(ctx, tx, issue.Key, issue.ViewTask)
+		if err != nil || pr == nil {
+			return err
+		}
+		prs = []record.PullRequest{*pr}
+	} else {
+		var err error
+		if prs, err = e.store.TaskPullRequests(ctx, tx, issue.Key); err != nil {
+			return err
+		}
 	}
-	pr.MergeForward = nil
-	return e.putPullRequest(ctx, tx, *pr)
+	for _, pr := range prs {
+		if pr.MergeForward == nil {
+			continue
+		}
+		pr.MergeForward = nil
+		if err := e.putPullRequest(ctx, tx, pr); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // mergeForwardLanded records that a merge forward landed (dispatch://INFRA-4374 R1): pr's head,
@@ -226,11 +245,13 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 
 // MergeForwardAt reads in tx what a merge-forward message (record.MergeForwardMessage) of issue
 // key is judged by: the issue, whether its tree lingers (record.TreeLingers) and the pull request
-// the record holds for it. It returns the issue and that pull request, with why a message of step
-// about the merge forward asked of head is no longer to be delivered (leftMergeForwardAt), "" while
-// it is. An issue the record does not hold is a nil issue, no pull request and no reason. The
-// daemon's executor is its one caller: it reads the rule in one transaction at each attempt of a
-// row, just before it delivers (the daemon's mergeForwardMessage), so the executor judges each
+// the message is about: the issue's pull request that holds a merge forward of head, whichever
+// task's it is, and the pull request of the issue's task that merges where none does
+// (record.Store.MergePullRequest). It returns the issue and that pull request, with why a message
+// of step about the merge forward asked of head is no longer to be delivered (leftMergeForwardAt),
+// "" while it is. An issue the record does not hold is a nil issue, no pull request and no reason.
+// The daemon's executor is its one caller: it reads the rule in one transaction at each attempt of
+// a row, just before it delivers (the daemon's mergeForwardMessage), so the executor judges each
 // queued row by this rule, and no row outlives the state it was written for. The workflow calls
 // neither this nor leftMergeForwardAt: it writes these rows only in states the rule accepts. The
 // rule is kept beside mergeForward and mergeForwardLanded, which write the rows, and
@@ -245,7 +266,15 @@ func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, key stri
 	if err != nil {
 		return nil, nil, "", err
 	}
-	pr, err := store.PullRequest(ctx, tx, key)
+	prs, err := store.TaskPullRequests(ctx, tx, key)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	at := slices.IndexFunc(prs, func(pr record.PullRequest) bool { return pr.MergeForward != nil && pr.MergeForward.Head == head })
+	if at >= 0 {
+		return issue, &prs[at], leftMergeForwardAt(*issue, lingers, &prs[at], step, head), nil
+	}
+	pr, err := store.MergePullRequest(ctx, tx, key)
 	if err != nil {
 		return nil, nil, "", err
 	}
@@ -430,10 +459,17 @@ func mergedForwardOf(asked *record.MergeForward, commit string) (record.LandedMe
 // it and a later CONFLICTING read of the same head made a newer one, whose own row reads it - is
 // left as it is. It acts on nothing and moves nothing.
 func (e *Engine) conflictConfirmDone(ctx context.Context, tx pgx.Tx, fact intake.ConflictConfirmDone) (intake.Result, error) {
-	pr, err := e.store.PullRequest(ctx, tx, fact.Issue)
-	if err != nil || pr == nil || pr.Number != fact.Number || pr.ConflictRead == nil || pr.ConflictRead.Head != fact.Head ||
-		!pr.ConflictRead.At.Equal(fact.FirstReadAt) {
+	prs, err := e.store.TaskPullRequests(ctx, tx, fact.Issue)
+	if err != nil {
 		return intake.Result{}, err
+	}
+	at := slices.IndexFunc(prs, func(pr record.PullRequest) bool { return pr.Number == fact.Number })
+	if at < 0 {
+		return intake.Result{}, nil
+	}
+	pr := &prs[at]
+	if pr.ConflictRead == nil || pr.ConflictRead.Head != fact.Head || !pr.ConflictRead.At.Equal(fact.FirstReadAt) {
+		return intake.Result{}, nil
 	}
 	first := *pr.ConflictRead
 	pr.ConflictRead = nil

@@ -777,14 +777,6 @@ const pullRequestColumns = `issue, ` + pullRequestPlan + `, repo, number, branch
 const pullRequestPlan = `(select coalesce(json_agg(json_build_object('task', t.task, 'branch', t.branch, 'state', t.state) order by t.task), '[]')
 	from plan_tasks t join issues i on i.key = t.issue and i.generation = t.generation where t.issue = pull_requests.issue)`
 
-func (s *Postgres) PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error) {
-	prs, err := s.TaskPullRequests(ctx, tx, issue)
-	if err != nil || len(prs) == 0 {
-		return nil, err
-	}
-	return &prs[0], nil
-}
-
 func (s *Postgres) PullRequestOfTask(ctx context.Context, tx pgx.Tx, issue, task string) (*PullRequest, error) {
 	prs, err := s.TaskPullRequests(ctx, tx, issue)
 	if err != nil {

@@ -90,7 +90,7 @@ func capturePhase(t *testing.T, pool *store.Pool) (phase.Phase, *record.PullRequ
 		if issue, err = record.NewStore().Issue(context.Background(), tx, "CAPTURE-1"); err != nil {
 			return err
 		}
-		pr, err = record.NewStore().PullRequest(context.Background(), tx, "CAPTURE-1")
+		pr, err = record.NewStore().MergePullRequest(context.Background(), tx, "CAPTURE-1")
 		return err
 	}); err != nil {
 		t.Fatalf("read CAPTURE-1: %v", err)

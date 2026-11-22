@@ -148,7 +148,7 @@ func TestAHandoffCompletionReadsThatIssuesPullRequestAlone(t *testing.T) {
 	var other *record.PullRequest
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 		var err error
-		other, err = record.NewStore().PullRequest(context.Background(), tx, "CAPTURE-2")
+		other, err = record.NewStore().MergePullRequest(context.Background(), tx, "CAPTURE-2")
 		return err
 	}); err != nil {
 		t.Fatalf("read CAPTURE-2's pull request: %v", err)

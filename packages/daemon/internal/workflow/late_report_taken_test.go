@@ -32,7 +32,7 @@ func reviewApprovedNow(t *testing.T, pool *pgxpool.Pool, engine *Engine, key str
 		if err != nil {
 			return err
 		}
-		pr, err := engine.store.PullRequest(ctx, tx, key)
+		pr, err := engine.store.MergePullRequest(ctx, tx, key)
 		if err != nil {
 			return err
 		}

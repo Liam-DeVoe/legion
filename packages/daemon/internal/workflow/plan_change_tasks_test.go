@@ -19,7 +19,8 @@ import (
 // seedAToE writes on key the plan of tasks a to e of one step each, each step its own agent's key
 // (`implementer:a` … `tester:e`; this release names one fresh agent of each role, record.NameAgents,
 // so each task's step carries a key of its own): c needs b, d needs a and c, and e needs d, so e is
-// the task that merges. a and c run at their step, b is done, and d and e wait.
+// the task that merges. a and c run at their step, b is done, and d and e wait. a works on a branch
+// of its own, legion/<key>.a, where its pull request #44 is open.
 func seedAToE(t *testing.T, pool *pgxpool.Pool, root record.Issue) {
 	t.Helper()
 	seedTasks(t, pool, root.Key, root.Generation,
@@ -28,6 +29,9 @@ func seedAToE(t *testing.T, pool *pgxpool.Pool, root record.Issue) {
 		planTask{id: "c", steps: []string{"implementer:c"}, agents: []claim.Agent{"impl-c"}, needs: []string{"b"}, state: record.TaskRunning, place: atStep(1)},
 		planTask{id: "d", steps: []string{"implementer:d"}, agents: []claim.Agent{"impl-d"}, needs: []string{"a", "c"}, state: record.TaskWaiting},
 		planTask{id: "e", steps: []string{"tester:e"}, agents: []claim.Agent{"test-e"}, needs: []string{"d"}, state: record.TaskWaiting})
+	seedTaskBranch(t, pool, root.Key, "a", "legion/"+root.Key+".a")
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Repo: "sjawhar/legion", Number: 44,
+		Branch: "legion/" + root.Key + ".a", HeadSHA: "head-a", Failing: []string{}})
 }
 
 // A stop holds only the tasks that need the stopped task: of the plan a to e, the owner's stop of c

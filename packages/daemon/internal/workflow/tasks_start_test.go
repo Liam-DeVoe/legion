@@ -50,8 +50,10 @@ func startClaims(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) 
 // step each, a, b, c and d an implementer's and e a tester's, where c needs b, d needs a and c, and
 // e needs d, so e is the task that merges. At the first step a and b run and c, d and e wait, and
 // the starts of a's agent and b's agent are queued, each under its own claim, the agent its step
-// names. b passes: c runs and d waits. a passes: d still waits, for c. c passes: d runs. d passes:
-// e runs. e passes: its retro, since e merges.
+// names. a, the first to start, works on the issue's branch, with its pull request #42, and each
+// other implementer's task opens its own pull request on its own branch before its step passes.
+// b passes: c runs and d waits. a passes: d still waits, for c. c passes: d runs. d passes: e runs.
+// e passes: its retro, since e merges.
 //
 // The fault it catches is a task that starts before its needs are done (its control: c's needs
 // taken out of the plan, so c starts at the first step beside a and b, and the assertion that c
@@ -86,6 +88,7 @@ func TestEachTaskStartsWhenItsNeedsAreDone(t *testing.T) {
 		t.Fatalf("the implementer's starts of %s name the claims %v, want %v: one for the agent of a's step and one for b's", root.Key, got, want)
 	}
 
+	seedTaskPR(t, pool, engine, root.Key, "b", 44)
 	taskMoves(t, pool, engine, root.Key, "b", TriggerImplementationReady, "")
 	joinEnds(t, pool, engine, root.Key, "c")
 	tasks = tasksOf(t, pool, engine, root.Key)
@@ -101,6 +104,7 @@ func TestEachTaskStartsWhenItsNeedsAreDone(t *testing.T) {
 	assertTask(t, tasks, "a", record.TaskDone, atStep(1))
 	assertTask(t, tasks, "d", record.TaskWaiting, noAct)
 
+	seedTaskPR(t, pool, engine, root.Key, "c", 45)
 	taskMoves(t, pool, engine, root.Key, "c", TriggerImplementationReady, "")
 	joinEnds(t, pool, engine, root.Key, "d")
 	tasks = tasksOf(t, pool, engine, root.Key)
@@ -108,6 +112,7 @@ func TestEachTaskStartsWhenItsNeedsAreDone(t *testing.T) {
 	assertTask(t, tasks, "d", record.TaskRunning, atStep(1))
 	assertTask(t, tasks, "e", record.TaskWaiting, noAct)
 
+	seedTaskPR(t, pool, engine, root.Key, "d", 46)
 	taskMoves(t, pool, engine, root.Key, "d", TriggerImplementationReady, "")
 	joinEnds(t, pool, engine, root.Key, "e")
 	tasks = tasksOf(t, pool, engine, root.Key)

@@ -70,11 +70,12 @@ func onTask(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, task string, 
 
 // taskMoves runs one transition of task of key on trigger, as a completion of the step task
 // stands at moves it: on the copy of key read for task, with the phases row of that step's role
-// and the issue's pull request, and reason for the move's notice and the step its work returns to.
+// and the task's own pull request (pullRequestOf on that copy, as the completion reads it), and
+// reason for the move's notice and the step its work returns to.
 func taskMoves(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, task string, trigger TriggerKind, reason string) {
 	t.Helper()
 	onTask(t, pool, engine, key, task, func(ctx context.Context, tx pgx.Tx, view record.Issue, w Walk) error {
-		pr, err := engine.store.PullRequest(ctx, tx, key)
+		pr, err := engine.pullRequestOf(ctx, tx, view)
 		if err != nil {
 			return err
 		}
@@ -84,6 +85,20 @@ func taskMoves(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, task strin
 		}
 		return engine.transition(ctx, tx, view, trigger, record.TaskPlace{}, row, pr, reason)
 	})
+}
+
+// seedTaskPR records number open on the branch task of key works on now (record.PlanTask.BranchOf),
+// as the agent of the task's implementation step opens its pull request there, and fails the test
+// unless the store reads it back as task's own (pullRequestOfTask): a pull request on a branch
+// several tasks hold is no task's. A task that holds the issue's own branch has stepRoot's #42.
+func seedTaskPR(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, task string, number int) {
+	t.Helper()
+	branch := tasksOf(t, pool, engine, key)[task].BranchOf(key)
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: "sjawhar/legion", Number: number,
+		Branch: branch, HeadSHA: "head-" + task, Failing: []string{}})
+	if pr := pullRequestOfTask(t, pool, key, task); pr.Number != number {
+		t.Fatalf("the pull request of task %s of %s = #%d, want #%d on %s", task, key, pr.Number, number, branch)
+	}
 }
 
 // tasksOf is each task of the plan of key at its generation as the store holds it now, by id.
@@ -157,10 +172,11 @@ func TestATaskThatPassesItsLastStepIsDoneAndTheIssueGoesOn(t *testing.T) {
 }
 
 // A move of one task writes the issue in the phase its tasks put it in, with that phase's Dispatch
-// status: with task a at its implementer's step and task b at its review, b's review that requests
-// changes takes b back to its implementer and writes the issue in implementing with the status
-// in_progress, over the needs_review it showed; and a's implementation that passes takes a to its
-// review and leaves the issue in implementing, where b now stands, writing no needs_review.
+// status: with task a at its implementer's step on the issue's branch, with its pull request #42,
+// and task b at its review on legion/LEGION-208.b, with #45, b's review that requests changes takes
+// b back to its implementer and writes the issue in implementing with the status in_progress, over
+// the needs_review it showed; and a's implementation that passes takes a to its review and leaves
+// the issue in implementing, where b now stands, writing no needs_review.
 //
 // The fault it catches is the issue that takes one task's phase as its own (its control: the
 // transition's write of the copy read for the task with the store's PutIssue, which its refusal of
@@ -176,6 +192,8 @@ func TestAWriteOfAViewWritesTheIssuesDerivedPhase(t *testing.T) {
 		planTask{id: "a", steps: []string{"implementer", "reviewer"}, agents: []claim.Agent{"implementer", "reviewer"}, state: record.TaskRunning, place: atStep(1)},
 		planTask{id: "b", steps: []string{"implementer", "reviewer"}, agents: []claim.Agent{"implementer-2", "reviewer-2"}, state: record.TaskRunning, place: atStep(2)},
 		planTask{id: "c", steps: []string{"implementer"}, agents: []claim.Agent{"implementer-3"}, needs: []string{"a", "b"}, state: record.TaskWaiting})
+	seedTaskBranch(t, pool, root.Key, "b", "legion/LEGION-208.b")
+	seedTaskPR(t, pool, engine, root.Key, "b", 45)
 
 	taskMoves(t, pool, engine, root.Key, "b", TriggerReviewRejected, changesBody)
 

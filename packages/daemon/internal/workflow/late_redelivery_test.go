@@ -289,7 +289,7 @@ func latePullRequest(t *testing.T, pool *pgxpool.Pool) record.PullRequest {
 	var got *record.PullRequest
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		var err error
-		got, err = record.NewStore().PullRequest(t.Context(), tx, "LEGION-208")
+		got, err = record.NewStore().MergePullRequest(t.Context(), tx, "LEGION-208")
 		return err
 	})
 	if got == nil {
