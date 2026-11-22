@@ -168,13 +168,13 @@ func TestATokenShorterThanRenewBeforeIsNotRenewedInALoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if wait := client.untilRenewal(&Token{Expiry: now.Add(time.Hour)}); wait != time.Hour-DefaultRenewBefore {
+	if wait := client.renewalAt(&Token{Expiry: now.Add(time.Hour)}, now).Sub(now); wait != time.Hour-DefaultRenewBefore {
 		t.Errorf("a token of an hour is renewed in %s, want %s ahead of its expiry", wait, DefaultRenewBefore)
 	}
-	if wait := client.untilRenewal(&Token{Expiry: now.Add(2 * time.Second)}); wait != time.Second {
+	if wait := client.renewalAt(&Token{Expiry: now.Add(2 * time.Second)}, now).Sub(now); wait != time.Second {
 		t.Errorf("a token of two seconds is renewed in %s, want half of what is left", wait)
 	}
-	if wait := client.untilRenewal(&Token{Expiry: now.Add(-time.Second)}); wait != 0 {
+	if wait := client.renewalAt(&Token{Expiry: now.Add(-time.Second)}, now).Sub(now); wait != 0 {
 		t.Errorf("a token already past its expiry is renewed in %s, want at once", wait)
 	}
 }
@@ -217,19 +217,21 @@ func TestRenewalCorpus(t *testing.T) {
 	}
 }
 
-// TestTokenTradesAgainAtTheCorpusMoment drives Token with a stepped clock across a token of each
-// life testdata/renewal.json names under the default window: Token trades as the token lands,
-// answers that token at every call a step apart before the corpus's renewal moment, and trades
-// again at exactly that moment, which is when Run renews it and when the TypeScript client trades
-// again. A Token that held a token only until RenewBefore ahead of its expiry traded one between
-// one and two windows again before its half life, and one of the window or less at every call.
+// TestTokenTradesAgainAtTheCorpusMoment drives Token with a stepped clock across each row of
+// testdata/renewal.json a token can land by, under the row's own window: Token trades as the
+// token lands, answers that token at every call a step apart before the corpus's renewal moment,
+// and trades again at exactly that moment, which is when Run renews it and when the TypeScript
+// client trades again. A Token that held a token only until RenewBefore ahead of its expiry
+// traded one between one and two windows again before its half life, and one of the window or
+// less at every call.
 func TestTokenTradesAgainAtTheCorpusMoment(t *testing.T) {
 	const step = 500 * time.Millisecond
 	ran := 0
 	for _, row := range readRenewalCorpus(t).Rows {
 		// The broker writes a token's life in whole seconds, and read refuses an answer with none
-		// left, so only a row of a whole, positive life can land through Token.
-		if corpusSeconds(row.RenewBeforeSeconds) != DefaultRenewBefore || row.LifeSeconds <= 0 || row.LifeSeconds != math.Trunc(row.LifeSeconds) {
+		// left, so only a row of a whole, positive life can land through Token: the rows of a life
+		// of 0 s and -1 s cannot, and are left out.
+		if row.LifeSeconds <= 0 || row.LifeSeconds != math.Trunc(row.LifeSeconds) {
 			continue
 		}
 		ran++
@@ -240,7 +242,7 @@ func TestTokenTradesAgainAtTheCorpusMoment(t *testing.T) {
 			landed := time.Now()
 			clock := landed
 			client, err := New(Config{BrokerURL: broker.Address(), Key: testKey(t), Subject: projectedStub(),
-				Now: func() time.Time { return clock }})
+				RenewBefore: corpusSeconds(row.RenewBeforeSeconds), Now: func() time.Time { return clock }})
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
@@ -272,7 +274,59 @@ func TestTokenTradesAgainAtTheCorpusMoment(t *testing.T) {
 		})
 	}
 	if ran == 0 {
-		t.Fatalf("%s holds no row of a whole, positive life under a window of %s", renewalCorpusPath, DefaultRenewBefore)
+		t.Fatalf("%s holds no row of a whole, positive life", renewalCorpusPath)
+	}
+}
+
+// TestRunRenewsAtTheMomentWorkedOutAsTheTokenLanded: Run trades again at the renewal moment it
+// stored as the token landed, however long onToken took, and RenewalAt answers that same moment
+// inside onToken, where natscred's keeper reads it. A token of 400 s under the default window of
+// 300 s renews at its half life, 200 s after it lands. An onToken that takes 40 s leaves it 360 s,
+// whose half, worked out again then, is 220 s after the landing: a loop that worked the moment out
+// after onToken renewed 20 s late, half of what onToken took.
+func TestRunRenewsAtTheMomentWorkedOutAsTheTokenLanded(t *testing.T) {
+	const (
+		life = 400 * time.Second
+		took = 40 * time.Second
+		// renews is half of life, since life is under twice DefaultRenewBefore.
+		renews = 200 * time.Second
+	)
+	broker := newStubBroker(t, func(n int, _ url.Values) (int, map[string]any) {
+		return 200, map[string]any{"access_token": "token-" + strconv.Itoa(n), "token_type": "DPoP", "expires_in": int64(life / time.Second)}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	landed := time.Date(2026, 11, 22, 4, 0, 0, 0, time.UTC)
+	clock := &waitingClock{now: landed, stop: ctx}
+	client, err := New(Config{BrokerURL: broker.Address(), Key: testKey(t), Subject: projectedStub(), Now: clock.Now, After: clock.After})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// arrivals is the loop's clock as each token reached onToken.
+	var arrivals []time.Time
+	err = client.Run(ctx, func(_ context.Context, token *Token) error {
+		arrivals = append(arrivals, clock.now)
+		if len(arrivals) == 2 {
+			cancel()
+			return nil
+		}
+		clock.now = clock.now.Add(took)
+		if got := client.RenewalAt(token); !got.Equal(landed.Add(renews)) {
+			t.Errorf("RenewalAt %s after the token landed answers %s after the landing, want %s: the moment worked out as it landed", took, got.Sub(landed), renews)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Run = %v, want it to end with its context", err)
+	}
+	if len(arrivals) != 2 {
+		t.Fatalf("the loop handed its caller %d tokens, want the first and its renewal", len(arrivals))
+	}
+	if got := arrivals[1].Sub(landed); got != renews {
+		t.Errorf("the renewal landed %s after the token it renews, want %s: the moment worked out as that token landed, whatever the %s onToken took", got, renews, took)
+	}
+	if trades := len(broker.Requests()); trades != 2 {
+		t.Errorf("the broker saw %d trades, want two: the first and its renewal", trades)
 	}
 }
 

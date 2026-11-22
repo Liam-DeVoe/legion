@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // rowDrive is how a drive sends one GET row of the table on the seeded store (newDriveWorld) and
@@ -122,7 +123,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/issues/{key}/summary":    {target: "/api/v1/issues/$issue/summary", statement: statementOf(`\bselect\s+key,\s*project_key,\s*title,\s*status\s+from\s+issues\b`)},
 	"GET /api/v1/issues/{key}/events":     {target: "/api/v1/issues/$issue/events", statement: statementOf(`\bselect\s+last_seq,\s*created_at\s+from\s+issues\b`)},
 	// refs.Closure tags each statement it runs (refs.ClosureTag), its one-hop reads in each direction.
-	"GET /api/v1/issues/{key}/references": {target: "/api/v1/issues/$issue/references", statement: statementOf(`/\*\s*refs\.Closure\s*\*/`)},
+	"GET /api/v1/issues/{key}/references": {target: "/api/v1/issues/$issue/references", statement: statementOf(regexp.QuoteMeta(refs.ClosureTag))},
 	"GET /api/v1/issues/{key}/collaborators": {target: "/api/v1/issues/$issue/collaborators",
 		statement: statementOf(`\bselect\s+assignee\s+from\s+issues\s+where\s+key\b`)},
 	"GET /api/v1/references":           {target: "/api/v1/references?to=$issueRef&since=0", statement: statementOf(`\bfrom\s+graph_edges\s+g\b`)},

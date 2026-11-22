@@ -15,10 +15,11 @@
 // Each process makes its own key and sends only its public half: the proof embeds the public JWK,
 // and no code here marshals a private member onto the wire.
 //
-// When it trades again: Token and Run alike hold a token until RenewBefore ahead of its expiry,
-// and never before half of what it had left when it landed (RenewalAt), a moment worked out once
-// as it lands. The TypeScript client holds a token to the same moment, and testdata/renewal.json
-// holds both clients to the rule (TestRenewalCorpus).
+// When it trades again: RenewBefore ahead of a token's expiry, and never before half of what it
+// had left when it landed, a moment worked out once as the token lands and stored with it. Token
+// answers the token until then, Run sleeps until then, and RenewalAt answers that moment for it.
+// The TypeScript client holds a token to the same rule, and testdata/renewal.json holds both
+// clients to it (TestRenewalCorpus).
 //
 // What it refuses to do: hand out a token it could not renew. Token answers the held token while
 // that token is live and the broker is merely unreachable, and answers the error once the broker
@@ -303,7 +304,8 @@ type Client struct {
 
 	mu   sync.Mutex
 	held *Token
-	// renewsAt is when Token trades again for held: renewalAt as of the moment held landed.
+	// renewsAt is when the client trades again for held: renewalAt as of the moment held landed.
+	// Token answers held until then, Run sleeps until then, and RenewalAt answers it for held.
 	renewsAt time.Time
 }
 
@@ -368,18 +370,18 @@ func New(cfg Config) (*Client, error) {
 // under the minted credential signs with it.
 func (c *Client) Key() *ecdsa.PrivateKey { return c.key }
 
-// Token is a live access token: the held one until the renewal moment worked out as it landed
-// (renewalAt: RenewBefore ahead of its expiry, and never before half of what it had left), and
-// otherwise a fresh trade. That is the rule Run renews by, and the one the TypeScript client
-// holds a token to (HeldToken.renewsAt in packages/cipher-client/src/token-client.ts), so a
-// token that lands with RenewBefore or less left is held to its half life rather than traded
-// again at every call. A trade the broker did not answer, or answered with a refusal a later
-// trade may cure (429, a DPoP refusal, a pod session it holds no registration for yet, a person
-// Dispatch holds), while the held token is still live answers that token, since a client that
-// already holds an identity need not stop for a broker that is merely down or busy; a refusal no
-// retry can cure (RefusedError.Permanent), and a failure with nothing live left, answer the
-// error, so no caller writes with no identity. Token trades once; a caller that waits for a
-// registration to land runs Run, which trades again.
+// Token is a live access token: the held one until the renewal moment worked out once as it
+// landed (renewalAt: RenewBefore ahead of its expiry, and never before half of what it had left),
+// and otherwise a fresh trade. Run sleeps until that same stored moment and RenewalAt answers it,
+// and the TypeScript client holds a token to the same rule (HeldToken.renewsAt in
+// packages/cipher-client/src/token-client.ts), so a token that lands with RenewBefore or less
+// left is held to its half life rather than traded again at every call. A trade the broker did
+// not answer, or answered with a refusal a later trade may cure (429, a DPoP refusal, a pod
+// session it holds no registration for yet, a person Dispatch holds), while the held token is
+// still live answers that token, since a client that already holds an identity need not stop for
+// a broker that is merely down or busy; a refusal no retry can cure (RefusedError.Permanent), and
+// a failure with nothing live left, answer the error, so no caller writes with no identity. Token
+// trades once; a caller that waits for a registration to land runs Run, which trades again.
 func (c *Client) Token(ctx context.Context) (*Token, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -402,9 +404,9 @@ func (c *Client) Token(ctx context.Context) (*Token, error) {
 }
 
 // Run keeps one token live until ctx ends, handing each one to onToken as it lands: the first
-// trade, and every renewal RenewBefore ahead of the token in hand. It is the shape a caller with
-// something to keep fresh takes — a credential to install, a token file to rewrite — and
-// nothing of that caller restarts across a renewal.
+// trade, and every renewal, traded at the renewal moment stored as the token in hand landed
+// (RenewalAt). It is the shape a caller with something to keep fresh takes — a credential to
+// install, a token file to rewrite — and nothing of that caller restarts across a renewal.
 //
 // It stops with a plain error when the broker refuses the identity in a way no retry can cure
 // (RefusedError.Permanent), and when onToken fails. A broker that does not answer, or answers
@@ -429,6 +431,7 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 		if err == nil {
 			c.held, c.renewsAt = token, c.renewalAt(token, c.now())
 		}
+		renews := c.renewsAt
 		c.mu.Unlock()
 		switch {
 		case err == nil:
@@ -442,7 +445,9 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 			if err := onToken(ctx, token); err != nil {
 				return err
 			}
-			if !c.sleep(ctx, c.untilRenewal(token)) {
+			// The renewal comes at the moment stored as the token landed: one worked out again
+			// after onToken would come later, by half of onToken's time for a half-life renewal.
+			if !c.sleep(ctx, renews.Sub(c.now())) {
 				return nil
 			}
 			continue
@@ -477,10 +482,17 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 	}
 }
 
-// RenewalAt is when Run trades again once token lands: RenewBefore ahead of its expiry, and never
-// before half of what the token had left when it landed (untilRenewal). A caller that holds an
+// RenewalAt is when the client trades again once token lands (renewalAt). For the token it holds,
+// the one Run has just handed onToken or Token last answered, that is the moment stored as the
+// token landed, which Run sleeps until and Token answers the token until, however long after the
+// landing the caller asks; any other token's is worked out as of now. A caller that holds an
 // older token beside it reads from this whether the older one outlives the wait.
 func (c *Client) RenewalAt(token *Token) time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.held != nil && token == c.held {
+		return c.renewsAt
+	}
 	return c.renewalAt(token, c.now())
 }
 
@@ -493,22 +505,15 @@ func retriedTrade(err error) (string, []any) {
 	return "a trade got no usable answer from the secrets broker", []any{"error", err.Error()}
 }
 
-// untilRenewal is how long to wait before trading again for the token in hand: RenewBefore
-// ahead of its expiry, and never before half of what is left. A token of at least twice
-// RenewBefore renews RenewBefore ahead of its expiry, and a shorter one at its half life — a
-// deployment that mints short tokens, or a dev stack proving a renewal in seconds. That half is
-// never later than the token's own expiry, and it is what keeps such a client from trading again
-// soon after each token lands, which would spend the broker's per-address token bucket in a loop
-// and end in a 429.
-func (c *Client) untilRenewal(token *Token) time.Duration {
-	now := c.now()
-	return c.renewalAt(token, now).Sub(now)
-}
-
-// renewalAt is RenewalAt as of now: the later of RenewBefore ahead of the token's expiry and half
-// of what it has left, and now for a token already past its expiry. The TypeScript client's
-// BrokerTokenClient holds the same rule (renewalAt in packages/cipher-client/src/token-client.ts),
-// and testdata/renewal.json holds the two to it (TestRenewalCorpus).
+// renewalAt is when to trade again for token as of now: the later of RenewBefore ahead of its
+// expiry and half of what it has left, and now for a token already past its expiry. A token of at
+// least twice RenewBefore renews RenewBefore ahead of its expiry, and a shorter one at its half
+// life — a deployment that mints short tokens, or a dev stack proving a renewal in seconds. That
+// half is never later than the token's own expiry, and it is what keeps such a client from trading
+// again soon after each token lands, which would spend the broker's per-address token bucket in a
+// loop and end in a 429. The TypeScript client's BrokerTokenClient holds the same rule (renewalAt
+// in packages/cipher-client/src/token-client.ts), and testdata/renewal.json holds the two to it
+// (TestRenewalCorpus).
 func (c *Client) renewalAt(token *Token, now time.Time) time.Time {
 	left := token.Expiry.Sub(now)
 	if left <= 0 {
