@@ -720,8 +720,9 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 	case record.AnsweredByChanges:
 		// A review the gate's own approval followed is not named: the person's word is that
 		// approval, and the sentences after this one say how the document stands. The review is
-		// asked of the gate in question alone (SupersedingApproval), filed under step; armed says the
-		// deployment gates step, since gateInQuestion takes step from the steps it gates.
+		// asked of the gate in question alone (SupersedingApproval), filed under step; armed says a
+		// person approves step (record.TakesStep), since gateInQuestion takes step from the steps
+		// the tree is gated on (classify.TreeSteps).
 		if superseded := SupersedingApproval(gate, armed, answeredReview(step, waiting, gate)); superseded != nil {
 			fmt.Fprintf(&task, "A person's review answered your wait on %s, and the %s was approved at version %d after it, so the review "+
 				"asks for no revision now.", key, document, superseded.Version)

@@ -28,21 +28,27 @@ type Approval struct {
 }
 
 // SupersedingApproval is the one place that decides whether a person's recorded review of a design
-// document is still their word, so a task or a notice may name it. Every sender asks it, of the
-// gate the issue holds for d.Step as the record holds it when it asks (gate, nil where the issue
-// holds none) and of whether a person approves that step (gated): the changes notice
-// (tellChanges; the registration's and the artifact event's reading of the gate before they apply
-// the review; and the daemon's readNoticeTree at the notice's delivery), the resume of a root a
-// person answered (resumeTask), the decisions and the approval kept for an architect's start or
-// catch-up (KeptDecisionsTask, again at each send and each delivery) and the controller's relay of
-// a decision nobody in its tree hears (the daemon's parkDecision, and again at a relayed changes
-// request's publish, its controllerNotice); the clear of a generation asks it too, before it
-// deletes the gates of the issues it clears, of each decision kept on them and each changes
-// request the outbox holds on them (Engine.ClearGeneration). It holds the guards that choose
-// whether the one rule (classify.ReviewSuperseded) is asked of a review, listed below, so a new
-// step kind or a change to how an approval of the same version is read is made here once. Which
-// reviews a sender asks about is the sender's: of the queued notices, record.ChangesRequest is the
-// one rule for which rows a reader asks again.
+// document is still their word, so a task or a notice may name it. Every sender of a task or a
+// notice about a person's review asks it, of the gate the issue holds for d.Step as the record
+// holds it when it asks (gate, nil where the issue holds none) and of whether a person approves
+// that step (gated): the changes notice (tellChanges; the registration's and the artifact event's
+// reading of the gate before they apply the review; and the daemon's readNoticeTree at the notice's
+// delivery), the resume of a root a person answered (resumeTask), the decisions and the approval
+// kept for an architect's start or catch-up (KeptDecisionsTask, again at each send and each
+// delivery) and the controller's relay of a decision nobody in its tree hears (the daemon's
+// parkDecision, and again at a relayed changes request's publish, its controllerNotice); the clear
+// of a generation asks it too, before it deletes the gates of the issues it clears, of each
+// decision kept on them and each changes request the outbox holds on them (Engine.ClearGeneration).
+// It holds the guards that choose whether the one rule (classify.ReviewSuperseded) is asked of a
+// review, listed below, so a new step kind or a change to how an approval of the same version is
+// read is made here once. Which reviews a sender asks about is the sender's: of the queued notices,
+// record.ChangesRequest is the one rule for which rows a reader asks again.
+//
+// The news of an approved version is no such sender: it tells a holder of a version a person
+// approved, not of a review, and asks whether that approval is still the gate's
+// (classify.DesignApprovalStands). So a changes request that cleared the approval ends the news,
+// where a gate with no approval leaves a review standing here: only a later approval is the
+// person's word in a review's place.
 //
 // It answers the approval that superseded the review, which a sender may name, and nil when the
 // review stands. The review stands at each of these guards, in the order they are asked, because

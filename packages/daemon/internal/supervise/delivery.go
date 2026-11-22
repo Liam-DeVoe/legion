@@ -151,20 +151,23 @@ type Delivery struct {
 	Kept []byte
 	// Resume marks the task as the resume task of a root a person answered, and is what its text is
 	// rendered from at every send (Deps.RootTask, the daemon's rootTask): the wait the start
-	// answers (record.SuperviseRequest.Awaiting, encoded JSON), opaque here as Kept is. The text is
-	// not written when the task is queued, because a person can review the document again before
-	// any send of it, and the issue's own record no longer holds that wait once the root has
-	// resumed, so the delivery carries it, and every rewrite of the delivery keeps it. Empty for
-	// every other task, and for a held task a daemon of an earlier release queued, which is sent
-	// as the text it holds.
+	// answers (record.SuperviseRequest.Awaiting, encoded JSON), opaque here as Kept is. The resume
+	// text is not written when the task is queued, because a person can review the document again
+	// before any send of it, and the issue's own record no longer holds that wait once the root has
+	// resumed, so the delivery carries it, and every rewrite of the delivery keeps it. Until the
+	// first send writes that text, the task's text is only the news its start carries, whose own
+	// text (News) is empty, or empty where the start carries no news. Resume is empty for every
+	// other task, and for a held task a daemon of an earlier release queued, which is sent as the
+	// text it holds.
 	Resume []byte
 	// News is what the task carries of news of the approved design (record.DeliveryNews, encoded
 	// JSON): the start's own text, each item it tells and each opening it carries. It is opaque here
 	// as Kept is, and carried and persisted with the delivery. It is rewritten, with the task text,
 	// at every send, by the one render that writes both (Deps.DesignNews, and Deps.RootTask where a
-	// root architect's task is narrowed), so the news a delivery holds is exactly what its text
-	// names: no writer keeps one beside a text it did not render with it. Empty for a task that
-	// carries none, which no send asks about.
+	// root architect's task is narrowed, and at every send of a resume task, whose text RootTask
+	// writes from the record with this news rendered after it), so the news a delivery holds is
+	// exactly what its text names: no writer keeps one beside a text it did not render with it.
+	// Empty for a task that carries none, which no send asks about.
 	News []byte
 	// Carried is the copy of News that the prompt whose turn this delivery's confirmation takes
 	// carried, and, while the delivery is confirmed, its credit: what its audiences are read as
@@ -1055,7 +1058,8 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	}
 	// A resume task is written at its send, wherever that send is decided: one on a daemon that
 	// wires no answer to RootHears is still written from the record first (currentRootTask), since
-	// the text it was queued with is none at all (Delivery.Resume).
+	// the text it was queued with holds no resume, only the news its start carries or nothing at
+	// all (Delivery.Resume).
 	if len(p.Resume) > 0 {
 		sends, err := m.currentRootTask(ctx)
 		if err != nil || !sends {
@@ -1236,11 +1240,11 @@ func (m *Machine) rewritePending(ctx context.Context, id, task string, kept, new
 // task that carries no news is never asked about, and every task holds where nothing answers
 // (Deps.DesignNews nil).
 //
-// Nor is a resume task (Delivery.Resume) asked here: the start queued it with no text, so the news
-// it carries follows an empty text, and a render of that alone would send the news without the
-// resume, or read a resume whose news no longer stands as a task with nothing to say. Every send
-// of it renders its text from the record first (currentRootTask, Deps.RootTask), and the news
-// after that text in the same answer, so the one render of its news is there.
+// Nor is a resume task (Delivery.Resume) asked here: the start queued it with no text of its own,
+// so the news it carries follows an empty text, and a render of that alone would send the news
+// without the resume, or read a resume whose news no longer stands as a task with nothing to say.
+// Every send of it renders its text from the record first (currentRootTask, Deps.RootTask), and
+// the news after that text in the same answer, so the one render of its news is there.
 func (m *Machine) currentNews(ctx context.Context) (bool, error) {
 	p := m.claim.Pending
 	if m.deps.DesignNews == nil || len(p.News) == 0 || len(p.Resume) > 0 {

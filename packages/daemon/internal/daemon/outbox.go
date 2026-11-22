@@ -2722,10 +2722,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// queued for news alone: startNews.roundNamed): the one place each prompt is composed reads
 		// it there, and gives a reviewer's task of a row that lacks it, which only a row of the
 		// release before this one can be, those sentences naming no commit and no entry
-		// (supervise's Delivery.message). A resume task of an answered root carries no text and
-		// the wait it answers instead (supervise.Delivery.Resume): its text is written at each
-		// send, from the record as it stands then (the daemon's rootTask), and the news it carries
-		// is rendered after that text there (narrowedNews). The news the task carries travels the
+		// (supervise's Delivery.message). A resume task of an answered root carries no text of its
+		// own, and the wait it answers instead (supervise.Delivery.Resume): it is queued with the
+		// news its start carries as its whole text, empty where it carries none, and at each send
+		// its text is written from the record as it stands then (the daemon's rootTask), with that
+		// news rendered after it (narrowedNews). The news the task carries travels the
 		// same way (supervise.Delivery.News): the task is the start's own text and the news after
 		// it, the round's two sentences after the news where the task names them (renderNews), the
 		// send renders that news again from the record (the daemon's designNews), and the write
