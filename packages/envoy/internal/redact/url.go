@@ -298,6 +298,43 @@ func Cause(err error, raw string) error {
 	}
 }
 
+// CauseAt is Cause for a client that calls one fixed URL of its own, callURL, built from raw (the
+// configured endpoint) and a route and query the client holds: printable passes a *url.Error that
+// names callURL exactly, as it passes one naming raw followed by a broker route, so a clean
+// endpoint's failure prints its own text (a TLS failure's x509 cause, a refused dial's address)
+// and not its class alone. raw must still be clean, and callURL must begin with raw, so an
+// endpoint holding a credential prints the class alone; a URL net/http names other than callURL,
+// a redirect's target, prints the class alone too.
+func CauseAt(err error, raw, callURL string) error {
+	if err == nil {
+		return nil
+	}
+	ue, checked, printable := printableAt(err, raw, func(named string) bool {
+		return callClean(raw, named) || named == callURL && ownCall(raw, callURL)
+	})
+	switch {
+	case !printable:
+		return &classified{class(err, "the endpoint"), err}
+	case ue != nil && ue.Err != nil && ue.Err.Error() == checked:
+		return ue.Err
+	case ue == nil && err.Error() == checked:
+		return err
+	default:
+		return &classified{checked, err}
+	}
+}
+
+// ownCall reports whether callURL begins with raw, a clean URL: its scheme in any case, since
+// net/url lowers it, then the rest of raw as written, a trailing "/" aside.
+func ownCall(raw, callURL string) bool {
+	if !clean(raw) {
+		return false
+	}
+	n := strings.Index(raw, "://") + len("://")
+	base := strings.TrimRight(raw, "/")
+	return len(callURL) >= len(base) && strings.EqualFold(callURL[:n], raw[:n]) && strings.HasPrefix(callURL[n:], base[n:])
+}
+
 // printable answers the *url.Error err holds, if any, the text of the failure under it that may
 // print, given raw (Error), and whether any may. All of these must hold:
 //   - raw is clean;
@@ -320,6 +357,12 @@ func Cause(err error, raw string) error {
 // fmt.Errorf("grant %s: %w", id, cause) is that failure to errors.Is and errors.As, but its words
 // are the caller's, and checking the failure says nothing about them.
 func printable(err error, raw string) (ue *url.Error, text string, ok bool) {
+	return printableAt(err, raw, func(named string) bool { return callClean(raw, named) })
+}
+
+// printableAt is printable with accepted in place of callClean: whether the URL the *url.Error
+// names is one whose failure may print.
+func printableAt(err error, raw string, accepted func(named string) bool) (ue *url.Error, text string, ok bool) {
 	if !errors.As(err, &ue) {
 		ue = nil
 	}
@@ -333,7 +376,7 @@ func printable(err error, raw string) (ue *url.Error, text string, ok bool) {
 	inner := err
 	if ue != nil {
 		// A *url.Error that wraps nothing names no failure to check.
-		if !callClean(raw, ue.URL) || ue.Err == nil {
+		if !accepted(ue.URL) || ue.Err == nil {
 			return ue, "", false
 		}
 		inner = ue.Err

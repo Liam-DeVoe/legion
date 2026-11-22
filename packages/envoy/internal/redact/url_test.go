@@ -355,6 +355,33 @@ func TestErrorPrintsOnlyTheClassAfterARedirect(t *testing.T) {
 	}
 }
 
+// CauseAt passes the failure of a call to the client's own fixed URL, a route and a query outside
+// the broker's /v1/ appended to a clean endpoint, as Cause passes a broker route: the error the
+// *url.Error wraps, its dial address and all. It prints the class alone for the same failure when
+// the endpoint holds a user name, when net/http names another URL (a redirect's target), and when
+// the URL named does not begin with the endpoint.
+func TestCauseAtPassesTheFailureOfTheClientsOwnURL(t *testing.T) {
+	const own = "http://127.0.0.1:1/models/embeddings?api-version=2024-05-01-preview"
+	_, err := http.Post(own, "application/json", nil)
+	var ue *url.Error
+	if got := CauseAt(err, "http://127.0.0.1:1/models", own); !errors.As(err, &ue) || got != ue.Err {
+		t.Fatalf("CauseAt = %v, want the error the *url.Error wraps", got)
+	}
+	if got := Cause(err, "http://127.0.0.1:1/models"); got.Error() != ClassRefused {
+		t.Fatalf("Cause = %v, want the class alone for a route outside /v1/ (the row's control)", got)
+	}
+	for name, call := range map[string]struct{ raw, callURL string }{
+		"an endpoint holding a user name":   {"http://madeuptoken0123" + "@" + "127.0.0.1:1/models", own},
+		"another URL than the client's own": {"http://127.0.0.1:1/models", "http://127.0.0.1:1/models/chat/completions"},
+		"an own URL not under the endpoint": {"http://127.0.0.1:2/models", own},
+		"an own URL under another endpoint": {"http://127.0.0.1:1/other", own},
+	} {
+		if got := CauseAt(err, call.raw, call.callURL); got.Error() != ClassRefused || !errors.Is(got, err) {
+			t.Errorf("%s: CauseAt = %v, want the class alone, unwrapping to the failure", name, got)
+		}
+	}
+}
+
 // oauthAnswer is the error x/oauth2 returns when a token endpoint answers HTTP 400 with
 // contentType and body: an *oauth2.RetrieveError holding the fields the library itself read from
 // that body, so each case below is what a broker's answer really yields.
