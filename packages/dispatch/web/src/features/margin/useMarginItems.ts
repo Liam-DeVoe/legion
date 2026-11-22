@@ -323,10 +323,10 @@ export function useMarginItems(
      *  in the list it was in, open or resolved, whoever resolves or reopens it meanwhile: moving
      *  it between them would remount its card, and the composer and what it holds with it. */
     readonly held?: ReadonlySet<string>;
-    /** Whether the reader has these cards on the screen: the desktop margin up, or a compact
-     *  sheet they have pulled open (`MarginSheet`'s `placesItems`). It is what lets the two
-     *  reads below go out before the editor's first batch, for a reader who is looking at the
-     *  place they fill (`features/doc/first-batch.ts`). */
+    /** Whether the reader has these cards on the screen: the Details drawer open, a compact
+     *  sheet they have pulled open, or the desktop margin up (`MarginSheet`'s `placesItems`). It
+     *  is what lets the two reads below go out before the editor's first batch, for a reader who
+     *  is looking at the place they fill (`features/doc/first-batch.ts`). */
     readonly reached?: boolean;
   } = {}
 ) {

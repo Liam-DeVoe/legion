@@ -278,7 +278,7 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[11],
   }),
   ...answers(
-    'MarginSheet | MarginComposerSlot | form | onScreen={ !covered && tab.value === "comments" && (drawer ? drawerOpen : sheet.expanded || !isCompactViewport) }',
+    'MarginSheet | MarginComposerSlot | form | onScreen={!covered && tab.value === "comments" && seen}',
     { reason: REASONS[12] }
   ),
   ...answers("Margin | MarginSheet | form | <div className>", { reason: REASONS[11] }),

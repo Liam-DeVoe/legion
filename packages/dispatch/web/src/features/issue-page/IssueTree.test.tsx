@@ -20,7 +20,7 @@ import * as Y from "yjs";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock } from "../../__tests__/fake-clock";
-import { pressAsInputMethod } from "../../__tests__/input-method-keys";
+import { COMPOSING, KEY_CODE_229 } from "../../__tests__/input-method-keys";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
@@ -1240,48 +1240,6 @@ test("Escape closes the body a press outside the outline keeps, from the page or
   await waitFor(() => expect(first.querySelector("[data-node-body]")).toBeNull());
 });
 
-// The page's Escape lets go at once of the row a press outside the outline keeps (above). A press
-// on a field outside takes the focus into the field, where a reader typing Chinese, Japanese or
-// Korean drops a candidate with Escape: that Escape is the input method's, marked `isComposing`,
-// or sent unmarked with keyCode 229 after the composition's end, as Safari sends it (WebKit bug
-// 165004). It lets go of nothing at once; it ends the press as any key does (`trackPress`), and the
-// row goes as that press ends. A plain Escape after it lets the row go at once.
-test("an input method's Escape in a field a press outside the outline holds lets go of no row at once, and a plain Escape does", async () => {
-  setViewport(1440);
-  const user = userEvent.setup();
-  const view = renderTree(
-    node({
-      children: [
-        addressedComment("comment-1", "The first words."),
-        addressedComment("comment-2", "The second words."),
-      ],
-      id: KEY,
-      type: "issue",
-    })
-  );
-  const name = "A field outside the outline";
-  const field = render(<input aria-label={name} />).getByRole("textbox", { name });
-  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-  const [first] = rowsFor(view.container, "comment-1");
-  if (first === undefined) throw new Error("the first row is not drawn");
-  await waitFor(() => expect(first.querySelector("[data-node-body]")).not.toBeNull());
-
-  await user.pointer({ keys: "[MouseLeft>]", target: field });
-  expect(document.activeElement).toBe(field);
-  pressAsInputMethod(field, "Escape", {
-    beforePlain: () =>
-      expect(
-        first.querySelector("[data-node-body]"),
-        "an input method's Escape let go of the row at once"
-      ).not.toBeNull(),
-  });
-  expect(
-    first.querySelector("[data-node-body]"),
-    "the plain Escape did not let go of the row at once"
-  ).toBeNull();
-  await user.pointer({ keys: "[/MouseLeft]" });
-});
-
 // Safari focuses no button a press lands on, so a press on a control outside the outline takes
 // the focus from the row to no control at all, and the blur names no element. A blur naming no
 // element that a press caused keeps the body through the press's click, as any press's does, and
@@ -1759,7 +1717,7 @@ function composingEscape(target: Element): void {
     new KeyboardEvent("keydown", {
       bubbles: true,
       cancelable: true,
-      isComposing: true,
+      ...COMPOSING,
       key: "Escape",
     })
   );
@@ -1810,7 +1768,7 @@ test("an Escape that ends an input-method composition in a row's editor, sent un
   const user = userEvent.setup();
   const { editable, view } = await caretInStatement(user);
   await act(async () => {
-    pressIn(editable, "Escape", { isComposing: false, keyCode: 229 });
+    pressIn(editable, "Escape", KEY_CODE_229);
   });
   await nextFrame();
   expect(view.edited.at(-1), "an Escape that ended a composition ended the editing").toBe(
@@ -4125,10 +4083,10 @@ test("an input method's key has the row's editor read no caret, and a plain Back
     window.getSelection()?.collapse(words, 1);
     expect(ownOffset(), "the editor read the move before the browser reported it").toBe(0);
     for (const [key, modifiers] of [
-      ["Process", { keyCode: 229 }],
-      ["a", { isComposing: true }],
-      ["Backspace", { isComposing: true }],
-      ["Backspace", { isComposing: false, keyCode: 229 }],
+      ["Process", KEY_CODE_229],
+      ["a", COMPOSING],
+      ["Backspace", COMPOSING],
+      ["Backspace", KEY_CODE_229],
     ] as const) {
       reports = 0;
       pressIn(editable, key, modifiers);
@@ -4426,8 +4384,8 @@ test("Shift+Tab from the row's editor goes to the row past a control another blo
 // or unmarked with keyCode 229 as Safari sends the key that ends one - and ends no editing: the
 // focus stays in the row's editor, and the row keeps its editing.
 test.each([
-  ["isComposing", { isComposing: true }],
-  ["keyCode 229", { isComposing: false, keyCode: 229 }],
+  ["isComposing", COMPOSING],
+  ["keyCode 229", KEY_CODE_229],
 ] as const)("a Tab pressed in an input-method composition in the row's editor, marked by %s, leaves the editing and the focus as they were", async (_mark, modifiers) => {
   setViewport(1440);
   const user = userEvent.setup();

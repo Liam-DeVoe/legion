@@ -10,6 +10,7 @@ import { MemoryRouter } from "react-router-dom";
 import { nextFrame } from "../../__tests__/frames";
 import { api } from "../../api/client";
 import type { Ask, Comment } from "../../api/types";
+import { theFirstBatchIsAwaited } from "../doc/first-batch";
 import { useDrawerPage } from "../issue-page/drawer-page";
 import {
   type MarginDrawer,
@@ -111,6 +112,15 @@ function landingClient(comments: Comment[], asks: Ask[] = []): QueryClient {
   queryClient.setQueryData(["asks", issue.key], asks);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], comments);
+  return queryClient;
+}
+
+/** The page's client before the margin has read anything of its own: the issue's comments and
+ *  its asks, which the margin reads itself (`useMarginItems`, `useAnsweredAsks`), are not in it. */
+function unreadClient(): QueryClient {
+  const queryClient = landingClient([]);
+  queryClient.removeQueries({ exact: true, queryKey: ["comments", issue.key] });
+  queryClient.removeQueries({ exact: true, queryKey: ["asks", issue.key] });
   return queryClient;
 }
 
@@ -350,6 +360,67 @@ test("below xl, the margin in an open Details drawer draws its cards with no car
   } finally {
     restoreMatchMedia();
     scrollTo.mockRestore();
+  }
+});
+
+// The margin's reads - its comments and its answered asks - wait for the document's first batch
+// unless a reader sees the margin (`MarginSheet`'s `seen`). An open Details drawer is a margin the
+// reader sees at every width, below `xl` too, where a margin outside Details is a compact sheet
+// that waits until the reader opens it. A closed one is a margin no reader sees at every width, at
+// `xl` and above too, where a margin outside Details is the desktop column, which reads at once.
+test.each([
+  [1024, "open", "before"],
+  [1440, "open", "before"],
+  [1440, "closed", "after"],
+] as const)("at %i px with Details %s, the margin reads its comments and answered asks %s the document's first batch", async (width, drawer, when) => {
+  const restoreMatchMedia = stubViewport(width);
+  const listComments = spyOn(api, "listComments").mockResolvedValue([comment]);
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
+  // How many times each of the margin's two reads has gone out.
+  const reads = () => ({
+    answeredAsks: listIssueAsks.mock.calls.length,
+    comments: listComments.mock.calls.length,
+  });
+  act(() => theFirstBatchIsAwaited(true));
+  const view = render(
+    <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "spec" })]}>
+      <QueryClientProvider client={unreadClient()}>
+        <MarginProvider>
+          <Details fills open={drawer === "open"}>
+            <Margin />
+          </Details>
+        </MarginProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    if (when === "before") {
+      await waitFor(() =>
+        expect(
+          reads(),
+          `Details ${drawer} at ${width} px held the margin's reads for the first batch`
+        ).toEqual({ answeredAsks: 1, comments: 1 })
+      );
+    } else {
+      await settled();
+      expect(
+        reads(),
+        `Details ${drawer} at ${width} px made the margin's reads before the first batch`
+      ).toEqual({ answeredAsks: 0, comments: 0 });
+      act(() => theFirstBatchIsAwaited(false));
+      await waitFor(() =>
+        expect(
+          reads(),
+          `Details ${drawer} at ${width} px did not make the margin's reads after the first batch`
+        ).toEqual({ answeredAsks: 1, comments: 1 })
+      );
+    }
+  } finally {
+    view.unmount();
+    act(() => theFirstBatchIsAwaited(false));
+    listComments.mockRestore();
+    listIssueAsks.mockRestore();
+    restoreMatchMedia();
   }
 });
 

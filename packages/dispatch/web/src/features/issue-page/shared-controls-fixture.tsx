@@ -440,7 +440,7 @@ export const idlePriorityWrite: IssuePriorityWrite = {
 
 /** The issue the identity block's typed editors are open on: the margin fixture's issue, with no
  *  documents, as `shared-writes.test.ts` builds its own. */
-export const ISSUE: IssueDetails = {
+const ISSUE: IssueDetails = {
   ...marginIssue,
   artifacts: [],
   last_seq: 250,
@@ -449,7 +449,7 @@ export const ISSUE: IssueDetails = {
 };
 
 /** The reader's own state of `ISSUE`. */
-export const STATE: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
+const STATE: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
 
 /** The identity block's editor of `field` (`IssueFieldForms`), open as the page opens it: on the
  *  drafts of the page's `useIssueHeaderWrites`, and closed as the page closes it, which `onClose`,

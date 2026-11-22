@@ -1,15 +1,7 @@
 import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import { MAX_ISSUE_ADVANCES, MAX_ISSUE_BLOCKERS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import {
-  act,
-  // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for an Escape that ends an IME composition, which user-event has no form for
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -691,37 +683,6 @@ test("the blocked-by editor refuses Cancel and Escape while the save is out", as
   }
 });
 
-// An input method's Escape typed into the blocked-by box drops what the reader was composing,
-// and leaves the editor open (`inputMethodKey`); a plain Escape is Cancel's, and closes it.
-test("an input method's Escape in the blocked-by box leaves the editor open, and a plain Escape closes it", async () => {
-  const user = userEvent.setup();
-  const { restore } = stubIssueApi();
-  const { unmount } = renderDetails();
-
-  try {
-    await user.click(
-      await screen.findByRole("button", { name: blockedByControlName("CORE-1", 0) })
-    );
-    const keys = await screen.findByLabelText("Issues CORE-1 waits on");
-    pressAsInputMethod(keys, "Escape", {
-      beforePlain: () =>
-        expect(
-          screen.queryByLabelText("Issues CORE-1 waits on"),
-          "an input method's Escape closed the blocked-by editor"
-        ).not.toBeNull(),
-    });
-    await waitFor(() =>
-      expect(
-        screen.queryByLabelText("Issues CORE-1 waits on"),
-        "a plain Escape left the blocked-by editor open"
-      ).toBeNull()
-    );
-  } finally {
-    unmount();
-    restore();
-  }
-});
-
 // A refusal belongs to the attempt that earned it. The editor held the last one until the next
 // save started, so opening it again drew a refusal of a list the reader had already dropped.
 test("the blocked-by editor opened again draws no refusal from the attempt before", async () => {
@@ -981,9 +942,11 @@ test("Escape in the blocked-by box closes its editor and goes no further", async
   }
 });
 
-// An Escape that ends an IME composition gives up what the reader was composing, and the
-// blocked-by editor closed on it, with the list typed into it. The editor leaves that press alone,
-// unmarked, as the page's other editors do, and a plain Escape still closes it.
+// An Escape that ends an IME composition - marked `isComposing`, or sent unmarked with keyCode 229
+// after the composition's end, as Safari sends it (WebKit bug 165004) - gives up what the reader
+// was composing, and the blocked-by editor closed on it, with the list typed into it. The editor
+// leaves that press alone, unmarked, as the page's other editors do, and a plain Escape still
+// closes it.
 test("an Escape that ends an IME composition leaves the blocked-by editor open with its list", async () => {
   const user = userEvent.setup();
   const { restore } = stubIssueApi();
@@ -997,25 +960,28 @@ test("an Escape that ends an IME composition leaves the blocked-by editor open w
     const keys = await screen.findByLabelText<HTMLInputElement>("Issues CORE-1 waits on");
     await user.click(keys);
     await user.paste("CORE-2");
-    // user-event has no form for this: it cannot mark a key as an IME composition.
-    fireEvent.keyDown(keys, { isComposing: true, key: "Escape" });
-    expect(
-      screen.queryByLabelText("Issues CORE-1 waits on"),
-      "an Escape that ended an IME composition closed the blocked-by editor"
-    ).toBe(keys);
-    expect(keys.value, "an Escape that ended an IME composition threw the typed list away").toBe(
-      "CORE-2"
+    pressAsInputMethod(keys, "Escape", {
+      beforePlain: () => {
+        expect(
+          screen.queryByLabelText("Issues CORE-1 waits on"),
+          "an Escape that ended an IME composition closed the blocked-by editor"
+        ).toBe(keys);
+        expect(
+          keys.value,
+          "an Escape that ended an IME composition threw the typed list away"
+        ).toBe("CORE-2");
+      },
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByLabelText("Issues CORE-1 waits on"),
+        "Escape left the blocked-by editor open"
+      ).not.toBeInTheDocument()
     );
-
-    await user.keyboard("{Escape}");
-    expect(
-      screen.queryByLabelText("Issues CORE-1 waits on"),
-      "Escape left the blocked-by editor open"
-    ).not.toBeInTheDocument();
     expect(
       escapes.taken,
       "the editor marked the Escape that ended a composition taken, or left a plain one unmarked"
-    ).toEqual([false, true]);
+    ).toEqual([false, false, true]);
   } finally {
     escapes.stop();
     unmount();

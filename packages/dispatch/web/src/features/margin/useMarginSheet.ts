@@ -254,10 +254,9 @@ export function useMarginSheet(): MarginSheetModel {
   } = useMarginItems(owner, tab, visibleArtifact, markPlacements, blockPlacements, blockFilterId, {
     documentShown: placementsPublished,
     held: heldReplyKeys,
-    // The cards are the reader's the moment the margin lays them out beside the document: the
-    // desktop column up, or a compact sheet they have opened (`MarginSheet`). Until then the
-    // two per-owner reads wait for the editor's first batch
-    // (`features/doc/first-batch.ts`).
+    // The cards are the reader's the moment a reader sees the margin: the Details drawer open, a
+    // compact sheet they have opened, or the desktop column up (`MarginSheet`). Until then the
+    // two per-owner reads wait for the editor's first batch (`features/doc/first-batch.ts`).
     reached: placesItems,
   });
   const onEdit = useCallback(

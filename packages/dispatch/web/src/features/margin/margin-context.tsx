@@ -257,9 +257,10 @@ interface MarginContextValue {
   hoveredItemId: string | undefined;
   hoveredMarkId: string | undefined;
   markPlacements: ReadonlyMap<string, MarkPlacement>;
-  /** Whether the margin is laying its cards out against the open document's blocks and marks: a
-   *  desktop margin that is up, or a compact sheet the reader has opened. A document measures
-   *  where its blocks and marks sit only for a reader who can see a card placed against them
+  /** Whether a reader sees the margin, which has an owner and nothing covering it: the Details
+   *  drawer open, a compact sheet they have opened, or the desktop column up (`MarginSheet`'s
+   *  `seen`). Only then do the margin's reads go out before the document's first batch
+   *  (`useMarginItems`), and does the open document measure where its blocks and marks sit
    *  (`ProofDocument`, dispatch://INFRA-341 requirement R11). */
   placesItems: boolean;
   /** Whether the registered document has reported its layout: it says so by publishing
@@ -280,7 +281,7 @@ interface MarginContextValue {
   setHoveredItemId(id: string | undefined): void;
   setMarkItemIds(markItemIds: ReadonlyMap<string, string>): void;
   setMarkPlacements(placements: ReadonlyMap<string, MarkPlacement>): void;
-  /** The margin sheet says whether it is laying its cards out; nothing else calls it. */
+  /** The margin sheet says whether a reader sees it; nothing else calls it. */
   setPlacesItems(places: boolean): void;
   shownCompose: ShownCompose | undefined;
   /** Takes back the registered document's layout while it is hidden and has no layout to report. */
@@ -319,8 +320,8 @@ const MarginContext = createContext<MarginContextValue>({
   setHoveredItemId: unavailableMargin,
   setMarkItemIds: unavailableMargin,
   setMarkPlacements: unavailableMargin,
-  // A margin sheet outside a provider - a test's bare one - lays its cards out for no document,
-  // so it reports that to nobody rather than throwing on a render of its own.
+  // A margin sheet outside a provider - a test's bare one - stands beside no document, so it
+  // reports whether it is seen to nobody rather than throwing on a render of its own.
   setPlacesItems: () => {},
   shownCompose: undefined,
   withdrawPlacements: unavailableMargin,

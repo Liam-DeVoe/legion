@@ -242,22 +242,21 @@ export function MarginSheet({
   // link scrolls its selected card after opening the review sheet"), and a card that is not
   // there yet is a landing that cannot happen.
   //
-  // The new issue page's Details drawer is no shut sheet: the sheet is its body, which the
-  // reader sees whenever the drawer is open, at every width (`drawerOpen`), so the rule is the
-  // compact sheet's alone (`compactSheet`).
+  // The new issue page's Details drawer is no shut sheet: the sheet is its body at every width,
+  // so the rule is the compact sheet's alone (`compactSheet`).
   const unnamedShutSheet =
     compactSheet && !sheet.expanded && selection.selectedItemId === undefined;
   const covered = collapsed || unnamedShutSheet || (isPhoneViewport && phoneThread !== undefined);
-  // The cards are laid out against the document's blocks and marks only while a reader can see
-  // them there: the desktop margin that is up, a compact sheet the reader has opened, or the
-  // Details drawer open at a compact width. The open document measures where its blocks and marks
-  // sit for that alone (`features/doc/ProofDocument.tsx`, dispatch://INFRA-341 requirement R11);
-  // a margin with no owner shows nothing, and a covered one has given its room away.
+  // Whether a reader sees the margin: the Details drawer open, a compact sheet they have opened,
+  // or the desktop column up. The composer below reads it for its `onScreen`.
+  const seen = drawer ? drawerOpen : sheet.expanded || !isCompactViewport;
+  // The margin's reads - its comments and its answered asks - go out before the document's first
+  // batch (`useMarginItems`, `features/doc/first-batch.ts`), and the open document measures where
+  // its blocks and marks sit (`features/doc/ProofDocument.tsx`, dispatch://INFRA-341 requirement
+  // R11), only while a reader sees the margin. A margin with no owner shows nothing, and a covered
+  // one has given its room away.
   const { setPlacesItems } = useMargin();
-  const placesItems =
-    owner !== undefined &&
-    !covered &&
-    (sheet.expanded || !isCompactViewport || (drawer && drawerOpen));
+  const placesItems = owner !== undefined && !covered && seen;
   useEffect(() => {
     setPlacesItems(placesItems);
     return () => setPlacesItems(false);
@@ -423,11 +422,7 @@ export function MarginSheet({
               key={`${composer.anchor.artifact}:${composer.seq ?? ""}`}
               onClose={actions.closeComposer}
               onKindChange={actions.onComposerKindChange}
-              onScreen={
-                !covered &&
-                tab.value === "comments" &&
-                (drawer ? drawerOpen : sheet.expanded || !isCompactViewport)
-              }
+              onScreen={!covered && tab.value === "comments" && seen}
             />
           )}
           {/* With no compose open on the document, what the margin's compose kept for its words

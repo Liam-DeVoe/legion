@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: a paste and a drop of files, an IME composition key, a key and an edit into the control a send holds disabled, the same-batch pairs inside act, and the hand-made beforeinput an edit's blocks are followed by
+// biome-ignore lint/style/noRestrictedImports: a paste and a drop of files, a key and an edit into the control a send holds disabled, the same-batch pairs inside act, and the hand-made beforeinput an edit's blocks are followed by
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { createRef, type ReactNode, useState } from "react";
@@ -9,7 +9,11 @@ import { MemoryRouter } from "react-router-dom";
 
 import { jump, realClock, settle, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
-import { pressAsInputMethod } from "../../__tests__/input-method-keys";
+import {
+  COMPOSING,
+  pressAsInputMethod,
+  pressInputMethodKey,
+} from "../../__tests__/input-method-keys";
 import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
 import type {
@@ -1805,8 +1809,7 @@ test("Ctrl+Enter sends while Enter, whitespace, and IME composition leave the dr
     await user.click(field);
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("still composing");
-    // user-event has no form for this: it cannot mark a key as an IME composition.
-    fireEvent.keyDown(field, { isComposing: true, key: "Enter" });
+    pressInputMethodKey(field, "Enter", COMPOSING);
     expect(createComment).not.toHaveBeenCalled();
     field.focus();
     await user.keyboard("{Control>}{Enter}{/Control}");

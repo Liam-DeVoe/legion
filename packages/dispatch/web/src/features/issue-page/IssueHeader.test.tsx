@@ -1,6 +1,6 @@
 import { beforeEach, expect, jest, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: user-event has no form for the presses and events the title's and the actions group's cases send: a press the browser cancels as it turns into a drag (its pointercancel and dragend, with no mouseup), a right press whose context menu takes its release (its contextmenu, with no pointerup), a tap's order (its pointer up before the mousedown that moves the focus, where user-event moves the focus as its pointer goes down), a blur of the window and its focus as the reader comes back, and a key pressed during an IME composition or, as Safari sends it, just after one.
+// biome-ignore lint/style/noRestrictedImports: user-event has no form for the presses and events the title's and the actions group's cases send: a press the browser cancels as it turns into a drag (its pointercancel and dragend, with no mouseup), a right press whose context menu takes its release (its contextmenu, with no pointerup), a tap's order (its pointer up before the mousedown that moves the focus, where user-event moves the focus as its pointer goes down), and a blur of the window and its focus as the reader comes back.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { http } from "msw";
@@ -8,7 +8,12 @@ import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
-import { pressAsInputMethod } from "../../__tests__/input-method-keys";
+import {
+  COMPOSING,
+  KEY_CODE_229,
+  pressAsInputMethod,
+  pressInputMethodKey,
+} from "../../__tests__/input-method-keys";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
 import {
@@ -2720,13 +2725,7 @@ test.each([
 
   try {
     const { editor, heading } = await editTitle(user, "Review the plan");
-    // user-event has no form for this: it cannot mark a key as an IME composition.
-    fireEvent.keyDown(
-      editor,
-      mark === "isComposing"
-        ? { isComposing: true, key }
-        : { isComposing: false, key, keyCode: 229 }
-    );
+    pressInputMethodKey(editor, key, mark === "isComposing" ? COMPOSING : KEY_CODE_229);
     expect(editor).toBeInTheDocument();
     expect(editor).toHaveValue("Review the plan");
     expect(editor).toHaveFocus();

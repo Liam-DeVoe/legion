@@ -12,9 +12,11 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
  * native listener alike, the field's own or one on the document or the window that a field's key
  * reaches, and every handler that passes over a composition, the key registry's among them
  * (`features/shell/keymap.ts`), which the page's bound keys go through. A listener that only
- * notes that a key was pressed acts on no key and is not in that range; nor are Arrow, Tab and
- * Backspace handlers of a field, unless they pass over a composition, as the row editor's Tab
- * does (`features/issue-page/useNodeEditing.ts`).
+ * notes that a key was pressed acts on no key and is not in that range; nor is one that only ends
+ * a held press, which any key ends (`features/issue-page/press-focus.ts`'s `trackPress`), such as
+ * the outline's Escape that lets go of the row a press kept (`IssueTree.tsx`'s `useReleaseFocus`);
+ * nor are Arrow, Tab and Backspace handlers of a field, unless they pass over a composition, as
+ * the row editor's Tab does (`features/issue-page/useNodeEditing.ts`).
  */
 export function inputMethodKey(event: KeyboardEvent | ReactKeyboardEvent): boolean {
   const key = "nativeEvent" in event ? event.nativeEvent : event;

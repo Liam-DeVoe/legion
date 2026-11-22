@@ -209,9 +209,9 @@ export function Margin({
           }}
           tabIndex={0}
         />
-        {/* While the margin lays its cards out beside the document the reader is at them, so
-            every read inside it - an author's agent registry among them - goes out rather than
-            waiting for the editor's first batch (`features/doc/first-batch.ts`). */}
+        {/* While a reader sees the margin (`MarginSheet`'s `placesItems`) they are at its cards,
+            so every read inside it - an author's agent registry among them - goes out rather
+            than waiting for the editor's first batch (`features/doc/first-batch.ts`). */}
         <ReaderIsHere value={placesItems}>
           <MarginSheet
             collapsed={railShown}

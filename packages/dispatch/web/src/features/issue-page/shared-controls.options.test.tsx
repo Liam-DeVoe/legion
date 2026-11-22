@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   act,
   type BoundFunctions,
-  // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for a blur while the window has no focus and an Escape that ends an IME composition, neither of which user-event has a form for
+  // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for a blur while the window has no focus, which user-event has no form for
   fireEvent,
   type queries,
   type RenderResult,
@@ -15,6 +15,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 
 import { graphNode } from "../../__tests__/graph-fixture";
+import { COMPOSING, pressInputMethodKey } from "../../__tests__/input-method-keys";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { artifact as specDocument } from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
@@ -6142,8 +6143,7 @@ test("an Escape that ends an IME composition leaves each open control and its dr
       expect(field.value).toBe(control.draft);
       expect(document.activeElement).toBe(field);
 
-      // user-event has no form for this: it cannot mark a key as an IME composition.
-      fireEvent.keyDown(field, { isComposing: true, key: "Escape" });
+      pressInputMethodKey(field, "Escape", COMPOSING);
       await settleReads();
       expect(control.fieldOf(view)).toBe(field);
       expect(field.value).toBe(control.draft);
