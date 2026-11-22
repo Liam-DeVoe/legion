@@ -309,7 +309,7 @@ const nodesOfKind = `
 		order by id
 	`
 
-// NodesBeneath answers the row of each node that stands beneath the node whose kind and id are
+// nodesBeneath answers the row of each node that stands beneath the node whose kind and id are
 // kind and id, as the store keys it, and is not gone, at every depth and of every kind, in (kind,
 // id) order, in one statement however deep the tree: each node whose current part_of tuple
 // (CurrentTupleRead) points at that node, each whose current part_of points at one of those, and
@@ -322,8 +322,8 @@ const nodesOfKind = `
 // planner proves the predicate of graph_tuples_as_of_in for an end the walk reads off a row it
 // reached, and walks that index from each such end. Each writer that takes a node to gone reads
 // what stands beneath it so, through WithBeneath.
-func NodesBeneath(ctx context.Context, q Queryer, kind, id string) ([]Node, error) {
-	rows, err := q.Query(ctx, nodesBeneath, kind, id, StateGone)
+func nodesBeneath(ctx context.Context, q Queryer, kind, id string) ([]Node, error) {
+	rows, err := q.Query(ctx, nodesBeneathStatement, kind, id, StateGone)
 	if err != nil {
 		return nil, fmt.Errorf("read the nodes beneath %s/%s: %w", kind, id, err)
 	}
@@ -334,11 +334,11 @@ func NodesBeneath(ctx context.Context, q Queryer, kind, id string) ([]Node, erro
 	return beneath, nil
 }
 
-// WithBeneath answers roots, each followed by what NodesBeneath reads beneath it, root by root in
+// WithBeneath answers roots, each followed by what nodesBeneath reads beneath it, root by root in
 // the order roots holds them, and each node once, as the store keys it, by kind and id: where a node
 // is met twice - a root an earlier root's subtree holds, or a node two roots' subtrees share - the
 // answer keeps it where it was first met, as that read answered it. It reads beneath every root, one
-// NodesBeneath each, whether or not it met the root already. Each writer that takes a node to gone
+// nodesBeneath each, whether or not it met the root already. Each writer that takes a node to gone
 // takes with it what this answers beneath it: the state route and the settle (api's
 // writeNodeState), a document's removal over the stale lenses on its node (api's removeArtifact),
 // and the block-index tick's sweep of every stale lens (graphcensus's StateStaleLensesGone).
@@ -353,7 +353,7 @@ func WithBeneath(ctx context.Context, q Queryer, roots []Node) ([]Node, error) {
 	}
 	for _, root := range roots {
 		take(root)
-		beneath, err := NodesBeneath(ctx, q, root.Kind, root.ID)
+		beneath, err := nodesBeneath(ctx, q, root.Kind, root.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -364,14 +364,14 @@ func WithBeneath(ctx context.Context, q Queryer, roots []Node) ([]Node, error) {
 	return nodes, nil
 }
 
-// nodesBeneath is the statement of NodesBeneath: $1 and $2 the start's kind and id and $3 the gone
-// state. walked is the start and each node the walk has reached, each once, as the store keys it:
-// its recursive step is the current part_of tuples into one node it holds, under the node's kind
-// and its address kind, read in a lateral subquery keyed by that node, and its `union` drops a
-// node it holds already, so a part_of cycle ends the walk rather than looping. The relation each
-// step keeps is the near end and the spelling of the far end, which graph_tuples_as_of_in does not
-// key, so it sorts that node's part_of tuples by node. The start itself is no answer.
-var nodesBeneath = `
+// nodesBeneathStatement is the statement of nodesBeneath: $1 and $2 the start's kind and id and $3
+// the gone state. walked is the start and each node the walk has reached, each once, as the store
+// keys it: its recursive step is the current part_of tuples into one node it holds, under the
+// node's kind and its address kind, read in a lateral subquery keyed by that node, and its `union`
+// drops a node it holds already, so a part_of cycle ends the walk rather than looping. The relation
+// each step keeps is the near end and the spelling of the far end, which graph_tuples_as_of_in does
+// not key, so it sorts that node's part_of tuples by node. The start itself is no answer.
+var nodesBeneathStatement = `
 		with recursive walked (node_kind, node_id) as (
 			select $1::text, $2::text
 			union
@@ -407,7 +407,7 @@ func scanNodesOfKind(rows pgx.Rows, kind string) ([]Node, error) {
 	return nodes, nil
 }
 
-// ScanNode reads one node row, as ReadNode, NodesOfKind and NodesBeneath take it: a row whose
+// ScanNode reads one node row, as ReadNode, NodesOfKind and nodesBeneath take it: a row whose
 // first columns are nodeColumns, in their order, as a statement of another package selects them
 // through NodeColumnsOf, and whose columns after those, where it selects any, it reads into more.
 // A null project_key is the empty Project, and a null parties nil Parties.

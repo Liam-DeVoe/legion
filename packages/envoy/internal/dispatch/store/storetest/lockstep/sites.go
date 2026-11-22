@@ -82,7 +82,7 @@ var storeWriteCallSites = map[string]string{
 	"api/reasoning_write.go#writeReasoningPointer": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// One node's state a request writes or settles (api/node_state.go): the issue's owner lock,
 	// then one Write of the node as the store holds it but for its state, and, on a move into
-	// gone, of every node beneath it (graphstore.NodesBeneath), each as the store holds it but for
+	// gone, of every node beneath it (graphstore.WithBeneath), each as the store holds it but for
 	// its state: a plain write that moves the rows and appends their state tuples. It appends no
 	// event. Its order is the order TestEveryStoreWriteTakesOneLockOrder proves of Write, after the
 	// owner lock writeReasoningNodes takes first too.

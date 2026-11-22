@@ -354,12 +354,12 @@ func storeReads(t *testing.T, ctx context.Context, pool *store.Pool, reference l
 	// tuples into a node the step before reached, read by that node's kind and id as CurrentIn's
 	// read into a node is: no index keys the far end with the near end after it, so every step
 	// walks this one.
-	beneath, err := NodesBeneath(ctx, recorder, subtreeKind, subtreeRoot)
+	beneath, err := nodesBeneath(ctx, recorder, subtreeKind, subtreeRoot)
 	if err != nil {
-		t.Fatalf("NodesBeneath: %v", err)
+		t.Fatalf("nodesBeneath: %v", err)
 	}
-	requireSameNodes(t, "NodesBeneath", beneath, reference.beneath)
-	record("NodesBeneath", false, 1, false)
+	requireSameNodes(t, "nodesBeneath", beneath, reference.beneath)
+	record("nodesBeneath", false, 1, false)
 	reads[len(reads)-1].wantOnlyIndex = "graph_tuples_as_of_in"
 
 	kinds := inboxKindsInTheStore(t, ctx, pool)
@@ -918,7 +918,7 @@ func writeOneLongValue(t *testing.T, ctx context.Context, pool *store.Pool) stri
 	return value
 }
 
-// The subtree NodesBeneath is read on, which writeSubtree states through Write. Its root, a lens,
+// The subtree nodesBeneath is read on, which writeSubtree states through Write. Its root, a lens,
 // holds a finding and a lens; the finding holds a lens, whose part_of names the finding by its
 // address kind as a lens invoked on a finding does, with a finding of its own, which holds a lens
 // whose part_of names that finding as a block, three levels further down; a gone lens under the
@@ -939,7 +939,7 @@ const (
 	subtreeUnderMoved    = "GRAPH-tree-under-moved"
 )
 
-// subtreeBeneath is what NodesBeneath answers of the subtree's root, each node as `<kind>/<id>`,
+// subtreeBeneath is what nodesBeneath answers of the subtree's root, each node as `<kind>/<id>`,
 // sorted: every node under it but the gone lens, which the walk goes on through, and the moved
 // lens with the lens under it, which stand under the root no more.
 func subtreeBeneath() []string {
@@ -1167,7 +1167,7 @@ func walkTheWholeLog(t *testing.T, ctx context.Context, pool *store.Pool) logRef
 	}
 	// The walk beneath the subtree's root answers what the subtree holds beneath it: a walk that
 	// stopped at the gone lens, kept the moved lens or looped at the cycle through the root would
-	// answer otherwise, and holding NodesBeneath to it would hold the read to that.
+	// answer otherwise, and holding nodesBeneath to it would hold the read to that.
 	if want := subtreeBeneath(); !slices.Equal(reference.beneath, want) {
 		t.Fatalf("the walk of the whole log answers the nodes beneath %s/%s as %v, and the subtree writeSubtree wrote holds %v beneath it",
 			subtreeKind, subtreeRoot, reference.beneath, want)
@@ -1278,7 +1278,7 @@ func requireSameTuples(t *testing.T, name string, answered []Tuple, want []int64
 	}
 }
 
-// nodesBeneathInTheLog is NodesBeneath's answer for the subtree's root as a walk in Go computes
+// nodesBeneathInTheLog is nodesBeneath's answer for the subtree's root as a walk in Go computes
 // it: the current part_of relations, each the newest part_of tuple of its relation where that one
 // asserts, walked breadth first from the root to every node they reach, each once, a node reached
 // through the tuples into it under its own kind and under its address kind (AddressKind); and of

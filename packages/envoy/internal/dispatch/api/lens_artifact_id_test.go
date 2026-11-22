@@ -89,9 +89,6 @@ func TestALensMovedOntoADocumentRecordsThatDocumentsRow(t *testing.T) {
 	// its address 200 with its on naming parent, and one that reads gone answers alice's GET
 	// /api/v1/lenses?on= and GET /api/v1/references?to= of its address what the same read of a lens
 	// nobody wrote answers (requireReadsAsALensNobodyWrote).
-	asAlice := func(method, path string, body any) *httptest.ResponseRecorder {
-		return dispatchRequest(t, rig.handler, method, path, body, "alice")
-	}
 	requireAfterRemoval := func(removed, parent, want string, lenses ...lensInvoked) {
 		t.Helper()
 		for _, lens := range lenses {
@@ -110,7 +107,7 @@ func TestALensMovedOntoADocumentRecordsThatDocumentsRow(t *testing.T) {
 			}
 			requireReadsAsALensNobodyWrote(t, func(read, status, login string) string {
 				return fmt.Sprintf("after the removal of %s, %s's %s answers %s, want 404 NOT_FOUND as for a lens nobody wrote", removed, login, read, status)
-			}, lensReader{"alice", asAlice, lens})
+			}, lensReader{"alice", rig.as("alice"), lens})
 		}
 	}
 	removedDocument(t, rig.handler, a.ID)

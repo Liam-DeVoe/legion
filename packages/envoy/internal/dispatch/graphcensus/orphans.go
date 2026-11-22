@@ -155,7 +155,7 @@ func StateOrphanedGone(ctx context.Context, database *store.Store, ref string) e
 // stands on, with the key of the issue that address names, `<issue key>/<slug>`, whose owner lock
 // every writer under the lens takes (api's lockIssueOwner). Only a lens that records a row can be
 // stale itself, so the read keeps those before it walks; every node under one is stale with it and
-// is taken with it as graphstore.NodesBeneath reads it. It reads the lenses of the store, through
+// is taken with it as graphstore.WithBeneath reads it. It reads the lenses of the store, through
 // the primary key of graph_nodes.
 var staleLenses = `
 	select ` + graphstore.NodeColumnsOf(`stale`) + `, split_part(split_part(placed.to_id, '#', 1), '/', 1)

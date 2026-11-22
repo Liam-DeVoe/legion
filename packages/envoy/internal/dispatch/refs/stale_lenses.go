@@ -46,7 +46,7 @@ func StaleLensesOnSQL(columns, document string) string {
 // beneath it (api's removeArtifact). It takes no lock of its own: the removal reads it under the
 // owner lock of the issue the address names, which every writer of a lens, a finding or a risk
 // under the issue takes first (api's lockIssueOwner).
-func StaleLensesOn(ctx context.Context, q graphstore.Queryer, document string) ([]graphstore.Node, error) {
+func StaleLensesOn(ctx context.Context, q Queryer, document string) ([]graphstore.Node, error) {
 	rows, err := q.Query(ctx, staleLensesOn(), document)
 	if err != nil {
 		return nil, fmt.Errorf("read the stale lenses on %s: %w", document, err)

@@ -598,7 +598,7 @@ var indexPasses = map[string]string{
 	// One node's state, written or settled through the store's writer from the request and the
 	// node's own row: the state is a base attribute of the node, which no projection row holds. A
 	// node taken gone takes its whole part_of subtree gone in the same write, each node from its own
-	// row, which the write reads through the current part_of tuples (graphstore.NodesBeneath).
+	// row, which the write reads through the current part_of tuples (graphstore.WithBeneath).
 	"api/reasoning_write.go#writeNodeState": "the request's state, the node's own row, the rows of every node under a node it takes gone, and the issue it stands under",
 	// An issue's own field write made for a run: the issue's node, restated from the PATCH and the
 	// issue's row it locked, and caused by the issue's own event, so the run's change of the issue

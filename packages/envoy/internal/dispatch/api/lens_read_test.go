@@ -404,12 +404,9 @@ func TestALensOnAFindingGoesGoneWithTheFinding(t *testing.T) {
 	if state := storedNodeOf(t, rig.database, onFinding.Address).State; state != graphstore.StateGone {
 		t.Errorf("the lens on the finding %s is %s once the finding's lens is gone, want gone with the finding", onFinding.Address, state)
 	}
-	asAlice := func(method, path string, body any) *httptest.ResponseRecorder {
-		return dispatchRequest(t, rig.handler, method, path, body, "alice")
-	}
 	requireReadsAsALensNobodyWrote(t, func(read, status, login string) string {
 		return fmt.Sprintf("%s's %s once the finding's lens is gone answers %s, want 404 NOT_FOUND as for a lens nobody wrote", login, read, status)
-	}, lensReader{"alice", asAlice, onFinding})
+	}, lensReader{"alice", rig.as("alice"), onFinding})
 	requireGoneRefused(t, "overtaken on the lens on the gone finding",
 		writeStateAs(t, rig.handler, rig.issue, onFinding.Address, graphstore.StateOvertaken, "alice"), onFinding.ID)
 }

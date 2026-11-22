@@ -61,6 +61,13 @@ func (r reasoningRig) post(path string, body map[string]any, login string) *http
 	return dispatchRequest(r.t, r.handler, http.MethodPost, "/api/v1/issues/"+r.issue+path, body, login)
 }
 
+// as is a sender of each request it is handed as login, a person's cookie.
+func (r reasoningRig) as(login string) sender {
+	return func(method, path string, body any) *httptest.ResponseRecorder {
+		return dispatchRequest(r.t, r.handler, method, path, body, login)
+	}
+}
+
 // nodePath is the route path of a node's own routes, its store address one escaped segment.
 func nodePath(address, route string) string {
 	return "/nodes/" + url.PathEscape(address) + "/" + route

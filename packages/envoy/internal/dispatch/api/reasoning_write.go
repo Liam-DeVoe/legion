@@ -503,7 +503,7 @@ var errNodeNotHeld = errors.New("the store holds no row of the node")
 // gone yet to gone in the same graphstore.Write, each node the same way, at every depth and
 // whatever its kind, those the caller may not see among them: a finding or a risk under a lens, a
 // lens invoked on a lens, a finding, a risk or a constraint, and all that stands under each
-// (graphstore.WithBeneath, whose graphstore.NodesBeneath is one statement however deep the tree).
+// (graphstore.WithBeneath, whose nodesBeneath is one statement however deep the tree).
 // So no read by its own address answers a node under a gone one live with nothing to stand on
 // (spec requirement r-proposed). The route lets a person alone make that move (goneNotPermitted),
 // so what stands under the node is read for the write and for no refusal, and tells the caller

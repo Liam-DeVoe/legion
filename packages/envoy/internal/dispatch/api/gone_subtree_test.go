@@ -362,13 +362,6 @@ func TestAWriteOnALensOnARemovedDocumentIsRefusedAsGone(t *testing.T) {
 		finding      lensFinding
 		risk         riskWritten
 	}
-	created := func(name string, response *httptest.ResponseRecorder) *httptest.ResponseRecorder {
-		t.Helper()
-		if response.Code != http.StatusCreated {
-			t.Fatalf("%s: status=%d body=%s", name, response.Code, response.Body.String())
-		}
-		return response
-	}
 	riskUnder := func(lens string) map[string]any {
 		return map[string]any{"lens": lens, "heading": "The import stalls.", "early_warning": "Rows stop.", "prevention": "Batch it."}
 	}
@@ -377,9 +370,9 @@ func TestAWriteOnALensOnARemovedDocumentIsRefusedAsGone(t *testing.T) {
 		document := emptyDocument(t, rig.handler, rig.issue, name)
 		made := lensed{document: document, address: "dispatch://" + rig.issue + "/artifact/" + document.Slug}
 		made.lens = rig.invoke(made.address, graphstore.LensKindPreMortem, "alice", nil)
-		made.finding = decodeBody[lensFinding](t, created("alice's finding under "+made.lens.Address,
+		made.finding = decodeBody[lensFinding](t, created(t, "alice's finding under "+made.lens.Address,
 			rig.post(nodePath(made.lens.Address, "findings"), map[string]any{"text": "The import holds a lock."}, "alice")))
-		made.risk = decodeBody[riskWritten](t, created("alice's risk under "+made.lens.Address,
+		made.risk = decodeBody[riskWritten](t, created(t, "alice's risk under "+made.lens.Address,
 			rig.post("/risks", riskUnder(made.lens.Address), "alice")))
 		made.hidden = rig.invoke(made.address, "trade-off", "alice", map[string]any{"visibility": graphstore.VisibilityAuthor})
 		return made
