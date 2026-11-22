@@ -97,6 +97,7 @@ function entry(
 
 function shapedLink(blockId: string, stale: boolean): DecisionLink {
   return {
+    changed_since_tie: false,
     created_at: "2026-11-01T00:00:00Z",
     created_version: 1,
     from_block: "store",

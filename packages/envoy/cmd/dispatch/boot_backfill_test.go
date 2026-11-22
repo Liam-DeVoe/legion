@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -198,8 +199,9 @@ const bootBackfillSigningKey = "boot-backfill-key"
 
 // No pod's readiness waits for the boot's backfill. A process booted with its passes held
 // (DISPATCH_TEST_HOLD_BOOT_BACKFILL) is healthy, serves a write of a project and an issue, holds the
-// horizon its boot recorded before the passes in graph_backfill_horizon, and logs no done line. A
-// process booted without the hold over the same database logs the done line once its passes end.
+// horizon its boot recorded before the passes in graph_backfill_horizon, the row of this build's
+// marking rule (refs.BlockIndexMarkingRule, the table's key), and logs no done line. A process
+// booted without the hold over the same database logs the done line once its passes end.
 //
 // Then the bound of the record. With a transaction of the test's own holding an event insert open,
 // a third process whose bound is 2 s (DISPATCH_TEST_BOOT_BACKFILL_HORIZON_WAIT) logs the skip,
@@ -226,8 +228,8 @@ func TestTheBootBackfillHoldsNoPodsReadiness(t *testing.T) {
 	key, _ := held.createIssue(t)
 	var recorded bool
 	if err := database.Pool.QueryRow(ctx, `
-		select exists (select 1 from graph_backfill_horizon where id = 1 and recorded_at >= $1)
-	`, started).Scan(&recorded); err != nil {
+		select exists (select 1 from graph_backfill_horizon where marking_rule = $2 and recorded_at >= $1)
+	`, started, refs.BlockIndexMarkingRule).Scan(&recorded); err != nil {
 		t.Fatalf("read graph_backfill_horizon: %v", err)
 	}
 	if !recorded {

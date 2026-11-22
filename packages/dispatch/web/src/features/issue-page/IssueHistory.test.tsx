@@ -10,6 +10,7 @@ import { prependEventToLog } from "../../api/event-feed";
 import type { Artifact, DispatchEvent, Handoff, IssueDetails, MessageRead } from "../../api/types";
 import { linkText, pageInkText } from "../../theme/classes";
 import { dateKey, dayLabel } from "../activity/activity-model";
+import { buildIssuePath } from "../refs/routes";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { HistoryHandoff } from "./HistoryHandoff";
 import { IssueHistory } from "./IssueHistory";
@@ -545,6 +546,45 @@ test("a day the address opened closes when the reader presses its line", async (
   } finally {
     unmount?.();
     restoreReads();
+  }
+});
+
+// A block's line names the block by its id, and a UUID is no name a reader reads: the history
+// names a question's block by the question's first words, a link to the question's own address,
+// which puts the focus on its row in the outline.
+test("a repaired block's words are a link to its question's address, and its id is not drawn", async () => {
+  const block = "01f349b4-2a84-4ebb-81be-91fa2f4e2300";
+  const repaired = {
+    ...claim(1),
+    payload: { block_id: block, disturbed_by: { id: "alice", kind: "user" }, version: 3 },
+    type: "block.repaired",
+  } as DispatchEvent;
+  const question = {
+    block_id: block,
+    id: "q1",
+    kind: "question",
+    question: "Which layout reads best on a phone?",
+  };
+  // The log holds no refused check, so the history reads no check.
+  const reads = [
+    spyOn(api, "getIssueEvents").mockResolvedValue([repaired]),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([question] as never),
+  ];
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined).unmount;
+    const link = await screen.findByRole("link", { name: question.question });
+    expect(link).toHaveAttribute("href", buildIssuePath({ id: "q1", key: KEY, kind: "ask" }));
+    expect(
+      screen.getByRole("list", { name: CONTROL_LABELS.history_list }),
+      "the repaired block's line draws its id"
+    ).not.toHaveTextContent(block);
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
   }
 });
 

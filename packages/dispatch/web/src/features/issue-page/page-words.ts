@@ -673,9 +673,10 @@ export const STATE_LINES = freeze({
   /** What the outline says over its rows, on load as much as later, of each read they come from
    *  that stands failed, beside that read's Retry (`outline-reads.ts`): the names the rows cite,
    *  which checks serve each statement, the issue's decisions, the checks' results, the
-   *  questions, the comments, the messages, and each document whose blocks it draws, named by
-   *  the part the document plays: the spec, the plan or Verification, since a decision is a block
-   *  of a document and no document of its own. */
+   *  questions, the comments and the messages. The spec's, the plan's and the verification
+   *  document's lines, last, are what the Plan and the Verification views say of a tree read
+   *  refused before it first answered, each named by the part the document whose blocks the view
+   *  waits on plays (`PlanFilterBody`, `VerificationFilterBody`). */
   names_unreadable: "Could not load the names this issue's rows cite.",
   coverage_unreadable: "Could not load which checks serve each statement.",
   issue_decisions_unreadable: "Could not load this issue's decisions.",
@@ -686,6 +687,13 @@ export const STATE_LINES = freeze({
   spec_unreadable: "Could not load the spec.",
   plan_unreadable: "Could not load the plan.",
   verification_unreadable: "Could not load the verification document.",
+  /** What the Spec view says over its columns, on load as much as later, of a group of its reads
+   *  that stands failed, beside one Retry for the group (`spec-filter/SpecFilterBody.tsx`): the
+   *  spec's blocks and their coverage, and the results and the Verification document's blocks.
+   *  The second is not the outline's `results_unreadable` above, which names the results read
+   *  alone. */
+  statements_unreadable: "Could not load the statements.",
+  spec_results_unreadable: "Could not load the results.",
 } as const);
 
 /**
@@ -713,22 +721,9 @@ export const ANSWER_LINES = freeze({
    *  read, and when they could not be (`HistoryHandoff.tsx`). */
   loading_handoff: "Loading handoff…",
   handoff_unreadable: "Could not load the handoff.",
-  /** What the Verification view says when its Verification document's blocks could not be
-   *  read, so it cannot say which statement each check serves. */
-  checks_unreadable: "Could not load the checks.",
-  /** What the Spec filter says over its columns when the decisions could not be read, so the
-   *  column beside each statement cannot say what shaped it. */
-  decisions_unreadable: "Could not load the decisions.",
-  /** What the Spec view says when the spec's blocks or their coverage could not be read. */
-  statements_unreadable: "Could not load the statements.",
-  /** What the Spec view says when the results could not be read, so it marks no statement. */
-  results_unreadable: "Could not load the results.",
   /** What the outline says when the issue's tree could not be read before it first answered,
    *  so it holds no row to draw. */
   outline_unreadable: "Could not load the outline.",
-  /** What the Decisions view says over its list when the asks could not be read, so it cannot
-   *  say which questions there are; of the decisions read it says `decisions_unreadable`. */
-  questions_unreadable: "Could not load the questions.",
   /** What the history in Details says while the issue's log is read, which Details opening
    *  asks for, and when it could not be; and what its Load older says while the next page is
    *  out (`IssueHistory.tsx`): the Activity tab's words. */
@@ -746,12 +741,6 @@ export const ANSWER_LINES = freeze({
   /** What a command bar run's page says when its one read failed with anything but 400 or
    *  404, with Retry beside it (`run-page/RunPage.tsx`). */
   run_unreadable: "Could not load this run.",
-  /** What the Plan view says when the plan's blocks could not be read, so it holds no task to
-   *  draw. */
-  plan_unreadable: "Could not load the plan.",
-  /** What the Spec view says over its columns when the issue's questions and their answers could
-   *  not be read, so it draws no decision a person made. */
-  answers_unreadable: "Could not load the answers.",
   /** What the list of who worked the issue says while its read, which the reader opened, is
    *  out, and when it failed (`IssueCollaboratorList.tsx`): the Collaborators tab's words. */
   loading_collaborators: "Loading collaborators…",
@@ -762,6 +751,10 @@ export const ANSWER_LINES = freeze({
   /** What a decision's Change form says when Dispatch refused its send, whatever the server
    *  answered: the reader's words stay in the field, to send again (`DecisionActions.tsx`). */
   change_not_sent: "Could not send the change.",
+  /** What Left on a row of the Decisions list says, and so does the key that zooms out, since
+   *  the list has no level above its rows: the outline's own report for those keys speaks of
+   *  the whole issue, which the list is not (`decisions-filter/DecisionsFilterBody.tsx`). */
+  no_level_above: "This list has no level above this row.",
   /** What a control says while its own write is out: Dispatch has not answered, so none of
    *  these says the thing is done. */
   saving_close: "Closing…",
@@ -1037,6 +1030,10 @@ export const CONTROL_LABELS = freeze({
    *  written out in the reader's locale (`dayLabel`). */
   history_today: "Today",
   history_yesterday: "Yesterday",
+  /** What a line of the history calls a block it names by a UUID that no node of the issue
+   *  carries now, in place of that id and the word before it (`history-model.ts`): an id is no
+   *  name, so the line says what the block is rather than which one. */
+  history_gone_block: "a block that is gone",
   /** Details' list of the runs Legion made of the issue's steps, under the history
    *  (`DetailsSteps.tsx`), where today's page has a Steps tab: its heading, which its count of
    *  runs follows, "Steps (4)"; the heading of each task's runs, before the task's own name,

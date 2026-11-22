@@ -209,9 +209,11 @@ export function decisionNode(block: string, partial: Partial<TreeNode> = {}): Tr
 }
 
 /** One `shaped` tie, as today's read carries it: a link from a block of the decision to the
- *  node `ref` names. */
+ *  node `ref` names. Its `changed_since_tie` says the opposite of `stale`, so a reader of the
+ *  wrong fact draws the wrong state. */
 export function shaped(ref: string, stale = false): DecisionLink {
   return {
+    changed_since_tie: !stale,
     created_at: "2026-11-10T00:00:00Z",
     created_version: 1,
     from_block: "d",

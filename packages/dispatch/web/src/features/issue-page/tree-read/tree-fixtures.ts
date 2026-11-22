@@ -1,4 +1,4 @@
-import type { Decision, IssueTreeEnd, IssueTreeParent } from "../../../api/types";
+import type { Comment, Decision, IssueTreeEnd, IssueTreeParent } from "../../../api/types";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
 
 /**
@@ -24,7 +24,7 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
  */
 
 /** The issue every fixture of the page is read for. */
-export const TREE_KEY = "CORE-1";
+const TREE_KEY = "CORE-1";
 
 /** The kinds the store keys a node by that are no block, each the supertag of its nodes. A typed
  *  block of another kind - an ask written in a document among them - is a `block`. */
@@ -123,6 +123,19 @@ export function treeNode(
     id: `${owner}/${document}#${name}`,
     kind: "block",
   };
+}
+
+/** A comment as the tree read answers it: its words, who wrote it and when, under the node
+ *  `parent` names - where none is given, the comment it replies to, else the issue. */
+export function commentNode(
+  comment: Pick<Comment, "author" | "body" | "created_at" | "id" | "reply_to">,
+  parent: string = comment.reply_to ?? TREE_KEY
+): TreeAnswerNode {
+  return treeNode(comment.id, "comment", parent, {
+    author: [comment.author],
+    made_at: comment.created_at,
+    text: comment.body,
+  });
 }
 
 /** The decisions read's object for a decision whose words are `text`: never kept, replaced or

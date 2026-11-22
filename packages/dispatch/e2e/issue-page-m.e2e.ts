@@ -1432,35 +1432,46 @@ test("Load older by keyboard keeps the focus in view when the older page extends
 // Details scrolled 500 px down, turned busy and then went once its read answered; the focus was
 // on the resize handle, and two Tabs took Details to 0. The keeper now looks first in the
 // scrolling body of Details the lost control stood in, and skips a fixed or sticky control.
+// A press never leaves the focus to the keeper: each control of Details a press takes away hands
+// the focus on itself (each Retry, Load older), and the Retry of what the issue blocks, which this
+// row first drove, now does so too (`IssueMargin.tsx`). A control that goes with no press is the
+// keeper's own case: when a person writes in a thread only agents wrote, the thread leaves the
+// history for the outline (R2), and the control of it that held the reader's focus goes with it.
 test("a control of Details that goes away under the focus hands it to a control of Details' body, never the drawer's resize handle", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
   await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "A read that fails once" });
+  const issue = await createIssue({ project: "CORE", title: "An agents' thread a person joins" });
+  const root = await createComment(
+    issue.key,
+    { body: "The plan's third task needs a second look." },
+    activityAgent
+  );
+  await createComment(
+    issue.key,
+    { body: "The third task stands as written.", reply_to: root.id },
+    activityAgent
+  );
 
   const context = await reader(browser, "alice");
   try {
     const page = await context.newPage();
-    const blocks = /\/api\/v1\/references\?.*kind=blocked_by/;
-    await page.route(blocks, (route) =>
-      route.fulfill({
-        body: JSON.stringify({ error: { code: "INTERNAL", message: "refused by the row" } }),
-        contentType: "application/json",
-        status: 500,
-      })
-    );
     await gotoIssue(page, `/issues/${issue.key}`);
     await openDetails(page);
-    const retry = marginShell(page).getByRole("button", { name: CONTROL_LABELS.retry });
-    await expect(retry, "Details draws no Retry for the read that failed").toHaveCount(1, {
-      timeout: 30_000,
-    });
-    await page.unroute(blocks);
-    await retry.focus();
+    const thread = await seededHistoryEntry(page, historyItem(page, root.id), root.created_at);
+    // The turn's time link holds the focus as a keyboard reader leaves it there, with no press.
+    await thread.locator("[data-history-time]").focus();
     await nextFrames(page);
-    await page.keyboard.press("Enter");
-    await expect(retry, "the Retry stayed after its read answered").toHaveCount(0);
+    await createComment(
+      issue.key,
+      { body: "A person joins the agents' thread.", reply_to: root.id },
+      { login: "bob" }
+    );
+    await expect(
+      historyItem(page, root.id),
+      "the thread stayed in the history once a person wrote in it"
+    ).toHaveCount(0, { timeout: 30_000 });
     await nextFrames(page);
     const focus = await page.evaluate(() => {
       const active = document.activeElement;
@@ -3237,7 +3248,10 @@ async function seedHeldRows({ waiting }: { waiting: boolean }): Promise<string> 
 }
 
 /** The reads Details makes once it opens that a row holds back, each until its promise settles:
- *  the blockers' titles, and, where named, the issue's log and the issues waiting on it. */
+ *  the blockers' titles, and, where named, the issue's log and the issues waiting on it with
+ *  their titles. Blocks reads what waits on the issue, then those issues' titles in a read of
+ *  their own, so the issues and their titles land together, as a reader's slow read of what
+ *  waits brings both. */
 interface HeldReads {
   readonly log?: Promise<void>;
   readonly titles: Promise<void>;
@@ -3265,8 +3279,14 @@ async function afterTo(
     }
     await route.continue();
   });
+  // A read of titles that names a blocker is the blockers' read, held by `titles`; any other is
+  // the read of the titles of what waits on the issue, held with that read by `waiting`.
+  const blockers = new Set(
+    ((await getIssue(key)).blocked_by ?? []).map((blocker) => `dispatch://${blocker}`)
+  );
   await page.route("**/api/v1/reference-targets?**", async (route) => {
-    await held.titles;
+    const refs = new URL(route.request().url()).searchParams.getAll("ref");
+    await (refs.some((ref) => blockers.has(ref)) ? held.titles : (held.waiting ?? held.titles));
     await route.continue();
   });
   await gotoIssue(page, `/issues/${key}`);

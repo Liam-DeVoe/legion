@@ -3,11 +3,14 @@ import { expect, test } from "bun:test";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import type { Actor, Artifact, Comment, DispatchEvent, MessageRead } from "../../api/types";
 import { dayLabel } from "../activity/activity-model";
+import { buildIssuePath, buildReferencePath, parseNodeReference } from "../refs/routes";
 import {
   buildHistory,
+  type HistoryBlock,
   type HistoryDay,
   type HistoryEntry,
   type HistoryInput,
+  historyBlocks,
 } from "./history-model";
 import { CONTROL_LABELS, DECLARED_WORDS, wordsIn } from "./page-words";
 
@@ -101,6 +104,7 @@ test("the history leaves out every event of a row the outline draws, and a docum
     buildHistory({
       artifacts: [spec],
       asks: [],
+      blocks: new Map(),
       comments: [comment("c1", "2026-11-15T09:05:00Z", PERSON)],
       events,
       lastReadSeq: 0,
@@ -126,6 +130,7 @@ test("the history keeps the events of an approval request, which the outline dra
     buildHistory({
       artifacts: [],
       asks: [],
+      blocks: new Map(),
       comments: [],
       events,
       lastReadSeq: 0,
@@ -158,6 +163,7 @@ test("the history keeps an approval request's followers added and removed", () =
         { id: "a1", kind: "approval" },
         { id: "q1", kind: "question" },
       ],
+      blocks: new Map(),
       comments: [],
       events,
       lastReadSeq: 0,
@@ -190,6 +196,7 @@ test("one author's uploads within a minute are one entry that opens each file", 
       buildHistory({
         artifacts: shots,
         asks: [],
+        blocks: new Map(),
         comments: [],
         events,
         lastReadSeq: 0,
@@ -230,6 +237,7 @@ function uploadRuns(events: readonly DispatchEvent[]): { files: number[]; id: st
     buildHistory({
       artifacts: [],
       asks: [],
+      blocks: new Map(),
       comments: [],
       events,
       lastReadSeq: 0,
@@ -350,6 +358,7 @@ test("a thread agents wrote among themselves is one entry with its replies, unti
       buildHistory({
         artifacts: [],
         asks,
+        blocks: new Map(),
         comments,
         events: [],
         lastReadSeq: 0,
@@ -401,6 +410,7 @@ test("each day is headed, newest first, and the read mark falls between read and
   const days = buildHistory({
     artifacts: [],
     asks: [],
+    blocks: new Map(),
     comments: [],
     events,
     lastReadSeq: 2,
@@ -439,6 +449,7 @@ test("the read mark falls inside a day where that day holds read and unread entr
   const days = buildHistory({
     artifacts: [],
     asks: [],
+    blocks: new Map(),
     comments: [],
     events,
     lastReadSeq: 1,
@@ -461,6 +472,7 @@ test("a thread that began before the oldest event read so far waits for its page
       buildHistory({
         artifacts: [],
         asks: [],
+        blocks: new Map(),
         comments: [old, recent],
         events,
         lastReadSeq: 0,
@@ -490,6 +502,7 @@ test("the day the pages of the log read so far end in is partial until the log i
     buildHistory({
       artifacts: [],
       asks: [],
+      blocks: new Map(),
       comments: [],
       events,
       lastReadSeq: 0,
@@ -529,6 +542,7 @@ test("a delivery and a resolution of an agents' thread are lines of the history"
     buildHistory({
       artifacts: [],
       asks: [],
+      blocks: new Map(),
       comments: [among, mine],
       events,
       lastReadSeq: 0,
@@ -566,6 +580,7 @@ test("a delivery of an agents' thread names its agent, never its address", () =>
     buildHistory({
       artifacts: [],
       asks: [],
+      blocks: new Map(),
       comments: [among],
       events,
       lastReadSeq: 0,
@@ -596,6 +611,7 @@ test("an approval request's line draws its question's words, never its markup or
     buildHistory({
       artifacts: [],
       asks: [{ id: "a1", kind: "approval" }],
+      blocks: new Map(),
       comments: [],
       events,
       lastReadSeq: 0,
@@ -613,4 +629,189 @@ test("an approval request's line draws its question's words, never its markup or
       expect(line, `the approval request's line draws "${typed}" as typed`).not.toContain(typed);
     }
   }
+});
+
+// A block's line names the block by its id, and a UUID is no name a reader reads: the history
+// names such a block by the first line of the words of the node that carries it, as the outline
+// names a question, and the panel links those words to that node. An id its author chose, a slug
+// such as `c-units`, reads as words and stays as `main` writes it.
+
+const QUESTION_BLOCK = "01f349b4-2a84-4ebb-81be-91fa2f4e2300";
+const CHECK_BLOCK = "6c0e1a52-93d4-4b7f-a0c8-2f5d8e9b1c47";
+const GONE_BLOCK = "9a7b3c2d-1e4f-4a5b-8c6d-7e8f9a0b1c2d";
+
+/** The blocks of the issue's question, asked from the typed block `QUESTION_BLOCK`, and of its
+ *  two checks, the blocks `CHECK_BLOCK` and `c-units`, as the asks read and the results read
+ *  carry them. */
+const BLOCKS = historyBlocks(
+  KEY,
+  [
+    {
+      block_id: QUESTION_BLOCK,
+      id: "q1",
+      question: "Which **layout** reads best on a phone? The rail or the drawer.",
+    },
+  ],
+  [
+    {
+      block_id: CHECK_BLOCK,
+      ref: `dispatch://${KEY}/artifact/verification-md#b-${CHECK_BLOCK}`,
+      text: "The units pass on a clean checkout.",
+    },
+    {
+      block_id: "c-units",
+      ref: `dispatch://${KEY}/artifact/verification-md#b-c-units`,
+      text: "The units pass.",
+    },
+  ]
+);
+
+/** The lines the history draws of `events` with the blocks `blocks`, newest first: each line's
+ *  text, and the block it names by its node's words. */
+function blockLines(
+  blocks: HistoryInput["blocks"],
+  events: readonly DispatchEvent[]
+): { block: HistoryBlock | undefined; text: string }[] {
+  return flat(
+    buildHistory({
+      artifacts: [],
+      asks: [{ id: "q1", kind: "question" }],
+      blocks,
+      comments: [],
+      events,
+      lastReadSeq: 0,
+      messages: [],
+      today: "2026-11-15",
+    })
+  ).flatMap((entry) =>
+    entry.kind === "event"
+      ? [
+          {
+            block: entry.block,
+            text: entry.description
+              .filter((part): part is string => typeof part === "string")
+              .join(""),
+          },
+        ]
+      : []
+  );
+}
+
+test("a repaired block is named by its question's first words, never by its id", () => {
+  seq = 0;
+  const [line, ...rest] = blockLines(BLOCKS, [
+    event("block.repaired", "2026-11-15T09:00:00Z", {
+      block_id: QUESTION_BLOCK,
+      disturbed_by: PERSON,
+      version: 3,
+    }),
+  ]);
+  expect(rest).toEqual([]);
+  expect(line?.text, "the repaired block's line draws its id").not.toContain(QUESTION_BLOCK);
+  expect(line?.text).toBe(
+    "repaired server-owned state on block “Which layout reads best on a phone?”"
+  );
+  expect(line?.block).toEqual({
+    path: buildIssuePath({ id: "q1", key: KEY, kind: "ask" }),
+    words: "Which layout reads best on a phone?",
+  });
+});
+
+test("a question's block marked malformed is named by the question's first words, never by its id", () => {
+  seq = 0;
+  const [line, ...rest] = blockLines(BLOCKS, [
+    event("block.invalid", "2026-11-15T09:00:00Z", {
+      block_id: QUESTION_BLOCK,
+      disturbed_by: PERSON,
+      reason: "it names no options",
+      version: 3,
+    }),
+  ]);
+  expect(rest).toEqual([]);
+  expect(line?.text, "the malformed block's line draws its id").not.toContain(QUESTION_BLOCK);
+  expect(line?.text).toBe(
+    "marked decision “Which layout reads best on a phone?” malformed: it names no options"
+  );
+  expect(line?.block?.path).toBe(buildIssuePath({ id: "q1", key: KEY, kind: "ask" }));
+});
+
+test("a refused check is named by its words where its id is a UUID, and by its id where that is a slug", () => {
+  seq = 0;
+  const refused = (at: string, blockId: string) =>
+    event("block.invalid", at, {
+      block_id: blockId,
+      block_type: "check",
+      disturbed_by: PERSON,
+      reason: "its ci_check names no job",
+      version: 2,
+    });
+  const lines = blockLines(BLOCKS, [
+    refused("2026-11-15T09:00:00Z", CHECK_BLOCK),
+    refused("2026-11-15T09:01:00Z", "c-units"),
+  ]);
+  expect(lines[1]?.text, "the refused check's line draws its id").not.toContain(CHECK_BLOCK);
+  expect(lines.map((line) => line.text)).toEqual([
+    "refused check c-units: its ci_check names no job",
+    "refused check “The units pass on a clean checkout.”: its ci_check names no job",
+  ]);
+  expect(lines.map((line) => line.block)).toEqual([
+    undefined,
+    {
+      path: checkPath(),
+      words: "The units pass on a clean checkout.",
+    },
+  ]);
+});
+
+/** The page address of the check `BLOCKS` names by its words: its `ref`, read as a route. */
+function checkPath(): string {
+  const route = parseNodeReference(`dispatch://${KEY}/artifact/verification-md#b-${CHECK_BLOCK}`);
+  if (route === undefined) throw new Error("the check's ref reads as no route");
+  return buildReferencePath(route);
+}
+
+test("a block whose id is a UUID that no node carries reads as a block that is gone", () => {
+  seq = 0;
+  const lines = blockLines(BLOCKS, [
+    event("block.repaired", "2026-11-15T09:00:00Z", {
+      block_id: GONE_BLOCK,
+      disturbed_by: PERSON,
+      version: 3,
+    }),
+    event("block.invalid", "2026-11-15T09:01:00Z", {
+      block_id: GONE_BLOCK,
+      disturbed_by: PERSON,
+      reason: "it names no options",
+      version: 3,
+    }),
+  ]);
+  expect(lines).toEqual([
+    {
+      block: undefined,
+      text: `marked ${CONTROL_LABELS.history_gone_block} malformed: it names no options`,
+    },
+    {
+      block: undefined,
+      text: `repaired server-owned state on ${CONTROL_LABELS.history_gone_block}`,
+    },
+  ]);
+  expect(CONTROL_LABELS.history_gone_block).toBe("a block that is gone");
+});
+
+// Until every read the blocks come from has answered, whether a block is gone is not known, so
+// a line names the block by `main`'s word for it alone: never by its id, and never as gone.
+test("while the blocks are not known, a repaired block's line names a block, never its id or one that is gone", () => {
+  seq = 0;
+  const lines = blockLines(undefined, [
+    event("block.repaired", "2026-11-15T09:00:00Z", {
+      block_id: QUESTION_BLOCK,
+      disturbed_by: PERSON,
+      version: 3,
+    }),
+  ]);
+  expect(lines).toEqual([{ block: undefined, text: "repaired server-owned state on a block" }]);
+  expect(lines[0]?.text, "the repaired block's line draws its id").not.toContain(QUESTION_BLOCK);
+  expect(lines[0]?.text, "the repaired block's line says it is gone").not.toContain(
+    CONTROL_LABELS.history_gone_block
+  );
 });

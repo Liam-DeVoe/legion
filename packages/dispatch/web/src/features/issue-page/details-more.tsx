@@ -17,7 +17,14 @@ import { stateForIssue } from "../issue/pins";
 import { SubscribedAgents } from "../issue/SubscribedAgents";
 import { buildIssuePath, type IssueRoute, parseIssuePath } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
-import { ownScrollMark, rewatch, watchedIn } from "../shell/ViewportAnchor";
+import {
+  claimBox,
+  overlaps,
+  ownScrollMark,
+  rewatch,
+  scrollingAncestor,
+  watchedIn,
+} from "../shell/ViewportAnchor";
 import { outlineItemRoute, useAddressFallback, useAddressTarget } from "./address-target";
 import { DetailsSteps } from "./DetailsSteps";
 import { DetailsErrorLine, useSaidFailure } from "./details-error";
@@ -484,10 +491,17 @@ function useLandedPlaceHold(open: boolean | undefined): (target: string, frames:
  * where each scroll of the box the hold did not make itself left it - the reader's wheel, a key,
  * a drag, the browser's own anchoring. The hold tells its own scroll from those by a mark of its
  * own, built by the same rule as the history's anchor's (`ownScrollMark`), since both scroll
- * Details' box in the same frames. While a scroll has left the element wholly outside the view,
- * the hold yields: it corrects nothing, so whatever keeps the rows in view keeps them - the
- * browser's own anchoring, or the history's anchor where it keeps a place - and a scroll that
- * brings the element back into the view takes it as the place again.
+ * Details' box and the event of one's scroll can reach the other. While a scroll has left the
+ * element wholly outside the view, the hold yields: it corrects nothing, so whatever keeps the
+ * rows in view keeps them - the browser's own anchoring, or the history's anchor where it keeps a
+ * place - and a scroll that brings the element back into the view takes it as the place again.
+ *
+ * One keeper keeps Details' box at a time. While the hold keeps a top, it claims the box
+ * (`claimBox`): the history's anchor lets its own place there go, keeps none and moves the box for
+ * nothing, so no change of height is made good toward two places, the focused element's and an
+ * entry of the history's. The hold gives the box back as it yields and as it ends, and the
+ * anchor keeps places again by its own rules from the next one it records: an act of the
+ * reader's, the history's own `keepRow`, a scroll.
  *
  * One move is the place the key asked for rather than one to make good: `t v` often reaches the
  * history while its list is still the loading line, at the end of what Details holds, and once
@@ -518,25 +532,31 @@ function holdLandedPlace(target: string, frames: number): () => void {
       if (left > 0) frame = requestAnimationFrame(() => arrive(left - 1));
       return;
     }
-    // The box that scrolls the control: the nearest element around it, inside Details' own
-    // `aside`, whose content scrolls.
+    // The box that scrolls the control, inside Details' own `aside`: the history's anchor finds
+    // the box it keeps a place in by the same rule (`scrollingAncestor`), so the hold claims the
+    // very box the anchor scrolls.
     const details = control.closest(`aside[${DETAILS_ATTRIBUTE}]`);
-    let box = control.parentElement;
-    while (
-      box !== null &&
-      box !== details &&
-      !/^(auto|scroll)$/.test(getComputedStyle(box).overflowY)
+    const scroller = scrollingAncestor(control);
+    if (
+      scroller === null ||
+      scroller === details ||
+      (details !== null && !details.contains(scroller))
     ) {
-      box = box.parentElement;
+      return;
     }
-    if (box === null || box === details) return;
-    const scroller = box;
-    // The control's top as the place to keep, or null while it lies wholly outside the view.
+    // The control's top as the place to keep, or null while it lies wholly outside the view; and
+    // the claim of the box (`claimBox`) while a top is kept.
     let kept: number | null = null;
+    let claim: (() => void) | undefined;
     const keepTop = () => {
       const at = control.getBoundingClientRect();
-      const view = scroller.getBoundingClientRect();
-      kept = at.bottom > view.top && at.top < view.bottom ? at.top : null;
+      kept = overlaps(at, scroller.getBoundingClientRect()) ? at.top : null;
+      if (kept !== null) {
+        claim ??= claimBox(scroller);
+        return;
+      }
+      claim?.();
+      claim = undefined;
     };
     keepTop();
     const own = ownScrollMark();
@@ -570,6 +590,8 @@ function holdLandedPlace(target: string, frames: number): () => void {
     scroller.addEventListener("scroll", scrolled, { passive: true });
     stop = () => {
       own.end();
+      claim?.();
+      claim = undefined;
       sizes.disconnect();
       control.removeEventListener("focusout", release);
       control.removeEventListener(HISTORY_HEADING_LANDED_EVENT, keepTop);

@@ -352,8 +352,12 @@ export function IssueMarginPanel({
     queryKey: ["references", "to", issueReference, "blocked_by"],
     ...EVENT_FRESH,
   });
+  // This Dispatch answers an issue's wait on this one as `needs`, which the read's kind reads, so
+  // the row takes an edge of `needs` as well as of the kind it asks for.
   const waiting = (blocking.data?.edges ?? []).flatMap((edge) =>
-    edge.kind !== "blocked_by" || edge.node.issue_key === undefined ? [] : [edge.node.issue_key]
+    (edge.kind !== "needs" && edge.kind !== "blocked_by") || edge.node.issue_key === undefined
+      ? []
+      : [edge.node.issue_key]
   );
   // The list Referenced by opens, as the cache holds it: this never reads it itself, so the
   // control has a number only once the list has been read, and then it is the rows the list

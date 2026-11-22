@@ -77,9 +77,10 @@ type IssueTreeDocuments struct {
 //
 // NoConversation marks a node of the issue that no conversation node stands above. Document names,
 // for a typed block of a role document, its document and its position in that document as the
-// blocks read lists it. Decision, Result, Check and Plan carry the members the decisions read, the
-// results read and the ordered read answer for the node; the issue's own members ride on an issue
-// node (IssueTreeIssue).
+// blocks read lists it. Ask carries an ask's wording beside its question, which is its text, as the
+// decisions read answers it for the ask. Decision, Result, Check and Plan carry the members the
+// decisions read, the results read and the ordered read answer for the node; the issue's own
+// members ride on an issue node (IssueTreeIssue).
 type IssueTreeNode struct {
 	Kind           string             `json:"kind"`
 	ID             string             `json:"id"`
@@ -99,6 +100,7 @@ type IssueTreeNode struct {
 	TextTree       DisplayTree        `json:"text_tree,omitempty"`
 	NoConversation bool               `json:"no_conversation,omitempty"`
 	Document       *IssueTreeDocument `json:"document,omitempty"`
+	Ask            *IssueTreeAsk      `json:"ask,omitempty"`
 	Decision       *Decision          `json:"decision,omitempty"`
 	Result         *IssueTreeResult   `json:"result,omitempty"`
 	Check          *IssueTreeCheck    `json:"check,omitempty"`
@@ -136,6 +138,17 @@ type IssueTreeDocument struct {
 	ArtifactID string `json:"artifact_id"`
 	Slug       string `json:"slug"`
 	Position   int    `json:"position"`
+}
+
+// IssueTreeAsk is what an ask node answers of its wording from the ask's row beside its question,
+// which is the node's text: the options its asker gave, its urgency and whether it takes more than
+// one option, as GET /api/v1/issues/{key}/decisions answers them on the ask's entry. Its answer is
+// the node's own values (IssueTreeNode.Attributes), and where a person answered it, the decision it
+// is (IssueTreeNode.Decision).
+type IssueTreeAsk struct {
+	Options  []AskOption `json:"options"`
+	Urgency  string      `json:"urgency"`
+	Multiple bool        `json:"multiple"`
 }
 
 // IssueTreeResult is what a result node answers as GET /api/v1/issues/{key}/results answers it

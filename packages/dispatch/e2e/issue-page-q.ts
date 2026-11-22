@@ -1,6 +1,6 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
-import { answerAsk, createAsk, getAsk } from "./api";
+import { answerAsk, createAsk, getArtifact, getAsk } from "./api";
 import { seedWholeIssue } from "./issue-layout-seed";
 import { asPlanner } from "./issue-layout-seed-support";
 import { issuePage, presetRow } from "./issue-page";
@@ -188,6 +188,8 @@ export interface DecisionsLayoutSeed {
   /** A question of 160 words alice answered, which the view cuts at six lines. */
   readonly answered: string;
   readonly key: string;
+  /** The slug of the issue's spec, which `rowLayouts` reads to tell a statement from a block. */
+  readonly spec: string;
   /** A question of 160 words that waits on alice, which the view draws whole. */
   readonly waiting: string;
 }
@@ -229,5 +231,10 @@ export async function seedDecisionsLayout(): Promise<DecisionsLayoutSeed> {
     },
     asPlanner
   );
-  return { answered: answered.id, key: seeded.key, waiting: waiting.id };
+  return {
+    answered: answered.id,
+    key: seeded.key,
+    spec: (await getArtifact(seeded.specArtifactId)).slug,
+    waiting: waiting.id,
+  };
 }
