@@ -5,7 +5,7 @@ import { prioritiesQuery } from "../../api/queries";
 import type { CreatePriorityInput, PatchPriorityInput } from "../../api/types";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import { isConflict } from "../writes/conflicts";
-import { refusedByDispatch, SendStoppedError } from "../writes/keyed-write";
+import { endedWithoutVerdict } from "../writes/keyed-write";
 import { type Shape, shape } from "../writes/tab-storage";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
@@ -183,7 +183,12 @@ const mountedPages = new Set<MountedPage>();
  * text of the same priority that went out is refused too, which takes its place (`supersedes`):
  * at once where its refusal lands later, whether a page shows the priority or not, and else once
  * the held text is handed back to the shell's line, so the line names that text once. Where no
- * page shows the priority, the shell's line offers the text to copy (`draft`).
+ * page shows the priority, the shell's line offers the text to copy (`draft`). A write of a text
+ * that lands makes needless every earlier write of the same text of the same priority that ended
+ * with no verdict and stands on the shell's line (`outdates`): the server holds the reader's newer
+ * text, and a Retry of the older one would name a text the server no longer holds, be refused,
+ * and offer the older text back as another person's. The store keeps it no longer, so a reload
+ * does not bring it back, and its Retry sends nothing.
  */
 export const priorityTextWrite = defineWriteKind<PriorityTextWrite>({
   claims: (client, write) =>
@@ -191,6 +196,8 @@ export const priorityTextWrite = defineWriteKind<PriorityTextWrite>({
   draft: (write) => write.detail.text,
   kept: keptTextWrite,
   name: "priority-text",
+  outdates: (landed, earlier) =>
+    landed.detail.id === earlier.detail.id && landed.detail.attribute === earlier.detail.attribute,
   supersedes: (refused, unsent) =>
     refused.detail.id === unsent.detail.id &&
     refused.detail.attribute === unsent.detail.attribute &&
@@ -460,10 +467,7 @@ export function usePriorityWrites(
       // and hold that one back by the event feed's one read a second (`MIN_REFETCH_INTERVAL_MS`),
       // so the field would edit on from the text before it. Dispatch's other verdicts, a discard
       // and a landing read the priorities at once.
-      const noVerdict =
-        error instanceof SendStoppedError ||
-        (error instanceof ApiError && !refusedByDispatch(error));
-      if (noVerdict) return;
+      if (endedWithoutVerdict(error)) return;
       const refreshed = refresh();
       if (!landed) return;
       // That read may answer with the priorities the page draws already, which draws nothing

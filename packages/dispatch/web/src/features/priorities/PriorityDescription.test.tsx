@@ -742,6 +742,32 @@ test("a writer's write answered after the editor drew another person's reading i
   expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN, PLAN]]);
 });
 
+// The editor holds the server's reading of another person's text, read-only, with the writer's
+// text kept beside it, and they use it. Their kept text is written as it is, over the text the
+// editor took in, and nothing drawn from the reading is: an editor that holds a reading writes
+// none of it, Use my text's write included.
+test("Use my text beside an editor drawn from the server's reading writes the kept text as it is, and nothing drawn from the reading", async () => {
+  const { editor, onSave, rerender, scope } = described(PLAN, true, displayTree(PLAN), true);
+  const { box, handle } = await editor();
+  handle.view.focus();
+  await onFakeClock(async () => {
+    writeAtEnd(handle, " Done.");
+    await jump(SAVE_AFTER_MS);
+    rerender(PLAN, true, PLAN_AS_TEXT, false);
+    rerender(ELSEWHERE, true, asText(ELSEWHERE), false);
+    drawsReading(box, ELSEWHERE);
+  });
+  const reading = handle.getMarkdown();
+  const notice = scope.getByRole("alert", { name: "Description of P1, changed by another person" });
+  act(() => within(notice).getByRole("button", { name: "Use my text" }).click());
+  expect(onSave.mock.calls.map(([written]) => written)).not.toContain(reading);
+  expect(onSave.mock.calls.flat().filter((written) => /\\[#*-]/.test(written))).toEqual([]);
+  expect(onSave.mock.calls).toEqual([
+    [PLAN_WRITTEN, PLAN],
+    [PLAN_WRITTEN, ELSEWHERE],
+  ]);
+});
+
 // The page draws another person's text while the writer's typing waits, and a write goes before
 // the editor's effects take that text in: the typing at rest, as here, or the editor left as the
 // same commit turns it read-only for a text the server's parser does not take whole. The write

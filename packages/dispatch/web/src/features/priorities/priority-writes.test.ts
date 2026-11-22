@@ -226,6 +226,18 @@ function pageWrites(shown: readonly string[] = [], Client: typeof QueryClient = 
         await settle();
       });
     },
+    /** The tab reloads: a new app, over the tab's storage, takes up the writes it kept
+     *  (`Writes.resume`), as the app does once signed in. Answers the new app's store. */
+    reload: () => {
+      const after = new Client({
+        defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+      });
+      after.setQueryData(["whoami"], whoami);
+      restores.push(() => after.clear());
+      const store = writesOf(after);
+      act(() => store.resume("alice"));
+      return store;
+    },
     /** The reader writes `title` as priority `id`'s, where its field last took `from` in from the
      *  server: the text it was drawn with, or the last a read brought it. */
     rename: (title: string, from: string, id = "p1") =>
@@ -508,6 +520,49 @@ test("A over Old, B over A, A stopped late and B refused, the shell's Retry land
   await read(2, "A");
   rename("C", "A");
   expect(await sentAt(3)).toEqual({ expected: { title: "A" }, title: "C" });
+});
+
+// "A" was stopped with no verdict and stays on the shell's line; "B", pressed after it, lands.
+// The server holds the reader's newer text, so "A" is let go: its Retry sends nothing, where a
+// write naming the text "A" went over would be refused and offer the older text back as another
+// person's.
+test("a stopped write that a newer landed write of the same text supersedes is let go: its Retry sends nothing", async () => {
+  const { answer, client, read, rename, sentAt, sentCount, stopLate } = pageWrites(SHOWS_P1);
+  await read(0, "Old");
+  const writes = writesOf(client);
+  await onFakeClock(async () => {
+    rename("A", "Old");
+    const stopped = await stopLate(0);
+    rename("B", "Old");
+    expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "B" });
+    await answer(1, false);
+    expect(writes.rows()).toMatchObject([{ id: stopped?.id, status: "refused" }]);
+    act(() => writes.retry(stopped?.id ?? 0));
+    await turns();
+  });
+  expect(writes.rows()).toEqual([]);
+  expect(sentCount()).toBe(2);
+});
+
+// The same through a reload: the tab keeps "A" no longer once "B" lands, so the page after the
+// reload neither offers it nor sends it.
+test("a stopped write that a newer landed write of the same text supersedes is kept no longer: a reload neither offers it nor sends it", async () => {
+  const { answer, read, reload, rename, sentAt, sentCount, stopLate } = pageWrites(SHOWS_P1);
+  await read(0, "Old");
+  let key = "";
+  await onFakeClock(async () => {
+    rename("A", "Old");
+    key = (await stopLate(0))?.key ?? "";
+    expect(sessionStorage.getItem(`dispatch.write:${key}`)).not.toBeNull();
+    rename("B", "Old");
+    await sentAt(1);
+    await answer(1, false);
+  });
+  expect(sessionStorage.getItem(`dispatch.write:${key}`)).toBeNull();
+  const after = reload();
+  await turns();
+  expect(after.rows()).toEqual([]);
+  expect(sentCount()).toBe(2);
 });
 
 // A chain's start is a text the server took: an edit started from it after a read showed it -

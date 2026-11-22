@@ -87,11 +87,12 @@ function heldText(held: Held): string {
 
 /** Writes what the editor holds, at once, where it differs from the server's text, with the text
  *  the editor last took in from it (`from`); Use my text's write (`use`) writes it whatever it
- *  is. An editor that holds the server's reading of the text (`fromTree`) writes nothing, ever: a
- *  reading is a thing to draw, never a text to store. */
+ *  is. An editor that holds the server's reading of the text (`fromTree`) writes nothing, ever,
+ *  Use my text's write included: a reading is a thing to draw, never a text to store. */
 function save(held: Held, send: Latest["send"], use?: true): void {
   stop(held);
-  const markdown = heldText(held);
+  if (held.fromTree) return;
+  const markdown = held.handle.getMarkdown();
   if (markdown === held.base && use === undefined) return;
   held.base = markdown;
   const entry = { landed: false, text: markdown };
@@ -471,9 +472,12 @@ export function PriorityDescription({
   // One of the reader's kept texts, put back in the editor from its markdown, since the server
   // holds no reading of it, and written at once, even where the editor holds it already: the
   // reader chose it over the other person's text. With no editor the reader writes in - another
-  // person's text it could not draw, or one the server cannot read as markdown, drawn read-only -
-  // it is written as it is, over the server's text the editor last took in, or with no editor
-  // drawn, the last that arrived, and the server's text stays drawn until the answer replaces it.
+  // person's text it could not draw, or one the server cannot read as markdown, drawn read-only
+  // from the server's reading - it is written as it is, over the server's text the editor last
+  // took in, or with no editor drawn, the last that arrived, and the server's text stays drawn
+  // until the answer replaces it. That editor is the one that holds a reading, and it writes
+  // nothing of it: the kept text goes out on its own here, never through `save`, which writes
+  // nothing from an editor that holds a reading.
   const putBack = (text: string) => {
     setKept(NOTHING_KEPT);
     const current = held.current;

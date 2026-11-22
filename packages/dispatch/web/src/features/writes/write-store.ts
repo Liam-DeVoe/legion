@@ -16,6 +16,7 @@ import { newSendKey } from "../../lib/send-key";
 import { isConflict } from "./conflicts";
 import { indexedDbFiles, type KeptFiles } from "./kept-files";
 import {
+  endedWithoutVerdict,
   KEYED_SEND_ATTEMPT_MS,
   retriesUnderItsKey,
   SEND_DEADLINE_MS,
@@ -175,6 +176,14 @@ export interface WriteKind<D, K = D> {
    *  up, and else once `unsent` is handed back to the line (`Writes.unclaim`). Left out, no write
    *  takes another's place. */
   readonly supersedes?: (refused: Write<D>, unsent: Write<D>) => boolean;
+  /** Whether `landed`, a write of this kind that landed, makes `earlier` needless: a write of this
+   *  kind pressed before it that ended with no verdict of Dispatch's (`endedWithoutVerdict`) -
+   *  stopped, its key spent, or refused after an attempt that went unanswered - and stands refused
+   *  for a Retry. The newer write landed over what the older one was of, so a Retry of the older
+   *  would only go back over it. The store then keeps `earlier` no longer, so a reload does not
+   *  take it up, and its Retry lets it go and sends nothing (`Writes.retry`). Left out, no landing
+   *  makes another write needless. */
+  readonly outdates?: (landed: Write<D>, earlier: Write<D>) => boolean;
   /** What a kind lets go of once whoever is signed in changes, or the person signs out: what it
    *  remembered of their answers, which the next person's writes must not build on. The writes
    *  that change drops are undone first (`undone`), from what the kind still remembers. */
@@ -349,6 +358,11 @@ interface Entry {
    *  drops with nothing shown and nothing sent, where no record at all leaves the upload to
    *  land on this page, as it does in a browser with no IndexedDB. */
   unkept: boolean;
+  /** Whether a newer write that landed made it needless while it stood refused
+   *  (`WriteKind.outdates`): it is kept nowhere since, and its Retry lets it go and sends nothing.
+   *  It stays for the reader to press Retry or Discard, and loses nothing of theirs: the newer
+   *  write landed. */
+  outdated: boolean;
   readonly endsWithSession: boolean;
 }
 
@@ -380,8 +394,10 @@ let watcher: ((store: Writes) => void) | undefined;
  * (`WriteKind.claims`) stays too, kept as any refusal is, and is that surface's until the reader
  * settles it there (`settle`) or the surface goes (`unclaim`); so does a text of the reader's a
  * surface claims though no write of it was sent (`claimUnsent`), until a refused write that went
- * out carries it too (`WriteKind.supersedes`). A conflict (`isConflict`) refuses the same body
- * every time, so no Retry makes it again. A write belongs to the person who pressed it: a session
+ * out carries it too (`WriteKind.supersedes`). A refused write that ended with no verdict, and
+ * that a newer write of the same thing makes needless as it lands (`WriteKind.outdates`), is kept
+ * no longer, and its Retry sends nothing. A conflict (`isConflict`) refuses the same body every
+ * time, so no Retry makes it again. A write belongs to the person who pressed it: a session
  * that lapses (whoami answers 401, or the write itself is answered 401) stops every write's trying
  * and starts none, but keeps them all, in memory and in storage, until someone signs in - the same
  * person's sign-in takes them up again, and anyone else's drops every write of another login
@@ -507,6 +523,7 @@ export class Writes {
       file: spec.file,
       held: false,
       keeping: undefined,
+      outdated: false,
       press,
       request: request ?? null,
       stop: new AbortController(),
@@ -563,11 +580,17 @@ export class Writes {
    *  key before the file is under it. Until then the write stands refused under its old key
    *  with its old file, and a reload brings it back for the reader to retry again; a second
    *  press inside that window does nothing, since the first one is still moving the file. A
-   *  conflict (`isConflict`) is not made again: Dispatch would refuse its body the same way. */
+   *  conflict (`isConflict`) is not made again: Dispatch would refuse its body the same way. One a
+   *  newer write that landed made needless (`Entry.outdated`) is let go instead, and nothing is
+   *  sent. */
   retry(id: number): void {
     const entry = this.#entries.get(id);
     if (entry?.write.status !== "refused" || entry.keeping !== undefined) return;
     if (isConflict(entry.write.refusal)) return;
+    if (entry.outdated) {
+      this.#remove(entry);
+      return;
+    }
     const old = entry.write.key;
     if (retriesUnderItsKey(entry.write.refusal)) {
       this.#retryUnder(entry, old, entry.write.sent);
@@ -707,6 +730,7 @@ export class Writes {
       file: undefined,
       held: false,
       keeping: undefined,
+      outdated: false,
       press: undefined,
       request,
       stop: new AbortController(),
@@ -1001,6 +1025,7 @@ export class Writes {
       file,
       held: false,
       keeping: undefined,
+      outdated: false,
       press: undefined,
       request,
       stop: new AbortController(),
@@ -1241,10 +1266,11 @@ export class Writes {
   }
 
   /** The write `entry` landed with `answer` (`null` for a landing with none): it leaves, or stays
-   *  made for its kind to show, and its kind refreshes what it wrote. The landing is told before
-   *  the store reads anything again for it, so every read it starts was sent after it: a listener
-   *  that orders Dispatch's answers by when each read went out (`issue-field-writes.ts`) counts
-   *  those reads as newer than the landing. */
+   *  made for its kind to show, its kind refreshes what it wrote, and each refused write it makes
+   *  needless is kept no longer (`#outdate`). The landing is told before the store reads anything
+   *  again for it, so every read it starts was sent after it: a listener that orders Dispatch's
+   *  answers by when each read went out (`issue-field-writes.ts`) counts those reads as newer
+   *  than the landing. */
   #landed(entry: Entry, answer: unknown): void {
     const kind = kinds.get(entry.write.kind);
     const awaited = entry.press !== undefined;
@@ -1257,6 +1283,7 @@ export class Writes {
     } else {
       this.#remove(entry);
     }
+    this.#outdate(entry.write);
     if (kind?.landed !== undefined) kind.landed(this.#client, entry.write, answer, awaited);
     this.#emit({ answer, kind: "landed", write: entry.write });
     if (kind?.landed === undefined && (!awaited || answer === null)) {
@@ -1332,6 +1359,23 @@ export class Writes {
     }
   }
 
+  /** Marks each write the landed `landed` makes needless (`WriteKind.outdates`) and keeps it no
+   *  longer: one of its kind pressed before it that stands refused with no verdict of Dispatch's
+   *  (`endedWithoutVerdict`), for a Retry - no conflict, which no Retry makes again. Its Retry
+   *  then lets it go (`retry`), and a reload does not take it up. */
+  #outdate(landed: Write): void {
+    const outdates = kinds.get(landed.kind)?.outdates;
+    if (outdates === undefined) return;
+    for (const entry of this.#entries.values()) {
+      const { write } = entry;
+      if (entry.outdated || write.kind !== landed.kind || write.id >= landed.id) continue;
+      if (write.status !== "refused" || isConflict(write.refusal)) continue;
+      if (!endedWithoutVerdict(write.refusal) || !outdates(landed, write)) continue;
+      entry.outdated = true;
+      this.#forget(entry);
+    }
+  }
+
   /** Drops every one of `entries` wherever it stands (`#take`), and only then starts the writes
    *  whose turn that gives, each line once: a write waiting behind a dropped one is either
    *  dropped with it or still holds its place, and is never started on the way. */
@@ -1394,11 +1438,12 @@ export class Writes {
    *  a write re-pressed under another's key cannot answer for (`#carried`). An upload whose
    *  file is not under its key - the keep is still in flight, or the browser kept nothing - is
    *  kept nowhere, since a record naming a file that is not there is one a reload drops with
-   *  nothing shown and nothing sent; leaving the page is still confirmed while it is out. */
+   *  nothing shown and nothing sent; leaving the page is still confirmed while it is out. Nor is
+   *  a write a newer landing made needless (`Entry.outdated`). */
   #keep(entry: Entry): void {
     const { write } = entry;
     const state = keptState(write);
-    if (write.login === undefined || state === undefined) return;
+    if (write.login === undefined || state === undefined || entry.outdated) return;
     if (entry.unkept || entry.keeping?.key === write.key) {
       this.#kept.keepNothing({ key: write.key, presentation: write.presentation, state });
       return;
