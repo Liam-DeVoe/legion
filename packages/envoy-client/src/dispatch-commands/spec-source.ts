@@ -20,8 +20,14 @@ export async function specSourceCommand(context: CommandContext): Promise<Dispat
         text:
           sources.length === 0
             ? `${project} names no spec source.`
-            : [`Spec sources of ${project}:`, ...sources.map((source) => `- ${sourceLine(source)}`)].join("\n"),
-        details: { project, sources: sources.map(({ repo, branch, enabled }) => ({ repo, branch, enabled })) },
+            : [
+                `Spec sources of ${project}:`,
+                ...sources.map((source) => `- ${sourceLine(source)}`),
+              ].join("\n"),
+        details: {
+          project,
+          sources: sources.map(({ repo, branch, enabled }) => ({ repo, branch, enabled })),
+        },
       };
     }
     const repo = stringArg(args, "repo");
@@ -63,12 +69,21 @@ export async function specImportLevelCommand(context: CommandContext): Promise<D
       : `The import of ${imported.issue} wrote ${written.length} ${written.length === 1 ? "node" : "nodes"} into the approved spec of ${imported.repo}: ${written.join(", ")}.`,
   ];
   if (held.length > 0) {
-    lines.push(`It holds ${held.length} ${held.length === 1 ? "statement" : "statements"} until a change request supplies what each lacks:`);
+    lines.push(
+      `It holds ${held.length} ${held.length === 1 ? "statement" : "statements"} until a change request supplies what each lacks:`
+    );
     for (const hold of held) lines.push(`- ${hold.id} lacks ${hold.lacks.join(", ")}`);
-    if (imported.repair_issue !== null) lines.push(`Their repair issue is ${imported.repair_issue}.`);
+    if (imported.repair_issue !== null)
+      lines.push(`Their repair issue is ${imported.repair_issue}.`);
   }
   return {
     text: lines.join("\n"),
-    details: { issue: imported.issue, repo: imported.repo, written, held, repair_issue: imported.repair_issue },
+    details: {
+      issue: imported.issue,
+      repo: imported.repo,
+      written,
+      held,
+      repair_issue: imported.repair_issue,
+    },
   };
 }

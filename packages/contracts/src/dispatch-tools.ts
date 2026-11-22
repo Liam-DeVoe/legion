@@ -2565,10 +2565,14 @@ export const dispatchToolSpecs = [
       "404 SOURCE_NOT_FOUND when remove names no source of the project.",
     arguments: (z) => ({
       action: z.enum(["add", "list", "remove"]).describe("add, list or remove."),
-      project: z.string().describe("Project key whose spec sources to change or list, such as CORE."),
+      project: z
+        .string()
+        .describe("Project key whose spec sources to change or list, such as CORE."),
       repo: z
         .string()
-        .describe("The repository, owner/name, that add names or remove takes off; list takes none.")
+        .describe(
+          "The repository, owner/name, that add names or remove takes off; list takes none."
+        )
         .optional(),
       branch: z
         .string()
@@ -2584,7 +2588,9 @@ export const dispatchToolSpecs = [
         };
         if (action === "list") return repo === undefined && branch === undefined;
         if (typeof repo !== "string" || !ARCHITECTURE_SOURCE_REPO_PATTERN.test(repo)) return false;
-        return action === "add" ? typeof branch === "string" && branch.trim() !== "" : branch === undefined;
+        return action === "add"
+          ? typeof branch === "string" && branch.trim() !== ""
+          : branch === undefined;
       },
       message:
         "add names repo as owner/name and a branch; remove names repo alone; list names neither.",
@@ -2606,7 +2612,9 @@ export const dispatchToolSpecs = [
       "repair issue.",
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
-      notes: z.string().describe("The level's notes document, by its name or slug, such as notes.md."),
+      notes: z
+        .string()
+        .describe("The level's notes document, by its name or slug, such as notes.md."),
     }),
     strict: true,
   },
