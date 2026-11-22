@@ -187,6 +187,41 @@ func TestTheGroupDefaultPassesOverOnlyAnOwnersPlanOfTheRunsGeneration(t *testing
 	})
 }
 
+// After a way back that ran two or more generations, an issue holds a copy of its owner's plan at
+// each of them: each new run carried the plan from its start (record.Store's CarryPlan), the time
+// it was given with it. The first step of an issue whose group runs the project's default steps
+// passes over every copy and names the version once in its one notice, so the next run's first
+// step finds no plan of the owner and tells nothing. The fault caught is a pass-over of the newest
+// copy alone: the next run's first step then finds the copy left and tells the same version again.
+func TestTheGroupDefaultPassesOverEveryCopyOfItsOwnersPlanOnce(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedOwnersPlan(t, pool, root.Key, 1)
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		if err := record.NewStore().CarryPlan(t.Context(), tx, root.Key, 1, 2, false); err != nil {
+			return err
+		}
+		return record.NewStore().CarryPlan(t.Context(), tx, root.Key, 2, 3, false)
+	})
+	execSQL(t, pool, `update issues set generation = 4 where key = $1`, root.Key)
+	drawnInto(t, pool, root.Key, "planning", "b", "default")
+
+	firstStep(t, pool, engine, root.Key)
+	execSQL(t, pool, `update issues set generation = generation + 1, phase = 'admitted' where key = $1`, root.Key)
+	firstStep(t, pool, engine, root.Key)
+
+	want := []record.Notice{{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: "The first step of " + root.Key +
+		" took no plan: version 2 of document plan-artifact, given by " + treeRoleToken(t, root.Key, claim.RoleArchitect) +
+		". " + inPlanningB(root.Key)}}
+	if got := noticesOf(t, pool, root.Key, "plan-not-taken"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the plan-not-taken notices of two runs = %+v, want the one notice of the first run, naming the version once", got)
+	}
+	if got := planRowsOf(t, pool, root.Key); got != [3]int{2, 2, 2 * len(todaysDefaultSteps)} {
+		t.Fatalf("the plan rows of %s = %v, want the default plans of the two runs alone: every copy of the owner's plan deleted", root.Key, got)
+	}
+}
+
 // planNotTakenOfB is the answer to a plan given for key, in the variant b of planning.
 func planNotTakenOfB(key string) *intake.Refusal {
 	return &intake.Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: inPlanningB(key) +

@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -157,30 +158,27 @@ func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issu
 	return e.tellPassedOver(ctx, tx, issue, earlier, stored.Version)
 }
 
-// passOverOwners deletes the plans of issue's owner that its first step would otherwise take, for
-// an issue whose group runs the project's default steps, and answers the versions it passed over
-// and the plan of the run's generation that stands after it (stored, as the caller read it): the
-// owner's plan in force at the run's generation, and then the newest plan in force its owner gave
-// of any other generation (record.Store's OwnersNewestPlan), generation 0 among them, which holds
-// a plan given before the daemon recorded and drew the issue. A plan of the run's generation that
-// no owner gave, a hand-over's carried default, stands. The rows go in this transaction.
+// passOverOwners deletes every plan of issue's owner that its first step could take, for an issue
+// whose group runs the project's default steps, and answers the versions it passed over, in the
+// order they were given, and the plan of the run's generation that stands after it (stored, as the
+// caller read it): the owner's plan in force at each generation (record.Store's PlansOfOwners), the
+// run's own, generation 0, which holds a plan given before the daemon recorded and drew the issue,
+// and each copy a carry wrote to a later generation. A run that passed over the newest alone would
+// leave the copies before it to the next run's first step, which would tell the same version again.
+// A plan of the run's generation that no owner gave, a hand-over's carried default, stands. The
+// rows go in this transaction.
 func (e *Engine) passOverOwners(ctx context.Context, tx pgx.Tx, issue record.Issue, stored *record.StoredPlan) ([]record.PlanVersion, *record.StoredPlan, error) {
-	var passed []record.PlanVersion
-	if stored != nil && stored.Version.Source == record.PlanSourceOwner {
-		if err := e.store.DeletePlan(ctx, tx, issue.Key, issue.Generation); err != nil {
-			return nil, nil, err
-		}
-		passed, stored = append(passed, stored.Version), nil
-	}
-	newest, err := e.store.OwnersNewestPlan(ctx, tx, issue)
+	passed, err := e.store.PlansOfOwners(ctx, tx, issue)
 	if err != nil {
 		return nil, nil, err
 	}
-	if newest != nil {
-		if err := e.store.DeletePlan(ctx, tx, issue.Key, newest.Version.Generation); err != nil {
+	for _, version := range passed {
+		if err := e.store.DeletePlan(ctx, tx, issue.Key, version.Generation); err != nil {
 			return nil, nil, err
 		}
-		passed = append(passed, newest.Version)
+		if stored != nil && version.Generation == stored.Version.Generation {
+			stored = nil
+		}
 	}
 	return passed, stored, nil
 }
@@ -249,8 +247,10 @@ func (e *Engine) tellNotTaken(ctx context.Context, tx pgx.Tx, issue record.Issue
 			"generation", version.Generation, "version", version.Version, "document", version.ArtifactID, "giver", version.GivenBy,
 			"experiment", group.Experiment, "variant", group.Variant)
 	}
+	// The copies a carry wrote of one version stand side by side, in the order they were given, and
+	// the notice names that version once.
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
-		"The first step of %s took no plan: %s. %s", issue.Key, strings.Join(described, "; "),
+		"The first step of %s took no plan: %s. %s", issue.Key, strings.Join(slices.Compact(described), "; "),
 		intake.GroupClause(issue.Key, group))})
 }
 
