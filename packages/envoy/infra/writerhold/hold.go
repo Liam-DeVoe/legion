@@ -249,10 +249,7 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, stores
 		return err
 	}
 	fmt.Fprintf(stdout, "aborted hold %s in %s: row gen %d, released\n", o.holdID, d.Workflow, moved.Gen)
-	if changed != nil {
-		return fmt.Errorf("the hold is released, and a disk changed after abort's last check, outside any hold: %w", changed)
-	}
-	return nil
+	return disksAfterMove("abort", changed)
 }
 
 // abortReleasedPrepare ends hold o.holdID, whose row reads released with its hold id and whose
@@ -518,10 +515,23 @@ func release(ctx context.Context, records *holdrecord.Client, op *Operator, o op
 		return fmt.Errorf("hold %s is released (row gen %d), and its done entry was not written: run hold release --hold %s again: %w", o.holdID, moved.Gen, o.holdID, err)
 	}
 	fmt.Fprintf(stdout, "released hold %s: row gen %d; the record's hold_gen is %d\n", o.holdID, moved.Gen, d.HoldGen)
-	if changed != nil {
-		return fmt.Errorf("the hold is released, and a disk changed after release's last check, outside any hold: %w", changed)
+	return disksAfterMove("release", changed)
+}
+
+// disksAfterMove is command's verdict on its read of the disks after its row move, with the hold
+// released: nil when every target is where its check left it; a refusal (exit 1) naming the change
+// when the read saw one, a restore outside any hold; and UNKNOWN (exit 2) when the read could not
+// be made whole, which claims no change it did not see.
+func disksAfterMove(command string, err error) error {
+	var refused *Refusal
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &refused):
+		return fmt.Errorf("the hold is released, and a disk changed after %s's last check, outside any hold: %w", command, err)
+	default:
+		return unknownf(StepPostcheck, err, "the hold is released, and %s could not read the disks again after its row move", command)
 	}
-	return nil
 }
 
 // onExpectedDisks refuses unless every target is on its expected disk (holdrecord.Expected).
