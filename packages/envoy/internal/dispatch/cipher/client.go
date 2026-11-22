@@ -457,19 +457,19 @@ func (c *Client) readDeviceGrant(ctx context.Context) (bool, error) {
 // other things whether the broker takes the approver fields (approver_fields).
 const settingsPath = "/v1/settings"
 
-// ApproverFieldsTTL is how long one read of the broker's settings answers TakesApproverFields: the
-// bound within which Dispatch follows a broker that starts or stops saying it takes the approver
-// fields. The fact changes only when the broker is deployed again, so it is the five seconds the
-// device grant's read is (deviceGrantTTL), for the same reasons: a burst of approves reads once,
-// and an operator who has just moved the broker sees Dispatch follow within seconds. An approve
-// reads the settings at most once in this window, the one broker call it adds.
+// ApproverFieldsTTL is how long one definite answer of the broker's settings answers
+// TakesApproverFields (approver_fields true, or settings answered without it): the bound within
+// which Dispatch follows a broker that starts or stops saying it takes the approver fields. The fact
+// changes only when the broker is deployed again, so it is the five seconds the device grant's read
+// is (deviceGrantTTL), for the same reasons: a burst of approves reads once, and an operator who has
+// just moved the broker sees Dispatch follow within seconds. A read that fails is not kept: the next
+// approve reads again.
 const ApproverFieldsTTL = 5 * time.Second
 
-// approverFields remembers the last successful read of whether the broker takes the approver
-// fields, until ApproverFieldsTTL after it. Unlike deviceGrant it is never answered past that: a
-// read that fails, or one too old, is answered false, since sending the fields to a broker that
-// does not take them fails the approve (400 INVALID_DECISION), while leaving them out of an approve
-// to one that does is an approve every broker takes.
+// approverFields remembers the last definite answer of whether the broker takes the approver
+// fields, until ApproverFieldsTTL after the read that gave it: the broker's settings naming
+// approver_fields true, or answering 200 without it. A read that fails is never remembered, and an
+// answer is never used past its window, unlike deviceGrant's.
 type approverFields struct {
 	// mu guards the remembered answer and nothing else, and is never held across the read, as
 	// deviceGrant's is not.
@@ -506,18 +506,25 @@ func (a *approverFields) keep(takes bool) {
 
 // TakesApproverFields answers whether this broker's GET /v1/settings says it takes the approver
 // fields of a machine login's approve (approver_fields: approver_issuer, approver_subject and
-// approver_session_generation), from a read at most ApproverFieldsTTL old. A broker from before
-// them sends no such setting, and refuses an approve carrying any of them 400 INVALID_DECISION.
-// A read that fails, or a settings answer this cannot read, answers false and is logged at WARN:
-// the approve then carries the approver and the code alone, which every broker takes.
+// approver_session_generation), from a read at most ApproverFieldsTTL old: true when the settings
+// answer approver_fields true, and false when the broker answers its settings 200 without it, as a
+// broker from before them does, one that refuses an approve carrying any of them 400
+// INVALID_DECISION.
+//
+// Any other read is an error, never an answer: a transport failure, a non-2xx answer, a settings
+// answer that is not a JSON object or whose approver_fields is not a boolean, Dispatch's own token
+// it cannot read (an *AccountTokenError), and ctx ending first. An approve then relays nothing
+// (api.approveCredentialRecord), since leaving the fields out of an approve to a broker that takes
+// them would leave its account and generation checks to that broker's 50-second fallback, and
+// sending them to one that does not would be refused.
 //
 // The read runs on ctx with its cancellation dropped, bounded by the call's own window
 // (defaultTimeout), as ServesDeviceGrant's does: the answer is every waiting caller's. A caller
-// waits for it only until ctx ends, and is then answered false, while the read goes on for the
-// next caller: an approve's ctx carries the deadline its relay must meet (api.relayDeadline).
-func (c *Client) TakesApproverFields(ctx context.Context) bool {
+// waits for it only until ctx ends, while the read goes on for the next caller: an approve's ctx
+// carries the deadline its relay must meet (api.relayDeadline).
+func (c *Client) TakesApproverFields(ctx context.Context) (bool, error) {
 	if takes, fresh := c.approverFields.fresh(); fresh {
-		return takes
+		return takes, nil
 	}
 	read := c.approverFields.flight.DoChan(settingsPath, func() (any, error) {
 		if takes, fresh := c.approverFields.fresh(); fresh {
@@ -533,27 +540,36 @@ func (c *Client) TakesApproverFields(ctx context.Context) bool {
 	select {
 	case answer := <-read:
 		if answer.Err != nil {
-			slog.Warn("dispatch: the secrets broker's settings could not be read, so this machine-login approve names no approving account and no session generation", "error", answer.Err)
-			return false
+			return false, answer.Err
 		}
-		return answer.Val.(bool)
+		return answer.Val.(bool), nil
 	case <-ctx.Done():
-		slog.Warn("dispatch: the secrets broker's settings were not read before this machine-login approve's deadline, so it names no approving account and no session generation", "error", context.Cause(ctx))
-		return false
+		return false, fmt.Errorf("agent-secrets: read %s: %w", settingsPath, context.Cause(ctx))
 	}
 }
 
-// readApproverFields reads the broker's settings and answers their approver_fields.
+// readApproverFields reads the broker's settings and answers their approver_fields: false for a
+// settings object that names none, and an error for an answer that is not a JSON object or whose
+// approver_fields is not a boolean.
 func (c *Client) readApproverFields(ctx context.Context) (bool, error) {
 	body, err := c.do(ctx, http.MethodGet, settingsPath, nil)
 	if err != nil {
 		return false, err
 	}
-	var settings struct {
-		ApproverFields bool `json:"approver_fields"`
-	}
+	var settings map[string]json.RawMessage
 	if err := json.Unmarshal(body, &settings); err != nil {
 		return false, fmt.Errorf("agent-secrets: read %s: %w", settingsPath, err)
 	}
-	return settings.ApproverFields, nil
+	if settings == nil {
+		return false, fmt.Errorf("agent-secrets: read %s: the answer is null, not the broker's settings", settingsPath)
+	}
+	raw, named := settings["approver_fields"]
+	if !named {
+		return false, nil
+	}
+	var takes bool
+	if err := json.Unmarshal(raw, &takes); err != nil {
+		return false, fmt.Errorf("agent-secrets: read %s: approver_fields is not a boolean: %w", settingsPath, err)
+	}
+	return takes, nil
 }
