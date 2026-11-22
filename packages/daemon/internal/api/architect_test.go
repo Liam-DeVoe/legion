@@ -460,7 +460,7 @@ func TestArchitectAndPhaseRoutesApplyTheRequiredFacts(t *testing.T) {
 
 	signoffGrant := architect.grant(t)
 	signoff := h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
-		"grantId": signoffGrant, "issue": "LEGION-208",
+		"grantId": signoffGrant, "issue": "LEGION-208", "task": "a",
 	}, nil)
 	if signoff.Code != http.StatusOK {
 		t.Fatalf("signoff = %d: %s", signoff.Code, signoff.Body)
@@ -497,7 +497,7 @@ func TestArchitectAndPhaseRoutesApplyTheRequiredFacts(t *testing.T) {
 		fact.Decision != intake.RetryDecision || fact.Task != "b" {
 		t.Fatalf("retry fact = %#v", got[1])
 	}
-	if fact, ok := got[2].(intake.SignOff); !ok || fact.Issue != "LEGION-208" {
+	if fact, ok := got[2].(intake.SignOff); !ok || fact.Issue != "LEGION-208" || fact.Task != "a" {
 		t.Fatalf("signoff fact = %#v", got[2])
 	}
 	if fact, ok := got[3].(intake.BackwardMove); !ok || fact.Issue != "LEGION-208" ||

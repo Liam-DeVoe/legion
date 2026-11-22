@@ -1825,6 +1825,7 @@
       "issue",
       "reason",
       "returnTo",
+      "task",
       "to"
     ]
   },
@@ -1878,7 +1879,8 @@
     "route": "POST /legion/v1/signoff",
     "fieldPaths": [
       "grantId",
-      "issue"
+      "issue",
+      "task"
     ]
   },
   {

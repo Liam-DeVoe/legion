@@ -2110,6 +2110,12 @@ export const LegionPhaseBackwardRequest = z.strictObject({
    * 221): the daemon judges it as it judges a failed step's `returnTo`, and `to` must be the phase
    * that step runs as. */
   returnTo: z.number().int().positive().optional(),
+  /** The task of the issue's plan the move is of (contract 224): an architect's move that names
+   * none is of the one task at `accepting`, and the daemon answers `409 TASK_REQUIRED` where two or
+   * more stand there and `409 TASK_NOT_AT_PHASE` for a named task that does not; a phase worker's
+   * move is of the task of its own step, and a task it names must be that one
+   * (`TASK_NOT_GRANTS`). */
+  task: nonEmptyString.optional(),
 });
 
 /** `api.PhaseRetryRequest`, the retry-or-escalate decision of the architect that owns a held issue.
@@ -2145,10 +2151,14 @@ export const LegionEscalateRequest = z.strictObject({
  * (`SIGNOFF_STALE_ENTRY`). Since
  * contract 51 it is also refused while an issue beneath that one is still in the workflow
  * (`SIGNOFF_CHILD_IN_WORKFLOW`, naming them): children are accepted and merged before their
- * parent, whose own head proves their merged work (dispatch://INFRA-980). */
+ * parent, whose own head proves their merged work (dispatch://INFRA-980). `task` names the task of
+ * the issue's plan it accepts (contract 224): a sign-off that names none is of the one task at
+ * `accepting`, and the daemon answers `409 TASK_REQUIRED` where two or more stand there and
+ * `409 TASK_NOT_AT_PHASE` for a named task that does not. */
 export const LegionSignOffRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
+  task: nonEmptyString.optional(),
 });
 
 /** `api.RootCloseRequest`, a root architect's close of its tree before the tree's first phase starts,

@@ -3185,6 +3185,15 @@ package api
 // answered `409 TASK_REQUIRED`, and a named task that is not held `409 TASK_NOT_AT_PHASE`.
 // `readBody` refuses an unknown field, so a plugin that sends `task` needs this contract; a
 // plugin before it sends none, which a daemon of this contract takes while one task is held.
+// `POST /legion/v1/signoff` (`api.SignOffRequest`, `sign_off`) and the architect's
+// `POST /legion/v1/phase/backward` (`api.PhaseBackwardRequest`, `request_backward_move`) take an
+// optional `task` the same way, of the tasks that stand at accepting: one that names none is of
+// the one task there, refused `409 TASK_REQUIRED` where two or more stand there and
+// `409 TASK_NOT_AT_PHASE` for a named task that does not. A phase worker's move back is of the
+// task of its own step, which the daemon reads from its claim, and a `task` it names must be that
+// one (`400 TASK_NOT_GRANTS`). A completion of a plan of several tasks is of the task of the step
+// its claim's agent runs, keyed by that task's phase, and one of an agent that runs no step of it
+// is answered `409 HANDOFF_NOT_CURRENT_PHASE`; no request or answer shape of it changes.
 // (224 is a working number, above every number this tree's entries hold and every number the
 // changes this one is built on hold. No reading of the open pull requests chose it: the pull
 // request that carries this entry reads `const DaemonAPIVersion` at each open pull request's head

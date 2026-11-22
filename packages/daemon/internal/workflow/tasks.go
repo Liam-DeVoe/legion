@@ -134,6 +134,71 @@ func (e *Engine) handoffView(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	return view, ok, err
 }
 
+// actView is the copy of issue an owner's call on the act at answers is read on (sign_off and the
+// architect's move back, at accepting): for a plan of several tasks, the copy read for task, the
+// task the call names, or, where it names none, for the one task that stands at at; for a plan of
+// one task, or none, the issue itself, as before tasks, whatever the call names. A named task that
+// does not stand at at is refused (intake.TaskNotAtPhase), and so is a call that names none while
+// two or more tasks stand there (intake.TaskRequired); with none there, the issue itself is
+// answered, which stands at another act and which the call's own guard refuses.
+func (e *Engine) actView(ctx context.Context, tx pgx.Tx, issue record.Issue, task string, at phase.Phase) (record.Issue, *intake.Refusal, error) {
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil || stored == nil || len(stored.Tasks) <= 1 {
+		return issue, nil, err
+	}
+	if task != "" {
+		view, _, ok, err := viewOn(issue, stored, task)
+		switch {
+		case err != nil:
+			return record.Issue{}, nil, err
+		case !ok:
+			return record.Issue{}, intake.TaskNotAtPhase(issue.Key, task, "", at), nil
+		case view.Phase != at:
+			return record.Issue{}, intake.TaskNotAtPhase(issue.Key, task, view.Phase, at), nil
+		}
+		return view, nil, nil
+	}
+	var standing []record.Issue
+	var ids []string
+	for _, row := range stored.Tasks {
+		view, _, _, err := viewOn(issue, stored, row.Task)
+		if err != nil {
+			return record.Issue{}, nil, err
+		}
+		if view.Phase == at {
+			standing, ids = append(standing, view), append(ids, row.Task)
+		}
+	}
+	switch len(standing) {
+	case 0:
+		return issue, nil, nil
+	case 1:
+		return standing[0], nil, nil
+	}
+	return record.Issue{}, intake.TaskRequired(issue.Key, ids, at), nil
+}
+
+// backwardView is the copy of issue a move back (fact) is read on: the owner's, at accepting, on
+// the task it names or the one task there (actView); a phase worker's on the task of the step its
+// claim's agent runs, which its route names (intake.BackwardMove.Task). Of a plan of one task, or
+// none, it is the issue itself, as before tasks. A worker's move of a plan of several tasks that
+// names no task of it, its agent running no step there, is refused and changes nothing.
+func (e *Engine) backwardView(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.BackwardMove) (record.Issue, *intake.Refusal, error) {
+	if fact.Requester == claim.RoleArchitect {
+		return e.actView(ctx, tx, issue, fact.Task, phase.Accepting)
+	}
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil || stored == nil || len(stored.Tasks) <= 1 {
+		return issue, nil, err
+	}
+	view, _, ok, err := viewOn(issue, stored, fact.Task)
+	if err != nil || ok {
+		return view, nil, err
+	}
+	return record.Issue{}, refused("BACKWARD_REFUSED", fmt.Sprintf("the %s's claim runs no step of %s, so its move back to %s changed nothing",
+		fact.Requester, issue.Key, fact.To)).Refusal, nil
+}
+
 // heldView is the copy of issue read for the held task an owner's decision on a hold is of
 // (retryOrEscalate): the task it names; else the task whose step the claim it names runs, the
 // operator's retry of one claim; else the one held task of the plan. With none held, it is the

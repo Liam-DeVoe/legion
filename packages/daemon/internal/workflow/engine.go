@@ -2455,11 +2455,22 @@ func (e *Engine) phaseNow(ctx context.Context, tx pgx.Tx, issue record.Issue) (p
 	return moved.Phase, nil
 }
 
+// backward moves the issue back to an earlier phase, on the owner's move from accepting or on the
+// move of the phase worker that runs it. Of a plan of several tasks it moves one task
+// (backwardView): the owner's move is of the task it names, or of the one task at accepting where
+// it names none, and a worker's of the task of the step its claim's agent runs, which the route
+// names; the rest reads the copy of the issue read for that task, and its pull request is that
+// task's own.
 func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMove) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
+	view, refusal, err := e.backwardView(ctx, tx, *issue, fact)
+	if err != nil || refusal != nil {
+		return intake.Result{Refusal: refusal}, err
+	}
+	issue = &view
 	// The table is the guard, and it reads three things: the move names a target, a backward row
 	// of the issue's phase serves that target - anything but an earlier phase has none - and the
 	// caller is the role running that phase. An empty target is read first, since the row lookup
@@ -2521,7 +2532,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if fact.PhaseEntry != 0 && fact.PhaseEntry < row.Entry {
 		return intake.Result{Refusal: staleBackwardMove(issue.Key, fact.Requester, issue.Phase, row.Entry, fact.PhaseEntry), Unspent: true}, nil
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := e.pullRequestOf(ctx, tx, *issue)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -2567,11 +2578,21 @@ func endChildrenFirst(hold string) string {
 // base; under children-first a parent starts its own phases only after its children have left,
 // so by the time it is accepted there is nothing left to wait for, and the refusal is the
 // backstop for a child filed after the parent started.
+//
+// Of a plan of several tasks it is the sign-off of one task at accepting (actView): the one it
+// names, or the one task there where it names none, read for that task, so it moves that task
+// alone and tells its step its own pull request; a sign-off that names none while two or more
+// tasks stand at accepting, or that names a task that does not, is refused and changes nothing.
 func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
+	view, refusal, err := e.actView(ctx, tx, *issue, fact.Task, phase.Accepting)
+	if err != nil || refusal != nil {
+		return intake.Result{Refusal: refusal}, err
+	}
+	issue = &view
 	if issue.Phase != phase.Accepting {
 		return refused("SIGNOFF_OUTSIDE_ACCEPTING", fmt.Sprintf("%s is in phase %s, not accepting; this sign-off changed nothing", issue.Key, issue.Phase)), nil
 	}
@@ -2592,7 +2613,7 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	if err != nil {
 		return intake.Result{}, err
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := e.pullRequestOf(ctx, tx, *issue)
 	if err != nil {
 		return intake.Result{}, err
 	}

@@ -1067,6 +1067,11 @@ type BackwardMove struct {
 	// that stands (record.Store.OpenStep), which a worker's turn behind its entry can match. 0 for
 	// the architect's move and for a claim that serves no entry, which nothing of an entry judges.
 	PhaseEntry int64
+	// Task is the task of the issue's plan the move is of: of a plan of several tasks, the task
+	// the architect names, or the one task at accepting where it names none (workflow's actView),
+	// and for a phase worker's move the task of the step its claim's agent runs, which the route
+	// reads (api's phaseBackward). "" for a plan of one task and an issue with no plan rows.
+	Task string
 }
 
 func (f BackwardMove) namedIssue() (string, bool) { return f.Issue, true }
@@ -1136,12 +1141,17 @@ func (f RestartPhase) namedIssue() (string, bool) { return f.Issue, true }
 // SignOff records the architect's post-production-check approval: the claim of the architect, and
 // the issue's generation and the run of the step it stood in (record.Store.OpenStep, the run of
 // accepting) as the route read them (api's signOff), which the workflow judges again under the
-// fact lock (ArchitectRequest, EnteredRequest).
+// fact lock (ArchitectRequest, EnteredRequest). Task is the task of the issue's plan it accepts,
+// "" for none named: of a plan of several tasks, a sign-off that names none is of the one task at
+// accepting, refused TASK_REQUIRED where two or more stand there, and one that names a task not at
+// accepting is refused TASK_NOT_AT_PHASE (workflow's actView); of a plan of one task, or none, it
+// is the issue's sign-off as before.
 type SignOff struct {
 	Issue      string
 	By         claim.Token
 	Generation uint64
 	Entry      record.StepEntry
+	Task       string
 }
 
 func (f SignOff) namedIssue() (string, bool) { return f.Issue, true }
