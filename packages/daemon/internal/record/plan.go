@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/plan"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 )
 
 // The plan of an issue is three tables (store migration 20261117034837_issue_plans): the versions
@@ -824,6 +825,30 @@ func (s *Postgres) SetStepWait(ctx context.Context, tx pgx.Tx, issue string, gen
 		return fmt.Errorf("%s: the plan holds no such task that is running", describe)
 	}
 	return nil
+}
+
+// AgentWaiter is the task of the plan of issue at generation in the state running whose step has
+// waited longest for agent: of the steps that wait for their agent (StepWaitAgent) and whose agent
+// is agent, as a running step's is read (stepOfRow, PlanStep.AgentName), the one whose wait began
+// first (PlanTask.StepWaitSince), and of two that began at one moment the first in task id order.
+// It is "" where no step waits for agent. A step that waits for its join waits for no agent, and a
+// task that is not running has no step that waits, whatever its row still holds: a freed agent
+// goes to this step, and an agent with a step waiting since earlier is busy for every other step.
+func (s *Postgres) AgentWaiter(ctx context.Context, tx pgx.Tx, issue string, generation uint64, agent claim.Agent) (string, error) {
+	var raw []byte
+	if err := tx.QueryRow(ctx, "select "+pods.AgentWaitersColumn("$1::text", "$2::bigint"), issue, int64(generation)).Scan(&raw); err != nil {
+		return "", fmt.Errorf("read the step of %s at generation %d that waited longest for agent %s: %w", issue, generation, agent, err)
+	}
+	rows, _, err := pods.DecodeRunning(raw)
+	if err != nil {
+		return "", fmt.Errorf("read the step of %s at generation %d that waited longest for agent %s: %w", issue, generation, agent, err)
+	}
+	for _, row := range rows {
+		if agent != "" && stepOfRow(row, false).Agent == agent {
+			return row.Task, nil
+		}
+	}
+	return "", nil
 }
 
 // hasPlan says whether issue has plan rows at generation.

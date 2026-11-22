@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -169,6 +170,83 @@ func TestAStepWaitIsWrittenWithItsMomentAndAMoveEndsIt(t *testing.T) {
 		if c := taskOf(t, tx, planIssue, 1, "c"); c.State != TaskRunning || c.HoldReason != "" {
 			t.Fatalf("held task c moved reads %s for %q, want running with no hold reason", c.State, c.HoldReason)
 		}
+	})
+}
+
+// The step that has waited longest for its agent is the one the agent goes to next: of the steps
+// of running tasks that wait for agent k, the one whose wait began first, and of two that began at
+// one moment the first in task id order. Tasks x and y each have a step of agent k, which waits
+// since t2 and t1: AgentWaiter(k) answers y; once y waits no more, x; with x and y both waiting
+// since t2, x. A step that waits for its join (w, since t0), a step of another agent (m, since t0)
+// and a step that waited for k before its task was stopped (v, since t0) are never k's answer, and
+// with no step left waiting for k the answer is "". The agent of a step whose row names none is
+// its role (PlanStep.AgentName): u's tester step waits for the agent tester. The store itself
+// refuses a wait for the agent with no moment.
+//
+// The fault it catches is a freed agent that goes to a step other than the one that waited longest
+// for it (its controls: the read ordered by task id alone, which answers x; and the read of every
+// step's wait whatever it waits for, which answers w).
+func TestTheStepThatWaitedLongestForItsAgentIsNext(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	t0 := planGivenAt.Add(time.Minute)
+	t1, t2 := t0.Add(time.Minute), t0.Add(2*time.Minute)
+	inTx(t, st, func(tx pgx.Tx) {
+		v := PlanVersion{Issue: planIssue, Generation: 1, Version: 1, ArtifactID: planAuthor, Source: PlanSourceOwner, GivenBy: planOwner, GivenAt: planGivenAt}
+		var tasks []PlanTask
+		var steps []PlanStep
+		for _, task := range []struct {
+			id    string
+			agent claim.Agent
+		}{{"m", "m"}, {"v", "k"}, {"w", "k"}, {"x", "k"}, {"y", "k"}} {
+			tasks = append(tasks, PlanTask{Issue: planIssue, Generation: 1, Task: task.id, PlanVersion: 1, BlockText: "Do " + task.id + ".",
+				State: TaskRunning, Place: TaskPlace{Kind: PlaceStep, Position: 1}})
+			steps = append(steps, PlanStep{Issue: planIssue, Generation: 1, Task: task.id, Position: 1, Role: "implementer", Type: "implementation",
+				AgentKey: string(task.agent), Agent: task.agent})
+		}
+		tasks = append(tasks, PlanTask{Issue: planIssue, Generation: 1, Task: "u", PlanVersion: 1, BlockText: "Do u.",
+			State: TaskRunning, Place: TaskPlace{Kind: PlaceStep, Position: 2}})
+		steps = append(steps,
+			PlanStep{Issue: planIssue, Generation: 1, Task: "u", Position: 1, Role: "implementer", Type: "implementation", Agent: "implementer"},
+			PlanStep{Issue: planIssue, Generation: 1, Task: "u", Position: 2, Role: "tester", Type: "testing"})
+		putPlan(t, tx, v, tasks, steps)
+	})
+	refusedEach(t, st, []refusedWrite{
+		{name: "a wait for the agent with no moment", check: "plan_tasks_step_wait_since_check", write: func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `update plan_tasks set step_wait = 'agent' where issue = $1 and task = 'x'`, planIssue)
+			return err
+		}},
+	})
+
+	next := func(tx pgx.Tx, agent claim.Agent, want string) {
+		t.Helper()
+		got, err := NewStore().AgentWaiter(ctx, tx, planIssue, 1, agent)
+		if err != nil {
+			t.Fatalf("the step that waited longest for agent %s: %v", agent, err)
+		}
+		if got != want {
+			t.Fatalf("the step that waited longest for agent %s is task %q's, want task %q's", agent, got, want)
+		}
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		next(tx, "k", "")
+		must(t, NewStore().SetStepWait(ctx, tx, planIssue, 1, "v", StepWaitAgent, &t0))
+		must(t, NewStore().StopTask(ctx, tx, planIssue, 1, "v", "the owner stopped it"))
+		must(t, NewStore().SetStepWait(ctx, tx, planIssue, 1, "w", StepWaitJoin, &t0))
+		must(t, NewStore().SetStepWait(ctx, tx, planIssue, 1, "m", StepWaitAgent, &t0))
+		must(t, NewStore().SetStepWait(ctx, tx, planIssue, 1, "x", StepWaitAgent, &t2))
+		must(t, NewStore().SetStepWait(ctx, tx, planIssue, 1, "y", StepWaitAgent, &t1))
+		must(t, NewStore().SetStepWait(ctx, tx, planIssue, 1, "u", StepWaitAgent, &t1))
+		next(tx, "k", "y")
+		next(tx, "m", "m")
+		next(tx, "tester", "u")
+		must(t, NewStore().SetStepWait(ctx, tx, planIssue, 1, "y", StepWaitNone, nil))
+		next(tx, "k", "x")
+		must(t, NewStore().SetStepWait(ctx, tx, planIssue, 1, "y", StepWaitAgent, &t2))
+		next(tx, "k", "x")
+		must(t, NewStore().SetStepWait(ctx, tx, planIssue, 1, "x", StepWaitNone, nil))
+		must(t, NewStore().SetStepWait(ctx, tx, planIssue, 1, "y", StepWaitNone, nil))
+		next(tx, "k", "")
 	})
 }
 

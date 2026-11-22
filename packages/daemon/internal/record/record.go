@@ -554,25 +554,34 @@ func RunningOf(issue Issue, planned bool, rows []pods.RunningRow) []RunningStep 
 	}
 	var steps []RunningStep
 	for _, row := range rows {
-		step := RunningStep{Task: row.Task, Place: TaskPlace{Kind: row.Kind, Position: row.Position}, Held: row.Held || held}
-		switch row.Kind {
-		case PlaceRetro:
-			step.Phase = phase.Retro
-		case PlaceMerge:
-			step.Phase = phase.Merging
-		default:
-			step.Phase = plan.RunsAs(row.Role)
-		}
-		if step.Role = claim.Role(row.Role); step.Phase != phase.Step {
-			step.Role = phase.RoleFor(step.Phase)
-		}
-		step.Agent = claim.Agent(step.Role)
-		if row.Role != "" {
-			step.Agent = PlanStep{Task: row.Task, Position: row.At, Role: row.Role, AgentKey: row.Key, Agent: claim.Agent(row.Agent)}.AgentName()
-		}
-		steps = append(steps, step)
+		steps = append(steps, stepOfRow(row, held))
 	}
 	return steps
+}
+
+// stepOfRow is the step one row of the read of an issue's plan rows works (pods.RunningRow): its
+// task and place, the phase and the role of that place and the agent that works it, as RunningStep
+// says, held where the row's task is held or held is. It is the one reading of a row: the running
+// steps (RunningOf) and the step that waited longest for its agent (Postgres.AgentWaiter) each
+// read it.
+func stepOfRow(row pods.RunningRow, held bool) RunningStep {
+	step := RunningStep{Task: row.Task, Place: TaskPlace{Kind: row.Kind, Position: row.Position}, Held: row.Held || held}
+	switch row.Kind {
+	case PlaceRetro:
+		step.Phase = phase.Retro
+	case PlaceMerge:
+		step.Phase = phase.Merging
+	default:
+		step.Phase = plan.RunsAs(row.Role)
+	}
+	if step.Role = claim.Role(row.Role); step.Phase != phase.Step {
+		step.Role = phase.RoleFor(step.Phase)
+	}
+	step.Agent = claim.Agent(step.Role)
+	if row.Role != "" {
+		step.Agent = PlanStep{Task: row.Task, Position: row.At, Role: row.Role, AgentKey: row.Key, Agent: claim.Agent(row.Agent)}.AgentName()
+	}
+	return step
 }
 
 // todaysPlace is the place of p on today's line, phase.Order, as the walk of a run with no plan
@@ -2316,6 +2325,9 @@ type Store interface {
 	// SetStepWait writes what the step at a running task's place waits for, since at;
 	// StepWaitNone with a nil at ends its wait.
 	SetStepWait(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, wait StepWait, at *time.Time) error
+	// AgentWaiter is the running task whose step has waited longest for agent (its wait agent, by
+	// the moment it began, then by task id), "" where no step waits for it.
+	AgentWaiter(ctx context.Context, tx pgx.Tx, issue string, generation uint64, agent claim.Agent) (string, error)
 	// AssignTaskBranch gives task its GitHub branch, once, and answers it: the issue's own branch
 	// for the first task of the generation to start, else the first give of the task's slug that
 	// the generation has given no task, even one a later version removed. The generation's task

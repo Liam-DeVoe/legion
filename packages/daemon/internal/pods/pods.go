@@ -170,22 +170,30 @@ type RunningRow struct {
 // its agent is in no row, and neither is a task at no act, waiting, stopped, done or left.
 // DecodeRunning reads it.
 func RunningColumn(key, generation string) string {
-	return stepsColumn(key, generation, `t.state in ('running', 'held') and t.step_wait = ''`)
+	return stepsColumn(key, generation, `t.state in ('running', 'held') and t.step_wait = ''`, `t.task`)
 }
 
 // StoppedColumn is RunningColumn's read of the tasks of the run in the state stopped instead:
 // the step each stands at, which its stop ended (record.StoppedStep).
 func StoppedColumn(key, generation string) string {
-	return stepsColumn(key, generation, `t.state = 'stopped'`)
+	return stepsColumn(key, generation, `t.state = 'stopped'`, `t.task`)
 }
 
-// stepsColumn is the read RunningColumn and StoppedColumn make, of the tasks the SQL condition
-// which names, over their alias t.
-func stepsColumn(key, generation, which string) string {
+// AgentWaitersColumn is RunningColumn's read of the tasks of the run in the state running whose
+// step waits for its agent (plan_tasks.step_wait is agent) instead, the step that has waited
+// longest first: by the moment its wait began (plan_tasks.step_wait_since), then by task id
+// (record.Store.AgentWaiter).
+func AgentWaitersColumn(key, generation string) string {
+	return stepsColumn(key, generation, `t.state = 'running' and t.step_wait = 'agent'`, `t.step_wait_since, t.task`)
+}
+
+// stepsColumn is the read RunningColumn, StoppedColumn and AgentWaitersColumn make, of the tasks
+// the SQL condition which names, over their alias t, in the SQL order order names.
+func stepsColumn(key, generation, which, order string) string {
 	return `case when exists (select 1 from issue_plans p where p.issue = ` + key + ` and p.generation = ` + generation + `) then ` +
 		`coalesce((select json_agg(json_build_object('task', t.task, 'held', t.state = 'held', 'kind', t.running_kind, ` +
 		`'position', t.position, 'role', coalesce(a.role, ''), 'key', coalesce(a.agent_key, ''), 'agent', coalesce(a.agent, ''), ` +
-		`'at', coalesce(a.position, 0)) order by t.task) ` +
+		`'at', coalesce(a.position, 0)) order by ` + order + `) ` +
 		`from plan_tasks t left join lateral (select s.role, s.agent_key, s.agent, s.position from plan_steps s ` +
 		`where s.issue = t.issue and s.generation = t.generation and s.task = t.task ` +
 		`and (t.running_kind = 'step' and s.position = t.position or t.running_kind = 'retro' and s.type = 'implementation') ` +
