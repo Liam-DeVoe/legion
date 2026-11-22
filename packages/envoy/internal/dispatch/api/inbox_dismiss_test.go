@@ -730,7 +730,9 @@ func TestDismissedPagesFromItsCursor(t *testing.T) {
 // root of that moment otherwise than the page's arms are cut in (meInboxDismissedCut), and a page
 // of two would skip a row or answer one twice. Each page's total is the page it answers, only a
 // page that more rows follow names a cursor, and a cursor that names no thread or Agent root is
-// refused there.
+// refused there. Each entry a page answers carries the relations the walk of every relation (the
+// read with no state) gives its node, its dismissal among them, though under this state the walk
+// reads the page's own nodes alone (meInboxBuild's page_nodes).
 func TestTheOneReadsDismissedViewPagesFromItsCursor(t *testing.T) {
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
@@ -760,6 +762,7 @@ func TestTheOneReadsDismissedViewPagesFromItsCursor(t *testing.T) {
 	}
 
 	read := []string{}
+	answered := map[string]meInboxEntry{}
 	query := url.Values{"state": {myRepliesStateDismissed}, "limit": {"2"}}
 	for page := 1; ; page++ {
 		if page > len(rows) {
@@ -774,6 +777,7 @@ func TestTheOneReadsDismissedViewPagesFromItsCursor(t *testing.T) {
 				t.Fatalf("page %d holds %s %s with no row of the page", page, entry.Node.Kind, entry.Node.ID)
 			}
 			read = append(read, entry.Node.ID)
+			answered[entry.Node.ID] = entry
 		}
 		more := len(read) < len(want)
 		if (answer.NextCursor != "") != more {
@@ -786,6 +790,24 @@ func TestTheOneReadsDismissedViewPagesFromItsCursor(t *testing.T) {
 	}
 	if !slices.Equal(read, want) {
 		t.Fatalf("the Dismissed view read %v, want %v: every dismissed row once, newest dismissal first, then by id", read, want)
+	}
+	walk := readMeInboxAs(t, handler, "alice", url.Values{})
+	for _, id := range read {
+		entry := answered[id]
+		walked, held := meInboxEntryOfNode(walk, entry.Node.Kind, entry.Node.ID)
+		if !held {
+			t.Fatalf("the walk holds no entry of the dismissed %s %s", entry.Node.Kind, entry.Node.ID)
+		}
+		same := slices.EqualFunc(entry.Relations, walked.Relations, func(page, all meInboxRelation) bool {
+			return page.Kind == all.Kind && page.Direction == all.Direction && page.At.Equal(all.At)
+		})
+		dismissal := slices.ContainsFunc(entry.Relations, func(relation meInboxRelation) bool {
+			return relation.Kind == graphstore.TupleDismissed && relation.Direction == meInboxOutbound
+		})
+		if !same || !dismissal {
+			t.Errorf("the dismissed %s %s carries %+v on its page, want %+v as the walk reads it, its dismissal among them",
+				entry.Node.Kind, entry.Node.ID, entry.Relations, walked.Relations)
+		}
 	}
 
 	notARoot := meInboxCursor{moment: time.Now(), kind: graphstore.KindComment, id: "not-a-root"}.String()

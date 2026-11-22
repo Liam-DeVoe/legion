@@ -546,3 +546,105 @@ func TestTheOneReadTakesAProvedSessionAsThePersonsOwnNode(t *testing.T) {
 		}
 	})
 }
+
+// The settings the one read makes (meInboxSettings) end with its own transaction: a pooled
+// connection carries none of them to the next statement it runs, which may be another client's.
+// The read runs through its own path (readMeInbox) on a pool of one connection, so the statement
+// after it lands on the connection it ran on - the backend's pid says so - and that connection's
+// value of each setting the read makes must be the one it held before the read: the server's own.
+// Where the server's own value is the one the read sets, a session-level leak would read the same,
+// so the connection is first given another value of that setting at session level, the one the
+// read must then leave it holding. Each setting is named from the read's own text, `set local
+// <name> = <value>` (or `set <name> = <value>`, which is the leak this test is for).
+func TestTheOneReadsSettingsEndWithItsTransaction(t *testing.T) {
+	_, database, deps := newTestServer(t, testServerOptions{})
+	deps.Store = storetest.SingleConnection(t, database)
+	served := directServer(deps)
+	pool := deps.Store.Pool
+	ctx := context.Background()
+
+	names := make([]string, 0, len(meInboxSettings))
+	for _, setting := range meInboxSettings {
+		assignment, local := strings.CutPrefix(setting, "set local ")
+		if !local {
+			assignment, _ = strings.CutPrefix(setting, "set ")
+		}
+		name, _, assigns := strings.Cut(assignment, " = ")
+		if !assigns || name == assignment || strings.ContainsAny(name, " ;") {
+			t.Fatalf("the read's setting %q names no one setting this test can read back", setting)
+		}
+		names = append(names, name)
+	}
+	type held struct {
+		pid    int32
+		values []string
+	}
+	read := func(q interface {
+		QueryRow(context.Context, string, ...any) pgx.Row
+	}) held {
+		t.Helper()
+		var got held
+		if err := q.QueryRow(ctx, `
+			select pg_backend_pid(),
+			       array(select current_setting(name) from unnest($1::text[]) with ordinality as named(name, at) order by at)
+		`, names).Scan(&got.pid, &got.values); err != nil {
+			t.Fatalf("read %v: %v", names, err)
+		}
+		return got
+	}
+
+	// What the read sets, read inside a transaction that runs its settings and is rolled back.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	for _, setting := range meInboxSettings {
+		if _, err := tx.Exec(ctx, setting); err != nil {
+			t.Fatalf("%s: %v", setting, err)
+		}
+	}
+	sets := read(tx)
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("roll back: %v", err)
+	}
+	own := read(pool)
+	for index, name := range names {
+		if own.values[index] != sets.values[index] {
+			continue
+		}
+		var other string
+		if err := pool.QueryRow(ctx, `
+			select set_config(s.name, coalesce(
+			         (select value from unnest(s.enumvals) value where value <> $2 limit 1),
+			         case when $2 = 'on' then 'off' else 'on' end), false)
+			from pg_settings s where s.name = $1
+		`, name, sets.values[index]).Scan(&other); err != nil {
+			t.Fatalf("give the connection another %s than the read's %s: %v", name, sets.values[index], err)
+		}
+	}
+	before := read(pool)
+	for index, name := range names {
+		if before.values[index] == sets.values[index] {
+			t.Fatalf("the connection holds %s = %s, the read's own value, so a leak of it would not show", name, before.values[index])
+		}
+	}
+
+	limit := 200
+	for _, request := range []meInboxRequest{{}, {state: myRepliesStateDismissed, limit: &limit}} {
+		statement, args, err := meInboxStatement(model.Actor{Kind: "user", ID: "alice"}, 0, request, false, false, nil)
+		if err != nil {
+			t.Fatalf("build the read of state %q: %v", request.state, err)
+		}
+		if _, err := served.readMeInbox(ctx, statement, args); err != nil {
+			t.Fatalf("the read of state %q: %v", request.state, err)
+		}
+		after := read(pool)
+		if after.pid != before.pid {
+			t.Fatalf("the statement after the read ran on backend %d, not %d, the read's own", after.pid, before.pid)
+		}
+		if !slices.Equal(after.values, before.values) {
+			t.Errorf("after the read of state %q the connection holds %v = %v, want %v as before it: a setting of the read outlived its transaction",
+				request.state, names, after.values, before.values)
+		}
+	}
+}

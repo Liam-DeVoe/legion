@@ -1121,6 +1121,24 @@ func meInboxTextOf(shape meInboxShape) *meInboxText {
 // predicate is over the node's own row of graph_nodes, read by its key for each node, in this
 // statement and bound once, and the counts are taken after it. What the page's rows draw is read
 // once for the page (meInboxPageReads).
+//
+// Under state=dismissed the walk reads only the tuples between the person's nodes and the nodes
+// the page answers (page_nodes): the first offset + limit + 1 of the page's rows, in the order the
+// page answers in, which are the rows the page and its next_cursor are taken from, or every row
+// where ?kind= narrows the entries by their relations. That is the page's cost and not the
+// person's history: every dismissal appends a dismissed tuple and every Mark all read a read_through
+// tuple for each thread it marks (api/read_marks.go), and the whole walk read all of them for a page
+// of 200. In the dismissed scale test the dismissals and Mark all read runs it times append some
+// 35,000 such tuples to the person, before the page 50,000 deep is timed and after page 1 is: the
+// walk then read 11,830 tuples for each of three kinds, and the deep page read a p50 of 44 ms
+// against 24 ms for page 1 over the same plan. Each of these reads is keyed from the page's node:
+// a relation out of the person by graph_tuples_current on its whole key, one index descent, and a
+// relation into the person by graph_tuples_as_of_out from the node, whose own tuples of a kind are
+// few. The read into the person leaves out the `to_kind <> 'value'` test, which every person node
+// passes, so graph_tuples_as_of_in - keyed by the person, the index that made each probe of the
+// scale check above read all the person's tuples of a kind - is no index its plan can take. A
+// page's nodes are at most offset + limit + 1, where the states the page does not cut (inbox and
+// unread) answer every row, so they keep the one pass over the person's tuples.
 func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	slots := shape.slots()
 	args := &meInboxArgs{values: make([]any, slots.first)}
@@ -1137,6 +1155,29 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	// rows already.
 	visible := meInboxVisible("g.node_kind", "g.node_id")
 	order := meInboxOrderOf(shape)
+	// The walk's reach: the relations of every node tied to the person, or under state=dismissed of
+	// the page's own nodes alone (above).
+	pageNodes, walkFrom := ``, ``
+	inbound := `t.to_kind = k.node_kind and t.to_id = k.node_id and t.kind = k.kind
+				and t.to_kind <> '` + graphstore.KindValue + `' and ` + atHorizon
+	outbound := `t.from_kind = k.node_kind and t.from_id = k.node_id and t.kind = k.kind
+				and t.to_kind <> '` + graphstore.KindValue + `' and ` + meInboxOutOfPerson + ` and ` + atHorizon
+	if shape.state == myRepliesStateDismissed {
+		pageNodes = `
+	page_nodes(node_kind, node_id) as materialized (
+		select pr.node_kind, pr.node_id from page_rows pr
+		order by ` + order.by("pr") + `
+		limit case when ` + meInboxKindsParam + `::text[] is null
+		  then ` + meInboxOffset + `::bigint + ` + meInboxLimit + `::bigint + 1 end
+	),`
+		walkFrom = `
+		cross join page_nodes p`
+		inbound = `t.from_kind = p.node_kind and t.from_id = p.node_id and t.kind = k.kind
+				and t.to_kind = k.node_kind and t.to_id = k.node_id and ` + atHorizon
+		outbound = `t.from_kind = k.node_kind and t.from_id = k.node_id and t.kind = k.kind
+				and t.to_kind = p.node_kind and t.to_id = p.node_id
+				and t.to_kind <> '` + graphstore.KindValue + `' and ` + meInboxOutOfPerson + ` and ` + atHorizon
+	}
 
 	var statement strings.Builder
 	statement.WriteString(`
@@ -1159,20 +1200,16 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	` + meInboxKindSkip("kinds_out", "from") + `,
 	page_rows(node_kind, node_id, page, moment, agent_session, agent) as (` +
 		meInboxPageRows(shape, meInboxIssue, meInboxArtifact) + `
-	),
+	),` + pageNodes + `
 	walked(near_kind, near_id, kind, direction, at) as (
 		select stated.from_kind, stated.from_id, k.kind, '` + meInboxInbound + `', stated.at
-		from kinds_in k
-		cross join lateral (` + graphstore.CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.at, t.asserted`,
-		`t.to_kind = k.node_kind and t.to_id = k.node_id and t.kind = k.kind
-				and t.to_kind <> '`+graphstore.KindValue+`' and `+atHorizon) + `) stated
+		from kinds_in k` + walkFrom + `
+		cross join lateral (` + graphstore.CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.at, t.asserted`, inbound) + `) stated
 		where ` + readKind("k.kind") + ` and stated.asserted
 		union all
 		select stated.to_kind, stated.to_id, k.kind, '` + meInboxOutbound + `', stated.at
-		from kinds_out k
-		cross join lateral (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.at, t.asserted`,
-		`t.from_kind = k.node_kind and t.from_id = k.node_id and t.kind = k.kind
-				and t.to_kind <> '`+graphstore.KindValue+`' and `+meInboxOutOfPerson+` and `+atHorizon) + `) stated
+		from kinds_out k` + walkFrom + `
+		cross join lateral (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.at, t.asserted`, outbound) + `) stated
 		where ` + readKind("k.kind") + ` and stated.asserted
 	),
 	-- Each relation kind and end that ties a node to the person, once, with its newest moment: the
