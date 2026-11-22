@@ -72,7 +72,8 @@ type Config struct {
 	// refused too, since the system trust store holds no RDS CA. Any other URL, one carrying its own
 	// password or a passwordless one to a local Postgres that trusts its clients, connects as given.
 	// Nothing is substituted into it: a URL naming the removed ${BROKER_DATABASE_PASSWORD}
-	// placeholder is refused, as BROKER_DATABASE_PASSWORD itself is.
+	// placeholder is refused, as BROKER_DATABASE_PASSWORD itself is. A URL holding an "@" after its
+	// user name and password is refused by the store, naming this variable alone (store.Open).
 	DatabaseURL string
 	// DatabaseIAM is whether the broker signs in to DatabaseURL with RDS IAM auth tokens: the URL
 	// names a user and an RDS endpoint host, pgx finds no password for it, and it verifies that

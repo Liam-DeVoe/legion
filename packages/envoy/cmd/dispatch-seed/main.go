@@ -32,6 +32,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/pgdsn"
 )
 
 func main() {
@@ -58,6 +59,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	if strings.TrimSpace(*databaseURL) == "" {
 		fmt.Fprintln(stderr, "dispatch-seed: --database-url is required")
+		return 2
+	}
+	// Before the store's own refusal, which names DATABASE_URL, the server's setting.
+	if err := pgdsn.Refusal("--database-url", *databaseURL); err != nil {
+		fmt.Fprintf(stderr, "dispatch-seed: %v\n", err)
 		return 2
 	}
 	if !(*scale > 0) || *scale > 1000 {
