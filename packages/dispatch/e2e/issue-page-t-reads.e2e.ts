@@ -6,6 +6,7 @@ import { nodeRow } from "./issue-page-g";
 import { fixtureSeed, seedKeys } from "./issue-page-t";
 import {
   checksOutOfPlace,
+  editNoticesSent,
   firstLoad,
   idReadsOf,
   idSet,
@@ -56,9 +57,10 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
 // a slot the stage mounts again past the app's 30 s `staleTime` sends no read of its own, shown
 // on Plan, whose slot reads only through `useIssueTree`.
 // SLOW(>=2s): the whole seeded issue, its load waited out to a 1.5 s quiet window, Details
-// opened, three filters each pressed on, off and on again with each press waited out, and each
-// of Plan's two 31 s jumps of the clock held until the live socket's last frame is 2 to 10 s old,
-// up to one 15 s heartbeat.
+// opened, the seed's edit notices waited for, which the server sends about 30 s after a
+// person's last version of each document, three filters each pressed on, off and on again with
+// each press waited out, and each of Plan's two 31 s jumps of the clock held until the live
+// socket's last frame is 2 to 10 s old, up to one 15 s heartbeat.
 test("the first load reads the tree once and a filter its view once", async ({ browser }) => {
   test.setTimeout(ROW_MS);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
@@ -89,6 +91,11 @@ test("the first load reads the tree once and a filter its view once", async ({ b
       "the first load, with the outline, Details and the header drawn, sends no blocks read"
     ).toEqual([]);
     await closeDetails(page);
+    // A person wrote versions of the seed's documents, and the server sends each document's edit
+    // notice about 30 s after that person's last version, a notice the page reads the issue's
+    // detail again for. The Plan re-press below holds to no read at all, so the presses are
+    // counted only once every notice is sent.
+    await editNoticesSent(seeded.key, traffic);
 
     for (const filter of VIEW_FILTERS) {
       const name = PRESET_NAMES[filter];
