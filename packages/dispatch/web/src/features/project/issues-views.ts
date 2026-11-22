@@ -14,7 +14,7 @@ import {
 } from "../../lib/page-address";
 import { DAY_MS } from "../delivery/lib/window";
 import { isViewer } from "../refs/actor";
-import { useUserPreference } from "../shell/userPreference";
+import { useStoredUserPreference, useUserPreference } from "../shell/userPreference";
 import { type IssueStatus, openIssueStatuses } from "./board-model";
 import {
   type ClosedWindow,
@@ -657,6 +657,11 @@ export function inExcludedTree(
   return excluded.includes(key) || (rootKey !== undefined && excluded.includes(rootKey));
 }
 
+/** The trees `params` leaves out (`exclude_tree`), as the address holds them. */
+export function readExcludedTrees(params: URLSearchParams): readonly string[] {
+  return EXCLUDED_TREES[EXCLUDE_TREE].read(params, EXCLUDE_TREE);
+}
+
 /** The trees the address leaves out (`exclude_tree`), and the remove of one, which its chip
  *  calls. */
 export function useExcludedTrees(): readonly [readonly string[], (tree: string) => void] {
@@ -821,8 +826,9 @@ export function matchSavedView(
 }
 
 /** One project's saved views, kept with the signed-in login in this browser, with their name
- *  check, the save and the delete. One caller per page holds them, since each `useUserPreference`
- *  holds its own copy of what is stored. */
+ *  check, the save and the delete. Every caller reads what is stored now, in this tab and in
+ *  every other tab of the browser (`useStoredUserPreference`), and a save or a delete changes the
+ *  stored list at the moment it writes, by its own name alone: a view saved in another tab stays. */
 export interface SavedViews {
   readonly views: readonly SavedView[];
   readonly check: (name: string) => ViewNameCheck;
@@ -833,7 +839,7 @@ export interface SavedViews {
 }
 
 export function useSavedViews(project: string): SavedViews {
-  const [stored, setStored] = useUserPreference<StoredViews>(
+  const [stored, change] = useStoredUserPreference<StoredViews>(
     "project.saved-views",
     readSavedViews,
     writeSavedViews
@@ -844,14 +850,14 @@ export function useSavedViews(project: string): SavedViews {
     (name: string, query: string) => {
       const checked = checkViewName(name, views);
       if (checked.kind !== "problem")
-        setStored(withSavedView(stored, project, { name: checked.name, query }));
+        change((now) => withSavedView(now, project, { name: checked.name, query }));
       return checked;
     },
-    [project, setStored, stored, views]
+    [change, project, views]
   );
   const remove = useCallback(
-    (name: string) => setStored(withoutSavedView(stored, project, name)),
-    [project, setStored, stored]
+    (name: string) => change((now) => withoutSavedView(now, project, name)),
+    [change, project]
   );
   return { views, check, save, remove };
 }

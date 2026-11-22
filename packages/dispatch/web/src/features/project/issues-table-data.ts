@@ -1,4 +1,4 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   advancesIssuesQuery,
@@ -8,7 +8,7 @@ import {
   projectDonePageQuery,
   projectIssuesQuery,
 } from "../../api/queries";
-import type { IssueSummary, LegionBoardResponse } from "../../api/types";
+import type { IssueSummary, IssueSummaryPage, LegionBoardResponse } from "../../api/types";
 import { claimIsTakeable } from "../issue/ClaimChip";
 import { useAgentText } from "../refs/AgentName";
 import type { AgentRegistry } from "../refs/agent-registry";
@@ -101,6 +101,18 @@ const NO_FACTS: Readonly<Record<string, LegionFacts>> = {};
 export const CLOSE_ITEMS_AGAIN_MS = 60_000;
 
 /**
+ * The count of every done issue a page read of Done holds, which Done's tab and its pager count:
+ * the read's `total`, or none where the page lists none of the rows it answered
+ * (`listedDoneRows`), since that `total` then counts rows that no view lists.
+ */
+export function donePageTotal(page: IssueSummaryPage): number {
+  const rows = page.issues ?? NO_ISSUES;
+  return rows.length > 0 && listedDoneRows(rows, { windowed: false, paged: true }).length === 0
+    ? 0
+    : page.total;
+}
+
+/**
  * One listing's issues as the table shows them.
  *
  * A project's listing: the open listing once, unless the view lists only done issues, and the
@@ -140,14 +152,23 @@ export function useIssueTableItems(
       : advancesIssuesQuery(listing)),
     enabled: done !== undefined && (project === undefined || done.kind === "all"),
   });
+  const pageRead = projectDonePageQuery(project ?? "", {
+    offset: done?.kind === "page" ? done.offset : 0,
+    size: done?.kind === "page" ? done.size : 0,
+    window: done?.window,
+  });
   const donePage = useQuery({
-    ...projectDonePageQuery(project ?? "", {
-      offset: done?.kind === "page" ? done.offset : 0,
-      size: done?.kind === "page" ? done.size : 0,
-      window: done?.window,
-    }),
-    // A step of the pager keeps the page on screen until the next one answers.
-    placeholderData: keepPreviousData,
+    ...pageRead,
+    // A step of the pager keeps the page on screen until the next one answers: a read of the
+    // same window, whose key differs from the last one's in no part but the page's size and
+    // offset, the last two. A read of another window keeps nothing of the last one, whose rows
+    // and `total` are not this window's: the view shows its loading state until it answers.
+    placeholderData: (previous, previousQuery) =>
+      previousQuery !== undefined &&
+      JSON.stringify(previousQuery.queryKey.slice(0, -2)) ===
+        JSON.stringify(pageRead.queryKey.slice(0, -2))
+        ? previous
+        : undefined,
     enabled: paged,
   });
   const doneRead = paged ? donePage : everyIssue;
@@ -258,8 +279,9 @@ export function useIssueTableItems(
     board,
     doneLoaded,
     doneRead,
-    /** Every done issue the paged read's window holds, where the view reads a page. */
-    doneTotal: paged ? donePage.data?.total : undefined,
+    /** Every done issue the paged read's window holds, where the view reads a page
+     *  (`donePageTotal`). */
+    doneTotal: paged && donePage.data !== undefined ? donePageTotal(donePage.data) : undefined,
     issues,
     items,
     itemsStatus,

@@ -10,6 +10,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import { apiErrorMessage } from "../../api/client";
 import {
   legionDaemonQuery,
+  projectDoneIssuesQuery,
   projectDonePageQuery,
   projectOpenCountQuery,
   userStateQuery,
@@ -84,6 +85,7 @@ import {
 import {
   answeredWhole,
   type DoneRead,
+  donePageTotal,
   type IssueListing,
   useIssueTableItems,
 } from "./issues-table-data";
@@ -127,6 +129,7 @@ import {
   matchSavedView,
   narrowingsDiffer,
   readCols,
+  readExcludedTrees,
   readWindow,
   type SavedView,
   type SavedViews,
@@ -236,32 +239,101 @@ const PROJECT_GRAMMAR = viewsGrammar<View>({
 /** What Open's own address asks of its rows, which Open's tab counts by on another view. */
 const OPEN_ADDRESS = builtInAddress("open");
 
-/** The rows of `items` that the view at `query` lists, as the view's tab counts them: its filters,
- *  its search, the issues a link names, and the Needs you and Unread flags. */
-function countOf(
-  items: readonly Item[],
-  query: URLSearchParams,
-  userState: UserState | undefined
-): number {
+/** Which listings a view reads by the picks of its Status filter (the spec's Loading section):
+ *  the open listing unless it picks Done alone, and the done issues where it picks Done or no
+ *  status. */
+function listingsOf(statusPicks: readonly string[]): {
+  readonly open: boolean;
+  readonly done: boolean;
+} {
+  return {
+    open: statusPicks.length === 0 || statusPicks.some((status) => status !== "done"),
+    done: statusPicks.length === 0 || statusPicks.includes("done"),
+  };
+}
+
+/** Whether the board decides which rows a view lists, in a project with a Legion daemon: by a
+ *  Queue filter, by a filter of a column the board feeds, or by the trees it leaves out
+ *  (`excluded`), which a row's facts name as its `root_key`. */
+function narrowsByBoard(filters: View["filters"], excluded: readonly string[]): boolean {
+  return excluded.length > 0 || filters.some(({ id }) => id === "queue" || isBoardFedColumn(id));
+}
+
+/** What the page holds that the view tabs count from. */
+interface TabReads {
+  /** The view the tabs have open. */
+  readonly active: ActiveView;
+  /** The rows the table lists now, once every read they wait on has answered. */
+  readonly listed: number | undefined;
+  /** Every row the page holds, with its facts. */
+  readonly items: readonly Item[];
+  /** The open listing has answered, on a view that reads it. */
+  readonly openIn: boolean;
+  /** Open's count by the `total` of `open=true&limit=1`, on a view that reads no open row. */
+  readonly openTotal: number | undefined;
+  /** Done's count by its own read, kept once Done has been opened in the page. */
+  readonly doneKept: number | undefined;
+  /** The board has answered, or the project has no Legion daemon and so no board to wait for. */
+  readonly boardIn: boolean;
+  /** The reader's read state, which Unread narrows by. */
+  readonly userState: UserState | undefined;
+  readonly saved: readonly SavedView[];
+}
+
+/** Each view tab's count, by the built-in view's id or the saved view's name. */
+interface TabCounts {
+  readonly built: ReadonlyMap<string, number | undefined>;
+  readonly saved: ReadonlyMap<string, number | undefined>;
+}
+
+const NO_TAB_COUNTS: TabCounts = { built: new Map(), saved: new Map() };
+
+/**
+ * The count of the view at `query` from the open listing: the rows it lists by every narrowing
+ * it holds, its filters, its search, the issues a link names, the Needs you and Unread flags and
+ * the trees it leaves out. None where the open listing cannot give it: a view that lists closed
+ * issues, which only its own read holds; the open listing not read, or still out; a narrowing
+ * the board decides (`narrowsByBoard`) before the board has answered; and Unread before the
+ * reader's read state has.
+ */
+function openListingCount(query: URLSearchParams, reads: TabReads): number | undefined {
   const own = readUrl(expandView(query));
+  const excluded = readExcludedTrees(query);
   const needsYou = query.get("needs-you") === "1";
   const unread = query.get("unread") === "1";
-  return items.filter(
+  if (!reads.openIn || listingsOf(picksOf(own.filters, "status")).done) return undefined;
+  if (!reads.boardIn && narrowsByBoard(own.filters, excluded)) return undefined;
+  if (unread && reads.userState === undefined) return undefined;
+  return reads.items.filter(
     (item) =>
       matchesFilters(item, own.filters) &&
       matchesSearch(item, own.search) &&
       (own.selection === null || own.selection.keys.has(item.issue.key)) &&
       (!needsYou || item.issue.open_asks > 0) &&
-      (!unread || issueIsUnread(item.issue, userState?.[item.issue.key]?.last_read_seq ?? 0))
+      (!unread ||
+        issueIsUnread(item.issue, reads.userState?.[item.issue.key]?.last_read_seq ?? 0)) &&
+      !inExcludedTree(item.issue.key, item.facts?.root_key, excluded)
   ).length;
 }
 
-/** Whether the view at `query` lists closed issues: its Status filter picks Done, or it picks no
- *  status (`nofilter=1`). The open listing cannot count such a view. */
-function listsClosed(query: URLSearchParams): boolean {
-  const expanded = expandView(query);
-  const statuses = expanded.getAll("status");
-  return statuses.includes("done") || (statuses.length === 0 && expanded.get("nofilter") === "1");
+/**
+ * The count each view tab shows, or none where the page cannot count that view now (the spec's
+ * Design, "The views"). The open tab counts the rows the table lists, the reader's own changes
+ * included. Open counts its own view from the open listing, and on a view that reads none by the
+ * `total` of `open=true&limit=1`. Done counts by its own read, once it has been opened in the
+ * page. A saved view counts from the open listing (`openListingCount`).
+ */
+function tabCounts(reads: TabReads): TabCounts {
+  const built = new Map<string, number | undefined>([
+    ["open", reads.openIn ? openListingCount(OPEN_ADDRESS, reads) : reads.openTotal],
+    ["done", reads.doneKept],
+  ]);
+  const saved = new Map<string, number | undefined>(
+    reads.saved.map((view) => [view.name, openListingCount(copyAddress(view.query), reads)])
+  );
+  if (reads.active.kind === "built-in") built.set(reads.active.id, reads.listed);
+  else saved.set(reads.active.name, reads.listed);
+  return { built, saved };
 }
 
 /** The table's grouping on the Board, whose Group by picks the Board's columns instead: its rows
@@ -382,16 +454,17 @@ interface IssuesTabPlace {
   readonly setShowIcebox: (shown: boolean) => void;
   readonly lanes: boolean;
   readonly setLanes: (shown: boolean) => void;
-  /** The page of Done's own read whose `total` counts Done's tab, once Done has been opened. */
-  readonly donePage: DonePageRead | undefined;
-  readonly rememberDonePage: (page: DonePageRead) => void;
+  /** Done's own read once Done has been opened in the page, which counts Done's tab. */
+  readonly doneRead: HeldDoneRead | undefined;
+  readonly rememberDoneRead: (read: HeldDoneRead) => void;
 }
 
-/** One page of Done read with no window: what Done's tab counts by. */
-interface DonePageRead {
-  readonly offset: number;
-  readonly size: number;
-}
+/** Done's own read with no Closed window: one page of it, in the table in its own sort, or every
+ *  done issue, on the Board, at the All rows page size or under a narrowing the browser applies.
+ *  Either one counts Done's own view, which lists every done issue. */
+type HeldDoneRead =
+  | { readonly kind: "page"; readonly offset: number; readonly size: number }
+  | { readonly kind: "all" };
 
 export function IssuesTable({
   label,
@@ -502,18 +575,30 @@ function IssuesTab({ label, project }: { label: string | undefined; project: str
   // The saved view the reader opened, which stays the open tab while they change it: by its tab,
   // or by an address that is its query, which opens it as a press on its tab does. An address
   // that is another saved view's query, while the open one is changed, opens that one instead.
+  // An address that names nothing is the page as it opens (`page-address.ts`), Open unchanged,
+  // so no saved view stays open over it: the project's link in the page's header lands there
+  // with the tab still drawn. A change of a saved view never empties the address, since the
+  // view's query holds its columns and its layout (`savedViewQuery`).
   const [chosen, setChosen] = useState<string | undefined>(undefined);
-  const chosenView = saved.views.find((view) => view.name === chosen);
   const matched = matchSavedView(saved.views, params);
+  const bare = params.toString() === "" && matched === undefined;
+  if (bare && chosen !== undefined) setChosen(undefined);
+  const chosenView = bare ? undefined : saved.views.find((view) => view.name === chosen);
   const opened =
     matched !== undefined && (chosenView === undefined || isSavedViewChanged(params, chosenView));
   if (opened) setChosen(matched.name);
   const savedView = opened ? matched : chosenView;
   const base = viewFor(expandView(params).get("view"));
-  const active: ActiveView =
-    savedView === undefined
-      ? { kind: "built-in", id: base.id }
-      : { kind: "saved", name: savedView.name };
+  // One object while the open view stays, so the tab counts, which read it, are worked out again
+  // only when it changes.
+  const savedName = savedView?.name;
+  const active = useMemo<ActiveView>(
+    () =>
+      savedName === undefined
+        ? { kind: "built-in", id: base.id }
+        : { kind: "saved", name: savedName },
+    [savedName, base.id]
+  );
   const tableKey = tableStorageKey(project);
   const [layout, setLayout] = useViewLayout(tableKey, active);
   const [showIcebox, setShowIcebox] = useUserPreference(
@@ -534,12 +619,10 @@ function IssuesTab({ label, project }: { label: string | undefined; project: str
       run: () => setLayout(layout === "board" ? "table" : "board"),
     },
   ]);
-  const [donePage, setDonePage] = useState<DonePageRead | undefined>(undefined);
-  const rememberDonePage = useCallback(
-    (page: DonePageRead) =>
-      setDonePage((held) =>
-        held?.offset === page.offset && held.size === page.size ? held : page
-      ),
+  const [doneRead, setDoneRead] = useState<HeldDoneRead | undefined>(undefined);
+  const rememberDoneRead = useCallback(
+    (read: HeldDoneRead) =>
+      setDoneRead((held) => (JSON.stringify(held) === JSON.stringify(read) ? held : read)),
     []
   );
   if (daemon.isPending) return <LoadingSkeleton label="Loading issues" />;
@@ -563,8 +646,8 @@ function IssuesTab({ label, project }: { label: string | undefined; project: str
     setShowIcebox,
     lanes,
     setLanes,
-    donePage,
-    rememberDonePage,
+    doneRead,
+    rememberDoneRead,
   };
   // One table per view's stored layout, and per daemon answer: the columns a view opens with,
   // and the key its widths and order are kept under, are read once as the table mounts.
@@ -772,9 +855,9 @@ function IssueTableBody({
     setSelectionLayout(onBoard);
     setSelection({});
   }
-  const listsDone = !whole && (statusPicks.length === 0 || statusPicks.includes("done"));
-  const readsOpen =
-    project === undefined || statusPicks.length === 0 || statusPicks.some((s) => s !== "done");
+  const listings = listingsOf(statusPicks);
+  const listsDone = !whole && listings.done;
+  const readsOpen = project === undefined || listings.open;
   const closedValue = filters.find((filter) => filter.id === "closed")?.value;
   const closed = typeof closedValue === "string" ? closedValue : undefined;
   // The clock a window is read against, held while the Closed filter stays, so a rolling
@@ -838,15 +921,12 @@ function IssueTableBody({
     registry,
     viewer,
   });
-  // A view with a Legion filter, sort or grouping waits for the board, and one whose filter,
-  // sort or grouping reads facts waits for the facts of its done rows too: it never lists rows,
-  // or a count, from a read that has not answered.
+  // A view whose rows the board decides (`narrowsByBoard`), or with a Legion sort or grouping,
+  // waits for the board, and one whose filter, sort or grouping reads facts waits for the facts
+  // of its done rows too: it never lists rows, or a count, from a read that has not answered.
   const reading = [...filters.map(({ id }) => id), ...sorting.map(({ id }) => id), ...grouping];
   const boardWaits =
-    hasLegion &&
-    (filters.some(({ id }) => id === "queue") ||
-      reading.some(isBoardFedColumn) ||
-      excluded.length > 0);
+    hasLegion && (narrowsByBoard(filters, excluded) || reading.some(isBoardFedColumn));
   const factsWait =
     hasLegion &&
     done !== undefined &&
@@ -1090,73 +1170,77 @@ function IssueTableBody({
     if (!loaded) setOpenFilter(undefined);
   }, [loaded]);
 
-  // The tab counts. Open counts from the open listing, and on a view that reads none (Done) from
-  // the `total` of a one-row page of it. Done counts by the `total` of its own page read, once
-  // Done has been opened in the page: the same read, kept while another view is open. A saved
-  // view counts from the open listing, and one that lists closed issues only while it is open.
-  // The open view's tab counts the rows the table lists now, the reader's changes included.
+  // The tab counts (`tabCounts`). Done's own read is kept once Done has been opened in the page,
+  // in either layout: the same read, held while another view is open.
   const active = tab?.active;
   const onDone = active?.kind === "built-in" && active.id === "done";
   const openCount = useQuery({
     ...projectOpenCountQuery(project ?? ""),
     enabled: tab !== undefined && !readsOpen,
   });
-  const rememberDonePage = tab?.rememberDonePage;
+  const rememberDoneRead = tab?.rememberDoneRead;
   useEffect(() => {
-    if (onDone && done?.kind === "page" && done.window === undefined)
-      rememberDonePage?.({ offset: done.offset, size: done.size });
-  }, [onDone, done, rememberDonePage]);
-  const donePage = tab?.donePage;
-  const doneCount = useQuery({
+    if (onDone && done !== undefined && done.window === undefined)
+      rememberDoneRead?.(
+        done.kind === "page"
+          ? { kind: "page", offset: done.offset, size: done.size }
+          : { kind: "all" }
+      );
+  }, [onDone, done, rememberDoneRead]);
+  const heldDone = tab?.doneRead;
+  // Done's own read, held: leaving Done reads it no more until a live event does.
+  const donePageCount = useQuery({
     ...projectDonePageQuery(project ?? "", {
-      offset: donePage?.offset ?? 0,
-      size: donePage?.size ?? 0,
+      offset: heldDone?.kind === "page" ? heldDone.offset : 0,
+      size: heldDone?.kind === "page" ? heldDone.size : 0,
     }),
-    // Done's own read, held: leaving Done reads it no more until a live event does.
+    select: donePageTotal,
     refetchOnMount: false,
-    enabled: tab !== undefined && donePage !== undefined && !onDone,
+    enabled: tab !== undefined && heldDone?.kind === "page" && !onDone,
   });
+  const doneAllCount = useQuery({
+    ...projectDoneIssuesQuery(project ?? "", undefined),
+    refetchOnMount: false,
+    enabled: tab !== undefined && heldDone?.kind === "all" && !onDone,
+  });
+  const doneKept =
+    heldDone?.kind === "page"
+      ? donePageCount.data
+      : heldDone?.kind === "all"
+        ? doneAllCount.data?.length
+        : undefined;
+  const openTotal = readsOpen ? undefined : openCount.data;
   const openIn = readsOpen && issues.data !== undefined;
-  const savedViews = tab?.saved.views;
-  // The open view's own count is the rows the table lists now (`listedCount`, below), so the
-  // counts of the other views are all this works out.
-  const openActive = active?.kind === "built-in" && active.id === "open";
-  const savedActive = active?.kind === "saved" ? active.name : undefined;
-  const counts = useMemo(() => {
-    const built = new Map<string, number | undefined>([
-      [
-        "open",
-        openActive
-          ? undefined
-          : openIn
-            ? countOf(allItems, OPEN_ADDRESS, userState.data)
-            : openCount.data,
-      ],
-      ["done", doneCount.data?.total],
-    ]);
-    const savedCounts = new Map<string, number | undefined>(
-      (savedViews ?? []).map((saved: SavedView) => {
-        const query = copyAddress(saved.query);
-        return [
-          saved.name,
-          saved.name !== savedActive && openIn && !listsClosed(query)
-            ? countOf(allItems, query, userState.data)
-            : undefined,
-        ];
-      })
-    );
-    return { built, savedCounts };
-  }, [
-    allItems,
-    doneCount.data,
-    openActive,
-    openCount.data,
-    openIn,
-    savedActive,
-    savedViews,
-    userState.data,
-  ]);
+  const boardIn = !hasLegion || board.data !== undefined;
   const listedCount = counted ? (doneTotal ?? listedRows.length) : undefined;
+  const savedViews = tab?.saved.views;
+  const counts = useMemo(
+    () =>
+      active === undefined || savedViews === undefined
+        ? NO_TAB_COUNTS
+        : tabCounts({
+            active,
+            listed: listedCount,
+            items: allItems,
+            openIn,
+            openTotal,
+            doneKept,
+            boardIn,
+            userState: userState.data,
+            saved: savedViews,
+          }),
+    [
+      active,
+      allItems,
+      boardIn,
+      doneKept,
+      listedCount,
+      openIn,
+      openTotal,
+      savedViews,
+      userState.data,
+    ]
+  );
 
   const header = board.data?.header;
   const tabs =
@@ -1165,11 +1249,7 @@ function IssueTableBody({
         active={tab.active}
         boardFailure={hasLegion && board.isError ? readFailure(board) : undefined}
         changed={tab.changed}
-        counts={
-          active?.kind === "built-in"
-            ? new Map(counts.built).set(active.id, listedCount)
-            : counts.built
-        }
+        counts={counts.built}
         daemonFailure={tab.daemonFailure}
         daemonReadError={
           hasLegion && header !== undefined && header.read_at !== null && !header.read_ok
@@ -1192,11 +1272,7 @@ function IssueTableBody({
           update(() => copyAddress(entry.query));
         }}
         saved={tab.saved.views}
-        savedCounts={
-          active?.kind === "saved"
-            ? new Map(counts.savedCounts).set(active.name, listedCount)
-            : counts.savedCounts
-        }
+        savedCounts={counts.saved}
         views={BUILT_IN_VIEWS}
       />
     );

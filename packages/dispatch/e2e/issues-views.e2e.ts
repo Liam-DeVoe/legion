@@ -795,8 +795,9 @@ async function saveTest(page: Page): Promise<void> {
 }
 
 // SLOW(>=2s): a view saved, reloaded, opened from its tab, refused under three names, read in
-// another project, deleted, and a stored value that does not parse read.
-test("a saved view keeps its filter, sort, grouping, columns and layout through a reload, refuses a name in use, a built-in name and a long one, and belongs to its project", async ({
+// another project, deleted, saved and deleted in two tabs of one browser, and a stored value
+// that does not parse read.
+test("a saved view keeps its filter, sort, grouping, columns and layout through a reload, refuses a name in use, a built-in name and a long one, belongs to its project, and survives a save and a delete in a second tab of the same browser", async ({
   browser,
 }) => {
   test.setTimeout(150_000);
@@ -890,6 +891,42 @@ test("a saved view keeps its filter, sort, grouping, columns and layout through 
       "Done",
       "Mine",
     ]);
+
+    // A second tab of the same browser saves Two while the first is open. The first draws Two
+    // with no reload, and its own save of One keeps Two. After a reload both tabs show both; a
+    // delete of Two in the second tab keeps One, which the first tab saved.
+    const second = await context.newPage();
+    await second.setViewportSize({ height: 1000, width: 1440 });
+    await second.goto(`/projects/${ACME}/issues?status=todo&layout=table`);
+    await expect(second.locator("[data-issue-row]").first()).toBeVisible();
+    await saveView(second, "Two");
+    await expect(page.getByRole("tab", { name: /^Two(?:,|$)/ })).toBeVisible();
+    await saveView(page, "One");
+    for (const on of [page, second]) {
+      await on.reload();
+      await expect(on.getByRole("tab", { name: /^One(?:,|$)/ })).toBeVisible();
+      expect((await tabNames(on)).map((tab) => tab.split(",")[0])).toEqual([
+        "Open",
+        "Done",
+        "Mine",
+        "Two",
+        "One",
+      ]);
+    }
+    await second.getByRole("tab", { name: /^Two(?:,|$)/ }).click();
+    await second.getByRole("button", { exact: true, name: "Delete saved view Two" }).click();
+    await expect(second.getByRole("tab", { name: /^Two(?:,|$)/ })).toHaveCount(0);
+    for (const on of [page, second]) {
+      await on.reload();
+      await expect(on.getByRole("tab", { name: /^One(?:,|$)/ })).toBeVisible();
+      expect((await tabNames(on)).map((tab) => tab.split(",")[0])).toEqual([
+        "Open",
+        "Done",
+        "Mine",
+        "One",
+      ]);
+    }
+    await second.close();
 
     // A stored value that does not parse is dropped, and the built-in views draw.
     await page.evaluate(() =>
