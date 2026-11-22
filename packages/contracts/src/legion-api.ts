@@ -2207,7 +2207,9 @@ export const LegionTaskStopRequest = z.strictObject({
 });
 /** What plugin code takes the value of in one issue's record: `legion-phase-ops.ts` reads the
  * issue's phase and its open check for `handoff_complete`, `phase-reminder.ts` reads the phase
- * and, at `step`, the issue's `stepRole`, `phase-reminder.ts` and
+ * and, at `step`, the issue's `stepRole`, and the token of the claim that works its role's step
+ * (`workers{}.claim.token`, contract 222; a claim view's token sits under `otherClaims[].claim` as
+ * well), `phase-reminder.ts` and
  * `pi-legion/src/stall-evidence.ts` read the architect's claim state, and the controller's
  * `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status, hold reason, slot,
  * design gate, and the state and both turn times of the architect's claim, of every worker's and
@@ -2234,12 +2236,14 @@ const ISSUE_RECORD_READS = [
   "workers{}.claim.state",
   "workers{}.claim.lastTurnStart",
   "workers{}.claim.lastTurnEnd",
+  "workers{}.claim.token",
   "otherClaims",
   "otherClaims[].role",
   "otherClaims[].claim",
   "otherClaims[].claim.state",
   "otherClaims[].claim.lastTurnStart",
   "otherClaims[].claim.lastTurnEnd",
+  "otherClaims[].claim.token",
   "check",
   "check.role",
   "check.looks",
