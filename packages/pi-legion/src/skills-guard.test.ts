@@ -692,7 +692,9 @@ test("an implementer and owner task is accepted on the evidence its steps give",
 // closes at its retro.
 test("the architect's skill routes its own steps to the reference that names owner-step and complete_step", () => {
   expect([
-    ...lacks("legion-architect/SKILL.md", [/key is `owner` is yours[^.;]*references\/own-steps\.md`/]),
+    ...lacks("legion-architect/SKILL.md", [
+      /key is `owner` is yours[^.;]*references\/own-steps\.md`/,
+    ]),
     ...lacks("legion-architect/references/own-steps.md", [
       /no such step, or that step's key is `owner`, it is yours/,
       /one `owner-step` notice/,
@@ -885,6 +887,11 @@ test("the architect's wake table sends each owner-plan notice to where its handl
     ...lacks("legion-architect/references/wake-routing.md", [
       /\| `retro-held`, `task-stopped`, `plan-not-taken` \|[^|]*references\/plan-changes\.md`/,
       /\| `checks-red` \|[^|]*"A conflicting head"/,
+      /\| `owner-step` \|[^|]*`complete_step`[^|]*references\/own-steps\.md`/,
+      /\| `pr-blocked` \|[^|]*references\/capped-pull-request\.md`/,
+    ]),
+    ...lacks("legion-architect/references/capped-pull-request.md", [
+      /a tester's fail and a move back count none/,
     ]),
     ...lacks("legion-architect/references/plan-changes.md", [
       /\*\*`task-stopped`:\*\*[^*]*later version that changes the task, or end the work/,

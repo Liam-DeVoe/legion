@@ -7,7 +7,7 @@ Stopping a task, a later version of a plan Legion runs, and the `task-stopped`, 
 
 ## The task block
 
-You choose which of Legion's steps each issue of your tree runs.
+You choose the steps each issue of your tree runs: Legion's roles, the roles of the deployment and the roles a plan defines, in any order, a role at two steps if you need it, and no role required.
 The plan is the issue's `plan.md` document (`dispatch artifact` on the issue).
 In this release it holds one `plan_task` block, the issue's one task:
 
@@ -21,28 +21,29 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 - Give the block `serves` naming the spec's `requirement` blocks, as a planner's task does, so the issue's coverage counts it.
   A change of `serves` alone changes no task.
 
-- This release gives each role one agent for each issue, the session that role keeps until the issue leaves the workflow.
-  It cannot carry out your choice of a fresh or an earlier agent yet; write the choice all the same, because retro rates the plan's steps and the agent that worked each against it.
+- A key after a step's role and a colon names its agent: the steps of one key share one agent, which runs on one model and one harness, and a step with no key gets a fresh agent.
+  The key `owner` names you: its roles run on your model, and you do those steps yourself (`skill://legion-architect/references/own-steps.md`).
+  Write why you chose each agent, because retro rates the plan's steps and the agent that worked each against it.
 
-## The roles and their order
+## The roles
 
 | Step | Type | Phase | What leaving it out means |
 | --- | --- | --- | --- |
 | `planner` | planning | `planning` | No implementation plan and no plan review: the steps work from your task's text and the spec. |
-| `implementer` | implementation | `implementing` | Required. It also works the retro, and a failed step returns to it unless the failed step names an earlier one. |
-| `tester` | testing | `testing` | Only the implementer records results against the checks, and nobody runs them again. |
-| `reviewer` | review | `reviewing` | No review: on a base whose rules require an approving review, the merger waits and tells you. |
+| `implementer` | implementation | `implementing` | With no other step of the type implementation: no pull request, so no merge; you do the retro; and a failed step that names no earlier one stops the task; with one, the agent of the task's last such step works the retro, and a failed step returns to the first one before it unless it names an earlier step. |
+| `tester` | testing | `testing` | Only the steps that record results against the checks (the implementer's, where the task has one) record them, and nobody runs them again. |
+| `reviewer` | review | `reviewing` | No review: on a base whose rules require an approving review, the merger waits and tells you; a reviewer of an issue with no pull request ends its step by its verdict. |
 | `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, and nothing waits for you to read the evidence. |
+| `acceptance` | review | `accepting` | No fresh reading of the whole work: with it, a fresh agent of the role acceptance reads the evidence and ends the step by its own verdict, and you sign nothing off for it. |
 
-Without `acceptance:owner`, two steps still hold the checks:
-a reviewer step approves only once a pass stands for every `before_merge` check at the head, and retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read, which moves nothing back (`skill://legion-retro`).
-So on a task with no reviewer step and no `acceptance:owner`, such a check holds the merge only where it is among the checks the base branch requires.
+Without `acceptance:owner`, a reviewer step, where the task has one, approves only once a pass stands for every `before_merge` check at the head, and retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read, which moves nothing back (`skill://legion-retro`).
+So on a task with no reviewer step and no `acceptance:owner` or `acceptance` step, such a check holds the merge only where it is among the checks the base branch requires.
 
 ## What Legion refuses
 
 `register_plan` answers `409 PLAN_REFUSED` with `reasons: [{task, reason}]`, one reason for each cause, its `task` empty for a cause of the whole plan.
 Fix each reason and give a new version.
-A reason that ends `This release of Legion does not carry it out yet.` names a plan a later release takes: write it again within the table above.
+A reason that ends `This release of Legion does not carry it out yet.` names what a later release takes, more than one task or a task's `needs`, `owner`, `part_of` or `merges`: write it again as one task without them.
 
 The reasons a version gets for where its task stands are in `skill://legion-architect/references/plan-changes.md`.
 
