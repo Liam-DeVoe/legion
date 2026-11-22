@@ -110,10 +110,10 @@ func (w Walk) PlaceOf(p phase.Phase) (record.TaskPlace, bool) {
 
 // AgentAt is the name of the agent that does the work of place on w (record.PlanStep.AgentName), the
 // one place the workflow names a step's agent: for a step, the agent of that step, so the steps of
-// one key name one agent; for the retro, the agent of the task's last step of the type
-// implementation, which runs it. It is "" for the merge, for a walk with no plan rows, for a step
-// of the key owner, whose claim is no name on the issue, and for a place the task does not hold:
-// there the role stands for the agent (Engine.stepToken).
+// one key name one agent; for the retro, the agent that does it (retroAgent). It is "" for the
+// merge, for a walk with no plan rows, where the agent is the owner (OwnerAt), whose claim is no
+// name on the issue, and for a place the task does not hold: there the role stands for the agent
+// (Engine.stepToken).
 func (w Walk) AgentAt(place record.TaskPlace) claim.Agent {
 	if !w.Stored {
 		return ""
@@ -124,13 +124,53 @@ func (w Walk) AgentAt(place record.TaskPlace) claim.Agent {
 			return w.Steps[place.Position-1].AgentName()
 		}
 	case record.PlaceRetro:
+		agent, _ := w.retroAgent()
+		if agent.Owner() {
+			return ""
+		}
 		for i := len(w.Steps) - 1; i >= 0; i-- {
-			if w.Steps[i].Type == plan.TypeImplementation {
+			if w.agentOfStep(i+1) == agent {
 				return w.Steps[i].AgentName()
 			}
 		}
 	}
 	return ""
+}
+
+// OwnerAt says whether the agent that does the work of place on w, a stored walk, is the owner of
+// its task: a step of the key owner, or the retro of a task whose retro is the owner's
+// (retroAgent). The engine runs such a place by the architect that owns the issue now
+// (Engine.ownerAgent), never by a worker.
+func (w Walk) OwnerAt(place record.TaskPlace) bool {
+	if !w.Stored {
+		return false
+	}
+	switch place.Kind {
+	case record.PlaceStep:
+		return place.Position >= 1 && place.Position <= len(w.Steps) && w.agentOfStep(place.Position).Owner()
+	case record.PlaceRetro:
+		agent, _ := w.retroAgent()
+		return agent.Owner()
+	}
+	return false
+}
+
+// agentOfStep is the agent of step place (from 1) of w's task (plan.AgentOf).
+func (w Walk) agentOfStep(place int) plan.Agent {
+	step := w.Steps[place-1]
+	return plan.AgentOf(w.Task, place, plan.Step{Role: step.Role, Key: step.AgentKey})
+}
+
+// retroAgent is who does the retro of w's task, and the role of that run (plan.RetroAgent), read
+// from the types its rows record (record.PlanStep.Type): the agent and the role of its last step of
+// the type implementation, else the owner as the implementer. A walk with no plan rows walks
+// todaysSteps, whose last step of that type is the implementer's.
+func (w Walk) retroAgent() (plan.Agent, string) {
+	types := make([]plan.Type, len(w.Steps))
+	for i, step := range w.Steps {
+		types[i] = step.Type
+	}
+	return plan.RetroAgent(w.Task, namedSteps(w.Steps), types)
 }
 
 // placeIn is where w's task stands while its issue stands in p: for a stored walk, w.Place where
@@ -458,13 +498,16 @@ func (w Walk) planStepAt(place record.TaskPlace) (record.PlanStep, bool) {
 
 // RoleAt is the role that works the step of w's task at place: for a step, the worker of the
 // phase its role runs as (phase.RoleFor of plan.RunsAs: the architect for the owner's acceptance),
-// and the role itself where it runs as step, a role the deployment defines; the implementer at the
-// retro and the merger at the merge; and "" at no act or at a place the task does not hold. On a
-// task whose roles are Legion's own it answers phase.RoleFor of the phase the place derives.
+// and the role itself where it runs as step, a role the deployment defines; at the retro the role
+// of the agent that does it (retroAgent: the role of the task's last step of the type
+// implementation, else the implementer, on whose row the owner's retro is recorded); the merger at
+// the merge; and "" at no act or at a place the task does not hold. On a task whose roles are
+// Legion's own it answers phase.RoleFor of the phase the place derives.
 func (w Walk) RoleAt(place record.TaskPlace) claim.Role {
 	switch place.Kind {
 	case record.PlaceRetro:
-		return phase.RoleFor(phase.Retro)
+		_, role := w.retroAgent()
+		return claim.Role(role)
 	case record.PlaceMerge:
 		return phase.RoleFor(phase.Merging)
 	}

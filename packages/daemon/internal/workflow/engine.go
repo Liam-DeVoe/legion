@@ -1017,6 +1017,24 @@ func (e *Engine) recordStepReview(ctx context.Context, tx pgx.Tx, issue record.I
 	return e.store.PutPhase(ctx, tx, row)
 }
 
+// completionOf is the phase a completion of role on issue is of, and whether it is current: the
+// work of the place issue's task stands at now. For a run with plan rows it is current exactly
+// where the task runs, issue stands in the phase that place derives, and role is the role that
+// works the place (Walk.RoleAt: a step's role, a role the deployment defines at step among them,
+// and at the retro the role of the agent that does it, plan.RetroAgent); otherwise it is of the
+// phase role left (phase.LeftBy). A run with no plan rows judges by the phase alone (phase.Of), as
+// it always did.
+func completionOf(issue record.Issue, w Walk, role claim.Role) (phase.Phase, bool) {
+	if !w.Stored {
+		reported := phase.Of(role, issue.Phase)
+		return reported, reported == issue.Phase
+	}
+	if w.State == record.TaskRunning && issue.Phase == issuePhaseOf(w, w.Place, w.State) && role == w.RoleAt(w.Place) {
+		return issue.Phase, true
+	}
+	return phase.LeftBy(role, issue.Phase), false
+}
+
 func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComplete) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -1041,13 +1059,16 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// and the handoff it names is the report of the run of its step the move ended
 	// (reportEndedStep).
 	//
-	// reported is the phase this completion is of (phase.Of): the issue's own, or, for a role the
-	// issue has moved on without, the phase that role has left, which pastCompletion answers. At
-	// step, a completion is current only from the role of the running step (Issue.StepRole): two
-	// steps of roles the deployment defines both run as step, and the other's report is of a step
-	// the task has left.
-	reported := phase.Of(fact.Role, issue.Phase)
-	current := reported == issue.Phase && (issue.Phase != phase.Step || fact.Role == issue.StepRole)
+	// reported is the phase this completion is of, and current whether it is the work of the place
+	// the issue's task stands at (completionOf): for a run with plan rows, the role that works that
+	// place (Walk.RoleAt: the step's role, a role the deployment defines at step among them, and at
+	// the retro the role of the agent that does it), and for a role the issue has moved on without,
+	// the phase that role has left, which pastCompletion answers.
+	w, err := e.walk(ctx, tx, *issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	reported, current := completionOf(*issue, w, fact.Role)
 	var late *intake.Refusal
 	if !current {
 		var now *intake.Refusal

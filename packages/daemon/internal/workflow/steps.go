@@ -337,7 +337,11 @@ func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issu
 	}
 	if at == phase.Merging {
 		// The retro's completion is recorded on the row of the role that works the retro.
-		retro, err := e.phaseRow(ctx, tx, issue.Key, phase.RoleFor(phase.Retro))
+		w, err := e.walk(ctx, tx, issue)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		retro, err := e.phaseRow(ctx, tx, issue.Key, w.RoleAt(record.TaskPlace{Kind: record.PlaceRetro}))
 		if err != nil {
 			return "", time.Time{}, err
 		}
@@ -385,17 +389,15 @@ func (e *Engine) placeToken(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // stepToken is the claim token of the agent that does the work of place on w, issue's walk, whose
 // role is role and which runs as at: the one function that makes the token of a step's agent,
 // which each entry takes (enter) and writes to the step's phases row (record.PhaseRow.Claim) and
-// to its step record (startStep). A step of the key owner is the architect that runs the owner's
-// step now (ownerAgent), as the accepting step's is (startAgent). Where AgentAt names an agent, it
+// to its step record (startStep). A place whose agent is the owner (Walk.OwnerAt: a step of the key
+// owner, or the retro of a task whose retro is the owner's) is run by the architect that owns the
+// issue now (ownerAgent), as the accepting step is (startAgent). Where AgentAt names an agent, it
 // is that agent's token (claim.AgentToken), so the steps of one key are one claim; where it names
 // none — the merge, and every place of a run with no plan rows — it is the role's own token
 // (R20).
 func (e *Engine) stepToken(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, place record.TaskPlace, at phase.Phase, role claim.Role) (claim.Token, error) {
-	if w.Stored && place.Kind == record.PlaceStep && place.Position >= 1 && place.Position <= len(w.Steps) {
-		step := w.Steps[place.Position-1]
-		if plan.AgentOf(w.Task, place.Position, plan.Step{Role: step.Role, Key: step.AgentKey}).Owner() {
-			return e.ownerAgent(ctx, tx, issue, at)
-		}
+	if w.OwnerAt(place) {
+		return e.ownerAgent(ctx, tx, issue, at)
 	}
 	name := w.AgentAt(place)
 	if name == "" {

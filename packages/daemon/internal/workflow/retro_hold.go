@@ -140,8 +140,9 @@ func (e *Engine) releaseHeldParents(ctx context.Context, tx pgx.Tx, written []st
 // The hold is cleared and parent stands in its retro, where its task already stands ({retro 0},
 // moveTask at the hold). The retro's Dispatch status is queued through Engine.status, since the
 // hold wrote none and the record still holds the status of the last step (PhaseStatus(held) is
-// empty). The implementer is started with the task the pass into the retro would have started it
-// with (transition): the handoff of the step the task passed last, which the hold kept on that
+// empty). The retro's role is started (Walk.RoleAt of the retro: the role of the agent that does
+// it) with the task the pass into the retro would have started it with (transition): the handoff
+// of the step the task passed last, which the hold kept on that
 // step's phases row, and the pull request. Its start raises its entry and the count of starts of
 // the retro's place (start, which writes the retro's step), not restart, which raises neither,
 // since this retro never ran. The act is children_done, which the log line names: no row of the
@@ -198,7 +199,7 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	}
 	e.logOnCommit(ctx, "workflow: the last issue beneath a held parent left the workflow, and its retro starts", "issue", parent.Key, "tree", parent.Tree,
 		"task", w.Task, "act", "children_done", "from", phase.Held, "to", phase.Retro, "status", parent.Status)
-	role := phase.RoleFor(phase.Retro)
+	role := w.RoleAt(w.Place)
 	if err := e.clearHandoff(ctx, tx, parent.Key, role); err != nil {
 		return err
 	}
