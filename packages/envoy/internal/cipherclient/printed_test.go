@@ -322,7 +322,9 @@ func TestARedirectedDiscoveryPrintsWhereItEnded(t *testing.T) {
 		t.Fatal("Start read a discovery document from a port that is closed")
 	}
 	namesAll(t, "the redirected discovery", err.Error(), "connection refused")
-	if strings.Contains(err.Error(), "302") || !errors.Is(err, syscall.ECONNREFUSED) {
+	// A status prints as "HTTP <code>", as the 404 below does; the bare digits are no status, and
+	// the refused port can hold them (CI run 44852710105's was 43029).
+	if strings.Contains(err.Error(), "HTTP 302") || !errors.Is(err, syscall.ECONNREFUSED) {
 		t.Errorf("the redirected discovery = %q (errors.Is ECONNREFUSED: %t), want the refused connection it ended in", err, errors.Is(err, syscall.ECONNREFUSED))
 	}
 

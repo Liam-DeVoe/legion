@@ -520,7 +520,7 @@ func TestAWSRefusalNamesTheSourceAndTheChoice(t *testing.T) {
 
 			// The pipe command a prompt that cannot run names signs in as this one did.
 			useTerminal(t)
-			readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errNoValuePrompt }
+			readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errNoForeground }
 			_, stderr, code = runSecret("set", "HELD_KEY")
 			if want := "pipe the value in: " + row.prefix + "agent-secrets secret set HELD_KEY < FILE"; code != exitUsageError || !strings.Contains(stderr, want) {
 				t.Fatalf("set: exit %d, stderr %q; want %d naming %q", code, stderr, exitUsageError, want)
@@ -1188,10 +1188,9 @@ func TestSecretAPromptThatNeverHoldsTheTerminalShowsNoLabel(t *testing.T) {
 }
 
 // TestSecretAPromptThatCannotRunNamesThePipeCommand: a prompt no shell can bring to the
-// foreground, and a platform with no prompt, are usage errors naming the command that pipes the
-// value in, and write nothing.
+// foreground is a usage error naming the command that pipes the value in, and writes nothing.
 func TestSecretAPromptThatCannotRunNamesThePipeCommand(t *testing.T) {
-	for _, refusal := range []error{errNoForeground, errNoValuePrompt} {
+	for _, refusal := range []error{errNoForeground} {
 		local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, local, testAccount, adaSignIn)
