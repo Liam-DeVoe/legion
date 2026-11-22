@@ -12,14 +12,16 @@ import (
 
 	"github.com/sjawhar/envoy/infra/writerhold/holdtest"
 	"github.com/sjawhar/envoy/internal/holdrecord"
+	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// otherProbeToken names the stack probe's account and audience, and the stack's auth service
-// refuses it for its own reason: it lists its own probe token alone, as a real one refuses a token
-// another issuer minted or one with a bad signature. A check of the token's claims takes it for the
-// admitted token; a check of the whole token does not.
-var otherProbeToken = holdtest.PlatformToken(holdtest.ProbeAccount, []string{"envoy-nats"}, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC))
+// otherProbeToken names the stack probe's account and audience, signed by no one and named for an
+// issuer no stack serves (holdtest.PlatformToken), and the stack's auth service refuses it for its
+// own reason: it lists its own probe token alone, as a real one refuses a token another issuer
+// minted or one with a bad signature. A check of the token's claims alone takes it for the admitted
+// identity; a check of its signature against the recorded issuer's keys does not.
+var otherProbeToken = holdtest.PlatformToken(holdtest.ProbeAccount, []string{holdtest.ProbeAudience}, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC))
 
 // `hold prove` counts each restarted server's refusal of the probe as the hold's only through
 // Operator.Probe's check against this hold's admitted-probe record, and checks the same before it
@@ -109,15 +111,29 @@ func TestHoldRestartProveAndBarrierCountsTheProbesRefusalOnlyForTheRecordedToken
 }
 
 // Operator.Probe reads the probe's credential file at each dial and counts a refusal as the hold's
-// only for the token this hold's signed journal recorded, within its life: the same op, the record
-// read once, answers the refusal for the recorded token, UNKNOWN naming (b) after the file holds
-// another token (a credential rotated mid-hold), and UNKNOWN naming (a) with no record. An admitted
-// dial is answered as it is. Each dial presents the token it read. Control: a go test -overlay copy
-// of hold.go whose Probe skips the check answers the refusal for every token.
-func TestTheProbeCountsARefusalOnlyForTheRecordedTokenAtEachDial(t *testing.T) {
-	recorded := holdtest.PlatformToken(holdtest.ProbeAccount, []string{"envoy-nats"}, time.Now().Add(time.Hour))
-	credential, err := ProbeCredentialOf(recorded)
+// only for a token that proves the probe identity this hold's signed journal recorded, within its
+// life: the same op, the record read once, answers the refusal for the recorded token and for a
+// rewrite of the same identity signed by the recorded issuer (a credential rotated mid-hold), is
+// UNKNOWN naming (b) after the file holds a token of another issuer or of another subject, and
+// UNKNOWN naming (a) with no record. An admitted dial is answered as it is. Each dial presents the
+// token it read. Control: a go test -overlay copy of probe.go whose Probe skips the check answers
+// the refusal for every token.
+func TestTheProbeCountsARefusalOnlyForTheRecordedIdentityAtEachDial(t *testing.T) {
+	ctx := context.Background()
+	issuer := oidctest.New(t)
+	key := issuer.PublishKey(t, "probe-key")
+	mint := func(subject string, life time.Duration) string {
+		claims := issuer.Claims(subject, holdtest.ProbeAudience)
+		claims["exp"] = time.Now().Add(life).Unix()
+		return issuer.Mint(t, key, claims)
+	}
+	recorded := mint(holdtest.ProbeAccount, time.Hour)
+	rewritten := mint(holdtest.ProbeAccount, 2*time.Hour)
+	another := mint("system:serviceaccount:envoy-operator:another-probe", time.Hour)
+	credential, err := ProbeCredentialOf(ctx, recorded)
 	require.NoError(t, err)
+	require.Equal(t, holdtest.ProbeAccount, credential.Subject)
+	require.Equal(t, []string{holdtest.ProbeAudience}, credential.Audience)
 	journal := holdrecord.Done{Ops: []holdrecord.Operation{
 		{Command: holdrecord.CommandSet, State: holdrecord.StateIntent, Inputs: probeRecordInputs(credential)},
 	}}
@@ -134,7 +150,6 @@ func TestTheProbeCountsARefusalOnlyForTheRecordedTokenAtEachDial(t *testing.T) {
 			return fmt.Errorf("nats: %w", nats.ErrAuthorization)
 		},
 	}
-	ctx := context.Background()
 	var unknown *Unknown
 
 	err = op.Probe(ctx, "nats://hub")
@@ -144,13 +159,19 @@ func TestTheProbeCountsARefusalOnlyForTheRecordedTokenAtEachDial(t *testing.T) {
 	require.NoError(t, op.useProbeRecord(journal))
 	require.ErrorIs(t, op.Probe(ctx, "nats://hub"), nats.ErrAuthorization, "the recorded token's refusal")
 
-	current = otherProbeToken
-	err = op.Probe(ctx, "nats://hub")
-	require.False(t, errors.Is(err, nats.ErrAuthorization), "a refusal of another token was answered as the hold's: %v", err)
-	require.ErrorAs(t, err, &unknown)
-	require.ErrorContains(t, err, "(b)")
+	current = rewritten
+	require.ErrorIs(t, op.Probe(ctx, "nats://hub"), nats.ErrAuthorization, "the refusal of a rewrite of the recorded identity")
+
+	for _, token := range []struct{ raw, check string }{{otherProbeToken, "issuer"}, {another, "subject"}} {
+		current = token.raw
+		err = op.Probe(ctx, "nats://hub")
+		require.False(t, errors.Is(err, nats.ErrAuthorization), "a refusal of a token of another %s was answered as the hold's: %v", token.check, err)
+		require.ErrorAs(t, err, &unknown)
+		require.ErrorContains(t, err, "(b)")
+		require.ErrorContains(t, err, token.check)
+	}
 
 	admit = true
 	require.NoError(t, op.Probe(ctx, "nats://hub"), "an admitted dial")
-	require.Equal(t, []string{recorded, recorded, otherProbeToken, otherProbeToken}, presented, "a dial presented a token other than the one it read")
+	require.Equal(t, []string{recorded, recorded, rewritten, otherProbeToken, another, another}, presented, "a dial presented a token other than the one it read")
 }

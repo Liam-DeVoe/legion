@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/holdrecord"
 	"github.com/sjawhar/envoy/internal/holdrecord/holdrecordtest"
+	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -28,6 +29,9 @@ import (
 const (
 	OperatorAccount = holdrecordtest.OperatorAccount
 	ProbeAccount    = "system:serviceaccount:envoy-operator:envoy-hold-probe"
+	// ProbeAudience is the audience the stack's probe tokens are minted for, as a projected token's
+	// is the broker's BROKER_NATS_K8S_AUDIENCE.
+	ProbeAudience = "envoy-nats"
 	// MeasureAccount is the measurement job's, which runs `envoy-infra streams check`.
 	MeasureAccount = "system:serviceaccount:envoy:envoy-measure"
 	// ListenerMachines are the machine ids of the listener entries the stack lists; a test
@@ -58,9 +62,15 @@ type Stack struct {
 	// Kube is the clustered hub's Kubernetes objects over Cluster, with the chart's render
 	// (InstallRender): what the hold reads and evicts.
 	Kube *Kube
+	// ProbeIssuer is the platform issuer that signs the stack's probe tokens: it serves a
+	// discovery document and a key set, as a cluster's OIDC issuer does, which the hold's probe
+	// check reads to verify a rewritten token.
+	ProbeIssuer *oidctest.Issuer
 
-	t      testing.TB
-	tokens *tokenTable
+	t          testing.TB
+	tokens     *tokenTable
+	probeKey   *oidctest.Key
+	probeToken string
 	// services are the accounts every auth service of the stack lists (BROKER_NATS_SERVICES), and
 	// schema the test schema the broker's tables are in: each computed once, in StartWith.
 	services []config.NATSService
@@ -86,12 +96,10 @@ func (tt *tokenTable) verify(_ context.Context, raw string) (string, bool, time.
 	return account, false, issued, issued.Add(tt.life), nil
 }
 
-// The raw tokens of the stack's probe, measurement job and listeners. The operator's is
-// holdrecordtest's. The probe's is shaped as a platform identity token, its claims readable, since
-// `hold set` records its issuer and expiry beside the token's sha256 (writerhold.ProbeCredentialOf);
-// the stack's auth service verifies every token by its raw string alone.
-var probeToken = PlatformToken(ProbeAccount, []string{"envoy-nats"}, time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC))
-
+// The raw tokens of the stack's measurement job and listeners. The operator's is holdrecordtest's,
+// and the probe's is signed by the stack's ProbeIssuer (MintProbeToken), as a projected token is,
+// since `hold set` records the identity it names and each later dial verifies a rewritten one
+// against that issuer's keys. The stack's auth service admits every token by its raw string alone.
 const measureToken = "holdtest-measure-token"
 
 // MeasureToken is the measurement job's platform token, which `envoy-infra streams check` presents
@@ -100,16 +108,33 @@ const MeasureToken = measureToken
 
 // ProbeToken is the stack's probe's platform token, which the stack's auth service admits as the
 // probe account.
-func (s *Stack) ProbeToken() string { return probeToken }
+func (s *Stack) ProbeToken() string { return s.probeToken }
 
-// PlatformIssuer is the issuer every PlatformToken names, as a projected Kubernetes token names its
-// cluster's.
+// MintProbeToken is a token the stack's ProbeIssuer signs with the key the probe's token is signed
+// with, for subject and audience, issued a minute ago and lapsing at expiry: the probe's token
+// rewritten, as the kubelet rewrites a projected token before it lapses, or one of another
+// identity. The stack's auth service admits it only once AdmitToken names it.
+func (s *Stack) MintProbeToken(subject string, audience []string, expiry time.Time) string {
+	s.t.Helper()
+	return s.ProbeIssuer.Mint(s.t, s.probeKey, map[string]any{"iss": s.ProbeIssuer.URL(), "sub": subject, "aud": audience,
+		"iat": time.Now().Add(-time.Minute).Unix(), "exp": expiry.Unix()})
+}
+
+// AdmitToken has the stack's auth service admit raw as account's platform token, as a real one
+// admits a rewritten projected token of an account it lists.
+func (s *Stack) AdmitToken(raw, account string) {
+	s.tokens.mu.Lock()
+	defer s.tokens.mu.Unlock()
+	s.tokens.accounts[raw] = account
+}
+
+// PlatformIssuer is the issuer every PlatformToken names, an issuer no stack serves.
 const PlatformIssuer = "https://kubernetes.default.svc.holdtest"
 
-// PlatformToken is a token shaped as a platform identity token: an unsigned JWT whose claims name
-// its issuer (PlatformIssuer), subject, audience and expiry. The stack's auth service admits a token
-// by its raw string alone, so one it does not list is refused for its own reason, the credential's,
-// whatever its claims say.
+// PlatformToken is a token shaped as a platform identity token and signed by no one: an unsigned
+// JWT whose claims name its issuer (PlatformIssuer), subject, audience and expiry. The stack's auth
+// service admits a token by its raw string alone, so one it does not list is refused for its own
+// reason, the credential's, whatever its claims say.
 func PlatformToken(subject string, audience []string, expiry time.Time) string {
 	part := func(v any) string {
 		data, err := json.Marshal(v)
@@ -146,9 +171,13 @@ func StartWith(t testing.TB, opts Options) *Stack {
 	if err := broker.Pool.QueryRow(context.Background(), `select current_schema()`).Scan(&schema); err != nil {
 		t.Fatalf("holdtest: read the test schema's name: %v", err)
 	}
+	issuer := oidctest.New(t)
+	probeKey := issuer.PublishKey(t, "holdtest-probe-key")
+	probe := issuer.Mint(t, probeKey, map[string]any{"iss": issuer.URL(), "sub": ProbeAccount, "aud": []string{ProbeAudience},
+		"iat": time.Now().Add(-time.Minute).Unix(), "exp": time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC).Unix()})
 	tokens := &tokenTable{accounts: map[string]string{
 		holdrecordtest.OperatorToken: OperatorAccount,
-		probeToken:                   ProbeAccount,
+		probe:                        ProbeAccount,
 		measureToken:                 MeasureAccount,
 	}, life: 50 * time.Minute}
 	entries := []string{"operator/-/*=" + OperatorAccount, "probe/-/*=" + ProbeAccount, "measure/-/*=" + MeasureAccount}
@@ -164,7 +193,8 @@ func StartWith(t testing.TB, opts Options) *Stack {
 
 	keys := testnats.NewCalloutKeys(t)
 	cluster := testnats.StartClusterWithCallout(t, 3, keys)
-	s := &Stack{Cluster: cluster, Keys: keys, Broker: broker, t: t, tokens: tokens, services: services, schema: schema}
+	s := &Stack{Cluster: cluster, Keys: keys, Broker: broker, ProbeIssuer: issuer, t: t, tokens: tokens, probeKey: probeKey, probeToken: probe,
+		services: services, schema: schema}
 	// The auth service's hold view reads the broker's tables and shares the first broker process's
 	// floor of the row with its routes, as cmd/cipherd wires one process (holdrecordtest's
 	// HoldView); with the hold read off it reads nothing.
@@ -231,7 +261,7 @@ func (s *Stack) OperatorCredential() []nats.Option {
 }
 
 // ProbeCredential is the hold probe's CONNECT.
-func (s *Stack) ProbeCredential() nats.Option { return nats.UserInfo("service", probeToken) }
+func (s *Stack) ProbeCredential() nats.Option { return nats.UserInfo("service", s.probeToken) }
 
 // ListenerCredential is the CONNECT of the listener entry of machine, one of ListenerMachines.
 func (s *Stack) ListenerCredential(machine string) nats.Option {

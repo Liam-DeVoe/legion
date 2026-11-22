@@ -84,9 +84,11 @@ again, verify-only, and run the restore again.
    minter report, each server's `/varz`, `/routez`, `/leafz` and `/gatewayz`, and each protected
    stream. While the row is still `prepare`, the probe runs once and must be admitted, so its
    refusal in that hold cannot come from its own credential; a probe the hub refuses here stops
-   `hold set`, naming the probe's error, before its intent and its move of the row. The intent
-   records the admitted-probe record: the sha256 of the whole token as read from the probe's
-   credential file (never the token), the token's issuer and its expiry.
+   `hold set`, naming the probe's error, before its intent and its move of the row. The probe's
+   token is verified first as the auth service verifies it, against the published keys of the
+   issuer it names, and the intent records the identity it proved (the admitted-probe record): the
+   token's issuer, the subject the verifier answers, its audiences, and the sha256 of the whole
+   token as read from the probe's credential file (never the token) with its expiry.
 2. The row moves to `held`; the probe is refused.
 3. The writer census: complete listings, literal destinations, push consumers, sources and message
    schedules.
@@ -111,22 +113,38 @@ recording it in its done entry.
 Each dial of the probe, at `hold set`'s step 2 and at the proof of each restarted server in
 `hold set`, `hold prove` and `RestartProveAndBarrier`, reads the probe's credential file again,
 presents the token it read, and counts the server's refusal as the hold's only when this hold's
-signed journal holds the admitted-probe record (a), the token's sha256 is the recorded one (b),
-and the recorded expiry is after now plus the probe's 10 s timeout (c). Otherwise the dial is
-UNKNOWN, naming which, and the command stops. `hold set`'s rerun on a `held` row, `hold prove` and
-`RestartProveAndBarrier` make the same check before they write or restart anything. `hold abort`
-dials no probe, so it still ends the hold.
+signed journal holds the admitted-probe record (a); the token is the admitted one by its sha256,
+or one that proves the recorded identity (b); and it lapses after now plus the probe's 10 s timeout
+(c). A token proves the recorded identity when internal/oidc's Verifier, the one both of the auth
+service's token readers wrap (natscallout.PlatformTokens hands a projected Kubernetes token to
+enroll.K8sPodVerifier and a Google identity token to api.GoogleTokens), accepts it for the
+recorded issuer and audience: the same issuer, audience, signature and expiry checks the auth
+service makes, against the issuer's published keys read as the auth service reads them
+(oidc.NewKeys); and it names the recorded subject and audiences. The wrappers themselves are not
+linked: they live in the broker's packages, which would put the broker's store and its embedded
+migrations into envoy-infra. A token the kubelet rewrote in place, for the same projected
+identity, passes. Otherwise the dial is UNKNOWN, naming which check failed, and the command writes
+its stop and ends. `hold set`'s rerun on a `held` row, `hold prove` and `RestartProveAndBarrier`
+make the same check before they write or restart anything; set's rerun and prove's write the stop
+of their own pending intent there too, so `hold abort` is admitted after any of them.
+
+The verification reads the issuer's discovery document and key set over HTTPS, with no
+credential: for the dispatch cluster's projected tokens,
+`https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`
+and its `/jwks`, which answered 200 with no credential on 2026-11-22. The operator's Job reaches
+them: the `envoy-operator` namespace has no egress policy, and the Job already reaches Google's
+APIs. When either cannot be read, the dial is UNKNOWN (b), never a pass, and the command stops.
 
 The residuals of this check:
 
-- The probe credential must outlive the hold. A credential rotated mid-hold (the kubelet rewrites a
-  projected token in place) or expiring within the probe's timeout no longer matches, so the next
-  command stops UNKNOWN; the operator aborts the hold and sets a new one.
-- The check proves that the probe presents the token the hold admitted, not that the hub would
-  admit it now. A probe entry dropped from the services the auth service lists between the
-  admission and a later dial keeps the token's hash and expiry, so its refusal reads as the hold's.
-- A token another issuer minted, or one with a bad signature, is refused by the hash: it is not the
-  admitted token, whatever its account and audiences say.
+- It proves the same probe identity signed by its issuer, not that the hub would admit it now. A
+  probe entry dropped from the services the auth service lists between the admission and a later
+  dial keeps the identity, so its refusal reads as the hold's.
+- The issuer's keys must be readable at each command that dials with a rewritten token: with its
+  discovery document or key set unreachable, the dial is UNKNOWN and the command stops, as with
+  any other UNKNOWN.
+- A token of another issuer, subject or audience, or with a signature the issuer's keys do not
+  verify, is refused, whatever its other claims say.
 
 ## Workflows and their commands
 

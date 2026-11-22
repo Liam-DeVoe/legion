@@ -23,7 +23,7 @@ func (h *heldStack) probeWith(token string) {
 // run writes it in its intent, its expiry replaced by expiry when that is not zero.
 func (h *heldStack) stackProbeRecord(expiry time.Time) map[string]string {
 	h.t.Helper()
-	credential, err := ProbeCredentialOf(h.s.ProbeToken())
+	credential, err := ProbeCredentialOf(context.Background(), h.s.ProbeToken())
 	require.NoError(h.t, err)
 	if !expiry.IsZero() {
 		credential.Expiry = expiry

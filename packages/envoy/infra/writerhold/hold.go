@@ -2,8 +2,6 @@ package writerhold
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -16,7 +14,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/holdrecord"
-	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -49,6 +46,9 @@ type Operator struct {
 	// probe is this hold's admitted-probe record, read from its signed journal (useProbeRecord):
 	// what Probe counts a refusal against. Nil until a command reads one.
 	probe *ProbeCredential
+	// probeKeys are the recorded issuer's published keys, read at the first dial whose token is
+	// not the admitted one, and kept for the command's other dials.
+	probeKeys probeKeys
 }
 
 func (op *Operator) wait(ctx context.Context, d time.Duration) error {
@@ -680,7 +680,7 @@ func Set(ctx context.Context, records *holdrecord.Client, op *Operator, holdID, 
 		return nil, stop(err)
 	}
 	if row.Phase == natsgrant.OperatorPhaseHeld {
-		if err := op.probeProven(); err != nil {
+		if err := op.probeProven(ctx); err != nil {
 			return nil, stop(err)
 		}
 	}
@@ -796,157 +796,6 @@ func Set(ctx context.Context, records *holdrecord.Client, op *Operator, holdID, 
 	return reading, nil
 }
 
-// probeAdmitted is the probe's first run, outside the hold, with the row still prepare: it reads the
-// probe's credential file once, dials the hub presenting that token, and must be admitted, so the
-// probe's refusal in the hold (step 2 and each restarted server's proof) cannot come from its own
-// credential, an expired token or a probe entry the auth service does not list (plan §3a step 2).
-// It answers the admitted-probe record of that token for `hold set`'s intent (probeRecordInputs). A
-// credential it cannot read or whose claims name no issuer or expiry is UNKNOWN; any dial error
-// refuses the hold, naming it.
-func probeAdmitted(ctx context.Context, op *Operator) (map[string]string, error) {
-	raw, err := op.probeToken()
-	if err != nil {
-		return nil, err
-	}
-	credential, err := ProbeCredentialOf(raw)
-	if err != nil {
-		return nil, unknownf(StepProbe, err, "read the probe's credential: its issuer and expiry")
-	}
-	if err := op.ProbeDial(ctx, strings.Join(op.URLs, ","), raw); err != nil {
-		return nil, refusef(StepProbe, "the hold's probe was not admitted outside the hold, so its refusal in the hold would not show the hold's: %v", err)
-	}
-	return probeRecordInputs(credential), nil
-}
-
-// The inputs of `hold set`'s intent that record its admitted probe: the sha256 of the whole token
-// the probe was admitted with under prepare, as read from its credential file, the token's issuer,
-// and when it lapses.
-const (
-	probeTokenInput  = "probe_token_sha256"
-	probeIssuerInput = "probe_issuer"
-	probeExpiryInput = "probe_expiry"
-)
-
-// probeRecordInputs are credential's record as `hold set`'s intent holds it.
-func probeRecordInputs(credential ProbeCredential) map[string]string {
-	return map[string]string{
-		probeTokenInput:  credential.TokenSHA256,
-		probeIssuerInput: credential.Issuer,
-		probeExpiryInput: credential.Expiry.UTC().Format(time.RFC3339),
-	}
-}
-
-// useProbeRecord makes the admitted-probe record of d, this hold's signed journal, the one Probe
-// counts a refusal against: the one the latest set intent that recorded one holds, or none. A
-// record whose expiry does not read is UNKNOWN.
-func (op *Operator) useProbeRecord(d holdrecord.Done) error {
-	op.probe = nil
-	for _, o := range d.Ops {
-		if o.Command != holdrecord.CommandSet || o.State != holdrecord.StateIntent || o.Inputs[probeTokenInput] == "" {
-			continue
-		}
-		expiry, err := time.Parse(time.RFC3339, o.Inputs[probeExpiryInput])
-		if err != nil {
-			return unknownf(StepProbe, err, "read this hold's admitted-probe record: its %s", probeExpiryInput)
-		}
-		op.probe = &ProbeCredential{TokenSHA256: o.Inputs[probeTokenInput], Issuer: o.Inputs[probeIssuerInput], Expiry: expiry}
-	}
-	return nil
-}
-
-// probeToken reads the probe's credential file once, UNKNOWN when there is no reader or no token.
-func (op *Operator) probeToken() (string, error) {
-	if op.ProbeToken == nil {
-		return "", unknownf(StepProbe, nil, "the hold has no reader of the probe's credential")
-	}
-	raw, err := op.ProbeToken()
-	if err != nil {
-		return "", unknownf(StepProbe, err, "read the probe's credential")
-	}
-	return raw, nil
-}
-
-// Probe dials url once as the hold's probe (Restart.Probe's contract), reading the probe's
-// credential file at this dial and presenting the token it read: nil when the server admitted it,
-// an error wrapping nats.ErrAuthorization when it refused it and that refusal is the hold's. A
-// refusal is the hold's only when (a) this hold's signed journal holds the admitted-probe record
-// (useProbeRecord), (b) the token dialed hashes to the recorded sha256, and (c) the recorded expiry
-// is after now plus ProbeTimeout; otherwise the dial is UNKNOWN, naming which, and no caller counts
-// it. Every path that counts a refusal of the probe as the hold's dials through Probe: `hold set`'s
-// step 2 and the restart's proof of each server, in `hold set`, `hold prove` and
-// RestartProveAndBarrier. The check proves the same credential, not that the hub would admit it
-// now: a probe entry dropped from the auth service's list is the README's stated residual.
-func (op *Operator) Probe(ctx context.Context, url string) error {
-	raw, err := op.probeToken()
-	if err != nil {
-		return err
-	}
-	err = op.ProbeDial(ctx, url, raw)
-	if !errors.Is(err, nats.ErrAuthorization) {
-		return err
-	}
-	if why := op.probe.unproven(raw, time.Now()); why != "" {
-		return unknownf(StepProbe, nil, "the server refused the hold's probe (%v), %s", err, why)
-	}
-	return err
-}
-
-// probeProven is Probe's check with no dial, for a command to make before it writes anything: the
-// token the probe would present now is this hold's admitted one, still within its life.
-func (op *Operator) probeProven() error {
-	raw, err := op.probeToken()
-	if err != nil {
-		return err
-	}
-	if why := op.probe.unproven(raw, time.Now()); why != "" {
-		return unknownf(StepProbe, nil, "%s", why)
-	}
-	return nil
-}
-
-// unproven is why a refusal of a probe that presented raw is not the hold's under p, this hold's
-// admitted-probe record (nil for none), naming which check fails; "" when it is the hold's.
-func (p *ProbeCredential) unproven(raw string, now time.Time) string {
-	const why = "a refusal of the probe is the hold's only for the token this hold's set admitted under prepare"
-	switch {
-	case p == nil:
-		return why + ", and (a) this hold's journal holds no admitted-probe record"
-	case tokenSHA256(raw) != p.TokenSHA256:
-		return fmt.Sprintf("%s, and (b) the token presented hashes to %s, not %s, the admitted one (issuer %s)", why, tokenSHA256(raw), p.TokenSHA256, p.Issuer)
-	case !p.Expiry.After(now.Add(ProbeTimeout)):
-		return fmt.Sprintf("%s, and (c) the admitted token lapses at %s, not after now plus the probe's timeout (%s)", why, p.Expiry.UTC().Format(time.RFC3339), ProbeTimeout)
-	}
-	return ""
-}
-
-// ProbeTimeout bounds one dial of the hold's probe.
-const ProbeTimeout = 10 * time.Second
-
-// ProbeCredential is what the hold records of the probe's credential, never the secret: the sha256
-// of the whole token, the issuer it names and when it lapses.
-type ProbeCredential struct {
-	TokenSHA256 string
-	Issuer      string
-	Expiry      time.Time
-}
-
-// ProbeCredentialOf is raw's record: the probe's platform identity token as read from its file,
-// hashed whole, and its issuer and expiry, read unverified (natscred.ReadClaims). A token that names
-// no issuer or no expiry is an error.
-func ProbeCredentialOf(raw string) (ProbeCredential, error) {
-	claims, err := natscred.ReadClaims(raw)
-	if err != nil {
-		return ProbeCredential{}, err
-	}
-	return ProbeCredential{TokenSHA256: tokenSHA256(raw), Issuer: claims.Issuer, Expiry: claims.Expiry}, nil
-}
-
-// tokenSHA256 is the hex sha256 of raw, a whole token.
-func tokenSHA256(raw string) string {
-	sum := sha256.Sum256([]byte(raw))
-	return hex.EncodeToString(sum[:])
-}
-
 // censusReadings bounds how many times the writer census is read while its answer is not whole,
 // and censusPause is the pause between two readings.
 const (
@@ -1051,7 +900,7 @@ func prove(ctx context.Context, records *holdrecord.Client, op *Operator, o opti
 	if err := op.useProbeRecord(d); err != nil {
 		return stop(err)
 	}
-	if err := op.probeProven(); err != nil {
+	if err := op.probeProven(ctx); err != nil {
 		return stop(err)
 	}
 	restored := map[string]string{}
@@ -1152,7 +1001,7 @@ func RestartProveAndBarrier(ctx context.Context, records *holdrecord.Client, op 
 	if err := op.useProbeRecord(d); err != nil {
 		return nil, err
 	}
-	if err := op.probeProven(); err != nil {
+	if err := op.probeProven(ctx); err != nil {
 		return nil, err
 	}
 	nc, err := op.Connect(ctx)
