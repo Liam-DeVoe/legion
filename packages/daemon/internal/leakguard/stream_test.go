@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // aPush is a push of a repository's one commit to a ref its destination does not hold.
@@ -474,8 +475,8 @@ func TestReadOutputEndsWhenItsContextEndsAfterTheChildExited(t *testing.T) {
 			if err != nil {
 				return fmt.Errorf("the child's process id %q: %w", line, err)
 			}
-			for syscall.Kill(pid, 0) == nil {
-				time.Sleep(10 * time.Millisecond)
+			if !testwait.Holds(hangGuard, testwait.Poll, func() bool { return syscall.Kill(pid, 0) != nil }) {
+				return fmt.Errorf("the child, process %d, was not reaped within %s", pid, hangGuard)
 			}
 			cancel()
 			_, err = io.ReadAll(r)

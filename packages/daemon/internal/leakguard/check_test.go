@@ -460,26 +460,26 @@ func stopSaid(t *testing.T, ctx context.Context, err error, program string, call
 // from one that hung. The bound is what was left of the caller's 2 s when the check started, and
 // the time it ran is measured, so both are read as stoppedByItsBound reads them: a bound no
 // longer than 2 s and a run no shorter than it, never exact seconds a loaded machine would not
-// keep. The bound also has a floor: the check started before its stand-in wrote its sleep's
-// process id, so the bound is no shorter than what was left of the deadline when that file was
-// written, less a second for the rounding and the file's coarser clock. A deadline and a cancel
-// end the check through the same stop of its process group, so the cancel test alone sees that
-// stop reach the check's sleep.
+// keep. Where the stand-in wrote its sleep's process id before the bound ended, the bound also has
+// a floor: the check started before that file was written, so the bound is no shorter than what
+// was left of the deadline when the file was written, less 50 ms for the file's coarser clock.
+// Rounding to whole seconds keeps that order, so the floor needs no more slack. On a machine slow
+// enough that the bound ends first there is no file, and no floor to read, and the test does not
+// ask for one. A deadline and a cancel end the check through the same stop of its process group
+// (procgroup.Configure's Cancel), so the cancel test alone sees that stop reach the check's sleep.
 func TestASharedCheckStoppedByItsBoundNamesTheCheckItsTimeAndItsBound(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	sleep := filepath.Join(t.TempDir(), "sleep")
 	failed := stoppedPush(t, ctx, sleep)
 	stoppedByItsBound(t, failed, 2*time.Second)
-	written, err := os.Stat(sleep)
-	if err != nil {
-		t.Fatalf("the stand-in wrote no process id of its sleep before its bound ended, so the bound has no floor to be read against: %v", err)
-	}
-	deadline, _ := ctx.Deadline()
-	floor := wholeSeconds(deadline.Sub(written.ModTime())) - 1
-	if _, bound, _ := sharedStop(t, failed); bound < floor {
-		t.Errorf("the setup failure says %q: a bound of %d s, want one no shorter than the %d s left of the deadline when the check had started, less a second",
-			failed.Error(), bound, floor+1)
+	if written, err := os.Stat(sleep); err == nil {
+		deadline, _ := ctx.Deadline()
+		floor := wholeSeconds(deadline.Sub(written.ModTime()) - 50*time.Millisecond)
+		if _, bound, _ := sharedStop(t, failed); bound < floor {
+			t.Errorf("the setup failure says %q: a bound of %d s, want one no shorter than the %d s left of the deadline when the stand-in wrote its sleep's process id, after the check had started",
+				failed.Error(), bound, floor)
+		}
 	}
 	if failed.Err != nil {
 		t.Errorf("the setup failure carries %q beneath it, want the stop said once", failed.Err)
