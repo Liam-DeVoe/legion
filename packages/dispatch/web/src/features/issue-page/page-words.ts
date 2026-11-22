@@ -641,11 +641,12 @@ export const STATE_LINES = freeze({
 } as const);
 
 /** The words of two controls the box at the foot of the outline names as the way back to a draft
- *  it keeps (`ANSWER_LINES.kept_on_issue`, `kept_on_statement`), declared once here, ahead of
- *  both tables, for those lines and `CONTROL_LABELS` alike: a row's Reply, and the box's control
- *  that writes on the issue instead. */
-const REPLY_WORD = "Reply";
-const WRITE_ON_ISSUE_WORDS = "Write on the issue instead";
+ *  it keeps (`ANSWER_LINES.kept_on_issue`, `kept_on_statement`): a row's Reply, and the box's
+ *  control that writes on the issue instead. They stand here, ahead of `ANSWER_LINES`, because
+ *  `CONTROL_LABELS` comes after it. `CONTROL_LABELS.reply` and `write_on_issue` keep their own
+ *  words as they were, and `IssueComposer.test.tsx` holds each equal to its constant here. */
+export const REPLY_WORD = "Reply";
+export const WRITE_ON_ISSUE_WORDS = "Write on the issue instead";
 
 /**
  * What the page says in answer to the reader's own act, and never on load: a copy they pressed,
@@ -1124,7 +1125,7 @@ export const CONTROL_LABELS = freeze({
    *  message and an ask whatever its state, an answered or a resolved one included (R16,
    *  dispatch://INFRA-3677); it sets the line at the foot of the outline to answer it, as `r`
    *  does. */
-  reply: REPLY_WORD,
+  reply: "Reply",
   /** What the line at the foot of the outline says of the row it replies to, before that row's
    *  author and first line (the prototype's `.tgt`). */
   replying_to: "Replying to:",
@@ -1216,7 +1217,7 @@ export const CONTROL_LABELS = freeze({
   edit_placeholder: "Your comment, as it should read…  (Enter saves)",
   /** Sets the line back from the row it replies to, or the question it answers, to a new comment
    *  on the issue (the prototype's `.tgt .x`). */
-  write_on_issue: WRITE_ON_ISSUE_WORDS,
+  write_on_issue: "Write on the issue instead",
   /** What the box at the foot of the outline says while it is empty and writes a comment or a
    *  question on the issue itself: where the words go, as the reply's
    *  and the answer's placeholders say where theirs go. */

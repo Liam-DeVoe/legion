@@ -2,6 +2,7 @@ import type { EditorView } from "@milkdown/kit/prose/view";
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
 import type { Artifact } from "../../api/types";
+import { isCompositionKey } from "../refs/ref-picker";
 import { focusOnDocument } from "../shell/roving";
 import type { DocumentAdmissions } from "./document-admission";
 import { documentOfNode, type NodeDocument } from "./issue-artifacts";
@@ -895,7 +896,7 @@ export function useNodeEditing({
  *  `isComposing` false and keyCode 229 (WebKit bug 165004), as the title's editor reads it
  *  (`IssueTitleRow.tsx`). */
 export function inputMethodKey(event: KeyboardEvent): boolean {
-  return event.isComposing || event.keyCode === 229;
+  return isCompositionKey(event);
 }
 
 /** Whether `node` is inside the box the editor of `row` is drawn in (`EDITOR_BOX_ATTRIBUTE`),

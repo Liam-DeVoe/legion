@@ -65,8 +65,8 @@ export function TreeRows({
   /** The keys of the rows whose bodies the reader pinned open. */
   pinned: ReadonlySet<string>;
   /** Each row that carries the conversation's current point, by its key (`current-point.ts`'s
-   *  `pointMarks`, R12): no row is marked where it is undefined. */
-  points?: ReadonlyMap<string, PointMark>;
+   *  `pointMarks`, R12): a row it holds no key of is not marked. */
+  points: ReadonlyMap<string, PointMark>;
   /** What a key reported when it had nowhere to go, and the key of the row it was pressed on,
    *  which draws it (`NodeRow`'s `report`). */
   report?: { readonly line: string; readonly row: string | undefined };
@@ -110,7 +110,7 @@ export function TreeRows({
         }
         const place = documentOfNode(row.node.id, artifacts);
         const mark = threads.get(row.node.id);
-        const current = points?.get(key);
+        const current = points.get(key);
         return (
           <NodeRow
             {...(row.node.answer === undefined

@@ -6,12 +6,15 @@ import { compareTimestamps } from "../../lib/timestamps";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { deliveryMode } from "../conversation/delivery";
 import { redirectedReplyTarget, useHeldReplyTo, useHeldSends } from "../conversation/held-sends";
-import type { SentRequest, StatementAnchor } from "../conversation/send-request";
+import {
+  type SentRequest,
+  type StatementAnchor,
+  sameStatement,
+} from "../conversation/send-request";
 import { type AgentText, useAgentText } from "../refs/AgentName";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
-import { blockOfNodeId } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import { isStatement } from "./issue-tree";
 import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
@@ -444,9 +447,9 @@ function keptOnStatement(
   line.setEditing(undefined);
   // The same statement is the same document and the same words.
   line.setStatement((current) =>
-    aimed?.artifact === held.artifact && aimed.quote === held.quote
+    aimed !== undefined && sameStatement(aimed, held)
       ? aimed
-      : current?.artifact === held.artifact && current.quote === held.quote
+      : current !== undefined && sameStatement(current, held)
         ? current
         : held
   );
@@ -504,8 +507,6 @@ export interface StatementItem extends Pick<TreeNode, "source" | "text" | "tree"
   /** The document the statement is a block of, by the slug its node id names it by, which the
    *  server's `AnchorInput.artifact` takes as it takes an artifact's id. */
   readonly artifact: string;
-  /** The statement's own block id inside that document. */
-  readonly blockId: string;
   /** The statement's node id, `<slug>#b-<block id>` (`tree-drafts.ts`'s `blockNodeId`): the row
    *  a comment anchored to it is drawn under, which a landing names (`Landing.under`, of kind
    *  `statement`) and `IssueTree.tsx`'s `landingParent` finds by node id. */
@@ -548,23 +549,31 @@ export function replyItemOf(node: TreeNode): ReplyItem | StatementItem | undefin
 
 /** The statement a row of the outline is: a `requirement` block of the issue's spec, which the
  *  row carries as `TreeNode.statement` (`isStatement`), read from its node id
- *  `<slug>#b-<block id>` as `issue-artifacts.ts` reads a block's document (`blockOfNodeId`). A
- *  `requirement` block of the plan, the Verification or the decisions document is a block and
- *  nothing more (`tree-drafts.ts`'s `addDocumentBlocks`): it takes no Reply, and no comment is
- *  anchored to it from the line. Undefined for every other row. */
+ *  `<slug>#b-<block id>` (`slugOfBlockNodeId`). A `requirement` block of the plan, the
+ *  Verification or the decisions document is a block and nothing more (`tree-drafts.ts`'s
+ *  `addDocumentBlocks`): it takes no Reply, and no comment is anchored to it from the line.
+ *  Undefined for every other row. */
 function statementItemOf(node: TreeNode): StatementItem | undefined {
   if (!isStatement(node)) return undefined;
-  const block = blockOfNodeId(node.id);
-  if (block === undefined) return undefined;
+  const artifact = slugOfBlockNodeId(node.id);
+  if (artifact === undefined) return undefined;
   return {
-    artifact: block.slug,
-    blockId: block.blockId,
+    artifact,
     id: node.id,
     kind: "statement",
     ...(node.source === undefined ? {} : { source: node.source }),
     text: node.text,
     ...(node.tree === undefined ? {} : { tree: node.tree }),
   };
+}
+
+/** The slug of the document a block node's id names, `<slug>#b-<block id>`, read as
+ *  `issue-artifacts.ts`'s `documentOfNode` reads it, with no artifact list: the document by the
+ *  slug the server's anchor takes. `undefined` for a node that is no block, and for an id whose
+ *  slug or block id is empty. */
+function slugOfBlockNodeId(nodeId: string): string | undefined {
+  const cut = nodeId.indexOf("#b-");
+  return cut <= 0 || cut + 3 === nodeId.length ? undefined : nodeId.slice(0, cut);
 }
 
 /**

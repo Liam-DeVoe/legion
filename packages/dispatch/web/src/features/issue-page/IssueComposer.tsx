@@ -47,7 +47,6 @@ import { AgentName } from "../refs/AgentName";
 import { PlainText } from "../refs/plain-text";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { useMediaQuery } from "../shell/useDialog";
-import { outlineCommentsQuery, outlineMessagesQuery } from "./conversation-reads";
 import { FOOT_HEIGHT_PROPERTY, HEADER_SCROLLS_QUERY } from "./identity-block";
 import { firstLineOf } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
@@ -59,8 +58,8 @@ import {
 } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
-import { TAB_STOP_ROW } from "./slots/stage";
-import { issueAsksQuery } from "./useIssueTree";
+import { TAB_STOP_ROW } from "./tree-focus";
+import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
 
 /** The kinds the line writes, as its chips before Send, in this order: a comment, which is on at
  *  first, and a question, which is an ask of the issue with no options (R2). A later part adds a
@@ -430,12 +429,12 @@ function ReplyTargetLine({ issueKey, reply }: { issueKey: string; reply: ReplyTa
     refetchOnMount: false,
   });
   const comments = useQuery({
-    ...outlineCommentsQuery(issueKey),
+    ...issueCommentsQuery(issueKey),
     enabled: reply.parentKind === "comment",
     refetchOnMount: false,
   });
   const messages = useQuery({
-    ...outlineMessagesQuery(issueKey),
+    ...issueMessagesQuery(issueKey),
     enabled: reply.parentKind === "message",
     refetchOnMount: false,
   });
@@ -477,7 +476,7 @@ function EditLine({
   writer: OutlineWriter;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const comments = useQuery(outlineCommentsQuery(issueKey));
+  const comments = useQuery(issueCommentsQuery(issueKey));
   const tree = comments.data?.find((one) => one.id === editing.id)?.body_tree;
   const owner = useMemo(() => ({ issueKey, kind: "issue" as const }), [issueKey]);
   const mutationKey = useMemo(
@@ -521,7 +520,7 @@ function EditLine({
       owner={owner}
       saveEdit={async (id, body, carried, bounds) => {
         const saved = await saveCommentEdit(id, body, carried, bounds);
-        await queryClient.invalidateQueries({ queryKey: outlineCommentsQuery(issueKey).queryKey });
+        await queryClient.invalidateQueries({ queryKey: issueCommentsQuery(issueKey).queryKey });
         return saved;
       }}
     />

@@ -876,7 +876,7 @@ export function MentionComposer({
       // never sees it: Escape shuts the list, and the one after it reaches the composer.
       // The issue page's line stays mounted with its draft whatever ends it, so Escape there
       // asks nothing: it ends the target as the target line's control does (`endTarget`).
-      if (outline !== undefined) {
+      if (outlined) {
         event.preventDefault();
         event.stopPropagation();
         endTargetNow.current();
@@ -895,7 +895,7 @@ export function MentionComposer({
   }, [
     // A dormant composer renders no form; the one it renders when it wakes takes the listener.
     dormant,
-    outline,
+    outlined,
     replyTo,
   ]);
   // A composer fixed at the foot of the screen - the docked one below `sm`, or one a host's frame

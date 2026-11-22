@@ -63,8 +63,7 @@ function editedPlacements(root: TreeNode): Placement[] {
  * they have not. The line holds one target at a time - setting any one ends the others
  * (`OutlineWriter.statement`) - so the order they are read in here never decides between two.
  */
-function aimedAt(aim: PointAim | undefined): ((node: TreeNode) => boolean) | undefined {
-  if (aim === undefined) return undefined;
+function aimedAt(aim: PointAim): ((node: TreeNode) => boolean) | undefined {
   const { answer, reply, statement } = aim;
   // The question's own row, by the node id its Answer was taken from.
   if (answer !== undefined) return (node) => node.id === answer.nodeId;
@@ -124,10 +123,7 @@ function newestAct(placements: readonly Placement[]): Placement | undefined {
  * waits on the reader, which is where the page opens (`IssueTree.tsx`); else the node of the
  * newest act on the issue (`newestAct`). The path never runs through a transcluded placement.
  */
-export function currentPath(
-  root: TreeNode,
-  aim: PointAim | undefined
-): readonly string[] | undefined {
+export function currentPath(root: TreeNode, aim: PointAim): readonly string[] | undefined {
   const placements = editedPlacements(root);
   const aimed = aimedAt(aim);
   if (aimed !== undefined) return placements.find(({ node }) => aimed(node))?.path;
@@ -164,7 +160,7 @@ export function pointMarks(
   path: readonly string[] | undefined
 ): ReadonlyMap<string, PointMark> {
   const marks = new Map<string, PointMark>();
-  if (path === undefined || path.length === 0) return marks;
+  if (path === undefined) return marks;
   const point = rows.find((row) => depthOnPath(row, path) === path.length - 1);
   if (point !== undefined) return marks.set(rowKeyOf(point), "here");
   for (const row of rows) {

@@ -171,8 +171,7 @@ test("a target the tree does not hold is no point, though a question waits on th
 test("once the target ends, the point is the question that waits on the reader", () => {
   const root = issue([comment("c1", at(1)), waitingAsk("a1", at(2)), comment("c9", at(9))]);
   expect(currentPath(root, replyingTo("c1", "comment"))).toEqual([KEY, "c1"]);
-  // No writer at all, and a writer whose reply and other targets have all ended.
-  expect(currentPath(root, undefined)).toEqual([KEY, "a1"]);
+  // A writer whose reply and other targets have all ended.
   expect(currentPath(root, NOTHING_AIMED)).toEqual([KEY, "a1"]);
 });
 
@@ -187,9 +186,9 @@ test("a question waiting on the reader outranks a newer act; one waiting on anot
     waitingAsk("a2", at(3)),
     comment("c9", at(9)),
   ]);
-  expect(currentPath(waits, undefined)).toEqual([KEY, "c1", "a1"]);
+  expect(currentPath(waits, NOTHING_AIMED)).toEqual([KEY, "c1", "a1"]);
   const theirs = issue([review, comment("c1", at(1), [ask("a1", at(2))]), comment("c9", at(9))]);
-  expect(currentPath(theirs, undefined)).toEqual([KEY, "c9"]);
+  expect(currentPath(theirs, NOTHING_AIMED)).toEqual([KEY, "c9"]);
 });
 
 /** The issue before a newer act: an answered question, a message, a check's result and a
@@ -210,7 +209,7 @@ function acts(answered: string, ...first: TreeNode[]): TreeNode {
 }
 
 test("with nothing aimed and no question waiting, the newest act is the point", () => {
-  expect(currentPath(acts(at(3)), undefined)).toEqual([KEY, "c1", "c2"]);
+  expect(currentPath(acts(at(3)), NOTHING_AIMED)).toEqual([KEY, "c1", "c2"]);
 });
 
 test.each([
@@ -238,14 +237,19 @@ test.each([
     [KEY, "c1", "c2"],
   ],
 ])("a later %s decides the point", (_kind, root, path) => {
-  expect(currentPath(root, undefined)).toEqual(path);
+  expect(currentPath(root, NOTHING_AIMED)).toEqual(path);
 });
 
 test("a new act landing moves the point to it", () => {
   const thread = (replies: readonly TreeNode[]) =>
     issue([comment("c1", at(1), [comment("c2", at(2), replies)]), comment("c3", at(3))]);
-  expect(currentPath(thread([]), undefined)).toEqual([KEY, "c3"]);
-  expect(currentPath(thread([comment("c4", at(4))]), undefined)).toEqual([KEY, "c1", "c2", "c4"]);
+  expect(currentPath(thread([]), NOTHING_AIMED)).toEqual([KEY, "c3"]);
+  expect(currentPath(thread([comment("c4", at(4))]), NOTHING_AIMED)).toEqual([
+    KEY,
+    "c1",
+    "c2",
+    "c4",
+  ]);
 });
 
 // One instant, written two ways: the times are compared as instants and not as text, and the
@@ -254,9 +258,9 @@ test("a tie goes to the node later in reading order", () => {
   const whole = "2026-11-15T10:05:00Z";
   const fraction = "2026-11-15T10:05:00.000Z";
   const tied = issue([comment("c1", whole, [comment("c2", at(4))]), comment("c3", fraction)]);
-  expect(currentPath(tied, undefined)).toEqual([KEY, "c3"]);
+  expect(currentPath(tied, NOTHING_AIMED)).toEqual([KEY, "c3"]);
   const swapped = issue([comment("c3", fraction), comment("c1", whole, [comment("c2", at(4))])]);
-  expect(currentPath(swapped, undefined)).toEqual([KEY, "c1"]);
+  expect(currentPath(swapped, NOTHING_AIMED)).toEqual([KEY, "c1"]);
 });
 
 /** A check drawn under two requirements, `spec#b-r1` first in reading order and `spec#b-r2`
@@ -279,14 +283,14 @@ test("a node placed twice is the point at its edited placement, through no trans
   const newest = [comment("c9", at(9))];
   const copyFirst = placedTwice(true, newest);
   const edited = [KEY, "spec#b-r2", CHECK, "c9"];
-  expect(currentPath(copyFirst, undefined)).toEqual(edited);
+  expect(currentPath(copyFirst, NOTHING_AIMED)).toEqual(edited);
   expect(currentPath(copyFirst, replyingTo("c9", "comment"))).toEqual(edited);
   expect(nodesOn(copyFirst, edited).some((one) => one.transcluded)).toBe(false);
   const waiting = placedTwice(true, [waitingAsk("a1", at(1))]);
-  expect(currentPath(waiting, undefined)).toEqual([KEY, "spec#b-r2", CHECK, "a1"]);
+  expect(currentPath(waiting, NOTHING_AIMED)).toEqual([KEY, "spec#b-r2", CHECK, "a1"]);
   const copyLast = placedTwice(false, newest);
   const editedFirst = [KEY, "spec#b-r1", CHECK, "c9"];
-  expect(currentPath(copyLast, undefined)).toEqual(editedFirst);
+  expect(currentPath(copyLast, NOTHING_AIMED)).toEqual(editedFirst);
   expect(nodesOn(copyLast, editedFirst).some((one) => one.transcluded)).toBe(false);
 });
 
@@ -301,14 +305,13 @@ function deepQuestion(): TreeNode {
 test("no point marks no row", () => {
   const rows = treeRows(deepQuestion());
   expect(pointMarks(rows, undefined).size).toBe(0);
-  expect(pointMarks(rows, []).size).toBe(0);
 });
 
 // The point's own row drawn, it alone carries the mark, with or without the issue's row, which
 // the page draws none of (`IssueTree.tsx`).
 test("the point's own row is marked here, and no other row is marked", () => {
   const root = deepQuestion();
-  const path = currentPath(root, undefined);
+  const path = currentPath(root, NOTHING_AIMED);
   const rows = treeRows(root);
   const here: Readonly<Record<string, PointMark>> = { "CORE-1>c1>c2>a1": "here" };
   expect(Object.fromEntries(pointMarks(rows, path))).toEqual(here);
@@ -319,7 +322,7 @@ test("the point's own row is marked here, and no other row is marked", () => {
 // shut over it.
 test("with the point folded away, each drawn row on its path is marked path", () => {
   const root = deepQuestion();
-  const path = currentPath(root, undefined);
+  const path = currentPath(root, NOTHING_AIMED);
   const rows = treeRows(root, closed("c2"));
   expect(Object.fromEntries(pointMarks(rows, path))).toEqual({
     "CORE-1": "path",
@@ -341,7 +344,7 @@ test("with the point folded away, each drawn row on its path is marked path", ()
 // by a row's level or place in the list.
 test("the rows of a zoomed outline are marked by their trails", () => {
   const root = deepQuestion();
-  const path = currentPath(root, undefined);
+  const path = currentPath(root, NOTHING_AIMED);
   const [zoom] = root.children;
   if (zoom === undefined) throw new Error("the issue holds no comment to zoom into");
   const zoomed = (opened: OpenedBranches) => treeRows(zoom, opened, [KEY], NARROW_LEVELS);
@@ -358,7 +361,7 @@ test("the rows of a zoomed outline are marked by their trails", () => {
 // on the edited placement's rows alone, folded or not.
 test("a transcluded placement's rows are never marked", () => {
   const root = placedTwice(true, [waitingAsk("a1", at(1))]);
-  const path = currentPath(root, undefined);
+  const path = currentPath(root, NOTHING_AIMED);
   const open = treeRows(root);
   expect(open.filter((row) => row.kind === "node" && row.node.id === "a1")).toHaveLength(2);
   expect(Object.fromEntries(pointMarks(open, path))).toEqual({
@@ -377,7 +380,7 @@ test("a transcluded placement's rows are never marked", () => {
 // own row and is never marked, though the point is inside it.
 test("a row standing for a deeper branch is never marked", () => {
   const root = issue([comment("c1", at(1), [comment("c2", at(2), [comment("c3", at(3))])])]);
-  const path = currentPath(root, undefined);
+  const path = currentPath(root, NOTHING_AIMED);
   expect(path).toEqual([KEY, "c1", "c2", "c3"]);
   const opened = { ...NOTHING_OPENED, branches: new Set(["c1"]) };
   const rows = treeRows(root, opened, [], NARROW_LEVELS);
