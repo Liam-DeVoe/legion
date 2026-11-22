@@ -768,9 +768,9 @@ func TestReturnCountsLiveOnTheTaskOrOnTheImplementersRow(t *testing.T) {
 	}
 }
 
-// The task a run with plan rows is on is its plan's one task, whatever that task's state: this
-// release's plans hold one (plan.Supported). A plan that holds none, or more than one, names no
-// task, and says how many it holds.
+// The task a run with plan rows is on, for a reader of a plan of one task, is that one task,
+// whatever its state. A plan that holds none, or more than one, names no task, and says how many
+// it holds: a reader of a plan of several reads each of its tasks.
 func TestThePlansTaskIsItsOneTask(t *testing.T) {
 	v := PlanVersion{Issue: "LEGION-212", Generation: 1}
 	stopped := PlanTask{Issue: "LEGION-212", Generation: 1, Task: "a", State: TaskStopped}
@@ -781,9 +781,9 @@ func TestThePlansTaskIsItsOneTask(t *testing.T) {
 		tasks []PlanTask
 		want  string
 	}{
-		{nil, "the plan of LEGION-212 at generation 1 holds 0 tasks, and this release walks one"},
+		{nil, "the plan of LEGION-212 at generation 1 holds 0 tasks, not one"},
 		{[]PlanTask{{Task: "a", State: TaskWaiting}, {Task: "b", State: TaskRunning}},
-			"the plan of LEGION-212 at generation 1 holds 2 tasks, and this release walks one"},
+			"the plan of LEGION-212 at generation 1 holds 2 tasks, not one"},
 	} {
 		if got, err := (&StoredPlan{Version: v, Tasks: tc.tasks}).Task(); err == nil || err.Error() != tc.want || !reflect.DeepEqual(got, PlanTask{}) {
 			t.Errorf("the task of a plan of %d tasks = %+v, %v; want no task and %q", len(tc.tasks), got, err, tc.want)
