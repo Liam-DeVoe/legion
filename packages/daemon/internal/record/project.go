@@ -890,7 +890,7 @@ func TakesStep(deployment []DesignStep, step DesignStep) bool {
 // that used to read one row reads this instead and no reader can answer from one step where the
 // deployment gates three. The steps the work waits on are the ones the tree is gated on
 // (TreeSteps over Steps and Rows), which Open, EverOpened and OpenedAt all read in the one form
-// (required).
+// (Required).
 //
 // The zero value is the gate of a root with nothing registered, which is the answer a reader
 // wants for a tree the pass holds no gate row for: it is open at no step and has opened at none.
@@ -899,10 +899,11 @@ type TreeGate struct {
 	Rows  map[DesignStep]DesignGate
 }
 
-// required is the steps the tree's work waits on: RequiredSteps over the steps the tree is gated
+// Required is the steps the tree's work waits on: RequiredSteps over the steps the tree is gated
 // on (TreeSteps), so a criteria row its architect registered beside a deployment's spec holds the
-// tree in every rule of the gate alike.
-func (g TreeGate) required() []DesignStep {
+// tree in every rule of the gate alike. It is the one writer of that rule: every reader of the
+// steps a tree's gate holds its work on reads them here.
+func (g TreeGate) Required() []DesignStep {
 	return RequiredSteps(TreeSteps(g.Steps, g.Rows))
 }
 
@@ -912,7 +913,7 @@ func (g TreeGate) required() []DesignStep {
 // row at all is held too. It is the one rule for the question, which classify.DesignGatesOpen
 // reads it through.
 func (g TreeGate) Open() bool {
-	for _, step := range g.required() {
+	for _, step := range g.Required() {
 		if row, registered := g.Rows[step]; !registered || !GateOpen(row) {
 			return false
 		}
@@ -929,7 +930,7 @@ func (g TreeGate) Open() bool {
 // before its architect registered its Verification document still reads as released; one
 // registered before the first opening holds this answer until a person approves it.
 func (g TreeGate) EverOpened() bool {
-	for _, step := range g.required() {
+	for _, step := range g.Required() {
 		if row, registered := g.Rows[step]; !registered || !row.EverOpened {
 			return false
 		}
@@ -953,7 +954,7 @@ func (g TreeGate) OpenedAt() time.Time {
 		return time.Time{}
 	}
 	var at time.Time
-	for _, step := range g.required() {
+	for _, step := range g.Required() {
 		at = later(at, g.Rows[step].openedAt())
 	}
 	return at

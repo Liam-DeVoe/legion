@@ -146,8 +146,8 @@ type versionNewsLive struct {
 	natsURL  string
 	dispatch *scratchDispatch
 	client   *http.Client
-	// repo is the repository the run in hand maps to its project, and rt and built the stand-ins
-	// its daemon was booted with.
+	// repo is the default repository of the project of the run in hand, and rt and built the
+	// stand-ins its daemon was booted with.
 	repo  string
 	rt    *fake.Runtime
 	built *built
@@ -266,10 +266,10 @@ func newVersionNewsLive(t *testing.T) *versionNewsLive {
 }
 
 // boot readies a fresh configuration gating steps, on a database of its own, with a Dispatch
-// project of its own mapped to repo; makes fixture's trees on Dispatch and seeds them into the
-// store through the daemon's start path; boots the whole daemon; brings every claim its starts
-// launch to ready as its pane would, and waits for each to take the task its start queued; and
-// checks in SETUP that each stands at its entry (standAtTheirEntries).
+// project of its own whose default repository is repo; makes fixture's trees on Dispatch and seeds
+// them into the store through the daemon's start path; boots the whole daemon; brings every claim
+// its starts launch to ready as its pane would, and waits for each to take the task its start
+// queued; and checks in SETUP that each stands at its entry (standAtTheirEntries).
 func (r *versionNewsLive) boot(gates string, steps []record.DesignStep, repo string, fixture func()) {
 	t := r.t
 	t.Helper()

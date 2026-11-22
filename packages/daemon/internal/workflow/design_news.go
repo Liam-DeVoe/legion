@@ -183,7 +183,7 @@ const (
 // Both forms lead with the gate sentence when the opening is owed to the audience, said of the
 // gate as it stands at send (gateAtSend): the opened message while the standing gate is open,
 // naming the step approved last, and, where a gated step stands open on an ancestor's approval,
-// each such step with the approval it stands on (gateOpenedOnBasis); and the closed sentence,
+// each such step with the approval it stands on (gateOpenedMessage); and the closed sentence,
 // naming the version that closed it, once a later version has (gateClosedSentence). tellGateMoved
 // writes both through the same two functions, so a merger's release reads the words its prompt
 // quotes, and news sent after the gate closed again says so.
@@ -232,7 +232,7 @@ func RenderNews(news News) string {
 // reviewer. Otherwise it is open, and the sentence is the opened message of the approval that
 // opened it: the row whose approval Dispatch recorded last (record.EventMark.After), the later
 // step in the tree's order where the marks cannot tell, with each step that stands open on an
-// ancestor's approval (basisStepsOf), as tellGateMoved says it (gateOpenedOnBasis). It is "" when
+// ancestor's approval (basisStepsOf), as tellGateMoved says it (gateOpenedMessage). It is "" when
 // no row holds an approval, which says nothing.
 func gateAtSend(tree string, steps []record.DesignStep, gates map[record.DesignStep]record.DesignGate) string {
 	if held, closed := classify.StandingGate(steps, gates); closed {
@@ -252,7 +252,7 @@ func gateAtSend(tree string, steps []record.DesignStep, gates map[record.DesignS
 	if openedStep == "" {
 		return ""
 	}
-	return gateOpenedOnBasis(tree, openedStep, opened.ArtifactID, *opened.ApprovedVersion, basisStepsOf(steps, gates))
+	return gateOpenedMessage(tree, openedStep, opened.ArtifactID, *opened.ApprovedVersion, basisStepsOf(steps, gates))
 }
 
 // holderNews is the holder's form after its gate sentence: what changed for its issue, then the
