@@ -299,6 +299,20 @@ export function IssueTree({
   const pathHold = useRef<{ readonly ids: readonly string[]; readonly landing?: string }>({
     ids: [],
   });
+  // The lines of overtaken nodes on the address's path the reader closed since its landing, each
+  // let go of the path's hold for that following as a branch they fold is (`released`), and
+  // forgotten as those are; and the path's lines and following as last drawn, which a close of
+  // a line reads (`toggleOvertaken`).
+  const [releasedLines, setReleasedLines] = useState<{
+    readonly ids: ReadonlySet<string>;
+    readonly landing: string | undefined;
+  }>({ ids: NO_FOLDS, landing: undefined });
+  if (releasedLines.landing !== undefined && releasedLines.landing !== landingKey) {
+    setReleasedLines({ ids: NO_FOLDS, landing: undefined });
+  }
+  const lineHold = useRef<{ readonly ids: readonly string[]; readonly landing?: string }>({
+    ids: [],
+  });
   // Where the zoomed tree is rooted. Nothing chosen opens it on the issue itself, so a reader
   // on a phone sees the whole issue and can reach any branch of it; an address that names a
   // node opens it on that node's parent, so the node the address named is one of the rows.
@@ -350,6 +364,18 @@ export function IssueTree({
   const releasedHere = released.landing === landingKey ? released.ids : NO_FOLDS;
   const heldPath =
     releasedHere.size === 0 ? path : path.filter((above) => !releasedHere.has(above.id));
+  // The line of each overtaken node the path runs through, outermost first (`withLine`), which
+  // the path holds open so the node it names is a row, less each line the reader closed since
+  // the landing and every line below it on the path: the address opens a line and holds it open
+  // no further, since held at every render, the line drew open again at once, and a press, Enter
+  // and Left on it closed nothing and said nothing.
+  const pathLines = [...(withLine(undefined, path) ?? [])];
+  lineHold.current = { ids: pathLines, landing: landingKey };
+  const releasedLinesHere = releasedLines.landing === landingKey ? releasedLines.ids : NO_FOLDS;
+  const heldLines =
+    releasedLinesHere.size === 0
+      ? pathLines
+      : pathLines.filter((line) => !releasedLinesHere.has(line));
   /** `closed` with the address's own path, as it is held, taken out of it. */
   const openPath = (closed: ReadonlySet<string>): ReadonlySet<string> =>
     heldPath.length === 0 || closed.size === 0
@@ -366,7 +392,10 @@ export function IssueTree({
           closed: openPath(filtered.closed),
           deeper: new Set([...filtered.deeper, ...path.map((above) => above.id)]),
           // The line of each overtaken node the path runs through, so the node it names is a row.
-          overtaken: withLine(filtered.overtaken, path),
+          overtaken:
+            heldLines.length === 0
+              ? filtered.overtaken
+              : new Set([...(filtered.overtaken ?? []), ...heldLines]),
         };
   // The fold is seeded with the path the breadcrumb holds, so a row is keyed by its path from
   // the issue whether or not the reader has zoomed: a body they pinned, the row they are
@@ -541,6 +570,16 @@ export function IssueTree({
         }
         return { ...held, closed, overtaken };
       });
+      // A close of a line the address's path holds open lets that line, and every line below it
+      // on the path, go of the hold for this following, so the close is drawn.
+      const { ids, landing } = lineHold.current;
+      const at = open ? -1 : ids.indexOf(id);
+      if (at !== -1) {
+        setReleasedLines((held) => ({
+          ids: new Set([...(held.landing === landing ? held.ids : []), ...ids.slice(at)]),
+          landing,
+        }));
+      }
     },
     [holdsWords]
   );

@@ -519,6 +519,17 @@ function readWide(): void {
  *  `IssueTree.test.tsx`'s `renderTree` draws it: no address, no filter, no document; with
  *  `beside` drawn after the tree, under the same providers. */
 function renderTree(root: TreeNode, ...beside: ReactNode[]) {
+  return renderTreeAt(undefined, root, ...beside);
+}
+
+/** `renderTree`'s tree at an address: `reveal` is the chain down to the node the address names,
+ *  which the tree is then to put the focus on (`slots/body.tsx`), as `IssueTree.test.tsx`'s
+ *  `renderTree` gives it; undefined for no address. */
+function renderTreeAt(
+  reveal: readonly TreeNode[] | undefined,
+  root: TreeNode,
+  ...beside: ReactNode[]
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -544,11 +555,11 @@ function renderTree(root: TreeNode, ...beside: ReactNode[]) {
                 context: new Set<string>(),
                 emptyLine: "Nothing here.",
                 filtering: false,
-                focusReveal: false,
+                focusReveal: reveal !== undefined,
                 holdsEscape: false,
                 isClosed: false,
                 onEditing: () => {},
-                reveal: undefined,
+                reveal,
                 root,
                 rootRow: true,
               }),
@@ -981,6 +992,47 @@ test("`q` and `w` reach an overtaken question and decision", async () => {
     expect(line).toHaveAttribute("aria-expanded", "true");
   } finally {
     view.unmount();
+  }
+});
+
+// An address that names an overtaken node opens the line that holds it, so the node is a row the
+// page lands on, and holds it open no further: a press on the line, Enter and the left arrow each
+// close it, as they close any line, and a press opens it again. The address's path held the line
+// open at every render, so each of them closed nothing and said nothing.
+test("a press, Enter and the left arrow close the overtaken line an address opened", async () => {
+  readWide();
+  const user = userEvent.setup();
+  const tree = commentAndLine();
+  const closers: readonly (readonly [string, (line: HTMLElement) => Promise<void>])[] = [
+    ["a press", (line) => user.click(line)],
+    ["Enter", () => user.keyboard("{Enter}")],
+    ["the left arrow", () => user.keyboard("{ArrowLeft}")],
+  ];
+  for (const [what, close] of closers) {
+    const view = renderTreeAt(pathTo(tree, "comment-2"), tree);
+    try {
+      await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
+      const line = theLine(view.container);
+      expect(line).toHaveAttribute("aria-expanded", "true");
+      // Up from the node the address names to the line that holds it.
+      await user.keyboard("k");
+      await waitFor(() => expect(document.activeElement).toBe(line));
+
+      await close(line);
+      await waitFor(() =>
+        expect(line, `${what} left the address's line open`).toHaveAttribute(
+          "aria-expanded",
+          "false"
+        )
+      );
+      expect(rowOf(view.container, "comment-2"), `${what} left its node a row`).toBeNull();
+
+      await user.click(line);
+      await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "true"));
+      expect(rowOf(view.container, "comment-2")).not.toBeNull();
+    } finally {
+      view.unmount();
+    }
   }
 });
 
