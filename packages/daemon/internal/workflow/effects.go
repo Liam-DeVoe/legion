@@ -441,6 +441,10 @@ const testerVerdictLabel = "Tester's verdict"
 // place in the line of an issue's plan, has no standing to name. w is the walk of issue's run as
 // its caller read it, after any move of its task (moveTask), which the standing and the entry read
 // in place of a read of their own: a transition reads its walk once.
+//
+// A start of a copy of the issue read for one task of a plan of several (view) names the claim of
+// its step's agent, which the entry wrote on the role's phases row (startMarks.agent): two tasks'
+// steps of one role run at one time, each its own agent's, so each start is a row of its own.
 func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, role claim.Role, told func(Standing) string, movedBack bool) error {
 	if role == "" {
 		return nil
@@ -459,7 +463,15 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, sent, entry, startMarks{stored: true})
+	marks := startMarks{stored: true}
+	if issue.ViewTask != "" {
+		row, err := e.phaseRow(ctx, tx, issue.Key, role)
+		if err != nil {
+			return err
+		}
+		marks.agent = row.Claim
+	}
+	return e.started(ctx, tx, issue, role, sent, entry, marks)
 }
 
 // reviveArchitect queues the start of the architect of issue, a child, when the store records its
@@ -731,6 +743,12 @@ type startMarks struct {
 	// raising the entry it hands (enter), and the held phase's retry, which an architect's or an
 	// operator's own request brings (restart).
 	reasserts bool
+	// agent is the claim of the agent of the step the start is of, which the start's row names
+	// (record.SuperviseRequest.Claim): a start of a copy of the issue read for one task of a plan of
+	// several sets it (start), and every other start names none, whose row reaches the claim of the
+	// worker on its role's step. A start that names a claim takes out the start of that claim alone
+	// (record.Store.EnqueueStart), so the starts of two tasks' agents of one role stand side by side.
+	agent claim.Token
 }
 
 // started enqueues the start each of its six callers makes, each of which has held role to one
@@ -763,7 +781,7 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if marks.reasserts {
 		move = reassertion
 	}
-	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
+	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Claim: marks.agent, Task: task,
 		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
 		RoundNamed: marks.stored && namesTheRound(role), RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, e.now(), move)
 }

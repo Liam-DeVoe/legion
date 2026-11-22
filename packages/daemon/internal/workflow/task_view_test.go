@@ -118,8 +118,9 @@ func assertTask(t *testing.T, tasks map[string]record.PlanTask, task string, sta
 // A task that does not merge is done when its last step passes: with task a, `implementer
 // reviewer`, at its review and task b, `implementer`, needing it, so b is the plan's one task that
 // merges, a's approved review leaves a done at step 2 and starts no retro of a's, since a does not
-// merge. The issue does not leave the workflow: its tasks put it in admitted, where b waits, and
-// Legion writes no status of done and begins no linger.
+// merge. The issue does not leave the workflow: b, whose need is done, starts at its first step in
+// the same transaction (startReady), the issue stands in implementing, and Legion writes no status
+// of done and begins no linger.
 //
 // The fault it catches is a task that does not merge running a retro and a merge of its own, or an
 // issue that leaves the workflow when one of its tasks is done (its control: the transition's leave
@@ -142,9 +143,10 @@ func TestATaskThatPassesItsLastStepIsDoneAndTheIssueGoesOn(t *testing.T) {
 	if retro := startsIn(t, pool, root.Key, claim.RoleImplementer, phase.Retro); len(retro) != 0 {
 		t.Fatalf("the starts of the implementer in retro = %+v, want none: task a does not merge", retro)
 	}
+	assertTask(t, tasks, "b", record.TaskRunning, atStep(1))
 	issue := issueOf(t, pool, engine, root.Key)
-	if issue.Phase != phase.Admitted || issue.Hold != nil || issue.Status == "done" || issue.Lingers() {
-		t.Fatalf("%s after task a is done stands in %s (hold %+v), status %q, lingering %t; want admitted, where task b waits, with no done and no linger",
+	if issue.Phase != phase.Implementing || issue.Hold != nil || issue.Status == "done" || issue.Lingers() {
+		t.Fatalf("%s after task a is done stands in %s (hold %+v), status %q, lingering %t; want implementing, where task b starts, with no done and no linger",
 			root.Key, issue.Phase, issue.Hold, issue.Status, issue.Lingers())
 	}
 	for _, write := range statusWrites(t, pool, root.Key) {

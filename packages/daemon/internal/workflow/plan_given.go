@@ -199,9 +199,12 @@ func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 // (waitForFirstStep). A version taken after the work started writes the run's plan node again,
 // whole (planNode): the start wrote it at the version then in force, and the node names the plan
 // the run walks now. A version taken before the work starts writes none, since the start writes
-// the version in force.
+// the version in force. A plan of several tasks is afterSeveral's.
 func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, given givenVersion, written writtenVersion) error {
 	issue := *given.issue
+	if len(fact.Plan.Tasks) > 1 || given.stored != nil && len(given.stored.Tasks) > 1 {
+		return e.afterSeveral(ctx, tx, fact, issue, written)
+	}
 	ends := len(written.stopped) > 0 && given.stored != nil && record.HeldFor(issue, record.HoldTaskStopped)
 	if !written.started && !ends {
 		return nil
@@ -223,6 +226,44 @@ func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 		return e.waitForFirstStep(ctx, tx, issue, w, reason)
 	}
 	return e.restartTask(ctx, tx, issue, w, reason)
+}
+
+// afterSeveral is afterVersion of a plan of several tasks. Each stopped task the version changes
+// ends its stop: once the work started it starts again where its needs are done, or waits for
+// them (restartTask on the copy of issue read for it), and then each task whose needs are done
+// starts (startReady), a task the version adds among them. Before the work starts each such task
+// waits for its first step (waitForFirstStep), and nothing starts: the gate's opening starts each
+// task whose needs are done (gateOpened). The run's plan node names one task, and is not written
+// for a plan of several.
+func (e *Engine) afterSeveral(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, issue record.Issue, written writtenVersion) error {
+	for _, task := range written.stopped {
+		now, err := e.store.Issue(ctx, tx, issue.Key)
+		if err != nil {
+			return err
+		}
+		view, w, err := e.view(ctx, tx, *now, task)
+		if err != nil {
+			return err
+		}
+		reason := fmt.Sprintf("the owner gave version %d of the plan while task %s was stopped", fact.Plan.Version, task)
+		if !written.started {
+			err = e.waitForFirstStep(ctx, tx, view, w, reason)
+		} else {
+			err = e.restartTask(ctx, tx, view, w, reason)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if !written.started {
+		return nil
+	}
+	now, err := e.store.Issue(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
+	_, err = e.startReady(ctx, tx, *now)
+	return err
 }
 
 // waitsAtZero says whether a plan given at generation 0 for issue, which the daemon recorded after

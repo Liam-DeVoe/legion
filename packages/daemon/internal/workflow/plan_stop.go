@@ -39,11 +39,15 @@ func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 		return refusal, nil
 	}
 	if !w.Stored {
-		if err := e.planFirstStep(ctx, tx, issue); err != nil {
+		if _, err := e.planFirstStep(ctx, tx, issue); err != nil {
 			return nil, err
 		}
+		// The walk of the stopped task of the plan the first step settled, named, since a plan of
+		// several tasks has no one walk.
+		read := issue
+		read.ViewTask = w.Task
 		var err error
-		if w, err = e.walk(ctx, tx, issue); err != nil {
+		if w, err = e.walk(ctx, tx, read); err != nil {
 			return nil, err
 		}
 	}
@@ -270,11 +274,16 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 //
 // Its callers hand it a stopped task, or the new task of a later version, waiting: a task held
 // for its stop is never done or left, since each write of done or left clears the issue's hold in
-// the same write (endTaskWithLeave, and the merge of an issue that awaits it).
+// the same write (endTaskWithLeave, and the merge of an issue that awaits it). A copy of the issue
+// read for one task of a plan of several (view) is started again by restartViewed, which starts
+// the task only where its needs are done.
 func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, reason string) error {
 	steps := w.steps()
 	if !w.Stored || len(steps) == 0 {
 		return fmt.Errorf("restart task %s of %s: its line %v holds no first step", w.Task, issue.Key, w.Line)
+	}
+	if issue.ViewTask != "" {
+		return e.restartViewed(ctx, tx, issue, w, reason)
 	}
 	if w.State != record.TaskWaiting {
 		counts, err := e.store.ReturnCounts(ctx, tx, issue.Key, issue.Generation, w.Task)

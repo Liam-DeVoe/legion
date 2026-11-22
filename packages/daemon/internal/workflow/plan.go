@@ -78,30 +78,34 @@ func (e *Engine) passOverEarlierOwners(ctx context.Context, tx pgx.Tx, issue rec
 // its start (CarryPlan without carried): each task waits at no act, and the transition starts the
 // first step of its line. Where the owner gave none, the run takes the project's default steps
 // (defaultRows). Nothing is passed over in silence, and the plan the run takes is the one the
-// telling names (tellPassedOver). The task the run walks takes its branch here, in the transaction
-// that moves it into its first step (startTaskCopy).
-func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+// telling names (tellPassedOver). The one task of a plan of one takes its branch here, in the
+// transaction that moves it into its first step (startTaskCopy); each task of a plan of several
+// takes its own where it starts (startReady), and it answers whether the plan holds several.
+func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
 	earlier, err := e.passOverEarlierOwners(ctx, tx, issue)
 	if err != nil {
-		return err
+		return false, err
 	}
 	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if stored == nil {
 		if stored, err = e.store.OwnersNewestPlan(ctx, tx, issue); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if err := e.takeFirstPlan(ctx, tx, issue, stored, earlier); err != nil {
-		return err
+		return false, err
+	}
+	if stored != nil && len(stored.Tasks) > 1 {
+		return true, nil
 	}
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return e.startTaskCopy(ctx, tx, issue, w.Task)
+	return false, e.startTaskCopy(ctx, tx, issue, w.Task)
 }
 
 // takeFirstPlan writes stored, the plan the first step of issue's run walks, at the run's

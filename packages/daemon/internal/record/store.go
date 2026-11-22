@@ -2666,7 +2666,10 @@ const pendingPhaseStart = `issue = $1 and kind = 'supervise'
 // lease holds — and writes row in its place, carrying that row's attempts, next_at, last_error
 // and created_at. Where the issue owes no such row, row is written with its own values, which is
 // the first start of a phase. So two transitions before the worker runs leave one start, the
-// later one, and its caller (workflow.StartOrOwe) has one call to make either way.
+// later one, and its caller (workflow.StartOrOwe) has one call to make either way. A start that
+// names its agent's claim (SuperviseRequest.Claim) takes out only a start that names the same
+// claim, and a start that names none only one that names none: the steps of two tasks of one
+// issue run at one time, each its own agent's, and the start of one never takes out the other's.
 //
 // Two start rows of one issue the outbox cannot tell apart start that issue's worker twice for
 // one piece of work, and that is what this keeps to one row. The outbox's fences end a row that
@@ -2776,6 +2779,7 @@ func (s *Postgres) EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) e
 			delete from outbox where id = (select id from outbox
 				where `+pendingPhaseStart+`
 					and coalesce(payload->>'needsSlot', 'false') = coalesce(($2::jsonb)->>'needsSlot', 'false')
+					and coalesce(payload->>'claim', '') = coalesce(($2::jsonb)->>'claim', '')
 					and (lease_until is null or lease_until <= $3)
 				order by created_at, id limit 1)
 				and (lease_until is null or lease_until <= $3)

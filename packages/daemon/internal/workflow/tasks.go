@@ -126,3 +126,155 @@ func (e *Engine) putIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) (r
 func sameHold(a, b *record.Hold) bool {
 	return a == nil && b == nil || a != nil && b != nil && *a == *b
 }
+
+// needsDone says whether each task that task needs is done in stored, the plan of its run. A need
+// the plan does not hold is never done: a later version that removes a task another needs is
+// refused (plan.Validate).
+func needsDone(stored *record.StoredPlan, task record.PlanTask) bool {
+	for _, need := range task.Needs {
+		at := slices.IndexFunc(stored.Tasks, func(row record.PlanTask) bool { return row.Task == need })
+		if at < 0 || stored.Tasks[at].State != record.TaskDone {
+			return false
+		}
+	}
+	return true
+}
+
+// startReady is the one place tasks of a plan of several start, in the caller's transaction: it
+// moves each task that waits and each of whose needs is done, in task id order, to its first step,
+// running (moveTask), gives it its branch (startTaskCopy), writes the issue (putIssue) and starts
+// the step's role through Engine.start, the start of every step. It answers the issue as written. A
+// plan of one task, or none, starts nothing here: its one task starts at the gate's opening as
+// before (transition), and so the issue is answered as given. It runs at the first step of the
+// work (gateOpened), at each move of a task to done (transition), at each version of the plan taken
+// after the work started (afterVersion), and after a stopped task starts again or waits
+// (restartTask, through afterVersion). No setting bounds how many tasks run at one time: the plan
+// bounds it with each task's needs.
+func (e *Engine) startReady(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.Issue, error) {
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil || stored == nil || len(stored.Tasks) <= 1 {
+		return issue, err
+	}
+	var ready []string
+	for _, row := range stored.Tasks {
+		if row.State == record.TaskWaiting && needsDone(stored, row) {
+			ready = append(ready, row.Task)
+		}
+	}
+	if len(ready) == 0 {
+		return issue, nil
+	}
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil {
+		return record.Issue{}, err
+	}
+	written := issue
+	for _, id := range ready {
+		view, w, err := e.view(ctx, tx, written, id)
+		if err != nil {
+			return record.Issue{}, err
+		}
+		if err := e.startTaskCopy(ctx, tx, view, id); err != nil {
+			return record.Issue{}, err
+		}
+		steps := w.steps()
+		if len(steps) == 0 {
+			return record.Issue{}, fmt.Errorf("start task %s of %s: its line %v holds no first step", id, issue.Key, w.Line)
+		}
+		first := record.TaskPlace{Kind: record.PlaceStep, Position: 1}
+		if err := e.moveTask(ctx, tx, &view, &w, steps[0], first, record.TaskRunning); err != nil {
+			return record.Issue{}, err
+		}
+		view.Hold = nil
+		if written, err = e.putIssue(ctx, tx, view); err != nil {
+			return record.Issue{}, err
+		}
+		if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
+			return record.Issue{}, err
+		}
+		e.logOnCommit(ctx, "workflow: a task whose needs are done starts at its first step", "issue", issue.Key, "tree", issue.Tree, "task", id,
+			"needs", w.Needs, "to", steps[0], "issuePhase", written.Phase)
+		role := w.RoleAt(first)
+		if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
+			return record.Issue{}, err
+		}
+		view.Status, view.TakenBack = written.Status, written.TakenBack
+		if err := e.start(ctx, tx, view, w, role, func(at Standing) string {
+			return task(view, at, record.PhaseRow{}, pr, "")
+		}, false); err != nil {
+			return record.Issue{}, err
+		}
+	}
+	return written, nil
+}
+
+// restartViewed is restartTask of w's task of a plan of several tasks, read for that task (view),
+// for reason: the task stopped by its owner, or by a failed step, that a later version changes.
+// Where its work ran (record.TaskPlace.Started) its pass is raised, so a completion of its next run
+// takes a key of its own. Where each task it needs is done, it starts again at its first step,
+// running, its stop's reason gone, and that step's role is started at a raised entry that counts as
+// a move back (start). Else it waits at no act, its stop's reason gone, and starts when its needs
+// are done (startReady). Either way the issue is written where its tasks put it (putIssue): the
+// stop of one task holds the issue only while no other task runs.
+func (e *Engine) restartViewed(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, reason string) error {
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil {
+		return err
+	}
+	at := slices.IndexFunc(stored.Tasks, func(row record.PlanTask) bool { return row.Task == w.Task })
+	if at < 0 {
+		return fmt.Errorf("restart task %s of %s: its plan holds no such task", w.Task, issue.Key)
+	}
+	if w.Place.Started() {
+		counts, err := e.store.ReturnCounts(ctx, tx, issue.Key, issue.Generation, w.Task)
+		if err != nil {
+			return err
+		}
+		counts.Pass++
+		if err := e.store.PutReturnCounts(ctx, tx, issue.Key, issue.Generation, w.Task, counts); err != nil {
+			return err
+		}
+	}
+	from := record.StandsAt(issue)
+	if !needsDone(stored, stored.Tasks[at]) {
+		if err := e.moveTask(ctx, tx, &issue, &w, phase.Admitted, record.TaskPlace{}, record.TaskWaiting); err != nil {
+			return err
+		}
+		issue.Hold = nil
+		if _, err := e.putIssue(ctx, tx, issue); err != nil {
+			return err
+		}
+		if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
+			return err
+		}
+		e.logOnCommit(ctx, "workflow: a stopped task waits for the tasks it needs", "issue", issue.Key, "tree", issue.Tree, "task", w.Task,
+			"act", "task_released", "needs", w.Needs, "reason", reason)
+		return nil
+	}
+	first := record.TaskPlace{Kind: record.PlaceStep, Position: 1}
+	if err := e.moveTask(ctx, tx, &issue, &w, w.steps()[0], first, record.TaskRunning); err != nil {
+		return err
+	}
+	issue.Hold = nil
+	written, err := e.putIssue(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a stopped task starts again at its first step", "issue", issue.Key, "tree", issue.Tree, "task", w.Task,
+		"act", "task_restarted", "from", from, "to", issue.Phase, "reason", reason)
+	role := w.RoleAt(first)
+	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
+		return err
+	}
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
+	issue.Status, issue.TakenBack = written.Status, written.TakenBack
+	return e.start(ctx, tx, issue, w, role, func(at Standing) string {
+		return task(issue, at, record.PhaseRow{}, pr, reason)
+	}, true)
+}

@@ -2698,9 +2698,13 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// The issue leaves the workflow where its tasks put it in done (putIssue): the move of the
 	// one task of an issue to done, and of the last task of a plan of several, whose others are
 	// each done. A task that does not merge is done at its last step while another task waits or
-	// runs, and the issue goes on.
+	// runs, and the issue goes on: each task whose needs that move made done starts (startReady).
 	if written.Phase == phase.Done {
 		return e.leave(ctx, tx, written, "done")
+	}
+	if w.State == record.TaskDone {
+		_, err := e.startReady(ctx, tx, written)
+		return err
 	}
 	return nil
 }
@@ -2917,7 +2921,9 @@ func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Is
 // linger dropped, or one admitted before the daemon queued such rows, gets its row here. The plan
 // the transition walks is settled first (planFirstStep). Its one caller, StartFirstPhase, runs for
 // an issue the waiting line offers at admitted (record.LineFirstPhase), so the issue always
-// stands there.
+// stands there. A plan of several tasks has no one line to walk: each task whose needs are done
+// starts at its first step (startReady), and the architect is told the gate's opening once, as the
+// transition out of admitted tells it (noticeFor).
 //
 // A child's own architect starts between the branch row and the first worker's start
 // (StartFirstPhase says why here): the plain start (childArchitectStart), with no phase, task,
@@ -2927,7 +2933,8 @@ func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Is
 // order the outbox tries, not one it holds to: a start that fails and backs off holds back none of
 // the rows behind it.
 func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-	if err := e.planFirstStep(ctx, tx, issue); err != nil {
+	several, err := e.planFirstStep(ctx, tx, issue)
+	if err != nil {
 		return err
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.IssueBranch{Generation: issue.Generation}); err != nil {
@@ -2937,6 +2944,13 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 		if err := e.enqueue(ctx, tx, issue.Key, childArchitectStart(issue)); err != nil {
 			return err
 		}
+	}
+	if several {
+		written, err := e.startReady(ctx, tx, issue)
+		if err != nil {
+			return err
+		}
+		return e.notice(ctx, tx, issue.Key, noticeFor(TriggerGateOpened, issue.Phase, written.Phase, record.PhaseRow{}, "", ""))
 	}
 	return e.transition(ctx, tx, issue, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{}, nil, "")
 }
