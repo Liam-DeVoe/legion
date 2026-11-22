@@ -179,12 +179,12 @@ func TestABackstopSurvivesTheDaemonAndFiresOnce(t *testing.T) {
 	armed := time.Now().UTC().Truncate(time.Millisecond)
 	due := armed.Add(time.Hour)
 	if err := store.ArmPodBackstop(ctx, PodWakeBackstop{Project: "legion", Issue: rootIssue,
-		Role: claim.RoleImplementer, DueAt: due}); err != nil {
+		Claim: releasedToken, Role: claim.RoleImplementer, DueAt: due}); err != nil {
 		t.Fatalf("arm the backstop: %v", err)
 	}
 	// A release retried after a failure arms the one backstop, not two.
 	if err := store.ArmPodBackstop(ctx, PodWakeBackstop{Project: "legion", Issue: rootIssue,
-		Role: claim.RoleImplementer, DueAt: due.Add(time.Minute)}); err != nil {
+		Claim: releasedToken, Role: claim.RoleImplementer, DueAt: due.Add(time.Minute)}); err != nil {
 		t.Fatalf("arm the backstop again: %v", err)
 	}
 	if open, err := store.DuePodBackstops(ctx, "legion", due.Add(-time.Minute)); err != nil || len(open) != 0 {
@@ -197,7 +197,7 @@ func TestABackstopSurvivesTheDaemonAndFiresOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the due backstops after the restart: %v", err)
 	}
-	if len(due2) != 1 || due2[0].Issue != rootIssue || due2[0].Role != claim.RoleImplementer {
+	if len(due2) != 1 || due2[0].Issue != rootIssue || due2[0].Claim != releasedToken || due2[0].Role != claim.RoleImplementer {
 		t.Fatalf("due backstops after the restart = %+v, want the one armed before it", due2)
 	}
 	if !due2[0].DueAt.UTC().Equal(due) {
@@ -228,10 +228,10 @@ func TestTakingAReleasedPodOverCancelsItsBackstops(t *testing.T) {
 	ctx := context.Background()
 	at := time.Now().UTC()
 	if err := store.ArmPodBackstop(ctx, PodWakeBackstop{Project: "legion", Issue: rootIssue,
-		Role: claim.RoleImplementer, DueAt: at}); err != nil {
+		Claim: releasedToken, Role: claim.RoleImplementer, DueAt: at}); err != nil {
 		t.Fatalf("arm the backstop: %v", err)
 	}
-	if err := store.CancelPodBackstopsOf(ctx, "legion", rootIssue, ""); err != nil {
+	if err := store.CancelPodBackstopsOf(ctx, "legion", rootIssue, "", ""); err != nil {
 		t.Fatalf("cancel the pod's backstops: %v", err)
 	}
 	if open, err := store.DuePodBackstops(ctx, "legion", at.Add(time.Hour)); err != nil || len(open) != 0 {
@@ -293,7 +293,7 @@ func TestTakingAWakeRecordsItAgainstTheNewestReleaseOnce(t *testing.T) {
 		t.Fatalf("record the release: %v", err)
 	}
 	if err := store.ArmPodBackstop(ctx, PodWakeBackstop{Project: "legion", Issue: rootIssue,
-		Role: claim.RoleImplementer, DueAt: at}); err != nil {
+		Claim: releasedToken, Role: claim.RoleImplementer, DueAt: at}); err != nil {
 		t.Fatalf("arm the backstop: %v", err)
 	}
 	taken, err := store.TakePodWake(ctx, "legion", rootIssue, releasedToken, claim.RoleImplementer, pods.WakeDelivery, at, 0)
@@ -393,7 +393,7 @@ func TestAWakeCancelsTheWokenRolesBackstopAlone(t *testing.T) {
 	at := time.Now().UTC().Truncate(time.Millisecond)
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
 		if err := store.ArmPodBackstop(ctx, PodWakeBackstop{Project: "legion", Issue: rootIssue,
-			Role: role, DueAt: at.Add(time.Hour)}); err != nil {
+			Claim: claim.Token("legion-legion-legion-208-" + string(role)), Role: role, DueAt: at.Add(time.Hour)}); err != nil {
 			t.Fatalf("arm the %s backstop: %v", role, err)
 		}
 	}
@@ -411,7 +411,7 @@ func TestAWakeCancelsTheWokenRolesBackstopAlone(t *testing.T) {
 
 	// A path that takes the whole released pod over leaves none of them: nothing of that pod is
 	// a wake's any more.
-	if err := store.CancelPodBackstopsOf(ctx, "legion", rootIssue, ""); err != nil {
+	if err := store.CancelPodBackstopsOf(ctx, "legion", rootIssue, "", ""); err != nil {
 		t.Fatalf("cancel the pod's backstops: %v", err)
 	}
 	if open, err := store.DuePodBackstops(ctx, "legion", at.Add(2*time.Hour)); err != nil || len(open) != 0 {

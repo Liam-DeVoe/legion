@@ -79,11 +79,11 @@ type Pods interface {
 	// outbox row, so a notice held for an absent architect has still spent its count.
 	VolumeNoticeCounts(ctx context.Context, tx pgx.Tx, issue, podUID, trimmer string, episode int) (store.VolumeNoticeCounts, error)
 	RecordVolumeNotice(ctx context.Context, tx pgx.Tx, issue, podUID, trimmer string, episode int, at time.Time) (int, error)
-	// OpenPodBackstop is whether issue's role has a backstop armed and not yet fired: a release
-	// that left the role with its phase open armed it, so the backstop brings the pod back. The
-	// cutover's repair reads it to pass over a merger something will still wake
-	// (cutoverMergerRepair).
-	OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (bool, error)
+	// OpenPodBackstop is whether issue's claim token, which holds role now, has a backstop armed
+	// and not yet fired: a release that left the claim with its phase open armed it, so the
+	// backstop brings the pod back. The cutover's repair reads it to pass over a merger something
+	// will still wake (cutoverMergerRepair).
+	OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, role claim.Role) (bool, error)
 }
 
 // wakeRow is the outbox row a wake writes: a `start` of the claim it woke, token, in the woken
@@ -362,8 +362,10 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 // podBackstopDue wakes a released pod on its backstop, which is R5: backstop_minutes after the
 // release, whatever else did or did not happen. The row is fired under a conditional update, so a
 // backstop two passes read fires once, and the row survives a restart, so one that came due while
-// the daemon was down fires at the first pass after it starts. The claim it wakes is the agent
-// that works the backstop's role's step (Engine.workerClaim), where that claim stands released.
+// the daemon was down fires at the first pass after it starts. The claim it wakes is the one it was
+// armed for (fact.Claim), the worker of the open phase at its release, where that claim stands
+// released; a backstop the release before armed names none and wakes the agent that works the
+// backstop's role's step (Engine.workerClaim).
 func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodBackstopDue) (intake.Result, error) {
 	if e.cfg.Pods == nil {
 		return intake.Result{}, nil
@@ -376,9 +378,11 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	worker, err := e.workerClaim(ctx, tx, *issue, fact.Role)
-	if err != nil {
-		return intake.Result{}, err
+	worker := fact.Claim
+	if worker == "" {
+		if worker, err = e.workerClaim(ctx, tx, *issue, fact.Role); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	released, found, err := e.cfg.Pods.ReleasedClaimByToken(ctx, tx, string(worker))
 	if err != nil || !found {

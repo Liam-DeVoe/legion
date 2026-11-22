@@ -126,6 +126,10 @@ import (
 // The claim of each resume (20261121183336) is applied after all of these and touches no
 // outbox_kind_check: it adds pod_resumes.claim at its default, the empty string, on every row it
 // finds, so it needs no row of its own here.
+// The claim of each backstop (20261122072945) is applied after it and touches no
+// outbox_kind_check: it adds pod_wake_backstops.claim at its default, the empty string, on every
+// row it finds, and splits the one open backstop per role into one per claim for the rows that
+// name one, so it needs no row of its own here (migration_20261122072945_test.go).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -136,6 +140,7 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261117213545, 20261117223524, 20261119003157, 20261120042902, 20261120055717, 20261121183336,
+	20261122072945,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -152,10 +157,10 @@ var thisBranchsMigrations = []int{
 // forward (20261117064152), the kind list with the plan record (20261117023932), the plan of an
 // issue's 20261117034837, dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
 // 20261117200337, the name of each step's agent's 20261117213545, dispatch://INFRA-4374's
-// 20261119003157, dispatch://INFRA-4108's 20261120042902, dispatch://INFRA-4729's 20261120055717
-// and the claim of each resume's 20261121183336. That is why the loop below holds the list rather
-// than counting it, so that a version added above any of them is named here rather than read as
-// main's.
+// 20261119003157, dispatch://INFRA-4108's 20261120042902, dispatch://INFRA-4729's 20261120055717,
+// the claim of each resume's 20261121183336 and the claim of each backstop's 20261122072945. That
+// is why the loop below holds the list rather than counting it, so that a version added above any
+// of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

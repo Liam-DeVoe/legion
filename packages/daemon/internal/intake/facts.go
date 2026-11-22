@@ -1674,15 +1674,17 @@ const (
 )
 
 // PodBackstopDue is one armed backstop of a released pod coming due (the pod_wake_backstops row
-// at its due_at): the claim of the worker on the role it names is woken where it stands released
-// (ReleasedClaimByToken), whatever else did or did not happen since the release, and a backstop of
-// an issue the record no longer holds does nothing. It is never decoded from an event — the
-// daemon's own pass reads the due rows and
-// applies one fact per row, under the row's id, so a backstop that came due while the daemon was
-// down fires once after it starts.
+// at its due_at): the claim it was armed for (Claim), the worker of the open phase at its release,
+// is woken where it stands released (ReleasedClaimByToken), whatever else did or did not happen
+// since the release, and a backstop of an issue the record no longer holds does nothing. Role is
+// the role that claim held then; a backstop the release before armed names no claim, and wakes the
+// claim of the worker on Role's step. It is never decoded from an event — the daemon's own pass
+// reads the due rows and applies one fact per row, under the row's id, so a backstop that came due
+// while the daemon was down fires once after it starts.
 type PodBackstopDue struct {
 	ID    int64
 	Issue string
+	Claim claim.Token
 	Role  claim.Role
 }
 

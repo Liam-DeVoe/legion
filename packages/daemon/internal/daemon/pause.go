@@ -256,7 +256,7 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 				return made, err
 			}
 			if c.Token == worker {
-				rec.Backstop = &store.PodWakeBackstop{Project: p.token, Issue: c.Issue, Role: c.Role, DueAt: at.Add(p.backstop)}
+				rec.Backstop = &store.PodWakeBackstop{Project: p.token, Issue: c.Issue, Claim: c.Token, Role: c.Role, DueAt: at.Add(p.backstop)}
 			}
 		}
 	}
