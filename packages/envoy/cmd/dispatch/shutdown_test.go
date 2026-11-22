@@ -45,6 +45,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -747,7 +748,7 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 
 	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, database.Pool, intakeLeasesOf(t, database.Pool), app, events.NewBroker(), nil, nil)
+	}, database.Pool, intakeLeasesOf(t, database.Pool), app, events.NewBroker(), nil, nil, delivery.NewAttributor(refs.Renames{}))
 	if err != nil {
 		t.Fatalf("start the intakes: %v", err)
 	}
@@ -870,7 +871,7 @@ func TestAShutdownThatGivesUpOnItsBackgroundWorkStillStopsTheIntakes(t *testing.
 			mu.Unlock()
 		}
 		return client, err
-	}, database.Pool, intakeLeasesOf(t, database.Pool), testGitHubApp(t, github.URL), events.NewBroker(), nil, nil)
+	}, database.Pool, intakeLeasesOf(t, database.Pool), testGitHubApp(t, github.URL), events.NewBroker(), nil, nil, delivery.NewAttributor(refs.Renames{}))
 	if err != nil {
 		t.Fatalf("start the intakes: %v", err)
 	}
@@ -965,7 +966,7 @@ func TestAPanicAfterTheIntakesStartEndsTheProcess(t *testing.T) {
 	defer cancel()
 	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, database.Pool, intakeLeasesOf(t, database.Pool), testGitHubApp(t, githubServer.URL), events.NewBroker(), nil, nil)
+	}, database.Pool, intakeLeasesOf(t, database.Pool), testGitHubApp(t, githubServer.URL), events.NewBroker(), nil, nil, delivery.NewAttributor(refs.Renames{}))
 	if err != nil {
 		t.Fatalf("start the intakes: %v", err)
 	}
@@ -1036,16 +1037,18 @@ func TestAnIntakesHoldOutlivesTheProcessWhileItsHandBackHasNotReachedTheServer(t
 	if err := watcher.Flush(); err != nil {
 		t.Fatalf("flush the answers' watch: %v", err)
 	}
-	// The head write's first read, the repository's canonical name (refs.CanonicalRepo), waits
-	// behind this lock until the row cancels it, so the envelope is in its handler when the write
-	// is held, and the head write's failure, and so its hand-back, come after.
+	// The head write's first read, the attribution's candidates (delivery's
+	// attributionCandidatesQuery, which joins each candidate issue's project for its default
+	// repository), waits behind this lock on projects until the row cancels it, so the envelope is
+	// in its handler when the write is held, and the head write's failure, and so its hand-back,
+	// come after.
 	holder, err := intakes.database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin the repo_projects lock: %v", err)
+		t.Fatalf("begin the projects lock: %v", err)
 	}
 	t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
-	if _, err := holder.Exec(ctx, "lock table repo_projects in access exclusive mode"); err != nil {
-		t.Fatalf("lock repo_projects: %v", err)
+	if _, err := holder.Exec(ctx, "lock table projects in access exclusive mode"); err != nil {
+		t.Fatalf("lock projects: %v", err)
 	}
 	publisher, err := bus.Connect([]string{intakes.natsURL}, bus.WithName("shutdown-test-publisher"))
 	if err != nil {
@@ -1065,15 +1068,15 @@ func TestAnIntakesHoldOutlivesTheProcessWhileItsHandBackHasNotReachedTheServer(t
 	}); err != nil {
 		t.Fatalf("publish the pull request: %v", err)
 	}
-	waitUntil(t, 30*time.Second, "the envelope's head read to wait behind the repo_projects lock", func() bool {
-		return canonicalRepoReadsWaiting(t, intakes.database, false) > 0
+	waitUntil(t, 30*time.Second, "the envelope's head read to wait behind the projects lock", func() bool {
+		return headAttributionReadsWaiting(t, intakes.database, false) > 0
 	})
 	intakes.link.hold(t, heldIntakeConnection)
-	if cancelled := canonicalRepoReadsWaiting(t, intakes.database, true); cancelled == 0 {
+	if cancelled := headAttributionReadsWaiting(t, intakes.database, true); cancelled == 0 {
 		t.Fatal("control: no head read waited behind the lock to be cancelled")
 	}
 	if err := holder.Rollback(ctx); err != nil {
-		t.Fatalf("release the repo_projects lock: %v", err)
+		t.Fatalf("release the projects lock: %v", err)
 	}
 	intakes.process.waitForLog(t, 30*time.Second, `msg="dispatch delivery: a pull request's head row was not stored; handing the envelope back"`)
 	intakes.process.waitForLog(t, 30*time.Second, `msg="dispatch delivery: NATS did not answer a call in time, so it goes on without waiting for it"`,
@@ -1104,21 +1107,22 @@ func TestAnIntakesHoldOutlivesTheProcessWhileItsHandBackHasNotReachedTheServer(t
 	}
 }
 
-// canonicalRepoRead is how refs.CanonicalRepo's statement, the head write's first read, begins in
-// pg_stat_activity, which keeps each backend's statement text.
-const canonicalRepoRead = "select coalesce((select max(rename.rename_target) from (%"
+// headAttributionRead is how the head write's first read, the statement of delivery's
+// attributionCandidatesQuery, begins in pg_stat_activity, which keeps each backend's statement
+// text.
+const headAttributionRead = "with recursive candidates as (%"
 
-// canonicalRepoReadsWaiting counts the backends whose canonical-name read waits for a lock, and
-// with cancel cancels each one's statement (pg_cancel_backend), so its caller fails.
-func canonicalRepoReadsWaiting(t *testing.T, database *store.Store, cancel bool) int {
+// headAttributionReadsWaiting counts the backends whose head attribution read waits for a lock,
+// and with cancel cancels each one's statement (pg_cancel_backend), so its caller fails.
+func headAttributionReadsWaiting(t *testing.T, database *store.Store, cancel bool) int {
 	t.Helper()
 	query := `select count(*) from pg_stat_activity where wait_event_type = 'Lock' and query like $1`
 	if cancel {
 		query += ` and pg_cancel_backend(pid)`
 	}
 	var count int
-	if err := database.Pool.QueryRow(context.Background(), query, canonicalRepoRead).Scan(&count); err != nil {
-		t.Fatalf("read the waiting canonical-name reads: %v", err)
+	if err := database.Pool.QueryRow(context.Background(), query, headAttributionRead).Scan(&count); err != nil {
+		t.Fatalf("read the waiting head attribution reads: %v", err)
 	}
 	return count
 }

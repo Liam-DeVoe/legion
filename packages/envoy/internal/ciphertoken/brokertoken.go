@@ -391,11 +391,41 @@ func (l LiveToken) Caller() Caller { return l.caller }
 // token is still live, which is this. Nothing admits a caller through it alone. It is also the
 // first half of a decision that does something else before it checks the proof (Prove).
 func (v *Verifier) Live(ctx context.Context, r *http.Request) (LiveToken, error) {
+	return v.live(ctx, r, true)
+}
+
+// LiveUntil is Live and the instant the broker's answer says the token stops being live: its
+// 'exp', or the zero time when the broker named none. A connection that outlives its request reads
+// it to tell a token whose life ended from one the broker ended early, since both answer
+// ErrNotActive once they are over and only the first was due: the listener's relay socket closes
+// the one for a fresh trade at once and the other as a refusal (cmd/listener, relay_socket.go).
+//
+// Unlike Live it spends nothing of the source address's bucket: its caller is a connection whose
+// opening request Verify admitted with its proof, which spent the bucket then, and which asks
+// again at an interval its own process sets (the relay socket's 20 s check, of at most
+// relaySocketMaxPerListener sockets). Charging it would let a stranger who empties the bucket of
+// an address, which every client behind one load balancer shares, close every connection opened
+// from it.
+func (v *Verifier) LiveUntil(ctx context.Context, r *http.Request) (Caller, time.Time, error) {
+	live, err := v.live(ctx, r, false)
+	if err != nil {
+		return Caller{}, time.Time{}, err
+	}
+	return live.Caller(), expiryOf(live.answer), nil
+}
+
+// live is the broker's half of every check: the token r presents, the broker's answer about it,
+// and the caller sessionCaller reads that answer as, held to this verifier's read-only switch.
+// Live, and so Verify, and LiveUntil all read the answer through here, so an open connection's
+// recheck is held to the same rule as the request that opened it, the read-only switch included.
+// spend says whether an introspection spends the source address's bucket (known): Live's does,
+// LiveUntil's does not.
+func (v *Verifier) live(ctx context.Context, r *http.Request, spend bool) (LiveToken, error) {
 	token, ok := Presented(r)
 	if !ok {
 		return LiveToken{}, ErrNotPresented
 	}
-	answer, err := v.known(ctx, r, token)
+	answer, err := v.known(ctx, r, token, spend)
 	if err != nil {
 		return LiveToken{}, err
 	}
@@ -416,11 +446,11 @@ func SessionCaller(answer Introspection) (Caller, error) {
 }
 
 // sessionCaller is the one reading of the broker's answer about a token as a session's caller:
-// Live makes it with its verifier's Options.ServesReadOnly, and so Verify, which reads the answer
-// through Live, and the NATS auth service through SessionCaller with the switch off. The token is
-// live (ErrNotActive), bound to a key (ErrKeyMismatch: no proof can be the key it does not have),
-// and issued for acting as a session in a shape this package reads, a read-only one only when
-// servesReadOnly is set (ErrNotASession); the Caller it names is callerOf the answer.
+// live makes it with its verifier's Options.ServesReadOnly, and so Live, LiveUntil and Verify, which
+// reads the answer through Live, and the NATS auth service through SessionCaller with the switch
+// off. The token is live (ErrNotActive), bound to a key (ErrKeyMismatch: no proof can be the key it
+// does not have), and issued for acting as a session in a shape this package reads, a read-only one
+// only when servesReadOnly is set (ErrNotASession); the Caller it names is callerOf the answer.
 func sessionCaller(answer Introspection, servesReadOnly bool) (Caller, error) {
 	if !answer.Active {
 		return Caller{}, ErrNotActive
@@ -539,8 +569,9 @@ func shapeOf(answer Introspection) tokenShape {
 // had just been given. A stranger still pays per distinct token, which is the flood the bucket
 // exists for. The introspection runs under the context of whichever request opened the flight,
 // so one that goes away takes the others' answer with it; they are answered ErrBrokerUnreachable
-// and come back, which is what every other lost answer does.
-func (v *Verifier) known(ctx context.Context, r *http.Request, token string) (Introspection, error) {
+// and come back, which is what every other lost answer does. With spend false the bucket is not
+// spent (LiveUntil).
+func (v *Verifier) known(ctx context.Context, r *http.Request, token string, spend bool) (Introspection, error) {
 	key := sha256.Sum256([]byte(token))
 	if answer, ok := v.cache.lookup(key, v.now()); ok {
 		return answer, nil
@@ -551,7 +582,7 @@ func (v *Verifier) known(ctx context.Context, r *http.Request, token string) (In
 		if answer, ok := v.cache.lookup(key, v.now()); ok {
 			return answer, nil
 		}
-		if !v.addresses.AllowAt(v.address(r), v.now()) {
+		if spend && !v.addresses.AllowAt(v.address(r), v.now()) {
 			return Introspection{}, ErrRateLimited
 		}
 		answer, err := v.introspect(ctx, token)

@@ -79,6 +79,9 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 // time settingsWake is signalled -- in the server, the shared listener's wake on SettingsChannel --
 // so no message and no timer reads the row. A nil settingsWake reads it once.
 //
+// attributor is the Attributor of the rename pairs the process read at boot. Intake attributes
+// each pull request and keys its head row with it.
+//
 // The returned stop, called once ctx is cancelled, waits for both intakes' Runs and the cache's,
 // closes both clients, then waits for a hand-back finalizer each Run left behind. A Run can return
 // at its stop deadline with a hand-back still waiting for NATS; close settles that hand-back, sent
@@ -104,6 +107,7 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 func StartIntakes(
 	ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases,
 	github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports,
+	attributor *Attributor,
 ) (stop func(), err error) {
 	if github == nil {
 		slog.Info("dispatch delivery: no GitHub App key — the intakes are idle")
@@ -119,7 +123,7 @@ func StartIntakes(
 		return nil, fmt.Errorf("connect the job intake: %w", err)
 	}
 	settings := newSettingsCache(pool, settingsWake)
-	intake := newIntake(intakeClient, pool, leases.events, github, broker, settings)
+	intake := newIntake(intakeClient, pool, leases.events, github, broker, settings, attributor)
 	intake.pushes = pushes
 	job := newJobIntake(jobClient, pool, leases.jobs, github, realJobClock{}, settings)
 	var running sync.WaitGroup

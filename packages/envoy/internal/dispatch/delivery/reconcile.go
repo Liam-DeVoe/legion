@@ -46,11 +46,12 @@ const reconcileOverlap = time.Hour
 // (RecordDeployedEvents). A nil GitHub client (no App credentials) leaves it idle, exactly like
 // architecture.Importer and Intake.
 type Reconcile struct {
-	pool     *store.Pool
-	github   *githubapp.Client
-	events   *events.Broker
-	atStart  bool
-	interval time.Duration
+	pool       *store.Pool
+	github     *githubapp.Client
+	events     *events.Broker
+	attributor *Attributor
+	atStart    bool
+	interval   time.Duration
 	// gitHubReads is what RecordGitHubReads set: each leased pass's attempt at reading GitHub
 	// goes through it, and nil records nothing.
 	gitHubReads githubreads.Recorder
@@ -58,9 +59,10 @@ type Reconcile struct {
 
 // NewReconcile builds a Reconcile reading and writing through pool: cmd/dispatch hands it the
 // background pool (store.Pool.Background), so a pass neither waits for the requests' connections
-// nor takes one.
-func NewReconcile(pool *store.Pool, github *githubapp.Client, broker *events.Broker) *Reconcile {
-	return &Reconcile{pool: pool, github: github, events: broker}
+// nor takes one. It attributes pull requests and keys their head rows with attributor, the
+// Attributor of the rename pairs the process read at boot.
+func NewReconcile(pool *store.Pool, github *githubapp.Client, broker *events.Broker, attributor *Attributor) *Reconcile {
+	return &Reconcile{pool: pool, github: github, events: broker, attributor: attributor}
 }
 
 // FirstPassAtStart makes Run run one pass as it starts, before its jittered ticks, for an
@@ -283,7 +285,7 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 	// The attribution backfill runs last, within its own call budget: it is the one step whose
 	// work can wait a pass, so the timeline's own facts take the rate limit first.
 	recordRead("read attribution inputs of stored pull requests", r.reconcileAttributionInputs(ctx))
-	if changed, err := AttributePullRequests(ctx, r.pool, AttributionResolveBatch); err != nil {
+	if changed, err := r.attributor.AttributePullRequests(ctx, r.pool, AttributionResolveBatch); err != nil {
 		record("attribute stored pull requests", err)
 	} else if changed > 0 {
 		slog.Info("dispatch delivery: attributed stored pull requests", "changed", changed)
@@ -588,7 +590,7 @@ func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time
 		return err
 	}
 	refresh := func(ctx context.Context, head PullRequestHead) error {
-		err := RefreshPullRequestHead(ctx, r.pool, r.github, r.events, head.Repo, head.Number, now)
+		err := r.attributor.RefreshPullRequestHead(ctx, r.pool, r.github, r.events, head.Repo, head.Number, now)
 		if err == nil {
 			return nil
 		}
@@ -738,8 +740,8 @@ func (r *Reconcile) readAttributionInputs(ctx context.Context, pr DeliveryPullRe
 		githubreads.NoteFailuref(ctx, "read attribution inputs of %s PR #%d: %w", pr.Repo, pr.Number, err)
 		return nil
 	}
-	inputs := attributionInputsFrom(facts)
-	issueKey, _, err := resolveStoredIssueKey(ctx, r.pool, pr.Repo, pr.URL, inputs)
+	inputs := r.attributor.attributionInputsFrom(facts)
+	issueKey, _, err := r.attributor.resolveStoredIssueKey(ctx, r.pool, pr.Repo, pr.URL, inputs)
 	if err != nil {
 		slog.Warn("dispatch delivery: resolve the issue of a backfilled pull request", "repo", pr.Repo, "number", pr.Number, "error", err)
 		return nil
@@ -787,7 +789,7 @@ func (r *Reconcile) completePartialPullRequest(ctx context.Context, pr DeliveryP
 	if fetched.MergedAt == nil {
 		return nil
 	}
-	if err := completePullRequest(ctx, r.pool, r.github, owner, repo, pr.Repo, pr.Number, fetched, nil); err != nil {
+	if err := r.attributor.completePullRequest(ctx, r.pool, r.github, owner, repo, pr.Repo, pr.Number, fetched, nil); err != nil {
 		if limited, ok := githubapp.AsRateLimit(err); ok {
 			slog.Warn("dispatch delivery: stopped completing partial pull requests: rate limit", "repo", pr.Repo, "number", pr.Number, "error", err)
 			return limited
