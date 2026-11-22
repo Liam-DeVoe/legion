@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // manifestAt is where the tests' pi-legion manifest goes under a plugins root, and envoyManifestAt
@@ -414,20 +415,34 @@ const fakeBudget = time.Minute
 // attempt off once the fake has added a line to dir/hung, which a step that hangs adds once it has
 // counted its attempt and said all it says, and at fakeBudget where the fake never hangs. The gate
 // runs one attempt at a time, so a line past those the file held when the attempt began is that
-// attempt's own.
+// attempt's own. A read of the file that fails says nothing of it, so it changes nothing: neither
+// the count the attempt starts from, which is read again until a read succeeds, nor the watch,
+// which cuts only on a read that holds more lines.
 func endWhenHung(dir string) func(context.Context) (context.Context, context.CancelFunc) {
 	hung := filepath.Join(dir, "hung")
-	lines := func() int {
-		raw, _ := os.ReadFile(hung)
-		return strings.Count(string(raw), "\n")
+	lines := func() (int, bool) {
+		raw, err := os.ReadFile(hung)
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, true
+		}
+		return strings.Count(string(raw), "\n"), err == nil
 	}
 	return func(ctx context.Context) (context.Context, context.CancelFunc) {
-		before := lines()
+		var before int
+		testwait.Holds(fakeBudget, testwait.Poll, func() bool {
+			n, read := lines()
+			before = n
+			return read
+		})
 		attempt, cancel := context.WithTimeout(ctx, fakeBudget)
 		go func() {
-			for attempt.Err() == nil && lines() == before {
-				time.Sleep(5 * time.Millisecond)
-			}
+			testwait.Holds(fakeBudget, testwait.Poll, func() bool {
+				if attempt.Err() != nil {
+					return true
+				}
+				n, read := lines()
+				return read && n > before
+			})
 			cancel()
 		}()
 		return attempt, cancel
