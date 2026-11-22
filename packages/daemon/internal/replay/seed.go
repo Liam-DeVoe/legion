@@ -40,13 +40,15 @@ const seedSession = "replay-seed"
 // whether it is handed to Legion, and a lingering root's linger; the design gate rows of each such
 // issue's current run, what each holder of a gated tree's work took of its approved design, as the
 // daemon's upgrade to the release that records it writes it (told), and the mirror row of each ask
-// on such a root; the slots the issues hold, the trace's inferred slots among them (assumption
-// 34), and the mark of an issue whose slot went back for a wait on another issue; the tree
-// lifecycle of each tree that runs or lingers; the claims of the turns under way of the issues in
-// the workflow, as the outbox's start writes a claim (its given entry and a confirmed delivery);
-// the owed start of each issue whose work came back while it held no slot, marked to wait for one
-// and created at the moment its work came back; and a synthetic open pull request for each issue
-// the trace has seen one of. records writes the record's tables and claims the claims.
+// on such a root; the mark that the architect owning an issue was told of its children wait, where
+// the record told it in its tree's current run (childrenToldMarks); the slots the issues hold, the
+// trace's inferred slots among them (assumption 34), and the mark of an issue whose slot went back
+// for a wait on another issue; the tree lifecycle of each tree that runs or lingers; the claims of
+// the turns under way of the issues in the workflow, as the outbox's start writes a claim (its
+// given entry and a confirmed delivery); the owed start of each issue whose work came back while
+// it held no slot, marked to wait for one and created at the moment its work came back; and a
+// synthetic open pull request for each issue the trace has seen one of. records writes the
+// record's tables and claims the claims.
 //
 // It names each issue it cannot place, with the reason: one Dispatch shows no event or no
 // repository of, one in the workflow whose turn stands in a tree the record shows running no
@@ -84,6 +86,9 @@ type SeedReport struct {
 	// SlotCount is the trace's check of the slots it holds against the slots in use the slot line at
 	// the window's start says (Trace.SlotCount), whose difference is no issue's.
 	SlotCount SlotCount
+	// ChildrenTold is the moment the record told each issue's children wait whose telling the start
+	// state marked (childrenToldMarks), by key: the moment that wait began.
+	ChildrenTold map[string]time.Time
 }
 
 // SeedAndReport writes the start state Seed writes and answers its whole report (SeedReport).
@@ -93,7 +98,7 @@ func SeedAndReport(ctx context.Context, tx pgx.Tx, records record.Store, claims 
 		return SeedReport{}, fmt.Errorf("replay: seed the start state of %s: %w", t.Project, err)
 	}
 	s := seeder{ctx: ctx, tx: tx, records: records, claims: claims, t: t, at: at, rule: t.ruleAt(at), token: token,
-		placed: map[string]record.Issue{}, epochs: map[string]uint64{}, leftOut: map[int]int{}}
+		placed: map[string]record.Issue{}, epochs: map[string]uint64{}, leftOut: map[int]int{}, childrenTold: map[string]time.Time{}}
 	keys := slices.Sorted(maps.Keys(t.Issues))
 	for _, key := range keys {
 		if err := s.mirror(t.Issues[key]); err != nil {
@@ -105,7 +110,8 @@ func SeedAndReport(ctx context.Context, tx pgx.Tx, records record.Store, claims 
 			return SeedReport{}, err
 		}
 	}
-	for _, fn := range []func() error{s.gates, s.told, s.asks, s.slots, s.lifecycles, s.turns, s.owedStarts, s.pullRequests, s.unclassified} {
+	for _, fn := range []func() error{s.gates, s.told, s.childrenToldMarks, s.asks, s.slots, s.lifecycles, s.turns, s.owedStarts, s.pullRequests,
+		s.unclassified} {
 		if err := fn(); err != nil {
 			return SeedReport{}, err
 		}
@@ -120,7 +126,8 @@ func SeedAndReport(ctx context.Context, tx pgx.Tx, records record.Store, claims 
 			s.unplaced(fact.Issue, "the trace could not place a fact of it that stands at the window's start: %s", fact.Reason)
 		}
 	}
-	return SeedReport{Unplaced: s.report, LeftOut: s.leftOut, InferredSlots: s.inferred, SlotCount: t.SlotCount}, nil
+	return SeedReport{Unplaced: s.report, LeftOut: s.leftOut, InferredSlots: s.inferred, SlotCount: t.SlotCount,
+		ChildrenTold: s.childrenTold}, nil
 }
 
 // bearsOnStart says whether fact, which the trace could not place, leaves in doubt what a start
@@ -154,11 +161,13 @@ type seeder struct {
 	// opened, by its root.
 	placed map[string]record.Issue
 	epochs map[string]uint64
-	// report is each issue named, leftOut the turns written no claim of by assumption, and
-	// inferred the slots written that the trace inferred (SeedReport).
-	report   []Unplaced
-	leftOut  map[int]int
-	inferred int
+	// report is each issue named, leftOut the turns written no claim of by assumption, inferred
+	// the slots written that the trace inferred, and childrenTold the children waits whose telling
+	// was marked (SeedReport).
+	report       []Unplaced
+	leftOut      map[int]int
+	inferred     int
+	childrenTold map[string]time.Time
 }
 
 // unplaced names an issue the start state cannot place, once for each reason.
@@ -480,6 +489,43 @@ func (s *seeder) told() error {
 		if err := s.records.BaselineTold(s.ctx, s.tx, tree, record.AudienceArchitect, tree, s.at); err != nil {
 			return fmt.Errorf("replay: seed what the architect of %s took: %w", tree, err)
 		}
+	}
+	return nil
+}
+
+// childrenToldMarks writes the mark that the architect owning each placed issue in the workflow was
+// told of its children wait (record.Store.TellChildrenFirst), at its tree root's generation, where
+// the record told it in its tree's current run before the start: a line of a children wait of the
+// issue (Wait.Told) in the tree it stands in now, at or after its root's latest entry, a
+// re-admission opening a run the daemon tells anew. The daemon tells a wait once for its tree's
+// generation (admit's tellChildrenFirst), so without the mark the replay's daemon would tell again,
+// at its first pass, a wait the record told before the start: a notice the record never sent and a
+// line of a wait the trace would read as a second one. Each moment it marks is reported
+// (SeedReport.ChildrenTold).
+func (s *seeder) childrenToldMarks() error {
+	for _, key := range s.placedKeys() {
+		issue, iss := s.placed[key], s.t.Issues[key]
+		root, placed := s.placed[issue.Tree]
+		rootIss := s.t.Issues[issue.Tree]
+		if !inWorkflow(issue) || !placed || rootIss == nil {
+			continue
+		}
+		run, _ := s.run(rootIss)
+		if run == nil {
+			continue
+		}
+		i := slices.IndexFunc(iss.Waits, func(wait Wait) bool {
+			return wait.Kind == WaitChildren && wait.Told && !wait.Start.Before(run.At) && wait.Start.Before(s.at) &&
+				treeOf(iss, wait.Start) == issue.Tree
+		})
+		if i < 0 {
+			continue
+		}
+		told := iss.Waits[i].Start
+		if _, err := s.records.TellChildrenFirst(s.ctx, s.tx, key, issue.Tree, root.Generation, told); err != nil {
+			return fmt.Errorf("replay: seed the telling of %s's children wait: %w", key, err)
+		}
+		s.childrenTold[key] = told
 	}
 	return nil
 }

@@ -384,7 +384,15 @@ func TestReplayStatesAreTheProjectionsStates(t *testing.T) {
 // replay ran: buildTrace). And neither has an issue a hold of the daemon's line keeps from
 // its first start wait for a slot (startingAt): ACME-2 of childrenFirstWindow while its own open
 // child holds it, of acceptedAncestorWindow while its parent stands accepted, and of
-// ancestryWindow, a queued root, while its Dispatch chain names a live root.
+// ancestryWindow, a queued root, while its Dispatch chain names a live root. Four windows hold the
+// ways a reading of a wait can part from the daemon's facts, and both timelines count each wait as
+// the window's doc counts it: no wait of an issue in flight whose blocker is already done, though a
+// pass reads its row as another issue's blocker with no row of that blocker (doneBlockerWindow,
+// unfinishedLinks); a children wait that begins again at the opening of a gate a new spec version
+// closed, and not at the approval of another document (gateVersionWindow, gateReader); a link
+// wait and a children wait that touch as one (touchingWaitsWindow, issueWaits); and a children
+// wait the record told before the start as one, its telling marked in the start state
+// (toldBeforeStartWindow, childrenToldMarks).
 func TestSnapshotAndLineTimelinesAgree(t *testing.T) {
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
 	if dsn == "" {
@@ -478,6 +486,24 @@ func TestSnapshotAndLineTimelinesAgree(t *testing.T) {
 		window := ancestryWindow(t)
 		result := timelinesAgree(t, dsn, window, record.MainRule, MainBranch, 1, 1)
 		assertWaitsForNoSlot(t, window, result, "ACME-2", clock(9, 40))
+	})
+	t.Run("done-blocker", func(t *testing.T) {
+		result := timelinesAgree(t, dsn, doneBlockerWindow(t), record.MainRule, MainBranch, 1, 1)
+		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{})
+	})
+	t.Run("gate-version", func(t *testing.T) {
+		// ACME-1 waits on ACME-2 from the gate's opening at 10:20 to its closing at 11:00, and again
+		// from its opening at 12:00 to the window's end at 13:00.
+		result := timelinesAgree(t, dsn, gateVersionWindow(t), record.MainRule, MainBranch, 1, 1)
+		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitGateClosed: {Count: 1, Hours: 2.0 / 3}, WaitOpen: {Count: 1, Hours: 1}})
+	})
+	t.Run("touching-waits", func(t *testing.T) {
+		result := timelinesAgree(t, dsn, touchingWaitsWindow(t), record.MainRule, MainBranch, 1, 1)
+		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitChildDone: {Count: 1, Hours: 11.0 / 6}})
+	})
+	t.Run("told-before-start", func(t *testing.T) {
+		result := timelinesAgree(t, dsn, toldBeforeStartWindow(t), record.MainRule, MainBranch, 1, 1)
+		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitChildDone: {Count: 1, Hours: 1}})
 	})
 }
 

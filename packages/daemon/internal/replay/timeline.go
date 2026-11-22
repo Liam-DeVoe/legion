@@ -261,21 +261,14 @@ type gateSteps struct {
 }
 
 // gateStepsOf is root's design gate as its gate facts leave it, in time order (BuildTrace reads
-// the lines and the verdicts in one time order): a registration open or closed as it was
-// registered, an opening, a person's approval, a closing or a request for changes. Only the
-// facts that change the gate are kept.
-func gateStepsOf(root *IssueTrace) gateSteps {
+// the lines and the verdicts in one time order), read as gateReader reads a gate, lines saying
+// whether the window holds the daemon's lines of the gate's flips (Trace.GateLines). Only the facts
+// that change the gate are kept.
+func gateStepsOf(root *IssueTrace, lines bool) gateSteps {
 	var steps gateSteps
-	open := false
+	gate := gateReader{lines: lines}
 	for _, fact := range root.Gates {
-		switch fact.Kind {
-		case GateRegisteredFact:
-			open = fact.Open
-		case GateOpenedFact, GateApproved:
-			open = true
-		case GateClosedFact, GateChangesRequested:
-			open = false
-		}
+		open := gate.apply(fact)
 		if n := len(steps.open); n > 0 && steps.open[n-1] == open {
 			continue
 		}
@@ -314,9 +307,9 @@ type issueIndex struct {
 	gate gateSteps
 }
 
-// indexIssue indexes iss.
-func indexIssue(iss *IssueTrace) *issueIndex {
-	x := &issueIndex{iss: iss, shown: shownOf(iss), flight: iss.inFlight(), gate: gateStepsOf(iss)}
+// indexIssue indexes iss, the gate of the tree it roots read as gateStepsOf reads it.
+func indexIssue(iss *IssueTrace, gateLines bool) *issueIndex {
+	x := &issueIndex{iss: iss, shown: shownOf(iss), flight: iss.inFlight(), gate: gateStepsOf(iss, gateLines)}
 	done, rank := false, ""
 	for i, state := range x.shown.states {
 		if isDone := state.Status == record.DoneStatus; i == 0 || isDone != done {
@@ -397,7 +390,7 @@ func (r *lineReader) of(key string) *issueIndex {
 	if !ok {
 		return nil
 	}
-	x := indexIssue(iss)
+	x := indexIssue(iss, r.t.GateLines)
 	r.index[key] = x
 	return x
 }
@@ -497,12 +490,17 @@ func recordedWaitStarts(t Trace, ranks rankFunc, rule func(time.Time) record.Slo
 // measures": a stretch in which an issue in flight, standing before its review, waits on another
 // issue): each stretch of its link and children waits in which it stands in flight (flight) and
 // before its review (measuredStretches), in the order they began, each run of them that overlap
-// read as one wait, from the first one's start to the last one's end, ended by what ended the
-// last. A wait cut by its stretch's end ends as that stretch does: its move past its review
-// (moved_on), where the daemon judges no wait of it any longer (blockers' waitsOf) and the
-// snapshot timeline ends it too (waitEnd), or its leave (left_workflow). So a children wait the
-// daemon tells of a child that has not started, the line's hold on its first phase, is none of
-// them, as the snapshot timeline, which reads the waits of the issues in flight alone, counts none.
+// or touch read as one wait, from the first one's start to the last one's end, ended by what ended
+// the last. A wait that begins where another ends is the same stretch of waiting, as the snapshot
+// timeline reads it, whose wait goes on at a settle where something is left to wait on whatever
+// ended and began there (snapshots.waitAt): a blocker done at the moment another is linked, or a
+// children wait the trace ends where the daemon's next line of a children wait of the issue begins
+// (IssueTrace.nextWaitStart). A wait cut by its stretch's end ends as that stretch does: its move
+// past its review (moved_on), where the daemon judges no wait of it any longer (blockers' waitsOf)
+// and the snapshot timeline ends it too (waitEnd), or its leave (left_workflow). So a children
+// wait the daemon tells of a child that has not started, the line's hold on its first phase, is
+// none of them, as the snapshot timeline, which reads the waits of the issues in flight alone,
+// counts none.
 func issueWaits(iss *IssueTrace, flight [][2]time.Time) []CourseWait {
 	stretches := measuredStretches(iss, flight)
 	var pieces []CourseWait
@@ -524,7 +522,7 @@ func issueWaits(iss *IssueTrace, flight [][2]time.Time) []CourseWait {
 	slices.SortStableFunc(pieces, func(a, b CourseWait) int { return a.Start.Compare(b.Start) })
 	var waits []CourseWait
 	for _, wait := range pieces {
-		if n := len(waits); n > 0 && (waits[n-1].End.IsZero() || wait.Start.Before(waits[n-1].End)) {
+		if n := len(waits); n > 0 && (waits[n-1].End.IsZero() || !wait.Start.After(waits[n-1].End)) {
 			last := &waits[n-1]
 			if !last.End.IsZero() && (wait.End.IsZero() || wait.End.After(last.End)) {
 				last.End, last.EndedBy = wait.End, wait.EndedBy

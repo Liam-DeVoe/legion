@@ -148,6 +148,15 @@ const (
 	consumerCaughtUpLine = "admission: the Dispatch consumer has caught up; releasing held roots"
 )
 
+// gateOpenedLine and gateClosedLine are the msgs of the daemon's lines of a design gate's opening
+// and closing (GateOpened, GateClosed), which it writes at every artifact event that flips a gate
+// and at no other (workflow's applyArtifact): a window that holds both kinds says each flip of its
+// gates in them (Trace.GateLines).
+const (
+	gateOpenedLine = "workflow: design gate opened"
+	gateClosedLine = "workflow: design gate closed"
+)
+
 // processDiedLine, processDisplacedLine and workEndedLine are the msgs of the three lines the end
 // of a claim's process writes (ProcessEnded): its death (supervise's died), its displacement
 // through no fault of its own (displaced), and the let-go of a process that ran work (recordEnd).
@@ -754,10 +763,10 @@ var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
 	"workflow: root waits on a person and keeps its admission slot": func(h LineHead, a *lineAttrs) LogLine {
 		return WaitsOnPerson{LineHead: h, Issue: a.str("issue"), Tree: a.str("tree"), Reason: a.str("reason"), SinceSeq: a.seq("since_seq")}
 	},
-	"workflow: design gate opened": func(h LineHead, a *lineAttrs) LogLine {
+	gateOpenedLine: func(h LineHead, a *lineAttrs) LogLine {
 		return GateOpened{LineHead: h, Issue: a.str("issue"), Artifact: a.str("artifact"), Event: a.str("event"), Version: a.count("version")}
 	},
-	"workflow: design gate closed": func(h LineHead, a *lineAttrs) LogLine {
+	gateClosedLine: func(h LineHead, a *lineAttrs) LogLine {
 		return GateClosed{LineHead: h, Issue: a.str("issue"), Artifact: a.str("artifact"), Event: a.str("event"), Version: a.count("version")}
 	},
 	"workflow: design gate registered": func(h LineHead, a *lineAttrs) LogLine {

@@ -35,6 +35,9 @@ type Trace struct {
 	Parts        []Part
 	GateSteps    []record.DesignStep
 	TickInterval time.Duration
+	// GateLines says the window holds the daemon's lines of a design gate's opening and closing
+	// (gateOpenedLine, gateClosedLine), so its gates are read from them (gateReader).
+	GateLines bool
 	// Branches is the base branch of each repository the window's merges name, by owner/repo: the
 	// default branch a start state records an issue of that repository on.
 	Branches map[string]string
@@ -411,7 +414,9 @@ const (
 // Wait is one wait of an issue: its kind, when it began and ended (End zero while it stands),
 // what ended it, and what it is on: the unfinished blockers it began on (link); the ask or the spec
 // version and document it waits on and the Dispatch sequence it stands since (person); the phase
-// held, the role whose claim failed and why (held).
+// held, the role whose claim failed and why (held). Told is a children wait the daemon's line
+// began, which it writes as it tells the wait (admit's tellChildrenFirst), not one the trace reads
+// again with no line of its own (traceBuilder.childrenWaitAgain).
 type Wait struct {
 	Kind       WaitKind
 	Start, End time.Time
@@ -424,6 +429,7 @@ type Wait struct {
 	From       phase.Phase
 	Role       claim.Role
 	Reason     string
+	Told       bool
 }
 
 // released says whether w, a hold, ended with the record's issue working the held phase again:
@@ -506,6 +512,37 @@ type GateFact struct {
 	ChangesRequested bool
 	Event            string
 	Seq              int64
+}
+
+// gateReader is a design gate's openness as its facts leave it, read one fact at a time in time
+// order: the one reading of a gate the line timeline (gateStepsOf) and the trace's children waits
+// (traceBuilder.childrenWaitAgain) share. A registration leaves the gate open or closed as it was
+// registered, and an opening or a closing line flips it, each naming the document and the version
+// the gate stands at. The daemon writes such a line at every artifact event that flips a gate and
+// at no other (workflow's applyArtifact, classify.DesignGateOpen), so where the window holds those
+// kinds (lines, Trace.GateLines) a verdict moves nothing the lines do not. Where it holds none, a
+// verdict moves the gate only where it is on the document and at the version the gate stands at,
+// as record.GateOpen opens a step on the approval of its latest version alone: a verdict on
+// another document of the issue, which the deployment gates no step of, or on an older version
+// changes no gate state.
+type gateReader struct {
+	lines    bool
+	open     bool
+	artifact string
+	version  int
+}
+
+// apply reads fact into the gate and answers whether the gate stands open after it.
+func (g *gateReader) apply(fact GateFact) bool {
+	switch fact.Kind {
+	case GateRegisteredFact, GateOpenedFact, GateClosedFact:
+		g.open, g.artifact, g.version = fact.Kind == GateOpenedFact || fact.Kind == GateRegisteredFact && fact.Open, fact.Artifact, fact.Version
+	case GateApproved, GateChangesRequested:
+		if !g.lines && fact.Artifact == g.artifact && fact.Version == g.version {
+			g.open = fact.Kind == GateApproved
+		}
+	}
+	return g.open
 }
 
 // ChildFiling is a child filed under the issue (issue.created naming it the parent) or moved under
@@ -614,6 +651,7 @@ func buildTrace(w Window, ran *record.SlotRule) (Trace, error) {
 		b.held[msg] = true
 	}
 	b.recordLines, b.heldLines = b.held[passMovedSlotsLine], b.held[phaseHeldLine]
+	b.t.GateLines = b.held[gateOpenedLine] && b.held[gateClosedLine]
 	for repo, merges := range w.Merges {
 		if len(merges) > 0 {
 			b.t.Branches[repo] = merges[0].Branch
@@ -986,7 +1024,7 @@ func (b *traceBuilder) onLine(line LogLine) {
 		// no line, is read once every event is (childrenWaitEnds).
 		iss := b.issue(l.Issue)
 		b.generationIs(iss, l.Generation)
-		iss.Waits = append(iss.Waits, Wait{Kind: WaitChildren, Start: at})
+		iss.Waits = append(iss.Waits, Wait{Kind: WaitChildren, Start: at, Told: true})
 	case WaitsOnPerson:
 		// Each line is a root entering a wait on a person (workflow's enterAwaiting); its end is
 		// read once every event is (personWaitEnds).
@@ -2093,9 +2131,10 @@ func (b *traceBuilder) childrenWaitEnd(iss *IssueTrace, candidates []string, wai
 // closed at a full cap, and that its architect files another child under before its own first
 // phase can start, waits for that child again with no line; read from the line alone, it would
 // stand waiting for a slot alone. The gate stands open where the line began it (since), the daemon
-// judging only an issue of an open gate, and from then as the tree's gate facts leave it. Under a
-// rule whose children-first holds a started parent in any phase (childrenHoldAnyPhase), the wait
-// begins again anywhere in the issue's run, the visit it waited in or a later one.
+// judging only an issue of an open gate, and from then as the tree's gate facts leave it, read as
+// gateReader reads them. Under a rule whose children-first holds a started parent in any phase
+// (childrenHoldAnyPhase), the wait begins again anywhere in the issue's run, the visit it waited in
+// or a later one.
 func (b *traceBuilder) childrenWaitAgain(iss *IssueTrace, candidates []string, ended Wait, since time.Time) (Wait, bool) {
 	if ended.EndedBy != WaitChildDone && ended.EndedBy != WaitChildMovedOut && ended.EndedBy != WaitGateClosed {
 		return Wait{}, false
@@ -2127,21 +2166,16 @@ func (b *traceBuilder) childrenWaitAgain(iss *IssueTrace, candidates []string, e
 	}
 	slices.SortFunc(moments, time.Time.Compare)
 	moments = slices.CompactFunc(moments, time.Time.Equal)
-	open, read := true, 0
+	gate, read := gateReader{lines: b.t.GateLines}, 0
+	for ; read < len(gates) && !gates[read].At.After(since); read++ {
+		gate.apply(gates[read])
+	}
+	gate.open = true
 	for _, at := range moments {
 		for ; read < len(gates) && !gates[read].At.After(at); read++ {
-			if gate := gates[read]; gate.At.After(since) {
-				switch gate.Kind {
-				case GateRegisteredFact:
-					open = gate.Open
-				case GateOpenedFact, GateApproved:
-					open = true
-				case GateClosedFact, GateChangesRequested:
-					open = false
-				}
-			}
+			gate.apply(gates[read])
 		}
-		if open && len(b.childrenAt(iss.Key, candidates, at)) > 0 {
+		if gate.open && len(b.childrenAt(iss.Key, candidates, at)) > 0 {
 			return Wait{Kind: WaitChildren, Start: at}, true
 		}
 	}

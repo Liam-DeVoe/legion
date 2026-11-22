@@ -277,7 +277,7 @@ func (s *snapshots) holderState(issue record.Issue, slot record.Slot, claims []s
 func (s *snapshots) waitAt(at time.Time, key string, issue record.Issue, inWorkflow, inFlight bool, v *admit.PassView, dispatch *shadow) {
 	var links, children []string
 	if inWorkflow && inFlight && beforeReview(record.StandsAt(issue)) {
-		links, _ = unfinishedLinks(key, v, dispatch)
+		links, _ = unfinishedLinks(key, dispatch)
 		children = s.openChildren(key, issue, v, dispatch)
 	}
 	wait := s.waits[key]
@@ -347,20 +347,17 @@ func (s *snapshots) recordOf(key string) *record.Issue {
 }
 
 // unfinishedLinks is the blockers key's Dispatch links name that are not done, and every blocker
-// they name, as the pass read them where it read key's mirror row (blockers.Unfinished over
-// v.Rows), and as the replay's copy of Dispatch shows them where it read none, by the same rule: a
-// blocker it holds no payload of is not done. The mirror keeps a row of every issue the project
-// ever had (blockers.Load), but a pass reads the rows of the issues it judges alone
-// (blockers.JudgeLine): one a blocker can hold where it stands, and one it has started
-// (blockers' startedIssues: a slot, an owed start or the mark of a release for a wait). An issue
-// of a tree that is not live, or whose root lingers, is none of these once a pass has cleared its
-// mark (admit's releaseSlots, as record.LineFacts.NeedsSlot answers false of it), so the pass
-// reads no row of it while its links still stand in Dispatch, and the copy the mirror is written
-// from shows them (TestTheShadowMatchesTheMirrorAfterEveryFact).
-func unfinishedLinks(key string, v *admit.PassView, dispatch *shadow) (unfinished, linked []string) {
-	if row, read := v.Rows[key]; read {
-		return blockers.Unfinished(v.Rows, key), row.Blockers
-	}
+// they name, as the replay's copy of Dispatch shows them: a blocker it holds no payload of is not
+// done. It is the trace's reading of a link wait (traceBuilder.linkWaits), over the copy the
+// daemon's mirror is written from (TestTheShadowMatchesTheMirrorAfterEveryFact), and never the
+// rows a pass read. A pass reads the mirror rows of the issues it judges, each with the rows of
+// the blockers it names (blockers.JudgeLine, record.Store.DispatchIssuesOf): one a blocker can
+// hold where it stands and one it has started (blockers' startedIssues: a slot, an owed start or
+// the mark of a release for a wait). An issue it judges no wait of — one in flight that holds no
+// slot, owes no start and carries no mark — has no row there, or a row read only as another
+// issue's blocker, with no row of the blockers it names itself, which blockers.Unfinished counts
+// unfinished whether or not they are done.
+func unfinishedLinks(key string, dispatch *shadow) (unfinished, linked []string) {
 	iss, shown := dispatch.issues[key]
 	if !shown {
 		return nil, nil
@@ -385,7 +382,7 @@ func waitEnd(key string, issue record.Issue, wait *standingWait, v *admit.PassVi
 		return WaitMovedOn
 	}
 	if len(wait.links) > 0 {
-		_, linked := unfinishedLinks(key, v, dispatch)
+		_, linked := unfinishedLinks(key, dispatch)
 		for _, blocker := range wait.links {
 			if !slices.Contains(linked, blocker) {
 				return WaitLinkRemoved

@@ -358,6 +358,8 @@ A replay's scorecard names the assumptions from 1 to 25 that its measures rest o
 The gap between the two timelines is the error of reading a record from its lines, which the scorecard of every record rests on.
 The daemon writes the line of an issue's wait for its open children once for each generation of its tree.
 So a line timeline reads that wait again, with no line, where the issue's last open child closed and another opened before its own first phase started.
+The start state marks each such wait that the record told in its tree's current run before the window's start, so the replay's daemon does not tell it again.
+A line timeline reads a design gate from the daemon's lines of its openings and closings, so an approval of another document of the issue opens nothing.
 An issue that waits for a slot at the window's start began that wait where the record shows, in both timelines, since the start state is the record's.
 The merge queue is GitHub's, so no code that the replay runs writes the line of a pull request that leaves it.
 Just before the replay enters a recorded move back out of merging that such a line came before in the record, it writes that line to `log.jsonl` itself, so both timelines name the loop `queue_drop`.

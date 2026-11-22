@@ -248,7 +248,8 @@ half-open, so an issue that leaves at the instant another enters is not counted 
   and `open` (still waiting at `to`). A child at admitted that a link holds has not started; its
   wait is the line's, not this, and so is the wait of a child at admitted whose own first phase its
   open children hold. A wait goes on while the root of its tree lingers: it ends where its children
-  close or move out, or its blockers are done.
+  close or move out, or its blockers are done. A wait that begins at the moment another ends, a
+  link done as a child is filed, is the same stretch and counts once, ended by what ended the last.
 - `slotHoursInTurn` and `slotHoursNoTurn`: over each slot, from the pass that gives it to its
   release (or `to`), the time a worker of the holder, of any role, is in a turn (`supervise: a turn
   started` to `a turn ended`, its claim's failure, or its issue's leave), and the rest.
