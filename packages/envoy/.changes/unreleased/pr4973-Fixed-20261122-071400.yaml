@@ -21,8 +21,10 @@ body: |-
   most once per session and topic every ten minutes. A consumer whose filter drops such a topic
   while the stream holds messages on it that the consumer has not delivered passes them over, and
   the same WARN line names that, with how many messages were waiting on each dropped topic, read
-  just before the change. A filter that replaces a topic with one that contains it passes nothing
-  over and logs nothing.
+  just before the change; a restart writes it once it deleted the consumer, also when creating it
+  again fails. A filter that replaces a topic with one that contains it passes nothing over and
+  logs nothing. A consumer created where none stands, after the listener or the server removed
+  the one before it, is not counted, since nothing records that consumer's filter.
 time: 2026-11-22T07:14:00Z
 custom:
     Issue: pr4973

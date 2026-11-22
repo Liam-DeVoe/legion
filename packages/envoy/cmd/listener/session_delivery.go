@@ -281,10 +281,13 @@ func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stre
 	// (bus.SessionConsumers.SetNarrowed): a topic of the row the filter now leaves out, which an
 	// earlier build's filter carried or a later registration turned into the fifth kind. Those
 	// messages were counted for the session at their publish, so the loss is named here, at every
-	// change that makes it (leftOutByNarrowing): the dropped subjects (topics), the messages on
-	// each (pending_by_topic), and their sum (pending_passed_over). Each count is read on its
-	// subject just before the change, an observation that a message stored on the subject or
-	// delivered from it between the read and the change makes differ from the real loss by one.
+	// change that makes it (leftOutByNarrowing), a restart's once its delete landed and before its
+	// create: the dropped subjects (topics), the messages on each (pending_by_topic), and their sum
+	// (pending_passed_over). Each count is read on its subject just before the change, an
+	// observation that a message stored on the subject or delivered from it between the read and
+	// the change makes differ from the real loss by one. A create where no consumer stands counts
+	// nothing, since nothing records the filter of the one it replaces (SetNarrowed states the
+	// bound).
 	consumers.SetNarrowed(func(sessionID string, passedOver map[string]uint64) {
 		topics := slices.Sorted(maps.Keys(passedOver))
 		var sum uint64

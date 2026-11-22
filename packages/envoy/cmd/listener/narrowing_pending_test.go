@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -27,6 +29,11 @@ import (
 // so the filter leaves both out and drops the first. A widening, which drops a subject for one
 // that contains it (notifications.team.widened-foo for notifications.team.>), passes nothing over
 // and logs no line.
+//
+// A restart writes its line once its delete lands, before its create, so a create that fails
+// still leaves the loss named; its retry, which creates the consumer at the pending start and
+// reads no deleted consumer, writes none. An update counts from the consumer's next sequence, past
+// the messages it delivered before the update and awaits acks for.
 func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 	const (
 		newer    = "notifications.envoy.exceptions.*.*"
@@ -81,6 +88,32 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 		byTopic, _ := line["pending_by_topic"].(map[string]any)
 		if line["level"] != "WARN" || !slices.Contains(dropped, any(pairFoo)) || byTopic[pairFoo] != want || line["pending_passed_over"] != want {
 			t.Errorf("the narrowing line is %v, want a WARN naming %s among the dropped subjects with %v messages on it, and %v in all", line, pairFoo, want, want)
+		}
+	}
+	// deliverUnacked has sessionID's consumer deliver n messages, with one pull request of exactly
+	// that batch, and acks none of them, so the consumer's delivered sequence and its ack floor are
+	// apart by those n.
+	deliverUnacked := func(t *testing.T, sessionID string, n int) {
+		t.Helper()
+		name, ok := bus.SessionConsumerName(sessionID)
+		if !ok {
+			t.Fatalf("no consumer name for %s", sessionID)
+		}
+		inbox := raw.NewInbox()
+		sub, err := raw.SubscribeSync(inbox)
+		if err != nil {
+			t.Fatalf("subscribe the pull's inbox: %v", err)
+		}
+		defer func() { _ = sub.Unsubscribe() }()
+		request := fmt.Sprintf(`{"batch":%d,"no_wait":true}`, n)
+		if err := raw.PublishRequest("$JS.API.CONSUMER.MSG.NEXT."+bus.Stream+"."+name, inbox, []byte(request)); err != nil {
+			t.Fatalf("send the pull request of %s: %v", sessionID, err)
+		}
+		for range n {
+			msg, err := sub.NextMsg(5 * time.Second)
+			if err != nil || msg.Header.Get("Status") != "" {
+				t.Fatalf("the pull of %s answered %v (%v), want a message", sessionID, msg, err)
+			}
 		}
 	}
 
@@ -151,6 +184,76 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 		}
 		// Both messages on pairFoo above the ack floor: the one held unacked and the one after it.
 		narrowed(t, rig.harness.logs.String()[before:], session, 2)
+	})
+
+	t.Run("a restart whose delete lands and whose create fails", func(t *testing.T) {
+		const (
+			session = "ses_narrowing_restart_faulted"
+			kept    = "notifications.team.narrowing-kept-faulted"
+		)
+		filteringOn(t, session, pairFoo, kept)
+		store(t, stored, "narrowing-faulted-1", "narrowing-faulted-2")
+		deliverUnacked(t, session, 1)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if info, err := rig.consumers.Info(ctx, session); err != nil || info.NumAckPending != 1 {
+			t.Fatalf("the consumer of %s awaits %v acks (%v), want one: the restart would keep it", session, info, err)
+		}
+		name, _ := bus.SessionConsumerName(session)
+		consumers := rig.deps.consumers.consumers
+		consumers.SetCreateFault(func(consumer string) error {
+			if consumer == name {
+				return errors.New("the create faulted")
+			}
+			return nil
+		})
+		t.Cleanup(func() { consumers.SetCreateFault(nil) })
+		filter := sessionConsumerFilter(session, []string{pairFoo, pairBar, kept})
+		before := rig.harness.logs.Len()
+		if _, err := consumers.RestartAtFloor(ctx, session, filter); err == nil {
+			t.Fatalf("the restart of %s whose create faulted reported no error", session)
+		}
+		if _, err := rig.consumers.Info(ctx, session); !errors.Is(err, bus.ErrSessionConsumerNotFound) {
+			t.Fatalf("the consumer of %s reads %v after the faulted create, want it deleted", session, err)
+		}
+		// The delete landed, so both messages on pairFoo above the ack floor are passed over, and
+		// the line says so though no consumer was created.
+		narrowed(t, rig.harness.logs.String()[before:], session, 2)
+
+		consumers.SetCreateFault(nil)
+		before = rig.harness.logs.Len()
+		if _, err := consumers.RestartAtFloor(ctx, session, filter); err != nil {
+			t.Fatalf("the retry of the restart of %s: %v", session, err)
+		}
+		if filters := rig.filters(t, session); slices.Contains(filters, pairFoo) {
+			t.Fatalf("the consumer of %s filters on %v after the retry, %s among them", session, filters, pairFoo)
+		}
+		if lines := linesIn(rig.harness.logs.String()[before:], leftLine, map[string]any{"session_id": session, "from": "narrowing"}); len(lines) != 0 {
+			t.Errorf("the retry logged %v, want no second narrowing line: the restart's own named the loss", lines)
+		}
+	})
+
+	t.Run("an update of a consumer that awaits acks for messages it delivered", func(t *testing.T) {
+		const (
+			session = "ses_narrowing_update_unacked"
+			kept    = "notifications.team.narrowing-kept-unacked"
+		)
+		filteringOn(t, session, pairFoo, kept)
+		store(t, stored, "narrowing-unacked-1", "narrowing-unacked-2", "narrowing-unacked-3")
+		deliverUnacked(t, session, 2)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if info, err := rig.consumers.Info(ctx, session); err != nil || info.NumAckPending != 2 {
+			t.Fatalf("the consumer of %s awaits %v acks (%v), want two", session, info, err)
+		}
+		before := rig.harness.logs.Len()
+		rig.post(t, "/v1/interests/subscribe", consumerRegistration(session, "e", pairFoo, pairBar, kept))
+		if filters := rig.filters(t, session); slices.Contains(filters, pairFoo) {
+			t.Fatalf("the consumer of %s still filters on %v: the registration narrowed nothing", session, filters)
+		}
+		// The update goes on from the consumer's next sequence, past the two it delivered and
+		// awaits acks for: only the third message on pairFoo is passed over.
+		narrowed(t, rig.harness.logs.String()[before:], session, 1)
 	})
 
 	t.Run("a widening that replaces a subject with one that contains it", func(t *testing.T) {

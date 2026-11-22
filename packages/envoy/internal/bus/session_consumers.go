@@ -493,12 +493,16 @@ func (s *SessionConsumers) RestartAtFloor(ctx context.Context, sessionID string,
 		startSeq = ackFloor(info) + 1
 		// The consumer created again at startSeq holds nothing on a subject its filter drops,
 		// so every message on it from startSeq on, delivered and awaiting an ack or not, is
-		// passed over: counted before the delete, as an update's are (passedOverBy).
+		// passed over: counted before the delete, as an update's are (passedOverBy). The loss is
+		// certain once the delete lands, so it is reported then, before the create: a create that
+		// fails leaves the next call to create the consumer at the pending start with the filter
+		// it is given, and that call reads no deleted consumer to count against.
 		passedOver = s.passedOverBy(ctx, name, info, filters, startSeq)
 		s.setPendingStart(name, startSeq)
 		if err := s.delete(ctx, name); err != nil {
 			return SessionConsumerStart{}, err
 		}
+		s.reportNarrowed(sessionID, passedOver)
 	case errors.Is(err, ErrSessionConsumerNotFound):
 		pending, ok := s.pendingStart(name)
 		if !ok {
@@ -512,7 +516,6 @@ func (s *SessionConsumers) RestartAtFloor(ctx context.Context, sessionID string,
 	if err != nil {
 		return SessionConsumerStart{}, err
 	}
-	s.reportNarrowed(sessionID, passedOver)
 	s.setPendingStart(name, 0)
 	return start, nil
 }
@@ -1023,13 +1026,24 @@ func (s *SessionConsumers) update(ctx context.Context, sessionID, name string, i
 }
 
 // SetNarrowed sets the hook a change of a consumer's filter calls when it passes messages over: an
-// update, or a restart at the ack floor that deletes the consumer and creates it again, whose new
-// filter drops a subject no subject of it contains while the stream holds messages on that subject
-// from the consumer's position on. Those messages were counted for the session at their publish
-// and are never delivered to it. passedOver holds, for each such subject, how many messages the
-// stream held on it from that position on (passedOverBy): an observation read just before the
-// change, so a message stored on the subject, or delivered from it, between that read and the
-// change makes the real loss differ from it by one each. Call it before the handle is used.
+// update, once the server took it, or a restart at the ack floor that deletes the consumer and
+// creates it again, once its delete landed and before its create, whose new filter drops a subject
+// no subject of it contains while the stream holds messages on that subject from the consumer's
+// position on. Those messages were counted for the session at their publish and are never
+// delivered to it. passedOver holds, for each such subject, how many messages the stream held on it
+// from that position on (passedOverBy): an observation read just before the change, so a message
+// stored on the subject, or delivered from it, between that read and the change makes the real
+// loss differ from it by one each. Call it before the handle is used.
+//
+// A create where no consumer stands counts nothing, since nothing records the filter the consumer
+// it replaces carried: the resume record of a deleted consumer holds its floor and the stream's
+// identity alone (SessionResumeRecord), the server's own removal of an idle consumer
+// (SessionConsumerInactiveThreshold) records nothing, and a restart's retry at a pending start
+// reads no consumer. Such a create passes over at most the messages the stream holds on the
+// subjects the replaced consumer carried and its filter does not contain, from its start (the
+// resume floor plus one, the pending start, or the start its caller gave) to the stream's last
+// sequence at the create; for a restart's retry, only on the subjects its filter drops beyond those
+// the restart's own count read.
 func (s *SessionConsumers) SetNarrowed(narrowed func(sessionID string, passedOver map[string]uint64)) {
 	s.narrowed = narrowed
 }
