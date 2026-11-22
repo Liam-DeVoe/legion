@@ -143,9 +143,9 @@ type Ledger struct {
 	// leave it (recordPendingApproval): the row its version write moved to that version
 	// (MoveApprovalAsk), edited_at included, and the answered row where its carry answered the
 	// request (answerApprovalAsk). It is what the carry that reads it next moves nothing of
-	// (openApprovalAsk answers none for an answered row) and what the write's own report of the
-	// request it moved reads (PendingApproval, api.movedApprovalRequestAdvice), neither of which
-	// the asks table answers for before the write phase has run.
+	// (openApprovalAsk answers none for an answered row), which the asks table does not answer
+	// for before the write phase has run. The write's own report of the request it moved reads the
+	// table once that phase has run (Ledger.AfterWrites, api.movedApprovalRequestAdvice).
 	approvals map[string]*model.Ask
 	// reviews holds, per document, the newest review this transaction has queued, which the
 	// table answers only once the write phase has run (PendingReview). The carry's own review is
@@ -192,6 +192,33 @@ type Ledger struct {
 	// phase has run, so a later change of the same ask in this transaction is planned from it
 	// (asks.PlanSettleAfter) rather than from the tables.
 	settledAsks map[string]asks.Settled
+	// stated holds each version a pass of this transaction stated (recordStatedVersions), whose
+	// version_renders row the write phase's end writes (writeStatedRenders).
+	stated []statedVersion
+	// rendered is the write phase's second part: the writes of the carries to a version whose
+	// version_renders row the first part's end writes (carryAfterRender), which run once that row
+	// stands, so the review a carry inserts pins the digest its row records. toRendered is set while
+	// such a carry runs, and routes its writes there (write).
+	rendered   []WriteStep
+	toRendered bool
+	// restores holds each carry to a version that restores the approved text and takes its
+	// version_renders row in this transaction (carryRestored): its writes run in their place in
+	// the write phase, before the version's artifact.version, behind a savepoint the write phase
+	// takes before that version's insert, and the fill holds each one's pinned digest to the
+	// version's record (writeRestored). restoring is the one whose carry runs now, which routes the
+	// carry's writes into the queue as steps the write phase can drop (write) and records how to
+	// undo what the carry leaves on the ledger (noteUndo).
+	restores  []*restoredCarry
+	restoring *restoredCarry
+	// answering is, while a carry answers an approval request that names several documents
+	// (answerOn), the restore carries whose queued reviews the carry read to decide that every
+	// document stands approved: its answer's writes are steps the write phase drops once one of
+	// them is dropped (write), and what the answer leaves on the ledger is undone with it
+	// (noteUndo).
+	answering []*restoredCarry
+	// afterWrites are the reads a caller registered to run once the write phase has run and before
+	// the commit (AfterWrites), in the order they were registered.
+	afterWrites []func(context.Context)
 }
 
 // WriteStep is one step of a transaction's write phase: it puts the statements of one write on the
@@ -232,7 +259,9 @@ func (l *Ledger) Queue(step WriteStep) error {
 // far: for rows a route writes after its read phase has queued document work that reads them -
 // an issue's room, which the spec's queued version, fence and index resolve the spec's room
 // through - so the rows join the write phase's batch, ahead of that work, rather than running
-// inline inside the transaction's id window. It refuses what Queue refuses.
+// inline inside the transaction's id window. Every place in the queue the ledger has recorded - a
+// queued version's insert, the insert a restore carry's savepoint goes before - moves one along
+// with the steps. It refuses what Queue refuses.
 func (l *Ledger) QueueFirst(step WriteStep) error {
 	if l.tx == nil {
 		return errUnjoined
@@ -241,6 +270,13 @@ func (l *Ledger) QueueFirst(step WriteStep) error {
 		return ErrQueueSealed
 	}
 	l.queue = append([]WriteStep{step}, l.queue...)
+	for artifactID, pending := range l.latest {
+		pending.queued++
+		l.latest[artifactID] = pending
+	}
+	for _, restore := range l.restores {
+		restore.from++
+	}
 	return nil
 }
 
@@ -267,12 +303,25 @@ func batchFor(ctx context.Context, tx pgx.Tx) *store.WriteBatch {
 }
 
 // write runs step in tx: queued on ctx's ledger (queueFor), so its statements join the write
-// phase's batch in the order the transaction made its writes; on that batch at once while the
-// write phase builds it (batchFor); or else at once, as a batch of its own (store.RunWrite), where
-// nothing queues it. Every write a document operation makes goes through it.
+// phase's batch in the order the transaction made its writes - in its place but as a step the
+// write phase can drop while a restore carry runs (carryRestored, restoredCarry.step), or in the
+// phase's second part, after the version_renders rows, while any other carry to a version that
+// takes one runs (carryAfterRender), and in either as a step the write phase drops with the
+// restore carries an approval request's answer read (answerOn, answeringStep); on that batch at
+// once while the write phase builds it (batchFor); or else at once, as a batch of its own
+// (store.RunWrite), where nothing queues it. Every write a document operation makes goes through
+// it.
 func write(ctx context.Context, tx pgx.Tx, step WriteStep) error {
 	if ledger := queueFor(ctx, tx); ledger != nil {
-		ledger.queue = append(ledger.queue, step)
+		step = ledger.answeringStep(step)
+		switch {
+		case ledger.restoring != nil:
+			ledger.queue = append(ledger.queue, ledger.restoring.step(step))
+		case ledger.toRendered:
+			ledger.rendered = append(ledger.rendered, step)
+		default:
+			ledger.queue = append(ledger.queue, step)
+		}
 		return nil
 	}
 	if batch := batchFor(ctx, tx); batch != nil {
@@ -312,17 +361,39 @@ func queueWrites(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger) {
 // or a step that fails before it has queued its statements, once those queued before it have run
 // - stops it, and runQueue returns that error as it came, so a caller still tells a typed error -
 // a unique violation, ErrDocumentTooLarge, a guarded update's refusal - apart with errors.Is and
-// errors.As. It seals the queue first.
+// errors.As. It seals the queue first. Once the batch has run, it writes the version_renders row of
+// each version a pass of the transaction stated (writeStatedRenders), whose record is read from the
+// store as the batch left it, and then sends the write phase's second part, the writes of the
+// carries to those versions (carryAfterRender), as a batch of its own, so the reviews they insert
+// pin the digests those rows record.
+//
+// A transaction that holds a restore carry (carryRestored) splits its batch at the insert of the
+// first version such a carry pins: the steps before it go as one batch, the rest behind a
+// savepoint, with the version_renders rows, as writeRestored decides them, and after's statements
+// then go as a batch of their own, before the second part.
 func (l *Ledger) runQueue(ctx context.Context, after func(context.Context) error) error {
 	l.sealed = true
 	queue := l.queue
 	l.queue = nil
+	restored := len(l.restores) > 0
+	restoredFrom := len(queue)
+	for _, restore := range l.restores {
+		restoredFrom = min(restoredFrom, restore.from)
+	}
 	// The batch is built for ctx, so the write phase is made for the run of the command bar ctx
 	// carries (store.WithRun), and the store's writers that queue on it name what it changed.
 	batch := store.NewWriteBatch(ctx)
-	for _, step := range queue {
+	for _, step := range queue[:restoredFrom] {
 		if err := step(&batch); err != nil {
 			return batch.SendFailed(ctx, l.writer, err)
+		}
+	}
+	if restored {
+		if err := batch.Send(ctx, l.writer); err != nil {
+			return err
+		}
+		if err := l.writeRestored(ctx, queue[restoredFrom:]); err != nil {
+			return err
 		}
 	}
 	if after != nil {
@@ -333,7 +404,200 @@ func (l *Ledger) runQueue(ctx context.Context, after func(context.Context) error
 			return batch.SendFailed(ctx, l.writer, err)
 		}
 	}
-	return batch.Send(ctx, l.writer)
+	if err := batch.Send(ctx, l.writer); err != nil {
+		return err
+	}
+	if !restored {
+		if _, err := l.writeStatedRenders(ctx); err != nil {
+			return err
+		}
+	}
+	if len(l.rendered) == 0 {
+		return nil
+	}
+	rendered := l.rendered
+	l.rendered = nil
+	second := store.NewWriteBatch(ctx)
+	for _, step := range rendered {
+		if err := step(&second); err != nil {
+			return second.SendFailed(ctx, l.writer, err)
+		}
+	}
+	return second.Send(ctx, l.writer)
+}
+
+// restoredCarry is a carry to a version that restores the approved text and takes its
+// version_renders row in this transaction (carryRestored): the version, the digest the approval it
+// carries pinned, which the version's row holds from before the carry's review is inserted, so the
+// review's trigger pins it too, and the place in the queue of the version's insert, before which
+// the write phase takes its savepoint (runQueue, writeRestored). dropped says the fill found the
+// version's record another digest, so the carry's steps queue nothing from then on (step), nor do
+// those of an approval request's answer another carry decided on the carry's review (answerOn);
+// undo puts back, newest first, what the carry and such an answer left on the ledger in the read
+// phase (noteUndo, drop).
+type restoredCarry struct {
+	version statedVersion
+	pin     string
+	from    int
+	dropped bool
+	undo    []func()
+}
+
+// step is step as the carry queues it: it puts its statements on the batch until the carry is
+// dropped, and nothing from then on.
+func (restore *restoredCarry) step(step WriteStep) WriteStep {
+	return func(b *store.WriteBatch) error {
+		if restore.dropped {
+			return nil
+		}
+		return step(b)
+	}
+}
+
+// drop drops the carry: none of its steps queues a statement again, nor does any step of an
+// answer decided on its review, and each value the carry and such an answer left on the ledger in
+// the read phase - the pending review, the request as an answer left it, the answer's plan and
+// parts - stands again as it stood before, newest first.
+func (restore *restoredCarry) drop() {
+	restore.dropped = true
+	for index := len(restore.undo) - 1; index >= 0; index-- {
+		restore.undo[index]()
+	}
+	restore.undo = nil
+}
+
+// noteUndo records undo, which puts back a value of the ledger that what runs now is about to
+// change, for the drop of the restore carry running now and of each restore carry the answer
+// running now was decided on (answerOn); it records nothing while neither runs. Each writer of a
+// value a carry leaves on the ledger notes it before it changes it.
+func (l *Ledger) noteUndo(undo func()) {
+	if l == nil {
+		return
+	}
+	if l.restoring != nil {
+		l.restoring.undo = append(l.restoring.undo, undo)
+	}
+	for _, restore := range l.answering {
+		restore.undo = append(restore.undo, undo)
+	}
+}
+
+// restoresRead is each restore carry of this transaction (carryRestored), none dropped yet, that
+// carries a document documents names other than artifactID: the review a carry of artifactID read
+// for that document in place of its stored newest one, to decide whether an approval request
+// naming documents closes (namedDocumentsApproved), is that carry's, the one review of the
+// document this transaction queues (refuseSecondCarry).
+func (l *Ledger) restoresRead(documents []model.AskApprovalDocument, artifactID string) []*restoredCarry {
+	if l == nil {
+		return nil
+	}
+	var read []*restoredCarry
+	for _, restore := range l.restores {
+		if restore.dropped || restore.version.artifactID == artifactID {
+			continue
+		}
+		if slices.ContainsFunc(documents, func(document model.AskApprovalDocument) bool {
+			return document.ArtifactID == restore.version.artifactID
+		}) {
+			read = append(read, restore)
+		}
+	}
+	return read
+}
+
+// answerOn runs answer, a carry's answer of an approval request that names several documents,
+// which closes because each document stands approved at the version the request names: read
+// among them are the queued reviews of the restore carries read (restoresRead). Each such review
+// approves a version this transaction writes, which no stored review approves, so a request whose
+// answer read the review of a carry the write phase drops does not close once that carry is gone.
+// The answer's writes are therefore steps the write phase drops with any carry of read
+// (answeringStep), and what it leaves on the ledger is undone with that carry (noteUndo): the
+// request stays open, moved to the versions this transaction wrote, and the answering carry's own
+// review still names it. With read empty, as for every request that names one document, answer
+// runs as it is.
+func (l *Ledger) answerOn(read []*restoredCarry, answer func() error) error {
+	if l == nil || len(read) == 0 {
+		return answer()
+	}
+	previous := l.answering
+	l.answering = read
+	defer func() { l.answering = previous }()
+	return answer()
+}
+
+// answeringStep is step as it is queued while an answer runs (answerOn): it puts its statements on
+// the batch until a restore carry the answer was decided on is dropped, and nothing from then on.
+// It is step itself while no answer runs.
+func (l *Ledger) answeringStep(step WriteStep) WriteStep {
+	if len(l.answering) == 0 {
+		return step
+	}
+	read := l.answering
+	return func(b *store.WriteBatch) error {
+		for _, restore := range read {
+			if restore.dropped {
+				return nil
+			}
+		}
+		return step(b)
+	}
+}
+
+// writeRestored runs steps, the write phase from the insert of the first version a restore carry
+// pins on, behind a savepoint (a nested transaction of the writer's, pgx.Tx.Begin), and then the
+// fill (writeStatedRenders), which reads each stated version's record at one cut by its own walk and
+// holds each restore carry's pin to its version's digest. Where every pin is its version's digest,
+// the fill writes the rows and the savepoint is released: each carry's review and artifact.approved
+// stand before its version's artifact.version, as the queue made them. Where a pin is not, the
+// version's record is not the one the person approved, whatever its text: the transaction rolls
+// back to the savepoint, drops that carry (restoredCarry.drop) and runs steps and the fill again
+// behind a new savepoint, so the version, what it states and its row are written with no carry -
+// no review, no artifact.approved. Each round drops one carry at least, so it ends.
+//
+// What the rolled-back statements left in memory goes with them. The events their callbacks handed
+// the ledger (eventSink) are cut off where the savepoint was taken, so none of them is published;
+// the steps that run again append theirs again, with the ids and sequences the statements run again
+// took, and every other callback of a step that runs again writes again what it read. A dropped
+// carry's own read-phase values are undone by its drop. The stated versions stay recorded, so the
+// fill of the next round states the same rows. The ids the rolled-back inserts drew from their
+// sequences are not given back, which every reader of the event log already allows (the horizon's
+// gaps); an event's seq is taken from its owner row's last_seq, which the rollback restores, so the
+// seqs stay without gaps. A lock a rolled-back statement took first is let go and taken again by
+// the statement that runs again, in the same order.
+func (l *Ledger) writeRestored(ctx context.Context, steps []WriteStep) error {
+	appended := len(l.events)
+	for {
+		savepoint, err := l.writer.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("take the savepoint of the restored versions' carries: %w", err)
+		}
+		batch := store.NewWriteBatch(ctx)
+		for _, step := range steps {
+			if err := step(&batch); err != nil {
+				return batch.SendFailed(ctx, savepoint, err)
+			}
+		}
+		if err := batch.Send(ctx, savepoint); err != nil {
+			return err
+		}
+		missed, err := l.writeStatedRenders(ctx)
+		if err != nil {
+			return err
+		}
+		if len(missed) == 0 {
+			if err := savepoint.Commit(ctx); err != nil {
+				return fmt.Errorf("release the savepoint of the restored versions' carries: %w", err)
+			}
+			return nil
+		}
+		if err := savepoint.Rollback(ctx); err != nil {
+			return fmt.Errorf("roll back to the savepoint of the restored versions' carries: %w", err)
+		}
+		l.events = l.events[:appended]
+		for _, restore := range missed {
+			restore.drop()
+		}
+	}
 }
 
 // eventSink is where an event a document operation appends goes once appended: ctx's ledger, which
@@ -416,11 +680,13 @@ func (l *Ledger) NextVersion(ctx context.Context, artifactID string) (int, time.
 }
 
 // pendingVersion is a version this transaction has queued and not yet written, as latestVersion
-// reads a stored one.
+// reads a stored one, with queued, the place in the write queue of its insert, before which the
+// write phase takes the savepoint of a restore carry to it (carryRestored).
 type pendingVersion struct {
 	version          model.Version
 	markdown         string
 	docUpdateVersion int64
+	queued           int
 }
 
 // PendingVersionMarkdown is the markdown of version number of artifactID when it is the version
@@ -437,20 +703,6 @@ func (l *Ledger) PendingVersionMarkdown(artifactID string, number int) (string, 
 		return "", false
 	}
 	return pending.markdown, true
-}
-
-// PendingVersionNumber is the number of the version of artifactID this transaction last numbered
-// and queued and has not written yet: the document's newest, since the table holds the row only
-// once Commit has run the queue, so a reader before Commit that answers for the document as this
-// write leaves it - the standing review a question's advice names - takes it from here. False
-// when this transaction queued no version of the document, and once its write phase has begun,
-// when the table holds it.
-func (l *Ledger) PendingVersionNumber(artifactID string) (int, bool) {
-	if l == nil || l.sealed {
-		return 0, false
-	}
-	pending, queued := l.latest[artifactID]
-	return pending.version.Number, queued
 }
 
 // queuedVersion records pending as the latest version of artifactID, which this transaction has
@@ -842,12 +1094,13 @@ func pendingArtifact(ctx context.Context, artifactID string) (refs.DocumentAddre
 // recordPendingApproval records ask as artifactID's approval request as this transaction's queued
 // writes leave it, on the ledger ctx queues tx's writes on: the open row a version write's move
 // leaves (MoveApprovalAsk), or the answered row the same write's carry leaves
-// (answerApprovalAsk). The caller has queued the write that leaves it so, and a reader before the
-// write phase takes the request from here (PendingApproval, api.movedApprovalRequestAdvice). The
-// row is recorded under every document the request names, beside artifactID, since it is one row
-// whichever of them a later read finds it by: the reopen's follow moves and carries each document
-// of the issue in one transaction (FollowClosedIssueVersions), so the move of a request's second
-// document goes on from the row its first document's move or carry left.
+// (answerApprovalAsk). The caller has queued the write that leaves it so, and a read of the
+// request before the write phase takes it from here (openApprovalAsk). The row is recorded under
+// every document the request names, beside artifactID, since it is one row whichever of them a
+// later read finds it by: the reopen's follow moves and carries each document of the issue in one
+// transaction (FollowClosedIssueVersions), so the move of a request's second document goes on from
+// the row its first document's move or carry left. A restore carry's drop puts back the rows its
+// answer replaced (noteEntryUndo).
 func recordPendingApproval(ctx context.Context, tx pgx.Tx, artifactID string, ask *model.Ask) {
 	ledger := queueFor(ctx, tx)
 	if ledger == nil {
@@ -856,12 +1109,30 @@ func recordPendingApproval(ctx context.Context, tx pgx.Tx, artifactID string, as
 	if ledger.approvals == nil {
 		ledger.approvals = make(map[string]*model.Ask)
 	}
+	noteEntryUndo(ledger, &ledger.approvals, artifactID)
 	ledger.approvals[artifactID] = ask
 	if ask.Approval != nil {
 		for _, document := range ask.Approval.Documents {
+			noteEntryUndo(ledger, &ledger.approvals, document.ArtifactID)
 			ledger.approvals[document.ArtifactID] = ask
 		}
 	}
+}
+
+// noteEntryUndo notes, for the drop of the restore carries noteUndo notes for, that
+// (*values)[key] stands again as it stands now: the same value, or no entry at all.
+func noteEntryUndo[K comparable, V any](l *Ledger, values *map[K]V, key K) {
+	if l == nil || l.restoring == nil && len(l.answering) == 0 {
+		return
+	}
+	previous, had := (*values)[key]
+	l.noteUndo(func() {
+		if had {
+			(*values)[key] = previous
+		} else {
+			delete(*values, key)
+		}
+	})
 }
 
 // recordPendingReview records review as the newest review of artifactID on the ledger ctx queues
@@ -882,6 +1153,7 @@ func recordPendingReview(ctx context.Context, tx pgx.Tx, artifactID string, revi
 	if ledger.reviews == nil {
 		ledger.reviews = make(map[string]model.ArtifactReview)
 	}
+	noteEntryUndo(ledger, &ledger.reviews, artifactID)
 	ledger.reviews[artifactID] = review
 	return nil
 }
@@ -915,6 +1187,7 @@ func (l *Ledger) PlanSettle(ctx context.Context, askID string, change asks.Chang
 	if l.settledAsks == nil {
 		l.settledAsks = make(map[string]asks.Settled, 1)
 	}
+	noteEntryUndo(l, &l.settledAsks, askID)
 	l.settledAsks[askID] = settled
 	return settled, nil
 }
@@ -931,31 +1204,17 @@ func planSettle(ctx context.Context, tx pgx.Tx, askID string, change asks.Change
 
 // PendingReview is the review of artifactID this transaction has queued and not yet written
 // (recordPendingReview): a review it queued is newer than every stored one, so a read of the
-// document's newest review before Commit takes it from here. False when this transaction queued
-// none, and once its write phase has begun, when the table holds it.
+// document's newest review before Commit takes it from here. Its readers are the carry's own
+// (refuseSecondCarry, namedDocumentsApproved), which the write phase drops with the carry; a
+// route's report of the review a write leaves reads the table once the write phase has run
+// (AfterWrites). False when this transaction queued none, and once its write phase has begun,
+// when the table holds it.
 func (l *Ledger) PendingReview(artifactID string) (model.ArtifactReview, bool) {
 	if l == nil || l.sealed {
 		return model.ArtifactReview{}, false
 	}
 	review, queued := l.reviews[artifactID]
 	return review, queued
-}
-
-// PendingApproval is the approval request of artifactID as this transaction's queued writes
-// leave it (recordPendingApproval): the move its version write made, and the answer where its
-// carry answered the request. A read of the asks table before Commit sees neither, so a reader
-// that must answer for the request this write left takes it from here. False when this
-// transaction queued no write of a request for the document, when the stored row is the whole
-// answer, and once its write phase has begun, when the table holds its writes too.
-func (l *Ledger) PendingApproval(artifactID string) (model.Ask, bool) {
-	if l == nil || l.sealed {
-		return model.Ask{}, false
-	}
-	ask, queued := l.approvals[artifactID]
-	if !queued || ask == nil {
-		return model.Ask{}, false
-	}
-	return *ask, true
 }
 
 // ledgerAnnouncement is one document a transaction appended to and the last version it appended.
@@ -1121,7 +1380,8 @@ func collectVersionText(ctx context.Context, artifactID, markdown string) {
 }
 
 // Commit runs the transaction's write phase (its queue, one batch with the settlement credit's
-// statements after it) and commits it, then credits, releases and publishes what its document
+// statements after it), then the reads its caller registered for the rows that phase wrote
+// (AfterWrites), and commits it, then credits, releases and publishes what its document
 // operations recorded (see Ledger), closes this process's instance of each issue room a document
 // joined in it (closeJoinedRooms), publishes the events they appended, so a caller's own events,
 // published after Commit returns, follow them, and stores the display trees of the versions'
@@ -1140,6 +1400,28 @@ func (l *Ledger) Commit(ctx context.Context) error {
 	for _, copy := range l.copies {
 		l.service.scheduleSettle(copy)
 	}
+	return nil
+}
+
+// AfterWrites registers read, which Commit runs in the transaction once its write phase has run and
+// before it commits, after every read registered before it: a read of what the transaction wrote,
+// as its tables then hold it, rather than of what its read phase queued. The write phase decides
+// what a restore carry writes only once the version's record is read (writeRestored), so a read of
+// the carry made in the read phase - the review and the request its queued writes leave
+// (PendingReview, recordPendingApproval) - can name a review and an answer the transaction never
+// wrote; a read registered here cannot. A route's report of the approval its version superseded
+// and of the request it moved is read so. The read runs while the transaction holds its locks and
+// its transaction id, so it is a few bounded statements, and it returns nothing: a failure is its
+// own to report, and never fails the write. It refuses a ledger no caller joined and a sealed one
+// (ErrQueueSealed), as Queue does.
+func (l *Ledger) AfterWrites(read func(context.Context)) error {
+	if l.tx == nil {
+		return errUnjoined
+	}
+	if l.sealed {
+		return ErrQueueSealed
+	}
+	l.afterWrites = append(l.afterWrites, read)
 	return nil
 }
 
@@ -1215,6 +1497,11 @@ func (l *Ledger) commit(ctx context.Context) error {
 		_ = l.tx.Rollback(context.Background())
 		l.Discard()
 		return err
+	}
+	reads := l.afterWrites
+	l.afterWrites = nil
+	for _, read := range reads {
+		read(ctx)
 	}
 	captures := make([]roomCapture, 0, len(l.versions)+len(l.flushes)+len(l.order))
 	for _, written := range l.versions {
@@ -1430,13 +1717,15 @@ func (s *Service) commitConsuming(ctx context.Context, tx pgx.Tx, captures []roo
 }
 
 // Discard drops what a transaction that did not commit left behind: its queued writes, which
-// never ran, its live writes, which no room ever saw, and the rooms its rebuilds held. A version
-// it wrote marked nothing it read, so its authors stay where they were. After Commit only the
-// read-backs are left to drop. Every caller defers it, so it is where the request's use of the
-// ledger ends.
+// never ran, the reads registered for them (AfterWrites), its restore carries, its live writes,
+// which no room ever saw, and the rooms its rebuilds held. A version it wrote marked nothing it
+// read, so its authors stay where they were. After Commit only the read-backs are left to drop.
+// Every caller defers it, so it is where the request's use of the ledger ends.
 func (l *Ledger) Discard() {
 	l.sealed = true
 	l.queue = nil
+	l.afterWrites = nil
+	l.restores, l.restoring = nil, nil
 	for _, artifactID := range l.order {
 		l.service.finishLiveWrite(l.live[artifactID])
 	}

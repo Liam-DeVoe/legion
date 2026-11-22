@@ -194,12 +194,12 @@ func TestAskAdviceNamesACarriedReviewAndTheVersionItsReasonGives(t *testing.T) {
 
 // A question anchored on the specification pins its anchor to a stored version, and where the
 // live text has changed since the newest one, the anchor's snapshot writes the next version in
-// the question's own transaction (resolveAnchor), queued until Commit runs it. Alice approved
-// version 1 and the spec was then edited live, so the question's own write leaves the document at
-// version 2, which nobody has reviewed: the advice names nothing. The table still holds version 1
-// as the newest when the advice is read, so the rule takes the version off the question's ledger
-// (docs.Ledger.PendingVersionNumber); read off the table, it would name alice's approval of the
-// text this very write moved past.
+// the question's own transaction (resolveAnchor). Alice approved version 1 and the spec was then
+// edited live, so the question's own write leaves the document at version 2, which nobody has
+// reviewed: the advice names nothing. The advice is read once the question's write phase has run
+// (docs.Ledger.AfterWrites), so the table holds version 2 as the newest; read before it, the table
+// would still hold version 1, and the rule would name alice's approval of the text this very
+// write moved past.
 func TestAskAdviceNamesNoReviewOfTheVersionAnAnchorsSnapshotSupersedes(t *testing.T) {
 	handler, issueKey, _, _ := approveThenEditLive(t, "STANDSNAP")
 
@@ -215,10 +215,20 @@ func TestAskAdviceNamesNoReviewOfTheVersionAnAnchorsSnapshotSupersedes(t *testin
 // The live text put back to the text alice approved, the next anchored question's snapshot
 // writes version 3, which holds version 1's text byte for byte, so the restore carries her
 // approval to it in the same transaction (docs.carryApproval). The advice names that carry:
-// alice's approval, pinned to version 3 and naming version 1. The version and the carry are both
-// queued when the advice is read, and the table holds version 2 as the newest, which a read of it
-// would set against the carry's version 3 and so name nothing. The carry's time is its row's: the
-// advice is read before the write phase stores that row, and names the time the row then holds.
+// alice's approval, pinned to version 3 and naming version 1. The advice is read once the write
+// phase has run (docs.Ledger.AfterWrites), so the table holds the version and the carry the write
+// phase kept, and the carry's time is its row's.
+//
+// The same restore over a record that moved since the approval is no restore of what alice
+// approved, whatever its text. A requirement uploaded beside the spec, in the issue's
+// Verification document, is a node of the spec's record - the spec query takes requirements
+// wherever the issue's tree holds them - and writes no version of the spec, so the record the
+// carry to version 3 pinned is no longer the spec's. The live text changed and put back again,
+// the next anchored question's snapshot writes version 5, version 3's text byte for byte: the
+// write phase pins its carry to that digest behind a savepoint, finds the version's record
+// another digest, and drops the carry. The advice names no review: the newest one is the carry to
+// version 3, and the spec is at version 5. Read in the read phase, it would name the carry to
+// version 5 that the write phase dropped.
 func TestAskAdviceNamesTheApprovalAnAnchorsSnapshotCarries(t *testing.T) {
 	handler, issueKey, artifactID, editLive := approveThenEditLive(t, "STANDBACK")
 	if version, _ := askAnchoredStandingReview(t, handler, issueKey); version != 2 {
@@ -252,6 +262,27 @@ func TestAskAdviceNamesTheApprovalAnAnchorsSnapshotCarries(t *testing.T) {
 	}
 	if review.At.IsZero() || !review.At.Equal(stored[0].CreatedAt) {
 		t.Fatalf("standing review at = %s, want the stored carry's own time %s", review.At, stored[0].CreatedAt)
+	}
+
+	uploadDocument(t, handler, "/api/v1/issues/"+issueKey, "verification.md", requirementMarkdown("r1", "Each handshake is logged."))
+	editLive(strings.Replace(restoreSpec, "behind a flag.", "behind a flag and a canary.", 1))
+	if version, _ := askAnchoredStandingReview(t, handler, issueKey); version != 4 {
+		t.Fatalf("the third anchor is pinned to version %d, want 4, the version its snapshot of the live edit writes", version)
+	}
+	editLive(restoreSpec)
+	version, review = askAnchoredStandingReview(t, handler, issueKey)
+	if version != 5 {
+		t.Fatalf("the fourth anchor is pinned to version %d, want 5, the version its snapshot of the restored text writes", version)
+	}
+	if review != nil {
+		t.Fatalf("standing review = %#v, want none: version 5 restores the text of version 3 over another record, so no carry reaches it", review)
+	}
+	listed = dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/reviews", nil, "alice")
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list reviews: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	if stored = decodeBody[[]model.ArtifactReview](t, listed); len(stored) != 2 || stored[0].Version != 3 {
+		t.Fatalf("reviews = %#v, want alice's approval and its carry to version 3 alone", stored)
 	}
 }
 
@@ -383,7 +414,7 @@ func TestStandingSpecReviewRefusesAPlanReviewOfTheSpecification(t *testing.T) {
 		t.Fatalf("insert a plan review of the specification: %v", err)
 	}
 
-	review, err := standingSpecReview(context.Background(), database.Pool, nil, issue.Key)
+	review, err := standingSpecReview(context.Background(), database.Pool, issue.Key)
 	if err != nil {
 		t.Fatalf("read the standing review: %v", err)
 	}

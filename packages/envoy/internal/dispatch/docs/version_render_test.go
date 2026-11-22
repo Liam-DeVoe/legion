@@ -71,6 +71,10 @@ type renderRig struct {
 	// first render of version 3 answered, and digest the digest of its record.
 	before        time.Time
 	first, digest string
+	// settledRows is how many version_renders rows DOC-1's settlement left: the rows its room pass
+	// recorded for the newest version of each of DOC-1's query documents, which the census of the
+	// rendered versions reads beside DOC-2's.
+	settledRows int64
 }
 
 // address is the store address of block id of DOC-2's room.
@@ -313,19 +317,22 @@ func writeUnconvertedIssue(t *testing.T, database *store.Store) int {
 // deleted the version answers its stored bytes and says so. A version an erase deletes takes its
 // version_renders row with it, and a row a delete leaves behind is a difference of the census of
 // the rendered versions. A version whose markdown is null says it holds no bytes. The head of a
-// spec a real settlement wrote renders as that version's stored markdown. The census of
-// document_block_texts reads no difference in either direction over the converted issues, and
-// prints the rows of DOC-9 as the class of unstated rows of an issue that has not converted, with
-// their count; and document_block_texts keeps the columns 0121_block_graph.up.sql creates.
+// spec a real settlement wrote renders as that version's stored markdown, and that settlement's
+// room pass recorded the version's row, holding its record's digest, which the census reads beside
+// DOC-2's with no difference. The census of document_block_texts reads no difference in either
+// direction over the converted issues, and prints the rows of DOC-9 as the class of unstated rows
+// of an issue that has not converted, with their count; and document_block_texts keeps the columns
+// 0121_block_graph.up.sql creates.
 //
-// Then the versions the real version path writes. Five versions of the spec of CORE-1 each render
-// their stored bytes (renderStepTextOrder): a requirement under the criterion before the paragraph
-// in the tree prints after the paragraph, where its text stands; each member prints once at its
-// place in the text, whether its parent is a block of another document, an ask, a criterion the
-// version dropped or the callout holding it; two members of one text each print at their own
-// place; and a member's place in the text is read as of the row's time. And the versions an issue
-// room's settlement writes each render their stored bytes, each block's text value being its slice
-// of its own fragment's rendering (renderStepFragments).
+// Then the versions the real version path writes, each holding the row its pass recorded with its
+// record's digest. Five versions of the spec of CORE-1 each render their stored bytes
+// (renderStepTextOrder): a requirement under the criterion before the paragraph in the tree prints
+// after the paragraph, where its text stands; each member prints once at its place in the text,
+// whether its parent is a block of another document, an ask, a criterion the version dropped or
+// the callout holding it; two members of one text each print at their own place; and a member's
+// place in the text is read as of the row's time. And the versions an issue room's settlement
+// writes each render their stored bytes, each block's text value being its slice of its own
+// fragment's rendering (renderStepFragments).
 func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -360,6 +367,16 @@ func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 	if err := service.settleOwedNow(ctx, rig.settled.tree, time.Now().Add(roomWait(t))); err != nil {
 		t.Fatalf("settle DOC-1's room: %v", err)
 	}
+	// The room pass of DOC-1's settlement records the row of the newest version of each of its query
+	// documents, the spec's among them, and the census reads each as its stored bytes.
+	settledSpec := newestVersionNumber(t, database, rig.settled.spec)
+	requireStatedRow(t, database, rig.settled.issue, graphstore.QuerySpec, rig.settled.spec, settledSpec)
+	settledRenders := rig.readRenderCensus(t)
+	if settledRenders.Versions == 0 || settledRenders.Differences != 0 {
+		t.Fatalf("after DOC-1's settlement the census of the rendered versions compares %d and reads %d differences (%+v), want DOC-1's versions and none",
+			settledRenders.Versions, settledRenders.Differences, settledRenders.Reported)
+	}
+	rig.settledRows = settledRenders.Versions
 	unconverted := writeUnconvertedIssue(t, database)
 
 	// DOC-2: version 2 of the spec, written before the cutover, and then the spec's subtree.
@@ -605,9 +622,9 @@ func renderStepCensus(t *testing.T, rig *renderRig, unconverted int) {
 	if err != nil {
 		t.Fatalf("read the census of the versions version_renders holds: %v", err)
 	}
-	if renders.Versions != 1 || renders.Differences != 0 {
-		t.Errorf("the census of the rendered versions compares %d and reads %d differences (%+v), want version 3 alone and none",
-			renders.Versions, renders.Differences, renders.Reported)
+	if renders.Versions != rig.settledRows+1 || renders.Differences != 0 {
+		t.Errorf("the census of the rendered versions compares %d and reads %d differences (%+v), want version 3 beside DOC-1's %d and none",
+			renders.Versions, renders.Differences, renders.Reported, rig.settledRows)
 	}
 }
 
@@ -629,8 +646,8 @@ func renderStepBoundary(t *testing.T, rig *renderRig) {
 	if err != nil {
 		t.Fatalf("read the census of the versions version_renders holds: %v", err)
 	}
-	if renders.Versions != 1 || renders.Differences != 1 || len(renders.Reported) != 1 || !strings.Contains(renders.Reported[0].At, rig.spec+"@v3") {
-		t.Errorf("the census of the rendered versions compares %d and reads %d differences (%+v), want version 3's", renders.Versions, renders.Differences, renders.Reported)
+	if renders.Versions != rig.settledRows+1 || renders.Differences != 1 || len(renders.Reported) != 1 || !strings.Contains(renders.Reported[0].At, rig.spec+"@v3") {
+		t.Errorf("the census of the rendered versions compares %d and reads %d differences (%+v), want version 3's beside DOC-1's %d versions", renders.Versions, renders.Differences, renders.Reported, rig.settledRows)
 	}
 }
 
@@ -649,8 +666,8 @@ func renderStepRowDeleted(t *testing.T, rig *renderRig) {
 	if err != nil {
 		t.Fatalf("read the census of the versions version_renders holds: %v", err)
 	}
-	if renders.Versions != 0 || renders.Differences != 0 {
-		t.Errorf("the census of the rendered versions compares %d and reads %d differences, want none: no version holds a row", renders.Versions, renders.Differences)
+	if renders.Versions != rig.settledRows || renders.Differences != 0 {
+		t.Errorf("the census of the rendered versions compares %d and reads %d differences, want DOC-1's %d and none: no version of DOC-2 holds a row", renders.Versions, renders.Differences, rig.settledRows)
 	}
 }
 
@@ -700,24 +717,24 @@ func renderStepErasedVersion(t *testing.T, rig *renderRig) {
 	}); err != nil {
 		t.Fatalf("write versions 4 and 5 from the tree: %v", err)
 	}
-	if renders := rig.readRenderCensus(t); renders.Versions != 2 || renders.Differences != 0 {
-		t.Fatalf("with versions 4 and 5 written the census of the rendered versions compares %d and reads %d differences (%+v), want both and none",
-			renders.Versions, renders.Differences, renders.Reported)
+	if renders := rig.readRenderCensus(t); renders.Versions != rig.settledRows+2 || renders.Differences != 0 {
+		t.Fatalf("with versions 4 and 5 written the census of the rendered versions compares %d and reads %d differences (%+v), want both beside DOC-1's %d and none",
+			renders.Versions, renders.Differences, renders.Reported, rig.settledRows)
 	}
 	rig.eraseVersions(t, false, 4)
 	if versions, renders := rig.versionRows(t, rig.database.Pool, 4); versions != 0 || renders != 0 {
 		t.Errorf("after its erase version 4 holds %d versions and %d rows, want neither", versions, renders)
 	}
-	if renders := rig.readRenderCensus(t); renders.Versions != 1 || renders.Differences != 0 {
-		t.Errorf("after version 4's erase the census of the rendered versions compares %d and reads %d differences (%+v), want version 5 alone and none",
-			renders.Versions, renders.Differences, renders.Reported)
+	if renders := rig.readRenderCensus(t); renders.Versions != rig.settledRows+1 || renders.Differences != 0 {
+		t.Errorf("after version 4's erase the census of the rendered versions compares %d and reads %d differences (%+v), want version 5 beside DOC-1's %d and none",
+			renders.Versions, renders.Differences, renders.Reported, rig.settledRows)
 	}
 	// The control: a delete of version 5 that leaves its row behind is read as a difference.
 	rig.eraseVersions(t, true, 5)
 	renders := rig.readRenderCensus(t)
-	if renders.Versions != 1 || renders.Differences != 1 || len(renders.Reported) != 1 || !strings.Contains(renders.Reported[0].At, rig.spec+"@v5") {
-		t.Errorf("with version 5 deleted and its row left behind the census of the rendered versions compares %d and reads %d differences (%+v), want the row of version 5",
-			renders.Versions, renders.Differences, renders.Reported)
+	if renders.Versions != rig.settledRows+1 || renders.Differences != 1 || len(renders.Reported) != 1 || !strings.Contains(renders.Reported[0].At, rig.spec+"@v5") {
+		t.Errorf("with version 5 deleted and its row left behind the census of the rendered versions compares %d and reads %d differences (%+v), want the row of version 5 beside DOC-1's %d",
+			renders.Versions, renders.Differences, renders.Reported, rig.settledRows)
 	} else {
 		t.Logf("the census reads the row left behind at %s: %s", renders.Reported[0].At, renders.Reported[0].Cause)
 	}
@@ -727,8 +744,8 @@ func renderStepErasedVersion(t *testing.T, rig *renderRig) {
 	}); err != nil {
 		t.Fatalf("forget version 5's row: %v", err)
 	}
-	if renders := rig.readRenderCensus(t); renders.Versions != 0 || renders.Differences != 0 {
-		t.Errorf("with version 5's row forgotten the census of the rendered versions compares %d and reads %d differences, want none", renders.Versions, renders.Differences)
+	if renders := rig.readRenderCensus(t); renders.Versions != rig.settledRows || renders.Differences != 0 {
+		t.Errorf("with version 5's row forgotten the census of the rendered versions compares %d and reads %d differences, want DOC-1's %d and none", renders.Versions, renders.Differences, rig.settledRows)
 	}
 }
 
@@ -768,27 +785,37 @@ func firstDifference(got, want string) int {
 	return min(len(got), len(want))
 }
 
-// writeRenderRow writes the version_renders row of version number of the document artifactID, a
-// document of issue whose query is query, as the pass that states a version records it: the time
-// and the seq of the head's cut, and the digest of the query's record read there.
-func writeRenderRow(t *testing.T, database *store.Store, issue, query, artifactID string, number int) {
+// requireStatedRow fails unless version number of the document artifactID, a document of issue
+// whose query is query, holds the version_renders row the pass that stated it wrote: the time and
+// the seq of a cut, and the digest of the query's record read at that cut.
+func requireStatedRow(t *testing.T, database *store.Store, issue, query, artifactID string, number int) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		cut, err := refs.HeadCut(ctx, tx)
-		if err != nil {
-			return err
-		}
-		record, err := ReadQueryRecord(ctx, tx, issue, query, cut)
-		if err != nil {
-			return err
-		}
-		return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-			return QueueVersionRender(b, artifactID, number, record)
-		})
-	}); err != nil {
-		t.Fatalf("write the version_renders row of version %d of %s: %v", number, artifactID, err)
+	var digest string
+	var cut refs.TreeCut
+	if err := database.Pool.QueryRow(ctx, `
+		select record_sha256, at, read_seq from version_renders where artifact_id = $1 and number = $2`,
+		artifactID, number).Scan(&digest, &cut.At, &cut.ReadSeq); err != nil {
+		t.Fatalf("read the version_renders row the pass that stated version %d of %s wrote: %v", number, artifactID, err)
 	}
+	record, err := ReadQueryRecord(ctx, database.Pool, issue, query, cut)
+	if err != nil {
+		t.Fatalf("read the %s record of %s at the cut of version %d of %s: %v", query, issue, number, artifactID, err)
+	}
+	if digest != record.Digest {
+		t.Errorf("the pass that stated version %d of %s recorded the digest %s, want its %s record's, %s", number, artifactID, digest, query, record.Digest)
+	}
+}
+
+// newestVersionNumber is the number of the newest version of the document artifactID.
+func newestVersionNumber(t *testing.T, database *store.Store, artifactID string) int {
+	t.Helper()
+	var number int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select coalesce(max(number), 0) from artifact_versions where artifact_id = $1`, artifactID).Scan(&number); err != nil {
+		t.Fatalf("read the newest version of %s: %v", artifactID, err)
+	}
+	return number
 }
 
 // requireRenderedAsStored fails, naming the first byte that differs, unless version number of the
@@ -820,8 +847,8 @@ func requireOnceInPlace(t *testing.T, refKey string, number int, rendered, store
 
 // A version of a document renders in the text order its author wrote (R15), each member once, at
 // its place in the text, wherever its parent stands (R1). The spec of CORE-1 is written through the
-// real version path, version by version, each taking its version_renders row as the pass that
-// states a version records it, and each renders its stored bytes, character for character:
+// real version path, version by version, each holding the version_renders row the pass that
+// states it recorded, and each renders its stored bytes, character for character:
 //   - version 1, 165 bytes: a criterion, a paragraph, and a requirement whose parent attribute
 //     names the criterion, which the tree holds under the criterion, before the paragraph; the
 //     text of each once, at its place; and the census of the rendered versions reads no difference
@@ -874,7 +901,7 @@ func renderStepTextOrder(t *testing.T, rig *renderRig, service *Service) {
 	}
 	stated := func(number int) string {
 		t.Helper()
-		writeRenderRow(t, database, "CORE-1", graphstore.QuerySpec, spec, number)
+		requireStatedRow(t, database, "CORE-1", graphstore.QuerySpec, spec, number)
 		return storedVersionMarkdown(t, database, spec, number)
 	}
 
@@ -969,7 +996,7 @@ func renderStepTextOrder(t *testing.T, rig *renderRig, service *Service) {
 // `-` list, which the room's joined rendering writes with the other marker, and a spec opening
 // with a rule and holding a second one later, whose first the joined rendering writes `---` and
 // the spec's own rendering `***`. The settlement writes a version of each from its own fragment's
-// rendering, each takes its version_renders row as the pass records one, and each renders its
+// rendering, each holding the version_renders row its room pass recorded, and each renders its
 // stored bytes; the text value of the plan's and the spec's first block is its slice of its own
 // document's stored bytes. The Verification document's blocks read alike in both renderings.
 func renderStepFragments(t *testing.T, rig *renderRig, service *Service, serverURL string) {
@@ -1023,7 +1050,7 @@ func renderStepFragments(t *testing.T, rig *renderRig, service *Service, serverU
 			from artifacts a where a.id = $1`, document.id).Scan(&refKey, &number); err != nil {
 			t.Fatalf("read the newest version of %s: %v", document.id, err)
 		}
-		writeRenderRow(t, database, room.issue, document.query, document.id, number)
+		requireStatedRow(t, database, room.issue, document.query, document.id, number)
 		rig.requireRenderedAsStored(t, document.id, refKey, number)
 		if document.id == room.verification {
 			continue

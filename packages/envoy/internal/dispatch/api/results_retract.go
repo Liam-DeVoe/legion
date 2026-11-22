@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -104,6 +105,14 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The retraction moves the record of the check's issue's Verification query, which takes a
+	// version in its issue's room once the retraction is written (reviseQueriesUnder). That room's
+	// lock comes here, after the owner lock and before the event's owner row and every write
+	// (docs.LockQueryRooms).
+	if err := docs.LockQueryRooms(r.Context(), tx, result.CheckIssueKey); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if err := s.refuseRetractionBy(r.Context(), tx, actor, person, result); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -144,6 +153,10 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		ResultID: resultID, Reason: reason, Session: sessionOf(actor), Actor: actor, EventSeq: &seq, CreatedAt: createdAt,
 	}
 	if err := writeCheckResultRetraction(r.Context(), tx, &retraction, held, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := s.reviseQueriesUnder(r.Context(), tx, result.CheckIssueKey, actor, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

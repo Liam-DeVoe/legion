@@ -520,11 +520,15 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	stated := indexing.Stated()
 	// A pass that states a requirement node of the issue marks the issue's spec its own where the
 	// issue is no view (markOwnSpecIndexed), whatever wrote the requirement. A plan that lost the
-	// revision fence states nothing, so it marks nothing.
+	// revision fence states nothing, so it marks nothing. A pass that wins it states each version
+	// it covers, whose version_renders row its transaction writes once its write phase has run
+	// (recordStatedVersions): the request's pass, a room's pass for every fragment's newest version,
+	// and the reconciliation's.
 	if indexing.Won() {
 		if err := markOwnSpecIndexed(ctx, tx, record.Issue, blocks); err != nil {
 			return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 		}
+		recordStatedVersions(ctx, tx, versions)
 	}
 	if tick && indexing.Won() || indexing.Corrects() {
 		bound := missingVersionNodesBound
@@ -849,6 +853,7 @@ func planAskPartIndex(ctx context.Context, tx pgx.Tx, r *refs.Reader, ask model.
 		if ledger.askParts == nil {
 			ledger.askParts = make(map[string]refs.ItemIndex)
 		}
+		noteEntryUndo(ledger, &ledger.askParts, ask.ID)
 		ledger.askParts[ask.ID] = indexing.Held()
 	}
 	return indexing, nil

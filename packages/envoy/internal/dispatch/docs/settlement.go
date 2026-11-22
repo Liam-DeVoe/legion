@@ -1079,6 +1079,14 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		return settleDone, st.abandon(err)
 	}
 	st.published = ledger.events
+	// An issue room's versions stand in this transaction now, each with the digest of its query's
+	// record its room pass recorded (runQueue); a query whose record the write moved and whose
+	// document it wrote no version of takes one now (reviseQueries).
+	if versioning && len(st.layout) > 0 && st.owner.IssueKey != nil {
+		if err := st.reviseQueries(ctx, *st.owner.IssueKey); err != nil {
+			return settleDone, st.abandon(err)
+		}
+	}
 	// The commit marks the in-flight credits the version listed consumed before it releases the
 	// room's state, and the room updates the settlement stored marked stored (commitSettlement); a
 	// settlement that writes no version takes out none. The room forgets the author of each ask
@@ -1126,6 +1134,31 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		s.sweepUnrecordedMarks(room, st.layout, st.versioned, st.versionedCounts)
 	}
 	return settleDone, settleOutcome{}
+}
+
+// reviseQueries appends, in the settlement's transaction once its write phase has run, a version of
+// each query document of the issue issueKey whose query's record or rendering this settlement's
+// room write moved without writing that document a version: a requirement written into the
+// Verification document's fragment moves the spec's record and no byte of the spec
+// (Service.ReviseQueries). What those versions state is caused by the last artifact.version the
+// settlement appended.
+func (st *settlement) reviseQueries(ctx context.Context, issueKey string) error {
+	revised, err := st.service.ReviseQueries(ctx, st.tx, issueKey, st.credit.versionActor())
+	if err != nil {
+		return err
+	}
+	return graphstore.Caused(ctx, st.tx, revised, lastVersionEvent(st.published))
+}
+
+// lastVersionEvent is the id of the last artifact.version of events, the events a settlement's
+// write phase appended, and graphstore.NoEvent where it appended none.
+func lastVersionEvent(events []model.Event) int64 {
+	for index := len(events) - 1; index >= 0; index-- {
+		if events[index].Type == "artifact.version" {
+			return events[index].ID
+		}
+	}
+	return graphstore.NoEvent
 }
 
 // roomVersion is the latest markdown version a document of an issue room holds, as
@@ -1308,12 +1341,14 @@ func (st *settlement) blockVersions(ctx context.Context, fragments []roomFragmen
 
 // commitRoomVersions writes, in the settlement's transaction, one version of each document of the
 // issue room whose fragment changed (fragments), each through writeVersionTx with the version's
-// own approval move and carry, anchors and edit notice, then indexes the room once under its tree
-// artifact (indexRoom): each fragment's own rendering, the bytes its version holds, laid end to end
-// in the room's order with its blocks' ranges (fragmentsText), at the version of each fragment's
-// document - the one just written, or its latest - so each block records its own document's
-// version and the pass clears the mark the version trigger set on each version it writes
-// (refs.IndexBlocks' fence). Each version's node follows the pass's block nodes, and each
+// own approval move, anchors and edit notice, then indexes the room once under its tree artifact
+// (indexRoom): each fragment's own rendering, the bytes its version holds, laid end to end in the
+// room's order with its blocks' ranges (fragmentsText), at the version of each fragment's document
+// - the one just written, or its latest - so each block records its own document's version and the
+// pass clears the mark the version trigger set on each version it writes (refs.IndexBlocks'
+// fence); then carries each version's approval, once that pass has stated it (carryAfterRender),
+// a restore's carry before the versions' artifact.version events (carryRestored).
+// Each version's node follows the pass's block nodes, and each
 // version's artifact.version event names its own document and causes what the pass stated of
 // that document's blocks, with the version's node, stamping the links its blocks inserted at that
 // version (stampVersionEvent), each queued right after that event's append (graphstore.LatestEvent,
@@ -1377,6 +1412,24 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 		st.versioned, &st.reconciliation.sources)
 	if err != nil {
 		return err
+	}
+	// Each version's approval carry runs once the room's pass has stated it, so its writes run
+	// after the version_renders row that pass gives it (carryAfterRender), and the review it
+	// inserts pins that row's digest; a carry to a version that restores the approved text keeps
+	// its writes here, before the artifact.version events below, behind a row of the approval's
+	// digest the write phase holds to the version's record (carryRestored). Each version's move ran
+	// in its write, before the pass, so an open request names the version by now. A closed issue's
+	// version carries nothing.
+	if !st.issueClosed {
+		for _, write := range writes {
+			document, version, fragment := write.fragment.document, write.result.version, write.fragment
+			if err := carryAfterRender(ctx, tx, document, version.Number, func() error {
+				return s.carryApproval(ctx, tx, document, version,
+					renderedTree{tree: fragment.tree, markdown: fragment.markdown, offsets: fragment.offsets}, decisionStepCases{}, eventSink(ctx))
+			}); err != nil {
+				return err
+			}
+		}
 	}
 	for _, write := range writes {
 		node, err := WriteVersionNode(ctx, tx, write.result.owner, write.result.version.Number, write.actor, write.result.version.CreatedAt)

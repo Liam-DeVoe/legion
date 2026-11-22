@@ -443,6 +443,13 @@ func (s *server) recordResultUnderOwnerLocks(
 	if _, err := lockIssueOwners(ctx, tx, issueKey, check.IssueKey); err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
 	}
+	// The result moves the record of the check's issue's Verification query, which takes a version
+	// in its issue's room once the result is written (reviseQueriesUnder). That room's lock comes
+	// here, after the owner locks and before the event's owner row and every write, in the order
+	// docs/persistence.go sets for a transaction that takes both (docs.LockQueryRooms).
+	if err := docs.LockQueryRooms(ctx, tx, check.IssueKey); err != nil {
+		return recordedCheckResult{}, indexedCheck{}, err
+	}
 	recordingOpen, checkOpen, err := issuesOpenForResult(ctx, tx, issueKey, check.IssueKey)
 	if err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
@@ -514,6 +521,9 @@ func (s *server) recordResultUnderOwnerLocks(
 	seq := int64(event.Seq)
 	result.EventSeq = &seq
 	if err := writeRecordedResult(ctx, tx, &result, project, check.NodeAddress, screenshots, event.ID); err != nil {
+		return recordedCheckResult{}, indexedCheck{}, err
+	}
+	if err := s.reviseQueriesUnder(ctx, tx, check.IssueKey, actor, event.ID); err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1459,6 +1469,21 @@ func writeRecordedResult(ctx context.Context, tx pgx.Tx, result *model.CheckResu
 		graphstore.QueueWrite(b, nodes, tuples)
 		return nil
 	})
+}
+
+// reviseQueriesUnder appends, in tx, a version of each query document of the issue issueKey whose
+// record the route's write, which has run in tx, moved (docs.Service.ReviseQueries): a result
+// recorded or retracted moves the record of the Verification query of the check's issue, and a
+// version of that document holds it where the issue has converted. It causes what those versions
+// state under event, the event the route appended for its write (graphstore.Caused). The route
+// holds the issue's owner lock and took the issue room's lock right after it, before its event
+// and its first write (docs.LockQueryRooms), so the room lock ReviseQueries takes waits on nothing.
+func (s *server) reviseQueriesUnder(ctx context.Context, tx pgx.Tx, issueKey string, writer model.Actor, event int64) error {
+	revised, err := s.deps.Docs.ReviseQueries(ctx, tx, issueKey, writer)
+	if err != nil {
+		return err
+	}
+	return graphstore.Caused(ctx, tx, revised, event)
 }
 
 // loadCheckResults is every result recorded against the checks of one Verification document,

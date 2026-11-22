@@ -1178,10 +1178,10 @@ func (s *server) storeArtifact(
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The approval this upload's own version superseded, read in its read phase as the edit route
-	// reads it: an upload to an existing document always writes a version, so a replacement of an
-	// approved spec closes its design gate as an edit does, unless the restore above carried the
-	// approval to it. A new document has no review of its own to supersede.
+	// The approval this upload's own version superseded, read as the edit route reads it: an
+	// upload to an existing document always writes a version, so a replacement of an approved spec
+	// closes its design gate as an edit does, unless the restore above carried the approval to it.
+	// A new document has no review of its own to supersede.
 	var superseded *supersededApproval
 	var moved *movedApprovalRequest
 	if kind == "doc" && !created {
@@ -1192,16 +1192,18 @@ func (s *server) storeArtifact(
 		if target.IssueKey != nil {
 			route = "POST /api/v1/issues/{key}/artifacts"
 		}
-		superseded = s.supersededApprovalAdvice(
-			r.Context(), tx, ledger, route, artifactIssueKey(artifact), artifact.ID, version.Number,
-		)
-		// The open approval request this upload's own version took back from the person it was
-		// waiting on, read off the ledger the move above and the restore's carry are queued on,
-		// so a carry that answered the request reports nothing. A new document carries no
-		// request either.
-		moved = s.movedApprovalRequestAdvice(
-			r.Context(), tx, ledger, route, artifactIssueKey(artifact), artifact.ID,
-		)
+		// Both are read once the write phase has run (docs.Ledger.AfterWrites): whether the
+		// restore's carry is written is decided there, so the review and the request are read
+		// as the transaction wrote them. The open approval request is the one this upload's own
+		// version took back from the person it was waiting on, so a carry that answered the
+		// request reports nothing. A new document carries no request either.
+		if err := ledger.AfterWrites(func(ctx context.Context) {
+			superseded = s.supersededApprovalAdvice(ctx, tx, route, artifactIssueKey(artifact), artifact.ID, version.Number)
+			moved = s.movedApprovalRequestAdvice(ctx, tx, route, artifactIssueKey(artifact), artifact.ID)
+		}); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	var advice *writeAdvice
 	if target.IssueKey != nil && issueStatus != nil {
@@ -1943,22 +1945,26 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 			published = append(published, event)
 		}
 	}
-	// The approval this edit's own version superseded, read in the edit's read phase, where that
-	// version and any carry it made are queued: a person's approval of a spec is Legion's design
-	// gate, and the writer is the only one who learns in time that this write closed it.
+	// The approval this edit's own version superseded: a person's approval of a spec is Legion's
+	// design gate, and the writer is the only one who learns in time that this write closed it.
+	// It is read once the write phase has run (docs.Ledger.AfterWrites), which decides whether the
+	// carry of a version restoring the approved text is written, so it reads the review this
+	// transaction wrote rather than the one its read phase queued.
 	var superseded *supersededApproval
 	var moved *movedApprovalRequest
 	if written != nil {
-		superseded = s.supersededApprovalAdvice(
-			r.Context(), tx, ledger, routeEditDocument, artifactIssueKey(artifact), artifact.ID, written.Version.Number,
-		)
 		// The open approval request this edit's own version took back from the person it was
-		// waiting on, read off the ledger that version's move (docs.MoveApprovalAsk) and any
-		// carry are queued on: an edit that stored no version moved nothing, and one whose carry
-		// answered the request leaves it with the person and reports nothing.
-		moved = s.movedApprovalRequestAdvice(
-			r.Context(), tx, ledger, routeEditDocument, artifactIssueKey(artifact), artifact.ID,
-		)
+		// waiting on, read beside it, as the version's move (docs.MoveApprovalAsk) and any carry
+		// wrote it: an edit that stored no version moved nothing, and one whose carry answered the
+		// request leaves it with the person and reports nothing.
+		number := written.Version.Number
+		if err := ledger.AfterWrites(func(ctx context.Context) {
+			superseded = s.supersededApprovalAdvice(ctx, tx, routeEditDocument, artifactIssueKey(artifact), artifact.ID, number)
+			moved = s.movedApprovalRequestAdvice(ctx, tx, routeEditDocument, artifactIssueKey(artifact), artifact.ID)
+		}); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	// An edit hears about the asks of this issue a person declined to answer only where it added
 	// an ask block, which is the write R6 asks the reminder for: "an edit of one of the issue's

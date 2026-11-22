@@ -5,16 +5,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -526,18 +530,23 @@ func (r *storeWriterRig) lockResultCheck(t *testing.T, uploaded *bool) {
 
 // resultRecord is the record of a result (recordCheckResult, writeRecordedResult), through its
 // route: the owner locks of the recording issue and the check's issue, here one
-// (lockIssueOwners), then result.recorded, the check_results row, whose foreign key takes the
-// check's artifact row `for key share`, then the result's node and the recorder's in one node
-// write, and last the tuples that event causes. Each run records a result of its own under an id
-// drawn in the run, so the row, the node and the tuples are held as the tables they are written
-// to. The event is an issue's, so it takes no lock on projects (eventProjectLocks).
+// (lockIssueOwners), then the lock of the check's issue's room (docs.LockQueryRooms), then
+// result.recorded, the check_results row, whose foreign key takes the check's artifact row `for key
+// share`, then the result's node and the recorder's in one node write, and the tuples that event
+// causes. Each run records a result of its own under an id drawn in the run, so the row, the node
+// and the tuples are held as the tables they are written to. The event is an issue's, so it takes
+// no lock on projects (eventProjectLocks). The rig's issue is born converted, so the result moves
+// the record of its Verification query, and the route last appends a version of that document
+// (reviseQueriesUnder): the version's row, its node and its version_renders row, and the node's
+// tuples under result.recorded.
 func (r *storeWriterRig) resultRecord() storeWriter {
 	uploaded := false
 	return storeWriter{
 		name: "recordCheckResult",
 		steps: []storeStep{
 			ownerLockStep(store.IssueOwner(r.issue)),
-			eventAppendStep(),
+			r.roomLockStep(),
+			resultEventStep(),
 			{
 				name: "the result's row", order: projectionStep,
 				hold: holdTableWrites("check_results"), at: "insert into check_results (",
@@ -549,6 +558,8 @@ func (r *storeWriterRig) resultRecord() storeWriter {
 				takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
 			},
 			tupleAppendStep(),
+			revisedVersionRowStep(),
+			revisedRenderRowStep(),
 		},
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			r.lockResultCheck(t, &uploaded)
@@ -565,18 +576,22 @@ func (r *storeWriterRig) resultRecord() storeWriter {
 
 // resultRetraction is the retraction of a result (retractCheckResult, writeCheckResultRetraction),
 // through its route: it reads the result's check_results row plainly (readRetractedResult), takes
-// the owner lock of the check's issue (store.LockOwner), reads whether the store holds the
-// result's node, then appends result.retracted, and last writes, in one batch, the
-// check_result_retractions row and the result's retracted value that event causes, a tuple alone
-// (graphstore.QueueWrite). Each run retracts a result its ready recorded; the retraction's row and
-// the value are held as the tables they are written to.
+// the owner lock of the check's issue (store.LockOwner) and then its room's lock
+// (docs.LockQueryRooms), reads whether the store holds the result's node, then appends
+// result.retracted, and writes, in one batch, the check_result_retractions row and the result's
+// retracted value that event causes, a tuple alone (graphstore.QueueWrite). Each run retracts a
+// result its ready recorded; the retraction's row and the value are held as the tables they are
+// written to. The retraction moves the record of the issue's Verification query, so the route last
+// appends a version of that document (reviseQueriesUnder): the version's row, its node, its
+// version_renders row, and the node's tuples under result.retracted.
 func (r *storeWriterRig) resultRetraction() storeWriter {
 	uploaded := false
 	return storeWriter{
 		name: "retractCheckResult",
 		steps: []storeStep{
 			ownerLockStep(store.IssueOwner(r.issue)),
-			eventAppendStep(),
+			r.roomLockStep(),
+			resultEventStep(),
 			{
 				name: "the retraction's row", order: projectionStep,
 				hold: holdTableWrites("check_result_retractions"), at: "insert into check_result_retractions (",
@@ -587,6 +602,13 @@ func (r *storeWriterRig) resultRetraction() storeWriter {
 				hold: holdTableWrites("graph_tuples"), at: tupleOnlyAppendStatement,
 				takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
 			},
+			revisedVersionRowStep(),
+			{
+				name: "the revised version's node", order: nodeStep,
+				hold: holdTableWrites("graph_nodes"), at: nodeWriteStatement,
+				takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
+			},
+			revisedRenderRowStep(),
 		},
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			r.lockResultCheck(t, &uploaded)
@@ -604,5 +626,331 @@ func (r *storeWriterRig) resultRetraction() storeWriter {
 				},
 			}
 		},
+	}
+}
+
+// resultEventStep is the event a result's write appends (eventAppendStep), with the issue's row its
+// append updates (events.Broker moves the owner row's last_seq): a write held at an earlier step
+// that has locked that row already took its event, which the room's lock comes before.
+func resultEventStep() storeStep {
+	step := eventAppendStep()
+	step.takes = append(slices.Clone(step.takes), tableLock{"issues", rowExclusiveMode})
+	return step
+}
+
+// roomLockStep is the lock of the rig's issue's room (docs.LockQueryRooms), which a route that goes
+// on to append a version of one of the issue's query documents takes right after its owner lock
+// and before its event: held here as a writer of the room's stored history holds it, the advisory
+// lock of the issue's tree (lockDocumentRoom's key). It locks no table and no row.
+func (r *storeWriterRig) roomLockStep() storeStep {
+	return storeStep{
+		name: "the issue room's lock", order: roomStep,
+		hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
+			t.Helper()
+			tag, err := holder.Exec(ctx, `select pg_advisory_xact_lock(hashtext(artifact_id::text)) from issue_trees where issue_key = $1`, r.issue)
+			if err != nil {
+				t.Fatalf("hold the lock of %s's room: %v", r.issue, err)
+			}
+			if tag.RowsAffected() != 1 {
+				t.Fatalf("hold the lock of %s's room: it took %d room locks, want the one of the issue's tree", r.issue, tag.RowsAffected())
+			}
+		},
+		at: "select pg_advisory_xact_lock(hashtext(t.artifact_id::text)) from issue_trees t where t.issue_key = $1",
+	}
+}
+
+// revisedVersionRowStep is the row of the version a result's write appends of the Verification
+// document whose record it moved (docs.Service.ReviseQueries), whose insert's trigger owes the
+// document its block index (document_block_versions_owe); the version's number is drawn in the
+// run, so the table is held.
+func revisedVersionRowStep() storeStep {
+	return storeStep{
+		name: "the revised version's row", order: projectionStep,
+		hold: holdTableWrites("artifact_versions"), at: versionStatement,
+		takes: []tableLock{{"artifact_versions", rowExclusiveMode}, {"document_block_versions", rowExclusiveMode}},
+	}
+}
+
+// revisedRenderRowStep is the version_renders row of that version, holding its record's digest
+// (docs.QueueVersionRender), after the version's node.
+func revisedRenderRowStep() storeStep {
+	return storeStep{
+		name: "the revised version's render row", order: projectionStep,
+		hold: holdTableWrites("version_renders"), at: "insert into version_renders (",
+		takes: []tableLock{{"version_renders", rowExclusiveMode}},
+	}
+}
+
+// revisedSpec is the spec of the issues whose queries TestEveryWriteThatMovesAQuerysRecordAppendsAVersionOfIt
+// revises: a paragraph and one requirement; revisedChecks is their Verification document, one
+// check.
+const (
+	revisedSpec   = "The spec's opening words.\n\n:::requirement{#r1}\nThe list comes first.\n:::\n"
+	revisedChecks = ":::check{#c1 surface=\"cli\"}\nThe list reads the urgent asks first.\n:::\n"
+)
+
+// queryVersion is the newest version of a document and its version_renders row: the version's
+// number and stored markdown, and the row's digest, time and seq, each nil where it holds none.
+type queryVersion struct {
+	number   int
+	markdown string
+	digest   *string
+	at       *time.Time
+	readSeq  *int64
+}
+
+// newestQueryVersion reads the newest version of the document artifactID and its row.
+func newestQueryVersion(t *testing.T, database *store.Store, artifactID string) queryVersion {
+	t.Helper()
+	var version queryVersion
+	if err := database.Pool.QueryRow(context.Background(), `
+		select v.number, coalesce(v.markdown, ''), r.record_sha256, r.at, r.read_seq
+		from artifact_versions v
+		left join version_renders r on r.artifact_id = v.artifact_id and r.number = v.number
+		where v.artifact_id = $1
+		order by v.number desc limit 1`, artifactID).Scan(&version.number, &version.markdown, &version.digest, &version.at, &version.readSeq); err != nil {
+		t.Fatalf("read the newest version of %s: %v", artifactID, err)
+	}
+	return version
+}
+
+// requireRecordedDigest fails unless version, the newest version of a document of issue whose
+// query is query, holds a version_renders row whose digest is the digest docs builds of that
+// query's record at the row's own cut and at the head, and answers the digest.
+func requireRecordedDigest(t *testing.T, database *store.Store, what, issue, query string, version queryVersion) string {
+	t.Helper()
+	if version.digest == nil || version.at == nil || version.readSeq == nil {
+		t.Fatalf("%s: version %d of the %s holds no version_renders row", what, version.number, query)
+	}
+	ctx := context.Background()
+	recorded, err := docs.ReadQueryRecord(ctx, database.Pool, issue, query, refs.TreeCut{At: *version.at, ReadSeq: *version.readSeq})
+	if err != nil {
+		t.Fatalf("%s: read the %s record of %s at the row's cut: %v", what, query, issue, err)
+	}
+	head, err := docs.ReadQueryRecord(ctx, database.Pool, issue, query, refs.TreeCut{})
+	if err != nil {
+		t.Fatalf("%s: read the %s record of %s at the head: %v", what, query, issue, err)
+	}
+	if *version.digest != recorded.Digest || *version.digest != head.Digest {
+		t.Errorf("%s: version %d of the %s records the digest %s, want its record's, %s at the row's cut and %s at the head",
+			what, version.number, query, *version.digest, recorded.Digest, head.Digest)
+	}
+	return *version.digest
+}
+
+// writeThroughTheRoom appends markdown to the document artifactID of issueKey through its room, as
+// alice's browser writes it (connectBrowserPeer), and settles the issue's documents (settleIssue).
+func writeThroughTheRoom(t *testing.T, handler http.Handler, documents *docs.Service, issueKey, artifactID, markdown string) {
+	t.Helper()
+	peer := connectBrowserPeer(t, handler, documents, artifactID)
+	defer peer.close()
+	peer.appendParagraph(t, markdown)
+	peer.barrier(t)
+	settleIssue(t, documents, issueKey)
+}
+
+// requireRevisedVersion fails unless version number of the document of refKey, which artifactID
+// names, is a query version holding the definition_version of this build's record layout, whose
+// node the event event caused, and renders from the tree as its stored bytes with no difference
+// the census of the rendered versions reads at it.
+func requireRevisedVersion(t *testing.T, database *store.Store, what, artifactID, refKey string, number int, event int64) {
+	t.Helper()
+	ctx := context.Background()
+	if supertag, held := versionDefinition(t, database, refKey, number); supertag != graphstore.SupertagQueryVersion || definitionHeld(held) != fmt.Sprint(graphstore.QueryDefinitionVersion) {
+		t.Errorf("%s: version %d of %s is a %s holding definition_version %s, want a query version holding %d",
+			what, number, refKey, supertag, definitionHeld(held), graphstore.QueryDefinitionVersion)
+	}
+	var cause int64
+	if err := database.Pool.QueryRow(ctx, `select source_event from graph_nodes where kind = $1 and id = $2`,
+		graphstore.KindVersion, graphstore.VersionID(refKey, number)).Scan(&cause); err != nil {
+		t.Fatalf("%s: read the node of version %d of %s: %v", what, number, refKey, err)
+	}
+	if cause != event {
+		t.Errorf("%s: the node of version %d of %s is caused by the event %d, want the write's own %d", what, number, refKey, cause, event)
+	}
+	rendering, err := docs.RenderVersion(ctx, database.Pool, model.Actor{Kind: "user", ID: "alice"}, artifactID, number)
+	if err != nil {
+		t.Fatalf("%s: render version %d of %s: %v", what, number, refKey, err)
+	}
+	var stored string
+	if err := database.Pool.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`, artifactID, number).Scan(&stored); err != nil {
+		t.Fatalf("%s: read version %d of %s: %v", what, number, refKey, err)
+	}
+	if rendering.Source != docs.RenderedFromTree || rendering.Markdown != stored {
+		t.Errorf("%s: version %d of %s renders %q from %s, want its stored %q from the tree", what, number, refKey, rendering.Markdown, rendering.Source, stored)
+	}
+	census, err := docs.ReadVersionRenderCensus(ctx, database.Pool)
+	if err != nil {
+		t.Fatalf("%s: read the census of the rendered versions: %v", what, err)
+	}
+	for _, difference := range census.Reported {
+		if difference.At == "version "+graphstore.VersionID(refKey, number) {
+			t.Errorf("%s: the census of the rendered versions reads a difference at %s: %s", what, difference.At, difference.Cause)
+		}
+	}
+}
+
+// issueVersionCounts is the newest version number of each document of issueKey, by slug, read
+// through q.
+func issueVersionCounts(t *testing.T, q queryer, issueKey string) map[string]int {
+	t.Helper()
+	rows, err := q.Query(context.Background(), `
+		select a.slug, coalesce(max(v.number), 0) from artifacts a
+		left join artifact_versions v on v.artifact_id = a.id
+		where a.issue_key = $1 group by a.slug`, issueKey)
+	if err != nil {
+		t.Fatalf("read the versions of %s: %v", issueKey, err)
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var slug string
+		var number int
+		if err := rows.Scan(&slug, &number); err != nil {
+			t.Fatalf("read the versions of %s: %v", issueKey, err)
+		}
+		counts[slug] = number
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the versions of %s: %v", issueKey, err)
+	}
+	return counts
+}
+
+// Every write that moves a query's record or its document's rendering leaves its document a
+// version whose version_renders row records the record's digest, on an issue born converted:
+//   - a requirement written into the spec through the issue's room: its settlement writes one spec
+//     version, whose pass records its record's digest, and no version of the Verification document;
+//   - a requirement written into the Verification document's fragment: the settlement versions
+//     that document, and the spec's record moves while its rendering does not, so the settlement
+//     appends one spec version holding the bytes of the one before it, the record's digest on its
+//     row, its node caused by the Verification document's artifact.version;
+//   - prose alone written into the spec: the rendering moved, so the settlement writes one spec
+//     version, and the record did not, so its digest is the one the approval before it pinned (R14);
+//   - a result recorded on the check appends one Verification version, the bytes of the one before
+//     it, holding the record's new digest, its node caused by result.recorded; its retraction
+//     appends another, caused by result.retracted; each is a query version that renders from the
+//     tree as its stored bytes, with no difference the census reads at it, and neither moves the
+//     spec.
+//
+// An issue that has not converted takes no version from a result recorded on its check, and
+// ReviseQueries answers nothing for it and writes nothing.
+func TestEveryWriteThatMovesAQuerysRecordAppendsAVersionOfIt(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
+	documents := deps.Docs.(*docs.Service)
+	ctx := context.Background()
+	createReferenceAPIProject(t, handler, "REV")
+	issue := createDigestIssue(t, handler, database, "REV", "The revised issue", revisedSpec, false)
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", revisedChecks)
+	spec, verification := readDecisionDocument(t, database, issue.Key, "spec"), readDecisionDocument(t, database, issue.Key, "verification-md")
+
+	created, uploaded := newestQueryVersion(t, database, spec.id), newestQueryVersion(t, database, verification.id)
+	createdDigest := requireRecordedDigest(t, database, "the spec as the create wrote it", issue.Key, graphstore.QuerySpec, created)
+	requireRecordedDigest(t, database, "the Verification document as uploaded", issue.Key, graphstore.QueryVerification, uploaded)
+
+	writeThroughTheRoom(t, handler, documents, issue.Key, spec.id, requirementMarkdown("r2", "An ask keeps its urgency."))
+	worded := newestQueryVersion(t, database, spec.id)
+	if worded.number != created.number+1 {
+		t.Fatalf("a requirement written into the spec through the room leaves the spec at version %d, want one version after %d", worded.number, created.number)
+	}
+	wordedDigest := requireRecordedDigest(t, database, "a requirement written into the spec", issue.Key, graphstore.QuerySpec, worded)
+	if wordedDigest == createdDigest {
+		t.Errorf("a requirement written into the spec leaves the spec's digest at %s", wordedDigest)
+	}
+	if held := newestQueryVersion(t, database, verification.id); held.number != uploaded.number {
+		t.Errorf("a requirement written into the spec gave the Verification document version %d, want it at %d", held.number, uploaded.number)
+	}
+
+	writeThroughTheRoom(t, handler, documents, issue.Key, verification.id, requirementMarkdown("r3", "A requirement written beside the checks."))
+	checks := newestQueryVersion(t, database, verification.id)
+	if checks.number != uploaded.number+1 {
+		t.Fatalf("a requirement written into the Verification document leaves it at version %d, want %d", checks.number, uploaded.number+1)
+	}
+	moved := newestQueryVersion(t, database, spec.id)
+	if moved.number != worded.number+1 || moved.markdown != worded.markdown {
+		t.Fatalf("a requirement written into the Verification document leaves the spec at version %d holding %q, want one version after %d holding its bytes, %q",
+			moved.number, moved.markdown, worded.number, worded.markdown)
+	}
+	movedDigest := requireRecordedDigest(t, database, "a requirement written beside the checks", issue.Key, graphstore.QuerySpec, moved)
+	if movedDigest == wordedDigest {
+		t.Errorf("a requirement written beside the checks leaves the spec's digest at %s", movedDigest)
+	}
+	requireRevisedVersion(t, database, "the spec a room write revised", spec.id, spec.refKey, moved.number,
+		eventOf(t, database, "artifact.version", "payload->>'artifact_id'", verification.id))
+	checksDigest := requireRecordedDigest(t, database, "the Verification document a room write versioned", issue.Key, graphstore.QueryVerification, checks)
+
+	review := reviewDocument(t, handler, spec.id, "alice", "approved", "")
+	if review.ContentSHA256 == nil || *review.ContentSHA256 != movedDigest {
+		t.Fatalf("the approval of version %d of the spec pins %v, want its record's digest %s", moved.number, review.ContentSHA256, movedDigest)
+	}
+	const prose = "A closing paragraph of prose."
+	writeThroughTheRoom(t, handler, documents, issue.Key, spec.id, prose+"\n")
+	proseVersion := newestQueryVersion(t, database, spec.id)
+	if proseVersion.number != moved.number+1 || !strings.Contains(proseVersion.markdown, prose) {
+		t.Fatalf("prose written into the spec leaves it at version %d holding %q, want one version after %d holding the prose", proseVersion.number, proseVersion.markdown, moved.number)
+	}
+	if digest := requireRecordedDigest(t, database, "prose written into the spec", issue.Key, graphstore.QuerySpec, proseVersion); digest != *review.ContentSHA256 {
+		t.Errorf("prose written into the spec moves its digest from the approved %s to %s, want it standing (R14)", *review.ContentSHA256, digest)
+	}
+
+	recorded := recordResult(t, handler, issue.Key, resultBody("c1", "fail", headCommit, map[string]any{"failed": 1}))
+	if recorded.Code != http.StatusCreated {
+		t.Fatalf("record a result of c1: status=%d body=%s", recorded.Code, recorded.Body.String())
+	}
+	result := decodeBody[recordedResult](t, recorded).Result
+	withResult := newestQueryVersion(t, database, verification.id)
+	if withResult.number != checks.number+1 || withResult.markdown != checks.markdown {
+		t.Fatalf("a recorded result leaves the Verification document at version %d holding %q, want one version after %d holding its bytes, %q",
+			withResult.number, withResult.markdown, checks.number, checks.markdown)
+	}
+	resultDigest := requireRecordedDigest(t, database, "a recorded result", issue.Key, graphstore.QueryVerification, withResult)
+	if resultDigest == checksDigest {
+		t.Errorf("a recorded result leaves the Verification digest at %s", resultDigest)
+	}
+	requireRevisedVersion(t, database, "the Verification document a result revised", verification.id, verification.refKey, withResult.number,
+		eventOf(t, database, "result.recorded", "payload->>'result_id'", result.ID))
+
+	retraction := dispatchRequest(t, handler, http.MethodPost, "/api/v1/results/"+result.ID+"/retract",
+		map[string]any{"reason": "The run measured the wrong build."}, "alice")
+	if retraction.Code != http.StatusCreated {
+		t.Fatalf("retract the result: status=%d body=%s", retraction.Code, retraction.Body.String())
+	}
+	retracted := newestQueryVersion(t, database, verification.id)
+	if retracted.number != withResult.number+1 || retracted.markdown != withResult.markdown {
+		t.Fatalf("a retraction leaves the Verification document at version %d holding %q, want one version after %d holding its bytes, %q",
+			retracted.number, retracted.markdown, withResult.number, withResult.markdown)
+	}
+	if digest := requireRecordedDigest(t, database, "a retraction", issue.Key, graphstore.QueryVerification, retracted); digest == resultDigest {
+		t.Errorf("a retraction leaves the Verification digest at %s", digest)
+	}
+	requireRevisedVersion(t, database, "the Verification document a retraction revised", verification.id, verification.refKey, retracted.number,
+		eventOf(t, database, "result.retracted", "payload->>'result_id'", result.ID))
+	if held := newestQueryVersion(t, database, spec.id); held.number != proseVersion.number {
+		t.Errorf("a result and its retraction gave the spec version %d, want it at %d", held.number, proseVersion.number)
+	}
+
+	unconverted := createDigestIssue(t, handler, database, "REV", "An issue that has not converted", revisedSpec, true)
+	uploadDocument(t, handler, "/api/v1/issues/"+unconverted.Key, "verification.md", revisedChecks)
+	before := issueVersionCounts(t, database.Pool, unconverted.Key)
+	if response := recordResult(t, handler, unconverted.Key, resultBody("c1", "fail", headCommit, map[string]any{"failed": 1})); response.Code != http.StatusCreated {
+		t.Fatalf("record a result of %s's c1: status=%d body=%s", unconverted.Key, response.Code, response.Body.String())
+	}
+	if after := issueVersionCounts(t, database.Pool, unconverted.Key); !maps.Equal(after, before) {
+		t.Errorf("a result recorded on %s, which has not converted, leaves its documents at the versions %v, want %v", unconverted.Key, after, before)
+	}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	revised, err := documents.ReviseQueries(ctx, tx, unconverted.Key, model.Actor{Kind: "user", ID: "alice"})
+	if err != nil {
+		t.Fatalf("revise the queries of %s: %v", unconverted.Key, err)
+	}
+	if len(revised.Nodes) != 0 || len(revised.Tuples) != 0 {
+		t.Errorf("ReviseQueries of %s, which has not converted, answers %d nodes and %d tuples, want none", unconverted.Key, len(revised.Nodes), len(revised.Tuples))
+	}
+	if inside := issueVersionCounts(t, tx, unconverted.Key); !maps.Equal(inside, before) {
+		t.Errorf("ReviseQueries of %s, which has not converted, leaves its documents at the versions %v, want %v", unconverted.Key, inside, before)
 	}
 }

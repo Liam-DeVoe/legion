@@ -61,6 +61,8 @@ type versionWrite struct {
 	// (settlement.commitRoomVersions): the room's one index pass, under its tree artifact, indexes
 	// every fragment at the version written for its document, so the version write indexes
 	// nothing of its own (T12a of dispatch://INFRA-1253's plan).
+	// Nor does it carry an approval: the settlement carries one to the version once that pass has
+	// stated it.
 	roomIndexed bool
 	// steps names the phases of the decisions step whose own write this version is (restoreCase,
 	// conversionCase): set by SnapshotVersion from the mark the step alone puts on its context
@@ -2925,7 +2927,13 @@ type renderedTree struct {
 // and the carry's reads and the anchor refresh's walk. Its writes go through write in this order -
 // the version's insert, the task counts, the index, the move, the carry, the anchors - so a
 // transaction whose writes are queued runs them in its write phase, and the ledger records the
-// version as it will stand (latestVersion).
+// version as it will stand (latestVersion). The carry's writes wait for the second part of the
+// write phase where the index's pass gives the version its version_renders row in this transaction
+// (carryAfterRender), so the review it inserts pins the digest that row records, but for a carry
+// to a version that restores the approved text, whose writes keep their place behind a row of the
+// approval's digest, under a savepoint the write phase takes before the version's insert
+// (carryRestored); a version an issue room's settlement writes takes its carry after the room's
+// pass (commitRoomVersions).
 func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID string, rendered renderedTree, actor model.Actor, spec *versionWrite) (versionWriteResult, error) {
 	markdown, tree := rendered.markdown, rendered.tree
 	if spec == nil {
@@ -2986,7 +2994,8 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 // finishVersionWrite is what writeVersionTx does once the version's row (result.version) is
 // queued, indexed or left to its room's pass: it moves the open approval request and carries an
 // approval to the version, refreshes the anchors of the tree it was written from and records its
-// author capture, answering result.
+// author capture, answering result. A version left to its room's pass (versionWrite.roomIndexed)
+// takes its carry from the settlement, once that pass has stated it (commitRoomVersions).
 func (s *Service) finishVersionWrite(ctx context.Context, tx pgx.Tx, artifactID string, rendered renderedTree, actor model.Actor, spec *versionWrite, result versionWriteResult) (versionWriteResult, error) {
 	markdown, tree, version := rendered.markdown, rendered.tree, result.version
 	if !spec.closedIssue {
@@ -3005,9 +3014,15 @@ func (s *Service) finishVersionWrite(ctx context.Context, tx pgx.Tx, artifactID 
 		// rules: every ask block of the version agrees with its node, and the version holds the
 		// approved text again or every difference from it is one of the carry cases
 		// (carryVerdict). It runs after the move, so an open request already names this version
-		// when the carry answers it in the approver's name.
-		if err := s.carryApproval(ctx, tx, artifactID, version, rendered, spec.steps, eventSink(ctx)); err != nil {
-			return versionWriteResult{}, err
+		// when the carry answers it in the approver's name, and after the index, whose pass gives
+		// the version its version_renders row, before which none of its writes runs
+		// (carryAfterRender), or, for a restore, behind the row it writes itself (carryRestored).
+		if !spec.roomIndexed {
+			if err := carryAfterRender(ctx, tx, artifactID, version.Number, func() error {
+				return s.carryApproval(ctx, tx, artifactID, version, rendered, spec.steps, eventSink(ctx))
+			}); err != nil {
+				return versionWriteResult{}, err
+			}
 		}
 	}
 	// The transaction's own live operation already refreshed this tree's anchors
@@ -3119,7 +3134,8 @@ func versionRoomHead(ctx context.Context, tx pgx.Tx, artifactID string) (int64, 
 // head the insert meets - and queues the insert in tx's write phase (write). The ledger that
 // queues tx's writes records the version as it will stand, so the reads that follow in this
 // transaction take it from there rather than from a table that holds the row only once the write
-// phase has run (latestVersion, PendingVersionMarkdown).
+// phase has run (latestVersion, PendingVersionMarkdown), and the place of its insert in the queue,
+// before which the write phase takes the savepoint of a restore carry to it (carryRestored).
 func queueVersionInsert(ctx context.Context, tx pgx.Tx, artifactID, markdown string, authors []model.Actor, named bool, summary *string, docUpdateVersion *int64, stamp RenderStamp) (model.Version, error) {
 	number, createdAt, err := versionSlot(ctx, tx, artifactID)
 	if err != nil {
@@ -3139,7 +3155,7 @@ func queueVersionInsert(ctx context.Context, tx pgx.Tx, artifactID, markdown str
 		return model.Version{}, err
 	}
 	if ledger := queueFor(ctx, tx); ledger != nil {
-		ledger.queuedVersion(artifactID, pendingVersion{version: version, markdown: markdown, docUpdateVersion: cursor})
+		ledger.queuedVersion(artifactID, pendingVersion{version: version, markdown: markdown, docUpdateVersion: cursor, queued: len(ledger.queue) - 1})
 	}
 	return version, nil
 }

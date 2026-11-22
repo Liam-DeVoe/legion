@@ -130,6 +130,10 @@ type orderStep int
 
 const (
 	ownerStep orderStep = iota
+	// roomStep is a room's lock (docs.LockQueryRooms), which a transaction that takes both an
+	// owner's lock and a room's takes after the owner's advisory lock and before the owner row and
+	// every write (docs/persistence.go's order).
+	roomStep
 	fenceStep
 	nodeStep
 	projectionStep
@@ -1583,10 +1587,12 @@ func holdNewNode(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWrit
 // requireTheWrittenOrderAdmits checks a path's steps, in the order the path takes them, against
 // the invariants on markInboxReadThreads: the owner's lock first, a node before the projection row
 // naming it, the event before every step appending tuples that carry it, and the revision fence's
-// row before every step of the block statement it guards. A path skips the steps it does not take,
-// and is checked on the order of those it does. The fourth invariant, several nodes of one write
-// in ascending (kind, id), is graphstore's own (queueNodes, WriteArms): every node step here is
-// one statement, which writes one node, or a version's block nodes in that order.
+// row before every step of the block statement it guards; and against docs/persistence.go's order
+// for a transaction that takes a room's lock too: that lock right after the owner's, before the
+// owner row and every write. A path skips the steps it does not take, and is checked on the order
+// of those it does. The fourth invariant, several nodes of one write in ascending (kind, id), is
+// graphstore's own (queueNodes, WriteArms): every node step here is one statement, which writes one
+// node, or a version's block nodes in that order.
 func requireTheWrittenOrderAdmits(t *testing.T, writer storeWriter) {
 	t.Helper()
 	position := make(map[string]int, len(writer.steps))
@@ -1603,6 +1609,9 @@ func requireTheWrittenOrderAdmits(t *testing.T, writer storeWriter) {
 	for index, step := range writer.steps {
 		if step.order == ownerStep && index != 0 {
 			t.Errorf("%s takes the owner lock as its step %d: the owner lock comes first", writer.name, index+1)
+		}
+		if step.order == roomStep && slices.ContainsFunc(writer.steps[:index], func(before storeStep) bool { return before.order != ownerStep }) {
+			t.Errorf("%s takes %s after a step that is no owner lock: a room's lock comes right after the owner's, before the owner row and every write", writer.name, step.name)
 		}
 		if step.order == projectionStep && step.names != "" {
 			node, listed := position[step.names]

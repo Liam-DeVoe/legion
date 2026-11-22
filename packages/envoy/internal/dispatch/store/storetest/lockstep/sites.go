@@ -329,6 +329,20 @@ var storeWriteCallSites = map[string]string{
 	"api/results_retract.go#writeCheckResultRetraction":        "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"graphcensus/census_results.go#writeResultBatch":           "graphcensus#TestTheResultBatchTakesTheStoreLockOrder",
 	"graphcensus/census_results.go#writeResultRetractionBatch": "graphcensus#TestTheResultRetractionBatchTakesTheStoreLockOrder",
+	// A query's version a write appends where it moved the query's record or its document's
+	// rendering and wrote that document no version (docs.Service.ReviseQueries): once the write's
+	// own statements have run in its transaction, under the issue's owner lock and the lock of its
+	// room, both taken before the write's first statement (docs.LockQueryRooms, right after the
+	// owner's), the version's row, its node (docs/mutation.go#WriteVersionNode, above) and its
+	// version_renders row, and last the node's facts, caused by the event the write appended,
+	// through Caused. A recorded result and a retraction take it under result.recorded and
+	// result.retracted (reviseQueriesUnder), which api's TestEveryApiStoreWriterTakesTheStoreLockOrder
+	// drives through both routes, the room's lock held before their event; an issue room's
+	// settlement takes it once its write phase has run, under the last artifact.version it appended
+	// (reviseQueries), holding its room's lock from its read phase, one call of Caused after the rows
+	// its path holds, whose order refs' TestCausedTakesTheStoreLockOrder proves.
+	"api/results.go#reviseQueriesUnder": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"docs/settlement.go#reviseQueries":  "refs#TestCausedTakesTheStoreLockOrder",
 	// The backfill's passes over the components a process of the release before wrote with no
 	// node (R9 of this branch's spec): the architecture source rows of the batch's projects first,
 	// in ascending (project, id), then the rows read again under them, then the component nodes and

@@ -598,11 +598,13 @@ type supersededApprovalGate struct {
 }
 
 // supersededApprovalAdvice reports the approval the write of version just made stale, or nil when
-// it made none, which is every write of a document nobody has approved. It runs in the write's
-// read phase, where the version row and the approval carry (docs.carryApproval) are queued rather
-// than written, so the carry's own review comes off the ledger (docs.Ledger.PendingReview) and
-// everything else from the table: a carried approval is pinned to version itself and reports
-// nothing, which is right - the gate reopens on that carry's own artifact.approved event.
+// it made none, which is every write of a document nobody has approved. It runs once the write's
+// write phase has run and before its commit (docs.Ledger.AfterWrites), so the newest review is the
+// table's, holding whatever review the transaction wrote: the approval carry's own review
+// (docs.carryApproval) where the transaction wrote one, and none where the write phase dropped the
+// carry because the version's record was not the approved one (a restore's carry, which only the
+// write phase decides). A carried approval is pinned to version itself and reports nothing, which
+// is right - the gate reopens on that carry's own artifact.approved event.
 //
 // The read is the newest review of the document (docs.NewestReview), one entry of
 // artifact_reviews_by_artifact_event_seq in docs.ReviewOrder, the order the reviews' events
@@ -619,17 +621,11 @@ type supersededApprovalGate struct {
 func (s *server) supersededApprovalAdvice(
 	ctx context.Context,
 	tx pgx.Tx,
-	ledger *docs.Ledger,
 	route string,
 	issueKey string,
 	artifactID string,
 	version int,
 ) *supersededApproval {
-	// A review this transaction queued is newer than every stored one and no read of the table
-	// can see it before the write phase runs, so it answers for the newest review by itself.
-	if review, queued := ledger.PendingReview(artifactID); queued {
-		return supersededBy(&review, version)
-	}
 	adviceTx, ok := s.adviceSavepoint(ctx, tx, route, issueKey, "superseded_approval")
 	if !ok {
 		return nil
@@ -770,10 +766,11 @@ type movedApprovalDocument struct {
 // movedApprovalRequestAdvice reports the open approval request the write just took back from the
 // person, or nil when it took none: a document with no open request, and a request still at the
 // version its agent handed over, which is what a write whose own carry answered the request
-// leaves. It runs in the write's read phase, where the version row, the request's move
-// (docs.MoveApprovalAsk) and the approval carry are queued and not yet written, so it reads the
-// request as this transaction leaves it off the ledger (docs.Ledger.PendingApproval) and the
-// stored row only where the transaction queued no write of the request at all.
+// leaves. It runs once the write's write phase has run and before its commit
+// (docs.Ledger.AfterWrites), so it reads the request as the transaction wrote it: moved by the
+// version (docs.MoveApprovalAsk), and answered only where the approval carry's answer was written,
+// not where the write phase dropped the carry because the version's record was not the approved
+// one (a restore's carry, which only the write phase decides).
 //
 // The rule is docs.ApprovalAwaitsHandBack, the same one the SQL approvalMoved (ask_rows.go) and
 // the quiet flag of a later move (docs.MoveApprovalAsk) apply, asked here of the request as this
@@ -787,7 +784,6 @@ type movedApprovalDocument struct {
 func (s *server) movedApprovalRequestAdvice(
 	ctx context.Context,
 	tx pgx.Tx,
-	ledger *docs.Ledger,
 	route string,
 	issueKey string,
 	artifactID string,
@@ -797,23 +793,17 @@ func (s *server) movedApprovalRequestAdvice(
 		return nil
 	}
 	defer func() { _ = adviceTx.Rollback(ctx) }()
-	ask, queued := ledger.PendingApproval(artifactID)
-	if !queued {
-		stored, err := docs.OpenApprovalAsk(ctx, adviceTx, artifactID)
-		if err != nil {
-			s.logAdviceError(route, issueKey, "moved_approval_request", err)
-			return nil
-		}
-		if stored == nil {
-			return nil
-		}
-		ask = *stored
-	}
-	if ask.State != "open" || ask.Approval == nil {
-		// A request this write's own carry answered is the person's no longer, so it took
-		// nothing back from them.
+	stored, err := docs.OpenApprovalAsk(ctx, adviceTx, artifactID)
+	if err != nil {
+		s.logAdviceError(route, issueKey, "moved_approval_request", err)
 		return nil
 	}
+	if stored == nil || stored.Approval == nil {
+		// No request names the document, or this write's own carry answered it: it is the
+		// person's no longer, so the write took nothing back from them.
+		return nil
+	}
+	ask := *stored
 	if !docs.ApprovalAwaitsHandBack(ask.Approval.Documents) {
 		// The request still waits on the person, so this write took nothing back from them.
 		return nil

@@ -368,18 +368,22 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	ask.WaitingOnPerson = waitingOnPerson
 	appended = append(appended, event)
 	// The review the issue's specification already carries, reported beside the advice above.
-	// It is read here, in the read phase after every write of this ask is queued, so it answers
-	// for the specification as this write leaves it: a version the anchor's snapshot queued of
-	// that document, and a review that version's carry queued, come off the ledger, and the rest
-	// from the table. It is about the document rather than about this session, so it is read for
-	// a person's question as for an agent's, and it rides the advice the write already answers
-	// rather than a read of its own. A question on a project document has no issue and so no
-	// specification, and a write whose advice read failed carries nothing to hang it on; both
-	// report no review.
+	// It is read once the write phase has run and before the commit (docs.Ledger.AfterWrites), so
+	// it answers for the specification as this write left it: a version the anchor's snapshot
+	// wrote of that document, and a review that version's carry wrote, which the write phase drops
+	// where the version restores the approved text over another record (a restore's carry). It is
+	// about the document rather than about this session, so it is read for a person's question as
+	// for an agent's, and it rides the advice the write already answers rather than a read of its
+	// own. A question on a project document has no issue and so no specification, and a write
+	// whose advice read failed carries nothing to hang it on; both report no review.
 	if advice != nil && owner.IssueKey != nil {
-		advice.StandingReview = s.standingReviewAdvice(
-			r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey,
-		)
+		issueKey := *owner.IssueKey
+		if err := ledger.AfterWrites(func(ctx context.Context) {
+			advice.StandingReview = s.standingReviewAdvice(ctx, tx, routeOpenAsk, issueKey)
+		}); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)

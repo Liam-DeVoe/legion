@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -153,15 +155,494 @@ var errVersionRenderCut = errors.New("docs: a version's record is read at a cut 
 // then answers for the version and an approval of it pins; the time the version renders as of,
 // the time of the record's cut, which is no earlier than any tuple the transaction dated before it
 // read the cut (refs.HeadCut); and the highest graph_tuples.seq the record read. The row commits
-// with the version or not at all. It writes a table of its own and no tuple of the store.
+// with the version or not at all. It writes a table of its own and no tuple of the store. A version
+// that holds its row keeps it: the first pass that states a version records it, and a later pass
+// that states the version again - a room pass stating each fragment's newest version, the
+// reconciliation stating a version ReviseQueries wrote - records nothing.
 func QueueVersionRender(b *store.WriteBatch, artifactID string, number int, record QueryRecord) error {
 	if record.Cut.Dated || record.Cut.At.IsZero() {
 		return errVersionRenderCut
 	}
 	b.Queue("write the version_renders row of version "+fmt.Sprint(number), `
-		insert into version_renders (artifact_id, number, record_sha256, at, read_seq) values ($1, $2, $3, $4, $5)`,
+		insert into version_renders (artifact_id, number, record_sha256, at, read_seq) values ($1, $2, $3, $4, $5)
+		on conflict (artifact_id, number) do nothing`,
 		artifactID, number, record.Digest, record.Cut.At, record.Cut.ReadSeq)
 	return nil
+}
+
+// queryOfBand is the query whose record covers the versions of an issue's document of each band
+// (refs.DocumentBandSQL, the one statement of which document plays which part): the spec, the
+// Verification document and the plan. A document of any other band - the issue room's own
+// fragment, an upload, a project's document - is covered by no query's record, and its versions
+// take no version_renders row: they answer their stored bytes.
+var queryOfBand = map[string]string{
+	string(refs.RankBandSpec):         graphstore.QuerySpec,
+	string(refs.RankBandVerification): graphstore.QueryVerification,
+	string(refs.RankBandPlan):         graphstore.QueryPlan,
+}
+
+// statedVersion is a version a pass of a transaction stated (indexRenderedVersion): its document
+// and its number.
+type statedVersion struct {
+	artifactID string
+	number     int
+}
+
+// recordStatedVersions records on the ledger that runs tx's write phase each version of versions a
+// pass of tx stated, whose version_renders row that ledger writes once its write phase has run
+// (Ledger.writeStatedRenders). A version a pass states in a transaction no ledger of ctx knows
+// takes no row and answers its stored bytes.
+func recordStatedVersions(ctx context.Context, tx pgx.Tx, versions refs.Versions) {
+	ledger := ledgerFrom(ctx)
+	if ledger == nil || ledger.writer != tx && ledger.tx != tx {
+		return
+	}
+	for _, artifactID := range slices.Sorted(maps.Keys(versions)) {
+		if number := versions[artifactID].Number; number > 0 {
+			ledger.stated = append(ledger.stated, statedVersion{artifactID: artifactID, number: number})
+		}
+	}
+}
+
+// statedDocumentsStatement is the issue and the band (refs.DocumentBandSQL) of each document $1
+// names, which say whether a query's record covers its versions and which one (queryOfBand).
+var statedDocumentsStatement = `
+	select d.id::text, coalesce(d.issue_key, ''), ` + refs.DocumentBandSQL("d") + `
+	from artifacts d where d.id = any($1::uuid[])`
+
+// queryOf is the issue and the query whose record covers a document's versions.
+type queryOf struct{ issue, query string }
+
+// cutRecords builds the records of issues' queries at one cut, walking each issue's tree once
+// (WalkIssueTree) and building each query's record once (IssueTree.QueryRecord).
+type cutRecords struct {
+	cut     refs.TreeCut
+	trees   map[string]IssueTree
+	records map[queryOf]QueryRecord
+}
+
+// record is the record of of's query of of's issue at the cut, read through q.
+func (c *cutRecords) record(ctx context.Context, q Queryer, of queryOf) (QueryRecord, error) {
+	if record, read := c.records[of]; read {
+		return record, nil
+	}
+	tree, walked := c.trees[of.issue]
+	if !walked {
+		var err error
+		if tree, err = WalkIssueTree(ctx, q, of.issue, c.cut); err != nil {
+			return QueryRecord{}, err
+		}
+		if c.trees == nil {
+			c.trees = map[string]IssueTree{}
+		}
+		c.trees[of.issue] = tree
+	}
+	record, err := tree.QueryRecord(ctx, q, of.query)
+	if err != nil {
+		return QueryRecord{}, err
+	}
+	if c.records == nil {
+		c.records = map[queryOf]QueryRecord{}
+	}
+	c.records[of] = record
+	return record, nil
+}
+
+// writeStatedRenders writes, in the ledger's transaction, the version_renders row of each version
+// a pass of it stated (recordStatedVersions) whose document a query's record covers (queryOfBand):
+// the digest of that query's record, and the time and the seq of the cut it was read at, one cut
+// for the whole transaction, read once its write phase has run (refs.HeadCut), so the record and
+// the render as of the row's time hold every tuple the passes appended under their events. It runs
+// after the write phase's batch and before the commit (runQueue): the record is built in Go from the
+// store as that batch leaves it (IssueTree.QueryRecord), which no statement of the batch can read.
+//
+// A version a restore carry pins (carryRestored) holds its row already: the digest the approval it
+// carries pinned, which the insert trigger of the carry's review took from it. Its record is read
+// here as every other one is, by the fill's own walk (cutRecords), and never from that row or from
+// artifact_version_text_sha256, both of which answer the pin in this transaction. Where every pin is
+// its version's record's digest, the pinned rows take the cut's time and seq and keep their digest
+// (queuePinnedRenderCut), and every other row is written as above. Where one is not - or the fill
+// states no row of a pinned version at all - it writes no row and answers each restore carry it
+// missed, in the order the carries ran, for the write phase to drop (writeRestored). The stated
+// versions stay recorded, so the fill of the round after a drop states the same versions again.
+func (l *Ledger) writeStatedRenders(ctx context.Context) ([]*restoredCarry, error) {
+	pins := map[statedVersion]*restoredCarry{}
+	for _, restore := range l.restores {
+		if !restore.dropped {
+			pins[restore.version] = restore
+		}
+	}
+	tx := l.writer
+	if tx == nil {
+		tx = l.tx
+	}
+	renders, err := l.statedRenders(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	held := map[statedVersion]bool{}
+	for _, render := range renders {
+		if restore, pinned := pins[render.version]; pinned {
+			held[render.version] = render.record.Digest == restore.pin
+		}
+	}
+	var missed []*restoredCarry
+	for _, restore := range l.restores {
+		if pins[restore.version] == restore && !held[restore.version] {
+			missed = append(missed, restore)
+		}
+	}
+	if len(missed) > 0 || len(renders) == 0 {
+		return missed, nil
+	}
+	return nil, store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		for _, render := range renders {
+			if _, pinned := pins[render.version]; pinned {
+				if err := queuePinnedRenderCut(b, render.version, render.record); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := QueueVersionRender(b, render.version.artifactID, render.version.number, render.record); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// statedRender is a version a pass of the transaction stated whose document a query's record
+// covers, with that record as the fill read it.
+type statedRender struct {
+	version statedVersion
+	record  QueryRecord
+}
+
+// statedRenders reads, through tx, the record of each version a pass of the ledger's transaction
+// stated whose document a query's record covers (queryOfBand), once a version, in the order the
+// passes stated them: the query of each document read in one statement, and every record at one
+// cut, each issue's tree walked once (cutRecords). It reads no version_renders row.
+func (l *Ledger) statedRenders(ctx context.Context, tx pgx.Tx) ([]statedRender, error) {
+	if len(l.stated) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(l.stated))
+	for _, version := range l.stated {
+		ids = append(ids, version.artifactID)
+	}
+	rows, err := tx.Query(ctx, statedDocumentsStatement, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the documents whose versions the passes stated: %w", err)
+	}
+	covered := map[string]queryOf{}
+	for rows.Next() {
+		var id, band string
+		var of queryOf
+		if err := rows.Scan(&id, &of.issue, &band); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("read the documents whose versions the passes stated: %w", err)
+		}
+		if of.query = queryOfBand[band]; of.issue != "" && of.query != "" {
+			covered[id] = of
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the documents whose versions the passes stated: %w", err)
+	}
+	if len(covered) == 0 {
+		return nil, nil
+	}
+	cut, err := refs.HeadCut(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	records := cutRecords{cut: cut}
+	var renders []statedRender
+	written := map[statedVersion]bool{}
+	for _, version := range l.stated {
+		of, held := covered[version.artifactID]
+		if !held || written[version] {
+			continue
+		}
+		written[version] = true
+		record, err := records.record(ctx, tx, of)
+		if err != nil {
+			return nil, err
+		}
+		renders = append(renders, statedRender{version: version, record: record})
+	}
+	return renders, nil
+}
+
+// pinVersionRender is the step that writes the version_renders row of version, which a restore
+// carry pins (carryRestored), before the carry's review is inserted: the digest pin, the approval's
+// it carries, which artifact_version_text_sha256 then answers for the version and the review's
+// insert trigger pins (migration 20261105084017), with the transaction's start, at, and seq 0 for
+// the time and the seq of a cut no record has been read at yet, which the fill sets
+// (queuePinnedRenderCut) before anything reads the row as a version's record.
+func pinVersionRender(version statedVersion, pin string, at time.Time) WriteStep {
+	return execStep("pin the version_renders row of version "+fmt.Sprint(version.number), `
+		insert into version_renders (artifact_id, number, record_sha256, at, read_seq) values ($1, $2, $3, $4, 0)`,
+		version.artifactID, version.number, pin, at)
+}
+
+// errPinnedRenderGone refuses the fill of a pinned version whose row is not there to take its cut.
+var errPinnedRenderGone = errors.New("docs: the version_renders row a restore carry pinned is not there")
+
+// queuePinnedRenderCut queues on b the time and the seq of record's cut on the version_renders row
+// version holds with the digest a restore carry pinned (pinVersionRender), which the fill found to
+// be record's digest (writeStatedRenders): the row then holds what QueueVersionRender would have
+// written, and its digest stays the one the carried review pinned.
+func queuePinnedRenderCut(b *store.WriteBatch, version statedVersion, record QueryRecord) error {
+	if record.Cut.Dated || record.Cut.At.IsZero() {
+		return errVersionRenderCut
+	}
+	b.Queue("date the pinned version_renders row of version "+fmt.Sprint(version.number), `
+		update version_renders set at = $3, read_seq = $4
+		where artifact_id = $1 and number = $2 and record_sha256 = $5`,
+		version.artifactID, version.number, record.Cut.At, record.Cut.ReadSeq, record.Digest).Exec(func(tag pgconn.CommandTag) error {
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("date version %d of %s: %w", version.number, version.artifactID, errPinnedRenderGone)
+		}
+		return nil
+	})
+	return nil
+}
+
+// rendersInTransaction reports whether version number of artifactID takes its version_renders row
+// at the end of the first part of tx's write phase (writeStatedRenders): a pass of tx stated it
+// (recordStatedVersions) and a query's record covers its document (queryOfBand), which a document
+// tx creates reads off the address it was registered under.
+func rendersInTransaction(ctx context.Context, tx pgx.Tx, artifactID string, number int) (bool, error) {
+	ledger := queueFor(ctx, tx)
+	if ledger == nil || !slices.Contains(ledger.stated, statedVersion{artifactID: artifactID, number: number}) {
+		return false, nil
+	}
+	if address, pending := ledger.PendingDocument(artifactID); pending {
+		return address.IssueKey != "" && queryOfBand[string(address.Band)] != "", nil
+	}
+	var issue, band string
+	if err := tx.QueryRow(ctx, `select coalesce(d.issue_key, ''), `+refs.DocumentBandSQL("d")+` from artifacts d where d.id = $1`,
+		artifactID).Scan(&issue, &band); err != nil {
+		return false, fmt.Errorf("read whether a query's record covers document %s: %w", artifactID, err)
+	}
+	return issue != "" && queryOfBand[band] != "", nil
+}
+
+// carryAfterRender runs carry, a carry of an approval to version number of artifactID that a
+// writer of tx runs in its read phase, so that every write it makes runs after that version's
+// version_renders row where tx writes one (rendersInTransaction): in the second part of the write
+// phase, which the ledger sends once the rows stand (runQueue). The review the carry inserts then
+// pins the digest the row records, which artifact_version_text_sha256 answers from the row; the
+// insert's trigger takes the digest it answers at the insert. A carry that restores the approved
+// text is the one exception: its writes keep their place, before the version's artifact.version,
+// behind the row it writes itself (carryRestored). A version that takes no row in tx - one a pass
+// left to the reconciliation, one of a document no query's record covers, one written in a
+// transaction no ledger queues - keeps its carry where its writer runs it, and pins the digest of
+// its stored markdown.
+func carryAfterRender(ctx context.Context, tx pgx.Tx, artifactID string, number int, carry func() error) error {
+	rendered, err := rendersInTransaction(ctx, tx, artifactID, number)
+	if err != nil {
+		return err
+	}
+	if !rendered {
+		return carry()
+	}
+	ledger := queueFor(ctx, tx)
+	ledger.toRendered = true
+	defer func() { ledger.toRendered = false }()
+	return carry()
+}
+
+// carryRestored runs carry, the carry of newest - the document's newest review, an approval of
+// version A - to version number of artifactID, whose text is A's stored text byte for byte
+// (restoresApprovedText). A restore carries only because the version is what the person approved,
+// so where the version takes its version_renders row in tx (toRendered, which carryAfterRender
+// sets for the carry it runs to such a version) its record's digest must be the one newest pinned,
+// which is known before the write phase. The carry's writes then keep their place in the queue -
+// the review and its artifact.approved before the version's artifact.version, the order the Legion
+// daemon reads a restore by - after a step that writes the version's row with that pinned digest
+// (pinVersionRender), so the review's insert trigger pins it too. The write phase takes a savepoint
+// before the version's insert, reads the version's record by the fill's own walk once the queue has
+// run, and drops the carry where its digest is not the pin, writing the version, what it states and
+// its row again with no carry (writeRestored): the restore is then no exact one in the model,
+// whatever its text. A version that takes no row in tx, a review that pinned no digest, and a
+// version this transaction queued no insert of carry as carryAfterRender left them.
+func carryRestored(ctx context.Context, tx pgx.Tx, artifactID string, number int, newest model.ArtifactReview, carry func() error) error {
+	ledger := queueFor(ctx, tx)
+	if ledger == nil || !ledger.toRendered || newest.ContentSHA256 == nil {
+		return carry()
+	}
+	pending, queued := ledger.latest[artifactID]
+	if !queued || pending.version.Number != number {
+		return carry()
+	}
+	at, err := ledger.Now(ctx)
+	if err != nil {
+		return err
+	}
+	restore := &restoredCarry{version: statedVersion{artifactID: artifactID, number: number}, pin: *newest.ContentSHA256, from: pending.queued}
+	ledger.restores = append(ledger.restores, restore)
+	ledger.toRendered, ledger.restoring = false, restore
+	defer func() { ledger.toRendered, ledger.restoring = true, nil }()
+	if err := write(ctx, tx, pinVersionRender(restore.version, restore.pin, at)); err != nil {
+		return err
+	}
+	return carry()
+}
+
+// revisedDocumentsStatement is each document of the issue $1 whose versions a query's record covers
+// (queryOfBand), where the issue has converted - an issue_trees row holds its tree, whose room each
+// such document is edited in (document_rooms) - and nothing for any other issue: each one's id, its
+// band, and its newest version's number and markdown with the digest that version's version_renders
+// row records, null where it holds no row. They come in id order.
+var revisedDocumentsStatement = `
+	select d.id::text, ` + refs.DocumentBandSQL("d") + `, v.number, coalesce(v.markdown, ''), r.record_sha256
+	from issue_trees t
+	join document_rooms m on m.room = t.artifact_id
+	join artifacts d on d.id = m.artifact_id and d.issue_key = t.issue_key and d.kind = 'doc' and d.retired_at is null
+	join lateral (
+		select number, markdown from artifact_versions where artifact_id = d.id order by number desc limit 1
+	) v on true
+	left join version_renders r on r.artifact_id = d.id and r.number = v.number
+	where t.issue_key = $1 and ` + refs.DocumentBandSQL("d") + ` in ('` + string(refs.RankBandSpec) + `', '` +
+	string(refs.RankBandVerification) + `', '` + string(refs.RankBandPlan) + `')
+	order by d.id`
+
+// lockQueryRoomsStatement takes the lock of the room of the issue $1, its tree's (issue_trees),
+// as lockDocumentRoom takes it, and takes nothing for an issue with no tree.
+const lockQueryRoomsStatement = `select pg_advisory_xact_lock(hashtext(t.artifact_id::text)) from issue_trees t where t.issue_key = $1`
+
+// LockQueryRooms takes, in tx, the lock of every room ReviseQueries writes a version of issueKey's
+// query documents in: the issue's own room, its tree's, whose stored history's head each version
+// records (versionRoomHead), and nothing for an issue that has not converted. A writer that calls
+// ReviseQueries after writes of its own takes it right after its owner locks and before its first
+// write, the order docs/persistence.go sets for a transaction that takes both an owner's lock and
+// a room's: the owner's advisory lock, then the room's, then the owner row its writes take (the
+// event's). The lock is a transaction advisory lock, so ReviseQueries taking it again later waits
+// on nothing.
+func LockQueryRooms(ctx context.Context, tx pgx.Tx, issueKey string) error {
+	if _, err := tx.Exec(ctx, lockQueryRoomsStatement, issueKey); err != nil {
+		return fmt.Errorf("lock the room of %s: %w", issueKey, err)
+	}
+	return nil
+}
+
+// ReviseQueries appends, in tx, a version of each query document of the converted issue issueKey
+// whose query's record or whose rendering moved since its newest version, for a write that moved
+// a query's record and wrote no version of it: a recorded result, its retraction, a room write
+// that moved a query whose document's fragment it did not change. For an issue that has not
+// converted - no issue_trees row holds its tree - it does nothing and answers the zero value.
+//
+// It reads the store as tx holds it, so its caller's writes have run: it is called after them, and
+// never between a write phase's planning and its batch. It takes the issue's owner lock, which
+// every writer of a version takes first and which its caller holds already, and reads at one cut
+// of tx (refs.HeadCut) each query document's record (IssueTree.QueryRecord, the issue's tree walked
+// once) and its render as of the cut's time (RenderAt). A document whose newest version holds no
+// version_renders row is left as it is: no pass has stated that version yet, so the tree may not
+// hold it (a deferred pass), and the pass that states it records its digest. A document whose
+// record digests to its newest version's digest and whose render is that version's markdown is
+// left too. Each other one takes a version whose markdown is the render, which for a record moved
+// alone is the bytes of the version before it, written by writer, with its version node
+// (WriteVersionNode, whose owner names the query and its definition_version, ReadVersionOwner) and
+// its version_renders row holding the record's digest and the cut's time and seq, as a pass records
+// them (QueueVersionRender): the census reads it as every rendered version, and never as deferred.
+//
+// Before it writes, it takes the lock of the issue's room (LockQueryRooms), after every owner lock
+// its caller holds: each version records the head of its room's stored history
+// (versionRoomHead), which only that lock holds still. A caller that wrote before calling it took
+// that lock already, right after its owner locks and before its first write (LockQueryRooms); a
+// room settlement holds its own room's lock from its read phase; so the take here waits on nothing
+// in either.
+//
+// What it answers is the version nodes' facts, held for the event the caller writes: the caller
+// causes them under that event (graphstore.Caused), as every writer of the store causes its facts.
+// It appends no event of its own.
+func (s *Service) ReviseQueries(ctx context.Context, tx pgx.Tx, issueKey string, writer model.Actor) (graphstore.Uncaused, error) {
+	if err := store.LockOwner(ctx, tx, store.IssueOwner(issueKey)); err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	rows, err := tx.Query(ctx, revisedDocumentsStatement, issueKey)
+	if err != nil {
+		return graphstore.Uncaused{}, fmt.Errorf("read the query documents of %s: %w", issueKey, err)
+	}
+	type queryDocument struct {
+		id, query, markdown string
+		number              int
+		digest              *string
+	}
+	var documents []queryDocument
+	for rows.Next() {
+		var document queryDocument
+		var band string
+		if err := rows.Scan(&document.id, &band, &document.number, &document.markdown, &document.digest); err != nil {
+			rows.Close()
+			return graphstore.Uncaused{}, fmt.Errorf("read the query documents of %s: %w", issueKey, err)
+		}
+		if document.query = queryOfBand[band]; document.digest != nil {
+			documents = append(documents, document)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return graphstore.Uncaused{}, fmt.Errorf("read the query documents of %s: %w", issueKey, err)
+	}
+	if len(documents) == 0 {
+		return graphstore.Uncaused{}, nil
+	}
+	cut, err := refs.HeadCut(ctx, tx)
+	if err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	records := cutRecords{cut: cut}
+	type revision struct {
+		document queryDocument
+		markdown string
+		record   QueryRecord
+	}
+	var revisions []revision
+	for _, document := range documents {
+		record, err := records.record(ctx, tx, queryOf{issue: issueKey, query: document.query})
+		if err != nil {
+			return graphstore.Uncaused{}, err
+		}
+		rendering, err := RenderAt(ctx, tx, model.Actor{}, document.id, cut.At)
+		if err != nil {
+			return graphstore.Uncaused{}, err
+		}
+		if record.Digest != *document.digest || rendering.Markdown != document.markdown {
+			revisions = append(revisions, revision{document: document, markdown: rendering.Markdown, record: record})
+		}
+	}
+	if len(revisions) == 0 {
+		return graphstore.Uncaused{}, nil
+	}
+	if err := LockQueryRooms(ctx, tx, issueKey); err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	nodes := make([]graphstore.Uncaused, 0, len(revisions))
+	for _, revised := range revisions {
+		id := revised.document.id
+		version, err := queueVersionInsert(ctx, tx, id, revised.markdown, []model.Actor{writer}, false, nil, nil, RenderStamp{})
+		if err != nil {
+			return graphstore.Uncaused{}, err
+		}
+		owner, err := ReadVersionOwner(ctx, tx, id)
+		if err != nil {
+			return graphstore.Uncaused{}, err
+		}
+		node, err := WriteVersionNode(ctx, tx, owner, version.Number, writer, version.CreatedAt)
+		if err != nil {
+			return graphstore.Uncaused{}, err
+		}
+		record := revised.record
+		if err := write(ctx, tx, func(b *store.WriteBatch) error {
+			return QueueVersionRender(b, id, version.Number, record)
+		}); err != nil {
+			return graphstore.Uncaused{}, err
+		}
+		nodes = append(nodes, node)
+	}
+	return graphstore.Joined(nodes...), nil
 }
 
 // ForgetVersionRenders deletes, in tx, the version_renders row of each version a statement of
