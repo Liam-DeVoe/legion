@@ -42,7 +42,7 @@ func createBucketMakeBucket(t testing.TB, nc *nats.Conn, state selection.StoreSt
 	_, err = js.CreateKeyValue(ctx, selection.SessionBucketConfig(1))
 	require.NoError(t, err)
 	require.NoError(t, createBucketAwaitLeader(ctx, nc))
-	store := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+	store := selection.NewKVStore(selection.ConnRequester{Conn: nc})
 	require.NoError(t, createBucketFreshWrite(ctx, func() error {
 		_, err := store.WriteSentinel(ctx, state, 0)
 		return err
@@ -143,16 +143,16 @@ func createBucketResignWalk(t *testing.T, dir string, change func(*kvrecords.Man
 // that is no system key kvrecords knows; a consistent walk of another bucket is refused naming it,
 // and a directory of neither format is refused naming both.
 func TestAWalkBackupReadsIntoTheBucketsRecords(t *testing.T) {
-	sentinel, err := json.Marshal(selection.StoreState{Cutover: selection.CutoverDone, Boundary: 2, Hold: "the-cutover"})
+	sentinel, err := json.Marshal(ownSentinel(familySession, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 2, Hold: "the-cutover"}))
 	require.NoError(t, err)
 	durable := selection.DurableKey(bus.ListenerDurable("hub-a"))
 	records := []kvrecords.Record{
 		createBucketWalkRecord(1, selection.SentinelKey, sentinel),
-		createBucketWalkRecord(2, "ses_a", []byte(`{"start":2}`)),
-		createBucketWalkRecord(3, "ses_a", []byte(`{"start":3}`)),
+		createBucketWalkRecord(2, "ses_a", []byte(`{"key":"ses_a","start":2}`)),
+		createBucketWalkRecord(3, "ses_a", []byte(`{"key":"ses_a","start":3}`)),
 		createBucketWalkRecord(4, "ses_gone", nil, createBucketWalkMarker("DEL")...),
 		createBucketWalkRecord(5, "hold.barrier.h1", []byte("h1")),
-		createBucketWalkRecord(6, durable, []byte(`{"start":5}`)),
+		createBucketWalkRecord(6, durable, []byte(`{"key":"`+durable+`","start":5}`)),
 		createBucketWalkRecord(8, "ses_purged", nil, createBucketWalkMarker("PURGE")...),
 	}
 	dir := filepath.Join(t.TempDir(), "walk")
@@ -164,14 +164,15 @@ func TestAWalkBackupReadsIntoTheBucketsRecords(t *testing.T) {
 	require.NoError(t, err)
 	want := sha256.Sum256(sums)
 	require.Equal(t, hex.EncodeToString(want[:]), backup.sha256)
-	require.Equal(t, &selection.StoreState{Cutover: selection.CutoverDone, Boundary: 2, Hold: "the-cutover"}, backup.walk.Sentinel)
+	walked := ownSentinel(familySession, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 2, Hold: "the-cutover"})
+	require.Equal(t, &walked, backup.walk.Sentinel)
 	var keys, ops []string
 	for _, entry := range backup.walk.Entries {
 		keys, ops = append(keys, entry.Key), append(ops, entry.Op)
 	}
 	require.Equal(t, []string{"ses_a", "ses_gone", durable, "ses_purged"}, keys)
 	require.Equal(t, []string{"", "DEL", "", "PURGE"}, ops)
-	require.Equal(t, `{"start":3}`, string(backup.walk.Entries[0].Value), "the walk's later value of ses_a")
+	require.Equal(t, `{"key":"ses_a","start":3}`, string(backup.walk.Entries[0].Value), "the walk's later value of ses_a")
 	require.Nil(t, backup.archive, "a walk's load reproduces no sequence, so it records no archive state")
 
 	t.Run("a changed byte", func(t *testing.T) {
@@ -359,10 +360,11 @@ func TestTheReleasedOperatorsBackupRestoresTheSelectionBucket(t *testing.T) {
 	require.Equal(t, selection.CutoverDone, sentinel.state.Cutover)
 	require.Equal(t, uint64(1), sentinel.state.ReplayFrom)
 	nc, _ := h.operator()
-	store := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+	store := selection.NewKVStore(selection.ConnRequester{Conn: nc})
 	for key, record := range records {
 		got, _, err := store.Read(ctx, key)
 		require.NoError(t, err, key)
+		record.Key = key
 		require.Equal(t, record, got, key)
 	}
 	for _, key := range []string{"ses_gone", "ses_purged"} {
@@ -377,7 +379,7 @@ func TestTheReleasedOperatorsBackupRestoresTheSelectionBucket(t *testing.T) {
 	code, _, stderr = h.run("create-bucket", "--hold", id, "--after-loss")
 	require.Equal(t, 0, code, stderr)
 	nc, _ = h.operator()
-	_, _, err = selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc}).Read(ctx, "ses_backed")
+	_, _, err = selection.NewKVStore(selection.ConnRequester{Conn: nc}).Read(ctx, "ses_backed")
 	require.ErrorIs(t, err, selection.ErrNoRecord, "control: a recovery with no backup brought the record back")
 }
 
@@ -500,7 +502,7 @@ func TestACutWalkLoadIsDeletedAndLoadedAgain(t *testing.T) {
 		require.Equal(t, uint64(12+2), info.State.Msgs, "the loaded bucket: the walk's 12 records, the sentinel and this hold's barrier")
 		require.Equal(t, uint64(2), sentinel.state.Boundary)
 		nc, _ := h.operator()
-		store := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+		store := selection.NewKVStore(selection.ConnRequester{Conn: nc})
 		for i := range 12 {
 			got, _, err := store.Read(ctx, fmt.Sprintf("ses_%02d", i))
 			require.NoError(t, err)
@@ -511,7 +513,7 @@ func TestACutWalkLoadIsDeletedAndLoadedAgain(t *testing.T) {
 	t.Run("control: a key the walk does not hold", func(t *testing.T) {
 		h, id, dir := killed(t)
 		nc, _ := h.operator()
-		_, err := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc}).Write(ctx, "ses_foreign", selection.Record{Start: 9}, 0)
+		_, err := selection.NewKVStore(selection.ConnRequester{Conn: nc}).Write(ctx, "ses_foreign", selection.Record{Start: 9}, 0)
 		require.NoError(t, err)
 		code, _, stderr := h.run("create-bucket", "--hold", id, "--after-loss", "--backup", dir)
 		require.Equal(t, 1, code, stderr)
@@ -524,7 +526,7 @@ func TestACutWalkLoadIsDeletedAndLoadedAgain(t *testing.T) {
 	t.Run("control: a walk key holding another value", func(t *testing.T) {
 		h, id, dir := killed(t)
 		nc, _ := h.operator()
-		store := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+		store := selection.NewKVStore(selection.ConnRequester{Conn: nc})
 		_, revision, err := store.Read(ctx, "ses_00")
 		require.NoError(t, err)
 		_, err = store.Write(ctx, "ses_00", selection.Record{Start: 99}, revision)
@@ -563,10 +565,11 @@ func TestAHeldSnapshotRestoresTheSelectionBucket(t *testing.T) {
 	require.Contains(t, stdout, "restored and its sentinel written")
 	require.True(t, h.journal(id).Complete)
 	nc, _ := h.operator()
-	store := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+	store := selection.NewKVStore(selection.ConnRequester{Conn: nc})
 	for key, record := range records {
 		got, _, err := store.Read(ctx, key)
 		require.NoError(t, err, key)
+		record.Key = key
 		require.Equal(t, record, got, key)
 	}
 }

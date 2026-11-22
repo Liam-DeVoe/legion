@@ -204,12 +204,12 @@ func (rig *restoreRig) cutover(conversions ...restoreConversion) string {
 		_, err := js.CreateKeyValue(ctx, selection.SessionBucketConfig(rig.replicas))
 		require.NoError(t, err)
 		rig.waitLeader(nc, selectionStreamName)
-		_, err = selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc}).
+		_, err = selection.NewKVStore(selection.ConnRequester{Conn: nc}).
 			WriteSentinel(ctx, selection.StoreState{Boundary: 1, Hold: id}, 0)
 		require.NoError(t, err)
 	}
-	for _, pool := range rig.pools {
-		st := selection.NewPGStore(pool)
+	for family, pool := range rig.pools {
+		st := pgFamilyOf(t, family, pool)
 		if _, err := st.State(ctx); errors.Is(err, selection.ErrNoSentinel) {
 			_, err := st.WriteSentinel(ctx, selection.StoreState{}, 0)
 			require.NoError(t, err)
@@ -526,7 +526,7 @@ func TestCutoverRollbackThenUpgradeAgain(t *testing.T) {
 		cohort, _, found, err := readPrepareCohort(ctx, rig.records(), again)
 		require.NoError(t, err)
 		require.True(t, found, "the second cutover's prepare wrote no cohort record")
-		require.Equal(t, selection.StoreState{Cutover: selection.CutoverDone, Boundary: cohort.Boundary, Hold: again}, rig.marker(familySession),
+		require.Equal(t, ownSentinel(familySession, selection.StoreState{Cutover: selection.CutoverDone, Boundary: cohort.Boundary, Hold: again}), rig.marker(familySession),
 			"the second cutover's sentinel names the cutover that converted it")
 		_, err = rig.records().Admit(ctx, again, holdrecord.Request{Command: "streams census"}, nil)
 		require.NoError(t, err)

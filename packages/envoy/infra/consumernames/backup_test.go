@@ -135,10 +135,11 @@ func TestTheReleasedBackupIsTheWalkTheRecoveryLoads(t *testing.T) {
 	require.True(t, present && found, "the recovery left no bucket or no sentinel")
 	require.Equal(t, sha, sentinel.state.BackupSHA256, "the sentinel's backup is not the one backup printed")
 	nc, _ := h.operator()
-	store := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+	store := selection.NewKVStore(selection.ConnRequester{Conn: nc})
 	for key, record := range records {
 		got, _, err := store.Read(ctx, key)
 		require.NoError(t, err, key)
+		record.Key = key
 		require.Equal(t, record, got, key)
 	}
 	h.closeOperators()

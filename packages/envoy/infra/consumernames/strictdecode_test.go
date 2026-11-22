@@ -115,19 +115,19 @@ func malformedRefused(t *testing.T, key string, value []byte) {
 // refused value that is one JSON value, so each refusal is the strict decode's own.
 func TestTheStrictDecodeTakesOnlyAnExactValue(t *testing.T) {
 	full := selection.Record{
-		Current: "session~a", Start: 4, Retired: []string{"session~r"},
+		Key: "ses_a", Current: "session~a", Start: 4, Retired: []string{"session~r"},
 		Op:        &selection.Op{Kind: selection.OpReplace, Owner: "o", Candidate: "session~n", Old: "session~a", ReservedAt: time.Unix(1, 0).UTC()},
 		LastFloor: &selection.Floor{Floor: 3, Name: "session~a", StreamID: "s"},
 		Restore:   &selection.Restore{Target: "s-a", Start: 2, Phase: "planned"},
 	}
-	for _, record := range []selection.Record{full, {}} {
+	for _, record := range []selection.Record{full, {Key: "ses_b"}} {
 		raw, err := json.Marshal(record)
 		require.NoError(t, err)
 		got, err := strictRecord(raw)
 		require.NoError(t, err, "the strict decode refused %s", raw)
 		require.Equal(t, record, got)
 	}
-	raw, err := json.Marshal(selection.StoreState{Cutover: selection.CutoverDone, Boundary: 7, StreamID: "s", Orphans: []string{"x"}})
+	raw, err := json.Marshal(ownSentinel(familySession, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 7, StreamID: "s", Orphans: []string{"x"}}))
 	require.NoError(t, err)
 	_, err = strictStoreState(raw)
 	require.NoError(t, err)
@@ -160,7 +160,7 @@ func TestTheStrictDecodeTakesOnlyAnExactValue(t *testing.T) {
 // and answers each session's consumer.
 func malformedSessions(t *testing.T, nc *nats.Conn, sessions ...string) map[string]string {
 	t.Helper()
-	store := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+	store := selection.NewKVStore(selection.ConnRequester{Conn: nc})
 	consumers := map[string]string{}
 	for _, sessionID := range sessions {
 		name := selection.FreshName(sessionBucketPrefix)
@@ -282,7 +282,7 @@ func TestCleanupRefusesAMalformedSelectionValue(t *testing.T) {
 			consumers := malformedSessions(t, nc, "ses_a", "ses_b")
 			retired := selection.FreshName(sessionBucketPrefix)
 			censusSessionConsumer(t, nc, "ses_a", retired, bus.SessionConsumerFilters([]string{contracts.LegacyAgentSubject("ses_a")}))
-			kv := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+			kv := selection.NewKVStore(selection.ConnRequester{Conn: nc})
 			_, revision, err := kv.Read(ctx, "ses_a")
 			require.NoError(t, err)
 			_, err = kv.Write(ctx, "ses_a", selection.Record{Current: consumers["ses_a"], Start: 1, Retired: []string{retired}}, revision)
@@ -306,7 +306,7 @@ func TestCleanupRefusesAMalformedSelectionValue(t *testing.T) {
 				"the stop records a deletion or a record, or leaves out the barrier key: %q", left)
 			nc, _ = h.operator()
 			require.Contains(t, censusConsumers(t, nc), retired, "the refused cleanup deleted ses_a's retired name")
-			record, _, err := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc}).Read(ctx, "ses_a")
+			record, _, err := selection.NewKVStore(selection.ConnRequester{Conn: nc}).Read(ctx, "ses_a")
 			require.NoError(t, err)
 			require.Equal(t, []string{retired}, record.Retired, "the refused cleanup changed ses_a's record")
 			malformedRefused(t, c.key, value)

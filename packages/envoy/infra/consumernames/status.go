@@ -236,10 +236,12 @@ func statusSessionFamily(ctx context.Context, nc *nats.Conn) (statusFamily, erro
 	return f, nil
 }
 
-// statusPGFamily reads family's intake_consumers table: its sentinel row and every record
-// (selection.PGStore.List). A family whose store no flag names is an error, which status reports
-// as UNKNOWN; a missing table is a missing store; and a daemon store whose database answers
-// SQLSTATE 3D000 is read again by the census's rule (statusGone).
+// statusPGFamily reads family's intake_consumers rows through the family's store: its sentinel row
+// and every record (selection.PGStore.List). A family whose store no flag names is an error, which
+// status reports as UNKNOWN; a missing table is a missing store; a sentinel row that is not
+// exactly the family's own (selection.ErrMalformedSentinel) is a failed read, UNKNOWN, never no
+// marker; and a daemon store whose database answers SQLSTATE 3D000 is read again by the census's
+// rule (statusGone).
 func (r *run) statusPGFamily(ctx context.Context, family string) (statusFamily, error) {
 	f := statusFamily{family: family, where: selection.IntakeConsumersTable, records: map[string]selection.Record{}}
 	if file, flagName := r.o.storeFile(family); file == "" {
@@ -249,7 +251,10 @@ func (r *run) statusPGFamily(ctx context.Context, family string) (statusFamily, 
 	if err != nil {
 		return f, fmt.Errorf("%s's store: %w", family, err)
 	}
-	store := selection.NewPGStore(db)
+	store, err := pgStore(family, db)
+	if err != nil {
+		return f, err
+	}
 	state, err := store.State(ctx)
 	switch {
 	case errors.Is(err, selection.ErrNoStore):

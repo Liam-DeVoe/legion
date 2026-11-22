@@ -138,15 +138,15 @@ func dispatchDurables() []string {
 }
 
 // store is family's selection store on the run's reach: the selection bucket for the session
-// family, through the operator's connection, and the family's intake_consumers table for
-// Dispatch and each daemon.
+// family, through the operator's connection (newSessionStore), and the family's intake_consumers
+// rows for Dispatch and each daemon (newPGFamilyStore).
 func (r *run) store(ctx context.Context, family string) (familyStore, error) {
 	if family == familySession {
 		nc, _, err := r.conn(ctx)
 		if err != nil {
 			return nil, err
 		}
-		return selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc}), nil
+		return newSessionStore(nc), nil
 	}
 	if family != familyDispatch && !strings.HasPrefix(family, familyDaemonPrefix) {
 		return nil, fmt.Errorf("no family %q", family)
@@ -155,14 +155,85 @@ func (r *run) store(ctx context.Context, family string) (familyStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return selection.NewPGStore(db), nil
+	store, err := newPGFamilyStore(family, db)
+	if err != nil {
+		return nil, err
+	}
+	return store, nil
+}
+
+// pgStore is family's Postgres store on db (selection.NewPGStore), its refusal of a family no
+// store keeps (selection.ErrInvalidFamily) naming the family.
+func pgStore(family string, db Database) (*selection.PGStore, error) {
+	store, err := selection.NewPGStore(family, db)
+	if err != nil {
+		return nil, fmt.Errorf("the %s family's store: %w", family, err)
+	}
+	return store, nil
 }
 
 // familyStore is a family's store with its sentinel's write, which every store the operator
-// writes has (selection.KVStore, selection.PGStore).
+// writes has (selection.KVStore, selection.PGStore), and its sentinel's read with the revision a
+// write of it is conditional on, which the library's State does not answer.
 type familyStore interface {
 	selection.Store
 	WriteSentinel(ctx context.Context, state selection.StoreState, revision uint64) (uint64, error)
+	// sentinel is the store's sentinel, read through the store's own check (its State), and its
+	// revision, read before it, and found false for a store that holds none yet. A sentinel that
+	// is not exactly the store's own is the store's selection.ErrMalformedSentinel, never none.
+	sentinel(ctx context.Context) (selection.StoreState, uint64, bool, error)
+}
+
+// sessionStore is the session family's store (selection.KVStore) with nc, the connection the
+// revision of its sentinel is read on.
+type sessionStore struct {
+	*selection.KVStore
+	nc *nats.Conn
+}
+
+// newSessionStore is the session family's store on nc.
+func newSessionStore(nc *nats.Conn) sessionStore {
+	return sessionStore{KVStore: selection.NewKVStore(selection.ConnRequester{Conn: nc}), nc: nc}
+}
+
+// sentinel implements familyStore: the sequence of the sentinel key's last message, read from the
+// stream's leader (replayLeaderRead), then the sentinel through selection.KVStore.State. A key with
+// no message, or whose last is a delete or purge marker, holds none. A write between the two reads
+// is after the sequence, so a write conditional on it is refused and read again.
+func (s sessionStore) sentinel(ctx context.Context) (selection.StoreState, uint64, bool, error) {
+	last, found, err := replayLeaderRead(ctx, s.nc, selection.SessionBucket, selection.SentinelKey)
+	if err != nil || !found || last.Op != "" {
+		return selection.StoreState{}, 0, false, err
+	}
+	state, err := s.State(ctx)
+	switch {
+	case errors.Is(err, selection.ErrNoSentinel):
+		return selection.StoreState{}, 0, false, nil
+	case err != nil:
+		return selection.StoreState{}, 0, false, err
+	}
+	return state, last.Seq, true, nil
+}
+
+// pgFamilyStore is Dispatch's or a daemon's store (selection.PGStore) of family on db.
+type pgFamilyStore struct {
+	*selection.PGStore
+	db     Database
+	family string
+}
+
+// newPGFamilyStore is family's store on db (pgStore).
+func newPGFamilyStore(family string, db Database) (pgFamilyStore, error) {
+	store, err := pgStore(family, db)
+	if err != nil {
+		return pgFamilyStore{}, err
+	}
+	return pgFamilyStore{PGStore: store, db: db, family: family}, nil
+}
+
+// sentinel implements familyStore (readPGSentinel).
+func (s pgFamilyStore) sentinel(ctx context.Context) (selection.StoreState, uint64, bool, error) {
+	return readPGSentinel(ctx, s.db, s.family)
 }
 
 // pgUndefinedTable is Postgres's SQLSTATE for a relation that does not exist: a store whose table
@@ -175,22 +246,38 @@ func pgNoTable(err error) bool {
 	return errors.As(err, &pg) && pg.Code == pgUndefinedTable
 }
 
-// readPGSentinel reads the sentinel row of the intake_consumers table on db, its record as stored
-// and its revision, which selection.PGStore.State does not answer and the conditional write needs
-// (selection.PGStore.WriteSentinel), and found false for a table that holds none. Its error is the
-// query's, which pgNoTable reads for a table that does not exist; each caller decodes the record by
-// its own rule (enrollReadMarker, censusReadSentinel).
-func readPGSentinel(ctx context.Context, db Database) (record []byte, revision uint64, found bool, err error) {
+// readPGSentinel reads family's sentinel row of the intake_consumers table on db
+// (selection.PGSentinelKey) with its revision, which selection.PGStore.State does not answer and
+// the conditional write needs (selection.PGStore.WriteSentinel), and found false for a table that
+// holds no such row. The revision is read first and the state after it through the family's store
+// (selection.PGStore.State), whose check refuses a row that is not exactly the family's own
+// sentinel (another key's, another family's or none, a field this build does not know) as
+// selection.ErrMalformedSentinel, never a missing row: a write between the two reads is after the
+// revision, so a write conditional on it is refused and read again. A row gone between the two
+// reads is none. Its error is the query's or the store's, which pgNoTable reads for a table that
+// does not exist.
+func readPGSentinel(ctx context.Context, db Database, family string) (state selection.StoreState, revision uint64, found bool, err error) {
+	store, err := pgStore(family, db)
+	if err != nil {
+		return selection.StoreState{}, 0, false, err
+	}
 	var stored int64
-	err = db.QueryRow(ctx, `select record, revision from `+selection.IntakeConsumersTable+` where logical = $1`, selection.PGSentinelKey).
-		Scan(&record, &stored)
+	err = db.QueryRow(ctx, `select revision from `+selection.IntakeConsumersTable+` where logical = $1`, selection.PGSentinelKey(family)).
+		Scan(&stored)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return nil, 0, false, nil
+		return selection.StoreState{}, 0, false, nil
 	case err != nil:
-		return nil, 0, false, err
+		return selection.StoreState{}, 0, false, err
 	}
-	return record, uint64(stored), true, nil
+	state, err = store.State(ctx)
+	switch {
+	case errors.Is(err, selection.ErrNoSentinel):
+		return selection.StoreState{}, 0, false, nil
+	case err != nil:
+		return selection.StoreState{}, 0, false, err
+	}
+	return state, uint64(stored), true, nil
 }
 
 // behindBarrier runs read behind the hold's bucket barrier on the selection bucket, the one path

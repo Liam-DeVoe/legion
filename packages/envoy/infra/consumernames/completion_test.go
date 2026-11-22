@@ -157,13 +157,13 @@ func TestAForgedStoreMarkerCompletesNothing(t *testing.T) {
 	require.Zero(t, code, stderr)
 
 	forger, _ := rig.operator()
-	listenerStore := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: forger})
+	listenerStore := newSessionStore(forger)
 	state, revision, err := convertSentinel(ctx, listenerStore, familySession)
 	require.NoError(t, err)
 	state.Cutover = selection.CutoverDone
 	_, err = listenerStore.WriteSentinel(ctx, state, revision)
 	require.NoError(t, err, "the listener's own write of the sentinel")
-	for _, store := range []*selection.PGStore{selection.NewPGStore(dispatch), selection.NewPGStore(daemon)} {
+	for _, store := range []pgFamilyStore{pgFamilyOf(t, familyDispatch, dispatch), pgFamilyOf(t, daemonFamily("p1"), daemon)} {
 		_, err := store.WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone}, 0)
 		require.NoError(t, err)
 	}
@@ -172,9 +172,9 @@ func TestAForgedStoreMarkerCompletesNothing(t *testing.T) {
 	require.Empty(t, cutovers, "a broker cutover row exists before convert")
 	nc, _ := rig.operator()
 	for name, store := range map[string]selection.Store{
-		familySession:      selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc}),
-		familyDispatch:     selection.NewPGStore(dispatch),
-		daemonFamily("p1"): selection.NewPGStore(daemon),
+		familySession:      selection.NewKVStore(selection.ConnRequester{Conn: nc}),
+		familyDispatch:     pgFamilyOf(t, familyDispatch, dispatch),
+		daemonFamily("p1"): pgFamilyOf(t, daemonFamily("p1"), daemon),
 	} {
 		state, err := store.State(ctx)
 		require.NoError(t, err)

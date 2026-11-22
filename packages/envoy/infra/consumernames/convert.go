@@ -561,25 +561,21 @@ func (c convertRule) markDone(ctx context.Context, r *run, family string, daemon
 	return unknownf(nil, "the %s family's store marker moved under %d writes", family, convertConflicts)
 }
 
-// convertSentinel is the store's sentinel and the revision a write of it is conditional on, 0 for
-// a Postgres store with no sentinel row yet. selection.Store's State answers no revision, so the
-// revision is read first, as the sentinel key's record (whose value is a StoreState, not a
-// Record, and only its revision is used), and the state after it: a write between the two is
-// after the revision, so the write conditional on it is refused and read again.
+// convertSentinel is the store's sentinel and the revision a write of it is conditional on
+// (familyStore's sentinel: the revision read first, the state after it through the store's own
+// check, so a write between the two is refused and read again), 0 for a Postgres store with no
+// sentinel row yet. A selection bucket holding no sentinel is the store's selection.ErrNoSentinel:
+// create-bucket writes it before any convert, and a sentinel that is not the store's own is the
+// store's selection.ErrMalformedSentinel, never none.
 func convertSentinel(ctx context.Context, st familyStore, family string) (selection.StoreState, uint64, error) {
-	key := selection.PGSentinelKey
-	if family == familySession {
-		key = selection.SentinelKey
-	}
-	_, revision, err := st.Read(ctx, key)
+	state, revision, found, err := st.sentinel(ctx)
 	switch {
-	case errors.Is(err, selection.ErrNoRecord) && family != familySession:
-		return selection.StoreState{}, 0, nil
 	case err != nil:
 		return selection.StoreState{}, 0, err
+	case !found && family == familySession:
+		return selection.StoreState{}, 0, fmt.Errorf("%w: the bucket %s holds no %s", selection.ErrNoSentinel, selection.SessionBucket, selection.SentinelKey)
 	}
-	state, err := st.State(ctx)
-	return state, revision, err
+	return state, revision, nil
 }
 
 // convertOwner names convert in each operation it reserves.

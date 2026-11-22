@@ -1,10 +1,8 @@
 package consumernames
 
 import (
-	"bytes"
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -200,7 +198,7 @@ func ReadRecordedNames(ctx context.Context, conn *nats.Conn, deployments writerh
 			gone = append(gone, *s.gone)
 			continue
 		}
-		set, err := censusListNames(ctx, s.db)
+		set, err := censusListNames(ctx, s.db, family)
 		if err != nil {
 			unread = append(unread, fmt.Sprintf("%s's store: %v", family, err))
 			continue
@@ -262,13 +260,19 @@ func censusStoreNames(ctx context.Context, o options, family string) (map[string
 		return nil, err
 	}
 	defer pool.Close()
-	return censusListNames(ctx, pool)
+	return censusListNames(ctx, pool, family)
 }
 
-// censusListNames is every name the intake_consumers records on db hold, read through the store's
-// list (selection.PGStore.List, which leaves its sentinel row out).
-func censusListNames(ctx context.Context, db Database) (map[string]bool, error) {
-	records, err := selection.NewPGStore(db).List(ctx)
+// censusListNames is every name family's intake_consumers records on db hold, read through the
+// family's store's list (selection.PGStore.List, which reads only the family's own rows and leaves
+// its sentinel row out). A row that is not its key's record of the family, one copied there from
+// another key or family among them, fails the list (selection.ErrMalformedRecord).
+func censusListNames(ctx context.Context, db Database, family string) (map[string]bool, error) {
+	store, err := pgStore(family, db)
+	if err != nil {
+		return nil, err
+	}
+	records, err := store.List(ctx)
 	if errors.Is(err, selection.ErrNoStore) {
 		return nil, fmt.Errorf("it has no %s table", selection.IntakeConsumersTable)
 	}
@@ -388,9 +392,10 @@ func censusReadDaemonStores(ctx context.Context, deployments writerhold.DaemonDe
 // the store gone, with that answer. Every other answer leaves it unreconciled, naming why: a server
 // that does not answer, any other SQLSTATE among them (57P01 and 57P03, which a dying server
 // answers for a database it still holds, as a proxy's cached connection can reach it in the
-// seconds after its instance is deleted), and any other failed read; and so does a sentinel that
-// names another family than the store's, or none (censusSentinelFamily). A store whose table holds
-// no sentinel row is read, with found false.
+// seconds after its instance is deleted), and any other failed read; and so does a row that is not
+// exactly the family's own sentinel, one naming another family or none among them, which the
+// family's store refuses (selection.ErrMalformedSentinel, its selection.ErrSentinelFamily). A store
+// whose table holds no sentinel row is read, with found false.
 func censusReadDaemonStore(ctx context.Context, o options, project string, deployments []writerhold.DaemonDeployment) censusDaemonRead {
 	s := censusDaemonRead{project: project}
 	family := daemonFamily(project)
@@ -446,17 +451,15 @@ func censusReadDaemonStore(ctx context.Context, o options, project string, deplo
 		return s
 	}
 	s.db = pool
-	s.state, s.revision, s.found, err = censusReadSentinel(ctx, pool)
+	s.state, s.revision, s.found, err = censusReadSentinel(ctx, pool, family)
 	var pg *pgconn.PgError
 	switch {
 	case errors.As(err, &pg) && pg.Code == censusUndefinedDatabase:
 		s.gone = &writerhold.GoneStore{Project: project, Database: database, Instance: instance, StatedInstance: file.instance, Answer: pg.Error()}
+	case errors.Is(err, selection.ErrSentinelFamily):
+		s.unreconciled = fmt.Sprintf("its %s row is another family's sentinel, so the address its Deployment names holds another store: %v", selection.PGSentinelKey(family), err)
 	case err != nil:
 		s.unreconciled = err.Error()
-	case s.found:
-		if got, recorded := censusSentinelFamily(s.state); recorded && got != family {
-			s.unreconciled = fmt.Sprintf("its %s row names family %q, not %s, so the address its Deployment names holds another store", selection.PGSentinelKey, got, family)
-		}
 	}
 	return s
 }
@@ -488,15 +491,6 @@ func daemonSharedAddress(project, deployment, database, instance string, sharers
 	return fmt.Sprintf("Deployments %s each name database %q on instance %q: a store two daemons share is no one daemon's, so none of them reads it",
 		strings.Join(named, " and "), database, instance)
 }
-
-// censusSentinelFamily is the family a store's sentinel row names, and whether this build's
-// selection.StoreState records a family at all, the one place the census's check of it is gated.
-// It records none yet: until the selection package adds the field (StoreState.Family, JSON
-// "family"), a sentinel naming a family does not decode whole (censusReadSentinel refuses a field
-// it does not know), and every other sentinel names none, which must not leave every store
-// unreconciled. Once the field exists this answers state.Family and true, and a sentinel naming
-// another family, or none, leaves its store unreconciled (censusReadDaemonStore).
-func censusSentinelFamily(selection.StoreState) (string, bool) { return "", false }
 
 // censusNamesOf is every physical name record holds that the census keeps, once each: its
 // current, its open operation's candidate, and its retired names. An open operation's predecessor
@@ -609,7 +603,7 @@ func ReconcileDaemonStreamIDs(ctx context.Context, conn *nats.Conn, deployments 
 			change, kept, err := censusRewriteStreamID(ctx, s, current)
 			switch {
 			case err != nil:
-				result.Unreconciled = append(result.Unreconciled, writerhold.UnreconciledStore{Project: s.project, Reason: fmt.Sprintf("its %s row's write failed: %v", selection.PGSentinelKey, err)})
+				result.Unreconciled = append(result.Unreconciled, writerhold.UnreconciledStore{Project: s.project, Reason: fmt.Sprintf("its %s row's write failed: %v", selection.PGSentinelKey(daemonFamily(s.project)), err)})
 				held = fmt.Sprintf("not written, since %s's write failed before it", daemonFamily(s.project))
 			case kept != nil:
 				result.Reconciled = append(result.Reconciled, *kept)
@@ -621,26 +615,23 @@ func ReconcileDaemonStreamIDs(ctx context.Context, conn *nats.Conn, deployments 
 	return result, nil
 }
 
-// censusReadSentinel reads the sentinel row of the intake_consumers table on db with its
-// revision (readPGSentinel), and reports found false for a table that holds none. The row decodes
-// as this build's selection.StoreState, refusing a field it does not know.
-func censusReadSentinel(ctx context.Context, db Database) (selection.StoreState, uint64, bool, error) {
-	raw, revision, found, err := readPGSentinel(ctx, db)
+// censusReadSentinel reads family's sentinel row of the intake_consumers table on db with its
+// revision, through the family's store's check (readPGSentinel), and reports found false for a
+// table that holds none. A row that is not exactly the family's own sentinel, one under another
+// key, naming another family or none, or holding a field this build does not know, which a rewrite
+// would drop, is refused (selection.ErrMalformedSentinel).
+func censusReadSentinel(ctx context.Context, db Database, family string) (selection.StoreState, uint64, bool, error) {
+	key := selection.PGSentinelKey(family)
+	state, revision, found, err := readPGSentinel(ctx, db, family)
 	switch {
 	case pgNoTable(err):
 		return selection.StoreState{}, 0, false, fmt.Errorf("it has no %s table", selection.IntakeConsumersTable)
+	case errors.Is(err, selection.ErrMalformedSentinel):
+		return selection.StoreState{}, 0, false, fmt.Errorf("its %s row is no sentinel of %s this build reads whole, and a rewrite would drop what it does not know: %w", key, family, err)
 	case err != nil:
-		return selection.StoreState{}, 0, false, fmt.Errorf("read its %s row: %w", selection.PGSentinelKey, err)
-	case !found:
-		return selection.StoreState{}, 0, false, nil
+		return selection.StoreState{}, 0, false, fmt.Errorf("read its %s row: %w", key, err)
 	}
-	var state selection.StoreState
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&state); err != nil {
-		return selection.StoreState{}, 0, false, fmt.Errorf("its %s row is no sentinel this build reads whole, and a rewrite would drop what it does not know: %w", selection.PGSentinelKey, err)
-	}
-	return state, revision, true, nil
+	return state, revision, found, nil
 }
 
 // censusRewriteStreamID writes s's sentinel with stream_id current over the revision s read, and
@@ -648,7 +639,11 @@ func censusReadSentinel(ctx context.Context, db Database) (selection.StoreState,
 // unless the row now records current, or no row is left, which it answers as the store
 // reconciled, left unchanged by it, and no change.
 func censusRewriteStreamID(ctx context.Context, s censusDaemonRead, current string) (writerhold.StreamIDChange, *writerhold.ReconciledStore, error) {
-	store := selection.NewPGStore(s.db)
+	family := daemonFamily(s.project)
+	store, err := pgStore(family, s.db)
+	if err != nil {
+		return writerhold.StreamIDChange{}, nil, err
+	}
 	state, revision := s.state, s.revision
 	for range censusMaxConflicts {
 		next := state
@@ -661,7 +656,7 @@ func censusRewriteStreamID(ctx context.Context, s censusDaemonRead, current stri
 			return writerhold.StreamIDChange{}, nil, err
 		}
 		var found bool
-		if state, revision, found, err = censusReadSentinel(ctx, s.db); err != nil {
+		if state, revision, found, err = censusReadSentinel(ctx, s.db, family); err != nil {
 			return writerhold.StreamIDChange{}, nil, err
 		}
 		if !found || state.StreamID == current {

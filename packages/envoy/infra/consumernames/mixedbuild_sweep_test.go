@@ -122,7 +122,7 @@ func TestAnOldListenerSweepAfterTheWindow(t *testing.T) {
 		if info == nil {
 			orphanDeleted = 1
 		}
-		records := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: h.mixedBuildOperatorConn()})
+		records := selection.NewKVStore(selection.ConnRequester{Conn: h.mixedBuildOperatorConn()})
 		lost := 0
 		for _, s := range sessions {
 			info, err := consumerInfo(ctx, nc, notifications, s.current)
@@ -291,7 +291,7 @@ func (h *stack) mixedBuildOperatorConn() *nats.Conn {
 func (h *stack) mixedBuildAfterTheWindow(sessions []*mixedBuildSession, prefix string) string {
 	h.t.Helper()
 	ctx := context.Background()
-	records := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: h.mixedBuildOperatorConn()})
+	records := selection.NewKVStore(selection.ConnRequester{Conn: h.mixedBuildOperatorConn()})
 	nc, js := h.mixedBuildListenerConn(mixedBuildNewMachine)
 	for _, s := range sessions {
 		record, _, err := records.Read(ctx, s.id)

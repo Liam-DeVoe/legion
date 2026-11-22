@@ -94,7 +94,7 @@ func repairCheck(want, got []byte) error {
 // call: a call that serves must select the session's recorded consumer, never make one.
 func (rig *convertRig) repairCall(logical string) (selection.Selection, error) {
 	names := selection.New(selection.Config{
-		Store:    selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: rig.writerConn}),
+		Store:    selection.NewKVStore(selection.ConnRequester{Conn: rig.writerConn}),
 		Server:   convertTestServer{rig},
 		Prefix:   func(string) string { return sessionFreshPrefix },
 		Floor:    func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
@@ -336,7 +336,7 @@ func TestRepairSentinelAfterARollbackLetsFixedListenersStart(t *testing.T) {
 		left := repairSentinelValue(t, rig.stack)
 		var state selection.StoreState
 		require.NoError(t, json.Unmarshal(left, &state))
-		require.Equal(t, selection.StoreState{Cutover: selection.CutoverRolledBack, Boundary: 1, Hold: cutover}, state,
+		require.Equal(t, ownSentinel(familySession, selection.StoreState{Cutover: selection.CutoverRolledBack, Boundary: 1, Hold: cutover}), state,
 			"restore --finish keeps the cutover's boundary and hold")
 		nc, _ := rig.listener()
 		malformed := repairPlant(t, rig.stack, nc)
@@ -382,7 +382,7 @@ func TestRepairSentinelAfterARollbackLetsFixedListenersStart(t *testing.T) {
 
 		nc, _ := rig.listener()
 		defer nc.Close()
-		state, err := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc}).State(ctx)
+		state, err := selection.NewKVStore(selection.ConnRequester{Conn: nc}).State(ctx)
 		require.NoError(t, err, "the fixed-mode listener's read of the sentinel")
 		require.Equal(t, selection.CutoverRolledBack, state.Cutover, "the fixed-mode listener reads rolled_back, which is no done, and runs")
 		malformedRefused(t, selection.SentinelKey, []byte(`{"type":"io.nats.jetstream.api.v1.stream_info_response"}`))

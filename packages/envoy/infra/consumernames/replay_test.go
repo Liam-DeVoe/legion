@@ -79,10 +79,10 @@ func TestReplayWritesTheKeysRecordWithItsStartAndNoCurrent(t *testing.T) {
 	// of the bucket after a run opens one of its own.
 	bucket := func() familyStore {
 		nc, _ := h.operator()
-		return selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+		return newSessionStore(nc)
 	}
-	pg := func(db *pgxpool.Pool) func() familyStore {
-		return func() familyStore { return selection.NewPGStore(db) }
+	pg := func(family string, db *pgxpool.Pool) func() familyStore {
+		return func() familyStore { return pgFamilyOf(t, family, db) }
 	}
 	_, js := h.operator()
 
@@ -103,12 +103,12 @@ func TestReplayWritesTheKeysRecordWithItsStartAndNoCurrent(t *testing.T) {
 		store     func() familyStore
 		want      selection.Record
 	}{
-		{"ses_open", "5", bucket, selection.Record{Start: 5, Retired: []string{retired, current, candidate}}},
-		{"ses_new", "3", bucket, selection.Record{Start: 3}},
-		{"ses_deleted", "2", bucket, selection.Record{Start: 2}},
-		{listenerKey, "4", bucket, selection.Record{Start: 4}},
-		{dispatchDurables()[0], "6", pg(dispatchDB), selection.Record{Start: 6}},
-		{"legion-go-proj-a-dispatch", "11", pg(daemonDB), selection.Record{Start: 11}},
+		{"ses_open", "5", bucket, selection.Record{Key: "ses_open", Start: 5, Retired: []string{retired, current, candidate}}},
+		{"ses_new", "3", bucket, selection.Record{Key: "ses_new", Start: 3}},
+		{"ses_deleted", "2", bucket, selection.Record{Key: "ses_deleted", Start: 2}},
+		{listenerKey, "4", bucket, selection.Record{Key: listenerKey, Start: 4}},
+		{dispatchDurables()[0], "6", pg(familyDispatch, dispatchDB), selection.Record{Key: selection.PGKey(familyDispatch, dispatchDurables()[0]), Start: 6}},
+		{"legion-go-proj-a-dispatch", "11", pg(daemonFamily("proj-a"), daemonDB), selection.Record{Key: selection.PGKey(daemonFamily("proj-a"), "legion-go-proj-a-dispatch"), Start: 11}},
 	} {
 		before := replays()
 		code, _, stderr := h.run("replay", "--hold", id, "--key", row.key, "--from", row.from)
@@ -134,7 +134,7 @@ func TestReplayWritesTheKeysRecordWithItsStartAndNoCurrent(t *testing.T) {
 	require.Empty(t, createBucketEntries(h.journal(id), replayFinalCommand))
 	got, _, err := bucket().Read(ctx, "ses_new")
 	require.NoError(t, err)
-	require.Equal(t, selection.Record{Start: 3}, got, "a refused replay wrote the record")
+	require.Equal(t, selection.Record{Key: "ses_new", Start: 3}, got, "a refused replay wrote the record")
 }
 
 // In a selection-recovery hold, replay follows create-bucket --after-loss: before it, replay is
@@ -159,7 +159,7 @@ func TestReplayInARecoveryFollowsCreateBucketAfterLoss(t *testing.T) {
 
 	bucket := func() familyStore {
 		nc, _ := h.operator()
-		return selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+		return newSessionStore(nc)
 	}
 	for _, step := range []struct {
 		args     []string
@@ -204,7 +204,7 @@ func TestReplayReplacesAMalformedSessionRecord(t *testing.T) {
 	value := malformedValue(t, nc, "ses_bad")
 	record, err := strictRecord(value)
 	require.NoError(t, err, "ses_bad's value after replay is no exact record: %s", value)
-	require.Equal(t, selection.Record{Start: 3}, record)
+	require.Equal(t, selection.Record{Key: "ses_bad", Start: 3}, record)
 }
 
 // A replay whose done entry is lost, after it wrote the key's record, writes its stop, recording

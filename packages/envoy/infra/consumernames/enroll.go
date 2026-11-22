@@ -2,7 +2,6 @@ package consumernames
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -117,7 +116,7 @@ func (r *run) enrollHeld(ctx context.Context, a *admission, project string, p *e
 	// The readings, all before any write.
 	var findings []string
 	noTable := false
-	marker, revision, markerFound, err := enrollReadMarker(ctx, db)
+	marker, revision, markerFound, err := enrollReadMarker(ctx, store)
 	switch {
 	case errors.Is(err, selection.ErrNoStore):
 		noTable = true
@@ -212,7 +211,7 @@ func (r *run) enrollHeld(ctx context.Context, a *admission, project string, p *e
 	}
 	if !(p.marker && marker.Boundary > 0 && marker.StreamID != "") {
 		p.unsure = family + "'s store marker, if its unanswered write landed"
-		err := enrollWriteMarker(ctx, db, store, marker, revision, markerFound, r.o.holdID, boundary, streamID)
+		err := enrollWriteMarker(ctx, store, marker, revision, markerFound, r.o.holdID, boundary, streamID)
 		var refused *enrollRefusal
 		switch {
 		case errors.As(err, &refused):
@@ -314,19 +313,17 @@ func enrollHoldName(holdID string) string {
 	return "hold " + holdID
 }
 
-// enrollReadMarker reads the store's sentinel row with its revision (readPGSentinel), and whether
-// the row exists. A missing table is selection.ErrNoStore.
-func enrollReadMarker(ctx context.Context, db Database) (selection.StoreState, uint64, bool, error) {
-	data, revision, found, err := readPGSentinel(ctx, db)
+// enrollReadMarker reads the store's sentinel with its revision (familyStore's sentinel, through
+// the store's own check), and whether the row exists. A missing table is selection.ErrNoStore; a
+// row that is not exactly the store's own sentinel is the store's selection.ErrMalformedSentinel,
+// a read error, never a missing marker.
+func enrollReadMarker(ctx context.Context, store familyStore) (selection.StoreState, uint64, bool, error) {
+	state, revision, found, err := store.sentinel(ctx)
 	switch {
 	case pgNoTable(err):
 		return selection.StoreState{}, 0, false, fmt.Errorf("%w: %s (%w)", selection.ErrNoStore, selection.IntakeConsumersTable, err)
 	case err != nil || !found:
 		return selection.StoreState{}, 0, false, err
-	}
-	var state selection.StoreState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return selection.StoreState{}, 0, false, fmt.Errorf("the %s row of %s: %w", selection.PGSentinelKey, selection.IntakeConsumersTable, err)
 	}
 	return state, revision, true, nil
 }
@@ -337,7 +334,7 @@ func enrollReadMarker(ctx context.Context, db Database) (selection.StoreState, u
 // this hold wrote; a marker of this hold that lacks the boundary or the identity is written again.
 // A marker another writer put there in the meantime, or a write refused every time, is an
 // *enrollRefusal: the write did not land. Any other error is a write whose outcome is not known.
-func enrollWriteMarker(ctx context.Context, db Database, store familyStore, state selection.StoreState, revision uint64, found bool, holdID string, boundary uint64, streamID string) error {
+func enrollWriteMarker(ctx context.Context, store familyStore, state selection.StoreState, revision uint64, found bool, holdID string, boundary uint64, streamID string) error {
 	for range 8 {
 		write := state
 		write.Cutover, write.Hold, write.Boundary, write.StreamID = selection.CutoverDone, holdID, boundary, streamID
@@ -351,7 +348,7 @@ func enrollWriteMarker(ctx context.Context, db Database, store familyStore, stat
 		if !errors.Is(err, selection.ErrConflict) {
 			return err
 		}
-		if state, revision, found, err = enrollReadMarker(ctx, db); err != nil {
+		if state, revision, found, err = enrollReadMarker(ctx, store); err != nil {
 			return err
 		}
 		own := found && state.Cutover == selection.CutoverDone && state.Hold == holdID

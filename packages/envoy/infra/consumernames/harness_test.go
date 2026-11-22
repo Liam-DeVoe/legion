@@ -416,13 +416,33 @@ func (h *stack) consumer(name string) *jetstream.ConsumerInfo {
 func (h *stack) familyStore(nc *nats.Conn, family string) familyStore {
 	h.t.Helper()
 	if family == familySession {
-		return selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+		return newSessionStore(nc)
 	}
 	h.mu.Lock()
 	pool, ok := h.dbs[family]
 	h.mu.Unlock()
 	require.True(h.t, ok, "the test made no store for %s", family)
-	return selection.NewPGStore(pool)
+	return pgFamilyOf(h.t, family, pool)
+}
+
+// pgFamilyOf is family's Postgres store on db (newPGFamilyStore), failing t when the library
+// refuses to make it.
+func pgFamilyOf(t testing.TB, family string, db Database) pgFamilyStore {
+	t.Helper()
+	store, err := newPGFamilyStore(family, db)
+	require.NoError(t, err)
+	return store
+}
+
+// ownSentinel is state as family's store writes it (selection.KVStore.WriteSentinel,
+// selection.PGStore.WriteSentinel): under its own key, selection.SentinelKey for the session
+// family and selection.PGSentinelKey of the family otherwise, and naming the family.
+func ownSentinel(family string, state selection.StoreState) selection.StoreState {
+	state.Key, state.Family = selection.SentinelKey, family
+	if family != familySession {
+		state.Key = selection.PGSentinelKey(family)
+	}
+	return state
 }
 
 // record reads logical's record in family's store as the operator, under the row's phase now.

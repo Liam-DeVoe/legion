@@ -155,7 +155,7 @@ func (rig *convertRig) boundaryRegister(now func() time.Time) (string, uint64) {
 	rig.t.Helper()
 	ctx := context.Background()
 	names := selection.New(selection.Config{
-		Store:    selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: rig.writerConn}),
+		Store:    selection.NewKVStore(selection.ConnRequester{Conn: rig.writerConn}),
 		Server:   convertTestServer{rig},
 		Prefix:   func(string) string { return sessionFreshPrefix },
 		Floor:    func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
@@ -308,10 +308,10 @@ func boundaryNoEndRow(t *testing.T) {
 	id, cohort := rig.boundaryWindow(nil, nil, nil)
 	require.EqualValues(t, 100, cohort.Boundary)
 	nc, _ := rig.operator()
-	sentinel, err := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc}).State(ctx)
+	sentinel, err := selection.NewKVStore(selection.ConnRequester{Conn: nc}).State(ctx)
 	require.NoError(t, err)
 	nc.Close()
-	require.Equal(t, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 100, Hold: id}, sentinel,
+	require.Equal(t, ownSentinel(familySession, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 100, Hold: id}), sentinel,
 		"the release recorded something for the boundary: the sentinel holds more than create-bucket's B and hold and convert's marker")
 	message := rig.publish(boundaryShared, 1)[0]
 	require.EqualValues(t, 101, message)

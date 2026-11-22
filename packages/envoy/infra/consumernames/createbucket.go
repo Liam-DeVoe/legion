@@ -119,9 +119,10 @@ func (r *run) createBucketCutover(ctx context.Context) error {
 }
 
 // createBucketCutoverHeld is create-bucket's work after its intent, each change it makes counted
-// in left.
+// in left. Its sentinel, want, is the one selection.KVStore.WriteSentinel writes, its own key and
+// the session family included, so a sentinel read back compares with it whole.
 func (r *run) createBucketCutoverHeld(ctx context.Context, boundary uint64, replicas int, left *createBucketLeft) (map[string]string, error) {
-	want := selection.StoreState{Boundary: boundary, Hold: r.o.holdID}
+	want := selection.StoreState{Key: selection.SentinelKey, Family: selection.SessionFamily, Boundary: boundary, Hold: r.o.holdID}
 	nc, js, err := r.conn(ctx)
 	if err != nil {
 		return nil, err

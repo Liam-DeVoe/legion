@@ -177,7 +177,7 @@ func createBucketBackupOf(t *testing.T, n int, sentinel selection.StoreState, re
 	require.NoError(t, err)
 	_, err = js.CreateKeyValue(ctx, selection.SessionBucketConfig(n))
 	require.NoError(t, err)
-	store := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+	store := selection.NewKVStore(selection.ConnRequester{Conn: nc})
 	_, err = store.WriteSentinel(ctx, sentinel, 0)
 	require.NoError(t, err)
 	for key, record := range records {
@@ -626,10 +626,11 @@ func TestACompletedRecoveryAdopted(t *testing.T) {
 		require.Equal(t, createBucketJSON(first.state), createBucketJSON(adopted.state))
 		require.Equal(t, killed.State.Msgs, after.State.Msgs, "the rerun restored or wrote more than its barrier")
 		nc, _ = h.operator()
-		store := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+		store := selection.NewKVStore(selection.ConnRequester{Conn: nc})
 		for key, record := range kept {
 			got, _, err := store.Read(ctx, key)
 			require.NoError(t, err, key)
+			record.Key = key
 			require.Equal(t, record, got, key)
 		}
 		d := h.journal(id)
@@ -683,7 +684,7 @@ func TestACompletedRecoveryAdopted(t *testing.T) {
 		require.Equal(t, uint64(2), sentinel.state.Boundary)
 		require.Equal(t, in.BackupSHA256, sentinel.state.BackupSHA256)
 		nc, _ = h.operator()
-		store := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+		store := selection.NewKVStore(selection.ConnRequester{Conn: nc})
 		for i := range 5 {
 			got, _, err := store.Read(ctx, fmt.Sprintf("ses_%02d", i))
 			require.NoError(t, err)

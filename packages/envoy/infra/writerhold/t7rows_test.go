@@ -751,7 +751,7 @@ func (h *t7Stack) sessionRecord(session string) selection.Record {
 	h.t.Helper()
 	nc, _ := h.operator()
 	defer h.closeConns()
-	record, _, err := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc}).Read(context.Background(), session)
+	record, _, err := selection.NewKVStore(selection.ConnRequester{Conn: nc}).Read(context.Background(), session)
 	require.NoError(h.t, err, "%s's record", session)
 	return record
 }
@@ -898,7 +898,7 @@ func TestHoldPreflightALostSelectionBucket(t *testing.T) {
 	require.Equal(t, []string{"hold set intent", "hold set done", "create-bucket --after-loss intent", "create-bucket --after-loss done"}, h.entries(id))
 	require.True(t, h.journal(id).Complete, "create-bucket --after-loss did not complete the recovery's record")
 	nc, _ := h.operator()
-	state, err := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc}).State(context.Background())
+	state, err := selection.NewKVStore(selection.ConnRequester{Conn: nc}).State(context.Background())
 	require.NoError(t, err, "the recovered bucket's sentinel")
 	require.NotZero(t, state.ReplayFrom, "the recovered bucket's sentinel is not in replay mode")
 	h.closeConns()
@@ -1178,17 +1178,25 @@ func (h *t7Stack) cutovers() map[string]string {
 	return out
 }
 
-// sentinel is the selection bucket's sentinel and its revision, read as the operator.
+// sentinel is the selection bucket's sentinel and its revision, read as the operator: the
+// sequence of the sentinel key's last message (lastSeq), then the state through the store's check.
 func (h *t7Stack) sentinel() (selection.StoreState, uint64) {
 	h.t.Helper()
+	revision := h.lastSeq("KV_"+selection.SessionBucket, "$KV."+selection.SessionBucket+"."+selection.SentinelKey)
 	nc, _ := h.operator()
 	defer h.closeConns()
-	store := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
-	_, revision, err := store.Read(context.Background(), selection.SentinelKey)
+	state, err := selection.NewKVStore(selection.ConnRequester{Conn: nc}).State(context.Background())
 	require.NoError(h.t, err, "the selection bucket's sentinel")
-	state, err := store.State(context.Background())
-	require.NoError(h.t, err)
 	return state, revision
+}
+
+// t7Store is family's Postgres store on db (selection.NewPGStore), failing t when the library
+// refuses to make it.
+func t7Store(t testing.TB, family string, db *pgxpool.Pool) *selection.PGStore {
+	t.Helper()
+	store, err := selection.NewPGStore(family, db)
+	require.NoError(t, err)
+	return store
 }
 
 // cohortBoundary is the boundary B hold id's cohort record holds (consumer-names prepare's).
@@ -1301,7 +1309,7 @@ func TestHoldACrashThenARerun(t *testing.T) {
 		require.Equal(t, map[string]string{"session": selection.CutoverDone}, h.cutovers(), "the killed convert's cutover rows")
 		marked, revision := h.sentinel()
 		require.Equal(t, selection.CutoverDone, marked.Cutover, "the session family's store marker")
-		dispatchState, err := selection.NewPGStore(h.dbs["dispatch"]).State(context.Background())
+		dispatchState, err := t7Store(t, selection.DispatchFamily, h.dbs["dispatch"]).State(context.Background())
 		require.True(t, err != nil || dispatchState.Cutover != selection.CutoverDone, "Dispatch's store marker is done before its family was converted")
 
 		// release is refused until convert and the census complete; the census is refused too.
@@ -1320,7 +1328,7 @@ func TestHoldACrashThenARerun(t *testing.T) {
 		require.Contains(t, stdout, "converted 0 of", "convert's rerun converted a name again")
 		_, again := h.sentinel()
 		require.Equal(t, revision, again, "convert's rerun wrote the session family's marker again")
-		dispatchState, err = selection.NewPGStore(h.dbs["dispatch"]).State(context.Background())
+		dispatchState, err = t7Store(t, selection.DispatchFamily, h.dbs["dispatch"]).State(context.Background())
 		require.NoError(t, err)
 		require.Equal(t, selection.CutoverDone, dispatchState.Cutover, "convert's rerun did not mark Dispatch")
 		require.Equal(t, map[string]string{"session": selection.CutoverDone, "dispatch": selection.CutoverDone}, h.cutovers())
@@ -1394,7 +1402,7 @@ func TestHoldACrashThenARerun(t *testing.T) {
 				// Control: a rerun that takes any present bucket as its own writes its sentinel over
 				// this one, which holds another key.
 				nc, _ := h.operator()
-				_, err := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc}).
+				_, err := selection.NewKVStore(selection.ConnRequester{Conn: nc}).
 					WriteSentinel(ctx, selection.StoreState{Boundary: boundary, Hold: id}, 0)
 				require.NoError(t, err)
 				h.closeConns()
@@ -1982,10 +1990,10 @@ func (h *t7Stack) lastSeq(stream, subject string) uint64 {
 	return answer.Message.Seq
 }
 
-// pgCurrent is logical's current name in db's intake_consumers.
-func pgCurrent(t *testing.T, db *pgxpool.Pool, logical string) string {
+// pgCurrent is logical's current name in family's intake_consumers rows on db.
+func pgCurrent(t *testing.T, family string, db *pgxpool.Pool, logical string) string {
 	t.Helper()
-	record, _, err := selection.NewPGStore(db).Read(context.Background(), logical)
+	record, _, err := t7Store(t, family, db).Read(context.Background(), logical)
 	require.NoError(t, err, "%s's row", logical)
 	return record.Current
 }
@@ -2022,10 +2030,10 @@ func TestHoldTheCensusInsideTheCutover(t *testing.T) {
 	code, _, stderr := h.names("convert", "--hold", id, "--dispatch-database-file", h.file("dispatch"), "--daemon-database", daemon)
 	require.Zero(t, code, "convert: %s", stderr)
 	kept := map[string]string{
-		h.sessionRecord("ses_i1").Current:                     "ses_i1's recorded session~<nuid>",
-		pgCurrent(t, dispatchDB, bus.DispatchDeliveryDurable): "the recorded delivery-events~<nuid>",
-		pgCurrent(t, dispatchDB, bus.DispatchJobDurable):      "the recorded delivery-jobs~<nuid>",
-		pgCurrent(t, daemonDB, wake):                          "the recorded " + wake + "~<nuid>",
+		h.sessionRecord("ses_i1").Current:                                               "ses_i1's recorded session~<nuid>",
+		pgCurrent(t, selection.DispatchFamily, dispatchDB, bus.DispatchDeliveryDurable): "the recorded delivery-events~<nuid>",
+		pgCurrent(t, selection.DispatchFamily, dispatchDB, bus.DispatchJobDurable):      "the recorded delivery-jobs~<nuid>",
+		pgCurrent(t, "daemon/"+project, daemonDB, wake):                                 "the recorded " + wake + "~<nuid>",
 	}
 	for name, what := range kept {
 		require.Contains(t, name, "~", "%s is no fresh name: %q", what, name)
@@ -2034,7 +2042,7 @@ func TestHoldTheCensusInsideTheCutover(t *testing.T) {
 	// A session recorded just before the census, its consumer made as its record names it, and the
 	// impostor's session recorded under the impostor's name.
 	nc, _ := h.operator()
-	store := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+	store := selection.NewKVStore(selection.ConnRequester{Conn: nc})
 	justBefore := selection.FreshName("session")
 	config := sessionConsumerConfig(justBefore, "ses_i2")
 	config.Metadata = map[string]string{selection.LogicalMetadataKey: "ses_i2", bus.SessionIDMetadataKey: "ses_i2"}
@@ -2089,7 +2097,7 @@ func TestHoldTheCensusInsideTheCutover(t *testing.T) {
 	control := h.prepared(holdrecord.WorkflowStreamsCensus)
 	h.heldNoSteps(control)
 	nc, _ = h.operator()
-	store = selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+	store = selection.NewKVStore(selection.ConnRequester{Conn: nc})
 	lagging := selection.FreshName("session")
 	config = sessionConsumerConfig(lagging, "ses_i4")
 	config.Metadata = map[string]string{selection.LogicalMetadataKey: "ses_i4", bus.SessionIDMetadataKey: "ses_i4"}
@@ -2120,7 +2128,7 @@ func TestHoldTheCensusInsideTheCutover(t *testing.T) {
 	fixedOnly.FreshNames = func(context.Context, *nats.Conn, writerhold.DaemonDeployments, []string, string, []string) (writerhold.FreshNamesRead, error) {
 		return writerhold.FreshNamesRead{Names: map[string][]string{}}, nil
 	}
-	events := pgCurrent(t, dispatchDB, bus.DispatchDeliveryDurable)
+	events := pgCurrent(t, selection.DispatchFamily, dispatchDB, bus.DispatchDeliveryDurable)
 	code, stdout, _ = h.streamsWith(fixedOnly, controlFlags...)
 	require.Equal(t, 1, code, "control: the census with the fixed names' shapes alone")
 	require.Contains(t, stdout, "CHANGED "+bus.Stream+" consumer "+events+": removed",
@@ -2858,7 +2866,7 @@ func TestHoldCompletionPerWorkflow(t *testing.T) {
 		// A logical name with no start: ses_rb2's fresh consumer is gone, and its record saves no
 		// start and no floor of it.
 		nc, js := h.operator()
-		store := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+		store := selection.NewKVStore(selection.ConnRequester{Conn: nc})
 		record, revision, err := store.Read(ctx, "ses_rb2")
 		require.NoError(t, err)
 		require.NoError(t, js.DeleteConsumer(ctx, bus.Stream, record.Current))

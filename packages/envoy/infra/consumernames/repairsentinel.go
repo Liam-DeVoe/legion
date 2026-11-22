@@ -76,16 +76,18 @@ func (r *run) repairSentinelRun(ctx context.Context) error {
 	return nil
 }
 
-// repairWant is the sentinel the broker's records give, each read verified as the hold's client
-// verifies every row and record (holdrecord.Client.Cutovers, Records): the session family's cutover
-// row (repairRow) gives the state; for done, the hold it names is the cutover's; for rolled_back it
-// names the rollback's, whose saved set records the cutover's hold (restoreSet's CutoverHold); and
-// that cutover hold's cohort record gives the boundary B. The sentinel is the one convert and
-// restore --finish leave, and nothing else: create-bucket writes {boundary B, hold} (createbucket.go
-// createBucketCutoverHeld), convert adds cutover = done (convert.go markDone), and restore --finish
-// sets cutover = rolled_back keeping the rest (restore.go restoreMark). A selection recovery's fields
-// (replay_from, orphans, backup_sha256) are create-bucket --after-loss's, and the session sentinel
-// carries no stream identity. A read that fails, or a record that is missing, is UNKNOWN.
+// repairWant is the sentinel the broker's records give, as selection.KVStore.WriteSentinel writes
+// it (its own key, selection.SentinelKey, and the session family), each read verified as the
+// hold's client verifies every row and record (holdrecord.Client.Cutovers, Records): the session
+// family's cutover row (repairRow) gives the state; for done, the hold it names is the cutover's;
+// for rolled_back it names the rollback's, whose saved set records the cutover's hold (restoreSet's
+// CutoverHold); and that cutover hold's cohort record gives the boundary B. The sentinel is the one
+// convert and restore --finish leave, and nothing else: create-bucket writes {boundary B, hold}
+// (createbucket.go createBucketCutoverHeld), convert adds cutover = done (convert.go markDone), and
+// restore --finish sets cutover = rolled_back keeping the rest (restore.go restoreMark). A selection
+// recovery's fields (replay_from, orphans, backup_sha256) are create-bucket --after-loss's, and the
+// session sentinel carries no stream identity. A read that fails, or a record that is missing, is
+// UNKNOWN.
 func (r *run) repairWant(ctx context.Context) (selection.StoreState, error) {
 	rows, err := r.records.Cutovers(ctx)
 	if err != nil {
@@ -117,7 +119,7 @@ func (r *run) repairWant(ctx context.Context) (selection.StoreState, error) {
 	if cohort.Boundary == 0 {
 		return selection.StoreState{}, unknownf(nil, "the cohort record of hold %s holds no boundary B, which is at least 1", cutoverHold)
 	}
-	return selection.StoreState{Cutover: row.State, Boundary: cohort.Boundary, Hold: cutoverHold}, nil
+	return selection.StoreState{Key: selection.SentinelKey, Family: selection.SessionFamily, Cutover: row.State, Boundary: cohort.Boundary, Hold: cutoverHold}, nil
 }
 
 // repairRow is the session family's broker cutover row among rows. No such row, or one that reads
@@ -189,7 +191,8 @@ const (
 // records a selection recovery's create-bucket --after-loss brings back before it writes the
 // sentinel. So is a store state holding a selection recovery's fields, which create-bucket
 // --after-loss writes and this command never does. A value that is want already is left as it is;
-// every other value, malformed (strictStoreState refuses it) or not, is written over.
+// every other value, malformed (readSelectionValue refuses it, a sentinel of another key or family
+// among them) or not, is written over.
 func repairDecide(last replayMessage, found bool, want []byte) (bool, string, error) {
 	switch {
 	case !found:
@@ -201,10 +204,11 @@ func repairDecide(last replayMessage, found bool, want []byte) (bool, string, er
 	case bytes.Equal(last.Data, want):
 		return false, repairWasRecords, nil
 	}
-	state, err := strictStoreState(last.Data)
+	value, err := readSelectionValue(statusKey{Key: selection.SentinelKey, Value: last.Data})
 	if err != nil {
 		return true, repairWasMalformed, nil
 	}
+	state := value.state
 	if state.ReplayFrom != 0 || len(state.Orphans) > 0 || state.BackupSHA256 != "" {
 		return false, "", fmt.Errorf("selection bucket %s's key %s at sequence %d is a selection recovery's sentinel (hold %s): create-bucket --after-loss writes it, never this command",
 			selection.SessionBucket, selection.SentinelKey, last.Seq, state.Hold)

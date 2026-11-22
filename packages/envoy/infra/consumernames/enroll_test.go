@@ -96,7 +96,11 @@ func enrollNewDaemon(db *pgxpool.Pool, connect func(name string) (*nats.Conn, er
 	if err != nil {
 		return nil, err
 	}
-	d := &enrollDaemon{project: project, connect: connect, js: js, store: selection.NewPGStore(db), generations: map[string]jetstream.JetStream{}}
+	store, err := pgStore(daemonFamily(project), db)
+	if err != nil {
+		return nil, err
+	}
+	d := &enrollDaemon{project: project, connect: connect, js: js, store: store, generations: map[string]jetstream.JetStream{}}
 	d.names = selection.New(selection.Config{
 		Store:    d.store,
 		Server:   enrollDaemonServer{d: d},
@@ -342,13 +346,13 @@ func TestEnrollANewProjectAfterTheWindow(t *testing.T) {
 	// Control: a store holding a checkpoint stops enroll, naming it.
 	_, err := checkpointDB.Exec(ctx, `insert into consumer_positions (consumer, stream_seq, stream_time) values ($1, 42, now())`, daemonFixedPrefix+checkpointed+"-dispatch")
 	require.NoError(t, err)
-	h.enrollRequireStopped(checkpointed, selection.NewPGStore(checkpointDB), "consumer_positions holds a checkpoint of "+daemonFixedPrefix+checkpointed+"-dispatch")
+	h.enrollRequireStopped(checkpointed, enrollStore(t, checkpointed, checkpointDB), "consumer_positions holds a checkpoint of "+daemonFixedPrefix+checkpointed+"-dispatch")
 
 	// Control: a stream holding the project's fixed Dispatch durable stops enroll, naming it.
 	wc, _ := h.replaceWriter()
 	fixed := daemonFixedPrefix + listed + "-dispatch"
 	replaceMake(t, wc, jetstream.ConsumerConfig{Durable: fixed, FilterSubjects: []string{enrollDispatchFilter}, AckPolicy: jetstream.AckExplicitPolicy})
-	h.enrollRequireStopped(listed, selection.NewPGStore(listedDB), notifications+" lists consumer "+fixed)
+	h.enrollRequireStopped(listed, enrollStore(t, listed, listedDB), notifications+" lists consumer "+fixed)
 	wc, _ = h.replaceWriter()
 	require.NoError(t, deleteConsumer(ctx, wc, notifications, fixed))
 
@@ -371,9 +375,9 @@ func TestEnrollANewProjectAfterTheWindow(t *testing.T) {
 	code, stdout, _ := h.enrollRun(id, project)
 	require.Equal(t, 0, code)
 	require.Contains(t, stdout, daemonFamily(project)+": the store's marker and the broker's cutover record read done under hold "+id)
-	state, err := selection.NewPGStore(db).State(ctx)
+	state, err := enrollStore(t, project, db).State(ctx)
 	require.NoError(t, err)
-	require.Equal(t, selection.StoreState{Cutover: selection.CutoverDone, Hold: id, Boundary: last + 1, StreamID: identity}, state,
+	require.Equal(t, ownSentinel(daemonFamily(project), selection.StoreState{Cutover: selection.CutoverDone, Hold: id, Boundary: last + 1, StreamID: identity}), state,
 		"the marker records the boundary, the stream's last sequence + 1 at the enrolment, and the stream's identity")
 	row, ok := h.cutoverRow(daemonFamily(project))
 	require.True(t, ok)
@@ -453,7 +457,7 @@ func TestAnEnrollRerunAfterACrashCompletes(t *testing.T) {
 		_, err := h.records().Admit(ctx, id, holdrecord.Request{Command: enrollCommand}, map[string]string{"daemon": project})
 		require.NoError(t, err)
 		marker.Cutover, marker.Hold = selection.CutoverDone, id
-		_, err = selection.NewPGStore(db).WriteSentinel(ctx, marker, 0)
+		_, err = enrollStore(t, project, db).WriteSentinel(ctx, marker, 0)
 		require.NoError(t, err)
 		if cutoverToo {
 			_, err = h.records().PutCutover(ctx, daemonFamily(project), selection.CutoverDone, id)
@@ -466,9 +470,9 @@ func TestAnEnrollRerunAfterACrashCompletes(t *testing.T) {
 		t.Helper()
 		code, _, _ := h.enrollRun(id, project)
 		require.Equal(t, 0, code)
-		state, err := selection.NewPGStore(db).State(ctx)
+		state, err := enrollStore(t, project, db).State(ctx)
 		require.NoError(t, err)
-		require.Equal(t, selection.StoreState{Cutover: selection.CutoverDone, Hold: id, Boundary: boundary, StreamID: identity}, state)
+		require.Equal(t, ownSentinel(daemonFamily(project), selection.StoreState{Cutover: selection.CutoverDone, Hold: id, Boundary: boundary, StreamID: identity}), state)
 		row, ok := h.cutoverRow(daemonFamily(project))
 		require.True(t, ok)
 		require.Equal(t, holdrecord.CutoverRow{Family: daemonFamily(project), State: selection.CutoverDone, HoldID: id, HoldGen: row.HoldGen}, row)
@@ -515,7 +519,7 @@ func TestAnEnrollRerunAfterACrashCompletes(t *testing.T) {
 		require.Equal(t, "stop", stop.State)
 		left := daemonFamily(project) + ": store marker done and broker cutover record done, hold " + id + "'s"
 		require.Equal(t, left, stop.Outputs["left"])
-		state, err := selection.NewPGStore(db).State(ctx)
+		state, err := enrollStore(t, project, db).State(ctx)
 		require.NoError(t, err)
 		require.Equal(t, "another-stream", state.StreamID, "the refused rerun wrote nothing")
 		require.ErrorIs(t, h.release(id), holdrecord.ErrOutOfOrder, "hold release is refused over a stop that changed something")
@@ -552,7 +556,7 @@ func TestEnrollStopsOnWhatItFinds(t *testing.T) {
 	t.Run("a selection row", func(t *testing.T) {
 		const project = "ENRROW"
 		db := h.database(daemonFamily(project), daemonMigrations...)
-		store := selection.NewPGStore(db)
+		store := enrollStore(t, project, db)
 		_, err := store.Write(ctx, daemonFixedPrefix+project+"-github", selection.Record{Start: 3}, 0)
 		require.NoError(t, err)
 		h.enrollRequireStopped(project, store, "intake_consumers holds the selection row of "+daemonFixedPrefix+project+"-github")
@@ -563,14 +567,14 @@ func TestEnrollStopsOnWhatItFinds(t *testing.T) {
 		wc, _ = h.replaceWriter()
 		fresh := selection.FreshName(daemonFixedPrefix + project + "-github")
 		replaceMake(t, wc, jetstream.ConsumerConfig{Durable: fresh, FilterSubjects: []string{"notifications.github.>"}, AckPolicy: jetstream.AckExplicitPolicy})
-		h.enrollRequireStopped(project, selection.NewPGStore(db), notifications+" lists consumer "+fresh)
+		h.enrollRequireStopped(project, enrollStore(t, project, db), notifications+" lists consumer "+fresh)
 		wc, _ = h.replaceWriter()
 		require.NoError(t, deleteConsumer(ctx, wc, notifications, fresh))
 	})
 	for marker, project := range map[string]string{selection.CutoverDone: "ENRMDONE", selection.CutoverRolledBack: "ENRMROLL"} {
 		t.Run("a marker "+marker+" from another hold", func(t *testing.T) {
 			db := h.database(daemonFamily(project), daemonMigrations...)
-			store := selection.NewPGStore(db)
+			store := enrollStore(t, project, db)
 			_, err := store.WriteSentinel(ctx, selection.StoreState{Cutover: marker, Hold: "another-hold"}, 0)
 			require.NoError(t, err)
 			h.enrollRequireStopped(project, store, "the store's marker reads "+marker+" from hold another-hold")
@@ -583,12 +587,12 @@ func TestEnrollStopsOnWhatItFinds(t *testing.T) {
 		_, err := h.records().PutCutover(ctx, daemonFamily(project), selection.CutoverRolledBack, other)
 		require.NoError(t, err)
 		require.NoError(t, h.release(other))
-		h.enrollRequireStopped(project, selection.NewPGStore(db), "the broker holds the cutover record "+daemonFamily(project)+" rolled_back from hold "+other)
+		h.enrollRequireStopped(project, enrollStore(t, project, db), "the broker holds the cutover record "+daemonFamily(project)+" rolled_back from hold "+other)
 	})
 	t.Run("a store with no intake_consumers table", func(t *testing.T) {
 		const project = "ENRNOTAB"
 		db := h.database(daemonFamily(project), daemonMigrations[0])
-		h.enrollRequireStopped(project, selection.NewPGStore(db), "the store has no intake_consumers table")
+		h.enrollRequireStopped(project, enrollStore(t, project, db), "the store has no intake_consumers table")
 	})
 	t.Run("a stream that carries no identity", func(t *testing.T) {
 		const project = "ENRNOID"
@@ -603,7 +607,7 @@ func TestEnrollStopsOnWhatItFinds(t *testing.T) {
 		_, err = apiRequest(ctx, nc, "$JS.API.STREAM.UPDATE."+notifications, config)
 		require.NoError(t, err)
 		require.NoError(t, h.release(update))
-		h.enrollRequireStopped(project, selection.NewPGStore(db), notifications+" carries no stream identity ("+selection.StreamIdentityMetadataKey+")")
+		h.enrollRequireStopped(project, enrollStore(t, project, db), notifications+" carries no stream identity ("+selection.StreamIdentityMetadataKey+")")
 	})
 }
 
@@ -672,11 +676,11 @@ func TestAnEnrolledStoreLetsTheDaemonCountItsFloor(t *testing.T) {
 	code, _, _ := h.enrollRun(id, enrolled)
 	require.Equal(t, 0, code)
 	require.NoError(t, h.release(id))
-	state, err := selection.NewPGStore(enrolledDB).State(ctx)
+	state, err := enrollStore(t, enrolled, enrolledDB).State(ctx)
 	require.NoError(t, err)
-	require.Equal(t, selection.StoreState{Cutover: selection.CutoverDone, Hold: id, Boundary: last + 1, StreamID: identity}, state)
+	require.Equal(t, ownSentinel(daemonFamily(enrolled), selection.StoreState{Cutover: selection.CutoverDone, Hold: id, Boundary: last + 1, StreamID: identity}), state)
 	// Control: a store enrolled without the boundary and the identity.
-	_, err = selection.NewPGStore(bareDB).WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone, Hold: "an-enrolment-without-them"}, 0)
+	_, err = enrollStore(t, bare, bareDB).WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone, Hold: "an-enrolment-without-them"}, 0)
 	require.NoError(t, err)
 
 	between := publish(1)[0]
@@ -702,7 +706,7 @@ func TestAnEnrolledStoreLetsTheDaemonCountItsFloor(t *testing.T) {
 	floor := after[2]
 	for project, s := range map[string]served{enrolled: e, bare: b} {
 		require.NoError(t, s.daemon.recordLastFloor(ctx, "dispatch", s.js, s.current, floor), project)
-		record, _, err := selection.NewPGStore(s.db).Read(ctx, daemonFixedPrefix+project+"-dispatch")
+		record, _, err := enrollStore(t, project, s.db).Read(ctx, daemonFixedPrefix+project+"-dispatch")
 		require.NoError(t, err)
 		want := ""
 		if project == enrolled {
@@ -716,7 +720,7 @@ func TestAnEnrolledStoreLetsTheDaemonCountItsFloor(t *testing.T) {
 	again := func(project string, db *pgxpool.Pool) served {
 		t.Helper()
 		s := open(project, db)
-		record, _, err := selection.NewPGStore(db).Read(ctx, daemonFixedPrefix+project+"-dispatch")
+		record, _, err := enrollStore(t, project, db).Read(ctx, daemonFixedPrefix+project+"-dispatch")
 		require.NoError(t, err)
 		require.Equal(t, s.current, record.Current)
 		return s
@@ -747,7 +751,7 @@ func TestEnrollRefusesAStoreAddressTwoDeploymentsName(t *testing.T) {
 	h.censusDeploy(censusDeploymentOf(project, db))
 	sharer := censusDeployment(other, database, censusInstance)
 	h.censusDeploy(sharer)
-	h.enrollRequireStopped(project, selection.NewPGStore(db), daemonFamily(project)+"'s store address is shared",
+	h.enrollRequireStopped(project, enrollStore(t, project, db), daemonFamily(project)+"'s store address is shared",
 		"legion/legion-daemon-enrshare (project ENRSHARE)", "legion/legion-daemon-enrother (project ENROTHER)",
 		fmt.Sprintf("each name database %q on instance %q", database, censusInstance))
 
@@ -761,7 +765,7 @@ func TestEnrollRefusesAStoreAddressTwoDeploymentsName(t *testing.T) {
 	id := h.heldHold(holdrecord.WorkflowEnroll)
 	code, stdout, stderr := h.enrollRun(id, project)
 	require.Equal(t, 0, code, "control: enroll beside a Deployment at another address: %s%s", stdout, stderr)
-	state, err := selection.NewPGStore(db).State(ctx)
+	state, err := enrollStore(t, project, db).State(ctx)
 	require.NoError(t, err)
 	require.Equal(t, id, state.Hold, "control: the enroll marked the store")
 	require.NoError(t, h.release(id))
@@ -815,6 +819,13 @@ func TestEnrollStopsOnAnUnknownRead(t *testing.T) {
 	inputs := h.abortHold(id)
 	require.Contains(t, slices.Collect(maps.Values(inputs)), enrollCommand+": "+left, "hold abort's intent carries what the stop left")
 	require.Equal(t, "released", string(h.row().Phase))
-	_, err = selection.NewPGStore(db).State(ctx)
+	_, err = enrollStore(t, project, db).State(ctx)
 	require.ErrorIs(t, err, selection.ErrNoSentinel, "the UNKNOWN enroll wrote the store's marker")
+}
+
+// enrollStore is project's daemon store on db (pgFamilyOf of daemonFamily(project)), failing t when
+// the library refuses to make it.
+func enrollStore(t testing.TB, project string, db Database) *selection.PGStore {
+	t.Helper()
+	return pgFamilyOf(t, daemonFamily(project), db).PGStore
 }

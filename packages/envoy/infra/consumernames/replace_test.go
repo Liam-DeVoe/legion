@@ -58,7 +58,7 @@ func (h *stack) replaceWriter() (*nats.Conn, jetstream.JetStream) {
 func (h *stack) replaceOp() (*nats.Conn, selection.Store) {
 	h.t.Helper()
 	nc, _ := h.operator()
-	return nc, selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+	return nc, selection.NewKVStore(selection.ConnRequester{Conn: nc})
 }
 
 // replacePublish publishes n messages on replaceSubject and answers the last one's sequence.

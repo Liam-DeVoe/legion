@@ -372,7 +372,7 @@ func (rr *restoreRun) entries(ctx context.Context, family string) ([]restoreEntr
 		}
 		return out, true, nil
 	}
-	pg, ok := st.(*selection.PGStore)
+	pg, ok := st.(pgFamilyStore)
 	if !ok {
 		return nil, false, fmt.Errorf("%s's store %T lists no records", family, st)
 	}

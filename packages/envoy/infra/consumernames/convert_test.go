@@ -167,10 +167,10 @@ func (rig *convertRig) censusDone(id string) {
 	require.NoError(rig.t, rig.records().AppendDone(ctx, id, censusCommandName, nil))
 }
 
-// pgRecord reads logical's record in db's intake_consumers.
-func pgRecord(t *testing.T, db *pgxpool.Pool, logical string) selection.Record {
+// pgRecord reads logical's record in family's intake_consumers rows on db.
+func pgRecord(t *testing.T, family string, db *pgxpool.Pool, logical string) selection.Record {
 	t.Helper()
-	record, _, err := selection.NewPGStore(db).Read(context.Background(), logical)
+	record, _, err := pgFamilyOf(t, family, db).Read(context.Background(), logical)
 	require.NoError(t, err, "%s's row", logical)
 	return record
 }
@@ -265,9 +265,9 @@ func TestConvertConvertsEveryFamilysFixedNamesAtTheirFloors(t *testing.T) {
 		case familySession:
 			record = rig.record(familySession, m.Logical)
 		case familyDispatch:
-			record = pgRecord(t, dispatch, m.Logical)
+			record = pgRecord(t, familyDispatch, dispatch, m.Logical)
 		default:
-			record = pgRecord(t, daemon, m.Logical)
+			record = pgRecord(t, m.Family, daemon, m.Logical)
 		}
 		info := rig.requireFresh(m, record, floors[c.fixed]+1)
 		require.Equal(t, c.subject, info.Config.FilterSubject, "%s's fresh name keeps its filter", c.fixed)
@@ -283,18 +283,18 @@ func TestConvertConvertsEveryFamilysFixedNamesAtTheirFloors(t *testing.T) {
 	}
 	require.Equal(t, map[string]string{familySession: "done", familyDispatch: "done", daemonFamily("p1"): "done"}, states)
 	nc, _ := rig.operator()
-	sentinel, err := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc}).State(ctx)
+	sentinel, err := selection.NewKVStore(selection.ConnRequester{Conn: nc}).State(ctx)
 	require.NoError(t, err)
-	require.Equal(t, selection.StoreState{Cutover: selection.CutoverDone, Boundary: cohort.Boundary, Hold: id}, sentinel)
+	require.Equal(t, ownSentinel(familySession, selection.StoreState{Cutover: selection.CutoverDone, Boundary: cohort.Boundary, Hold: id}), sentinel)
 	stream, err := streamInfo(ctx, nc, notifications)
 	require.NoError(t, err)
-	dispatchState, err := selection.NewPGStore(dispatch).State(ctx)
+	dispatchState, err := pgFamilyOf(t, familyDispatch, dispatch).State(ctx)
 	require.NoError(t, err)
-	require.Equal(t, selection.StoreState{Cutover: selection.CutoverDone}, dispatchState)
-	daemonState, err := selection.NewPGStore(daemon).State(ctx)
+	require.Equal(t, ownSentinel(familyDispatch, selection.StoreState{Cutover: selection.CutoverDone}), dispatchState)
+	daemonState, err := pgFamilyOf(t, daemonFamily("p1"), daemon).State(ctx)
 	require.NoError(t, err)
 	require.NotEmpty(t, selection.StreamIdentity(stream))
-	require.Equal(t, selection.StoreState{Cutover: selection.CutoverDone, Boundary: stream.State.LastSeq + 1, StreamID: selection.StreamIdentity(stream)}, daemonState,
+	require.Equal(t, ownSentinel(daemonFamily("p1"), selection.StoreState{Cutover: selection.CutoverDone, Boundary: stream.State.LastSeq + 1, StreamID: selection.StreamIdentity(stream)}), daemonState,
 		"the daemon store's sentinel holds no boundary of the stream's end at the cutover, or not the stream's identity")
 	set, _, found, err := readConvertSet(ctx, rig.records(), id)
 	require.NoError(t, err)
@@ -393,15 +393,15 @@ func TestConvertStartsAtDispatchsHoldTokenStart(t *testing.T) {
 	code, _, stderr := rig.run(actionConvert, "--hold", id)
 	require.Zero(t, code, stderr)
 	m, _ := classify(present)
-	rig.requireFresh(m, pgRecord(t, dispatch, present), 51)
-	gone := pgRecord(t, dispatch, deleted)
+	rig.requireFresh(m, pgRecord(t, familyDispatch, dispatch, present), 51)
+	gone := pgRecord(t, familyDispatch, dispatch, deleted)
 	require.Empty(t, gone.Current, "the durable deleted before convert has a current")
 	require.EqualValues(t, 51, gone.Start, "the durable deleted before convert starts past the token's start")
 
 	rig.censusDone(id)
 	require.NoError(t, rig.release(id))
 	rig.connectWriter()
-	got := rig.consume(pgRecord(t, dispatch, present).Current, 1, 0)
+	got := rig.consume(pgRecord(t, familyDispatch, dispatch, present).Current, 1, 0)
 	require.Equal(t, []uint64{51}, got, "job 51 did not arrive first")
 }
 
@@ -438,7 +438,7 @@ func TestConvertStartsAGoneCohortMemberAtItsSavedFloorAndStopsForANameWithNoStar
 	require.Equal(t, 1, code, "convert wrote a durable with no safe start")
 	for _, durable := range dispatchDurables() {
 		require.Contains(t, stderr, "no safe start for "+durable)
-		_, _, err := selection.NewPGStore(dispatch).Read(ctx, durable)
+		_, _, err := pgFamilyOf(t, familyDispatch, dispatch).Read(ctx, durable)
 		require.ErrorIs(t, err, selection.ErrNoRecord, "convert wrote %s's row with no safe start", durable)
 	}
 	require.Equal(t, "stop", rig.lastEntry(id, actionConvert).State)
@@ -450,7 +450,7 @@ func TestConvertStartsAGoneCohortMemberAtItsSavedFloorAndStopsForANameWithNoStar
 	_, err = rig.records().Admit(ctx, id, holdrecord.Request{Command: actionReplay}, map[string]string{"key": "delivery", "from": "1"})
 	require.NoError(t, err, "the stop entry does not admit a replay")
 	for _, durable := range dispatchDurables() {
-		_, err := selection.NewPGStore(dispatch).Write(ctx, durable, selection.Record{Start: 1}, 0)
+		_, err := pgFamilyOf(t, familyDispatch, dispatch).Write(ctx, durable, selection.Record{Start: 1}, 0)
 		require.NoError(t, err)
 	}
 	require.NoError(t, rig.records().AppendDone(ctx, id, actionReplay, nil))
@@ -458,7 +458,7 @@ func TestConvertStartsAGoneCohortMemberAtItsSavedFloorAndStopsForANameWithNoStar
 	code, _, stderr = rig.run(actionConvert, "--hold", id, "--dispatch-database-file", "/dev/null")
 	require.Zero(t, code, stderr)
 	for _, durable := range dispatchDurables() {
-		require.EqualValues(t, 1, pgRecord(t, dispatch, durable).Start)
+		require.EqualValues(t, 1, pgRecord(t, familyDispatch, dispatch, durable).Start)
 	}
 	require.EqualValues(t, 3, rig.record(familySession, "expiring").Start)
 
@@ -467,7 +467,7 @@ func TestConvertStartsAGoneCohortMemberAtItsSavedFloorAndStopsForANameWithNoStar
 	rig.connectWriter()
 	// A creator of the fresh mode registers the expired member: its record's start governs.
 	names := selection.New(selection.Config{
-		Store:    selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: rig.writerConn}),
+		Store:    selection.NewKVStore(selection.ConnRequester{Conn: rig.writerConn}),
 		Server:   convertTestServer{rig},
 		Prefix:   func(string) string { return sessionFreshPrefix },
 		Floor:    func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
@@ -532,7 +532,7 @@ func TestConvertRerunAfterTheDeleteCreatesTheFreshNameFromTheSavedSet(t *testing
 	require.NoError(t, err)
 	_, err = rig.records().PutRecord(ctx, id, convertSetKind, convertSetKey, 0, value)
 	require.NoError(t, err)
-	store := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+	store := selection.NewKVStore(selection.ConnRequester{Conn: nc})
 	crashed := map[string]string{}
 	for _, f := range []*jetstream.ConsumerInfo{f2, f3} {
 		logical := strings.TrimPrefix(f.Name, "s-")
@@ -592,7 +592,7 @@ func TestConvertStopsNamingADaemonProjectWithNoStore(t *testing.T) {
 	db := rig.database(daemonFamily("p2"), daemonMigrations...)
 	code, _, stderr = rig.run(actionConvert, "--hold", id)
 	require.Zero(t, code, "control: the project with its table: %s", stderr)
-	require.True(t, strings.HasPrefix(pgRecord(t, db, "legion-go-p2-wake").Current, "legion-go-p2-wake~"))
+	require.True(t, strings.HasPrefix(pgRecord(t, daemonFamily("p2"), db, "legion-go-p2-wake").Current, "legion-go-p2-wake~"))
 }
 
 // The held re-read catches a writer connected across the hold (plan §3a, "Every held command",
@@ -652,7 +652,7 @@ func TestConvertStopsOnAnUnknownStoreAndHoldAbortEndsIt(t *testing.T) {
 	rig.publish("notifications.agent.u1", 2)
 	rig.fixed("s-u1", "notifications.agent.u1", 0)
 	db := rig.database(familyDispatch, dispatchMigrations...)
-	_, err := db.Exec(ctx, `insert into intake_consumers (logical, record, revision) values ($1, '"no store state"', 1)`, selection.PGSentinelKey)
+	_, err := db.Exec(ctx, `insert into intake_consumers (logical, record, revision) values ($1, '"no store state"', 1)`, selection.PGSentinelKey(familyDispatch))
 	require.NoError(t, err)
 	id, _ := rig.heldForConvert()
 	release, abort := holdrecord.Request{Command: holdrecord.CommandRelease}, holdrecord.Request{Command: holdrecord.CommandAbort}

@@ -140,7 +140,7 @@ func TestTheStatusListsEveryFamilysRecordsAndBlockers(t *testing.T) {
 			FilterSubject: "notifications.agent." + strings.NewReplacer("~", "_").Replace(name)}, actionCreateConsumer)
 		require.NoError(t, err, "create %s", name)
 	}
-	kv := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+	kv := selection.NewKVStore(selection.ConnRequester{Conn: nc})
 	write := func(store selection.Store, logical string, record selection.Record) {
 		t.Helper()
 		_, err := store.Write(ctx, logical, record, 0)
@@ -156,9 +156,9 @@ func TestTheStatusListsEveryFamilysRecordsAndBlockers(t *testing.T) {
 	write(kv, "ses_gone", selection.Record{Current: "session~G"})
 	statusPublishKV(t, nc, "ses_gone", nil, "DEL")
 
-	dispatch := selection.NewPGStore(h.database(familyDispatch, dispatchMigrations...))
+	dispatch := pgFamilyOf(t, familyDispatch, h.database(familyDispatch, dispatchMigrations...))
 	write(dispatch, "delivery-events", selection.Record{Current: "delivery-events~D", Start: 7})
-	daemon := selection.NewPGStore(h.database(daemonFamily("PROJ"), daemonMigrations...))
+	daemon := pgFamilyOf(t, daemonFamily("PROJ"), h.database(daemonFamily("PROJ"), daemonMigrations...))
 	_, err = daemon.WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone}, 0)
 	require.NoError(t, err)
 	write(daemon, "legion-go-PROJ-wake", selection.Record{Current: "legion-go-PROJ-wake~W", Start: 8, Retired: []string{"legion-go-PROJ-wake~V"}})

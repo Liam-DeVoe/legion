@@ -162,7 +162,7 @@ func TestTheCensusReadsTheRecordedSessionConsumers(t *testing.T) {
 	censusNotificationStream(t, js)
 	_, err := selection.CreateSessionBucket(ctx, nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
 	require.NoError(t, err)
-	store := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+	store := selection.NewKVStore(selection.ConnRequester{Conn: nc})
 
 	agent := func(sessionID string) []string {
 		return bus.SessionConsumerFilters([]string{contracts.LegacyAgentSubject(sessionID), "notifications.github.pr.owner.repo.7"})
@@ -341,13 +341,14 @@ func (h *stack) censusDaemonDeployed(project string, pool *pgxpool.Pool) string 
 	return file
 }
 
-// censusSentinel reads the sentinel row of the store on pool: its state and its revision.
-func censusSentinel(t *testing.T, pool *pgxpool.Pool) (selection.StoreState, uint64) {
+// censusSentinel reads the sentinel row of family's store on pool: its state, through the store,
+// and its revision.
+func censusSentinel(t *testing.T, family string, pool *pgxpool.Pool) (selection.StoreState, uint64) {
 	t.Helper()
 	var revision int64
 	require.NoError(t, pool.QueryRow(t.Context(), `select revision from `+selection.IntakeConsumersTable+` where logical = $1`,
-		selection.PGSentinelKey).Scan(&revision))
-	state, err := selection.NewPGStore(pool).State(t.Context())
+		selection.PGSentinelKey(family)).Scan(&revision))
+	state, err := pgFamilyOf(t, family, pool).State(t.Context())
 	require.NoError(t, err)
 	return state, uint64(revision)
 }
@@ -391,17 +392,17 @@ func TestTheCensusReconcilesEachDaemonStoresStreamID(t *testing.T) {
 	ctx := t.Context()
 	conn, js := censusHeldOperator(t, "stream-2")
 
-	sentinel := func(pool *pgxpool.Pool, state selection.StoreState) {
+	sentinel := func(project string, pool *pgxpool.Pool, state selection.StoreState) {
 		t.Helper()
-		_, err := selection.NewPGStore(pool).WriteSentinel(ctx, state, 0)
+		_, err := pgFamilyOf(t, daemonFamily(project), pool).WriteSentinel(ctx, state, 0)
 		require.NoError(t, err)
 	}
 	stale, staleDB := censusDaemonStore(t, "STALE", daemonMigrations...)
-	sentinel(staleDB, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 7, StreamID: "stream-1", Hold: "h0"})
+	sentinel("STALE", staleDB, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 7, StreamID: "stream-1", Hold: "h0"})
 	equal, equalDB := censusDaemonStore(t, "EQUAL", daemonMigrations...)
-	sentinel(equalDB, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 3, StreamID: "stream-2"})
+	sentinel("EQUAL", equalDB, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 3, StreamID: "stream-2"})
 	unrecorded, unrecordedDB := censusDaemonStore(t, "UNREC", daemonMigrations...)
-	sentinel(unrecordedDB, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 5})
+	sentinel("UNREC", unrecordedDB, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 5})
 	fresh, freshDB := censusDaemonStore(t, "FRESH", daemonMigrations...)
 	noTable, noTableDB := censusDaemonStore(t, "NOTABLE")
 	listing := censusListing(censusDeploymentOf("STALE", staleDB), censusDeploymentOf("EQUAL", equalDB), censusDeploymentOf("UNREC", unrecordedDB),
@@ -421,15 +422,15 @@ func TestTheCensusReconcilesEachDaemonStoresStreamID(t *testing.T) {
 	before := result
 	before.Reconciled = nil
 	require.ErrorContains(t, before.Covers(families), daemonFamily("EQUAL")+" is in none of", "control: the result without Reconciled")
-	state, revision := censusSentinel(t, staleDB)
-	require.Equal(t, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 7, StreamID: "stream-2", Hold: "h0"}, state)
+	state, revision := censusSentinel(t, daemonFamily("STALE"), staleDB)
+	require.Equal(t, ownSentinel(daemonFamily("STALE"), selection.StoreState{Cutover: selection.CutoverDone, Boundary: 7, StreamID: "stream-2", Hold: "h0"}), state)
 	require.Equal(t, uint64(2), revision, "the stale sentinel's rewrite")
-	state, revision = censusSentinel(t, equalDB)
+	state, revision = censusSentinel(t, daemonFamily("EQUAL"), equalDB)
 	require.Equal(t, "stream-2", state.StreamID)
 	require.Equal(t, uint64(1), revision, "the equal sentinel was written")
-	state, _ = censusSentinel(t, unrecordedDB)
-	require.Equal(t, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 5, StreamID: "stream-2"}, state)
-	_, err = selection.NewPGStore(freshDB).State(ctx)
+	state, _ = censusSentinel(t, daemonFamily("UNREC"), unrecordedDB)
+	require.Equal(t, ownSentinel(daemonFamily("UNREC"), selection.StoreState{Cutover: selection.CutoverDone, Boundary: 5, StreamID: "stream-2"}), state)
+	_, err = pgFamilyOf(t, daemonFamily("FRESH"), freshDB).State(ctx)
 	require.ErrorIs(t, err, selection.ErrNoSentinel, "the writer made a sentinel for a store with none")
 
 	result, err = ReconcileDaemonStreamIDs(ctx, conn, listing, families, []string{stale, equal, unrecorded, fresh})
@@ -438,14 +439,14 @@ func TestTheCensusReconcilesEachDaemonStoresStreamID(t *testing.T) {
 		{Project: "EQUAL", StreamID: "stream-2"}, {Project: "FRESH"}, {Project: "STALE", StreamID: "stream-2"}, {Project: "UNREC", StreamID: "stream-2"},
 	}}, result, "the second run")
 	require.NoError(t, result.Covers(stored))
-	_, revision = censusSentinel(t, staleDB)
+	_, revision = censusSentinel(t, daemonFamily("STALE"), staleDB)
 	require.Equal(t, uint64(2), revision)
 
-	_, err = selection.NewPGStore(staleDB).WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 7, StreamID: "stream-1", Hold: "h0"}, 2)
+	_, err = pgFamilyOf(t, daemonFamily("STALE"), staleDB).WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 7, StreamID: "stream-1", Hold: "h0"}, 2)
 	require.NoError(t, err)
 	stillStale := func(what string) {
 		t.Helper()
-		state, _ := censusSentinel(t, staleDB)
+		state, _ := censusSentinel(t, daemonFamily("STALE"), staleDB)
 		require.Equal(t, "stream-1", state.StreamID, "control: %s wrote the stale store", what)
 	}
 	result, err = ReconcileDaemonStreamIDs(ctx, conn, listing, families, []string{stale, equal, noTable})
@@ -650,8 +651,8 @@ func TestTheCensusRefusesAStoreAddressTwoDeploymentsName(t *testing.T) {
 	first, firstDB := censusDaemonStore(t, "FIRST", daemonMigrations...)
 	second, secondDB := censusDaemonStore(t, "SECOND", daemonMigrations...)
 	stale := selection.StoreState{Cutover: selection.CutoverDone, Boundary: 7, StreamID: "stream-1"}
-	for _, pool := range []*pgxpool.Pool{firstDB, secondDB} {
-		_, err := selection.NewPGStore(pool).WriteSentinel(ctx, stale, 0)
+	for project, pool := range map[string]*pgxpool.Pool{"FIRST": firstDB, "SECOND": secondDB} {
+		_, err := pgFamilyOf(t, daemonFamily(project), pool).WriteSentinel(ctx, stale, 0)
 		require.NoError(t, err)
 	}
 	families := []string{daemonFamily("FIRST"), daemonFamily("SECOND")}
@@ -673,7 +674,7 @@ func TestTheCensusRefusesAStoreAddressTwoDeploymentsName(t *testing.T) {
 		}
 	}
 	require.NoError(t, result.Covers(families))
-	state, _ := censusSentinel(t, firstDB)
+	state, _ := censusSentinel(t, daemonFamily("FIRST"), firstDB)
 	require.Equal(t, "stream-1", state.StreamID, "a run over a shared address wrote the store")
 	_, _, err = ReadRecordedNames(ctx, conn, shared, families, "", []string{first, sharing})
 	require.ErrorContains(t, err, "project FIRST")
@@ -706,7 +707,7 @@ func TestTheCensusReportsAGoneDaemonStoreAndKeepsAnUnreachableOne(t *testing.T) 
 	ctx := t.Context()
 	conn, _ := censusHeldOperator(t, "stream-2")
 	stale, staleDB := censusDaemonStore(t, "STALE", daemonMigrations...)
-	_, err := selection.NewPGStore(staleDB).WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 7, StreamID: "stream-1"}, 0)
+	_, err := pgFamilyOf(t, daemonFamily("STALE"), staleDB).WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 7, StreamID: "stream-1"}, 0)
 	require.NoError(t, err)
 	dropped := censusDroppedDatabase()
 	gone := censusStoreFileFor(t, "GONE", staleDB, dropped, censusInstance)
@@ -724,10 +725,10 @@ func TestTheCensusReportsAGoneDaemonStoreAndKeepsAnUnreachableOne(t *testing.T) 
 		Answer: result.Gone[0].Answer}, result.Gone[0])
 	require.Contains(t, result.Gone[0].Answer, "SQLSTATE 3D000", "the gone store carries the server's answer")
 	require.Contains(t, result.Gone[0].Answer, dropped)
-	state, _ := censusSentinel(t, staleDB)
+	state, _ := censusSentinel(t, daemonFamily("STALE"), staleDB)
 	require.Equal(t, "stream-2", state.StreamID, "the reachable store beside a gone one was reconciled")
 
-	_, err = selection.NewPGStore(staleDB).WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 7, StreamID: "stream-1"}, 2)
+	_, err = pgFamilyOf(t, daemonFamily("STALE"), staleDB).WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 7, StreamID: "stream-1"}, 2)
 	require.NoError(t, err)
 	away := []string{daemonFamily("STALE"), daemonFamily("AWAY")}
 	result, err = ReconcileDaemonStreamIDs(ctx, conn, listing, away, []string{stale, unreachable})
@@ -741,7 +742,7 @@ func TestTheCensusReportsAGoneDaemonStoreAndKeepsAnUnreachableOne(t *testing.T) 
 	require.Equal(t, writerhold.UnreconciledStore{Project: "STALE", Reason: "not written, since no store is written while any is unreconciled (daemon/AWAY)"},
 		result.Unreconciled[1])
 	require.NoError(t, result.Covers(away))
-	state, _ = censusSentinel(t, staleDB)
+	state, _ = censusSentinel(t, daemonFamily("STALE"), staleDB)
 	require.Equal(t, "stream-1", state.StreamID, "a run with an unreachable store wrote nothing")
 }
 
@@ -764,7 +765,7 @@ func TestTheCensusAnswersTheStoreItChangedBeforeAWriteFailed(t *testing.T) {
 	var deployments []writerhold.DaemonDeployment
 	for _, project := range projects {
 		entry, pool := censusDaemonStore(t, project, daemonMigrations...)
-		_, err := selection.NewPGStore(pool).WriteSentinel(ctx, stale, 0)
+		_, err := pgFamilyOf(t, daemonFamily(project), pool).WriteSentinel(ctx, stale, 0)
 		require.NoError(t, err)
 		pools[project] = pool
 		entries = append(entries, entry)
@@ -786,15 +787,15 @@ create trigger refuse_writes before insert or update on `+selection.IntakeConsum
 	require.Empty(t, result.Reconciled)
 	require.Len(t, result.Unreconciled, 2, "%+v", result.Unreconciled)
 	require.Equal(t, "REFUSED", result.Unreconciled[0].Project)
-	require.Contains(t, result.Unreconciled[0].Reason, selection.PGSentinelKey+" row's write failed")
+	require.Contains(t, result.Unreconciled[0].Reason, selection.PGSentinelKey(daemonFamily("REFUSED"))+" row's write failed")
 	require.Contains(t, result.Unreconciled[0].Reason, "the row refuses writes", "the failed write's reason")
 	require.Equal(t, writerhold.UnreconciledStore{Project: "THIRD", Reason: "not written, since daemon/REFUSED's write failed before it"},
 		result.Unreconciled[1])
 	require.NoError(t, result.Covers(families))
-	state, _ := censusSentinel(t, pools["FIRST"])
+	state, _ := censusSentinel(t, daemonFamily("FIRST"), pools["FIRST"])
 	require.Equal(t, "stream-2", state.StreamID, "control: the first store's write did not land")
 	for _, project := range projects[1:] {
-		state, _ := censusSentinel(t, pools[project])
+		state, _ := censusSentinel(t, daemonFamily(project), pools[project])
 		require.Equal(t, "stream-1", state.StreamID, "control: %s's sentinel was written", project)
 	}
 }
@@ -821,7 +822,7 @@ func TestTheCensusPlacesEachDaemonFamilyInOneList(t *testing.T) {
 	for project, state := range map[string]*selection.StoreState{"EQUAL": &consistent, "FIRST": &stale, "REFUSED": &stale, "THIRD": &stale, "UNSET": nil, "WHOLE": &consistent} {
 		entry, pool := censusDaemonStore(t, project, daemonMigrations...)
 		if state != nil {
-			_, err := selection.NewPGStore(pool).WriteSentinel(ctx, *state, 0)
+			_, err := pgFamilyOf(t, daemonFamily(project), pool).WriteSentinel(ctx, *state, 0)
 			require.NoError(t, err)
 		}
 		pools[project], entries[project], deployments[project] = pool, entry, censusDeploymentOf(project, pool)
@@ -874,7 +875,7 @@ create trigger refuse_writes before insert or update on `+selection.IntakeConsum
 	require.ErrorContains(t, before.Covers(families), daemonFamily("EQUAL")+" is in none of", "control: the result without Reconciled")
 
 	// A store it cannot reach: nothing written, the stale store unreconciled, not written.
-	_, err = selection.NewPGStore(pools["FIRST"]).WriteSentinel(ctx, stale, 2)
+	_, err = pgFamilyOf(t, daemonFamily("FIRST"), pools["FIRST"]).WriteSentinel(ctx, stale, 2)
 	require.NoError(t, err)
 	families, daemonDatabases = of("AWAY", "EQUAL", "FIRST", "GONE")
 	result, err = ReconcileDaemonStreamIDs(ctx, conn, listing, families, daemonDatabases)
@@ -893,7 +894,7 @@ create trigger refuse_writes before insert or update on `+selection.IntakeConsum
 	before = result
 	before.Reconciled = nil
 	require.ErrorContains(t, before.Covers(families), daemonFamily("EQUAL")+" is in none of", "control: the result without Reconciled")
-	state, _ := censusSentinel(t, pools["FIRST"])
+	state, _ := censusSentinel(t, daemonFamily("FIRST"), pools["FIRST"])
 	require.Equal(t, "stream-1", state.StreamID, "control: a run with a store it cannot reach wrote the stale store")
 }
 
@@ -910,7 +911,7 @@ func TestTheCensusCallsAStoreGoneOnlyAtItsDeploymentsAddress(t *testing.T) {
 	ctx := t.Context()
 	conn, _ := censusHeldOperator(t, "stream-2")
 	stale, staleDB := censusDaemonStore(t, "STALE", daemonMigrations...)
-	_, err := selection.NewPGStore(staleDB).WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 7, StreamID: "stream-1"}, 0)
+	_, err := pgFamilyOf(t, daemonFamily("STALE"), staleDB).WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 7, StreamID: "stream-1"}, 0)
 	require.NoError(t, err)
 	dropped := censusDroppedDatabase()
 	other := censusDeployment("GONE", dropped, censusInstance)
@@ -948,7 +949,7 @@ func TestTheCensusCallsAStoreGoneOnlyAtItsDeploymentsAddress(t *testing.T) {
 			require.Equal(t, writerhold.UnreconciledStore{Project: "STALE", Reason: "not written, since no store is written while any is unreconciled (daemon/GONE)"},
 				result.Unreconciled[1])
 			require.NoError(t, result.Covers(families))
-			state, _ := censusSentinel(t, staleDB)
+			state, _ := censusSentinel(t, daemonFamily("STALE"), staleDB)
 			require.Equal(t, "stream-1", state.StreamID, "a run with a store unreconciled wrote the stale store")
 		})
 	}
@@ -956,27 +957,27 @@ func TestTheCensusCallsAStoreGoneOnlyAtItsDeploymentsAddress(t *testing.T) {
 
 // The census's readers keep the address check for a daemon store's sentinel too: a store whose
 // sentinel row names another family than the store's, or none, is unreconciled, naming the family
-// it names, and nothing is written. It waits on the selection package's StoreState.Family (JSON
-// "family"), the field a sentinel names its family by: until this build records it
-// (censusSentinelFamily), the row skips, naming that. Control: the reconcile with the check taken
-// out (census.go's censusReadDaemonStore) rewrites the other family's sentinel.
+// it names, and nothing is written. The check is the family's store's own
+// (selection.PGStore.State, its selection.ErrSentinelFamily). Control: the reconcile with the check
+// taken out (census.go's censusReadDaemonStore and censusReadSentinel reading the row without the
+// store's check) rewrites the other family's sentinel.
 func TestTheCensusRefusesAStoreOfAnotherFamily(t *testing.T) {
-	if _, recorded := censusSentinelFamily(selection.StoreState{}); !recorded {
-		t.Skip("waits on the selection package's StoreState.Family (JSON \"family\"): this build's sentinel records no family (censusSentinelFamily)")
-	}
 	ctx := t.Context()
 	conn, _ := censusHeldOperator(t, "stream-2")
 	daemon, pool := censusDaemonStore(t, "OWN", daemonMigrations...)
-	_, err := selection.NewPGStore(pool).WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone, StreamID: "stream-1"}, 0)
+	_, err := pgFamilyOf(t, daemonFamily("OWN"), pool).WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone, StreamID: "stream-1"}, 0)
 	require.NoError(t, err)
-	_, err = pool.Exec(ctx, `update `+selection.IntakeConsumersTable+` set record = record || '{"family":"daemon/ELSE"}'::jsonb where logical = $1`, selection.PGSentinelKey)
+	_, err = pool.Exec(ctx, `update `+selection.IntakeConsumersTable+` set record = record || '{"family":"daemon/ELSE"}'::jsonb where logical = $1`, selection.PGSentinelKey(daemonFamily("OWN")))
 	require.NoError(t, err)
 	result, err := ReconcileDaemonStreamIDs(ctx, conn, censusListing(censusDeploymentOf("OWN", pool)), []string{daemonFamily("OWN")}, []string{daemon})
 	require.NoError(t, err)
 	require.Empty(t, result.Changed)
 	require.Len(t, result.Unreconciled, 1)
-	require.Contains(t, result.Unreconciled[0].Reason, `names family "daemon/ELSE"`)
-	state, _ := censusSentinel(t, pool)
+	require.Contains(t, result.Unreconciled[0].Reason, `names the family "daemon/ELSE"`)
+	var record []byte
+	require.NoError(t, pool.QueryRow(ctx, `select record from `+selection.IntakeConsumersTable+` where logical = $1`, selection.PGSentinelKey(daemonFamily("OWN"))).Scan(&record))
+	var state selection.StoreState
+	require.NoError(t, json.Unmarshal(record, &state))
 	require.Equal(t, "stream-1", state.StreamID, "the other family's sentinel was written")
 }
 
@@ -1057,7 +1058,7 @@ func TestTheRecordedNamesOfEveryFamily(t *testing.T) {
 	l0, l1 := fresh(bus.ListenerDurable("hub")), fresh(bus.ListenerDurable("hub"))
 	write(kv, selection.DurableKey(bus.ListenerDurable("hub")), selection.Record{Current: l1, Start: 4, Retired: []string{l0}})
 	dispatchFile, dispatchDB := censusStore(t, familyDispatch, dispatchMigrations...)
-	dispatch := selection.NewPGStore(dispatchDB)
+	dispatch := pgFamilyOf(t, familyDispatch, dispatchDB)
 	_, err = dispatch.WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone}, 0)
 	require.NoError(t, err)
 	d0, d1, d2 := fresh("delivery-events"), fresh("delivery-events"), fresh("delivery-events")
@@ -1065,7 +1066,7 @@ func TestTheRecordedNamesOfEveryFamily(t *testing.T) {
 		Op: &selection.Op{Kind: selection.OpReplace, Candidate: d2, Old: d1}})
 	daemon, daemonDB := censusDaemonStore(t, "PROJ", daemonMigrations...)
 	w0, w1 := fresh("legion-go-PROJ-wake"), fresh("legion-go-PROJ-wake")
-	write(selection.NewPGStore(daemonDB), "legion-go-PROJ-wake", selection.Record{Current: w1, Start: 4, Retired: []string{w0}})
+	write(pgFamilyOf(t, daemonFamily("PROJ"), daemonDB), "legion-go-PROJ-wake", selection.Record{Current: w1, Start: 4, Retired: []string{w0}})
 	empty, emptyDB := censusDaemonStore(t, "EMPTY", daemonMigrations...)
 	noTable, noTableDB := censusDaemonStore(t, "NOTABLE")
 	dropped := censusDroppedDatabase()
@@ -1199,7 +1200,7 @@ func TestTheCensusRemovesAStrayDispatchAndDaemonName(t *testing.T) {
 		censusCreateConfig(t, nc, config)
 	}
 	dispatchFile, dispatchDB := censusStore(t, familyDispatch, dispatchMigrations...)
-	_, err = selection.NewPGStore(dispatchDB).Write(ctx, events.Durable, selection.Record{Current: recordedD, Start: 1}, 0)
+	_, err = pgFamilyOf(t, familyDispatch, dispatchDB).Write(ctx, events.Durable, selection.Record{Current: recordedD, Start: 1}, 0)
 	require.NoError(t, err)
 
 	const wake = "legion-go-PROJ-wake"
@@ -1211,7 +1212,7 @@ func TestTheCensusRemovesAStrayDispatchAndDaemonName(t *testing.T) {
 	}
 	daemon, daemonDB := censusDaemonStore(t, "PROJ", daemonMigrations...)
 	h.censusDeploy(censusDeploymentOf("PROJ", daemonDB))
-	_, err = selection.NewPGStore(daemonDB).Write(ctx, wake, selection.Record{Current: recordedW, Start: 1}, 0)
+	_, err = pgFamilyOf(t, daemonFamily("PROJ"), daemonDB).Write(ctx, wake, selection.Record{Current: recordedW, Start: 1}, 0)
 	require.NoError(t, err)
 
 	flags := []string{"--daemon-consumer", wake + "=" + bus.LegionWakeTopic, "--daemon-database", daemon}

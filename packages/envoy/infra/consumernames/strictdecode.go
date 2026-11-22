@@ -72,10 +72,15 @@ type selectionValue struct {
 // one but a reply subject. An error is a malformed value, which every caller answers as UNKNOWN or
 // refuses, naming the key, and acts on nothing.
 //
-// It is the one place the census, status, cleanup and restore decode a value of the bucket. Shape
-// alone cannot refuse a well-formed record copied from one key onto another, which a holder of the
-// bucket's direct get can do: the library's records are to carry their own key, and this body is
-// then the library's check of a record against the key it was read under.
+// It is the one place the census, status, cleanup, restore, create-bucket and repair-sentinel
+// decode a value of the bucket. Shape alone cannot refuse a well-formed record copied from one key
+// onto another, which a holder of the bucket's direct get can do, so a value is also held to the
+// selection package's own rule for the key it was read under (consumernames record.go, Record.check
+// and StoreState.check, which its stores' Read and State apply): a record carries that key
+// (selection.Record.Key), and the sentinel carries selection.SentinelKey and names the session
+// family (selection.StoreState.Key, Family), the one family the bucket keeps. The package exports
+// no decode of a value read raw, which a walk of the bucket reads, so the rule is written here
+// beside the strict decode.
 func readSelectionValue(key statusKey) (selectionValue, error) {
 	switch {
 	case selection.CheckKey(key.Key) == nil || selection.CheckDurableKey(key.Key) == nil:
@@ -83,11 +88,18 @@ func readSelectionValue(key statusKey) (selectionValue, error) {
 		if err != nil {
 			return selectionValue{}, err
 		}
+		if record.Key != key.Key {
+			return selectionValue{}, fmt.Errorf("no selection record of its own: it carries the key %q", record.Key)
+		}
 		return selectionValue{record: &record}, nil
 	case key.Key == selection.SentinelKey:
 		state, err := strictStoreState(key.Value)
 		if err != nil {
 			return selectionValue{}, err
+		}
+		if state.Key != selection.SentinelKey || state.Family != selection.SessionFamily {
+			return selectionValue{}, fmt.Errorf("no sentinel of its own: it carries the key %q and names the family %q, not %s and %s",
+				state.Key, state.Family, selection.SentinelKey, selection.SessionFamily)
 		}
 		return selectionValue{state: &state}, nil
 	case strings.HasPrefix(key.Key, strictBarrierPrefix):

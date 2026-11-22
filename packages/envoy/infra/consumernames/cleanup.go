@@ -319,13 +319,17 @@ func (r *run) cleanupSessionTargets(ctx context.Context, a *admission, nc *nats.
 }
 
 // cleanupPGTargets are family's intake_consumers records that hold a retired name. A missing table
-// holds none.
+// holds none; a row that is not its key's record of the family is UNKNOWN (selection.PGStore.List,
+// selection.ErrMalformedRecord).
 func (r *run) cleanupPGTargets(ctx context.Context, family string) ([]cleanupTarget, error) {
 	db, err := r.database(ctx, family)
 	if err != nil {
 		return nil, fmt.Errorf("%s's store: %w", family, err)
 	}
-	store := selection.NewPGStore(db)
+	store, err := pgStore(family, db)
+	if err != nil {
+		return nil, err
+	}
 	records, err := store.List(ctx)
 	if errors.Is(err, selection.ErrNoStore) {
 		return nil, nil

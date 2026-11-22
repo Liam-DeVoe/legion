@@ -52,9 +52,9 @@ func TestTheCleanupDeletesOnlyRecordedRetiredNames(t *testing.T) {
 	h.notificationStream(js)
 	_, err := selection.CreateSessionBucket(ctx, nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
 	require.NoError(t, err)
-	kv := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
-	dispatch := selection.NewPGStore(h.database(familyDispatch, dispatchMigrations...))
-	daemon := selection.NewPGStore(h.database(daemonFamily("PROJ"), daemonMigrations...))
+	kv := selection.NewKVStore(selection.ConnRequester{Conn: nc})
+	dispatch := pgFamilyOf(t, familyDispatch, h.database(familyDispatch, dispatchMigrations...))
+	daemon := pgFamilyOf(t, daemonFamily("PROJ"), h.database(daemonFamily("PROJ"), daemonMigrations...))
 	write := func(store selection.Store, logical string, record selection.Record) {
 		t.Helper()
 		_, err := store.Write(ctx, logical, record, 0)
@@ -103,7 +103,7 @@ func TestTheCleanupDeletesOnlyRecordedRetiredNames(t *testing.T) {
 	require.Equal(t, 0, code, "%s", stderr)
 	require.Contains(t, stdout, "cleanup: 5 records with retired names, 3 names deleted, 5 dropped from retired")
 	nc, _ = h.operator()
-	kv = selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+	kv = selection.NewKVStore(selection.ConnRequester{Conn: nc})
 	left := censusConsumers(t, nc)
 	for _, name := range []string{sessionCurrent, selfRetired, unrecorded, listenerCurrent, daemonCurrent, dispatchCurrent} {
 		require.Contains(t, left, name, "cleanup deleted %s", name)
@@ -160,7 +160,7 @@ func TestTheConsumerCleanupCommandsRunOnlyInItsHold(t *testing.T) {
 	const current, retired = "session~onlyInItsHoldCurrentAAA", "session~onlyInItsHoldRetiredBBB"
 	cleanupPull(t, nc, current)
 	cleanupPull(t, nc, retired)
-	kv := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+	kv := selection.NewKVStore(selection.ConnRequester{Conn: nc})
 	_, err = kv.Write(ctx, "ses_a", selection.Record{Current: current, Start: 2, Retired: []string{retired}}, 0)
 	require.NoError(t, err)
 	before := len(h.journal(id).Ops)
