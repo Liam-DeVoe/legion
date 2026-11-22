@@ -2979,7 +2979,46 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 204: the `decisions` design-gate step is gone, since a person's
+// 205: dispatch://INFRA-3178 -- the owning architect moves a child out of the workflow by its own
+// status write in Dispatch, and the operation that made that move through the daemon goes. The
+// daemon takes the owning architect's done, backlog, icebox or triage on a child of its tree as it
+// takes a person's move (workflow's sessionStatusWrite). The child route that operation called
+// stays in the route table only to refuse an older plugin's call (removedChildRoute): it reads no
+// body, applies no fact and answers 410 ROUTE_REMOVED with a reason that says which status to
+// write in Dispatch. The `legion` tool loses the operation, `@legion/pi-shared`'s
+// `LegionDaemonClient` loses its call, and `packages/contracts/fixtures/daemon-api` loses the
+// fixture of the route's answer. That directory gains `end-child-rule.json`, the rules for ending
+// a child and the sentence on a status the daemon has not taken yet, which the daemon's refusals
+// and notices over children carry (`record.EndChildRule` and `record.StatusNotTakenYet`), and the
+// `legion` tool's description is held to that file word for word. `api.ChildRequest` and
+// contracts' `LegionChildRequest` stay, because rerun_child takes them. A plugin below 205 still
+// offers the operation to its agents. On a daemon at 205 that call gets the refusal as its result,
+// so the agent reads the status to write.
+// Contract 205 is served with no code of its own (193's entry): no key path or value of any
+// answer moves, so a caller at 205 is served what one at 202 is, and 205's records are 202's under
+// its own number. The route leaves the empty object's row of answers.go's Answers, since no plugin
+// at 205 parses that answer there, and an older plugin parses the refusal it gets as it parses any
+// refusal. `ROUTE_REMOVED` is a value of the refusal's `code`, which no reader enumerates. The
+// request records of 193, 199 and 202 hold the route's body (`request-shapes.json`). The route
+// leaves the request types the gate walks, reads no body and answers that body with the refusal,
+// and requests.go's RemovedRoutes declares it removed at 205, so the record of 205 and of every
+// later contract holds no body for it.
+// (This entry took 191 at first, the lowest number above main's 188 that no other open pull
+// request declared at a reading that ended at 2026-11-20T10:18:19Z, and the forward merge of
+// 2026-11-20 that brought in 0ec9ed84 left main at 188 and found 191 still free. The forward merge
+// of 2026-11-21 that brought in 43b9c9c3 brought main's 199 (INFRA-4605's entry above). A reading
+// of every open pull request at that merge, which ended at 2026-11-21T02:21:13Z, found 200
+// (#4049), 201 (#4611), 202 (#3712, #4273, #4392, #4432, #4493, #4580 and #4590), 203 (#4065,
+// #4175, #4553, #4592 and #4661) and 204 (#4030) declared, so this entry moved to 205, the lowest
+// number above main's 199 that no other open pull request declares. The forward merge of
+// 2026-11-21 that brought in 1cdf5b9c brought main's 202 (INFRA-4401's entry above). A reading of
+// every open pull request at that merge, which ended at 2026-11-21T03:41:04Z, found 203 (#4065,
+// #4175, #4553, #4592 and #4661) and 204 (#3831 and #4030) declared and 205 declared by no other,
+// so this entry kept 205. The forward merge of 2026-11-21 that brought in 52f925ee left main at
+// 202, and a reading of every open pull request at that merge, which ended at
+// 2026-11-21T12:31:48Z, found 205 declared by no other, so this entry kept 205. Read the base's own
+// number and every open pull request again at every forward merge rather than from this line.)
+// 216: the `decisions` design-gate step is gone, since a person's
 // decisions are nodes of the spec, which the `spec` step's approval covers. `gates.design` refuses
 // that step by name (config's readDesignSteps), so the step of `POST /legion/v1/gates/register` is
 // `criteria` or `spec`, and a call naming `decisions` is refused as a step the deployment does not
@@ -2989,7 +3028,7 @@ package api
 // names of `DESIGN_GATE_STEPS`, and `register_gate` offers no other step. The `design_gates` rows
 // and the kept approvals an earlier release wrote of the step stay in the store, which no reader
 // of this release is handed (record.Postgres.GatesOf), so no state of this daemon names the step.
-// A plugin of 202 reads that state as before, since it parses the three names, and the boot gate
+// A plugin of 205 reads that state as before, since it parses the three names, and the boot gate
 // and `legion probe-image` pair a daemon with a plugin of its own number. A loader of this release
 // refuses a file whose `gates.design` names `decisions`, so a deployment takes the step out of the
 // file before it pins an image of this release.
@@ -3026,4 +3065,11 @@ package api
 // open during the reading, made between 2026-11-21T06:38:03Z and 07:20:32Z: 203 #4175 and
 // #4661, 205 #3712, #4539 and #4573, 207 #3831, #3993, #4030, #4065, #4273, #4392, #4432, #4590,
 // #4592 and #4596, 208 #2230 and #4611, 209 #4049, #4540, #4553 and #4580, and nothing above 209.)
-const DaemonAPIVersion = 204
+// (At the forward merge of 2026-11-21 that brings main in at 98987d3f3d, main declares 205, the
+// entry before this one, and this change takes 216 in place of 204: the lowest number above main's
+// 205 that no open pull request declares, in a reading of `const DaemonAPIVersion` at the head of
+// each of the 411 open pull requests, made between 2026-11-21T20:11:41Z and 20:18:15Z: 206 #3712
+// and #4539, 207 #3993, #4273, #4392, #4432, #4590, #4682, #4723 and #4805, 208 #2230, 209 #4049,
+// #4540 and #4580, 210 #4661, 211 #4611, 212 #3831 and #4771, 213 #4030 and #4553, 214 #4592 and
+// #4596, 215 #4065, and nothing above 215.)
+const DaemonAPIVersion = 216

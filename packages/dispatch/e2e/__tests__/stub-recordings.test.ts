@@ -437,6 +437,7 @@ describe("every committed recording answers the display tree of every stored tex
       "OpenAsk.question",
       "OpenAskRow.question",
       "PersonNode.first_line",
+      "Priority.description",
       "PriorityRow.description",
       "ReplyBlockWithTrees.text",
       "RequirementCoverage.text",

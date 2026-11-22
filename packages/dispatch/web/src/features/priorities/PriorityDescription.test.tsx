@@ -1,13 +1,19 @@
-import { beforeAll, expect, jest, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { countEngineParses, displayTree } from "../../__tests__/display-trees";
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
+import type { DisplayTree } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import {
+  flushTasks,
+  installFakeParseWorker,
+  restoreParseWorker,
+} from "../refs/parse-worker-fixture";
 import { PriorityDescription } from "./PriorityDescription";
 import { SAVE_AFTER_MS } from "./useInPlaceDraft";
 
@@ -120,6 +126,99 @@ test("the answer to an earlier description write landing under the reader sends 
 
 beforeAll(async () => {
   await warmMarkdownRenderer();
+});
+
+afterEach(restoreParseWorker);
+
+/** Draws `node` as the priorities page draws a description: under a router and a query client,
+ *  which the editor's reference picker reads. */
+function renderDescription(node: ReactNode) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={client}>{node}</QueryClientProvider>
+    </MemoryRouter>
+  );
+  return {
+    view,
+    unmount: () => {
+      view.unmount();
+      client.clear();
+    },
+  };
+}
+
+/** A write the server has not answered yet, and does not answer while the row runs. */
+const neverAnswered = (): Promise<unknown> => new Promise(() => {});
+
+/** Emphasis nested 4,000 deep, 24,001 characters: the shape micromark spends 672,095,992
+ *  `attention` steps on, about 55 s (cybermonklabs/legion#4437). */
+const NESTED = `${"*a ".repeat(4_000)}b${" c*".repeat(4_000)}`;
+
+/** The server's reading of `NESTED`, as Go's display read writes it for marks nested past its
+ *  bound (pmdoc's `maxInlineNesting`, `literalDocument`): one paragraph of the text's own
+ *  characters, no mark among them. It is written out here because the page's own engine, which
+ *  `displayTree` reads with, is the parser this test keeps the page from running. */
+const NESTED_TREE: DisplayTree = {
+  content: [{ content: [{ text: NESTED, type: "text" }], type: "paragraph" }],
+  type: "doc",
+};
+
+test("a stored description is drawn from the server's tree, and nothing on the page or in the parse worker parses it", async () => {
+  const worker = installFakeParseWorker();
+  const parses = countEngineParses();
+  const { unmount, view } = renderDescription(
+    <PriorityDescription
+      canWrite={false}
+      description={NESTED}
+      descriptionTree={NESTED_TREE}
+      label="Description of P1"
+      onSave={neverAnswered}
+    />
+  );
+  try {
+    const body = view.container.firstElementChild as HTMLElement;
+    // Drawn in the commit that mounted it, with no parse owed: a text with no tree this long
+    // would be the worker's, marked pending meanwhile.
+    expect(body.getAttribute("data-markdown-pending")).toBeNull();
+    expect(body.textContent).toBe(NESTED);
+    expect(body.querySelector("em, strong")).toBeNull();
+    await act(() => flushTasks());
+    expect(worker.requests.map((request) => request.markdown.length)).toEqual([]);
+    expect(parses.count()).toBe(0);
+  } finally {
+    parses.restore();
+    unmount();
+  }
+});
+
+test("a description the reader has just written is drawn from its own text, never from the tree of the stored one", async () => {
+  const user = userEvent.setup();
+  const stored = "The **old** plan.";
+  const { unmount } = renderDescription(
+    <PriorityDescription
+      canWrite
+      description={stored}
+      descriptionTree={displayTree(stored)}
+      label="Description of P1"
+      onSave={neverAnswered}
+    />
+  );
+  try {
+    const described = screen.getByRole("group", { name: "Description of P1" });
+    expect(within(described).getByText("old").tagName).toBe("STRONG");
+    await user.click(within(described).getByRole("button", { name: "Edit the description of P1" }));
+    const field = await screen.findByRole("textbox", { name: "Description of P1" });
+    await user.clear(field);
+    await user.type(field, "The *new* plan.");
+    await user.tab();
+    // The server still answers the old text and its tree, and the block shows what was written.
+    const back = await screen.findByRole("group", { name: "Description of P1" });
+    expect(within(back).getByText("new").tagName).toBe("EM");
+    expect(within(back).queryByText("old")).toBeNull();
+  } finally {
+    unmount();
+  }
 });
 
 // A description is a stored text its writer typed in a box with the reference picker, and the

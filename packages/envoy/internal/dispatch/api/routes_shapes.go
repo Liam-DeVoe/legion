@@ -711,9 +711,8 @@ var routeShapes = map[string]routeShape{
 		Also: []routeAnswer{{Status: http.StatusOK, Body: whoamiAgent{}}},
 	},
 	"GET /api/v1/dashboard/builds": {Status: http.StatusOK, Response: dashboardBuilds{}},
-	// The listing answers prioritiesRead, whose rows carry each description's tree.
 	"GET /api/v1/priorities": {
-		Status: http.StatusOK, Response: prioritiesRead{}, Params: prioritiesQuery{},
+		Status: http.StatusOK, Response: model.Priorities{}, Params: prioritiesQuery{},
 	},
 	"POST /api/v1/priorities": {
 		Status: http.StatusCreated, Response: model.Priority{}, Request: createPriorityInput{},

@@ -164,6 +164,9 @@ type UncausedTuple struct {
 // so they go in with the caller's own under the same event, which is what keeps a block a version
 // stated gone carrying the event that deleted it. stated is read for one more thing besides: a
 // base attribute the caller states itself is not stated twice.
+//
+// It takes nodes as its own: it sets each one's cause to the sentinel where it stands rather than
+// copying a version's worth of nodes, so the caller does not use the slice again.
 func PlanUncaused(nodes []Node, stated []Tuple) Uncaused {
 	write := Uncaused{baseAt: len(stated), sentinel: true}
 	if len(nodes) > 0 {
@@ -297,9 +300,21 @@ var markMade = strconv.Itoa(markVisibility|markState) +
 
 // nodeMarks draws the mark a node write leaves on each row it made or moved, until the statement
 // that states that write's facts reads it and moves the row onto its cause (queueAppend): a
-// negative source_event, -(mark*markSpan + attributes), where mark names the write and attributes
-// are the base attributes it states for the node. No event has a negative id, and a row carries the
-// mark only between two statements of one transaction, the node write and the append.
+// negative source_event, -(mark*markSpan + attributes), where mark names the write and
+// attributes are the base attributes it states for the node (markVisibility, markState,
+// markProject, markParties: visibility and state for a node it made, with project and parties
+// where it carries them, and for a node already there each one the write moved). No event has a
+// negative id, and a row carries the mark only between two statements of one transaction, the
+// node write and the append, which run in one write phase or one after the other in a transaction
+// that holds the node's row from the first: no other transaction sees it, and the transaction's
+// commit follows the append. That is how the append knows which nodes the write made and which it
+// moved, and which attribute of each moved, without reading the node write's result back in Go
+// between the two.
+//
+// The mark is drawn from a counter of the process, so two writes of one transaction never share
+// one. A node two writes of one transaction write before the first states its facts carries the
+// second's mark, so a writer states the facts of each node write before it writes the same node
+// again: every writer here queues its append right after its event.
 var nodeMarks atomic.Int64
 
 // nextNodeMark is a mark no earlier write of this process drew, kept far below the bound a
@@ -323,8 +338,8 @@ func markedBy(row, markParam string) string {
 	return `(` + row + `.source_event < 0 and (-` + row + `.source_event) / ` + strconv.Itoa(markSpan) + ` = ` + markParam + `::bigint)`
 }
 
-// markAttributes is the base attributes the mark on row's source_event says its write states,
-// read where markedBy holds.
+// markAttributes is the base attributes the mark on row's source_event says its write states
+// (markVisibility, markState, markProject, markParties), read where markedBy holds.
 func markAttributes(row string) string {
 	return `((-` + row + `.source_event) % ` + strconv.Itoa(markSpan) + `)::integer`
 }
@@ -395,6 +410,10 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated int, tuple
 	if len(nodes) == 0 {
 		return
 	}
+	// Each statement builds its arguments when the write phase sends it (store.WriteBatch's
+	// QueueBuilt). The project check and the move read arrays of the insert's, which the insert's
+	// build hands them (projectArgs, and shared and scopeArgs): Send builds statements in the order
+	// they were queued, so the insert's comes first.
 	var shared, projectArgs, scopeArgs []any
 	markParam := "$" + strconv.Itoa(len(nodeArrayTypes)+1)
 	b.QueueBuilt("write graph nodes", `
@@ -417,8 +436,14 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated int, tuple
 	})
 	if slices.ContainsFunc(nodes, func(node Node) bool { return node.Project != "" }) {
 		// Each incoming node probes its own row through graph_nodes' primary key, behind an offset
-		// 0 the planner cannot flatten. This keeps the array scan at one pass after the preceding
-		// insert added rows that table statistics cannot yet describe.
+		// 0 the planner cannot flatten, and binds nothing of graph_nodes_project's predicate
+		// (project_key is not null), so that partial index, keyed on the project and the kind, is
+		// no probe of one node; a node holding no project fails the comparison all the same.
+		// Joined plainly, the nodes this batch's insert has just written are rows the table's
+		// statistics do not count yet, and over a table analyzed near empty the planner walks
+		// graph_nodes and rescans the whole array for each row it holds: a 150,000-block version's
+		// settlement waited 56 minutes on it under the race detector, and over ten minutes without
+		// it. Probed through graph_nodes_project instead, each node reads every node of its kind.
 		b.QueueBuilt("write graph nodes", `
 			select incoming.kind, incoming.id, incoming.project_key, held.project_key
 			from unnest($1::text[], $2::text[], $3::text[]) as incoming(kind, id, project_key)
@@ -549,12 +574,15 @@ const (
 // appending is one append of a write's tuples (queueAppend): the caller's own, and the base
 // attributes its node write states for the nodes it marked.
 type appending struct {
-	// tuples is how many tuples the caller states itself, and tuple returns the one at an index.
-	// They stay with their writer until the write phase sends this statement.
+	// tuples is how many tuples the caller states itself, and tuple the one at an index, in the
+	// order the caller stated them, with the source_event and the legacy_source_seq it is written
+	// with. It is read where the append binds it rather than copied out: a version's block index
+	// states one tuple a block. The append also reads them for a base attribute the writer states
+	// itself, which it does not state twice.
 	tuples int
 	tuple  func(index int) Tuple
 	// nodes are the nodes the write wrote, and mark what its node write left on the rows it made
-	// or moved, 0 for none.
+	// or moved (nodeMarks), 0 for none.
 	nodes []Node
 	mark  int64
 	// baseAt is how many of tuples the base attributes follow.
@@ -568,16 +596,56 @@ type appending struct {
 	appended *int64
 }
 
-// queueAppend queues one statement per appendRows of the caller's tuples and nodes. Relations
-// come first, then attributes, with a node's base attributes at baseAt; segments preserve exactly
-// that order while limiting an encoded statement's peak memory.
+// queueAppend queues the statement that appends a write's tuples and moves its nodes onto their
+// cause, one statement up to appendRows of them: the relations first and then the attributes,
+// each in the order the caller stated them, with the base attributes the node write states
+// standing after the first baseAt of the caller's tuples, one node at a time in the order the
+// nodes were given, visibility, state, project, parties (nodeMarks); and, beside them, every node
+// the node write marked set at its cause, with, where sentinel says so, every node still at the
+// sentinel. The rows the move reads are the ones the node write already locked, so the statement
+// takes no node row the write did not hold before, and it reads the marks as its own snapshot
+// holds them, before its own move.
+//
+// Neither the read of the marks nor the move joins the nodes it was handed to graph_nodes: each
+// node probes its own row through graph_nodes' primary key, in a subquery behind an offset 0 the
+// planner cannot flatten, as queueNodes' move meets the table through that key. Joined plainly,
+// the mark is a filter the planner estimates at one row of a table analyzed near empty, whose
+// statistics do not count the rows the node write has just written, and it walks graph_nodes and
+// rescans the whole array for each marked row it finds there: a write of 2,000 nodes removed
+// 3,998,000 rows by its join filter, and a version of 150,000 blocks would run for hours. An
+// update cannot take a lateral on the table it updates, so the move updates the rows its own
+// probe found, by their key: the mark and the sentinel are read off the probed row, and the
+// update carries no condition of its own on graph_nodes for the planner to estimate at one row
+// (TestTheNodeWritesAppendProbesEachNodeOfItsBatchOnce). The probed row is the row the update
+// moves, since every row the move sets is one this transaction's node write holds, so no other
+// writer moves it in between.
+//
+// The tuples carry two repeat keys: one event states one fact once, so a writer that is retried
+// appends the same row again, and the insert drops it. One insert carries both, so it names no
+// conflict target, and every unique index of graph_tuples is its arbiter: the two repeat keys,
+// each partial on `source_event <> 0`, so a tuple at the sentinel is appended unconditionally.
+//
+// A write of more than appendRows tuples and nodes is appended as several such statements in a
+// row, each over the next appendRows of them in that same order, so the rows land in the order
+// one statement would give them (appendSegments). A statement's arguments are encoded whole
+// before any of it is sent, in a buffer that grows by doubling and keeps each earlier size alive
+// for the arguments it already holds: one statement over a version's 150,001 block nodes and
+// their 150,001 tuples bound some 81 MB of arguments and held 377 MB of encoding at the heap's
+// peak.
 //
 // It is what QueueWrite and QueueCaused append through, so a tuple of ToPerson's three kinds
-// naming a person, and a mark from a person, which is FromPerson's, are refused here, as each
-// statement binds its tuples (tupleParamsOf), which fails Send.
+// naming a person, and a mark from a person, which is FromPerson's, are refused here
+// (refusePersonTuple), before any statement of the append is queued, encoded or sent, which fails
+// Send (queueRefused).
 func queueAppend(b *store.WriteBatch, write appending) {
 	if write.tuples == 0 && write.mark == 0 && !(write.sentinel && len(write.nodes) > 0) {
 		return
+	}
+	for index := range write.tuples {
+		if err := refusePersonTuple("", write.tuple(index)); err != nil {
+			queueRefused(b, err)
+			return
+		}
 	}
 	order, majors, before, baseSlot := appendOrder(write.tuples, write.tuple, write.baseAt)
 	nodes := write.nodes
@@ -591,11 +659,16 @@ func queueAppend(b *store.WriteBatch, write appending) {
 	}
 }
 
-// appendRows is the most tuples and nodes one statement of an append binds together.
+// appendRows is the most tuples and nodes one statement of an append binds together: a write
+// of a few thousand rows, which is every write a request makes, is one statement, and a version
+// of 150,001 blocks is 37 of about 2 MB of arguments each.
 const appendRows = 8192
 
-// appendOrder is the caller's tuple indexes in append order, with their positions. before is the
-// number of caller tuples before the base-attribute slot.
+// appendOrder is the indexes of the caller's tuples in the order the append writes them, with
+// each one's place (its major): the relations first and then the attributes, each in the order the
+// caller stated them, and the base attributes the node write states at the place among the
+// attributes the caller's baseAt names, baseSlot, which no tuple of the caller takes. before is how
+// many of the tuples stand before that place.
 func appendOrder(tuples int, tuple func(index int) Tuple, baseAt int) (order []int, majors []int64, before int, baseSlot int64) {
 	relations := 0
 	for index := range tuples {
@@ -622,6 +695,8 @@ func appendOrder(tuples int, tuple func(index int) Tuple, baseAt int) (order []i
 	if baseAt >= tuples {
 		baseSlot = value
 	}
+	// The places are every number from 0 up but baseSlot, so a tuple's index in append order is
+	// its place, less one past baseSlot.
 	order = make([]int, tuples)
 	majors = make([]int64, tuples)
 	for index, major := range places {
@@ -634,11 +709,15 @@ func appendOrder(tuples int, tuple func(index int) Tuple, baseAt int) (order []i
 	return order, majors, int(baseSlot), baseSlot
 }
 
-// appendSegment is one statement of an append: caller tuples and nodes in their append-order
-// ranges.
+// appendSegment is one statement of an append: the caller's tuples [tuplesFrom, tuplesTo) in
+// append order, and the nodes [nodesFrom, nodesTo) whose base attributes it states and which it
+// moves onto their cause.
 type appendSegment struct{ tuplesFrom, tuplesTo, nodesFrom, nodesTo int }
 
-// appendSegments cuts an append into statements of at most rows tuples and nodes each.
+// appendSegments cuts an append into statements of at most rows tuples and nodes each, in the
+// append's own order: the tuples before the base slot, then the nodes, whose base attributes
+// stand at that slot, then the tuples after it. A write of rows or fewer is one statement, and
+// one with nothing to append is none.
 func appendSegments(tuples, before, nodes, rows int) []appendSegment {
 	total := tuples + nodes
 	var segments []appendSegment
@@ -652,8 +731,8 @@ func appendSegments(tuples, before, nodes, rows int) []appendSegment {
 	return segments
 }
 
-// tupleAt is how many caller tuples stand before append position at, where nodes occupy the range
-// [before, before+nodes).
+// tupleAt is how many of the caller's tuples stand before place at of the append's order, whose
+// first before places are tuples, the next nodes places nodes, and the rest tuples again.
 func tupleAt(at, before, nodes int) int {
 	switch {
 	case at <= before:
@@ -665,8 +744,10 @@ func tupleAt(at, before, nodes int) int {
 	}
 }
 
-// queueAppendStatement queues one segmented append. Its arguments build at Send, and the node
-// reads probe each node by its primary key instead of joining the batch to graph_nodes.
+// queueAppendStatement queues one statement of an append (queueAppend): the caller's tuples at
+// the indexes order names, at their places (majors), and, where nodes is not empty, the base
+// attributes those nodes' write states at baseSlot and their move onto their cause. Its arguments
+// are built when the write phase sends it (store.WriteBatch's QueueBuilt).
 func queueAppendStatement(b *store.WriteBatch, order []int, majors []int64, nodes []Node, write appending, own map[baseAttribute]struct{}, baseSlot int64) {
 	build := func() ([]any, error) {
 		params, err := tupleParamsOf(len(order), func(index int) Tuple { return write.tuple(order[index]) })
@@ -695,7 +776,7 @@ func queueAppendStatement(b *store.WriteBatch, order []int, majors []int64, node
 		`, build), write.appended)
 		return
 	}
-	// The node arrays follow the tuples' ten and their places, then the mark, base slot and
+	// The node arrays follow the tuples' ten and their places, and the mark, the base slot and the
 	// sentinel follow the node arrays (appendedNodeParams).
 	at := tupleArrayCount + 2
 	markParam := "$" + strconv.Itoa(at+appendedNodeArrays)
@@ -768,8 +849,11 @@ func counted(queued store.Queued, appended *int64) {
 	})
 }
 
-// appendedNodeParams are the ten arrays a segmented append reads nodes through: their four base
-// attributes, provenance, cause and the base attributes the writer stated itself.
+// appendedNodeParams are the appendedNodeArrays arrays the append reads nodes through, by
+// position: what each node's base attributes state (its kind, id, visibility, state, project,
+// parties, made_at, made_by), the cause it is moved onto and its base attributes are stated under
+// - cause where the write has one for all of its nodes, else the node's own - and the base
+// attributes the writer states itself (own), which the append leaves out.
 func appendedNodeParams(nodes []Node, cause *int64, own map[baseAttribute]struct{}) ([]any, error) {
 	kinds := make([]string, len(nodes))
 	ids := make([]string, len(nodes))
@@ -781,8 +865,9 @@ func appendedNodeParams(nodes []Node, cause *int64, own map[baseAttribute]struct
 	madeBys := make([][]byte, len(nodes))
 	causes := make([]int64, len(nodes))
 	skips := make([]int32, len(nodes))
+	var writers writerEncoder
 	for index, node := range nodes {
-		madeBy, err := json.Marshal(node.MadeBy.Recorded())
+		madeBy, err := writers.encode(node.MadeBy)
 		if err != nil {
 			return nil, fmt.Errorf("encode writer of node %s/%s: %w", node.Kind, node.ID, err)
 		}
@@ -814,8 +899,10 @@ const appendedNodeArrays = 10
 // states that attribute itself.
 type baseAttribute struct{ kind, id, attribute string }
 
-// statedAttributes are the base attributes the write states itself, read from the tuple source at
-// Send so it neither copies nor encodes a version's tuples while it queues them.
+// statedAttributes are the base attributes the write states itself, read off the tuples it
+// handed in (tuple, of which there are tuples): a document made where an orphaned node stands,
+// and the backfill's write of such a document, state its node gone and then live themselves. One
+// write states one fact once, so the node write states none of those attributes beside them.
 func statedAttributes(tuples int, tuple func(index int) Tuple) map[baseAttribute]struct{} {
 	stated := make(map[baseAttribute]struct{})
 	for index := range tuples {
@@ -836,37 +923,6 @@ func tupleArrays(first int) string {
 
 // tupleArrayCount is how many arrays tupleArrays lists and tupleParams binds.
 const tupleArrayCount = 10
-
-// tupleParamsOf binds a segmented append directly from its tuple source without first copying the
-// segment into a []Tuple. It refuses a tuple that ToPerson or FromPerson alone appends
-// (refusePersonTuple), since queueAppend is every other writer's append.
-func tupleParamsOf(count int, tuple func(index int) Tuple) ([]any, error) {
-	fromKinds := make([]string, count)
-	fromIDs := make([]string, count)
-	kinds := make([]string, count)
-	toKinds := make([]string, count)
-	toIDs := make([]string, count)
-	ats := make([]time.Time, count)
-	whos := make([][]byte, count)
-	sourceEvents := make([]int64, count)
-	legacySeqs := make([]*int64, count)
-	asserted := make([]bool, count)
-	for index := range count {
-		held := tuple(index)
-		if err := refusePersonTuple("", held); err != nil {
-			return nil, err
-		}
-		who, err := json.Marshal(held.Who.Recorded())
-		if err != nil {
-			return nil, fmt.Errorf("encode writer of %s %s: %w", held.Kind, held.FromID, err)
-		}
-		fromKinds[index], fromIDs[index], kinds[index] = held.FromKind, held.FromID, held.Kind
-		toKinds[index], toIDs[index], ats[index] = held.ToKind, held.ToID, held.At
-		whos[index], sourceEvents[index] = who, held.SourceEvent
-		legacySeqs[index], asserted[index] = held.LegacySourceSeq, held.Asserted
-	}
-	return []any{fromKinds, fromIDs, kinds, toKinds, toIDs, ats, whos, sourceEvents, legacySeqs, asserted}, nil
-}
 
 // encodeAttributes writes an empty object for a node that carries no attribute, since the column
 // is `not null` and a nil map encodes as the JSON null, which is a value rather than no value.

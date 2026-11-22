@@ -64,7 +64,7 @@ func WriteArms(first int, nodes []Node, tuples []Tuple, claims []Claim) (string,
 
 // WriteArmsUncaused is WriteArms for a writer whose cause is appended after these arms run: the
 // nodes it makes state no base attribute here and are made at the sentinel, marked as made
-// (nodeMark), and the write it answers holds them for that event, which QueueCaused moves them
+// (nodeMarks), and the write it answers holds them for that event, which QueueCaused moves them
 // onto and appends their base attributes under, read off that mark. No tuple may be updated to
 // learn its cause, and the node row moves onto the event, so a node made at the sentinel whose
 // base attributes were stated here would be a row naming one event and base tuples naming
@@ -170,7 +170,7 @@ const nodesWrittenFirst = `(select count(*) from graph_nodes_written) >= 0`
 // moves no stored state, so there is never a state of a node already there for it to state.
 //
 // states is false for a writer whose cause is appended after these arms (WriteArmsUncaused): the
-// nodes it makes carry the mark bound after the node arrays instead of a cause (nodeMark), as
+// nodes it makes carry the mark bound after the node arrays instead of a cause (nodeMarks), as
 // made, so the append that cause comes with states those same attributes for that event.
 //
 // A node the store holds already is left out before the insert, by a probe of graph_nodes' key
@@ -448,13 +448,13 @@ func nodeParams(nodes []Node) ([]any, error) {
 	sourceEvents := make([]int64, len(nodes))
 	projects := make([]*string, len(nodes))
 	parties := make([]*string, len(nodes))
+	var writers writerEncoder
 	for index, node := range nodes {
 		encoded, err := encodeAttributes(node.Attributes)
 		if err != nil {
 			return nil, fmt.Errorf("encode attributes of node %s/%s: %w", node.Kind, node.ID, err)
 		}
-		// Recorded drops the request's credential, which no row ever holds.
-		madeBy, err := json.Marshal(node.MadeBy.Recorded())
+		madeBy, err := writers.encode(node.MadeBy)
 		if err != nil {
 			return nil, fmt.Errorf("encode writer of node %s/%s: %w", node.Kind, node.ID, err)
 		}
@@ -476,20 +476,28 @@ func nodeParams(nodes []Node) ([]any, error) {
 	return []any{kinds, ids, supertags, visibilities, states, attributes, madeAts, madeBys, sourceEvents, projects, parties}, nil
 }
 
-// tupleParams are the ten arrays a tuple append binds, in tupleWriteColumns' order.
+// tupleParams are the tupleArrayCount arrays a tuple append binds, in tupleWriteColumns' order.
 func tupleParams(tuples []Tuple) ([]any, error) {
-	fromKinds := make([]string, len(tuples))
-	fromIDs := make([]string, len(tuples))
-	kinds := make([]string, len(tuples))
-	toKinds := make([]string, len(tuples))
-	toIDs := make([]string, len(tuples))
-	ats := make([]time.Time, len(tuples))
-	whos := make([][]byte, len(tuples))
-	sourceEvents := make([]int64, len(tuples))
-	legacySeqs := make([]*int64, len(tuples))
-	asserted := make([]bool, len(tuples))
-	for index, tuple := range tuples {
-		who, err := json.Marshal(tuple.Who.Recorded())
+	return tupleParamsOf(len(tuples), func(index int) Tuple { return tuples[index] })
+}
+
+// tupleParamsOf is tupleParams of the count tuples nth answers, read in place where the caller
+// holds them (queueAppend).
+func tupleParamsOf(count int, nth func(index int) Tuple) ([]any, error) {
+	fromKinds := make([]string, count)
+	fromIDs := make([]string, count)
+	kinds := make([]string, count)
+	toKinds := make([]string, count)
+	toIDs := make([]string, count)
+	ats := make([]time.Time, count)
+	whos := make([][]byte, count)
+	sourceEvents := make([]int64, count)
+	legacySeqs := make([]*int64, count)
+	asserted := make([]bool, count)
+	var writers writerEncoder
+	for index := range count {
+		tuple := nth(index)
+		who, err := writers.encode(tuple.Who)
 		if err != nil {
 			return nil, fmt.Errorf("encode writer of %s %s: %w", tuple.Kind, tuple.FromID, err)
 		}
@@ -511,8 +519,9 @@ func claimParams(claims []Claim) ([]any, error) {
 	ats := make([]time.Time, len(claims))
 	whos := make([][]byte, len(claims))
 	sourceEvents := make([]int64, len(claims))
+	var writers writerEncoder
 	for index, claim := range claims {
-		who, err := json.Marshal(claim.Who.Recorded())
+		who, err := writers.encode(claim.Who)
 		if err != nil {
 			return nil, fmt.Errorf("encode writer of %s %s: %w", claim.Kind, claim.FromID, err)
 		}
@@ -521,4 +530,28 @@ func claimParams(claims []Claim) ([]any, error) {
 		whos[index], sourceEvents[index] = who, claim.SourceEvent
 	}
 	return []any{fromKinds, fromIDs, kinds, toKinds, toIDs, ats, whos, sourceEvents}, nil
+}
+
+// writerEncoder encodes the writer each row of a write binds, as the row records it: Recorded
+// drops the request's credential, which no row ever holds. A run of rows with one writer shares
+// one encoding, since a write of a version's blocks names one writer for every node and tuple of
+// it, and an encoding per row held as many copies of the same bytes as the version has blocks.
+type writerEncoder struct {
+	last    model.Actor
+	encoded []byte
+}
+
+// encode is writer's encoding: the one the previous call answered where that call encoded the
+// same recorded actor, else a new one.
+func (e *writerEncoder) encode(writer model.Actor) ([]byte, error) {
+	recorded := writer.Recorded()
+	if e.encoded != nil && recorded == e.last {
+		return e.encoded, nil
+	}
+	encoded, err := json.Marshal(recorded)
+	if err != nil {
+		return nil, err
+	}
+	e.last, e.encoded = recorded, encoded
+	return encoded, nil
 }
