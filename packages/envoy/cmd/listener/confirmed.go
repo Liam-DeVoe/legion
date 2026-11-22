@@ -385,12 +385,11 @@ func (s *roleSend) timedOut() {
 // routes give a request that ends so (writeBusUnavailable), under earlierAttemptInProcessPrefix
 // and recorded earlier_attempt_in_process, where a send whose window ends otherwise is the 504
 // (timedOut). It costs its sender one, as the 504 does: the forward that ended in process marked
-// the charge (sendToRole). At the edge it names no holder the scope does not show
-// (shownForwardError), since a send of the forward after the stream's in-process refusal that
-// could not be confirmed names the holder's agent subject.
+// the charge (sendToRole). err is the error as sendToRole kept it, already judged by the holder
+// its forward went to (shownForwardError), so a holder the send resolved since judges nothing.
 func (s *roleSend) endedInProcess(err error) {
 	s.record.holder = s.holder
-	s.record.refuseBusUnavailable(s.w, s.shownForwardError("edge listener's role send ended while an earlier forward was in process; its answer names no holder", err))
+	s.record.refuseBusUnavailable(s.w, err)
 	s.settle(sendDeliveryFailed)
 }
 
@@ -553,9 +552,12 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 			// A forward that failed with no refusal may have been stored for its holder, so it
 			// costs its sender one whatever this send answers next.
 			send.record.charge.stored()
+			// The error is kept as the answer may give it, judged now by the holder this forward
+			// went to (shownForwardError): a later pass may hold another holder, one the edge
+			// shows, while the error names this one's agent subject.
 			inProcess = nil
 			if earlierAttemptInProcess(err) {
-				inProcess = err
+				inProcess = send.shownForwardError("edge listener's role send ended while an earlier forward was in process; its answer names no holder", err)
 			}
 		}
 		// Any resolution not answered above (a holder past the live window, which keeps its
