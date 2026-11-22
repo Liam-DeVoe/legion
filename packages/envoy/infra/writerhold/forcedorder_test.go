@@ -91,6 +91,18 @@ func (f *forcedHub) streamLeader(t *testing.T, stream string) int {
 	return i
 }
 
+// awaitStreamLeader waits, within testwait.Eventually's bound, until stream's STREAM.INFO names a
+// leader.
+func (f *forcedHub) awaitStreamLeader(t *testing.T, stream string) {
+	t.Helper()
+	testwait.Eventually(t, "stream "+stream+" names a leader", func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), noAnswerWithin)
+		defer cancel()
+		s, err := f.js.Stream(ctx, stream)
+		return err == nil && s.CachedInfo().Cluster != nil && s.CachedInfo().Cluster.Leader != ""
+	})
+}
+
 // consumerNames is the operator's CONSUMER.NAMES listing of stream behind the meta barrier.
 func (f *forcedHub) consumerNames(t *testing.T, stream, holdID string) []string {
 	t.Helper()
@@ -458,7 +470,8 @@ func TestForcedOrderHoldBucketBarrierWithinOneTerm(t *testing.T) {
 // stands for leader while it has a committed entry it has not applied (nats-server 2.10.29
 // raft.go:4212-4217, 2.15.1 raft.go:6250-6255), so while the old leader is down no follower leads,
 // STREAM.MSG.GET with no barrier (the control) gets no answer and never a stale one, and once the
-// old leader is back it leads and the read behind the barrier returns the write, the followers'
+// old leader is back it leads (the row waits for the stream's leader, the restart's election being
+// its setup) and the read behind the barrier returns the write, the followers'
 // applies still held. The plan's 2.10.29 miss needs a new leader that stored the write without
 // learning its commit; the hooks cannot keep that across the old leader's stop (its Shutdown
 // releases every hold on it, and a routed append has no hold point), so the miss is forced on
@@ -488,6 +501,10 @@ func TestForcedOrderHoldBucketBarrierAcrossTheRestart(t *testing.T) {
 	require.False(t, control.notFound || control.value != "", "control: STREAM.MSG.GET answered %s with the old leader down, want no answer and no stale one", control)
 	require.Empty(t, leading, "a follower with an unapplied committed write leads: %v", seen)
 	f.cluster.AwaitReady(t)
+	// The restart is the row's setup, and so is the group's election after it: under load a
+	// stream can stay leaderless longer than ReadBucket's bound, where ReadBucket rightly answers
+	// UNKNOWN. The row waits for the server's own signal, a leader in STREAM.INFO, then reads.
+	f.awaitStreamLeader(t, kvStreamPrefix+bucketBarrierBucket)
 
 	got := make(chan msgGet, 1)
 	readAnswered(t, answer(func() error {
