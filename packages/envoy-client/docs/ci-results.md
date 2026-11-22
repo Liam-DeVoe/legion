@@ -1,7 +1,8 @@
 # A CI job's result, and its read
 
-These two calls are part of the `dispatch` command, which the package's
-[README](../README.md) ("The `dispatch` command") describes.
+These calls, `dispatch result` and `dispatch results`, each with `--project` or `--issue`, are
+part of the `dispatch` command, which the package's [README](../README.md)
+("The `dispatch` command") describes.
 
 `dispatch result --project <KEY> --check <id> --verdict pass|fail|could_not_run --commit <sha>`
 is a CI job's record of its result of a check of the spec files, and the one call that is no
