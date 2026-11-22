@@ -3180,10 +3180,12 @@ package api
 // declared. The forward merge of 2026-11-22 that brought in 5c418da8 left main at 213, and a
 // reading of every open head made between 2026-11-22T15:54:21Z and 15:58:32Z found #3993, #4065,
 // #4392, #4432 and #4771 declaring 221 as well, so this entry kept 221: whichever of these merges
-// after another takes the next free number at its next forward merge. A pod at main's 213, or at a
-// number another open pull request declares below 221, runs a plugin that does not know this
-// release's shapes, so it is served the state without `projectRelease`. Read the base's own number
-// and every open head again at the next merge rather than from this entry, as
+// after another takes the next free number at its next forward merge. The forward merge of
+// 2026-11-22 that brought in e7381b7d left main at 213, and a reading made between 21:10:50Z and
+// 21:17:52Z found #3993, #4392, #4432 and #4771 declaring 221, so it kept 221 again. A pod at
+// main's 213, or at a number another open pull request declares below 221, runs a plugin that does
+// not know this release's shapes, so it is served the state without `projectRelease`. Read the
+// base's own number and every open head again at the next merge rather than from this entry, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. A renumber moves projectReleaseContract in shaping.go with it: it is the number the state's
 // `projectRelease` and the refusal's `heldPods` are served down below, the arrival of the six
