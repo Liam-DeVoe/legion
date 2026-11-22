@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // TestDayWindowAnswersTheWindowsDaysAndTheCompareRangesDays: one read answers the day rows of
@@ -183,4 +186,96 @@ func dayLabels(days []WindowRow) []string {
 	}
 	sort.Strings(labels)
 	return labels
+}
+
+// TestTheListReadsOfAFullPageOfTheLargestEvalsSendBoundedStatements: the reads the list read makes
+// of a full page of evals (200, the most a page holds), each a logged eval of MaxEvalSeries series
+// folded as quantiles whose names and slug are the largest a key holds, over a window and a compare
+// range: the day rows (DayWindow), the series' first days (FirstDays) and the stored figures
+// (ReadStoredFigures) send statements that each take at most statementBytes of parameters as pgx
+// encodes them, the day rows' in several; and the day rows of the three evals that hold some come
+// back once each, each with its samples, and their first days with them.
+func TestTheListReadsOfAFullPageOfTheLargestEvalsSendBoundedStatements(t *testing.T) {
+	r := newRig(t)
+	const page = 200
+	day := at(3, 0, 0)
+	largest := func(prefix string, index int) string {
+		head := fmt.Sprintf("%s%04d-", prefix, index)
+		return head + strings.Repeat("x", maxKeyBytes-len(head))
+	}
+	entries := make([]Entry, page)
+	for index := range entries {
+		slug := largest("e", index)
+		evalID := EvalID(r.project, slug)
+		entry := Entry{Definition: Definition{EvalID: evalID, ProjectKey: r.project, Slug: slug, Source: SourceLogged}}
+		for series := range MaxEvalSeries {
+			entry.Series = append(entry.Series, Series{EvalID: evalID, Series: largest("s", series),
+				SeriesComputation: SeriesComputation{Role: RoleHeadline, Listed: true, Agg: AggQuantile}})
+		}
+		entries[index] = entry
+	}
+	// Three of the evals hold day rows on day: two values of their first series and one of their last.
+	held := []int{0, page / 2, page - 1}
+	for _, index := range held {
+		var rows []json.RawMessage
+		for at, reading := range []struct {
+			series int
+			value  float64
+		}{{0, 1}, {0, 2}, {MaxEvalSeries - 1, 3}} {
+			rows = append(rows, row(t, map[string]any{"series": largest("s", reading.series), "row_kind": "run", "row_key": fmt.Sprint(at),
+				"value": reading.value, "measured_at": day.Add(time.Duration(at) * time.Hour)}))
+		}
+		r.write(t, largest("e", index), alice, rows...)
+	}
+	statements := &sentStatements{}
+	traced := New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
+	window, compare := Range{From: day, To: day.AddDate(0, 0, 1)}, Range{From: day.AddDate(0, 0, -7), To: day.AddDate(0, 0, -6)}
+	days, err := traced.DayWindow(t.Context(), []string{r.project}, entries, "", nil, window, &compare)
+	if err != nil {
+		t.Fatalf("read the day rows of %d evals: %v", page, err)
+	}
+	firsts, err := traced.FirstDays(t.Context(), entries, "")
+	if err != nil {
+		t.Fatalf("read the first days of %d evals: %v", page, err)
+	}
+	if _, err := traced.ReadStoredFigures(t.Context(), []string{r.project}, entries, "", "", window, &compare); err != nil {
+		t.Fatalf("read the stored figures of %d evals: %v", page, err)
+	}
+	sent := r.measured(t, statements.take())
+	windows := 0
+	for _, statement := range sent {
+		if statement.bytes > statementBytes {
+			t.Errorf("the list's reads sent %.80q with %d bytes of parameters as pgx encodes them, past %d", strings.Join(strings.Fields(statement.sql), " "), statement.bytes, statementBytes)
+		}
+		if strings.Contains(statement.sql, "then samples end") {
+			windows++
+		}
+	}
+	if windows < 2 {
+		t.Errorf("the day rows of %d evals of %d series were read in %d statements, and the check needs them cut", page, MaxEvalSeries, windows)
+	}
+	var want, got []string
+	for _, index := range held {
+		evalID := entries[index].Definition.EvalID
+		want = append(want, fmt.Sprintf("%.6s %.6s 2", evalID[len(r.project)+1:], largest("s", 0)), fmt.Sprintf("%.6s %.6s 1", evalID[len(r.project)+1:], largest("s", MaxEvalSeries-1)))
+		for _, series := range []string{largest("s", 0), largest("s", MaxEvalSeries-1)} {
+			if first, ok := firsts[evalID][series]; !ok || !first.Equal(day) {
+				t.Errorf("the first day of %.6s's series %.6s is %v (%t), want %s", evalID[len(r.project)+1:], series, first, ok, day.Format(time.DateOnly))
+			}
+		}
+	}
+	for _, one := range days {
+		if one.Range != RangeWindow || !one.Part.Day.Equal(day) || one.Part.N != len(one.Part.Samples) {
+			t.Errorf("a day row of %.6s's series %.6s answers %s on %s with n %d and samples %v, want the window's day and its samples",
+				one.EvalID[len(r.project)+1:], one.Part.Series, one.Range, one.Part.Day.Format(time.DateOnly), one.Part.N, one.Part.Samples)
+		}
+		got = append(got, fmt.Sprintf("%.6s %.6s %d", one.EvalID[len(r.project)+1:], one.Part.Series, len(one.Part.Samples)))
+	}
+	slices.Sort(want)
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Errorf("the day rows read are %v, want %v", got, want)
+	}
+	largestBytes, what := largestStatement(sent)
+	t.Logf("%d statements, %d of the day rows; the largest %d bytes of parameters (%s), of %d", len(sent), windows, largestBytes, what, statementBytes)
 }

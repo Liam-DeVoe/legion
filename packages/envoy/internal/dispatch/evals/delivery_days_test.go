@@ -511,18 +511,19 @@ func TestTheUnownedP0RowIsTheCountAtItsLastWrite(t *testing.T) {
 // TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce: each statement that finds what a day no
 // longer holds against the list its write gives it (leftDaysOwedStatement's and
 // goneMembersDeleteStatement's items, zeroStaleDaysStatement's and zeroStaleSettingsDaysStatement's
-// rows, and standingPartsQuery's readings less the write's own) reads that list once, with the
-// write's values and under the generic plan a statement pgx caches can settle on after its fifth
-// run, which estimates every list at 10 rows: the list runs under no SubPlan, no nested loop runs
-// it again for each row of its other side, and the filter is a SetOp Except over the list or a
-// hash or merge anti-join. standingPartsQuery's generic plan also matches each reading to its keys
-// by their day, as a hash or merge join on it or an index condition, rather than testing each
-// reading against every key of its series. The day is past work_mem, as one of INFRA's is: 80,000
-// items across 40 deploy repositories and 80,000 rows written through writeDeliveryDay, and 80,000
-// readings of a logged eval on the same day, the three tables analyzed. Each statement is
-// explained with the arrays a second write of the day sends, one item, one row and one reading
-// fewer than stored, in a transaction prepared as its write prepares it, and then with literals
-// for its generic plan, which reads none of them.
+// rows) reads that list once, with the write's values and under the generic plan a statement pgx
+// caches can settle on after its fifth run, which estimates every list at 10 rows: the list runs
+// under no SubPlan, no nested loop runs it again for each row of its other side, and the filter is
+// a SetOp Except over the list or a hash or merge anti-join. standingPartsQuery takes no list of
+// the write's own readings (standingParts leaves them out as it reads them, since their ids grow
+// with the batch), and its generic plan matches each reading to its keys by their day, as a hash
+// or merge join on it or an index condition, rather than testing each reading against every key
+// of its series. The day is past work_mem, as one of INFRA's is: 80,000 items across 40 deploy
+// repositories and 80,000 rows written through writeDeliveryDay, and 80,000 readings of a logged
+// eval on the same day, the three tables analyzed. Each statement is explained with the arrays a
+// second write of the day sends, one item, one row and one reading fewer than stored, in a
+// transaction prepared as its write prepares it, and then with literals for its generic plan,
+// which reads none of them.
 //
 // The test judges the plan and not the clock, which a loaded runner would fail; k20 measures the
 // write's time on the build farm. That measurement is what this test stands for: written as
@@ -621,9 +622,6 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 		lists                []string
 		arguments            []any
 		parameters, literals []string
-		// joinedOn is a key the generic plan matches rows by (explaintest.RequireJoinedOn), none
-		// where empty.
-		joinedOn string
 	}{
 		{
 			name: "leftDaysOwedStatement", statement: leftDaysOwedStatement, lists: []string{"given"},
@@ -655,16 +653,6 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 				"array['acme/repo-00000']", "array[" + date + "]::date[]", "array['EVAL/deploy-frequency']", "'test-build'", "'computation'",
 				"array['acme/deploy-00']", "array['acme/deploy-00']"},
 		},
-		{
-			// The generic plan matches each reading to its keys by a hash join whose Hash Cond is
-			// the series and the day, (date_trunc('day', r.measured_at, 'UTC') = k.day); the plan
-			// with the values, of one key, reads it on the outer side of a nested loop.
-			name: "standingPartsQuery", statement: standingPartsQuery, joinedOn: "k.day",
-			arguments:  []any{evalID, []string{standingKey.series}, []string{standingKey.repo}, []time.Time{standingKey.day}, written},
-			parameters: []string{"text", "text[]", "text[]", "timestamptz[]", "text[]"},
-			literals: []string{"'" + evalID + "'", "array['minutes']", "array['']", "array[" + date + "]::timestamptz[]",
-				"array['00000000-0000-0000-0000-000000000000']"},
-		},
 	} {
 		t.Run(filter.name, func(t *testing.T) {
 			tx, err := r.database.Pool.Begin(ctx)
@@ -677,13 +665,23 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 					t.Fatalf("%s: %v", setting, err)
 				}
 			}
-			_, generic := explaintest.RequireStatementReadsListOnce(t, ctx, tx, filter.name, filter.statement, filter.arguments,
+			_, _ = explaintest.RequireStatementReadsListOnce(t, ctx, tx, filter.name, filter.statement, filter.arguments,
 				filter.parameters, filter.literals, filter.lists...)
-			if filter.joinedOn != "" {
-				explaintest.RequireJoinedOn(t, generic, filter.name+" under the generic plan", filter.joinedOn)
-			}
 		})
 	}
+	// The generic plan of standingPartsQuery matches each reading to its keys by a hash join whose
+	// Hash Cond is the series and the day, (date_trunc('day', r.measured_at, 'UTC') = k.day).
+	t.Run("standingPartsQuery", func(t *testing.T) {
+		tx, err := r.database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin standingPartsQuery's transaction: %v", err)
+		}
+		defer tx.Rollback(ctx)
+		generic := explaintest.GenericPlan(t, ctx, tx, "standingPartsQuery", standingPartsQuery, []string{"text", "text[]", "text[]", "timestamptz[]"},
+			[]string{"'" + evalID + "'", "array['minutes']", "array['']", "array[" + date + "]::timestamptz[]"})
+		explaintest.RequireJoinedOn(t, generic, "standingPartsQuery under the generic plan", "k.day")
+		t.Logf("standingPartsQuery under the generic plan:\n%s", explaintest.Outline(t, generic))
+	})
 
 	// The second write itself, which leaves one item fewer and makes one row zero.
 	if err := r.registry.writeDeliveryDay(ctx, ProjectDay{Project: "EVAL", Day: day, Rows: kept, Members: again}, testBuild, true); err != nil {

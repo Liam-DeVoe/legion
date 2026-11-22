@@ -13,4 +13,17 @@ body: |-
   (`/api/v1/delivery/timeline`, `measures` and `pipeline`, and a live timeline or measures view)
   that names `from`, `to`, `q` or `at` more than once is `400 INVALID_QUERY` naming the key, as
   an eval read is, where it was answered the first value's window or search; a facet such as
-  `repo` or `priority` still takes any number of values.
+  `repo` or `priority` still takes any number of values. So that no statement that writes a
+  logged eval's stored rows passes 256 KiB, a logged eval holds at most 234 series and a day row
+  of it at most 21,626 values: a register or readings write that would leave an eval holding more
+  series is `400 EVAL_SERIES_LIMIT`, and a reading that would put more values on its day row
+  `400 READING_DAY_SAMPLES_LIMIT`, each naming the bound. A readings write sends every list that
+  grows with its batch (its readings, the ids it corrects, its day rows' insert, lock and update,
+  and the standing readings it reads) in statements of at most 256 KiB, and logs one
+  `eval_readings` change of its eval however many it takes; a reading whose fields alone would
+  pass that is `400 READING_TOO_LARGE`, naming its largest field. The list read sends its day rows'
+  read in statements of at most 256 KiB too. A refused readings batch answers
+  `{code, error, rows, rows_omitted?}`: `rows` lists the first 206 refused rows by index and the
+  new `rows_omitted` counts the rest, and every refusal of the eval writes bounds its texts (an
+  error 1,024 bytes, a field 128), so the answer an `Idempotency-Key` keeps stays under 256 KiB
+  whatever the body.

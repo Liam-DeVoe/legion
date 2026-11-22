@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"iter"
 	"maps"
 	"math"
 	"slices"
@@ -63,7 +64,11 @@ import (
 //
 // A write that would leave a value of a row past what a float holds (a sum, numerator or
 // denominator that overflows to an infinity) is refused, naming the row of the batch whose part
-// made it so (CodeReadingDayOverflow), and stores nothing: no read can answer such a figure.
+// made it so (CodeReadingDayOverflow), and stores nothing: no read can answer such a figure. So is
+// a write that would leave a row holding more values than MaxDaySamples where it held fewer
+// (CodeReadingDaySamplesLimit): the row's update sends every value it holds, and past that many it
+// would pass the statement bound (statementBytes). A write that adds no value to such a row, a
+// correction of one of its readings, is taken.
 
 // dayKey is one day row of an eval: its series, its repository (empty for the project's own row)
 // and its day.
@@ -71,6 +76,15 @@ type dayKey struct {
 	series string
 	repo   string
 	day    time.Time
+}
+
+// insertBytes is the most bytes k adds to the parameters of writeDays' insert of its row, as pgx
+// encodes them in binary: in each of the statement's four arrays 4 bytes of length and the element,
+// the series and the repository their bytes, the day at most 8 and the listing 1. The lock after
+// the insert, and standingParts' read of the readings that stand, send three of those arrays, and
+// so take no more.
+func (k *dayKey) insertBytes() int {
+	return 4*4 + len(k.series) + len(k.repo) + 8 + 1
 }
 
 // compareDayKeys orders day keys by series, repository and day, each string by its bytes: the
@@ -147,10 +161,14 @@ func dayKeysOf(reading Reading, row int) ([]dayKey, dayPart, bool) {
 // the batch's order) and the readings it replaced that a row folded, in the write's transaction,
 // under the eval's lock (WriteReadings): it makes sure each touched row exists and locks the
 // rows, both in the byte order of their keys (compareDayKeys), folds each row again or appends to
-// it, and writes every row's new parts in one statement, recording builtBy as the build that wrote
-// them. It runs after the write's readings are inserted and its replaced readings superseded, so a
-// read of the standing readings sees both. A row it would leave holding a value no float holds
-// refuses the write (CodeReadingDayOverflow).
+// it, and writes every row's new parts, recording builtBy as the build that wrote them. Each of
+// the three is sent in statements of at most statementBytes of parameters (statementChunks), in
+// the order of the keys: the insert and the lock in chunks of the keys (insertBytes), the update
+// in chunks of the rows (dayUpdates). It runs after the write's readings are inserted and its
+// replaced readings superseded, so a read of the standing readings sees both. A row it would leave
+// holding a value no float holds refuses the write (CodeReadingDayOverflow), and so does a row it
+// would leave holding more than MaxDaySamples values where it held fewer
+// (CodeReadingDaySamplesLimit); nothing is written then.
 func writeDays(ctx context.Context, w *writeTx, definition Definition, series map[string]Series, added, removed []Reading, builtBy string) error {
 	// parts is each touched row's parts of the write's own readings, in the batch's order; refold
 	// holds each row a replaced reading counted in; first is the first row of the batch that
@@ -191,32 +209,50 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 	for index, key := range keys {
 		seriesNames[index], repos[index], days[index], listed[index] = key.series, key.repo, key.day, series[key.series].Listed
 	}
+	// ends is where each chunk of the keys ends that one insert, and then one lock, sends.
+	var ends []int
+	end := 0
+	for chunk := range statementChunks(keys, paramBytes(4, definition.ProjectKey, definition.EvalID, writerReadings, builtBy), (*dayKey).insertBytes) {
+		end += len(chunk)
+		ends = append(ends, end)
+	}
 	// A row two writers would both create is created once: the second insert waits for the
 	// first's and then does nothing, and both lock the row below. Every writer of these rows holds
 	// the eval's lock, so none runs beside this one; each still takes the rows in this byte order,
-	// so two that did would wait on each other rather than deadlock.
-	if _, err := w.Exec(ctx, `
-		insert into eval_days (project_key, eval_id, writer, series, repo, day, listed, built_by)
-		select $1, $2, $3, k.series, k.repo, k.day, k.listed, $4
-		from unnest($5::text[], $6::text[], $7::date[], $8::bool[]) as k(series, repo, day, listed)
-		order by k.series collate "C", k.repo collate "C", k.day
-		on conflict (project_key, eval_id, writer, deploy_repo, series, repo, day) do nothing
-	`, definition.ProjectKey, definition.EvalID, writerReadings, builtBy, seriesNames, repos, days, listed); err != nil {
-		return fmt.Errorf("make the day rows of %s: %w", definition.EvalID, err)
+	// so two that did would wait on each other rather than deadlock. The chunks go in that order,
+	// the inserts of every chunk before the lock of any, so the statements take the rows in the
+	// order one insert and then one lock did.
+	from := 0
+	for _, to := range ends {
+		if _, err := w.Exec(ctx, `
+			insert into eval_days (project_key, eval_id, writer, series, repo, day, listed, built_by)
+			select $1, $2, $3, k.series, k.repo, k.day, k.listed, $4
+			from unnest($5::text[], $6::text[], $7::date[], $8::bool[]) as k(series, repo, day, listed)
+			order by k.series collate "C", k.repo collate "C", k.day
+			on conflict (project_key, eval_id, writer, deploy_repo, series, repo, day) do nothing
+		`, definition.ProjectKey, definition.EvalID, writerReadings, builtBy, seriesNames[from:to], repos[from:to], days[from:to], listed[from:to]); err != nil {
+			return fmt.Errorf("make the day rows of %s: %w", definition.EvalID, err)
+		}
+		from = to
 	}
-	locked, err := w.Query(ctx, `
-		select `+dayColumns+` from eval_days
-		where project_key = $1 and eval_id = $2 and writer = $3 and deploy_repo = ''
-		  and (series, repo, day) in (select * from unnest($4::text[], $5::text[], $6::date[]))
-		order by series collate "C", repo collate "C", day
-		for update
-	`, definition.ProjectKey, definition.EvalID, writerReadings, seriesNames, repos, days)
-	if err != nil {
-		return fmt.Errorf("lock the day rows of %s: %w", definition.EvalID, err)
-	}
-	rows, err := pgx.CollectRows(locked, func(row pgx.CollectableRow) (DayRow, error) { return scanDay(row) })
-	if err != nil {
-		return fmt.Errorf("lock the day rows of %s: %w", definition.EvalID, err)
+	rows := make([]DayRow, 0, len(keys))
+	from = 0
+	for _, to := range ends {
+		locked, err := w.Query(ctx, `
+			select `+dayColumns+` from eval_days
+			where project_key = $1 and eval_id = $2 and writer = $3 and deploy_repo = ''
+			  and (series, repo, day) in (select * from unnest($4::text[], $5::text[], $6::date[]))
+			order by series collate "C", repo collate "C", day
+			for update
+		`, definition.ProjectKey, definition.EvalID, writerReadings, seriesNames[from:to], repos[from:to], days[from:to])
+		if err != nil {
+			return fmt.Errorf("lock the day rows of %s: %w", definition.EvalID, err)
+		}
+		held, err := pgx.AppendRows(rows, locked, func(row pgx.CollectableRow) (DayRow, error) { return scanDay(row) })
+		if err != nil {
+			return fmt.Errorf("lock the day rows of %s: %w", definition.EvalID, err)
+		}
+		rows, from = held, to
 	}
 	if len(rows) != len(keys) {
 		return fmt.Errorf("the write touches %d day rows of %s and locked %d", len(keys), definition.EvalID, len(rows))
@@ -231,21 +267,16 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 	if err != nil {
 		return err
 	}
-	// One statement writes every row, so the statement-level trigger of eval_days logs this eval's
-	// change once (20261117100014) rather than rewriting its change row once a row. Each row's key
-	// and values go at its index among the locked rows, the key's arrays above filled again in that
-	// order. An array parameter holds no arrays of differing lengths, so the rows' samples go as one
-	// flat list, each row's the n of them from its first's position on.
-	counts, firsts := make([]int, len(rows)), make([]int, len(rows))
-	sums, nums, dens, maxes := make([]*float64, len(rows)), make([]*float64, len(rows)), make([]*float64, len(rows)), make([]*float64, len(rows))
-	lastValues, lastAts, lastRecordedAts := make([]*float64, len(rows)), make([]*time.Time, len(rows)), make([]*time.Time, len(rows))
-	lastReadings := make([]string, len(rows))
-	// Empty rather than nil, which pgx would send as null, and a slice of null is null where a row
-	// with no value holds the empty list.
-	samples := []float64{}
+	// Every row's next state, at its index among the locked rows, before any is written: a refused
+	// row refuses the write, each row of the batch named once, whichever rows it makes so.
+	next := make([]DayRow, len(rows))
 	var refused []RowError
+	refuse := func(refusal RowError) {
+		if !slices.ContainsFunc(refused, func(earlier RowError) bool { return earlier.Index == refusal.Index }) {
+			refused = append(refused, refusal)
+		}
+	}
 	for index, row := range rows {
-		seriesNames[index], repos[index], days[index] = row.Series, row.Repo, row.Day
 		key := dayKey{series: row.Series, repo: row.Repo, day: row.Day}
 		base, given := row, parts[key]
 		if refold[key] {
@@ -253,38 +284,133 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 			base.LastValue, base.LastAt, base.LastRecordedAt, base.LastReading = nil, nil, nil, ""
 			given = append(standing[key], given...)
 		}
-		next, overflow := addParts(base, given, first[key])
-		if overflow >= 0 {
-			if !slices.ContainsFunc(refused, func(refusal RowError) bool { return refusal.Index == overflow }) {
-				refused = append(refused, RowError{Index: overflow, Code: CodeReadingDayOverflow, Field: "value", Message: fmt.Sprintf(
-					"with this value the sums of series %q on %s (its values, and each weighted by its n) pass the largest number a float holds, which no read could answer",
-					row.Series, row.Day.Format(time.DateOnly))})
-			}
-			continue
+		folded, overflow := addParts(base, given, first[key])
+		switch {
+		case overflow >= 0:
+			refuse(RowError{Index: overflow, Code: CodeReadingDayOverflow, Field: "value", Message: fmt.Sprintf(
+				"with this value the sums of series %q on %s (its values, and each weighted by its n) pass the largest number a float holds, which no read could answer",
+				row.Series, row.Day.Format(time.DateOnly))})
+		case folded.N > MaxDaySamples && folded.N > row.N:
+			refuse(RowError{Index: pastDaySamples(base, given, first[key]), Code: CodeReadingDaySamplesLimit, Field: "measured_at", Message: fmt.Sprintf(
+				"with this reading the day row of %s would hold %d values, and a day row holds at most %d, so that its write is sent in one statement of at most %d bytes",
+				dayRowName(row), folded.N, MaxDaySamples, statementBytes)})
+		default:
+			folded.Listed = series[row.Series].Listed
+			next[index] = folded
 		}
-		listed[index], counts[index], firsts[index] = series[row.Series].Listed, next.N, len(samples)+1
-		sums[index], nums[index], dens[index], maxes[index] = next.Sum, next.Num, next.Den, next.Max
-		lastValues[index], lastAts[index], lastRecordedAts[index], lastReadings[index] = next.LastValue, next.LastAt, next.LastRecordedAt, next.LastReading
-		samples = append(samples, next.Samples...)
 	}
 	if len(refused) > 0 {
 		return rowsRefusal(refused)
 	}
-	if _, err := w.Exec(ctx, `
-		update eval_days d set listed = given.listed, n = given.n, sum = given.sum, num = given.num, den = given.den,
-			max = given.max, samples = ($15::float8[])[given.first : given.first + given.n - 1],
-			last_value = given.last_value, last_at = given.last_at, last_recorded_at = given.last_recorded_at,
-			last_reading = nullif(given.last_reading, '')::uuid, built_by = $4, updated_at = now()
-		from unnest($5::text[], $6::text[], $7::date[], $8::bool[], $9::int[], $10::float8[], $11::float8[],
-			$12::float8[], $13::float8[], $14::float8[], $16::timestamptz[], $18::timestamptz[], $19::text[], $17::int[])
-			as given(series, repo, day, listed, n, sum, num, den, max, last_value, last_at, last_recorded_at, last_reading, first)
-		where d.project_key = $1 and d.eval_id = $2 and d.writer = $3 and d.deploy_repo = ''
-		  and d.series = given.series and d.repo = given.repo and d.day = given.day
-	`, definition.ProjectKey, definition.EvalID, writerReadings, builtBy, seriesNames, repos, days, listed, counts, sums, nums,
-		dens, maxes, lastValues, samples, lastAts, firsts, lastRecordedAts, lastReadings); err != nil {
-		return fmt.Errorf("write the day rows of %s: %w", definition.EvalID, err)
+	// Each statement of the update widens the one eval_days change the transaction logs of this
+	// eval (the statement-level trigger of 20261117100014), so the statements log the eval's change
+	// once, as one statement did.
+	for args := range dayUpdates(definition.ProjectKey, definition.EvalID, builtBy, next) {
+		if _, err := w.Exec(ctx, `
+			update eval_days d set listed = given.listed, n = given.n, sum = given.sum, num = given.num, den = given.den,
+				max = given.max, samples = ($15::float8[])[given.first : given.first + given.n - 1],
+				last_value = given.last_value, last_at = given.last_at, last_recorded_at = given.last_recorded_at,
+				last_reading = nullif(given.last_reading, '')::uuid, built_by = $4, updated_at = now()
+			from unnest($5::text[], $6::text[], $7::date[], $8::bool[], $9::int[], $10::float8[], $11::float8[],
+				$12::float8[], $13::float8[], $14::float8[], $16::timestamptz[], $18::timestamptz[], $19::text[], $17::int[])
+				as given(series, repo, day, listed, n, sum, num, den, max, last_value, last_at, last_recorded_at, last_reading, first)
+			where d.project_key = $1 and d.eval_id = $2 and d.writer = $3 and d.deploy_repo = ''
+			  and d.series = given.series and d.repo = given.repo and d.day = given.day
+		`, args...); err != nil {
+			return fmt.Errorf("write the day rows of %s: %w", definition.EvalID, err)
+		}
 	}
 	return nil
+}
+
+// pastDaySamples is the row of the batch that makes a day row hold more than MaxDaySamples values,
+// base being the row before the parts given are added to it (addParts): the first of the write's
+// own parts at or after the position whose value would be one past the bound, or blame, the first
+// row of the batch that touches the row, where none is. Of a refold the parts given are the
+// standing readings' and then the write's own, so the write's own come last.
+func pastDaySamples(base DayRow, given []dayPart, blame int) int {
+	for _, part := range given[min(max(0, MaxDaySamples-len(base.Samples)), len(given)):] {
+		if part.row >= 0 {
+			return part.row
+		}
+	}
+	return blame
+}
+
+// dayRowName is row as a refusal names it: its series, its repository where it is a repository's
+// row, and its day.
+func dayRowName(row DayRow) string {
+	if row.Repo == "" {
+		return fmt.Sprintf("series %q on %s", row.Series, row.Day.Format(time.DateOnly))
+	}
+	return fmt.Sprintf("series %q in repository %q on %s", row.Series, row.Repo, row.Day.Format(time.DateOnly))
+}
+
+// dayUpdateArrays is how many arrays writeDays' update takes (dayUpdates): one for each key column
+// and each column it writes of a row, and one more, the rows' samples as one flat list, beside its
+// four scalars (the project, the eval, the writer and the build).
+const dayUpdateArrays = 15
+
+// dayUpdateBytes is the most bytes row adds to the parameters of writeDays' update, as pgx encodes
+// them in binary: in each array but the samples' 4 bytes of length and the element, its series,
+// repository and last reading their bytes, its listing 1 and each of its ten numbers, dates and
+// times (day, n, sum, num, den, max, last value, last_at, first and last_recorded_at) at most 8; and
+// for each of its samples 4 bytes of length and 8 of value.
+func dayUpdateBytes(row *DayRow) int {
+	return (dayUpdateArrays-1)*4 + len(row.Series) + len(row.Repo) + 1 + len(row.LastReading) + 10*8 + (4+8)*len(row.Samples)
+}
+
+// MaxDaySamples is the most values one day row of a logged eval holds (CodeReadingDaySamplesLimit):
+// the most whose row, with every key and the build at their largest, writeDays' update sends in one
+// statement within statementBytes (dayUpdates). A row keeps every value of its day (samples), and
+// its update sends them all, 12 bytes a value, so a readings write that would leave a row holding
+// more, where it held fewer, is refused, and no statement that writes a day row passes the bound.
+// It is the bound less the statement's own parameters, paramBytes(dayUpdateArrays, project, eval,
+// writerReadings, build), 4 bytes of length before each of its 19 parameters, an array header for
+// each of its 15 arrays, a project key (maxProjectKeyBytes), an eval id (maxEvalIDBytes), the
+// writer and a build of at most maxKeyBytes (figureRowReserve says why), 1,429 in all; less the
+// row's bytes but its samples, dayUpdateBytes with a series and a repository of maxKeyBytes each
+// and a last reading's uuid of 36 bytes, 1,197; over the 12 bytes of a value: (262,144 - 1,429 -
+// 1,197) / 12 = 21,626.
+const MaxDaySamples = (statementBytes -
+	(4*(dayUpdateArrays+4) + arrayHeaderBytes*dayUpdateArrays + maxProjectKeyBytes + maxEvalIDBytes + len(writerReadings) + maxKeyBytes) -
+	((dayUpdateArrays-1)*4 + 2*maxKeyBytes + 1 + 36 + 10*8)) / (4 + 8)
+
+// dayUpdates is the arguments of each statement writeDays' update sends of rows, each row's next
+// state in the byte order of their keys, recording builtBy: rows cut into chunks whose parameters
+// take at most statementBytes as statementChunks cuts them, the statement's own estimated by
+// paramBytes and each row's by dayUpdateBytes, each statement's arrays one chunk. An array
+// parameter holds no arrays of differing lengths, so a chunk's samples go as one flat list, each
+// row's the n of them from its first's position on.
+func dayUpdates(project, evalID, builtBy string, rows []DayRow) iter.Seq[[]any] {
+	return func(yield func([]any) bool) {
+		for chunk := range statementChunks(rows, paramBytes(dayUpdateArrays, project, evalID, writerReadings, builtBy), dayUpdateBytes) {
+			count, held := len(chunk), 0
+			for index := range chunk {
+				held += len(chunk[index].Samples)
+			}
+			seriesNames, repos, days, listed := make([]string, count), make([]string, count), make([]time.Time, count), make([]bool, count)
+			counts, firsts := make([]int, count), make([]int, count)
+			sums, nums, dens, maxes := make([]*float64, count), make([]*float64, count), make([]*float64, count), make([]*float64, count)
+			lastValues, lastAts, lastRecordedAts := make([]*float64, count), make([]*time.Time, count), make([]*time.Time, count)
+			lastReadings := make([]string, count)
+			// Empty rather than nil, which pgx would send as null, and a slice of null is null where a
+			// row with no value holds the empty list.
+			samples := make([]float64, 0, held)
+			for index := range chunk {
+				row := &chunk[index]
+				seriesNames[index], repos[index], days[index], listed[index] = row.Series, row.Repo, row.Day, row.Listed
+				counts[index], firsts[index] = row.N, len(samples)+1
+				sums[index], nums[index], dens[index], maxes[index] = row.Sum, row.Num, row.Den, row.Max
+				lastValues[index], lastAts[index], lastRecordedAts[index], lastReadings[index] = row.LastValue, row.LastAt, row.LastRecordedAt, row.LastReading
+				samples = append(samples, row.Samples...)
+			}
+			if !yield([]any{project, evalID, writerReadings, builtBy, seriesNames, repos, days, listed, counts, sums, nums,
+				dens, maxes, lastValues, samples, lastAts, firsts, lastRecordedAts, lastReadings}) {
+				return
+			}
+		}
+	}
 }
 
 // addParts is row with parts added in their order, and the index in the write's batch of the first
@@ -383,51 +509,58 @@ const writtenWhileLogged = `exists (select from logged_spans s where r.recorded_
 // the day's samples and sums as the appends left them; its last value is the appends' whatever
 // order the writes committed in, since every path breaks a tie of moments by this order. They are
 // the standing readings of its day and series (of its repository, for a repository's row) that
-// have a value and were written while the eval was logged (writtenWhileLogged). One statement
-// reads every key's (standingPartsQuery): the eval's standing readings of each day the keys name,
-// once a day, through eval_readings_row with that day's range in its index condition, less the
-// write's own, each then read by its id and matched to the keys of its day. Joined to every key
-// at once instead, the readings were planned, for a week's keys, as one scan of the eval that
-// each key then filtered whole.
+// have a value and were written while the eval was logged (writtenWhileLogged). A statement reads
+// the keys' (standingPartsQuery): the eval's standing readings of each day the keys name, once a
+// day, through eval_readings_row with that day's range in its index condition, each then read by
+// its id and matched to the keys of its day. Joined to every key at once instead, the readings
+// were planned, for a week's keys, as one scan of the eval that each key then filtered whole. The
+// keys grow with the batch, so they go in statements of at most statementBytes of parameters, cut
+// as writeDays' insert cuts them (insertBytes, whose four arrays take more than this statement's
+// three), in their order, each statement's rows in its keys' order. The write's own readings,
+// stored before this runs, come back among them and are left out here: the ids written are as many
+// as the batch's rows, and a statement sending them would grow with it.
 func standingParts(ctx context.Context, tx pgx.Tx, evalID string, keys []dayKey, written []string) (map[dayKey][]dayPart, error) {
 	standing := map[dayKey][]dayPart{}
 	if len(keys) == 0 {
 		return standing, nil
 	}
-	series, repos, days := make([]string, len(keys)), make([]string, len(keys)), make([]time.Time, len(keys))
-	for index, key := range keys {
-		series[index], repos[index], days[index] = key.series, key.repo, key.day
-	}
-	rows, err := tx.Query(ctx, standingPartsQuery, evalID, series, repos, days, written)
-	if err != nil {
-		return nil, fmt.Errorf("read the standing readings of %d day rows of %s: %w", len(keys), evalID, err)
+	own := make(map[string]bool, len(written))
+	for _, id := range written {
+		own[id] = true
 	}
 	var at int
 	var value, weight float64
 	var measured, recorded time.Time
 	var id string
-	if _, err := pgx.ForEachRow(rows, []any{&at, &value, &weight, &measured, &recorded, &id}, func() error {
-		key := keys[at-1]
-		standing[key] = append(standing[key], dayPart{value: value, weight: weight, at: measured.UTC(), recordedAt: recorded, id: id, row: -1})
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("read the standing readings of %d day rows of %s: %w", len(keys), evalID, err)
+	for chunk := range statementChunks(keys, paramBytes(3, evalID), (*dayKey).insertBytes) {
+		series, repos, days := make([]string, len(chunk)), make([]string, len(chunk)), make([]time.Time, len(chunk))
+		for index, key := range chunk {
+			series[index], repos[index], days[index] = key.series, key.repo, key.day
+		}
+		rows, err := tx.Query(ctx, standingPartsQuery, evalID, series, repos, days)
+		if err != nil {
+			return nil, fmt.Errorf("read the standing readings of %d day rows of %s: %w", len(chunk), evalID, err)
+		}
+		if _, err := pgx.ForEachRow(rows, []any{&at, &value, &weight, &measured, &recorded, &id}, func() error {
+			if !own[id] {
+				key := chunk[at-1]
+				standing[key] = append(standing[key], dayPart{value: value, weight: weight, at: measured.UTC(), recordedAt: recorded, id: id, row: -1})
+			}
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the standing readings of %d day rows of %s: %w", len(chunk), evalID, err)
+		}
 	}
 	return standing, nil
 }
 
-// standingPartsQuery is standingParts' statement: $1 the eval, $2 to $4 the keys (series,
-// repository, day) and $5 the ids of the write's own readings. standing is the ids of the
-// standing readings of the keys' days except the write's, materialized, so the set operation
-// runs once whatever plan the joins after it take, and reads each side once (day_rows.go says
-// why a day's write finds what it leaves out so): as `r.id <> all($5)` in each day's read, every
-// reading was compared with the list, which a generic plan, knowing no value of it, cannot hash;
-// as a `not exists`, its generic plan was a nested-loop anti-join that runs the list again for
-// each reading, and its plan with the values hashed the list again for each key. Each reading is
-// then matched to its keys by series and by the day itself, the UTC midnight its measured_at falls
-// in, which every key's day is (dayKeysOf's measures.Midnight, or a date of eval_days): a hash
-// join keys on it, where a match on the range of each key's day tested each reading against every
-// key of its series.
+// standingPartsQuery is standingParts' statement: $1 the eval and $2 to $4 the keys (series,
+// repository, day). standing is the ids of the standing readings of the keys' days, materialized,
+// so each day's readings are read once, through the index, whatever plan the joins after it take.
+// Each reading is then matched to its keys by series and by the day itself, the UTC midnight its
+// measured_at falls in, which every key's day is (dayKeysOf's measures.Midnight, or a date of
+// eval_days): a hash join keys on it, where a match on the range of each key's day tested each
+// reading against every key of its series.
 const standingPartsQuery = `
 	with ` + loggedSpans + `, k as (
 		select * from unnest($2::text[], $3::text[], $4::timestamptz[]) with ordinality as k(series, repo, day, at)
@@ -440,8 +573,6 @@ const standingPartsQuery = `
 				and r.measured_at >= d.day and r.measured_at < d.day + interval '24 hours'
 				and ` + writtenWhileLogged + `
 		) r
-		except
-		select * from unnest($5::text[]::uuid[]) as written(id)
 	)
 	select k.at, r.value, coalesce(r.n, 1)::float8, r.measured_at, r.recorded_at, r.id::text
 	from standing

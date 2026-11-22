@@ -253,12 +253,14 @@ type Registered struct {
 // one eval at once both land, in turn, as the next two versions: each takes the eval's lock
 // (lockEval) before it reads the version it writes after. A write of a computed eval that names a
 // field of its computation is refused, and stores nothing (computationField, R5), and so is a
-// write of a min_n no read ranks by (rankedByMinN). A version that lists or unlists a logged
-// eval's series lists or unlists that series' stored day rows in the same transaction
-// (relistDays). A write that may write the eval's section, one carrying doc_text or the first of
-// an eval, takes the document's owner lock before it stores anything (lockDocument) and does the
-// section's document work there, in its read phase, queued for the commit after its versions'
-// rows (writeMethod).
+// write of a min_n no read ranks by (rankedByMinN). A write that adds a series to a logged eval
+// that would then hold more than MaxEvalSeries series is refused (CodeSeriesLimit), counted under
+// the eval's lock, so two writes cannot pass the bound together; one that adds none is never
+// refused for the series the eval holds. A version that lists or unlists a logged eval's series
+// lists or unlists that series' stored day rows in the same transaction (relistDays). A write that
+// may write the eval's section, one carrying doc_text or the first of an eval, takes the
+// document's owner lock before it stores anything (lockDocument) and does the section's document
+// work there, in its read phase, queued for the commit after its versions' rows (writeMethod).
 func (s *Store) Register(ctx context.Context, change Registration) (Registered, error) {
 	if err := validateRegistration(change); err != nil {
 		return Registered{}, err
@@ -291,6 +293,11 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 				return fieldRefusal(CodeFieldInvalid, fmt.Sprintf("series[%d].min_n", index),
 					"series %s of %s: min_n is the fewest timed results a job needs before it is ranked among %s's slowest jobs, and no read ranks this series by one: only %s's series %s takes a min_n",
 					one.Series, evalID, SlugPRCI, SlugPRCI, SeriesJobs)
+			}
+		}
+		if !current.Computed() {
+			if index, count, total := seriesPastLimit(series, len(change.Series), func(index int) string { return change.Series[index].Series }); index >= 0 {
+				return fieldRefusal(CodeSeriesLimit, fmt.Sprintf("series[%d].series", index), "%s", seriesLimitReason(evalID, change.Series[index].Series, count, total))
 			}
 		}
 		next := current
@@ -566,8 +573,9 @@ var (
 )
 
 // validateRegistration refuses a register write whose fields the tables would refuse, whose keys
-// an index entry cannot hold (maxKeyBytes), or whose links are not links, before any transaction
-// opens, naming the field it refuses as the body spells it.
+// an index entry cannot hold (maxKeyBytes), whose links are not links, or that names more series
+// than an eval holds (MaxEvalSeries), before any transaction opens, naming the field it refuses as
+// the body spells it.
 func validateRegistration(change Registration) error {
 	if !slugPattern.MatchString(change.Slug) {
 		return fieldRefusal(CodeSlugInvalid, "slug", "slug %q is not lower-case letters, digits and hyphens starting with a letter or a digit", change.Slug)
@@ -650,6 +658,11 @@ func validateRegistration(change Registration) error {
 			}
 		}
 	}
+	if index, count, total := seriesPastLimit(nil, len(change.Series), func(index int) string { return change.Series[index].Series }); index >= 0 {
+		return fieldRefusal(CodeSeriesLimit, fmt.Sprintf("series[%d].series", index),
+			"series %q is series %d of the %d this write names, and an eval holds at most %d series, so that each of its stored rows is written in one statement of at most %d bytes",
+			change.Series[index].Series, count, total, MaxEvalSeries, statementBytes)
+	}
 	return nil
 }
 
@@ -689,6 +702,36 @@ func validSeriesName(name string) error {
 		return fmt.Errorf("a series name holds no `.`, which separates a target judge's series from its statistic")
 	}
 	return nil
+}
+
+// seriesPastLimit reads a write's n series names (name(i) the i-th) against held, the eval's
+// series by name: the index of the first name that would make the eval hold more than
+// MaxEvalSeries series, which series of the eval it would be, and how many the eval would hold
+// after the write; index is -1 where no name would. A name counts once however many times the write
+// names it, and a series the eval holds counts listed or not.
+func seriesPastLimit(held map[string]Series, n int, name func(int) string) (index, count, total int) {
+	if len(held)+n <= MaxEvalSeries {
+		return -1, 0, 0
+	}
+	index, total = -1, len(held)
+	added := map[string]bool{}
+	for at := range n {
+		if _, has := held[name(at)]; has || added[name(at)] {
+			continue
+		}
+		added[name(at)] = true
+		if total++; total > MaxEvalSeries && index < 0 {
+			index, count = at, total
+		}
+	}
+	return index, count, total
+}
+
+// seriesLimitReason is why a write is refused that would make series name the count-th series of
+// the eval evalID, past MaxEvalSeries, and leave it holding total series.
+func seriesLimitReason(evalID, name string, count, total int) string {
+	return fmt.Sprintf("series %q would be series %d of %s, and the write would leave it holding %d where an eval holds at most %d series, so that each of its stored rows is written in one statement of at most %d bytes",
+		name, count, evalID, total, MaxEvalSeries, statementBytes)
 }
 
 // validateLinks refuses the first link of links that carries no relation or whose href is not an

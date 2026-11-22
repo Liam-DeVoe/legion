@@ -203,8 +203,10 @@ func TestAReadingCarriesAValueOrItsReasonAndIsCorrectedOnce(t *testing.T) {
 
 // TestAWriteOfReadingsLogsOneChangePerEval: one statement writing a batch of three readings of one
 // eval logs one eval_readings change, naming the project and the eval and spanning the readings'
-// measured_at; a statement writing readings of two evals logs one change for each; and the write
-// of superseded_at on a replaced reading logs none.
+// measured_at; a statement writing readings of two evals logs one change for each; a transaction
+// of two such statements, as the readings write sends a batch past the statement bound, logs one
+// change of each eval still, spanning every reading of it the two wrote; and the write of
+// superseded_at on a replaced reading logs none.
 func TestAWriteOfReadingsLogsOneChangePerEval(t *testing.T) {
 	ctx := context.Background()
 	store := migratedEvalStore(t)
@@ -258,6 +260,40 @@ func TestAWriteOfReadingsLogsOneChangePerEval(t *testing.T) {
 	t.Logf("marking %d readings superseded logged %d change rows", superseded.RowsAffected(), len(changes))
 	if superseded.RowsAffected() != 2 || len(changes) != 0 {
 		t.Fatalf("marking %d readings superseded logged %d changes; want two readings marked and no change", superseded.RowsAffected(), len(changes))
+	}
+
+	head = changeLogHead(t, store)
+	tx, err := store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin a transaction of two statements: %v", err)
+	}
+	for _, batch := range []struct {
+		evals    []string
+		measured []time.Time
+	}{{[]string{evalID, other}, []time.Time{evalAt(9, 9), evalAt(9, 10)}}, {[]string{evalID, evalID}, []time.Time{evalAt(10, 9), evalAt(8, 1)}}} {
+		if _, err := tx.Exec(ctx, `
+			insert into eval_readings (eval_id, series, row_kind, row_key, value, measured_at, recorded_by)
+			select eval, 'minutes', 'pull_request', 'acme/widgets#tx' || ordinality || '-' || extract(epoch from measured), ordinality * 10, measured, $3::jsonb
+			from unnest($1::text[], $2::timestamptz[]) with ordinality as given(eval, measured, ordinality)
+		`, batch.evals, batch.measured, evalRecorder); err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("write a statement of the transaction: %v", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the transaction of two statements: %v", err)
+	}
+	changes = changesAfter(t, store, head)
+	t.Logf("a transaction of two statements over 2 evals logged %d change rows: %+v", len(changes), changes)
+	spans := map[string][2]time.Time{evalID: {evalAt(8, 1), evalAt(10, 9)}, other: {evalAt(9, 10), evalAt(9, 10)}}
+	if len(changes) != 2 {
+		t.Fatalf("a transaction of two statements writing readings of two evals logged %d changes; want one of each", len(changes))
+	}
+	for _, change := range changes {
+		want, held := spans[change.ref]
+		if !held || change.tOld == nil || !change.tOld.Equal(want[0]) || change.tNew == nil || !change.tNew.Equal(want[1]) {
+			t.Fatalf("the change of %s spans %v to %v; want every reading of it the two statements wrote, %s to %s", change.ref, change.tOld, change.tNew, want[0], want[1])
+		}
 	}
 }
 

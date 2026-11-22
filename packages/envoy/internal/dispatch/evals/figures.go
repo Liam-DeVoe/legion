@@ -948,8 +948,49 @@ const statementRows = 5000
 // statementChunks bounds them. On the farm (dispatch://INFRA-2916, Job infra2916-k8hso1), 9 of 24
 // passes over TCP stalled about 200 ms on a statement whose Bind and Execute messages held 0.8-1.0
 // MB, in the pod's loopback TCP (gVisor), while Postgres sat in ClientRead reading it; none of 24
-// passes over the unix socket did.
+// passes over the unix socket did. A row larger than the bound alone is sent whole, in a statement
+// of its own (statementChunks), so the routes bound what one row may hold: the series of an eval
+// (MaxEvalSeries) and the values of a day row (MaxDaySamples), each the most whose row, at the
+// largest keys the routes take, is written in one statement within the bound.
 const statementBytes = 256 << 10
+
+// MaxEvalSeries is the most series one eval holds, listed or not (CodeSeriesLimit): the most whose
+// stored range row, with every key, the build and each series' name at their largest, the range
+// upsert sends in one statement within statementBytes (rangeUpserts). The range row is the widest
+// row a series makes: a day's figures fold the headline series alone, with no via-repository
+// entry. A register write or a readings write that would leave a logged eval holding more is
+// refused (Register, registerMissing), so no statement that writes a stored row of the eval passes
+// the bound. It is the bound less what the statement holds besides its series' entries
+// (figureRowReserve), over the most one series adds (seriesFigureBytes): (262,144 - 2,337) / 1,106
+// = 234; with 235 series the statement would take 262,247 bytes.
+//
+// The entries count each series' via-repository entry, which a logged eval's rows never carry
+// (writeDays sets none), and without which the bound would admit 446 series. A figures write reads
+// the rows it folds (readFigureGroups, through dayWindow) with one pair (eval, series) for each
+// series whose fold reads its samples, 1,043 bytes at the largest keys, fewer than a series' 1,106
+// here, so that read's statement stays within the bound at this count too (244,062 bytes of pairs
+// for one eval), where at 446 series it would not.
+const MaxEvalSeries = (statementBytes - figureRowReserve) / seriesFigureBytes
+
+// seriesFigureBytes is the most bytes one series adds to a figures column (encodeFigures): its name
+// of at most maxKeyBytes after a 2-byte length, its flag and its count of statistics, a byte each,
+// and the statistics of the widest fold, a quantile's n, sum, median, p90 and max (aggStatistics),
+// each its name after a 1-byte length, a flag and 8 bytes of value: 11 + 13 + 16 + 13 + 13 = 66;
+// then its via-repository entry, the name again after its 2-byte length and a varint of at most
+// binary.MaxVarintLen64 bytes. 582 + 524 = 1,106.
+const seriesFigureBytes = (2 + maxKeyBytes + 1 + 1 + 66) + (2 + maxKeyBytes + binary.MaxVarintLen64)
+
+// figureRowReserve is the most bytes the range upsert of one stored range row takes besides its
+// series' entries (rangeUpserts): the statement's own, paramBytes(8, project, build), 4 bytes of
+// length before each of its 10 parameters, an array header for each of its 8 arrays, a project key
+// (maxProjectKeyBytes) and a build of at most maxKeyBytes (a 40-character commit, or a shorter name
+// the process draws: cmd/dispatch's processBuild); the row's, upsertBytes less its figures, 4 bytes
+// of length in each of the 8 arrays, 4 numbers, dates and times of at most 8 bytes, an eval id
+// (maxEvalIDBytes), and a repository and a deploy repository of at most maxKeyBytes each; and the
+// figures' two counts, of the series and of their via-repository entries, 2 bytes each at this
+// many series. 722 + 1,611 + 4 = 2,337.
+const figureRowReserve = 4*(8+2) + arrayHeaderBytes*8 + maxProjectKeyBytes + maxKeyBytes +
+	8*4 + 4*8 + maxEvalIDBytes + 2*maxKeyBytes + 2*2
 
 // statementChunks is rows cut into the chunks one statement each sends, in their order: each chunk
 // closed before the row that would make it hold more than statementRows rows, or parameters of

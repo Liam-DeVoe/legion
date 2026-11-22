@@ -127,11 +127,13 @@ func undeclaredQueryKey(query url.Values, declared []string) error {
 		if key == evalSessionQueryKey || slices.Contains(declared, key) {
 			continue
 		}
+		// The key is the request's, of any length, and the refusal of a write is the answer its
+		// idempotency key keeps, so it names the key cut to a field's bound.
 		if len(declared) == 0 {
-			return errorf(http.StatusBadRequest, "INVALID_QUERY", "%q is no query key of this route, which takes none but %s", key, evalSessionQueryKey)
+			return errorf(http.StatusBadRequest, "INVALID_QUERY", "%q is no query key of this route, which takes none but %s", evals.BoundedField(key), evalSessionQueryKey)
 		}
 		return errorf(http.StatusBadRequest, "INVALID_QUERY", "%q is no query key of this route, which takes %s and %s",
-			key, strings.Join(declared, ", "), evalSessionQueryKey)
+			evals.BoundedField(key), strings.Join(declared, ", "), evalSessionQueryKey)
 	}
 	return nil
 }
@@ -213,8 +215,10 @@ func unspelledBodyKey(raw json.RawMessage, keys bodyKeys, at string) error {
 		for _, key := range slices.Sorted(maps.Keys(named)) {
 			inner, spelled := keys[key]
 			if !spelled {
+				// The key is the body's, of any length; the refusal names it cut to a field's
+				// bound, so the answer an idempotency key keeps stays bounded whatever the body.
 				return errorf(http.StatusBadRequest, "INVALID_JSON", "%s holds the key %q, which is none of the keys it takes, each spelled exactly so: %s",
-					where, key, strings.Join(slices.Sorted(maps.Keys(keys)), ", "))
+					where, evals.BoundedField(key), strings.Join(slices.Sorted(maps.Keys(keys)), ", "))
 			}
 			if inner == nil {
 				continue
@@ -1031,9 +1035,11 @@ func evalNotFound(project, slug string) error {
 }
 
 // writeEvalError answers err: a registry refusal (*evals.Error) as its own body, {code, error}
-// and for a readings write the refused rows, 404 for a project no row holds, 409 for a project
-// whose `evals-md` slug names a file and 400 for every other; anything else as writeHandlerError
-// does.
+// and for a readings write its refused rows, the first evals.MaxRefusedRows of them, and
+// rows_omitted, how many more there are, every text in it bounded, so the answer the write's
+// idempotency key keeps stays within the statement bound whatever the body; 404 for a project no
+// row holds, 409 for a project whose `evals-md` slug names a file and 400 for every other;
+// anything else as writeHandlerError does.
 func (s *server) writeEvalError(w http.ResponseWriter, err error) {
 	var refused *evals.Error
 	if !errors.As(err, &refused) {

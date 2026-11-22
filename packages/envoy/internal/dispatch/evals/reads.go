@@ -329,19 +329,19 @@ func (s *Store) CountedIn(ctx context.Context, project, family, deployRepo strin
 }
 
 // DayWindow reads the listed day rows of entries, evals of projects, for a window of days and,
-// where compare is not nil, for a compare range too, as one statement: the `union all` of one read
-// of each range, each an index range of eval_days_window for each project, so the compare range is
-// a second windowed read of the same rows and never one read with two windows (R2, R12), and the
-// evals of many projects are one statement. Each row says which range it answers for
-// (RangeWindow, RangeCompare). A range's days are the UTC dates d with From's date <= d < To's
-// date. repos empty reads the projects' own rows (repo is the empty string); repos named reads
-// those repositories' rows, a repository filter's fold. Each eval's rows are its own writer's
-// (Definition.writer, R3): a computed eval's the computation's, a logged eval's the readings
-// write's, so an eval whose source changed folds none of the rows the other writer made. And they
-// are those of the deploy repository its read reads, where the delivery settings name deployRepo
-// ("" where none are set; DeployRepoOf): of an eval keyed by the deploy repository that
-// repository's rows, and of every other the rows of none, so a move of the deploy repository is
-// this selection (deploy_repos.go).
+// where compare is not nil, for a compare range too: the `union all` of one read of each range,
+// each an index range of eval_days_window for each project, so the compare range is a second
+// windowed read of the same rows and never one read with two windows (R2, R12), and the evals of
+// many projects are one statement where its parameters fit in statementBytes (dayWindow says how
+// it cuts them where they do not). Each row says which range it answers for (RangeWindow,
+// RangeCompare). A range's days are the UTC dates d with From's date <= d < To's date. repos empty
+// reads the projects' own rows (repo is the empty string); repos named reads those repositories'
+// rows, a repository filter's fold. Each eval's rows are its own writer's (Definition.writer, R3):
+// a computed eval's the computation's, a logged eval's the readings write's, so an eval whose
+// source changed folds none of the rows the other writer made. And they are those of the deploy
+// repository its read reads, where the delivery settings name deployRepo ("" where none are set;
+// DeployRepoOf): of an eval keyed by the deploy repository that repository's rows, and of every
+// other the rows of none, so a move of the deploy repository is this selection (deploy_repos.go).
 //
 // A row answers what the folds and the answer read and nothing more (WindowRow), since what the
 // read costs is the bytes it sends: no project, repository, listing or build, and a sample list
@@ -357,26 +357,20 @@ func (s *Store) DayWindow(ctx context.Context, projects []string, entries []Entr
 
 // dayWindow is DayWindow's read in q: the pool, or a transaction that writes the rows it reads,
 // as the stored figures' writes fold them (figures.go), so a fold of the rows a write left reads
-// them as a paint does.
+// them as a paint does. It names each eval and, for each series whose samples or last write it
+// reads, the pair (eval, series), which at MaxEvalSeries series of the largest names is about
+// 244 KB of one eval: so entries go in runs whose parameters take at most statementBytes as
+// statementChunks cuts them (the statement's own estimated by paramBytes and each eval's by
+// windowEntryBytes), a statement each, every one sent on q, and the rows they answer are their
+// rows together; an eval's rows all come from its own run's statement, which names it alone of
+// the runs. A read that fits sends the one statement it always did. Each statement reads q's
+// snapshot: a transaction at repeatable read has one for all of them, so the runs read the rows of
+// one moment, as one statement does; on the pool, or in a transaction at read committed, each
+// reads the rows that stand when it runs, as the list read's other reads, which run beside this
+// one, already do.
 func dayWindow(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepo string, repos []string, window Range, compare *Range) ([]WindowRow, error) {
 	if len(repos) == 0 {
 		repos = []string{""}
-	}
-	evalIDs := make([]string, len(entries))
-	var computedEvals, sampledEvals, sampledSeries, lastEvals, lastSeries []string
-	for index, entry := range entries {
-		evalIDs[index] = entry.Definition.EvalID
-		if entry.Definition.Computed() {
-			computedEvals = append(computedEvals, entry.Definition.EvalID)
-		}
-		for _, series := range entry.Series {
-			if readsSamples(entry.Definition, series) {
-				sampledEvals, sampledSeries = append(sampledEvals, entry.Definition.EvalID), append(sampledSeries, series.Series)
-			}
-			if len(repos) > 1 && series.Agg == AggLast {
-				lastEvals, lastSeries = append(lastEvals, entry.Definition.EvalID), append(lastSeries, series.Series)
-			}
-		}
 	}
 	ranged := func(inWindow string, from, to int) string {
 		return `select ` + inWindow + `, eval_id, series, day, n, sum, num, den, max,
@@ -391,22 +385,77 @@ func dayWindow(ctx context.Context, q delivery.Querier, projects []string, entri
 			  and ` + deployRepoCase("deploy_repo", "$9", "$10") + `
 			  and day >= $` + strconv.Itoa(from) + `::date and day < $` + strconv.Itoa(to) + `::date`
 	}
-	query := ranged("true", 11, 12)
-	args := []any{projects, repos, evalIDs, sampledEvals, sampledSeries, computedEvals, lastEvals, lastSeries,
-		keyedEvals(entries), deployRepo, window.From.UTC(), window.To.UTC()}
+	query, times := ranged("true", 11, 12), 2
 	if compare != nil {
-		query += "\n\t\tunion all\n\t\t" + ranged("false", 13, 14)
-		args = append(args, compare.From.UTC(), compare.To.UTC())
+		query, times = query+"\n\t\tunion all\n\t\t"+ranged("false", 13, 14), 4
 	}
-	rows, err := q.Query(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("read the day rows of %v: %w", projects, err)
+	// base is the statement's parameters with no eval: its nine arrays, the deploy repository, the
+	// days of the ranges and the projects and repositories it reads.
+	base := paramBytes(9, deployRepo) + (4+8)*times
+	for _, names := range [][]string{projects, repos} {
+		for _, name := range names {
+			base += 4 + len(name)
+		}
 	}
-	days, err := pgx.CollectRows(rows, scanWindowRow)
-	if err != nil {
-		return nil, fmt.Errorf("read the day rows of %v: %w", projects, err)
+	lastPairs := len(repos) > 1
+	days := []WindowRow{}
+	for run := range statementChunks(entries, base, func(entry *Entry) int { return windowEntryBytes(entry, lastPairs) }) {
+		evalIDs := make([]string, len(run))
+		var computedEvals, sampledEvals, sampledSeries, lastEvals, lastSeries []string
+		for index, entry := range run {
+			evalIDs[index] = entry.Definition.EvalID
+			if entry.Definition.Computed() {
+				computedEvals = append(computedEvals, entry.Definition.EvalID)
+			}
+			for _, series := range entry.Series {
+				if readsSamples(entry.Definition, series) {
+					sampledEvals, sampledSeries = append(sampledEvals, entry.Definition.EvalID), append(sampledSeries, series.Series)
+				}
+				if lastPairs && series.Agg == AggLast {
+					lastEvals, lastSeries = append(lastEvals, entry.Definition.EvalID), append(lastSeries, series.Series)
+				}
+			}
+		}
+		args := []any{projects, repos, evalIDs, sampledEvals, sampledSeries, computedEvals, lastEvals, lastSeries,
+			keyedEvals(run), deployRepo, window.From.UTC(), window.To.UTC()}
+		if compare != nil {
+			args = append(args, compare.From.UTC(), compare.To.UTC())
+		}
+		rows, err := q.Query(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("read the day rows of %v: %w", projects, err)
+		}
+		if days, err = pgx.AppendRows(days, rows, scanWindowRow); err != nil {
+			return nil, fmt.Errorf("read the day rows of %v: %w", projects, err)
+		}
 	}
 	return days, nil
+}
+
+// windowEntryBytes is the most bytes entry adds to the parameters of dayWindow's statement, as pgx
+// encodes them in binary, 4 bytes of length before each element: its eval id in the evals' array,
+// and in the computed and the keyed evals' where it is one of them, and its id and a series' name
+// in the arrays of pairs for each series whose samples it reads and, where lastPairs (the read
+// names more than one repository), for each `last` series, whose last write it reads.
+func windowEntryBytes(entry *Entry, lastPairs bool) int {
+	id := 4 + len(entry.Definition.EvalID)
+	bytes := id
+	if entry.Definition.Computed() {
+		bytes += id
+	}
+	if KeyedByDeployRepo(entry.Definition) {
+		bytes += id
+	}
+	for _, series := range entry.Series {
+		pair := id + 4 + len(series.Series)
+		if readsSamples(entry.Definition, series) {
+			bytes += pair
+		}
+		if lastPairs && series.Agg == AggLast {
+			bytes += pair
+		}
+	}
+	return bytes
 }
 
 // Items reads one page of a logged eval's standing readings (superseded_at is null) measured in

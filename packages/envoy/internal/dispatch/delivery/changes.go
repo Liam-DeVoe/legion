@@ -25,12 +25,13 @@ import (
 // issue's facts carries neither.
 //
 // The three eval kinds hold none either: Repo carries the project key and Ref the eval id
-// (migrations 20261117100012 to 20261117100014). An eval_readings row is one statement's readings
-// of one eval, spanning their measured_at; an eval_versions row is one new version of a
-// definition or of one of its series and carries no span, since it changes how every window of
-// the eval reads; an eval_days row is one transaction's writes of one eval's day rows, spanning
-// midnight UTC of the first and the last day written, and its RunKind names the settings rewrite
-// where that wrote it (EvalDaysWrittenBySettingsRewrite).
+// (migrations 20261117100012 to 20261117100014). An eval_readings row is one transaction's
+// readings of one eval, however many statements wrote them, spanning their measured_at; an
+// eval_versions row is one new version of a definition or of one of its series and carries no
+// span, since it changes how every window of the eval reads; an eval_days row is one
+// transaction's writes of one eval's day rows, spanning midnight UTC of the first and the last day
+// written, and its RunKind names the settings rewrite where that wrote it
+// (EvalDaysWrittenBySettingsRewrite).
 //
 // An issue_filings row holds none either: Repo carries the project key and Ref the filed issue's
 // key (migration 20261117100019). TOld and TNew are the filing's filed_at before and after: an

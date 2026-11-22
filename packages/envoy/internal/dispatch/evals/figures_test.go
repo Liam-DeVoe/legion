@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -800,8 +801,19 @@ var statementOIDs = map[string][]uint32{
 	dayDeleteKind: {pgtype.TextOID, pgtype.TextArrayOID, pgtype.DateArrayOID, pgtype.TextArrayOID, pgtype.TextArrayOID},
 }
 
+// dayUpdateOIDs is the type of each parameter of writeDays' update of its rows (dayUpdates), as
+// the server describes it (TestAReadingsWritesDayRowsGoInBoundedStatementsInKeyOrder holds it to
+// the description): what pgx encodes each argument as.
+var dayUpdateOIDs = []uint32{
+	pgtype.TextOID, pgtype.TextOID, pgtype.TextOID, pgtype.TextOID, pgtype.TextArrayOID, pgtype.TextArrayOID, pgtype.DateArrayOID,
+	pgtype.BoolArrayOID, pgtype.Int4ArrayOID, pgtype.Float8ArrayOID, pgtype.Float8ArrayOID, pgtype.Float8ArrayOID, pgtype.Float8ArrayOID,
+	pgtype.Float8ArrayOID, pgtype.Float8ArrayOID, pgtype.TimestamptzArrayOID, pgtype.Int4ArrayOID, pgtype.TimestamptzArrayOID,
+	pgtype.TextArrayOID,
+}
+
 // encodedBytes is the bytes args, the arguments of a statement, take as pgx sends them as the
-// types oids: each encoded as its parameter's type, in the format pgx sends that type in, with 4
+// types oids: each encoded as its parameter's type, in the format pgx sends it in (a string as
+// text, as pgx's ExtendedQueryBuilder chooses, any other argument in its type's format), with 4
 // bytes of length before it.
 func encodedBytes(t *testing.T, oids []uint32, args []any) int {
 	t.Helper()
@@ -810,7 +822,12 @@ func encodedBytes(t *testing.T, oids []uint32, args []any) int {
 	}
 	types, total := pgtype.NewMap(), 0
 	for index, arg := range args {
-		encoded, err := types.Encode(oids[index], types.FormatCodeForOID(oids[index]), arg, nil)
+		format := types.FormatCodeForOID(oids[index])
+		switch arg.(type) {
+		case string, *string:
+			format = pgtype.TextFormatCode
+		}
+		encoded, err := types.Encode(oids[index], format, arg, nil)
 		if err != nil {
 			t.Fatalf("encode argument %d of a statement of the types %v: %v", index+1, oids, err)
 		}
@@ -821,10 +838,10 @@ func encodedBytes(t *testing.T, oids []uint32, args []any) int {
 
 // paramEstimate is the most bytes args, the arguments of a statement, take as pgx encodes them,
 // estimated from the arguments as statementChunks' callers estimate a statement's (paramBytes,
-// and upsertBytes, deleteBytes or dayRowBytes): 4 bytes of length before each argument, a
-// string's bytes, and an array's header and, for each element, 4 bytes of length and its bytes, a
-// string's or a byte slice's length (none for a null string), 1 for a bool and at most 8 for a
-// number, a date or a time, null or not.
+// and upsertBytes, deleteBytes, dayRowBytes or dayUpdateBytes): 4 bytes of length before each
+// argument, a string's bytes, and an array's header and, for each element, 4 bytes of length and
+// its bytes, a string's or a byte slice's length (none for a null string), 1 for a bool and at
+// most 8 for a number, a date or a time, null or not.
 func paramEstimate(t *testing.T, args []any) int {
 	t.Helper()
 	bytes := 4 * len(args)
@@ -854,6 +871,10 @@ func paramEstimate(t *testing.T, args []any) int {
 		case []int32:
 			bytes += arrayHeaderBytes + (4+8)*len(value)
 		case []int64:
+			bytes += arrayHeaderBytes + (4+8)*len(value)
+		case []int:
+			bytes += arrayHeaderBytes + (4+8)*len(value)
+		case []float64:
 			bytes += arrayHeaderBytes + (4+8)*len(value)
 		case []*float64:
 			bytes += arrayHeaderBytes + (4+8)*len(value)
@@ -919,6 +940,84 @@ func (f *figureStatements) take() []figureStatement {
 	taken := f.sent
 	f.sent = nil
 	return taken
+}
+
+// sentStatements is a tracer (storetest.Traced) that records, in the order they start, every
+// statement on the pool it traces that takes parameters: each one's SQL and arguments.
+type sentStatements struct {
+	mu   sync.Mutex
+	sent []pgx.TraceQueryStartData
+}
+
+func (s *sentStatements) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if len(data.Args) > 0 {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.sent = append(s.sent, data)
+	}
+	return ctx
+}
+
+func (s *sentStatements) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// take answers the statements recorded since the last take, and forgets them.
+func (s *sentStatements) take() []pgx.TraceQueryStartData {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	taken := s.sent
+	s.sent = nil
+	return taken
+}
+
+// sentStatement is one statement sentStatements recorded, measured: its SQL and arguments, the
+// types the server describes its parameters as, and the bytes its parameters take as pgx encodes
+// them as those types (encodedBytes).
+type sentStatement struct {
+	sql   string
+	args  []any
+	oids  []uint32
+	bytes int
+}
+
+// measured is each of sent measured (sentStatement), the types of each SQL's parameters described
+// once, by the server, on a connection of the rig's own pool.
+func (r rig) measured(t *testing.T, sent []pgx.TraceQueryStartData) []sentStatement {
+	t.Helper()
+	ctx := t.Context()
+	conn, err := r.database.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire a connection to describe the statements: %v", err)
+	}
+	defer conn.Release()
+	described := map[string][]uint32{}
+	statements := make([]sentStatement, len(sent))
+	for index, data := range sent {
+		oids, held := described[data.SQL]
+		if !held {
+			description, err := conn.Conn().PgConn().Prepare(ctx, "", data.SQL, nil)
+			if err != nil {
+				t.Fatalf("describe the statement %.120q: %v", strings.Join(strings.Fields(data.SQL), " "), err)
+			}
+			oids, described[data.SQL] = description.ParamOIDs, description.ParamOIDs
+		}
+		statements[index] = sentStatement{sql: data.SQL, args: data.Args, oids: oids, bytes: encodedBytes(t, oids, data.Args)}
+	}
+	return statements
+}
+
+// largestStatement is the largest of statements (sentStatement.bytes) and its SQL's first words,
+// as a failure or a log names it.
+func largestStatement(statements []sentStatement) (int, string) {
+	largest, what := 0, ""
+	for _, statement := range statements {
+		if statement.bytes > largest {
+			largest, what = statement.bytes, statement.sql
+		}
+	}
+	if words := strings.Fields(what); len(words) > 6 {
+		what = strings.Join(words[:6], " ")
+	}
+	return largest, what
 }
 
 // writesOf is the rows statements take, by kind, each list in the order they take its rows.
@@ -1364,6 +1463,127 @@ func TestAStatementOfTheStoredFiguresHoldsAtMostItsBoundAsPgxEncodesIt(t *testin
 	}
 }
 
+// TestTheRoutesBoundsAreTheStatementBoundAtTheLargestKeys: the bounds the routes hold a row to
+// are each the most whose one row, built by the package's own folds and encoders with every key,
+// the build and each series' name at their largest, its statement sends within statementBytes.
+// An eval of MaxEvalSeries series, each folded by any agg with every statistic set and with a
+// via-repository count a varint takes the most bytes for: its range row is upserted (rangeUpserts)
+// in one statement whose parameters take at most the bound as estimated and as pgx encodes them,
+// and so is its day row of headline series (dayUpserts); the widest fold, a quantile's, takes the
+// bytes for each series that MaxEvalSeries' derivation counts (seriesFigureBytes); and with one
+// series more that range row's statement passes the bound, as estimated and as encoded. A day row
+// of MaxDaySamples values is updated (dayUpdates) in one statement whose parameters take at most
+// the bound, as estimated (dayUpdateBytes) and as encoded; with one value more the estimate, the
+// bound statementChunks holds a statement to, passes it (the estimate counts the row's day, n and
+// first at 8 bytes, where pgx encodes each in 4, so that row would still encode within it).
+func TestTheRoutesBoundsAreTheStatementBoundAtTheLargestKeys(t *testing.T) {
+	largest := func(index int, fill string) string {
+		prefix := fmt.Sprintf("%06d-", index)
+		return prefix + strings.Repeat(fill, maxKeyBytes-len(prefix))
+	}
+	project := "P" + strings.Repeat("9", maxProjectKeyBytes-1)
+	evalID := EvalID(project, strings.Repeat("s", maxKeyBytes))
+	scope := figureScope{build: strings.Repeat("b", maxKeyBytes), project: project}
+	repo, deployRepo := strings.Repeat("r", maxKeyBytes), strings.Repeat("d", maxKeyBytes)
+	if len(evalID) != maxEvalIDBytes || len(project) != maxProjectKeyBytes {
+		t.Fatalf("an eval id of %d bytes and a project key of %d, want %d and %d", len(evalID), len(project), maxEvalIDBytes, maxProjectKeyBytes)
+	}
+	day := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	definition := Definition{EvalID: evalID, ProjectKey: project, Source: SourceLogged}
+	// rows is the stored range row and day row of an eval of n series, each named at the largest
+	// a name holds and folded by agg, over one day whose part of each sets every value a fold reads.
+	rows := func(agg string, n int) (rangeFigureRow, dayFigureRow) {
+		series, parts, via := make([]Series, n), make([]measures.DayPart, n), make(map[string]int, n)
+		for index := range n {
+			name, value, at := largest(index, "x"), 1.5+float64(index), day.Add(time.Hour)
+			series[index] = Series{EvalID: evalID, Series: name, SeriesComputation: SeriesComputation{Role: RoleHeadline, Listed: true, Agg: agg}}
+			parts[index] = measures.DayPart{Series: name, Day: day, N: 2, Sum: new(2 * value), Num: new(value), Den: new(1.0), Max: new(value),
+				Samples: []float64{value, value}, LastValue: new(value), LastAt: &at}
+			via[name] = math.MaxInt64
+		}
+		folded := FoldStatistics(definition, series, parts, Range{From: day, To: day.AddDate(0, 0, 1)})
+		for name, stats := range folded {
+			for statistic, value := range stats {
+				if value == nil {
+					t.Fatalf("%s: series %.12s... folds no value of %s, and the check needs every statistic set", agg, name, statistic)
+				}
+			}
+		}
+		return rangeFigureRow{rangeFigureKey: rangeFigureKey{repo: repo, days: math.MaxInt32, end: day.AddDate(0, 0, 1), eval: evalID, deployRepo: deployRepo},
+				key: math.MinInt64, figures: encodeFigures(folded, via), oldest: day},
+			dayFigureRow{dayFigureKey: dayFigureKey{repo: repo, day: day, eval: evalID, deployRepo: deployRepo},
+				key: math.MinInt64, figures: encodeFigures(foldDay(definition, series, parts, day), nil), stamp: math.MaxInt64}
+	}
+	// one is the size of the one statement statements sends, as estimated and as pgx encodes it as
+	// oids, failing the test where it sends more than one.
+	one := func(what string, statements iter.Seq[[]any], oids []uint32) (int, int) {
+		sent := slices.Collect(statements)
+		if len(sent) != 1 {
+			t.Fatalf("%s went in %d statements, want one", what, len(sent))
+		}
+		return paramEstimate(t, sent[0]), encodedBytes(t, oids, sent[0])
+	}
+
+	widest, widestAgg := 0, ""
+	for _, agg := range aggs {
+		ranged, daily := rows(agg, MaxEvalSeries)
+		for _, statement := range []struct {
+			name       string
+			statements iter.Seq[[]any]
+			oids       []uint32
+		}{
+			{"its range row", rangeUpserts(scope, []rangeFigureRow{ranged}), statementOIDs[rangeUpsertKind]},
+			{"its day row", dayUpserts(scope, []dayFigureRow{daily}), statementOIDs[dayUpsertKind]},
+		} {
+			what := fmt.Sprintf("%s of an eval of %d series folded by %s", statement.name, MaxEvalSeries, agg)
+			estimated, encoded := one(what, statement.statements, statement.oids)
+			if estimated > statementBytes || encoded > estimated {
+				t.Errorf("%s takes %d bytes of parameters as pgx encodes them and an estimated %d, where the bound is %d", what, encoded, estimated, statementBytes)
+			}
+			t.Logf("%s: %d bytes of parameters as pgx encodes them, an estimated %d, of %d", what, encoded, estimated, statementBytes)
+		}
+		if len(ranged.figures) > widest {
+			widest, widestAgg = len(ranged.figures), agg
+		}
+	}
+	// The figures' two counts take 2 bytes each at this many series, as figureRowReserve counts them.
+	if want := 2 + MaxEvalSeries*seriesFigureBytes + 2; widestAgg != AggQuantile || widest != want {
+		t.Errorf("the widest range row's figures are %s's, %d bytes, want a quantile's, %d bytes: %d of %d bytes and the two counts", widestAgg, widest, want, MaxEvalSeries, seriesFigureBytes)
+	}
+	past, _ := rows(AggQuantile, MaxEvalSeries+1)
+	what := fmt.Sprintf("the range row of an eval of %d series folded by %s", MaxEvalSeries+1, AggQuantile)
+	if estimated, encoded := one(what, rangeUpserts(scope, []rangeFigureRow{past}), statementOIDs[rangeUpsertKind]); estimated <= statementBytes || encoded <= statementBytes {
+		t.Errorf("%s takes %d bytes of parameters as pgx encodes them and an estimated %d, want both past the bound %d", what, encoded, estimated, statementBytes)
+	} else {
+		t.Logf("%s: %d bytes of parameters as pgx encodes them, an estimated %d, past %d", what, encoded, estimated, statementBytes)
+	}
+
+	dayRow := func(n int) DayRow {
+		lastAt, recordedAt := day.Add(23*time.Hour), day.Add(24*time.Hour)
+		row := DayRow{ProjectKey: project, EvalID: evalID, Repo: repo, Listed: true, DayPart: measures.DayPart{
+			Series: largest(0, "v"), Day: day, N: n, Sum: new(math.MaxFloat64), Num: new(-math.MaxFloat64), Den: new(math.SmallestNonzeroFloat64),
+			Max: new(math.MaxFloat64), LastValue: new(math.Pi), LastAt: &lastAt, LastRecordedAt: &recordedAt, LastReading: "0190c9a4-5c1e-7a00-8000-000000000000",
+		}}
+		row.Samples = make([]float64, n)
+		for index := range row.Samples {
+			row.Samples[index] = math.Pi * float64(index)
+		}
+		return row
+	}
+	what = fmt.Sprintf("a day row of %d values", MaxDaySamples)
+	estimated, encoded := one(what, dayUpdates(project, evalID, scope.build, []DayRow{dayRow(MaxDaySamples)}), dayUpdateOIDs)
+	if estimated > statementBytes || encoded > estimated {
+		t.Errorf("%s takes %d bytes of parameters as pgx encodes them and an estimated %d, where the bound is %d", what, encoded, estimated, statementBytes)
+	}
+	t.Logf("%s: %d bytes of parameters as pgx encodes them, an estimated %d, of %d", what, encoded, estimated, statementBytes)
+	what = fmt.Sprintf("a day row of %d values", MaxDaySamples+1)
+	if estimated, encoded := one(what, dayUpdates(project, evalID, scope.build, []DayRow{dayRow(MaxDaySamples + 1)}), dayUpdateOIDs); estimated <= statementBytes || encoded > estimated {
+		t.Errorf("%s takes %d bytes of parameters as pgx encodes them and an estimated %d, want the estimate past the bound %d", what, encoded, estimated, statementBytes)
+	} else {
+		t.Logf("%s: %d bytes of parameters as pgx encodes them, an estimated %d, past %d", what, encoded, estimated, statementBytes)
+	}
+}
+
 // TestARowPastTheStatementBoundIsWrittenAlone: a range row whose figures alone are past
 // statementBytes is written by a statement of its own, between those of the rows around it, and
 // stored bit for bit, as they are (writeFigures).
@@ -1665,6 +1885,92 @@ func TestAWriteOfAFewRangesOfEveryLengthSendsOneRangeUpsert(t *testing.T) {
 			ranges, slices.Sorted(maps.Keys(lengths)), slices.Sorted(maps.Keys(repos)), upserts, len(FigureLengths))
 	}
 	t.Logf("a reading's write upserted %d ranges of %d lengths and %d repositories in %d statements", ranges, len(lengths), len(repos), upserts)
+}
+
+// TestTheLargestEvalTheRoutesAcceptIsWrittenWithinTheStatementBound: over a settled history whose
+// figures are built, a logged eval takes series of the largest names a name holds, each folded as
+// a quantile, listed and headline, 40 at a time and then one at a time, until a register write is
+// refused: it holds MaxEvalSeries of them, and the refusal (CodeSeriesLimit) names that bound. A
+// readings write of one reading of each series then folds its day and every range that holds it
+// into the stored figures, in its own transaction, and no statement the write sends takes more
+// than statementBytes of parameters as pgx encodes them as the types the server describes; the
+// stored figures it leaves are the fold of the rows that stand.
+func TestTheLargestEvalTheRoutesAcceptIsWrittenWithinTheStatementBound(t *testing.T) {
+	r := newRefresherRig(t)
+	r.seedLoggedQuantile(t)
+	r.settle(t)
+	const slug, most = "big-names", 1600
+	name := func(index int) string {
+		prefix := fmt.Sprintf("s%04d-", index)
+		return prefix + strings.Repeat("x", maxKeyBytes-len(prefix))
+	}
+	register := func(from, to int) error {
+		change := Registration{Project: r.project, Slug: slug, Caller: alice}
+		for index := from; index < to; index++ {
+			change.Series = append(change.Series, SeriesChange{Series: name(index),
+				SeriesComputationChange: SeriesComputationChange{Agg: Set(AggQuantile), Role: Set(RoleHeadline), Listed: Set(true)}})
+		}
+		_, err := r.registry.Register(t.Context(), change)
+		return err
+	}
+	held, step := 0, 40
+	var refused *Error
+	for {
+		if held >= most {
+			t.Fatalf("a logged eval took %d series of %d-byte names and refused none", held, maxKeyBytes)
+		}
+		err := register(held, held+step)
+		if err == nil {
+			held += step
+			continue
+		}
+		if !errors.As(err, &refused) || refused.Code != CodeSeriesLimit {
+			t.Fatalf("a register write of series %d to %d was answered %v, want %s", held, held+step, err, CodeSeriesLimit)
+		}
+		if step == 1 {
+			break
+		}
+		step = 1
+	}
+	if held != MaxEvalSeries || !strings.Contains(refused.Message, strconv.Itoa(held)) || refused.Field != "series[0].series" {
+		t.Fatalf("the eval took %d series and then refused series[0].series? %q: %s, want %d taken and the bound named", held, refused.Field, refused.Message, MaxEvalSeries)
+	}
+	t.Logf("the eval took %d series; then: %s %s: %s", held, refused.Code, refused.Field, refused.Message)
+
+	statements := &sentStatements{}
+	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
+	rows := make([]json.RawMessage, held)
+	for index := range held {
+		rows[index] = row(t, map[string]any{"series": name(index), "row_kind": "review", "row_key": fmt.Sprint(index), "value": 1.5 + float64(index),
+			"measured_at": refresherToday.Add(time.Duration(index) * time.Second)})
+	}
+	if _, err := r.registry.WriteReadings(t.Context(), Batch{Project: r.project, Slug: slug, Rows: rows, Caller: alice, BuiltBy: r.build}); err != nil {
+		t.Fatalf("write a reading of each of %d series: %v", held, err)
+	}
+	sent := r.measured(t, statements.take())
+	upserts := 0
+	for _, statement := range sent {
+		if statement.bytes > statementBytes {
+			t.Errorf("the write sent %.80q with %d bytes of parameters as pgx encodes them, past %d", strings.Join(strings.Fields(statement.sql), " "), statement.bytes, statementBytes)
+		}
+		if figureStatementKind(statement.sql) == rangeUpsertKind {
+			upserts += rowsIn(statement.args)
+		}
+	}
+	if upserts == 0 {
+		t.Errorf("the write upserted no range row of %s, and the check needs the widest rows written", slug)
+	}
+	stored := r.storedFigures(t)
+	expectTruth(t, "after the write of the largest eval", stored, r.truthFigures(t))
+	widest := 0
+	for line, figure := range stored {
+		if strings.HasSuffix(line, EvalID(r.project, slug)) {
+			widest = max(widest, len(figure.figures))
+		}
+	}
+	largest, what := largestStatement(sent)
+	t.Logf("%d statements, the largest %d bytes of parameters (%s), of %d; %d range rows upserted, the widest stored figures of %s %d bytes",
+		len(sent), largest, what, statementBytes, upserts, slug, widest)
 }
 
 // figureFoldTimingEnv names the variable that runs TestTheFoldOfOneCutOfSixEvalsIsTimed: set to 1,

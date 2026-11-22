@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,9 +76,16 @@ type Written struct {
 // appended to where the batch replaces no reading of their day, and folded again from the
 // readings that stand where it does, so the write reads no stored reading but the readings it
 // replaces and the standing readings of the days it corrects. A batch that would leave a day row
-// holding a value past what a float holds is refused (CodeReadingDayOverflow). The same
-// transaction folds again the stored figures of the days whose rows it moved, where BuiltBy
-// writes them (figures.go), under the eval's lock it holds.
+// holding a value past what a float holds is refused (CodeReadingDayOverflow), and so is one that
+// would leave a day row holding more than MaxDaySamples values (CodeReadingDaySamplesLimit), or a
+// logged eval holding more than MaxEvalSeries series (CodeSeriesLimit, registerMissing), or a
+// reading too large for any statement within statementBytes (CodeReadingTooLarge). Every list the
+// write sends that grows with its batch goes in statements of at most statementBytes, all in its
+// transaction: its readings (insertReadings), the ids it corrects (lockReplaced, the supersede,
+// foldedReadings), and the day rows and standing readings writeDays writes and reads. A refusal
+// names at most MaxRefusedRows row errors and counts the rest (rowsRefusal), so its answer is
+// bounded whatever the body. The same transaction folds again the stored figures of the days whose
+// rows it moved, where BuiltBy writes them (figures.go), under the eval's lock it holds.
 func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error) {
 	if !slugPattern.MatchString(batch.Slug) {
 		return Written{}, refusal(CodeSlugInvalid, "slug %q is not lower-case letters, digits and hyphens starting with a letter or a digit", batch.Slug)
@@ -124,8 +132,12 @@ func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error)
 			for index, reading := range removed {
 				ids[index] = reading.ID
 			}
-			if _, err := w.Exec(ctx, `update eval_readings set superseded_at = now() where id = any($1::text[]::uuid[])`, ids); err != nil {
-				return fmt.Errorf("supersede the readings %s corrects: %w", evalID, err)
+			// The ids grow with the batch, so they go in statements of at most statementBytes;
+			// lockReplaced locked every one of them already.
+			for chunk := range statementChunks(ids, paramBytes(1), textBytes) {
+				if _, err := w.Exec(ctx, `update eval_readings set superseded_at = now() where id = any($1::text[]::uuid[])`, chunk); err != nil {
+					return fmt.Errorf("supersede the readings %s corrects: %w", evalID, err)
+				}
 			}
 		}
 		if !definition.Computed() {
@@ -172,7 +184,8 @@ func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error)
 // foldedReadings is each of replaced, readings of the eval evalID, that its day rows hold: one
 // written while the eval was logged (writtenWhileLogged). A reading written while the eval was
 // computed was stored and never folded (WriteReadings), so a correction of it after a register
-// write made the eval logged appends to its day rows as a write that replaces nothing does.
+// write made the eval logged appends to its day rows as a write that replaces nothing does. The
+// ids it reads by grow with the batch, so they go in statements of at most statementBytes.
 func foldedReadings(ctx context.Context, tx pgx.Tx, evalID string, replaced []Reading) ([]Reading, error) {
 	if len(replaced) == 0 {
 		return nil, nil
@@ -181,18 +194,24 @@ func foldedReadings(ctx context.Context, tx pgx.Tx, evalID string, replaced []Re
 	for index, reading := range replaced {
 		ids[index] = reading.ID
 	}
-	rows, err := tx.Query(ctx, `
-		with `+loggedSpans+`
-		select r.id::text from eval_readings r
-		where r.eval_id = $1 and r.id = any($2::text[]::uuid[]) and `+writtenWhileLogged, evalID, ids)
-	if err != nil {
-		return nil, fmt.Errorf("read which corrected readings were folded: %w", err)
+	held := make(map[string]bool, len(ids))
+	for chunk := range statementChunks(ids, paramBytes(1, evalID), textBytes) {
+		rows, err := tx.Query(ctx, `
+			with `+loggedSpans+`
+			select r.id::text from eval_readings r
+			where r.eval_id = $1 and r.id = any($2::text[]::uuid[]) and `+writtenWhileLogged, evalID, chunk)
+		if err != nil {
+			return nil, fmt.Errorf("read which corrected readings were folded: %w", err)
+		}
+		var id string
+		if _, err := pgx.ForEachRow(rows, []any{&id}, func() error {
+			held[id] = true
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read which corrected readings were folded: %w", err)
+		}
 	}
-	held, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read which corrected readings were folded: %w", err)
-	}
-	return slices.DeleteFunc(slices.Clone(replaced), func(reading Reading) bool { return !slices.Contains(held, reading.ID) }), nil
+	return slices.DeleteFunc(slices.Clone(replaced), func(reading Reading) bool { return !held[reading.ID] }), nil
 }
 
 // registerMissing answers the eval's definition, registering the eval and every series of the
@@ -202,15 +221,30 @@ func foldedReadings(ctx context.Context, tx pgx.Tx, evalID string, replaced []Re
 // committed, and no register write lists or unlists a series of it until this write commits, the
 // listing writeDays writes into the day rows among what it waits for (relistDays). It answers
 // whether it registered the eval, the series it registered, in the batch's order, and the newest
-// version of every series of the eval by name, those it registered among them. An eval it
-// registers gets its section first, before its version's insert: the write takes the document's
-// owner lock (lockDocument) and queues the section's writes for the commit (writeMethod), so that
-// document work runs before the write's first statement that writes.
+// version of every series of the eval by name, those it registered among them. A batch whose new
+// series would leave a logged eval holding more than MaxEvalSeries series is refused, naming the
+// first row whose series passes the bound and how many the eval would hold (CodeSeriesLimit),
+// counted under that lock, before the write registers anything: one row, so the refusal of a
+// batch of thousands of new series stays a short answer; an eval this write registers is logged,
+// and a computed eval's series a reading registers are unlisted and never folded, so it is held to
+// no bound. An eval it registers gets its section first, before its version's insert: the write
+// takes the document's owner lock (lockDocument) and queues the section's writes for the commit
+// (writeMethod), so that document work runs before the write's first statement that writes.
 func (s *Store) registerMissing(ctx context.Context, w *writeTx, batch Batch, rows []Reading) (Definition, bool, []Series, map[string]Series, error) {
 	evalID := EvalID(batch.Project, batch.Slug)
 	definition, found, err := newestDefinition(ctx, w.Tx, evalID)
 	if err != nil {
 		return Definition{}, false, nil, nil, err
+	}
+	series, err := currentSeries(ctx, w.Tx, evalID)
+	if err != nil {
+		return Definition{}, false, nil, nil, err
+	}
+	if !definition.Computed() {
+		if index, count, total := seriesPastLimit(series, len(rows), func(index int) string { return rows[index].Series }); index >= 0 {
+			return Definition{}, false, nil, nil, rowsRefusal([]RowError{{Index: index, Code: CodeSeriesLimit, Field: "series",
+				Message: seriesLimitReason(evalID, rows[index].Series, count, total)}})
+		}
 	}
 	registered := false
 	if !found {
@@ -230,10 +264,6 @@ func (s *Store) registerMissing(ctx context.Context, w *writeTx, batch Batch, ro
 			return Definition{}, false, nil, nil, err
 		}
 		definition, registered = stored, true
-	}
-	series, err := currentSeries(ctx, w.Tx, evalID)
-	if err != nil {
-		return Definition{}, false, nil, nil, err
 	}
 	var added []Series
 	for _, row := range rows {
@@ -258,7 +288,9 @@ func (s *Store) registerMissing(ctx context.Context, w *writeTx, batch Batch, ro
 // earlier correction, or by an earlier row of the same batch. The row lock is what a second
 // correction of the same reading waits on, so it reads the reading the first one superseded. It
 // runs under the eval's lock, which WriteReadings takes first: a row lock gives the transaction
-// an id, which the write must not hold while it waits for that lock (inWrite).
+// an id, which the write must not hold while it waits for that lock (inWrite). The ids grow with
+// the batch, so they go sorted and each once in statements of at most statementBytes, each
+// locking its own in id order: the statements lock the readings in the order one statement does.
 func lockReplaced(ctx context.Context, tx pgx.Tx, evalID string, rows []Reading) (map[string]Reading, []RowError, error) {
 	var ids []string
 	for _, row := range rows {
@@ -269,19 +301,24 @@ func lockReplaced(ctx context.Context, tx pgx.Tx, evalID string, rows []Reading)
 	if len(ids) == 0 {
 		return nil, nil, nil
 	}
-	found, err := tx.Query(ctx, `
-		select `+ReadingColumns+` from eval_readings where id = any($1::text[]::uuid[]) order by id for update
-	`, ids)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read the readings %s corrects: %w", evalID, err)
-	}
-	stored, err := pgx.CollectRows(found, func(row pgx.CollectableRow) (Reading, error) { return scanReading(row) })
-	if err != nil {
-		return nil, nil, fmt.Errorf("read the readings %s corrects: %w", evalID, err)
-	}
-	byID := make(map[string]Reading, len(stored))
-	for _, reading := range stored {
-		byID[reading.ID] = reading
+	// A replaced id is a parsed uuid's canonical text, whose bytes sort as the uuids do.
+	slices.Sort(ids)
+	ids = slices.Compact(ids)
+	byID := make(map[string]Reading, len(ids))
+	for chunk := range statementChunks(ids, paramBytes(1), textBytes) {
+		found, err := tx.Query(ctx, `
+			select `+ReadingColumns+` from eval_readings where id = any($1::text[]::uuid[]) order by id for update
+		`, chunk)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read the readings %s corrects: %w", evalID, err)
+		}
+		stored, err := pgx.CollectRows(found, func(row pgx.CollectableRow) (Reading, error) { return scanReading(row) })
+		if err != nil {
+			return nil, nil, fmt.Errorf("read the readings %s corrects: %w", evalID, err)
+		}
+		for _, reading := range stored {
+			byID[reading.ID] = reading
+		}
 	}
 	var refused []RowError
 	replacedBy := map[string]int{}
@@ -308,10 +345,55 @@ func lockReplaced(ctx context.Context, tx pgx.Tx, evalID string, rows []Reading)
 	return byID, refused, nil
 }
 
-// insertReadings stores rows in one statement, so the batch logs one change row whatever its
-// size (the statement-level trigger of 20261117100012), with the server's recorder and time, and
-// each link stored at now, and answers them in the batch's order. Each row's id was minted when
-// it was parsed.
+// textBytes is the most bytes text adds to an array of texts as pgx encodes it in binary: 4 bytes
+// of length and its bytes. Each list of ids a readings write sends grows with its batch, and is cut
+// by it into statements of at most statementBytes (statementChunks).
+func textBytes(text *string) int {
+	return 4 + len(*text)
+}
+
+// readingArrays is how many arrays insertReadings' statement takes, one for each column of a
+// reading it is given, beside its two scalars (the eval and the recorder).
+const readingArrays = 19
+
+// readingBytes is the most bytes row adds to the parameters of insertReadings' statement, as pgx
+// encodes them in binary, attributes and links being the JSON it stores of them: in each of the
+// statement's arrays 4 bytes of length and the element, each text its bytes (the id a correction
+// replaces among them, none for a reading that replaces none), and each of its value, n, ci_low,
+// ci_high, ci_level and measured_at at most 8.
+func readingBytes(row *Reading, attributes, links string) int {
+	return readingArrays*4 + len(row.ID) + len(row.Series) + len(row.RowKey) + len(row.RowKind) + len(row.Col) + len(row.ValueAbsentReason) +
+		len(row.Unit) + len(row.NUnit) + len(attributes) + len(links) + len(row.Source) + len(row.Note) + len(row.Replaces) + 6*8
+}
+
+// largestText is the field of row, as a row spells it, whose text takes the most bytes as the
+// write sends it: the field a refusal of a reading too large to store names.
+func largestText(row *Reading, attributes, links string) string {
+	field, largest := "", -1
+	for _, text := range []struct {
+		field string
+		bytes int
+	}{
+		{"note", len(row.Note)}, {"attributes", len(attributes)}, {"links", len(links)}, {"source", len(row.Source)},
+		{"value_absent_reason", len(row.ValueAbsentReason)}, {"col", len(row.Col)}, {"unit", len(row.Unit)}, {"n_unit", len(row.NUnit)},
+	} {
+		if text.bytes > largest {
+			field, largest = text.field, text.bytes
+		}
+	}
+	return field
+}
+
+// insertReadings stores rows, with the server's recorder and time and each link stored at now, and
+// answers them in the batch's order. Each row's id was minted when it was parsed. The rows go in
+// the batch's order in statements whose parameters take at most statementBytes as
+// statementChunks cuts them (the statement's own estimated by paramBytes and each row's by
+// readingBytes), all in tx; each statement widens the one eval_readings change the transaction
+// logs of the eval (the statement-level trigger of 20261117100012), so the batch logs one change
+// row whatever its size. A reading whose row alone would pass the bound, a note or attributes of
+// some hundred kilobytes in a body of up to a megabyte, is refused, naming its largest field
+// (CodeReadingTooLarge), before any statement is sent: no statement within the bound could store
+// it.
 func insertReadings(ctx context.Context, tx pgx.Tx, evalID string, rows []Reading, caller model.Actor, now time.Time) ([]Reading, error) {
 	recordedBy, err := json.Marshal(caller.Recorded())
 	if err != nil {
@@ -325,7 +407,12 @@ func insertReadings(ctx context.Context, tx pgx.Tx, evalID string, rows []Readin
 	attributes, links := make([]string, count), make([]string, count)
 	measuredAt := make([]time.Time, count)
 	replaces := make([]*string, count)
-	for index, row := range rows {
+	sizes := make([]int, count)
+	// base is the statement's parameters with no row: its arrays, the eval and the recorder.
+	base := paramBytes(readingArrays, evalID) + 4 + len(recordedBy)
+	var refused []RowError
+	for index := range rows {
+		row := &rows[index]
 		ids[index], series[index], rowKeys[index], rowKinds[index], cols[index] = row.ID, row.Series, row.RowKey, row.RowKind, row.Col
 		values[index], ciLows[index], ciHighs[index], ciLevels[index] = row.Value, row.CILow, row.CIHigh, row.CILevel
 		reasons[index], units[index], nUnits[index], sources[index], notes[index] = row.ValueAbsentReason, row.Unit, row.NUnit, row.Source, row.Note
@@ -345,31 +432,45 @@ func insertReadings(ctx context.Context, tx pgx.Tx, evalID string, rows []Readin
 		if row.Replaces != "" {
 			replaces[index] = &row.Replaces
 		}
+		if sizes[index] = readingBytes(row, attributes[index], links[index]); base+sizes[index] > statementBytes {
+			refused = append(refused, RowError{Index: index, Code: CodeReadingTooLarge, Field: largestText(row, attributes[index], links[index]), Message: fmt.Sprintf(
+				"the reading takes %d bytes as the write sends it, and one statement of this write sends at most %d with the eval and the recorder it names (%d in all), so no statement could store it",
+				sizes[index], statementBytes-base, statementBytes)})
+		}
 	}
-	stored, err := tx.Query(ctx, `
-		insert into eval_readings (id, eval_id, series, row_key, row_kind, col, value, value_absent_reason, unit, n,
-			n_unit, ci_low, ci_high, ci_level, attributes, links, measured_at, recorded_by, source, note, replaces)
-		select r.id::uuid, $1, r.series, r.row_key, r.row_kind, r.col, r.value, r.reason, r.unit, r.n, r.n_unit,
-			r.ci_low, r.ci_high, r.ci_level, r.attributes::jsonb, r.links::jsonb, r.measured_at, $2::jsonb, r.source,
-			r.note, r.replaces::uuid
-		from unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::float8[], $9::text[], $10::text[],
-			$11::int8[], $12::text[], $13::float8[], $14::float8[], $15::float8[], $16::text[], $17::text[],
-			$18::timestamptz[], $19::text[], $20::text[], $21::text[])
-			as r(id, series, row_key, row_kind, col, value, reason, unit, n, n_unit, ci_low, ci_high, ci_level,
-				attributes, links, measured_at, source, note, replaces)
-		returning `+ReadingColumns,
-		evalID, recordedBy, ids, series, rowKeys, rowKinds, cols, values, reasons, units, ns, nUnits, ciLows, ciHighs,
-		ciLevels, attributes, links, measuredAt, sources, notes, replaces)
-	if err != nil {
-		return nil, fmt.Errorf("write the readings of %s: %w", evalID, err)
+	if len(refused) > 0 {
+		return nil, rowsRefusal(refused)
 	}
-	inserted, err := pgx.CollectRows(stored, func(row pgx.CollectableRow) (Reading, error) { return scanReading(row) })
-	if err != nil {
-		return nil, fmt.Errorf("write the readings of %s: %w", evalID, err)
-	}
-	byID := make(map[string]Reading, len(inserted))
-	for _, reading := range inserted {
-		byID[reading.ID] = reading
+	byID := make(map[string]Reading, count)
+	from := 0
+	for run := range statementChunks(sizes, base, func(size *int) int { return *size }) {
+		to := from + len(run)
+		stored, err := tx.Query(ctx, `
+			insert into eval_readings (id, eval_id, series, row_key, row_kind, col, value, value_absent_reason, unit, n,
+				n_unit, ci_low, ci_high, ci_level, attributes, links, measured_at, recorded_by, source, note, replaces)
+			select r.id::uuid, $1, r.series, r.row_key, r.row_kind, r.col, r.value, r.reason, r.unit, r.n, r.n_unit,
+				r.ci_low, r.ci_high, r.ci_level, r.attributes::jsonb, r.links::jsonb, r.measured_at, $2::jsonb, r.source,
+				r.note, r.replaces::uuid
+			from unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::float8[], $9::text[], $10::text[],
+				$11::int8[], $12::text[], $13::float8[], $14::float8[], $15::float8[], $16::text[], $17::text[],
+				$18::timestamptz[], $19::text[], $20::text[], $21::text[])
+				as r(id, series, row_key, row_kind, col, value, reason, unit, n, n_unit, ci_low, ci_high, ci_level,
+					attributes, links, measured_at, source, note, replaces)
+			returning `+ReadingColumns,
+			evalID, recordedBy, ids[from:to], series[from:to], rowKeys[from:to], rowKinds[from:to], cols[from:to], values[from:to],
+			reasons[from:to], units[from:to], ns[from:to], nUnits[from:to], ciLows[from:to], ciHighs[from:to], ciLevels[from:to],
+			attributes[from:to], links[from:to], measuredAt[from:to], sources[from:to], notes[from:to], replaces[from:to])
+		if err != nil {
+			return nil, fmt.Errorf("write the readings of %s: %w", evalID, err)
+		}
+		inserted, err := pgx.CollectRows(stored, func(row pgx.CollectableRow) (Reading, error) { return scanReading(row) })
+		if err != nil {
+			return nil, fmt.Errorf("write the readings of %s: %w", evalID, err)
+		}
+		for _, reading := range inserted {
+			byID[reading.ID] = reading
+		}
+		from = to
 	}
 	ordered := make([]Reading, len(rows))
 	for index, row := range rows {
@@ -378,25 +479,42 @@ func insertReadings(ctx context.Context, tx pgx.Tx, evalID string, rows []Readin
 	return ordered, nil
 }
 
-// rowsRefusal is the refusal of a batch with refused rows: every one, by index, under the code
-// of the first.
+// rowsRefusal is the refusal of a batch with refused rows, under the code of the first by index:
+// the first MaxRefusedRows row errors by index, each text bounded (fieldTextBytes,
+// errorTextBytes), and how many more there are (RowsOmitted), so the refusal of a megabyte of bad
+// rows is an answer of at most statementBytes.
 func rowsRefusal(refused []RowError) *Error {
 	sort.SliceStable(refused, func(i, j int) bool { return refused[i].Index < refused[j].Index })
 	var indexes []string
-	for _, row := range refused {
-		if index := fmt.Sprint(row.Index); !slices.Contains(indexes, index) {
-			indexes = append(indexes, index)
+	rows := 0
+	for at, row := range refused {
+		if at > 0 && row.Index == refused[at-1].Index {
+			continue
+		}
+		if rows++; rows <= 20 {
+			indexes = append(indexes, strconv.Itoa(row.Index))
 		}
 	}
-	named := "row " + indexes[0] + " cannot be written"
-	if len(indexes) > 1 {
+	listed := refused[:min(len(refused), MaxRefusedRows)]
+	for at := range listed {
+		listed[at].Field, listed[at].Message = boundText(listed[at].Field, fieldTextBytes), boundText(listed[at].Message, errorTextBytes)
+	}
+	var named string
+	switch {
+	case rows == 1:
+		named = "row " + indexes[0] + " cannot be written"
+	case rows <= len(indexes):
 		named = "rows " + strings.Join(indexes, ", ") + " cannot be written"
+	default:
+		named = fmt.Sprintf("%d rows cannot be written, the first row %s", rows, indexes[0])
 	}
-	return &Error{
-		Code:    refused[0].Code,
-		Message: "the batch stores no reading: " + named + ", and rows says why for each",
-		Rows:    refused,
+	message := "the batch stores no reading: " + named + ", and rows says why for each"
+	omitted := len(refused) - len(listed)
+	if omitted > 0 {
+		message = fmt.Sprintf("the batch stores no reading: %s; rows says why for the first %d refusals by row, and rows_omitted counts the other %d",
+			named, len(listed), omitted)
 	}
+	return &Error{Code: refused[0].Code, Message: boundText(message, errorTextBytes), Rows: listed, RowsOmitted: omitted}
 }
 
 // readingKeys are the keys a row may carry and linkKeys those of each of its links, the json tags

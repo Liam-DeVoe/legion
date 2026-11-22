@@ -1,6 +1,7 @@
 package evals
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"maps"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -324,6 +326,537 @@ func TestABatchThatWouldOverflowADayRowIsRefusedNamingItsRow(t *testing.T) {
 	spread := r.write(t, "fresh", alice, huge("a", 1e308, 1, at(5, 8, 0)), huge("b", 1e308, 1, at(6, 8, 0)))
 	if len(spread.Readings) != 2 {
 		t.Errorf("the readings spread over two days stored %d readings, want 2", len(spread.Readings))
+	}
+}
+
+// TestAReadingsWriteThatWouldPassTheSeriesBoundIsRefusedNamingItsRow: a logged eval holds four
+// series fewer than MaxEvalSeries. A batch naming six series it does not hold, two of them twice,
+// beside series it holds, is refused (CodeSeriesLimit) naming its one row whose series first passes
+// the bound, the bound, and how many series the eval would hold, and stores nothing: no reading and
+// no series. The batch less the two series past the bound is taken, and the eval then holds
+// MaxEvalSeries series; a batch of series it holds is taken, and one naming one more series is
+// refused at that row.
+func TestAReadingsWriteThatWouldPassTheSeriesBoundIsRefusedNamingItsRow(t *testing.T) {
+	r := newRig(t)
+	const slug = "series-bound"
+	evalID := EvalID(r.project, slug)
+	change := Registration{Project: r.project, Slug: slug, Caller: alice}
+	for index := range MaxEvalSeries - 4 {
+		change.Series = append(change.Series, SeriesChange{Series: fmt.Sprintf("held-%03d", index)})
+	}
+	if _, err := r.registry.Register(t.Context(), change); err != nil {
+		t.Fatalf("register %d series of %s: %v", len(change.Series), slug, err)
+	}
+	reading := func(series string, index int) json.RawMessage {
+		return row(t, map[string]any{"series": series, "row_kind": "run", "row_key": fmt.Sprint(index), "value": float64(index), "measured_at": at(3, 9, index)})
+	}
+	batch := func(names ...string) []json.RawMessage {
+		rows := make([]json.RawMessage, len(names))
+		for index, name := range names {
+			rows[index] = reading(name, index)
+		}
+		return rows
+	}
+	countSeries := `select count(distinct series) from eval_series where eval_id = $1`
+	series := func() int { return r.count(t, countSeries, evalID) }
+	for _, test := range []struct {
+		what    string
+		names   []string
+		refused int
+		holds   int
+		would   int
+	}{
+		{"six new series, the fifth and sixth past the bound", []string{"held-000", "new-a", "new-b", "new-a", "new-c", "new-d", "new-e", "held-001", "new-f", "new-e"},
+			6, MaxEvalSeries - 4, MaxEvalSeries + 2},
+		{"the four new series the bound takes", []string{"held-000", "new-a", "new-b", "new-a", "new-c", "new-d", "held-001"}, -1, MaxEvalSeries, 0},
+		{"series the eval holds", []string{"held-002", "new-d", "new-a"}, -1, MaxEvalSeries, 0},
+		{"one series more", []string{"held-002", "new-g", "new-a"}, 1, MaxEvalSeries, MaxEvalSeries + 1},
+	} {
+		readings := r.count(t, `select count(*) from eval_readings where eval_id = $1`, evalID)
+		_, err := r.registry.WriteReadings(t.Context(), Batch{Project: r.project, Slug: slug, Rows: batch(test.names...), Caller: alice, BuiltBy: testBuild})
+		stored := r.count(t, `select count(*) from eval_readings where eval_id = $1`, evalID) - readings
+		if test.refused < 0 {
+			if err != nil || stored != len(test.names) || series() != test.holds {
+				t.Errorf("%s: answered %v, %d readings stored and the eval holding %d series, want %d stored and %d series", test.what, err, stored, series(), len(test.names), test.holds)
+			}
+			continue
+		}
+		var refused *Error
+		if !errors.As(err, &refused) || refused.Code != CodeSeriesLimit || len(refused.Rows) != 1 {
+			t.Fatalf("%s: answered %v, want %s naming one row", test.what, err, CodeSeriesLimit)
+		}
+		one := refused.Rows[0]
+		if one.Index != test.refused || one.Code != CodeSeriesLimit || one.Field != "series" ||
+			!strings.Contains(one.Message, fmt.Sprintf("at most %d series", MaxEvalSeries)) || !strings.Contains(one.Message, fmt.Sprintf("holding %d", test.would)) {
+			t.Errorf("%s: row %d is refused %s on %q: %s; want row %d, %s on series, naming the bound %d and the %d series the eval would hold",
+				test.what, one.Index, one.Code, one.Field, one.Message, test.refused, CodeSeriesLimit, MaxEvalSeries, test.would)
+		}
+		if stored != 0 || series() != test.holds {
+			t.Errorf("%s: %d readings stored and the eval holding %d series after the refusal, want none stored and %d series", test.what, stored, series(), test.holds)
+		}
+		t.Logf("%s: refused row %d: %s", test.what, one.Index, one.Message)
+	}
+}
+
+// dayKeyOrder answers the positions, from 0, of the day keys its arrays hold (series, repository
+// and day, each array a column of the keys), in the byte order of the keys, every text `collate
+// "C"`: the order every statement that inserts or locks one eval's day rows takes them in
+// (compareDayKeys).
+const dayKeyOrder = `
+	select (k.sent - 1)::int from unnest($1::text[], $2::text[], $3::date[]) with ordinality as k(series, repo, day, sent)
+	order by k.series collate "C", k.repo collate "C", k.day`
+
+// TestAReadingsWritesDayRowsGoInBoundedStatementsInKeyOrder: a readings write of 190 readings on
+// one day, each of its own series and its own repository (attributes.repo), each name the most
+// bytes a key holds, touches 380 day rows, whose keys one insert would send in more than
+// statementBytes of parameters. writeDays' insert, lock and update each go in at least two
+// statements, and no statement of the write takes more than the bound as pgx encodes its
+// parameters as the types the server describes (the update's as dayUpdateOIDs, and within its
+// estimate); the inserts, the locks and the updates each take every key once, in the byte order of
+// the keys across their statements, the order Postgres's `collate "C"` gives them (dayKeyOrder);
+// every row holds its one reading; and the write logs one eval_days change of the eval, spanning
+// the day, as one statement does (migration 20261117100014).
+func TestAReadingsWritesDayRowsGoInBoundedStatementsInKeyOrder(t *testing.T) {
+	r := newRig(t)
+	statements := &sentStatements{}
+	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
+	const slug, count = "wide-keys", 190
+	evalID := EvalID(r.project, slug)
+	day := at(3, 0, 0)
+	// Of names that start with "a", "A", "b" and "B", a collation that folds case orders some the
+	// other way from their bytes.
+	name := func(kind string, index int) string {
+		prefix := fmt.Sprintf("%c%s%03d-", "aAbB"[index%4], kind, index)
+		return prefix + strings.Repeat("x", maxKeyBytes-len(prefix))
+	}
+	rows := make([]json.RawMessage, count)
+	var want []dayKey
+	values := map[dayKey]float64{}
+	for index := range count {
+		series, repo, value := name("s", index), name("r", index), float64(index)+0.25
+		rows[index] = row(t, map[string]any{"series": series, "row_kind": "run", "row_key": fmt.Sprint(index), "value": value,
+			"measured_at": day.Add(time.Duration(index) * time.Second), "attributes": map[string]any{"repo": repo}})
+		for _, key := range []dayKey{{series: series, day: day}, {series: series, repo: repo, day: day}} {
+			want, values[key] = append(want, key), value
+		}
+	}
+	slices.SortFunc(want, compareDayKeys)
+	whole := paramBytes(4, r.project, evalID, writerReadings, testBuild)
+	for index := range want {
+		whole += want[index].insertBytes()
+	}
+	if whole <= statementBytes {
+		t.Fatalf("one insert of the %d keys would take an estimated %d bytes of parameters, and the check needs more than %d", len(want), whole, statementBytes)
+	}
+	heads := r.changeHeads(t)
+	r.write(t, slug, alice, rows...)
+	sent := r.measured(t, statements.take())
+	for _, statement := range sent {
+		if statement.bytes > statementBytes {
+			t.Errorf("the write sent %.80q with %d bytes of parameters as pgx encodes them, past %d", strings.Join(strings.Fields(statement.sql), " "), statement.bytes, statementBytes)
+		}
+	}
+	for _, kind := range []struct {
+		name string
+		// marks is what the statement's SQL holds, each of them.
+		marks []string
+		// at is the index of the statement's series, after which come its repositories and days.
+		at int
+	}{
+		{"insert", []string{"insert into eval_days"}, 4},
+		{"lock", []string{"from eval_days", "for update"}, 3},
+		{"update", []string{"update eval_days"}, 4},
+	} {
+		var series, repos []string
+		var days []time.Time
+		var sizes []int
+		for _, statement := range sent {
+			if slices.ContainsFunc(kind.marks, func(mark string) bool { return !strings.Contains(statement.sql, mark) }) {
+				continue
+			}
+			series, repos = append(series, statement.args[kind.at].([]string)...), append(repos, statement.args[kind.at+1].([]string)...)
+			days, sizes = append(days, statement.args[kind.at+2].([]time.Time)...), append(sizes, statement.bytes)
+			if kind.name == "update" {
+				if !slices.Equal(statement.oids, dayUpdateOIDs) {
+					t.Errorf("the server describes the parameters of the update of day rows as %v, where the test encodes them as %v", statement.oids, dayUpdateOIDs)
+				}
+				if estimated := paramEstimate(t, statement.args); estimated > statementBytes || statement.bytes > estimated {
+					t.Errorf("an update of day rows takes %d bytes of parameters as pgx encodes them and an estimated %d, where the bound is %d", statement.bytes, estimated, statementBytes)
+				}
+			}
+		}
+		got := make([]dayKey, len(series))
+		for index := range got {
+			got[index] = dayKey{series: series[index], repo: repos[index], day: days[index].UTC()}
+		}
+		if len(sizes) < 2 || !slices.Equal(got, want) {
+			t.Errorf("the %ss of day rows went in %d statements of %v bytes taking %d keys, want at least two taking the %d keys in their byte order", kind.name, len(sizes), sizes, len(got), len(want))
+			continue
+		}
+		if at := firstOutOfOrder(keyOrderOf(t, r.database.Pool, len(got), dayKeyOrder, series, repos, days)); at >= 0 {
+			t.Errorf("the %ss of day rows take the key of series %.12q... and repository %.12q... at %d, out of the byte order Postgres's collate \"C\" gives them", kind.name, series[at], repos[at], at)
+		}
+		t.Logf("the %ss of day rows: %d statements of %v bytes of parameters, of %d", kind.name, len(sizes), sizes, statementBytes)
+	}
+	for _, key := range want {
+		if stored := r.day(t, evalID, key.series, key.repo, day); stored.N != 1 || stored.Sum == nil || *stored.Sum != values[key] || !slices.Equal(stored.Samples, []float64{values[key]}) {
+			t.Errorf("the day row of series %.12q... and repository %.12q... holds n %d, sum %v and samples %v, want its one reading %v", key.series, key.repo, stored.N, showValue(stored.Sum), stored.Samples, values[key])
+		}
+	}
+	changes := r.loggedChanges(t, "eval_days", heads)
+	if len(changes) != 1 || changes[0].evalID != evalID || !changes[0].first.Equal(day) || !changes[0].last.Equal(day) {
+		t.Errorf("the write logged the eval_days changes %v, want one of %s on %s", changes, evalID, day.Format(time.DateOnly))
+	}
+	largest, what := largestStatement(sent)
+	t.Logf("%d statements, the largest %d bytes of parameters (%s), of %d; changes logged %v", len(sent), largest, what, statementBytes, changes)
+}
+
+// changeHeads is the newest pending and the newest drained change, before a write whose changes
+// loggedChanges reads.
+func (r rig) changeHeads(t *testing.T) [2]int {
+	t.Helper()
+	return [2]int{r.count(t, `select coalesce(max(id), 0) from delivery_changes_pending`), r.count(t, `select coalesce(max(seq), 0) from delivery_changes`)}
+}
+
+// loggedChanges is every change of kind logged after heads (changeHeads), pending or drained, as
+// dayChange holds one: its project, its eval and its span.
+func (r rig) loggedChanges(t *testing.T, kind string, heads [2]int) []dayChange {
+	t.Helper()
+	changed, err := r.database.Pool.Query(t.Context(), `
+		select repo, ref, t_old, t_new from delivery_changes_pending where kind = $1 and id > $2
+		union all
+		select repo, ref, t_old, t_new from delivery_changes where kind = $1 and seq > $3`, kind, heads[0], heads[1])
+	if err != nil {
+		t.Fatalf("read the %s changes logged: %v", kind, err)
+	}
+	changes, err := pgx.CollectRows(changed, func(row pgx.CollectableRow) (dayChange, error) {
+		var change dayChange
+		return change, row.Scan(&change.project, &change.evalID, &change.first, &change.last)
+	})
+	if err != nil {
+		t.Fatalf("read the %s changes logged: %v", kind, err)
+	}
+	return changes
+}
+
+// TestTheLargestReadingsBodyGoesInBoundedStatements: a readings write of one body of nearly a
+// megabyte, the most the route takes, of readings whose row kinds, row keys and attributes.repo
+// are each the largest a key holds, is stored in statements that each take at most
+// statementBytes of parameters as pgx encodes them, its insert of readings in several, its
+// readings answered in the batch's order, and logs one eval_readings change, spanning their
+// measured_at, as one statement does (migration 20261117100012). A reading whose own row would
+// pass the bound alone, a note of 300,000 bytes, is refused READING_TOO_LARGE naming its note, and
+// the batch stores nothing; one with a note of 200,000 bytes is stored, in statements within the
+// bound.
+func TestTheLargestReadingsBodyGoesInBoundedStatements(t *testing.T) {
+	r := newRig(t)
+	statements := &sentStatements{}
+	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
+	const slug, body = "wide-body", 1 << 20
+	evalID := EvalID(r.project, slug)
+	day := at(3, 0, 0)
+	key := func(prefix string, index int) string {
+		head := fmt.Sprintf("%s%06d-", prefix, index)
+		return head + strings.Repeat("k", maxKeyBytes-len(head))
+	}
+	reading := func(index int, note string) json.RawMessage {
+		return row(t, map[string]any{"series": "minutes", "row_kind": key("kind", index%7), "row_key": key("row", index), "value": float64(index%97) + 0.5,
+			"measured_at": day.Add(time.Duration(index) * time.Second), "attributes": map[string]any{"repo": key("repo", 0)}, "note": note})
+	}
+	// The batch's readings, as many as a body under the route's megabyte holds, with room for the
+	// rest of the body (the readings' brackets and commas, its actor).
+	var rows []json.RawMessage
+	for size := 0; ; {
+		next := reading(len(rows), "a note")
+		if size+len(next)+1 > body-512 {
+			break
+		}
+		rows, size = append(rows, next), size+len(next)+1
+	}
+	heads := r.changeHeads(t)
+	written := r.write(t, slug, alice, rows...)
+	sent := r.measured(t, statements.take())
+	inserts := 0
+	for _, statement := range sent {
+		if statement.bytes > statementBytes {
+			t.Errorf("the write sent %.80q with %d bytes of parameters as pgx encodes them, past %d", strings.Join(strings.Fields(statement.sql), " "), statement.bytes, statementBytes)
+		}
+		if strings.Contains(statement.sql, "insert into eval_readings") {
+			inserts++
+		}
+	}
+	if inserts < 2 {
+		t.Errorf("the %d readings of a body of nearly %d bytes were inserted in %d statements, and the check needs them cut", len(rows), body, inserts)
+	}
+	ordered := len(written.Readings) == len(rows)
+	for index, stored := range written.Readings {
+		ordered = ordered && stored.RowKey == key("row", index)
+	}
+	if !ordered || r.count(t, `select count(*) from eval_readings where eval_id = $1`, evalID) != len(rows) {
+		t.Errorf("the write answered %d readings, in the batch's order %t, of the %d it was given", len(written.Readings), ordered, len(rows))
+	}
+	changes := r.loggedChanges(t, "eval_readings", heads)
+	if last := day.Add(time.Duration(len(rows)-1) * time.Second); len(changes) != 1 || changes[0].evalID != evalID || !changes[0].first.Equal(day) || !changes[0].last.Equal(last) {
+		t.Errorf("the write logged the eval_readings changes %v, want one of %s from %s to %s", changes, evalID, day.Format(time.RFC3339), last.Format(time.RFC3339))
+	}
+	largest, what := largestStatement(sent)
+	t.Logf("%d readings in %d insert statements; %d statements, the largest %d bytes of parameters (%s), of %d; changes %v",
+		len(rows), inserts, len(sent), largest, what, statementBytes, changes)
+
+	readings := r.count(t, `select count(*) from eval_readings`)
+	_, err := r.registry.WriteReadings(t.Context(), Batch{Project: r.project, Slug: slug, Caller: alice, BuiltBy: testBuild,
+		Rows: []json.RawMessage{reading(1000000, "a note"), reading(1000001, strings.Repeat("n", 300000))}})
+	var refused *Error
+	if !errors.As(err, &refused) || refused.Code != CodeReadingTooLarge || len(refused.Rows) != 1 || refused.Rows[0].Index != 1 || refused.Rows[0].Field != "note" {
+		t.Errorf("a reading with a note of 300,000 bytes was answered %v (%+v), want %s naming row 1's note", err, refused, CodeReadingTooLarge)
+	} else {
+		t.Logf("refused: %s", refused.Rows[0].Message)
+	}
+	if after := r.count(t, `select count(*) from eval_readings`); after != readings {
+		t.Errorf("the refused batch moved eval_readings from %d rows to %d", readings, after)
+	}
+	statements.take()
+	r.write(t, slug, alice, reading(1000002, strings.Repeat("n", 200000)))
+	for _, statement := range r.measured(t, statements.take()) {
+		if statement.bytes > statementBytes {
+			t.Errorf("the reading with a note of 200,000 bytes sent %.80q with %d bytes of parameters, past %d", strings.Join(strings.Fields(statement.sql), " "), statement.bytes, statementBytes)
+		}
+	}
+}
+
+// TestTheMostCorrectionsABodyHoldsGoInBoundedStatements: of each of two evals, readings and then
+// one body under a megabyte that corrects every one of them; every statement of the correction
+// takes at most statementBytes of parameters as pgx encodes them, and it logs one eval_readings
+// and one eval_days change of its eval:
+//   - 7,000 readings of one series on one day: the ids the correction locks, supersedes and reads
+//     as folded, and the write's own readings, which the read of the day's standing readings once
+//     sent, grow with the batch; the day row holds the 7,000 corrected values;
+//   - 1,200 readings of one series on one day, each of its own repository of the largest name a
+//     key holds: the keys of the 1,201 day rows the correction folds again grow with it; each
+//     repository's row holds its corrected value.
+func TestTheMostCorrectionsABodyHoldsGoInBoundedStatements(t *testing.T) {
+	r := newRig(t)
+	statements := &sentStatements{}
+	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
+	day := at(3, 0, 0)
+	for _, shape := range []struct {
+		slug  string
+		count int
+		repo  func(index int) string
+	}{
+		{"many-corrections", 7000, func(int) string { return "" }},
+		{"wide-corrections", 1200, func(index int) string {
+			head := fmt.Sprintf("acme-%06d-", index)
+			return head + strings.Repeat("r", maxKeyBytes-len(head))
+		}},
+	} {
+		evalID := EvalID(r.project, shape.slug)
+		reading := func(index int, value float64, replaces string) json.RawMessage {
+			fields := map[string]any{"series": "v", "row_kind": "r", "row_key": fmt.Sprint(index), "value": value, "measured_at": day.Add(time.Duration(index) * time.Second)}
+			if repo := shape.repo(index); repo != "" {
+				fields["attributes"] = map[string]any{"repo": repo}
+			}
+			if replaces != "" {
+				fields["replaces"] = replaces
+			}
+			return row(t, fields)
+		}
+		originals := make([]json.RawMessage, shape.count)
+		for index := range originals {
+			originals[index] = reading(index, float64(index%13)+1, "")
+		}
+		stored := r.write(t, shape.slug, alice, originals...)
+		corrections, size := make([]json.RawMessage, shape.count), 0
+		for index, original := range stored.Readings {
+			corrections[index] = reading(index, 2.5, original.ID)
+			size += len(corrections[index]) + 1
+		}
+		if size > 1<<20-512 {
+			t.Fatalf("%s: the correction body holds %d bytes of readings, more than the route takes", shape.slug, size)
+		}
+		statements.take()
+		heads := r.changeHeads(t)
+		r.write(t, shape.slug, alice, corrections...)
+		sent := r.measured(t, statements.take())
+		for _, statement := range sent {
+			if statement.bytes > statementBytes {
+				t.Errorf("%s: the correction sent %.80q with %d bytes of parameters as pgx encodes them, past %d", shape.slug,
+					strings.Join(strings.Fields(statement.sql), " "), statement.bytes, statementBytes)
+			}
+		}
+		if readings, changes := r.loggedChanges(t, "eval_readings", heads), r.loggedChanges(t, "eval_days", heads); len(readings) != 1 || len(changes) != 1 {
+			t.Errorf("%s: the correction logged the eval_readings changes %v and the eval_days changes %v, want one of each", shape.slug, readings, changes)
+		}
+		if superseded := r.count(t, `select count(*) from eval_readings where eval_id = $1 and superseded_at is not null`, evalID); superseded != shape.count {
+			t.Errorf("%s: the correction left %d readings superseded, want %d", shape.slug, superseded, shape.count)
+		}
+		if all := r.day(t, evalID, "v", "", day); all.N != shape.count || all.Sum == nil || *all.Sum != 2.5*float64(shape.count) {
+			t.Errorf("%s: the project's day row holds n %d and sum %v, want %d corrected values of 2.5", shape.slug, all.N, showValue(all.Sum), shape.count)
+		}
+		if shape.repo(0) != "" {
+			if corrected := r.count(t, `select count(*) from eval_days where eval_id = $1 and repo <> '' and n = 1 and sum = 2.5`, evalID); corrected != shape.count {
+				t.Errorf("%s: %d repositories' day rows hold the one corrected value, want %d", shape.slug, corrected, shape.count)
+			}
+		}
+		largest, what := largestStatement(sent)
+		t.Logf("%s: a correction of %d readings in a body of %d bytes: %d statements, the largest %d bytes of parameters (%s), of %d",
+			shape.slug, shape.count, size, len(sent), largest, what, statementBytes)
+	}
+}
+
+// TestARefusalListsAtMostItsBoundOfRowsAndCountsTheRest: a refusal of 20,000 refused rows, given
+// out of order, each with a field and an error past their bounds and full of characters JSON
+// escapes, lists the first MaxRefusedRows by index, each text within its bound as JSON encodes it,
+// and counts the rest (rows_omitted), its JSON, as the route's encoder writes it, within
+// statementBytes less what the stored answer's statement holds besides it
+// (refusalStatementReserve). MaxRefusedRows row errors at their largest (every text at its bound,
+// a code of codeBytes, an index and a count of 20 digits) encode within that; one more passes it.
+// Every code of the registry takes at most codeBytes.
+func TestARefusalListsAtMostItsBoundOfRowsAndCountsTheRest(t *testing.T) {
+	encoded := func(value any) []byte {
+		var buffer bytes.Buffer
+		if err := json.NewEncoder(&buffer).Encode(value); err != nil {
+			t.Fatalf("encode a refusal: %v", err)
+		}
+		return buffer.Bytes()
+	}
+	const count = 20000
+	refused := make([]RowError, count)
+	for index := range refused {
+		refused[index] = RowError{Index: count - 1 - index, Code: CodeReadingInvalid, Field: strings.Repeat("<é", 500), Message: strings.Repeat("\"&\u2028x", 700)}
+	}
+	refusal := rowsRefusal(refused)
+	var answer struct {
+		Rows []struct {
+			Index int             `json:"index"`
+			Field json.RawMessage `json:"field"`
+			Error json.RawMessage `json:"error"`
+		} `json:"rows"`
+		RowsOmitted int `json:"rows_omitted"`
+	}
+	body := encoded(refusal)
+	if err := json.Unmarshal(body, &answer); err != nil {
+		t.Fatalf("decode the refusal: %v", err)
+	}
+	if len(answer.Rows) != MaxRefusedRows || answer.RowsOmitted != count-MaxRefusedRows || len(answer.Rows)+answer.RowsOmitted != count {
+		t.Errorf("the refusal of %d rows lists %d and counts %d more, want %d listed and the rest counted", count, len(answer.Rows), answer.RowsOmitted, MaxRefusedRows)
+	}
+	for at, one := range answer.Rows {
+		if one.Index != at || len(one.Field) > fieldTextBytes+2 || len(one.Error) > errorTextBytes+2 {
+			t.Errorf("listed row %d is row %d, its field %d bytes and its error %d as JSON, want row %d within %d and %d", at, one.Index, len(one.Field), len(one.Error), at,
+				fieldTextBytes+2, errorTextBytes+2)
+			break
+		}
+	}
+	if room := statementBytes - refusalStatementReserve; len(body) > room {
+		t.Errorf("the refusal of %d rows encodes in %d bytes, past the %d the stored answer's statement leaves it", count, len(body), room)
+	}
+	t.Logf("a refusal of %d rows: %d listed, %d counted, %d bytes as JSON; %s", count, len(answer.Rows), answer.RowsOmitted, len(body), refusal.Message)
+
+	largest := func(rows int) int {
+		listed := make([]RowError, rows)
+		for index := range listed {
+			listed[index] = RowError{Index: math.MinInt64, Code: strings.Repeat("C", codeBytes), Field: strings.Repeat("f", fieldTextBytes), Message: strings.Repeat("m", errorTextBytes)}
+		}
+		return len(encoded(&Error{Code: strings.Repeat("C", codeBytes), Message: strings.Repeat("m", errorTextBytes), Rows: listed, RowsOmitted: math.MinInt64}))
+	}
+	room := statementBytes - refusalStatementReserve
+	if most, past := largest(MaxRefusedRows), largest(MaxRefusedRows+1); most > room || past <= room {
+		t.Errorf("%d row errors at their largest encode in %d bytes and %d in %d, want the first within the %d the stored answer's statement leaves and the second past it",
+			MaxRefusedRows, most, MaxRefusedRows+1, past, room)
+	} else {
+		t.Logf("%d row errors at their largest: %d bytes; %d: %d bytes; room %d", MaxRefusedRows, most, MaxRefusedRows+1, past, room)
+	}
+	for _, code := range []string{CodeSlugInvalid, CodeProjectNotFound, CodeFieldInvalid, CodeSeriesInvalid, CodeDocTextEmpty, CodeDocumentNotDocument,
+		CodeReadingsEmpty, CodeReadingInvalid, CodeValueOrReason, CodeFieldServerSet, CodeReplacesUnknown, CodeAlreadyReplaced, CodeLinkHrefNotAbsolute,
+		CodeLinkHrefNotHTTP, CodeLinkRelMissing, CodeReadingSeriesInvalid, CodeReadingDayOverflow, CodeMeasuredAtOutOfRange, CodeKeyTooLong,
+		CodeFieldComputed, CodeSeriesLimit, CodeReadingDaySamplesLimit, CodeReadingTooLarge} {
+		if len(code) > codeBytes {
+			t.Errorf("the code %s takes %d bytes, past codeBytes, %d", code, len(code), codeBytes)
+		}
+	}
+}
+
+// TestADayRowPastItsSampleBoundIsRefusedNamingItsRow: batches of 1,000 readings of one series on
+// one day fill its day row until a batch would leave it holding more than MaxDaySamples values:
+// that batch is refused (CodeReadingDaySamplesLimit), naming its first row past the bound on its
+// measured_at, and the bound, and stores nothing. A batch that fills the row to the bound is taken,
+// no statement of it taking more than statementBytes of parameters as pgx encodes them, and one
+// value more is then refused at its row 0; a correction of a reading of the full day, which adds no
+// value, is taken, and so is a batch on another day.
+func TestADayRowPastItsSampleBoundIsRefusedNamingItsRow(t *testing.T) {
+	r := newRig(t)
+	const slug, size, most = "many-samples", 1000, 25000
+	evalID := EvalID(r.project, slug)
+	day, other := at(3, 0, 0), at(4, 0, 0)
+	batch := func(first, n int, on time.Time) Batch {
+		rows := make([]json.RawMessage, n)
+		for index := range n {
+			rows[index] = row(t, map[string]any{"series": "v", "row_kind": "run", "row_key": fmt.Sprint(first + index), "value": float64((first+index)%997) + 0.5,
+				"measured_at": on.Add(time.Duration(first+index) * time.Second)})
+		}
+		return Batch{Project: r.project, Slug: slug, Rows: rows, Caller: alice, BuiltBy: testBuild}
+	}
+	readings := func() int { return r.count(t, `select count(*) from eval_readings where eval_id = $1`, evalID) }
+	held := 0
+	var last Written
+	var refused *Error
+	for {
+		if held >= most {
+			t.Fatalf("one day row took %d values and refused none", held)
+		}
+		written, err := r.registry.WriteReadings(t.Context(), batch(held, size, day))
+		if err != nil {
+			if !errors.As(err, &refused) {
+				t.Fatalf("a batch onto a day row of %d values: %v", held, err)
+			}
+			break
+		}
+		last, held = written, held+size
+	}
+	if refused.Code != CodeReadingDaySamplesLimit || len(refused.Rows) != 1 || refused.Rows[0].Code != CodeReadingDaySamplesLimit || refused.Rows[0].Field != "measured_at" {
+		t.Fatalf("a batch onto a day row of %d values was refused %s, rows %+v, want %s naming one row's measured_at", held, refused.Code, refused.Rows, CodeReadingDaySamplesLimit)
+	}
+	limit := held + refused.Rows[0].Index
+	if limit != MaxDaySamples || !strings.Contains(refused.Rows[0].Message, strconv.Itoa(limit)) {
+		t.Errorf("the batch onto %d values was refused at its row %d, a bound of %d, naming: %s; want the bound %d named", held, refused.Rows[0].Index, limit, refused.Rows[0].Message, MaxDaySamples)
+	}
+	if n, stored := r.day(t, evalID, "v", "", day).N, readings(); n != held || stored != held {
+		t.Errorf("the refused batch left the day row holding %d values and %d readings stored, want %d of each", n, stored, held)
+	}
+	t.Logf("a batch onto %d values: %s at row %d: %s", held, refused.Code, refused.Rows[0].Index, refused.Rows[0].Message)
+
+	statements := &sentStatements{}
+	traced := New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
+	if _, err := traced.WriteReadings(t.Context(), batch(held, MaxDaySamples-held, day)); err != nil {
+		t.Fatalf("a batch filling the day row to %d values: %v", MaxDaySamples, err)
+	}
+	sent := r.measured(t, statements.take())
+	for _, statement := range sent {
+		if statement.bytes > statementBytes {
+			t.Errorf("the batch filling the day row sent %.80q with %d bytes of parameters as pgx encodes them, past %d", strings.Join(strings.Fields(statement.sql), " "), statement.bytes, statementBytes)
+		}
+	}
+	largest, what := largestStatement(sent)
+	t.Logf("the batch filling the day row to %d values: %d statements, the largest %d bytes of parameters (%s), of %d", MaxDaySamples, len(sent), largest, what, statementBytes)
+	if n := r.day(t, evalID, "v", "", day).N; n != MaxDaySamples {
+		t.Errorf("the day row holds %d values, want %d", n, MaxDaySamples)
+	}
+	_, err := r.registry.WriteReadings(t.Context(), batch(MaxDaySamples, 1, day))
+	if !errors.As(err, &refused) || refused.Code != CodeReadingDaySamplesLimit || len(refused.Rows) != 1 || refused.Rows[0].Index != 0 ||
+		!strings.Contains(refused.Rows[0].Message, strconv.Itoa(MaxDaySamples)) {
+		t.Errorf("one value more onto the full day row was answered %v, want %s at row 0 naming %d", err, CodeReadingDaySamplesLimit, MaxDaySamples)
+	}
+	replaced := last.Readings[0]
+	r.write(t, slug, alice, row(t, map[string]any{"series": "v", "row_kind": "run", "row_key": replaced.RowKey, "value": 7.5,
+		"measured_at": replaced.MeasuredAt, "replaces": replaced.ID}))
+	if n, stored := r.day(t, evalID, "v", "", day).N, readings(); n != MaxDaySamples || stored != MaxDaySamples+1 {
+		t.Errorf("a correction on the full day row left it holding %d values and %d readings stored, want %d and %d", n, stored, MaxDaySamples, MaxDaySamples+1)
+	}
+	if _, err := r.registry.WriteReadings(t.Context(), batch(0, size, other)); err != nil {
+		t.Errorf("a batch on another day: %v", err)
+	} else if n := r.day(t, evalID, "v", "", other).N; n != size {
+		t.Errorf("the batch on another day left its day row holding %d values, want %d", n, size)
 	}
 }
 

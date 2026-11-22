@@ -24,6 +24,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -347,6 +348,14 @@ const MeasuredAtLead = 24 * time.Hour
 // eval_series (eval_id, series, version) are smaller still.
 const maxKeyBytes = 512
 
+// maxProjectKeyBytes is the most bytes a project key holds (projects' check: an upper-case letter
+// and up to nine more letters or digits), and maxEvalIDBytes the most an eval id holds: the
+// project key, a `/` and a slug of maxKeyBytes.
+const (
+	maxProjectKeyBytes = 10
+	maxEvalIDBytes     = maxProjectKeyBytes + 1 + maxKeyBytes
+)
+
 // keyTooLong is the reason a key named field is refused for, "" where it fits (maxKeyBytes).
 func keyTooLong(field, key string) string {
 	if len(key) <= maxKeyBytes {
@@ -418,17 +427,33 @@ const (
 	// which its code defines (R5): its name, question, number rule, decision, failure modes, unit,
 	// direction, kind or source, a series it does not hold, or any field of a series but min_n.
 	CodeFieldComputed = "EVAL_FIELD_COMPUTED"
+	// CodeSeriesLimit: a register write or a readings write would leave a logged eval holding
+	// more series than MaxEvalSeries, the most whose stored rows are each written in one
+	// statement of at most statementBytes.
+	CodeSeriesLimit = "EVAL_SERIES_LIMIT"
+	// CodeReadingDaySamplesLimit: the row's value would make its day row of a logged eval hold
+	// more values than MaxDaySamples, the most whose row is written in one statement of at most
+	// statementBytes.
+	CodeReadingDaySamplesLimit = "READING_DAY_SAMPLES_LIMIT"
+	// CodeReadingTooLarge: the row's reading takes more bytes as the write sends it (its note,
+	// attributes, links and other texts) than one statement of the write sends, so no statement
+	// within statementBytes could store it.
+	CodeReadingTooLarge = "READING_TOO_LARGE"
 )
 
 // Error is a write the registry refused before it wrote anything: a stable code, the reason in
 // plain words, the field of a register write the refusal is about where it is one field, and for
-// a readings write every refused row. A readings write's code is the code of its first refused
-// row; Rows names each.
+// a readings write its refused rows: the first MaxRefusedRows of them by index (Rows), and how
+// many it leaves out (RowsOmitted, 0 where it lists every one). A readings write's code is the
+// code of its first refused row. Every text an Error holds is bounded (errorTextBytes,
+// fieldTextBytes), so its answer, which the idempotency store keeps in one statement, takes at
+// most statementBytes whatever the body that was refused (MaxRefusedRows).
 type Error struct {
-	Code    string     `json:"code"`
-	Message string     `json:"error"`
-	Field   string     `json:"field,omitempty"`
-	Rows    []RowError `json:"rows,omitempty"`
+	Code        string     `json:"code"`
+	Message     string     `json:"error"`
+	Field       string     `json:"field,omitempty"`
+	Rows        []RowError `json:"rows,omitempty"`
+	RowsOmitted int        `json:"rows_omitted,omitempty"`
 }
 
 func (e *Error) Error() string {
@@ -444,12 +469,84 @@ type RowError struct {
 	Message string `json:"error"`
 }
 
+// errorTextBytes is the most bytes a refusal's text (an Error's or a RowError's) takes in the
+// JSON answer between its quotes, fieldTextBytes the most a field's name takes, and codeBytes the
+// most a code takes, the longest of the registry's codes (READING_DAY_SAMPLES_LIMIT, 25 bytes)
+// with room: a text the body sends, a key or a value the refusal names, is cut to its bound
+// (boundText).
+const (
+	errorTextBytes = 1024
+	fieldTextBytes = 128
+	codeBytes      = 32
+)
+
+// MaxRefusedRows is the most row errors a refusal of a readings write lists (Error.Rows), the
+// first by index; RowsOmitted counts the rest. The route answers the refusal whole and the
+// idempotency store keeps that answer in one statement (api's settleRequestKey: update
+// request_keys), so the most whose answer, every text at its bound, that statement sends within
+// statementBytes:
+//   - refusalStatementReserve, the statement's parameters besides the answer's body: 4 bytes of
+//     length before each of its six, the idempotency key (at most 128 bytes,
+//     contracts.IdempotencyKeyMax), the attempt and the status, the caller's login and the
+//     answer's headers as JSON, a few hundred bytes: 4,096 reserved in all;
+//   - refusalBodyReserve, the body's members besides its row errors: `{"code":"` 9, the code,
+//     `","error":"` 11, the error, `","rows":[` 10, `],"rows_omitted":` 17, a count of at most 20
+//     digits, `}` and the encoder's newline 2: 1,125;
+//   - refusedRowBytes, one row error: the comma before it 1, `{"index":` 9, an index of at most
+//     20 digits, `,"code":"` 9, the code, `","field":"` 11, the field, `","error":"` 11, the
+//     error and `"}` 2: 1,247.
+//
+// (262,144 - 4,096 - 1,125) / 1,247 = 206; with 207 the statement would take 263,350 bytes.
+const MaxRefusedRows = (statementBytes - refusalStatementReserve - refusalBodyReserve) / refusedRowBytes
+
+const (
+	refusalStatementReserve = 4096
+	refusalBodyReserve      = 9 + codeBytes + 11 + errorTextBytes + 10 + 17 + 20 + 2
+	refusedRowBytes         = 1 + 9 + 20 + 9 + codeBytes + 11 + fieldTextBytes + 11 + errorTextBytes + 2
+)
+
 func refusal(code, format string, args ...any) *Error {
-	return &Error{Code: code, Message: fmt.Sprintf(format, args...)}
+	return &Error{Code: code, Message: boundText(fmt.Sprintf(format, args...), errorTextBytes)}
 }
 
 // fieldRefusal is a refusal of a register write about one of its fields, which field names as
 // the body spells it (`series[0].agg`).
 func fieldRefusal(code, field, format string, args ...any) *Error {
-	return &Error{Code: code, Field: field, Message: fmt.Sprintf(format, args...)}
+	return &Error{Code: code, Field: boundText(field, fieldTextBytes), Message: boundText(fmt.Sprintf(format, args...), errorTextBytes)}
+}
+
+// BoundedField is text, a key or a field a refusal names, cut to the most a refusal's field takes
+// in its JSON answer (fieldTextBytes, boundText): for a route's own refusal that names a key the
+// request sent.
+func BoundedField(text string) string {
+	return boundText(text, fieldTextBytes)
+}
+
+// boundText is text cut where its JSON encoding would take more than most bytes between its
+// quotes, as encoding/json encodes a string (each of <, > and &, a control character, U+2028,
+// U+2029 and a byte that is no UTF-8 as a 6-byte escape, a quote and a backslash as 2): the
+// longest leading part of it, whole characters, whose encoding with an ellipsis (…, 3 bytes) after
+// it takes at most most, and the ellipsis. A text whose encoding fits is answered whole.
+func boundText(text string, most int) string {
+	if 6*len(text) <= most {
+		return text
+	}
+	used, fits := 0, 0
+	for at, r := range text {
+		if used+3 <= most {
+			fits = at
+		}
+		switch {
+		case r == '"' || r == '\\':
+			used += 2
+		case r < 0x20 || r == '<' || r == '>' || r == '&' || r == '\u2028' || r == '\u2029' || r == utf8.RuneError:
+			used += 6
+		default:
+			used += utf8.RuneLen(r)
+		}
+		if used > most {
+			return text[:fits] + "…"
+		}
+	}
+	return text
 }

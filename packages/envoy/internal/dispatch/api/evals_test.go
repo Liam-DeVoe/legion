@@ -74,10 +74,11 @@ func checkEvalEnvelope(t *testing.T, what string, body []byte) int {
 // evalRefusal is a refusal of an eval route: its code, its message and, for a readings write, the
 // refused rows.
 type evalRefusal struct {
-	Code  string           `json:"code"`
-	Error string           `json:"error"`
-	Field string           `json:"field"`
-	Rows  []evals.RowError `json:"rows"`
+	Code        string           `json:"code"`
+	Error       string           `json:"error"`
+	Field       string           `json:"field"`
+	Rows        []evals.RowError `json:"rows"`
+	RowsOmitted int              `json:"rows_omitted"`
 }
 
 // findEval is the item of slug among a list read's items, failing where there is not exactly one.
@@ -185,10 +186,12 @@ func holdsPRSize(t *testing.T, body []byte) bool {
 
 // TestTheEvalRoutesRefuseWithStableCodes: each bad request is refused with its stable
 // code, a readings write refused for a row names the row by its index, and no refused write
-// stores a reading or a version. Each of the four reads refuses a query key its route shape does
-// not declare, naming it (the old `scope` among them, and a key another eval route takes), and so
-// does the readings write; each of the five carrying the global session parameter alone is
-// accepted.
+// stores a reading or a version. A register write of 1,000 series, and a readings write of 1,000
+// readings each of a series of its own, are each refused EVAL_SERIES_LIMIT naming the most series
+// an eval holds (evals.MaxEvalSeries), the readings write at its one row past that bound. Each of
+// the four reads refuses a query key its route shape does not declare, naming it (the old `scope`
+// among them, and a key another eval route takes), and so does the readings write; each of the
+// five carrying the global session parameter alone is accepted.
 func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "EVL")
@@ -200,6 +203,14 @@ func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 		return row
 	}
 	readings := "/api/v1/projects/EVL/evals/review-time/readings"
+	// manySeries and manyReadings are 1,000 series of their own: a register write's, and a reading of each.
+	var manySeries, manyReadings []any
+	for index := range 1000 {
+		series := fmt.Sprintf("s%04d", index)
+		manySeries = append(manySeries, map[string]any{"series": series})
+		manyReadings = append(manyReadings, withKey(map[string]any{"series": series}))
+	}
+	seriesLimit := fmt.Sprintf("at most %d series", evals.MaxEvalSeries)
 	cases := []struct {
 		name         string
 		method, path string
@@ -257,6 +268,8 @@ func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 		{name: "a reading's link naming its rel in another case", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"links": []any{map[string]any{"Rel": "via", "href": "https://example.com/run"}}})}}, key: "r-case-rel", status: 400, code: evals.CodeReadingInvalid, names: "links[0].Rel"},
 		{name: "a PUT of a reading", method: http.MethodPut, path: readings + "/5d4a3b2c-1e0f-4a9b-8c7d-6e5f4a3b2c1d", body: good, status: 405, code: codeReadingAppendOnly},
 		{name: "a DELETE of a reading", method: http.MethodDelete, path: readings + "/5d4a3b2c-1e0f-4a9b-8c7d-6e5f4a3b2c1d", status: 405, code: codeReadingAppendOnly},
+		{name: "a register write of more series than an eval holds", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: map[string]any{"slug": "review-time", "series": manySeries}, key: "g-series-limit", status: 400, code: evals.CodeSeriesLimit, names: seriesLimit},
+		{name: "a readings write of more new series than an eval holds", method: http.MethodPost, path: readings, body: map[string]any{"readings": manyReadings}, key: "r-series-limit", status: 400, code: evals.CodeSeriesLimit, names: seriesLimit, rowIndex: evals.MaxEvalSeries},
 	}
 	countReadings := `select count(*) from eval_readings where eval_id like 'EVL/%'`
 	countVersions := `select count(*) from eval_versions where project_key = 'EVL'`
@@ -312,6 +325,58 @@ func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 			t.Errorf("GET %s: status %d, body %s, want 200", path, read.Code, read.Body.String())
 		}
 	}
+}
+
+// TestAMegabyteOfBadRowsIsRefusedWithABoundedKeptAnswer: a readings body of nearly a megabyte,
+// the most the route takes, of small rows that each lack a value, is refused 400
+// READING_VALUE_OR_REASON listing the first evals.MaxRefusedRows refused rows by index and counting
+// the rest in rows_omitted, the two together every row sent; and the answer its idempotency key
+// keeps (request_keys.response) is that answer, kept, under the 256 KiB one statement of the write
+// sends (evals.statementBytes), which the key's store writes it in.
+func TestAMegabyteOfBadRowsIsRefusedWithABoundedKeptAnswer(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "EVL")
+	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	var rows []any
+	for size := 0; ; {
+		next := map[string]any{"series": "s", "row_kind": "r", "row_key": fmt.Sprint(len(rows)), "measured_at": at}
+		encoded, err := json.Marshal(next)
+		if err != nil {
+			t.Fatalf("encode a row: %v", err)
+		}
+		if size+len(encoded)+1 > 1<<20-512 {
+			break
+		}
+		rows, size = append(rows, next), size+len(encoded)+1
+	}
+	const key = "bad-rows-megabyte"
+	response := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals/bad-rows/readings", map[string]any{"readings": rows}, key)
+	refusal := decodeBody[evalRefusal](t, response)
+	if response.Code != http.StatusBadRequest || refusal.Code != evals.CodeValueOrReason || len(refusal.Rows) != evals.MaxRefusedRows ||
+		refusal.Rows[0].Index != 0 || refusal.Rows[len(refusal.Rows)-1].Index != evals.MaxRefusedRows-1 || len(refusal.Rows)+refusal.RowsOmitted != len(rows) {
+		t.Fatalf("a body of %d rows lacking a value was answered %d %s listing %d rows and counting %d more, want 400 %s listing rows 0 to %d and counting the other %d",
+			len(rows), response.Code, refusal.Code, len(refusal.Rows), refusal.RowsOmitted, evals.CodeValueOrReason, evals.MaxRefusedRows-1, len(rows)-evals.MaxRefusedRows)
+	}
+	var kept *int64
+	if err := database.Pool.QueryRow(t.Context(), `select octet_length(response) from request_keys where idempotency_key = $1`, key).Scan(&kept); err != nil {
+		t.Fatalf("read the answer the key keeps: %v", err)
+	}
+	if kept == nil || *kept != int64(response.Body.Len()) || *kept >= 256<<10 {
+		t.Errorf("the key keeps an answer of %s bytes, where the route answered %d; want it kept, the same, and under %d", showKept(kept), response.Body.Len(), 256<<10)
+	}
+	if stored := countRows(t, database, `select count(*) from eval_readings where eval_id = 'EVL/bad-rows'`); stored != 0 {
+		t.Errorf("the refused body stored %d readings", stored)
+	}
+	t.Logf("%d rows refused: %d listed, %d counted; an answer of %d bytes, kept as %s: %s", len(rows), len(refusal.Rows), refusal.RowsOmitted,
+		response.Body.Len(), showKept(kept), refusal.Error)
+}
+
+// showKept is the size of a kept answer as a failure names it, "none" where the key keeps none.
+func showKept(kept *int64) string {
+	if kept == nil {
+		return "none"
+	}
+	return fmt.Sprint(*kept)
 }
 
 // TestAReadingsBatchRepeatedUnderItsKeyIsWrittenOnce: a batch of three under one key stores
