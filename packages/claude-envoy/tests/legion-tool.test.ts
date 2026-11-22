@@ -243,7 +243,7 @@ test("handoff_complete finds the record and commit for the issue's phase and the
 
 // A phase completion carries no verdict on this host as on every other: the tool refuses one once
 // the record says the completion is a phase's, and mints and posts nothing.
-test("a phase completion naming a verdict is refused after the state read, with nothing minted or posted", async () => {
+test("a phase completion naming a verdict is refused after the record read, with nothing minted or posted", async () => {
   const { client, requests } = await daemon()
   await expect(
     executeLegionTool(
@@ -262,7 +262,7 @@ test("a phase completion naming a verdict is refused after the state read, with 
       "handoff_complete carries no verdict on a phase completion: Dispatch's check states decide the testing phase",
     ),
   )
-  expect(requests.map(({ path }) => path)).toEqual(["/legion/v1/state"])
+  expect(requests.map(({ path }) => path)).toEqual(["/legion/v1/issues/LEGION-208/record"])
 })
 
 // The agent that does the retro rates the plan in the completion that ends it, through this tool
