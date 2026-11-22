@@ -32,12 +32,20 @@ func (s *Store) KeepProjectStanding(ctx context.Context, person, project, visibi
 
 // KeptProjectStanding is the last answer kept for person and project: the later, by askedAt, of
 // the answer kept for that person and an answer that Dispatch holds no such project, which is
-// kept for no person. visibility is "public" or "private", or "" for a project Dispatch does not
-// hold. found is false when no answer is kept, which is no error.
+// kept for no person. A no-project answer is that last answer only while no answer that the
+// project exists, kept for any person, was asked at or after it: once one was, the project was
+// made since, and a person with no answer of their own asked after the no-project one is kept
+// nothing, so a read while Dispatch cannot be asked refuses them as one never asked rather than
+// read the project that exists now as none. visibility is "public" or "private", or "" for a
+// project Dispatch does not hold. found is false when no answer is kept, which is no error.
 func (s *Store) KeptProjectStanding(ctx context.Context, person, project string) (visibility string, visible bool, askedAt time.Time, found bool, err error) {
-	err = s.Pool.QueryRow(ctx, `select coalesce(visibility, ''), visible, asked_at from project_standing
-		where project = $2 and (person = $1 or (person = '' and visibility is null))
-		order by asked_at desc limit 1`, person, project).Scan(&visibility, &visible, &askedAt)
+	err = s.Pool.QueryRow(ctx, `select coalesce(last.visibility, ''), last.visible, last.asked_at from (
+			select visibility, visible, asked_at from project_standing
+			where project = $2 and (person = $1 or (person = '' and visibility is null))
+			order by asked_at desc limit 1) last
+		where last.visibility is not null or not exists (
+			select 1 from project_standing made
+			where made.project = $2 and made.visibility is not null and made.asked_at >= last.asked_at)`, person, project).Scan(&visibility, &visible, &askedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, time.Time{}, false, nil
 	}

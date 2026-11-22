@@ -3,6 +3,8 @@ package projectaccess_test
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -249,6 +251,103 @@ func TestAProjectAnswerNoWriteKeptStandsOverTheKeptOne(t *testing.T) {
 	dispatch.SetDown(true)
 	r.clock.advance(projectaccess.CacheTTL)
 	r.hidden(t, "PRIV", keptAda, "while Dispatch is down after an answer no write kept")
+}
+
+// acmeRow is ACME once it is made: private, its list naming ada.
+var acmeRow = projectaccesstest.Row{Visibility: "private", Owner: keptDave, Listed: []string{keptAda}}
+
+// TestAKeptNoSuchProjectIsNotServedBesideALaterAnswerThatItExists: NEWP was asked at t0 and
+// Dispatch held no such project, kept for no person. NEWP is then made private, listing ada
+// alone; ada is asked at t2, so the broker keeps an answer that NEWP exists. bob, not on its list,
+// was never asked about NEWP since. A process whose Dispatch is down refuses bob's read under
+// OrKept as one never asked, and does not answer it no project, which would show him NEWP's rows.
+//
+// The fault: KeptProjectStanding reading the no-project row whatever was kept after it; bob's read
+// is answered no project.
+func TestAKeptNoSuchProjectIsNotServedBesideALaterAnswerThatItExists(t *testing.T) {
+	st := storetest.Open(t)
+	t0 := time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC)
+	t2 := t0.Add(time.Hour)
+	if err := st.KeepProjectStanding(t.Context(), "", "NEWP", "", false, t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.KeepProjectStanding(t.Context(), keptAda, "NEWP", "private", true, t2); err != nil {
+		t.Fatal(err)
+	}
+	down := projectaccesstest.NewServer(t, nil, nil)
+	down.SetDown(true)
+	r := keepingClientOf(down, st)
+	_, err := r.client.Access(projectaccess.OrKept(t.Context()), "NEWP", keptBob)
+	var missing *projectaccess.ProjectNotFoundError
+	if err == nil || errors.As(err, &missing) {
+		t.Fatalf("Access(OrKept, NEWP, bob) while Dispatch is down = %v; want refused: NEWP exists since the kept 404 and bob was never asked", err)
+	}
+}
+
+// TestARefusalIsNotAnsweredFromTheKeptProjectAnswer: ada's PUB is kept public. A Dispatch that
+// answers is no outage, though its answer is a failure: one refusing the broker's own account (401
+// or 403), or a 404 naming a code other than PROJECT_NOT_FOUND. A read under OrKept fails as it
+// fails with no keeper, is never answered from the kept answer, and counts nothing.
+//
+// The fault: Access answering from the kept answer any failure of a read under OrKept, not only
+// one Dispatch did not answer (Unanswered); each read is served PUB public.
+func TestARefusalIsNotAnsweredFromTheKeptProjectAnswer(t *testing.T) {
+	st := storetest.Open(t)
+	if err := st.KeepProjectStanding(t.Context(), keptAda, "PUB", "public", true, time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	for _, refusal := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"a 401 refusing the broker's own account", http.StatusUnauthorized, `{"code":"NO_IDENTITY","error":"no credential"}`},
+		{"a 403 refusing the broker's own account", http.StatusForbidden, `{"code":"ACCESS_ACCOUNT_REQUIRED","error":"not listed"}`},
+		{"a 404 naming another code", http.StatusNotFound, `{"code":"NOT_FOUND","error":"no such route"}`},
+	} {
+		t.Run(refusal.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(refusal.status)
+				_, _ = w.Write([]byte(refusal.body))
+			}))
+			t.Cleanup(server.Close)
+			r := newKeptRig(server.URL, "token", st)
+			got, err := r.client.Access(projectaccess.OrKept(t.Context()), "PUB", keptAda)
+			if err == nil || projectaccess.Unanswered(err) || got.Visible {
+				t.Fatalf("Access(OrKept, PUB, ada) on %s = %+v, %v; want the failure, not Unanswered, and nothing served", refusal.name, got, err)
+			}
+			if served := r.projectUnchecked(t, "public"); served != 0 {
+				t.Fatalf(`broker_project_visibility_unchecked_total{kept="public"} on %s = %d; want 0`, refusal.name, served)
+			}
+		})
+	}
+}
+
+// TestAnExistenceAnswerNoWriteKeptEndsTheKeptNoSuchProject: ACME is kept as no project; it is
+// then made, and the database refuses writes when ada's read answers that it exists. Once
+// Dispatch stops answering, carol, never asked about ACME, is refused on that answer rather than
+// answered no project on the older kept one.
+//
+// The fault: keepProject remembering no answer that a project exists it could not keep; carol's
+// read once Dispatch is down is the kept no project.
+func TestAnExistenceAnswerNoWriteKeptEndsTheKeptNoSuchProject(t *testing.T) {
+	st := storetest.Open(t)
+	dispatch := projectaccesstest.NewServer(t, keptProjects(), keptKinds())
+	r := keepingClientOf(dispatch, st)
+	r.readAll(t, map[string][]string{keptBob: {"ACME"}})
+	refuseProjectKeeps(t, st)
+	dispatch.SetRow("ACME", acmeRow)
+	r.clock.advance(projectaccess.CacheTTL)
+	if got, err := r.client.Access(t.Context(), "ACME", keptAda); err != nil || !got.Visible {
+		t.Fatalf("Access(ACME, ada) once ACME is made = %+v, %v; want visible", got, err)
+	}
+	if lines := r.warned("broker: Dispatch's answer of whether a person may see a project could not be kept", keptAda); len(lines) != 1 {
+		t.Fatalf("the refused write logged %v; want one WARN line", lines)
+	}
+	dispatch.SetDown(true)
+	r.clock.advance(projectaccess.CacheTTL)
+	r.hidden(t, "ACME", keptCarol, "while Dispatch is down after an answer that ACME exists no write kept")
 }
 
 // refuseProjectKeeps makes project_standing refuse every insert and update, as a database that

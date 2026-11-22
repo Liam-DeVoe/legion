@@ -404,6 +404,12 @@ type Client struct {
 	// project from the person, which no write has kept, was asked: it stands over an older kept
 	// answer as unkept does, and is forgotten the same way.
 	unkeptProjects map[accessKey]time.Time
+	// unkeptExists is, for each project, when the latest answer that it exists, for any person,
+	// which no write has kept, was asked: a kept answer that Dispatch holds no such project asked
+	// no later is no longer the project's, as the Keeper reads one beside a kept answer that it
+	// exists (Keeper.KeptProjectStanding), so it refuses as nothing kept. It is forgotten once a
+	// write for that project asked no earlier takes, and never otherwise.
+	unkeptExists map[string]time.Time
 	// keptNoted and keptProjectNoted are when MemberKind last counted each person's read, and
 	// Access each person and project's read, answered from what was kept, and under which label,
 	// so each counts, and logs a served read, once a minute per person or per person and project.
@@ -458,6 +464,7 @@ func New(baseURL string, account ciphertoken.Account, httpClient *http.Client) *
 		flights:          map[string]*personFlight{},
 		unkept:           map[string]unkeptKind{},
 		unkeptProjects:   map[accessKey]time.Time{},
+		unkeptExists:     map[string]time.Time{},
 		keptNoted:        map[string]keptNote{},
 		keptProjectNoted: map[accessKey]keptNote{},
 	}

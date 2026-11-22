@@ -121,3 +121,67 @@ func TestWhileDispatchCannotBeAskedARowIsShownByTheKeptProjectAnswer(t *testing.
 	m.Projects = newKeptProcess(dispatch, m.Store).client
 	requireListed(insider, "while Dispatch is down again", []string{hashed, plain}, []string{team})
 }
+
+// TestAKeptNoSuchProjectShowsNoRowOnceTheProjectIsMade is the person rule (maySee) on a project
+// made after Dispatch answered that it holds no such project. A pending request for SHARED_KEY,
+// from a pod that names no person so every signed-in person's list reads it, names ACME-3 in its
+// reason before ACME exists; both people's lists, read while Dispatch answers, keep Dispatch's
+// answer that it holds no ACME, kept for everyone. ACME is then made private, its list naming
+// insider, and insider's list, read while Dispatch answers, keeps her answer. Once Dispatch is
+// down, a broker process restarted since does not show outsider, who has read nothing of ACME since
+// it was made, the row, and his approval of it is ErrProjectAccessUnavailable, leaving it pending;
+// insider is shown it and approves it.
+//
+// Control: while Dispatch is down before ACME is made, outsider's list holds the row on the kept no
+// project, so the row's later absence rests on insider's answer and not on the outage alone.
+func TestAKeptNoSuchProjectShowsNoRowOnceTheProjectIsMade(t *testing.T) {
+	ctx := context.Background()
+	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+	dispatch := projectaccesstest.NewServer(t, dispatchRows(publicTeam), map[string]string{
+		insider: projectaccess.MemberFull, outsider: projectaccess.MemberFull, fixtureOperator: projectaccess.MemberFull,
+	})
+	pod, key := everyonesPod(t, m, "pod-k-acme", "")
+	req, err := m.Create(ctx, pod, signRequest(t, m, key, "ACME-3: rotate the new project's key", "SHARED_KEY"), "", nil)
+	if err != nil || req.RecordID == nil {
+		t.Fatalf("Create(SHARED_KEY, ACME-3) = %+v, %v; want pending", req, err)
+	}
+	acme := *req.RecordID
+	listed := func(login, when string, want bool) {
+		t.Helper()
+		pending, err := m.PendingForApprover(ctx, login, PendingStates{})
+		if err != nil {
+			t.Fatalf("PendingForApprover(%s) %s: %v", login, when, err)
+		}
+		got := slices.ContainsFunc(pending, func(p PendingSummary) bool { return p.RecordID == acme })
+		if got != want {
+			t.Fatalf("%s's list %s holds ACME's row: %t; want %t", login, when, got, want)
+		}
+	}
+
+	m.Projects = newKeptProcess(dispatch, m.Store).client
+	listed(insider, "while Dispatch answers, before ACME is made", true)
+	listed(outsider, "while Dispatch answers, before ACME is made", true)
+	dispatch.SetDown(true)
+	t.Cleanup(func() { dispatch.SetDown(false) })
+	m.Projects = newKeptProcess(dispatch, m.Store).client
+	listed(outsider, "while Dispatch is down, before ACME is made", true)
+
+	dispatch.SetDown(false)
+	dispatch.SetRow("ACME", projectaccesstest.Row{Visibility: "private", Owner: otherPerson, Listed: []string{insider}})
+	m.Projects = newKeptProcess(dispatch, m.Store).client
+	listed(insider, "once ACME is made", true)
+	dispatch.SetDown(true)
+	after := newKeptProcess(dispatch, m.Store)
+	m.Projects = after.client
+	listed(outsider, "while Dispatch is down, ACME made since", false)
+	listed(insider, "while Dispatch is down, ACME made since", true)
+	if got := after.projectUnchecked(t, "none"); got != 1 {
+		t.Errorf(`broker_project_visibility_unchecked_total{kept="none"} after outsider's list = %d; want 1`, got)
+	}
+	if decision, err := m.ApplyDecision(ctx, acme, true, outsider); !errors.Is(err, ErrProjectAccessUnavailable) {
+		t.Fatalf("an approval of ACME's request by %s while Dispatch is down = %+v, %v; want ErrProjectAccessUnavailable", outsider, decision, err)
+	}
+	if decision, err := m.ApplyDecision(ctx, acme, true, insider); err != nil || decision.GrantID == "" {
+		t.Fatalf("an approval of ACME's request by %s while Dispatch is down = %+v, %v; want a grant", insider, decision, err)
+	}
+}
