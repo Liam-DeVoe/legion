@@ -295,7 +295,9 @@ func TestEachCorpusHintStandsInTheBrokersSource(t *testing.T) {
 // The policy's refusals the corpus must hold: every format the policy writes a refusal with as
 // fmt.Errorf("%w: …"), so a refusal the broker sends and the corpus leaves out fails here, rather
 // than reaching cipher-client with no row that shows its pattern takes the broker's text. The one
-// refusal cipher-client withholds is the exception, and it must still stand in the source.
+// refusal cipher-client withholds is the exception, and it must still stand in the source. One
+// format, the refusal of a run's claim of the wrong form (readCIRun), takes each form a claim is
+// held to, so each such form must fill a row too.
 func TestEveryPolicyRefusalIsInTheCorpus(t *testing.T) {
 	withheld := map[string]bool{"%w: the subject token is not a person's Google identity token (%v)": true}
 	listed := map[string]bool{}
@@ -325,6 +327,27 @@ func TestEveryPolicyRefusalIsInTheCorpus(t *testing.T) {
 	for format := range withheld {
 		if !seen[format] {
 			t.Errorf("%s no longer writes the withheld refusal %q: take it out of this test's list", policySource, format)
+		}
+	}
+	filled := map[string]bool{}
+	for _, refusal := range policyRefusals {
+		for _, arg := range refusal.args {
+			if text, ok := arg.(string); ok {
+				filled[text] = true
+			}
+		}
+	}
+	forms := regexp.MustCompile(`form: ("(?:[^"\\]|\\.)*")`).FindAllStringSubmatch(string(raw), -1)
+	if len(forms) == 0 {
+		t.Fatalf("%s holds no claim form (form: \"…\"): the scan reads nothing", policySource)
+	}
+	for _, match := range forms {
+		form, err := strconv.Unquote(match[1])
+		if err != nil {
+			t.Fatalf("%s: %s does not unquote: %v", policySource, match[1], err)
+		}
+		if !filled[form] {
+			t.Errorf("%s holds a claim to the form %q, which no row of policyRefusals fills: add a row of the claim refusal with it", policySource, form)
 		}
 	}
 }
