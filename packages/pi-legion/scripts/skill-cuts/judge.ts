@@ -22,6 +22,11 @@
  *   block of the same name and input, so the request has one shape whichever model answered.
  *   Thinking and reasoning are left out: the step is what the agent did, and its thinking can
  *   quote the arm's skill text.
+ * - The skill names a caller gives (`names`: the case's skill and ours, in a run with an arm of
+ *   ours; none otherwise, and the text is then the case's as it is) reach the judge as
+ *   `the-skill`, in the criterion, the line, the messages before the step and the step
+ *   (blind.ts), the same in every arm, so the judge cannot tell the arm of their skill from the
+ *   arm of ours by a name, and the criterion uses the step's words.
  *
  * A judgement is the JSON object `{"verdict": "pass" | "fail", "reason": ...}`. One that does not
  * parse is asked for again, JUDGE_TRIES times in all, and then gives the verdict null, never fail
@@ -43,6 +48,7 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import { readCalls, type SessionMessage, stripSkillHeader } from "../skill-scenarios/transcript";
 import type { ArmName } from "./arms";
+import { blindSkillNames } from "./blind";
 import type { Case } from "./cases";
 import {
   BudgetSpent,
@@ -275,16 +281,31 @@ export function judgeReply(input: JudgeInput, gateway: Gateway): Promise<Judged>
   return askJudge(judgeBody(input), gateway);
 }
 
+/** The case's part of every judgement of case `c` (`sharedText`): its criterion, its line and the
+ *  messages before the step, each of `names` in them as `the-skill` (blind.ts). */
+function blindShared(c: Case, names: readonly string[]): string {
+  return sharedText({
+    criterion: {
+      pass: blindSkillNames(c.criterion.pass, names),
+      fail: blindSkillNames(c.criterion.fail, names),
+    },
+    line: blindSkillNames(c.line.text, names),
+    before: blindSkillNames(beforeText(c), names),
+  });
+}
+
 /** A case's judge controls (CONTROLS): each one's judgement, the controls whose verdict is not the
  *  one wanted (a null verdict is not), in CONTROLS' order, and whether none is. The real step is
  *  judged alone first and the other two after it, so they read the case's part from the cache it
- *  wrote. Rejects when a send does. */
+ *  wrote. `names` reach the judge as `the-skill` (blind.ts). Rejects when a send does. */
 export async function judgeControls(
   c: Case,
-  gateway: Gateway
+  gateway: Gateway,
+  names: readonly string[] = []
 ): Promise<Record<ControlName, Judged> & { failed: ControlName[]; hold: boolean }> {
-  const shared = sharedText({ criterion: c.criterion, line: c.line.text, before: beforeText(c) });
-  const judge = (content: readonly Block[]) => askJudge(bodyOf(shared, stepText(content)), gateway);
+  const shared = blindShared(c, names);
+  const judge = (content: readonly Block[]) =>
+    askJudge(bodyOf(shared, blindSkillNames(stepText(content), names)), gateway);
   const realStep = await judge(c.realStep.content ?? []);
   const [violating, nothing] = await Promise.all([
     judge(c.violatingStep.content ?? []),
@@ -341,19 +362,21 @@ export interface BlindJudged extends Judged {
 
 /** The judgements of `replies`, the replies of all arms of case `c`, in the order `blindOrder`
  *  gives them under `seed`: the first alone, then the rest at once in that order, so they read the
- *  case's part from the cache the first wrote. A call that fails gives the verdict null with its
+ *  case's part from the cache the first wrote. `names` reach the judge as `the-skill` (blind.ts).
+ *  A call that fails gives the verdict null with its
  *  reason. A judge body that cannot be built (a missing or bad `prompts/judge.md`) is a fault of
  *  the harness, not of a reply: it rejects the whole call with its reason, before any send. */
 export async function judgeBlind(
   c: Case,
   replies: readonly ArmReply[],
   gateway: Gateway,
-  seed: string
+  seed: string,
+  names: readonly string[] = []
 ): Promise<{ seed: string; judged: BlindJudged[] }> {
-  const shared = sharedText({ criterion: c.criterion, line: c.line.text, before: beforeText(c) });
+  const shared = blindShared(c, names);
   const order = blindOrder(replies, seed);
   const judge = ({ item }: { item: ArmReply }) =>
-    askJudge(bodyOf(shared, stepText(item.content)), gateway);
+    askJudge(bodyOf(shared, blindSkillNames(stepText(item.content), names)), gateway);
   const [head, ...rest] = order;
   const first = head === undefined ? [] : await Promise.allSettled([judge(head)]);
   const settled = [...first, ...(await Promise.allSettled(rest.map(judge)))];

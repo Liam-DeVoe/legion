@@ -10,6 +10,15 @@
  * case, stage and arm. A case whose arm still lacks its judged runs is "unscreened" and is not
  * counted (stageOutcome).
  *
+ * The old text is compared with one arm (Compared): the cut text (`new`, with `--new`), a skill
+ * of ours (`ours`, with `--ours`), or no skill (`none`, with neither). A case is informative when
+ * the old text passes at least INFORMATIVE_GAP more of its screen runs than no skill, whatever is
+ * compared; it is flagged when it is informative and the old text passes at least FLAG_GAP more
+ * than the compared arm (with no skill compared, that is informative); and a confirmed case is a
+ * loss when the compared arm passes at least LOSS_GAP fewer of its fresh runs than the old text.
+ * `lossChance` is the rule's chance of a loss, and `smallestDrop` each case's smallest drop the
+ * rule catches with a chance of at least DROP_CHANCE.
+ *
  * The control stage holds a skill's two controls on its control case, their arms' runs sent in
  * one interleaved order: the planted-loss control (`old` against `minus`, the old text less the
  * case's line), which must be a loss, so the test can see a loss; and the false-loss control
@@ -54,11 +63,15 @@ export const NEED_MIN_LOADS = 2;
 /** A near-miss task is a fault when it loads on more of its runs than this. */
 export const NEAR_MISS_MAX_LOADS = 1;
 
-/** The texts a case runs under: the cut's base, the cut text, no skill, the base without the
- *  case's line (the planted-loss control), and the base again under another arm's name (`twin`,
- *  the false-loss control). */
-export const Arm = z.enum(["old", "new", "none", "minus", "twin"]);
+/** The texts a case runs under: the cut's base, the cut text, a skill of ours (`--ours`), no
+ *  skill, the base without the case's line (the planted-loss control), and the base again under
+ *  another arm's name (`twin`, the false-loss control). */
+export const Arm = z.enum(["old", "new", "ours", "none", "minus", "twin"]);
 export type Arm = z.infer<typeof Arm>;
+/** The arm the old text is compared with: the cut text (`--new`), a skill of ours (`--ours`), or
+ *  no skill (neither). The screen flags a case, and confirm calls a loss, on old against it. */
+export const Compared = z.enum(["new", "ours", "none"]);
+export type Compared = z.infer<typeof Compared>;
 export const Stage = z.enum(["screen", "confirm", "control"]);
 export type Stage = z.infer<typeof Stage>;
 /** Where a case stands in a stage (StageOutcome's `state`). */
@@ -75,8 +88,9 @@ export const RunRecord = z.strictObject({
 });
 export type RunRecord = z.infer<typeof RunRecord>;
 
-/** The arms each stage runs: screen the old text, the cut and no skill; confirm the old text and
- *  the cut; control the old text, the old text less the case's line, and the old text again. */
+/** The arms each stage runs with the cut text compared: screen the old text, the cut and no
+ *  skill; confirm the old text and the cut; control the old text, the old text less the case's
+ *  line, and the old text again (`stageArms` for another compared arm). */
 export const STAGE_ARMS = {
   screen: ["old", "new", "none"],
   confirm: ["old", "new"],
@@ -88,28 +102,52 @@ export const STAGE_RUNS: Record<Stage, number> = {
   confirm: FRESH_RUNS,
   control: FRESH_RUNS,
 };
-export type StageArm<S extends Stage> = (typeof STAGE_ARMS)[S][number];
-/** Passes of each arm of a stage, each of that stage's runs. */
-export type Passes<S extends Stage> = Record<StageArm<S>, number>;
+
+/** The arms `stage` runs when the old text is compared with `compared`: the screen runs the old
+ *  text, no skill and the compared arm (so old and none alone with no skill compared), confirm the
+ *  old text and the compared arm, and control its three arms whatever is compared. */
+export function stageArms(stage: Stage, compared: Compared): readonly Arm[] {
+  if (stage === "control" || compared === "new") return STAGE_ARMS[stage];
+  if (stage === "confirm") return ["old", compared];
+  return compared === "none" ? ["old", "none"] : ["old", compared, "none"];
+}
+
+/** An arm a stage runs with some compared arm. */
+export type StageArm<S extends Stage> =
+  | (typeof STAGE_ARMS)[S][number]
+  | (S extends "control" ? never : Compared);
+/** The arms a stage runs whatever arm is compared: the screen's old text and no skill, confirm's
+ *  old text, and control's three. */
+type FixedArm<S extends Stage> = S extends "control"
+  ? "old" | "minus" | "twin"
+  : S extends "screen"
+    ? "old" | "none"
+    : "old";
+/** Passes of each arm of a stage, each of that stage's runs: those of the arms it runs whatever is
+ *  compared, and the compared arm's. */
+export type Passes<S extends Stage> = Record<FixedArm<S>, number> &
+  Partial<Record<StageArm<S>, number>>;
 /** Where a case stands in a stage: every arm has its judged runs (`counted`, with each arm's
  *  passes); some arm can still start the runs it lacks (`running`, with how many to start per
  *  arm); or some arm lacks its runs and has used its extra runs (`unscreened`). */
 export type StageOutcome<S extends Stage> =
   | { state: "counted"; passes: Passes<S> }
-  | { state: "running"; toStart: Record<StageArm<S>, number> }
+  | { state: "running"; toStart: Partial<Record<StageArm<S>, number>> }
   | { state: "unscreened" };
 
-/** Where case `caseId` stands in `stage`, from the run records so far (StageOutcome). An arm with
- *  more judged runs than the stage runs is the runner's fault, and throws. */
+/** Where case `caseId` stands in `stage`, the old text compared with `compared` (STAGE_ARMS's cut
+ *  unless given; `stageArms`), from the run records so far (StageOutcome). An arm with more judged
+ *  runs than the stage runs is the runner's fault, and throws. */
 export function stageOutcome<S extends Stage>(
   records: readonly RunRecord[],
   caseId: string,
-  stage: S
+  stage: S,
+  compared: Compared = "new"
 ): StageOutcome<S> {
   const required = STAGE_RUNS[stage];
-  const arms: readonly StageArm<S>[] = STAGE_ARMS[stage];
-  const passes = {} as Passes<S>;
-  const toStart = {} as Record<StageArm<S>, number>;
+  const arms = stageArms(stage, compared);
+  const passes: Partial<Record<Arm, number>> = {};
+  const toStart: Partial<Record<Arm, number>> = {};
   let running = false;
   for (const arm of arms) {
     let attempts = 0;
@@ -132,15 +170,24 @@ export function stageOutcome<S extends Stage>(
     toStart[arm] = lacking > 0 ? Math.min(lacking, left) : 0;
     running ||= lacking > 0;
   }
-  return running ? { state: "running", toStart } : { state: "counted", passes };
+  return running
+    ? { state: "running", toStart: toStart as Partial<Record<StageArm<S>, number>> }
+    : { state: "counted", passes: passes as Passes<S> };
 }
 
 /** Refuses a count that is not a count of `runs` runs, so a rule of 10 runs never reads the passes
  *  of 40, or the reverse. */
-function assertCounts(counts: Record<string, number>, runs: number): void {
+function assertCounts(counts: Partial<Record<string, number>>, runs: number): void {
   for (const [name, count] of Object.entries(counts))
-    if (!Number.isInteger(count) || count < 0 || count > runs)
+    if (count !== undefined && (!Number.isInteger(count) || count < 0 || count > runs))
       throw new RangeError(`${name} ${count} is no count of ${runs} runs`);
+}
+
+/** The passes of the compared arm `compared` in `passes`; throws when they hold none. */
+function comparedPasses(passes: Partial<Record<Arm, number>>, compared: Compared): number {
+  const count = passes[compared];
+  if (count === undefined) throw new RangeError(`no passes of the compared arm ${compared}`);
+  return count;
 }
 
 /** Whether a screened case is informative: the old text passes at least INFORMATIVE_GAP more of
@@ -150,18 +197,19 @@ export function isInformative(passes: Pick<Passes<"screen">, "old" | "none">): b
   return passes.old - passes.none >= INFORMATIVE_GAP;
 }
 
-/** Whether a screened case goes to the confirm stage: it is informative, and the cut passes at
- *  least FLAG_GAP fewer of its 10 runs than the old text. */
-export function isFlagged(passes: Passes<"screen">): boolean {
+/** Whether a screened case goes to the confirm stage: it is informative, and the compared arm (the
+ *  cut unless given) passes at least FLAG_GAP fewer of its 10 runs than the old text. With no skill
+ *  compared, that is informative. */
+export function isFlagged(passes: Passes<"screen">, compared: Compared = "new"): boolean {
   assertCounts(passes, SCREEN_RUNS);
-  return isInformative(passes) && passes.old - passes.new >= FLAG_GAP;
+  return isInformative(passes) && passes.old - comparedPasses(passes, compared) >= FLAG_GAP;
 }
 
-/** Whether a confirmed case is a loss: the cut passes at least LOSS_GAP fewer of 40 fresh runs than
- *  the old text. */
-export function isLoss(passes: Passes<"confirm">): boolean {
+/** Whether a confirmed case is a loss: the compared arm (the cut unless given) passes at least
+ *  LOSS_GAP fewer of 40 fresh runs than the old text. */
+export function isLoss(passes: Passes<"confirm">, compared: Compared = "new"): boolean {
   assertCounts(passes, FRESH_RUNS);
-  return passes.old - passes.new >= LOSS_GAP;
+  return passes.old - comparedPasses(passes, compared) >= LOSS_GAP;
 }
 
 /** Whether a skill's control case is a loss by the same rule as isLoss, with the old text less the
@@ -248,24 +296,25 @@ export interface SkillScore {
   outcome: SkillOutcome | undefined;
 }
 
-/** A skill's score from the run records of its cases, in the order their first screen record
- *  comes. Unscreened cases count for nothing. The verdict waits for every case's screen runs; with
+/** A skill's score from the run records of its cases, the old text compared with `compared` (the
+ *  cut unless given), in the order their first screen record comes. Unscreened cases count for
+ *  nothing. The verdict waits for every case's screen runs; with
  *  enough informative cases, for the control's runs (its planted-loss and false-loss controls are
  *  one stage); and when the planted-loss control is a loss and the false-loss control is not, for
  *  the confirm runs of every flagged case. An unscreened control is no control loss. A flagged
  *  case whose confirm runs stay unscreened gives no verdict, since its loss can be neither seen
  *  nor ruled out, and a `keeps` over it would hide one. */
-export function scoreSkill(records: readonly RunRecord[]): SkillScore {
+export function scoreSkill(records: readonly RunRecord[], compared: Compared = "new"): SkillScore {
   const ids = [
     ...new Set(records.filter((record) => record.stage === "screen").map((r) => r.caseId)),
   ];
   const cases: CaseScore[] = ids.map((caseId) => {
-    const screen = stageOutcome(records, caseId, "screen");
+    const screen = stageOutcome(records, caseId, "screen", compared);
     const counted = screen.state === "counted";
     const informative = counted && isInformative(screen.passes);
-    const flagged = counted && isFlagged(screen.passes);
-    const confirm = flagged ? stageOutcome(records, caseId, "confirm") : undefined;
-    const loss = confirm?.state === "counted" && isLoss(confirm.passes);
+    const flagged = counted && isFlagged(screen.passes, compared);
+    const confirm = flagged ? stageOutcome(records, caseId, "confirm", compared) : undefined;
+    const loss = confirm?.state === "counted" && isLoss(confirm.passes, compared);
     return { caseId, screen, informative, flagged, confirm, loss };
   });
   const screenedCases = cases.flatMap(({ caseId, screen }) =>
@@ -331,6 +380,170 @@ export function servedScreeningRefusal(counts: {
  *  MAX_SCREENED_CASES screened (counted) cases. */
 export function screeningDone(counts: { screened: number; informative: number }): boolean {
   return counts.informative >= MIN_INFORMATIVE_CASES || counts.screened >= MAX_SCREENED_CASES;
+}
+
+// The rule's chance of a loss, and each case's smallest drop.
+
+/** The chance of each count, 0 to `runs`, of `runs` runs that each pass with chance `p`. */
+function binomial(runs: number, p: number): number[] {
+  const chances: number[] = [];
+  let ways = 1;
+  for (let k = 0; k <= runs; k += 1) {
+    chances.push(ways * p ** k * (1 - p) ** (runs - k));
+    ways = (ways * (runs - k)) / (k + 1);
+  }
+  return chances;
+}
+
+/** From the chance of each count, the chance of each count or fewer. */
+function atMost(chances: readonly number[]): number[] {
+  let sum = 0;
+  return chances.map((chance) => {
+    sum += chance;
+    return sum;
+  });
+}
+
+/** The chance that a count of `runs` runs that each pass with chance `a` is at least `gap` more
+ *  than a count of `runs` runs that each pass with chance `b`. */
+function chanceAhead(runs: number, a: number, b: number, gap: number): number {
+  const ahead = binomial(runs, a);
+  const behind = atMost(binomial(runs, b));
+  let sum = 0;
+  for (let k = gap; k <= runs; k += 1) sum += (ahead[k] ?? 0) * (behind[k - gap] ?? 0);
+  return sum;
+}
+
+/** Pass rates of the three texts a case runs under: the old text, the compared arm's (`cut`) and
+ *  no skill. With no skill compared, `cut` and `none` are one arm's rate. */
+export interface PassRates {
+  readonly old: number;
+  readonly cut: number;
+  readonly none: number;
+}
+
+/**
+ * The chance that the registered rule calls a loss in one case, when each run of the old text
+ * passes with chance `old`, of the compared arm (the cut unless given) with `cut` and of no skill
+ * with `none`, all runs apart; exact binomial, o, n and z counts of SCREEN_RUNS runs and O and N
+ * counts of FRESH_RUNS fresh runs.
+ *
+ * With the cut or a skill of ours compared, in one informative case: it is flagged in the screen
+ * (o − n ≥ FLAG_GAP) given that it is informative (o − z ≥ INFORMATIVE_GAP), and then a loss in
+ * the confirm (O − N ≥ LOSS_GAP): P(o − n ≥ FLAG_GAP and o − z ≥ INFORMATIVE_GAP) / P(o − z ≥
+ * INFORMATIVE_GAP) × P(O − N ≥ LOSS_GAP). Throws for rates under which no case is ever
+ * informative.
+ *
+ * With no skill compared, the compared arm is no skill, so informative and flagged are one
+ * condition, and the screen's gap counts once: P(o − z ≥ the larger gap) × P(O − Z ≥ LOSS_GAP).
+ * Throws when `cut` and `none` differ, since they are one arm.
+ */
+export function lossChance(rates: PassRates, compared: Compared = "new"): number {
+  if (compared === "none") {
+    if (rates.cut !== rates.none) {
+      throw new RangeError(
+        `with no skill compared, the compared arm and no skill are one arm: their pass rates ${rates.cut} and ${rates.none} differ`
+      );
+    }
+    const gap = Math.max(INFORMATIVE_GAP, FLAG_GAP);
+    return (
+      chanceAhead(SCREEN_RUNS, rates.old, rates.none, gap) *
+      chanceAhead(FRESH_RUNS, rates.old, rates.none, LOSS_GAP)
+    );
+  }
+  const old = binomial(SCREEN_RUNS, rates.old);
+  const cut = atMost(binomial(SCREEN_RUNS, rates.cut));
+  const none = atMost(binomial(SCREEN_RUNS, rates.none));
+  let informative = 0;
+  let flagged = 0;
+  for (let k = 0; k <= SCREEN_RUNS; k += 1) {
+    const chance = (old[k] ?? 0) * (none[k - INFORMATIVE_GAP] ?? 0);
+    informative += chance;
+    flagged += chance * (cut[k - FLAG_GAP] ?? 0);
+  }
+  if (informative === 0) {
+    throw new Error(
+      `no case is informative when the old text passes ${rates.old} and no skill ${rates.none} of the runs`
+    );
+  }
+  return (flagged / informative) * chanceAhead(FRESH_RUNS, rates.old, rates.cut, LOSS_GAP);
+}
+
+/** The steps of a smallest drop, in points of pass rate (a point is 1 in 100). */
+export const DROP_STEP_POINTS = 5;
+/** The chance at which the rule catches a drop. */
+export const DROP_CHANCE = 0.8;
+
+/** A case's smallest drop: its screened pass rate of old (`old`, in points), and the smallest drop
+ *  in DROP_STEP_POINTS steps below it (`points`) that the rule catches with a chance of at least
+ *  DROP_CHANCE (`reaches`), with that chance; or, where no drop down to a rate of 0 reaches it, the
+ *  largest drop and its chance. An old text that passed no screen run has no drop: 0 points, at no
+ *  chance. */
+export interface SmallestDrop {
+  readonly old: number;
+  readonly points: number;
+  readonly chance: number;
+  readonly reaches: boolean;
+}
+
+/** The smallest drop of a case screened at `passes` (SmallestDrop): the compared arm passing the
+ *  drop below the old text's screened rate, and no skill its screened rate (with no skill compared,
+ *  no skill is the arm that drops), each drop's chance `lossChance`'s. */
+export function smallestDrop(
+  passes: Pick<Passes<"screen">, "old" | "none">,
+  compared: Compared
+): SmallestDrop {
+  assertCounts(passes, SCREEN_RUNS);
+  const old = Math.round((100 * passes.old) / SCREEN_RUNS);
+  const none = passes.none / SCREEN_RUNS;
+  let largest = { points: 0, chance: 0 };
+  for (let points = DROP_STEP_POINTS; points <= old; points += DROP_STEP_POINTS) {
+    const rates = { old: old / 100, cut: (old - points) / 100 };
+    let chance = 0;
+    if (compared === "none") chance = lossChance({ ...rates, none: rates.cut }, "none");
+    else if (chanceAhead(SCREEN_RUNS, rates.old, none, INFORMATIVE_GAP) > 0) {
+      chance = lossChance({ ...rates, none }, compared);
+    }
+    if (chance >= DROP_CHANCE) return { old, points, chance, reaches: true };
+    largest = { points, chance };
+  }
+  return { old, ...largest, reaches: false };
+}
+
+/** The median of `drops`' points, a drop that no step reaches counted above every other; Infinity
+ *  when the median falls on such a drop, and undefined for no drop. */
+function medianDrop(drops: readonly SmallestDrop[]): number | undefined {
+  if (drops.length === 0) return undefined;
+  const points = drops
+    .map((drop) => (drop.reaches ? drop.points : Number.POSITIVE_INFINITY))
+    .sort((a, b) => a - b);
+  const middle = Math.floor(points.length / 2);
+  const upper = points[middle] ?? 0;
+  return points.length % 2 === 1 ? upper : ((points[middle - 1] ?? 0) + upper) / 2;
+}
+
+/** Each screened (counted) case's smallest drop, with whether it is informative, and the median
+ *  over the screened cases and over the informative ones (`medianDrop`: undefined for none, and
+ *  Infinity when it falls on a case whose drop no step reaches), the old text compared with
+ *  `compared`. */
+export function dropFigures(
+  score: SkillScore,
+  compared: Compared
+): {
+  cases: { caseId: string; informative: boolean; drop: SmallestDrop }[];
+  screened: number | undefined;
+  informative: number | undefined;
+} {
+  const cases = score.cases.flatMap(({ caseId, screen, informative }) =>
+    screen.state === "counted"
+      ? [{ caseId, informative, drop: smallestDrop(screen.passes, compared) }]
+      : []
+  );
+  return {
+    cases,
+    screened: medianDrop(cases.map((each) => each.drop)),
+    informative: medianDrop(cases.filter((each) => each.informative).map((each) => each.drop)),
+  };
 }
 
 /** A cut's changed skills, loaded skills included, most read first by the counted sessions of the

@@ -58,7 +58,10 @@
  * (`SKILL_CUTS_SYSTEM_PROMPT`), with only the case skill's line of the recorded skill listing
  * (`- <skill>: <hint>`) changed (`armPromptBlocks`): the arm's hint, written and cached as above,
  * where the arm lists the skill, and the line removed where it does not (`none`, or an arm whose
- * text hides the skill). A recording that does not list the skill is sent as recorded in every
+ * text hides the skill). The arm of ours lists our skill under its own name (`armRecordedPrompt`):
+ * the line names ours under our hint in their skill's place, or, where the recording lists a skill
+ * of our name already, their line goes and that line holds our hint. A recording that does not
+ * list the skill is sent as recorded in every
  * arm. `--tools` restricts Oh My Pi's tools to the recorded names. The body's system prompt must
  * be those blocks byte for byte, or the capture is refused; a recorded tool the body does not
  * define, or one it defines beyond them, is kept in the record (`tools`).
@@ -597,6 +600,26 @@ export function armPromptBlocks(
   );
   if (changed === undefined) return { blocks: [...blocks], line: "not listed" };
   return { blocks: changed, line: hint === undefined ? "removed" : "replaced" };
+}
+
+/** The recorded system prompt `blocks` as an arm that installs the skill `installed` sends them,
+ *  the case's skill being `skill`, its listing line under `hint` (undefined: the arm lists no such
+ *  skill). Every arm but `ours` installs the case's skill, and gets `armPromptBlocks`'. The arm of
+ *  ours lists our skill under its own name: their skill's line names ours in its place, or, where
+ *  the recording lists a skill of our name already, their line goes and that line holds our hint,
+ *  so no name is listed twice. */
+export function armRecordedPrompt(
+  blocks: readonly string[],
+  skill: string,
+  installed: string,
+  hint: string | undefined
+): { blocks: string[]; line: ListingLine } {
+  if (installed === skill) return armPromptBlocks(blocks, skill, hint);
+  const held = armPromptBlocks(blocks, installed, hint);
+  if (held.line !== "not listed") {
+    return { blocks: armPromptBlocks(held.blocks, skill, undefined).blocks, line: held.line };
+  }
+  return armPromptBlocks(renamedListingBlocks(blocks, skill, installed), installed, hint);
 }
 
 /** The recorded system prompt `blocks` with the first `<skills>` listing line of `from` naming
@@ -1626,10 +1649,11 @@ export async function captureBody(
     const recorded =
       c.profile.systemPrompt === undefined
         ? undefined
-        : armPromptBlocks(
+        : armRecordedPrompt(
             c.profile.systemPrompt,
             c.skill,
-            hints.find((entry) => entry.skill.name === c.skill)?.cached?.hint
+            arm.skill,
+            hints.find((entry) => entry.skill.name === arm.skill)?.cached?.hint
           );
     if (recorded !== undefined) {
       promptFile = path.join(root, `system-prompt.${arm.name}.json`);

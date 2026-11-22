@@ -1,6 +1,7 @@
 /**
- * The five arms of a case: `old` (the skill's base text, `--old`), `new` (the
- * cut text, `--new`), `none` (no skill), `minus` (a copy of the old directory less every line
+ * The six arms of a case: `old` (the skill's base text, `--old`), `new` (the
+ * cut text, `--new`), `ours` (a skill of ours, `--ours`, under its own name: see below), `none`
+ * (no skill), `minus` (a copy of the old directory less every line
  * of the case's baseFile that is the case's line, trimmed, or less every line of any of its files
  * that is `--planted-line`, trimmed, when one is given: a rule written twice is still the rule, so
  * each copy of it goes) and `twin` (the old directory again, built as `old` is: the false-loss
@@ -8,8 +9,9 @@
  * differs between arms: the messages are the case's own but for the text of the skill's files in
  * its read results, and the profile is the case's own but for the skill, which `none` leaves out.
  *
- * In each arm but `none`, each read result of a file of the skill (the case's `skillReads`) is
- * answered from the arm's file the way the pinned Oh My Pi 18.18.6 answers a `skill://` read: one
+ * In each arm but `none` and `ours`, each read result of a file of the skill (the case's
+ * `skillReads`) is answered from the arm's file the way the pinned Oh My Pi 18.18.6 answers a
+ * `skill://` read: one
  * line `[Skill file: <absolute path>]`, then the file's text less its final newline (F1). The path
  * is never the arm's own directory: it is the one the real result shows, the skill's installed
  * path, so no arm's directory name reaches the model and the lines are the same in every arm. A
@@ -20,6 +22,18 @@
  * `read skill://alpha/references/missing.md` and `read skill://gamma` in a scratch profile. In
  * `none`, each read call of the skill and its result are removed, and an assistant message left
  * with no text and no tool call goes too.
+ *
+ * `ours` is a skill whose frontmatter name (and directory name) may differ from the case's skill
+ * (`ArmDirs.ours` gives its directory and its name). Its profile is the case's with ours in place
+ * of theirs, under our name; where the profile already holds a skill of our name, the `--ours`
+ * text replaces that entry, so no name is installed twice (context.ts refuses one installed twice),
+ * and the arm records that it replaced it. Its installed directory is theirs with our name as its
+ * last part. Each history read of a file of theirs becomes a read of `skill://<ours>` at the same
+ * path inside the skill (the call's `path` argument), answered from our directory at our installed
+ * directory, when ours has that file; when ours lacks it, the read call and its result are removed
+ * as `none` removes them, and the arm records the read's path inside the skill. So a renamed
+ * unchanged copy of their skill gives old's texts but for the name. A reply's read of their skill
+ * gets Oh My Pi's unknown-skill text (`unknownSkill`): the arm does not install it.
  *
  * `skillFile(arm, file)` answers one new read the same way, at the arm's `installedDir`, and is
  * what replay.ts answers a reply's read with; cases.ts's `skillReadFile(arm.skill, target)` says
@@ -52,39 +66,55 @@ export type ArmName = ScoreArm;
 /** One arm of a case. */
 export interface Arm {
   readonly name: ArmName;
-  /** The case's skill, as `skill://<skill>` names it. */
+  /** The skill the arm installs, as `skill://<skill>` names it: the case's skill, or in `ours`
+   *  our skill's name. */
   readonly skill: string;
   /** The arm's directory of the skill, absolute, or undefined for `none`. The model never sees
    *  it. */
   readonly skillDir: string | undefined;
-  /** The skill's directory as the model sees it, the same in every arm of a case: the installed
-   * directory the case's first `[Skill file: …]` line of the skill shows, or `/skills/<skill>`
-   * when the case has none. */
+  /** The skill's directory as the model sees it, the same in every arm of a case but `ours`: the
+   * installed directory the case's first `[Skill file: …]` line of the skill shows, or
+   * `/skills/<skill>` when the case has none; in `ours`, that directory with our name as its last
+   * part. */
   readonly installedDir: string;
   /** The case's messages, as this arm gives them. */
   readonly messages: SessionMessage[];
-  /** The skills the arm's profile installs: the case's own, less the case's skill for `none`. The
-   * case's skill is installed from `skillDir`. */
+  /** The skills the arm's profile installs: the case's own, less the case's skill for `none`, and
+   * with ours in its place for `ours`. The arm's skill is installed from `skillDir`. */
   readonly profileSkills: ProfileSkill[];
+  /** In `ours` only: the case's skill (`theirs`), which the arm does not install; whether our text
+   *  replaced a skill of our name that the profile held (`replacedOwn`); and the path inside the
+   *  skill of each history read of theirs removed because ours has no file there
+   *  (`removedReads`), in the history's order. */
+  readonly ours?: {
+    readonly theirs: string;
+    readonly replacedOwn: boolean;
+    readonly removedReads: readonly string[];
+  };
 }
 
 /** The directories the arms are built from: each is the skill's own directory, SKILL.md at its
- * top. */
+ * top. `new` is given with `--new`, and `ours`, with its name, with `--ours`. */
 export interface ArmDirs {
   readonly old: string;
-  readonly new: string;
+  readonly new?: string;
+  readonly ours?: { readonly dir: string; readonly name: string };
   /** The line `minus` leaves out in place of the case's line. */
   readonly plantedLine?: string;
+}
+
+/** Oh My Pi's answer to a read of `skill`, which `arm` does not install: one line naming it, then
+ *  the skills the arm's profile installs. */
+export function unknownSkill(arm: Arm, skill: string): { text: string; isError: true } {
+  const names = arm.profileSkills.map((each) => each.name);
+  const available = names.length > 0 ? names.join(", ") : "none";
+  return { text: `Unknown skill: ${skill}\nAvailable: ${available}`, isError: true };
 }
 
 /** The answer to a read of `file` (a path inside the skill's directory) from the arm's files,
  * shown at `shown`: the header and the text, or the not-found text with `isError`. */
 function answer(arm: Arm, file: string, shown: string): { text: string; isError: boolean } {
-  if (arm.skillDir === undefined) {
-    const names = arm.profileSkills.map((skill) => skill.name);
-    const available = names.length > 0 ? names.join(", ") : "none";
-    return { text: `Unknown skill: ${arm.skill}\nAvailable: ${available}`, isError: true };
-  }
+  if (arm.skillDir === undefined) return unknownSkill(arm, arm.skill);
   const full = path.resolve(arm.skillDir, file);
   const inside = path.relative(arm.skillDir, full);
   if (inside === ".." || inside.startsWith(`..${path.sep}`) || path.isAbsolute(inside)) {
@@ -192,9 +222,102 @@ function minusDirectory(c: Case, dirs: ArmDirs, scratch: string): string {
   return dir;
 }
 
+/** A read of a file of the case's skill in its history: the file (a path inside the skill), the
+ *  target its call read, the path its result's header shows, and its call's id. */
+interface HistoryRead {
+  readonly file: string;
+  readonly target: string;
+  readonly header: string | undefined;
+  readonly id: string;
+}
+
+/** `messages` less each read result at an index of `removed` and each call of those reads, an
+ *  assistant message left with no text and no tool call going too: what `none` gives of the
+ *  history. */
+function withoutReads(
+  messages: readonly SessionMessage[],
+  removed: ReadonlyMap<number, HistoryRead>
+): SessionMessage[] {
+  const ids = new Set([...removed.values()].map((read) => read.id));
+  return messages.flatMap((message, index): SessionMessage[] => {
+    if (removed.has(index)) return [];
+    const content = message.content;
+    if (message.role !== "assistant" || content === undefined) return [structuredClone(message)];
+    const kept = content.filter((part) => !(part.type === "toolCall" && ids.has(part.id ?? "")));
+    if (kept.length === content.length) return [structuredClone(message)];
+    if (!kept.some((part) => part.type === "text" || part.type === "toolCall")) return [];
+    return [structuredClone({ ...message, content: kept })];
+  });
+}
+
+/** The arm of ours of case `c` (the module's comment says what it holds), from `ours`, our
+ *  directory and name; `reads` are the case's reads of its skill's files, by index, and
+ *  `installedDir` their installed directory. */
+function oursArm(
+  c: Case,
+  ours: { readonly dir: string; readonly name: string },
+  reads: ReadonlyMap<number, HistoryRead>,
+  installedDir: string
+): Arm {
+  const skillDir = directory(ours.dir, "ours");
+  const replacedOwn =
+    ours.name !== c.skill && c.profile.skills.some((skill) => skill.name === ours.name);
+  const profileSkills = c.profile.skills.flatMap((skill) => {
+    if (skill.name !== c.skill) return [skill];
+    return replacedOwn ? [] : [{ ...skill, name: ours.name }];
+  });
+  const arm: Arm = {
+    name: "ours",
+    skill: ours.name,
+    skillDir,
+    installedDir: path.join(path.dirname(installedDir), ours.name),
+    messages: [],
+    profileSkills: structuredClone(profileSkills),
+  };
+  const lacking = new Map(
+    [...reads].filter(
+      ([, read]) =>
+        !statSync(path.resolve(skillDir, read.file), { throwIfNoEntry: false })?.isFile()
+    )
+  );
+  // Each kept read's call, by its id, reads our skill's URL at the same path inside the skill.
+  const theirs = `skill://${c.skill}`;
+  const targets = new Map(
+    [...reads]
+      .filter(([index]) => !lacking.has(index))
+      .map(([, read]) => [read.id, `skill://${ours.name}${read.target.slice(theirs.length)}`])
+  );
+  const messages = c.messages.map((message, index): SessionMessage => {
+    const read = reads.get(index);
+    if (read !== undefined && !lacking.has(index)) {
+      const target = targets.get(read.id) ?? read.target;
+      const shown = path.join(arm.installedDir, read.file);
+      return structuredClone(answered(message, arm, { file: read.file, target, shown }));
+    }
+    const content = message.content;
+    if (message.role !== "assistant" || content === undefined) return structuredClone(message);
+    const renamed = content.map((part) => {
+      const target = part.type === "toolCall" ? targets.get(part.id ?? "") : undefined;
+      if (target === undefined) return part;
+      return { ...part, arguments: { ...Object(part.arguments), path: target } };
+    });
+    return structuredClone({ ...message, content: renamed });
+  });
+  return {
+    ...arm,
+    messages: withoutReads(messages, lacking),
+    ours: {
+      theirs: c.skill,
+      replacedOwn,
+      removedReads: [...lacking.values()].map((read) => read.file),
+    },
+  };
+}
+
 /** The arm `name` of case `c`, from the skill directories `dirs`. `minus` writes its copy of the
  * old directory to `<scratch>/minus`, replacing one there. Throws naming the case when a
- * skillReads index is not a read of a `skill://<skill>` file. */
+ * skillReads index is not a read of a `skill://<skill>` file, or when `dirs` lacks the arm's
+ * directory. */
 export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string): Arm {
   const targets = readTargets(c.messages);
   const reads = new Map(
@@ -220,17 +343,12 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
     }
   }
 
+  if (name === "ours") {
+    if (dirs.ours === undefined) throw new Error(`case ${c.id}: the ours arm needs --ours`);
+    return oursArm(c, dirs.ours, reads, installedDir);
+  }
   if (name === "none") {
-    const ids = new Set([...reads.values()].map((read) => read.id));
-    const messages = c.messages.flatMap((message, index): SessionMessage[] => {
-      if (reads.has(index)) return [];
-      const content = message.content;
-      if (message.role !== "assistant" || content === undefined) return [structuredClone(message)];
-      const kept = content.filter((part) => !(part.type === "toolCall" && ids.has(part.id ?? "")));
-      if (kept.length === content.length) return [structuredClone(message)];
-      if (!kept.some((part) => part.type === "text" || part.type === "toolCall")) return [];
-      return [structuredClone({ ...message, content: kept })];
-    });
+    const messages = withoutReads(c.messages, reads);
     return {
       name,
       skill: c.skill,
@@ -241,10 +359,9 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
     };
   }
 
-  const skillDir =
-    name === "minus"
-      ? minusDirectory(c, dirs, scratch)
-      : directory(dirs[name === "twin" ? "old" : name], name);
+  const given = name === "new" ? dirs.new : dirs.old;
+  if (given === undefined) throw new Error(`case ${c.id}: the new arm needs --new`);
+  const skillDir = name === "minus" ? minusDirectory(c, dirs, scratch) : directory(given, name);
   const arm: Arm = {
     name,
     skill: c.skill,

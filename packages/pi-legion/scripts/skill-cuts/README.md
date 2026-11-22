@@ -44,20 +44,30 @@ read it: GET calls, and GraphQL queries that read file contents in batches.
 ```
 bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
   --config <skill-cuts.json> --key-file <file> --out <dir> \
-  --old <skill dir at the cut's base> --new <skill dir in the cut> --cases <case file> \
+  --old <skill dir at the cut's base> [--new <skill dir in the cut> | --ours <skill dir of ours>] \
+  --cases <case file> [--case <id>] \
   [--planted-line <text>] [--budget-usd <n>] [--concurrency <n, default 8>] \
   [--after-case <command>] [--request-log <file>] \
   [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] \
   [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] \
-  [--reading-models <file>]
+  [--reading-models <file>] [--limits <file>]
 ```
 
-One skill per run: `--old` and `--new` are that skill's own directories, and `--cases` holds that
-skill's cases (`cases.ts`), one JSON object per line.
+One skill per run: `--old` is that skill's own directory (their skill), and `--cases` holds that
+skill's cases (`cases.ts`), one JSON object per line. The old text is compared with one arm, the
+compared arm: `--new` (the skill's directory in the cut), `--ours` (a skill of ours, "The arm of
+ours" below), or neither, which compares the old text with no skill. `--new` and `--ours` exclude
+each other (exit 2). Each stage records its compared arm (`compared`; a stage that records none
+was run with `--new` before it was recorded), and a command whose `--out` holds runs of another
+compared arm is refused (exit 2). A case is informative when old passes at least 2 more of its
+10 screen runs than no skill; it is flagged when it is informative and old passes at least 2 more
+than the compared arm (with no skill compared, that is informative); and a confirmed case is a
+loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
 
 - `screen`: per case, the three judge controls (the real step must pass; the case's
   `violatingStep`, a step that breaks the line, must fail; "I will continue." must fail; a case
-  that fails any is dropped, naming the control), then a capture of each arm (old, new, none), 10
+  that fails any is dropped, naming the control), then a capture of each arm (old, the compared
+  arm unless it is no skill, and none), 10
   replays of each, each reply judged blind with all arms shuffled, and runs made again for the runs
   with no verdict, at most 5 more per arm. It stops at 6 informative or 15 screened cases. A case
   whose model the gateway does not serve (none of the configuration's `servedModels` has its id,
@@ -68,7 +78,11 @@ skill's cases (`cases.ts`), one JSON object per line.
   with fewer than 6 reading sessions on models the gateway serves is refused before any call
   (exit 2): it gets no verdict, with the reason `too few sessions on served models` and its served
   and total counts, and the walk of the cut's ranking goes on to the next skill.
-- `confirm`: 40 fresh runs of old and new for each flagged case.
+- `confirm`: 40 fresh runs of old and the compared arm for each flagged case. `confirm --case
+  <id>` makes 40 fresh runs of old and the compared arm on that one case, with no flag gate and
+  no gate of 6 informative cases, and no screen or judge controls: give it its own `--out`. It
+  refuses an id the case file does not hold, and a case whose model the gateway does not serve
+  (exit 2).
 - `control`: on the skill's control case, 40 runs each of three arms: old; `minus` (old without
   each line of the case's file that is the case's line, trimmed, or without each line that is
   `--planted-line`; a rule written twice is still the rule, so every copy goes; a link in the old
@@ -84,15 +98,31 @@ skill's cases (`cases.ts`), one JSON object per line.
   as `unreadable-directory`, its drop naming the repository, the commit and the path; a run
   started again skips it, and a dropped case is never informative. A read that fails for another
   reason, after its retries, fails the command (exit 1), and the next run reads it again.
-- `report`: each case's passes per arm and stage, the control case's passes of old, `minus` and
-  `twin` and what each control says, the skill's verdict and its reason (`keeps` prints as "no
-  loss detected by the registered rule"), the drops per judge control and the drops counted as
+- `report`: the compared arm, each case's passes and runs per arm and stage, the cases of each
+  kind (`source.kind` `session` or `written`; a case with none is a session case) and the
+  informative cases of each, the control case's passes of old, `minus` and
+  `twin` and what each control says, each model of the cases with its cases, the skill's verdict
+  and its reason, the drops per judge control and the drops counted as
   `model-not-served` and as `unreadable-directory`, an estimate of the procedure's false-loss
-  chance at the cases run (exact binomial under identical old and new texts, the pass rates taken
-  from each case's own screen; its assumptions are printed with it),
-  a table of the chance it finds a loss of 10 to 40 points in one informative case, the spend
-  at list price, the peak memory, and how many captures' system-prompt digests differ from their
-  session's. It calls no model, and needs only `--config`, `--out`, `--old` and `--cases`. With
+  chance at the cases run (exact binomial under identical old and compared texts, the pass rates
+  taken from each case's own screen; its assumptions are printed with it),
+  a table of the chance it finds a loss of 10 to 40 points in one informative case, each screened
+  case's smallest drop ("The smallest drop" below), the spend
+  at list price, the peak memory, how many captures' system-prompt digests differ from their
+  session's, and the text of `--limits <file>` as it is (the limits a result states, so no limit
+  is written into the runner), or that none was given. It calls no model, and needs only
+  `--config`, `--out`, `--old` and `--cases`; its compared arm is the one its results record (a
+  `--new` or `--ours` it is given must be that one). With the cut compared, `keeps` prints as "no
+  loss detected by the registered rule" and a loss names the cases where the cut's text passes at
+  least 10 fewer of 40 fresh runs than the old text. With no skill compared, the report says once
+  that the arm with no skill informs and clears nothing; `loss` prints as "no skill loses against
+  their skill on <n> cases" and `keeps` as "no loss of no skill detected by the registered rule".
+  With ours compared, it calls the arm of ours a bundle where its text replaced a skill of our name
+  that a case's profile held ("their skill hidden, ours at the given text (it replaced the
+  profile's own <name>)"), names on each case's line the history reads the arm of ours removed,
+  and gives ours against old twice: over all screened cases, and over the screened cases with no
+  removed read (each arm's screen passes, and the confirm passes and the count of losses where
+  confirm runs were made). With
   `--reading-models` it also prints each model of that file with its sessions and whether the
   gateway serves it, the sessions whose file names no model and those in no models query's rows,
   and the served models the screened cases ran on, each with its cases; a verdict then ends with
@@ -136,6 +166,47 @@ Responses route), at most three rounds. A Messages body gets a cache breakpoint 
 message; a Responses body gets none, since that route caches the shared prefix by itself. The
 judge stays `claude-opus-5-5` on the Messages route and reads a Responses reply's text and tool
 calls as it reads a Messages reply's, so its request names no model, route or arm.
+
+#### The arm of ours
+
+`--ours <dir>` is a skill of ours, whose frontmatter `name` (and directory name) may differ from
+the case's skill (`arms.ts`). Its profile is the case's with ours in place of their skill, under
+our name and description; where the profile already holds a skill of our name, the `--ours` text
+replaces that entry, so no name is installed twice (the context refuses a name installed twice),
+and the stage records that it replaced it (`ours.replacedOwn`). Each read of a file of their skill
+in the history becomes a read of `skill://<ours>/<the same path inside the skill>`, answered from
+our directory at our installed directory (theirs, with our name as its last part); where ours
+has no such file, the read call and its result are removed as the arm with no skill removes them,
+and the stage records the read's path (`ours.removedReads`). So a renamed unchanged copy of their
+skill gives old's texts but for the name. In a reply, a read of `skill://<ours>/…` is answered
+from our directory, and a read of their skill gets Oh My Pi's `Unknown skill: <theirs>` text; both
+are answered, not judged. The capture lists our skill under its own name and description, and a
+subagent's recorded listing names ours in their skill's line. Its captures are kept under
+`<out>/captures/ours-<digest of our directory>/`.
+
+#### The judge reads no skill name
+
+In a run with an arm of ours (`--ours`), before the judge reads a case's criterion (pass and
+fail), its line, its history and a step, in every arm, the case's skill name and ours become
+`the-skill` (`blind.ts`): `skill://<name>` reads `skill://the-skill`, a path part `/<name>/`
+reads `/the-skill/`, and the name as a whole word reads `the-skill`. A longer name that holds the
+name as part of a word (`alphabet`, `alpha-extra` for `alpha`) stays. So the judge cannot tell
+the arm of their skill from the arm of ours by a name, and the criterion uses the step's words. A
+run with `--new` (both arms hold the case's skill) or with no skill compared (the judge reads the
+case's own history in every arm) blinds nothing: its judge reads the case's text as it is.
+
+#### The smallest drop
+
+For each screened case, the report gives the smallest drop, in 5-point steps below the case's
+screened pass rate of old, that the rule (the screen's flag, then the confirm's loss: `score.ts`'s
+`lossChance` with the compared arm) catches with a chance of at least 80%, with that chance. With
+the cut or ours compared, the compared arm passes the drop below old and no skill at the case's
+screened rate; with no skill compared, no skill is the arm that drops, and the screen's gap is
+counted once (informative and flagged are one condition). Where no drop down to a rate of 0
+reaches 80%, the figure says so and gives the chance at the largest drop. The report gives the
+median over the screened cases and over the informative cases ("none" when there are none; a
+case no drop reaches counts above every other). At old 0.9 and no skill 0.1 the figure is 40
+points at 87.52%, compared with the cut or with no skill.
 
 ### The harness strings
 
@@ -940,6 +1011,25 @@ the last candidate, and writes no file. A bound is refused without `--model` or 
 (no search runs) and with `--first-read` (it stops at `--max`). Build a load test's tasks with
 `--max-candidates 60 --max-search-minutes 90`.
 
+### `results-index`
+
+```
+bun scripts/skill-cuts/cli.ts results-index --count <set-count out dir> \
+  --nearest <dir of nearest rows> --cases <dir of case files> --results <dir of results>
+```
+
+The inventory of the results of the skills of the two sets (`results-index.ts`). It lists each
+skill that `set-count`'s `summary.json` (in `--count`) gives at 20 or more own-copy sessions
+(`atLeast20`), in its order, beside its nearest row (a `nearest` row JSON file at any depth under
+`--nearest` of the skill's name; a row whose every reply was refused names no nearest skill, so
+it is none), its cases file (`cases-<skill>.jsonl` or `cases-<skill>.jsonl.gz` in `--cases`) and
+its result (`results-<skill>/` or `results-<skill>.tar.gz` in `--results`, holding the output of
+`behaviour report` for the skill as `report.txt`, whose `verdict:` line it prints; a result with
+no report, or a report with no verdict line, is none). It calls no model and reads nothing else.
+It exits 1 naming each skill that lacks a nearest row, a cases file or a result, and 2 when it
+refuses its arguments, a `summary.json` that is not set-count's, a directory it cannot read, or a
+`.json` file under `--nearest` that is no JSON or a nearest row of another shape.
+
 ## The request log
 
 Each model request of `behaviour`, `read`, `control`, `craft`, `nearest`, `proposals` and `load`
@@ -960,7 +1050,8 @@ message's text.
 
 0 done (a control held); 1 failed (every reply of a reader refused, a control that did not hold, a
 call, a load test's task or an `--after-case` command that failed, an item line of `proposals` that
-does not parse, or an item it leaves with no entry); 2 refused before any model
+does not parse, an item it leaves with no entry, or a skill `results-index` finds with no nearest
+row, cases file or result); 2 refused before any model
 call or store read (among the refusals, an `--out` inside a git or jj checkout, from `behaviour`'s
 stage commands, `load` and `build-cases`); 3 stopped (the budget is spent, or the peak memory
 passed 1 GiB, 1.5 GiB for `copies`); 4 stopped by build-cases' stop rule.

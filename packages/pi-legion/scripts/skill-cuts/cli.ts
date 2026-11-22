@@ -11,11 +11,11 @@
  * capture with no `--repos`: a command whose captures are all saved reads no repository.
  *
  *   bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> --config <file>
- *       --key-file <file> --out <dir> --old <dir> --new <dir> --cases <file>
- *       [--planted-line <text>] [--budget-usd <n>] [--concurrency <n>] [--after-case <command>]
- *       [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>]
- *       [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] [--request-log <file>]
- *       [--reading-models <file>]
+ *       --key-file <file> --out <dir> --old <dir> [--new <dir> | --ours <dir>] --cases <file>
+ *       [--case <id>] [--planted-line <text>] [--budget-usd <n>] [--concurrency <n>]
+ *       [--after-case <command>] [--models <models.yml>] [--omp <binary>] [--repos <dir>]
+ *       [--hint-model <model>] [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>]
+ *       [--request-log <file>] [--reading-models <file>] [--limits <file>]
  *   bun scripts/skill-cuts/cli.ts read --config <file> --key-file <file> --prompt <name>
  *       --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>]
  *       [--concurrency <n>]
@@ -73,17 +73,25 @@
  *   bun scripts/skill-cuts/cli.ts build-tasks --first-read --config <file> --key-file <file>
  *       --skill <dir> --sessions <file> --seed <n> [--max <n>] --out <tasks.jsonl>
  *       [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]
+ *   bun scripts/skill-cuts/cli.ts results-index --count <set-count out dir> --nearest <dir>
+ *       --cases <dir> --results <dir>
  *
- * `count-sql`, `copies`, `attribute`, `set-count`, `craft-lines`, `build-cases` and `build-tasks`
- * are the commands of countsql.ts, copies.ts, attribute.ts, set-count.ts, craftlist.ts and build.ts,
- * given their arguments whole.
+ * `count-sql`, `copies`, `attribute`, `set-count`, `craft-lines`, `build-cases`, `build-tasks` and
+ * `results-index` are the commands of countsql.ts, copies.ts, attribute.ts, set-count.ts,
+ * craftlist.ts, build.ts and results-index.ts, given their arguments whole.
  *
- * **`behaviour`** runs the behaviour test of one skill: `--old` and `--new` are the skill's own
- * directories at the cut's base and in the cut, and `--cases` a case file of that skill (cases.ts,
- * checked against `--old`). Each case's results are one file, `<out>/cases/<id>.json` (CaseResult),
+ * **`behaviour`** runs the behaviour test of one skill: `--old` is the skill's own directory at
+ * the cut's base (their skill), and `--cases` a case file of that skill (cases.ts, checked against
+ * `--old`). The old text is compared with one arm (score.ts's Compared): `--new`, the skill's
+ * directory in the cut; `--ours`, a skill of ours whose name may differ (arms.ts's `ours`); or,
+ * with neither, no skill. `--new` and `--ours` exclude each other. Each stage records its
+ * compared arm, and an `--out` whose results record another than the command's is refused.
+ * Each case's results are one file, `<out>/cases/<id>.json` (CaseResult),
  * written whole (a fresh file renamed over it) after each round of runs, so a run started again
  * goes on from what was saved and skips each case whose stage is complete. `--after-case
- * <command>` runs `<command> <that file>` through `sh` when a case's stage ends.
+ * <command>` runs `<command> <that file>` through `sh` when a case's stage ends. In a run with an
+ * arm of ours, every judgement reads the case's skill name and ours as `the-skill` (blind.ts);
+ * with `--new` or no skill compared, the judge reads the case's text as it is.
  *
  * - `screen`: per case in the file's order, until the skill has MIN_INFORMATIVE_CASES informative
  *   or MAX_SCREENED_CASES screened cases (score.ts): a case whose model the gateway does not serve
@@ -92,7 +100,8 @@
  *   `provider/model`, on the gateway route of its capture's body (gateway.ts); the three judge
  *   controls (judge.ts's CONTROLS) run, and a case that fails any is dropped, its drop naming
  *   each control it failed; then a capture
- *   per arm (old, new, none; capture.ts, read back when saved already), SCREEN_RUNS replays of
+ *   per arm (old, the compared arm unless it is none, and none; capture.ts, read back when saved
+ *   already), SCREEN_RUNS replays of
  *   each, every reply of the round judged blind (all arms shuffled under a recorded seed), and
  *   rounds of extra runs for the runs with no verdict, as score.ts's `stageOutcome` says, at most
  *   MAX_EXTRA_RUNS per arm. With `--reading-models <file>` (attribute.ts's
@@ -101,7 +110,10 @@
  *   before any model call (score.ts's `servedScreeningRefusal`: `too few sessions on served
  *   models`, with the served and total counts): it gets no verdict, and the walk of the cut's
  *   ranking goes on to its next skill.
- * - `confirm`: FRESH_RUNS fresh runs of old and new for each flagged case.
+ * - `confirm`: FRESH_RUNS fresh runs of old and the compared arm for each flagged case. With
+ *   `--case <id>`, FRESH_RUNS fresh runs of old and the compared arm on that case alone, with no
+ *   flag gate and no gate of MIN_INFORMATIVE_CASES informative cases, into its own `--out`; an id
+ *   the case file does not hold is refused.
  * - `control`: on the skill's control case, FRESH_RUNS runs each of old, `minus` (old less every
  *   line of the case's file that is the case's line, trimmed, or less every line that is
  *   `--planted-line`: a rule written twice is still the rule, so each copy goes; arms.ts) and
@@ -116,13 +128,20 @@
  *   the commit and the path, and a run started again skips it; a dropped case is never
  *   informative. A read that failed for another reason, after its retries, fails the command, and
  *   the next run reads it again.
- * - `report` (no model call) prints each case's passes per arm and stage, the drops by each judge
- *   control, by `model-not-served` and by `unreadable-directory`, the skill's verdict and its
- *   reason (score.ts; `keeps` is printed "no loss detected by the registered rule"), the rule's
- *   sensitivity (`lossChance` at an old pass rate of 0.9 and 0.7 and drops of 0.1 to 0.4), the
- *   estimated false-loss rate at the cases run (`falseLossChance`),
- *   the spend, the peak memory, and how many captures' system-prompt digests differ from their
- *   session's. With `--reading-models`, it prints each model of the file with its sessions and
+ * - `report` (no model call) prints the compared arm (no skill informs and clears nothing; ours is
+ *   a bundle where it replaced a skill of our name that a profile held), each case's passes per
+ *   arm and stage (and the history reads the ours arm removed), the cases of each kind and the
+ *   informative cases of each, the drops by each judge control, by `model-not-served` and by
+ *   `unreadable-directory`, with ours compared ours against old over all screened cases and over
+ *   those with no removed read, each model of the cases, the skill's verdict and its reason
+ *   (score.ts; `keeps` is printed "no loss detected by the registered rule", or "no loss of no
+ *   skill …" with no skill compared), the rule's sensitivity (`lossChance` at an old pass rate of
+ *   0.9 and 0.7 and drops of 0.1 to 0.4), each screened case's smallest drop and their medians
+ *   (score.ts's `dropFigures`), the estimated false-loss rate at the cases run
+ *   (`falseLossChance`), the spend, the peak memory, how many captures' system-prompt digests
+ *   differ from their session's, and the `--limits` text as it is. Its compared arm is the one
+ *   its results record. With `--reading-models`, it prints each model of the file with its
+ *   sessions and
  *   whether the gateway serves it (the file's `served`), the sessions with no model and not
  *   queried, and the served models the screened cases ran on, each with its cases; a verdict's
  *   line then ends with the reading sessions it speaks for, on each served model its screened
@@ -290,7 +309,7 @@ import {
   judgeControls,
   newSeed,
 } from "./judge";
-import { Host, LOAD_MODEL, LOAD_THINKING, runLoad } from "./load";
+import { Host, LOAD_MODEL, LOAD_THINKING, runLoad, skillName } from "./load";
 import { procPeakRssBytes, startPeakRssSampling } from "./memory";
 import {
   type DiffFile,
@@ -327,10 +346,14 @@ import {
   skillFiles,
 } from "./readers";
 import { type Replayed, replayInterleaved } from "./replay";
+import { main as resultsIndexMain } from "./results-index";
 import {
-  FLAG_GAP,
+  type CaseScore,
+  Compared,
+  DROP_CHANCE,
+  DROP_STEP_POINTS,
+  dropFigures,
   FRESH_RUNS,
-  INFORMATIVE_GAP,
   isControlLoss,
   isFalseLoss,
   isFlagged,
@@ -338,13 +361,15 @@ import {
   isLoss,
   LOAD_RUNS,
   LOSS_GAP,
+  lossChance,
   MAX_EXTRA_RUNS,
   MAX_SCREENED_CASES,
   MIN_INFORMATIVE_CASES,
+  type Passes,
   RunRecord,
   SCREEN_RUNS,
   type SkillScore,
-  STAGE_ARMS,
+  type SmallestDrop,
   STAGE_RUNS,
   Stage,
   StageState,
@@ -352,6 +377,7 @@ import {
   screeningDone,
   servedScreeningRefusal,
   skillVerdict,
+  stageArms,
   stageOutcome,
 } from "./score";
 import { main as setCountMain } from "./set-count";
@@ -1807,14 +1833,33 @@ const CaptureNote = z.strictObject({
  *  batch, so its runs are no runs of this procedure. */
 const SENDS = "each run its own session id; a round's arms interleaved in one seeded order";
 
+/** What a stage whose arms hold the arm of ours records of it: our skill's name; whether our text
+ *  replaced a skill of our name that the case's profile held, which makes the arm a bundle (their
+ *  skill hidden, ours at the given text); and the path inside the skill of each history read of
+ *  theirs it removed because ours has no file there (arms.ts's `Arm.ours`). */
+const OursNote = z.strictObject({
+  name: z.string().min(1),
+  replacedOwn: z.boolean(),
+  removedReads: z.array(z.string()),
+});
+type OursNote = z.infer<typeof OursNote>;
+
 /** One stage of a case: `running` until score.ts's `stageOutcome` says `counted` or `unscreened`.
- *  `texts` are the digests of `--old` and `--new` it ran with, and `plantedLine` the line `minus`
- *  left out in place of the case's (control only). `sends` is SENDS. `usd` is what its calls cost
- *  at list price. */
+ *  `texts` are the digests of `--old` and of `--new` or `--ours` it ran with, `compared` the arm
+ *  the old text was compared with (a stage that records none was run with `--new`, before it was
+ *  recorded), `ours` the arm of ours' note where its arms hold it, and `plantedLine` the line
+ *  `minus` left out in place of the case's (control only). `sends` is SENDS. `usd` is what its
+ *  calls cost at list price. */
 const StageResult = z.strictObject({
   state: StageState,
   sends: z.literal(SENDS),
-  texts: z.strictObject({ old: z.string(), new: z.string() }),
+  texts: z.strictObject({
+    old: z.string(),
+    new: z.string().optional(),
+    ours: z.string().optional(),
+  }),
+  compared: Compared.optional(),
+  ours: OursNote.optional(),
   plantedLine: z.string().nullable(),
   captures: z.record(z.string(), CaptureNote),
   seeds: z.array(z.string()),
@@ -1822,6 +1867,11 @@ const StageResult = z.strictObject({
   usd: z.number(),
 });
 type StageResult = z.infer<typeof StageResult>;
+
+/** The compared arm `stage` records, `new` for a stage of the cut's runner that records none. */
+function recordedArm(stage: StageResult): Compared {
+  return stage.compared ?? "new";
+}
 
 const Judgement = z.strictObject({
   verdict: z.enum(["pass", "fail"]).nullable(),
@@ -1876,98 +1926,41 @@ export function textDigest(dir: string): string {
   return hash.digest("hex").slice(0, 16);
 }
 
+/** The digests (`textDigest`) of the skill directories a run reads: `--old`, and `--new` or
+ *  `--ours` where given. */
+interface Texts {
+  readonly old: string;
+  readonly new?: string;
+  readonly ours?: string;
+}
+
 /** Where the captures of `arm` are saved under `out`: one directory per arm and text. `texts` are
- *  the digests of `--old` and `--new` (`textDigest`), so only `minus`'s copy is hashed here;
- *  `twin` holds the old text. */
-export function armCaptureDir(
-  out: string,
-  arm: Arm,
-  texts: { readonly old: string; readonly new: string }
-): string {
+ *  the digests of `--old`, `--new` and `--ours` (`textDigest`), so only `minus`'s copy is hashed
+ *  here; `twin` holds the old text. */
+export function armCaptureDir(out: string, arm: Arm, texts: Texts): string {
   const text =
     arm.skillDir === undefined
       ? "none"
-      : arm.name === "old" || arm.name === "new"
-        ? texts[arm.name]
+      : arm.name === "old" || arm.name === "new" || arm.name === "ours"
+        ? (texts[arm.name] ?? textDigest(arm.skillDir))
         : arm.name === "twin"
           ? texts.old
           : textDigest(arm.skillDir);
   return path.join(out, "captures", `${arm.name}-${text}`);
 }
 
-/** The chance of each count, 0 to `runs`, of `runs` runs that each pass with chance `p`. */
-function binomial(runs: number, p: number): number[] {
-  const chances: number[] = [];
-  let ways = 1;
-  for (let k = 0; k <= runs; k += 1) {
-    chances.push(ways * p ** k * (1 - p) ** (runs - k));
-    ways = (ways * (runs - k)) / (k + 1);
-  }
-  return chances;
-}
-
-/** From the chance of each count, the chance of each count or fewer. */
-function atMost(chances: readonly number[]): number[] {
-  let sum = 0;
-  return chances.map((chance) => {
-    sum += chance;
-    return sum;
-  });
-}
-
-/** The chance that a count of `runs` runs that each pass with chance `a` is at least `gap` more
- *  than a count of `runs` runs that each pass with chance `b`. */
-function chanceAhead(runs: number, a: number, b: number, gap: number): number {
-  const ahead = binomial(runs, a);
-  const behind = atMost(binomial(runs, b));
-  let sum = 0;
-  for (let k = gap; k <= runs; k += 1) sum += (ahead[k] ?? 0) * (behind[k - gap] ?? 0);
-  return sum;
-}
-
-/** Pass rates of the three texts a case runs under: the old text, the cut's and no skill. */
-interface PassRates {
-  readonly old: number;
-  readonly cut: number;
-  readonly none: number;
-}
-
-/**
- * The chance that the registered rule calls a loss in one informative case, when each run of the
- * old text passes with chance `old`, of the cut's text with `cut` and of no skill with `none`, all
- * runs apart. The case is flagged in the screen (o − n ≥ FLAG_GAP) given that it is informative
- * (o − z ≥ INFORMATIVE_GAP), o, n and z counts of SCREEN_RUNS runs, and then is a loss in the
- * confirm (O − N ≥ LOSS_GAP), O and N counts of FRESH_RUNS fresh runs; exact binomial:
- * P(o − n ≥ FLAG_GAP and o − z ≥ INFORMATIVE_GAP) / P(o − z ≥ INFORMATIVE_GAP) × P(O − N ≥
- * LOSS_GAP). Throws for rates under which no case is ever informative.
- */
-export function lossChance(rates: PassRates): number {
-  const old = binomial(SCREEN_RUNS, rates.old);
-  const cut = atMost(binomial(SCREEN_RUNS, rates.cut));
-  const none = atMost(binomial(SCREEN_RUNS, rates.none));
-  let informative = 0;
-  let flagged = 0;
-  for (let k = 0; k <= SCREEN_RUNS; k += 1) {
-    const chance = (old[k] ?? 0) * (none[k - INFORMATIVE_GAP] ?? 0);
-    informative += chance;
-    flagged += chance * (cut[k - FLAG_GAP] ?? 0);
-  }
-  if (informative === 0) {
-    throw new Error(
-      `no case is informative when the old text passes ${rates.old} and no skill ${rates.none} of the runs`
-    );
-  }
-  return (flagged / informative) * chanceAhead(FRESH_RUNS, rates.old, rates.cut, LOSS_GAP);
-}
-
 /** An estimate of the chance that the registered rule calls a loss in one informative case when
- *  the cut's text is the old text: lossChance with both texts passing at p = (old + new + 1) /
- *  (2 × SCREEN_RUNS + 2), the case's old and cut screen passes pooled with a Laplace term, and no
- *  skill at q = (none + 1) / (SCREEN_RUNS + 2). */
-export function falseLossChance(passes: { old: number; new: number; none: number }): number {
+ *  the compared arm's text is the old text: score.ts's `lossChance` with both texts passing at p =
+ *  (old + new + 1) / (2 × SCREEN_RUNS + 2), the case's old and compared arm's screen passes (`new`
+ *  here, whatever the compared arm is) pooled with a Laplace term, and no skill at q = (none + 1)
+ *  / (SCREEN_RUNS + 2); with no skill compared, no skill is the compared arm, at p. */
+export function falseLossChance(
+  passes: { old: number; new: number; none: number },
+  compared: Compared = "new"
+): number {
   const p = (passes.old + passes.new + 1) / (2 * SCREEN_RUNS + 2);
   const q = (passes.none + 1) / (SCREEN_RUNS + 2);
-  return lossChance({ old: p, cut: p, none: q });
+  return lossChance({ old: p, cut: p, none: compared === "none" ? p : q }, compared);
 }
 
 /** The report's sensitivity table: the old text's pass rates, the drops of the cut's text from
@@ -1976,17 +1969,24 @@ const SENSITIVITY = { old: [0.9, 0.7], drops: [0.1, 0.2, 0.3, 0.4], none: 0.1 } 
 
 // `behaviour`: running the stages.
 
-/** A behaviour command's cases and where it writes. `servedModels` are the configuration's, and
+/** A behaviour command's cases and where it writes. `compared` is the arm the old text is
+ *  compared with (`report`'s: the one its results record). `servedModels` are the configuration's,
  *  `readingModels` the skill's reading sessions by model that `--reading-models` names, with its
- *  file (undefined without it). */
+ *  file, and `limits` the text `--limits` names, with its file (each undefined without its flag). */
 interface Behaviour {
   readonly io: CliIo;
   readonly command: string;
   readonly out: string;
   readonly casesFile: string;
   readonly cases: readonly Case[];
+  readonly compared: Compared;
+  /** Whether a result made with another compared arm than `compared` is refused (`readResult`):
+   *  for a stage command, and for a report given `--new` or `--ours`; a report given neither
+   *  takes the arm its results record. */
+  readonly checkCompared: boolean;
   readonly servedModels: readonly string[];
   readonly readingModels: { readonly file: string; readonly count: ModelCount } | undefined;
+  readonly limits: { readonly file: string; readonly text: string } | undefined;
 }
 
 /** What a stage command runs with. `gateway` counts the spend; `replays`, `judge` and the capture
@@ -1994,7 +1994,7 @@ interface Behaviour {
  *  reads. */
 interface Runner extends Behaviour {
   readonly dirs: ArmDirs;
-  readonly texts: { readonly old: string; readonly new: string };
+  readonly texts: Texts;
   readonly scratch: string;
   readonly gateway: Gateway;
   readonly replays: Gateway;
@@ -2003,6 +2003,15 @@ interface Runner extends Behaviour {
   capture(c: Case, arm: Arm): Promise<Capture>;
   readonly afterCase: string | undefined;
   readonly afterCaseFailures: string[];
+}
+
+/** The skill names the judge reads as `the-skill` in every judgement of case `c` (blind.ts): in a
+ *  run with an arm of ours, the case's skill and ours, so the judge cannot tell old from ours by
+ *  a name; none in a run with `--new` (both arms hold the case's skill) or with no skill compared
+ *  (the judge reads the case's own history in every arm), whose judge reads the case's text as
+ *  it is. */
+function blinded(r: Runner, c: Case): string[] {
+  return r.dirs.ours === undefined ? [] : [c.skill, r.dirs.ours.name];
 }
 
 /** The milliseconds of the phases of one case's stage, from `startedAt` (`performance.now()`), for
@@ -2052,7 +2061,8 @@ function say(b: Behaviour, line: string): void {
 
 /** Case `caseId`'s results under `b.out`, or undefined when it has none. Refuses a result one of
  *  whose stages was run before each run had its own session id and the arms were interleaved
- *  (its stage records no `sends`, SENDS). */
+ *  (its stage records no `sends`, SENDS), and, where `b.checkCompared`, one of whose stages was
+ *  run with another compared arm than `b.compared`. */
 function readResult(b: Behaviour, caseId: string): CaseResult | undefined {
   const file = caseResultFile(b.out, caseId);
   if (!existsSync(file)) return undefined;
@@ -2071,6 +2081,14 @@ function readResult(b: Behaviour, caseId: string): CaseResult | undefined {
   const parsed = CaseResult.safeParse(raw);
   if (!parsed.success) {
     throw new Refused(`${file} is not a case result: ${schemaFaults(parsed.error)}`);
+  }
+  for (const stage of b.checkCompared ? Stage.options : []) {
+    const state = parsed.data.stages[stage];
+    if (state !== undefined && recordedArm(state) !== b.compared) {
+      throw new Refused(
+        `${file} holds runs made with the compared arm ${recordedArm(state)}, not ${b.compared}, this command's: give the --new or --ours they were made with (neither for none), or another --out`
+      );
+    }
   }
   return parsed.data;
 }
@@ -2136,7 +2154,7 @@ function screened(
   keep: (score: SkillScore) => readonly (string | undefined)[]
 ): { results: Map<string, CaseResult>; score: SkillScore } {
   const results = readResults(b);
-  const score = scoreSkill(runRecords(results.values()));
+  const score = scoreSkill(runRecords(results.values()), b.compared);
   const unfinished = screenUnfinished(b, results, score);
   if (unfinished !== undefined) {
     throw new Refused(`the screen is not finished: ${unfinished}; run behaviour screen first`);
@@ -2246,6 +2264,15 @@ function newResult(c: Case): CaseResult {
   };
 }
 
+/** The texts of `texts` in words: `old <digest>`, then `new <digest>` or `ours <digest>`. */
+function textWords(texts: Texts): string {
+  return [
+    `old ${texts.old}`,
+    ...(texts.new === undefined ? [] : [`new ${texts.new}`]),
+    ...(texts.ours === undefined ? [] : [`ours ${texts.ours}`]),
+  ].join(", ");
+}
+
 /** Refuses a stage of case `caseId` that was run with other skill texts or another planted line
  *  than this run's: its runs and this run's would be of different arms. */
 function checkSameTexts(r: Runner, caseId: string, stage: Stage, existing: StageResult): void {
@@ -2253,12 +2280,13 @@ function checkSameTexts(r: Runner, caseId: string, stage: Stage, existing: Stage
   if (
     existing.texts.old === r.texts.old &&
     existing.texts.new === r.texts.new &&
+    existing.texts.ours === r.texts.ours &&
     existing.plantedLine === plantedLine
   ) {
     return;
   }
   throw new Refused(
-    `case ${caseId}'s ${stage} runs in ${caseResultFile(r.out, caseId)} were made with other skill texts (old ${existing.texts.old}, new ${existing.texts.new}, planted line ${JSON.stringify(existing.plantedLine)}) than this run's (old ${r.texts.old}, new ${r.texts.new}, planted line ${JSON.stringify(plantedLine)}): use the same --old, --new and --planted-line, or another --out`
+    `case ${caseId}'s ${stage} runs in ${caseResultFile(r.out, caseId)} were made with other skill texts (${textWords(existing.texts)}, planted line ${JSON.stringify(existing.plantedLine)}) than this run's (${textWords(r.texts)}, planted line ${JSON.stringify(plantedLine)}): use the same --old, --new or --ours and --planted-line, or another --out`
   );
 }
 
@@ -2274,7 +2302,7 @@ function stageDone(r: Runner, result: CaseResult | undefined, stage: Stage): boo
  *  drop names each control it failed. */
 async function judgeTheControls(r: Runner, c: Case, result: CaseResult): Promise<CaseResult> {
   const before = r.gateway.spend().usd;
-  const controls = await judgeControls(c, r.judge);
+  const controls = await judgeControls(c, r.judge, blinded(r, c));
   const judged = (j: Judged) => ({ verdict: j.verdict, reason: j.reason });
   const next: CaseResult = {
     ...result,
@@ -2330,7 +2358,9 @@ async function runRound(
   );
   const judgeStarted = performance.now();
   phases.replaysMs += judgeStarted - replaysStarted;
-  const judged = replies.length === 0 ? [] : (await judgeBlind(c, replies, r.judge, seed)).judged;
+  const names = blinded(r, c);
+  const judged =
+    replies.length === 0 ? [] : (await judgeBlind(c, replies, r.judge, seed, names)).judged;
   phases.judgeMs += performance.now() - judgeStarted;
   const judgements = new Map(judged.map((j) => [`${j.arm}:${j.run}`, j]));
   let budgetSpent = false;
@@ -2404,6 +2434,7 @@ async function runStage(
     state: "running",
     sends: SENDS,
     texts: r.texts,
+    compared: r.compared,
     plantedLine: stage === "control" ? (r.dirs.plantedLine ?? null) : null,
     captures: {},
     seeds: [],
@@ -2430,6 +2461,7 @@ async function runStage(
   );
   const arms = new Map<ArmName, { arm: Arm; capture: Capture }>();
   const captures = { ...state.captures };
+  let ours: OursNote | undefined;
   const readsBefore = r.source.reads?.() ?? { calls: 0, ms: 0 };
   // The GitHub reads the captures made, counted into `phases`.
   const countReads = (): void => {
@@ -2439,9 +2471,13 @@ async function runStage(
       ms: readsAfter.ms - readsBefore.ms,
     };
   };
-  for (const name of STAGE_ARMS[stage]) {
+  for (const name of stageArms(stage, r.compared)) {
     const started = performance.now();
     const arm = buildArm(c, name, r.dirs, scratch);
+    if (arm.ours !== undefined) {
+      const { replacedOwn, removedReads } = arm.ours;
+      ours = { name: arm.skill, replacedOwn, removedReads: [...removedReads] };
+    }
     let capture: Capture;
     try {
       capture = await r.capture(c, arm);
@@ -2462,10 +2498,10 @@ async function runStage(
     };
   }
   countReads();
-  save({ ...state, captures });
+  save({ ...state, captures, ...(ours === undefined ? {} : { ours }) });
 
   for (;;) {
-    const outcome = stageOutcome(state.runs, c.id, stage);
+    const outcome = stageOutcome(state.runs, c.id, stage, r.compared);
     if (outcome.state !== "running") {
       update({ ...state, state: outcome.state });
       return current;
@@ -2534,9 +2570,11 @@ async function finishCase(
 
 /** `behaviour screen`. */
 async function screenCommand(r: Runner): Promise<void> {
+  const compared =
+    r.compared === "none" ? "compared with no skill" : `${r.compared} text ${r.texts[r.compared]}`;
   say(
     r,
-    `${r.cases.length} cases of the skill ${r.cases[0]?.skill} in ${r.casesFile}; old text ${r.texts.old}, new text ${r.texts.new}`
+    `${r.cases.length} cases of the skill ${r.cases[0]?.skill} in ${r.casesFile}; old text ${r.texts.old}, ${compared}`
   );
   // Each case's run records, read once here and kept as each case ends (only this process
   // writes <out>/cases/), for the score that says when screening stops.
@@ -2557,7 +2595,7 @@ async function screenCommand(r: Runner): Promise<void> {
       continue;
     }
     if (result === undefined) {
-      const score = scoreSkill([...records.values()].flat());
+      const score = scoreSkill([...records.values()].flat(), r.compared);
       if (screeningDone(score)) {
         say(
           r,
@@ -2612,6 +2650,27 @@ async function confirmCommand(r: Runner): Promise<void> {
   }
 }
 
+/** `behaviour confirm --case <id>`: FRESH_RUNS fresh runs of old and of the compared arm on case
+ *  `c`, with no flag gate and no gate of MIN_INFORMATIVE_CASES informative cases, scored by the
+ *  confirm rule; no screen and no judge controls run. */
+async function confirmCaseCommand(r: Runner, c: Case): Promise<void> {
+  say(
+    r,
+    `case ${c.id}: ${FRESH_RUNS} fresh runs of old and of ${r.compared}, with no flag gate and no gate of ${MIN_INFORMATIVE_CASES} informative cases`
+  );
+  const phases = newPhases();
+  const result = readResult(r, c.id) ?? newResult(c);
+  if (result.dropped !== null) {
+    say(r, `case ${c.id}: dropped before, skipped: ${result.dropped}`);
+    return;
+  }
+  if (stageDone(r, result, "confirm")) {
+    say(r, `case ${c.id}: confirmed before, skipped`);
+    return;
+  }
+  await finishCase(r, await runStage(r, c, "confirm", result, phases), "confirm", phases);
+}
+
 /** `behaviour control`. */
 async function controlStageCommand(r: Runner): Promise<void> {
   const { results, score } = screened(r, (s) => [s.controlCase]);
@@ -2646,24 +2705,26 @@ async function controlStageCommand(r: Runner): Promise<void> {
 
 // `behaviour report`.
 
-/** What a stage's counted passes say. */
-function stageVerdict(stage: Stage, passes: Record<ArmName, number>): string {
+/** What a stage's counted passes say, the old text compared with `compared`. */
+function stageVerdict(stage: Stage, passes: Passes<Stage>, compared: Compared): string {
   switch (stage) {
     case "screen":
       if (!isInformative(passes)) return "not informative";
-      return isFlagged(passes) ? "informative, flagged" : "informative, not flagged";
+      return isFlagged(passes, compared) ? "informative, flagged" : "informative, not flagged";
     case "confirm":
-      return isLoss(passes) ? "a loss" : "no loss";
+      return isLoss(passes, compared) ? "a loss" : "no loss";
     case "control":
       return `the planted-loss control (old against minus) is ${isControlLoss(passes) ? "a loss" : "no loss"}, the false-loss control (old against twin) is ${isFalseLoss(passes) ? "a loss" : "no loss"}`;
   }
 }
 
-/** Case `result`'s `stage` as one line: each arm's passes and what they say. */
+/** Case `result`'s `stage` as one line: each arm's passes and what they say, by the compared arm
+ *  the stage records. */
 function stageLine(result: CaseResult, stage: Stage): string {
   const state = result.stages[stage];
   if (state === undefined) return `${stage}: not run`;
-  const outcome = stageOutcome(state.runs, result.caseId, stage);
+  const compared = recordedArm(state);
+  const outcome = stageOutcome(state.runs, result.caseId, stage, compared);
   const unjudged = state.runs.filter((run) => run.verdict === null).length;
   const extra = unjudged === 0 ? "" : ` (${unjudged} runs with no verdict, run again)`;
   switch (outcome.state) {
@@ -2671,7 +2732,7 @@ function stageLine(result: CaseResult, stage: Stage): string {
       const passes = Object.entries(outcome.passes)
         .map(([arm, count]) => `${arm} ${count}/${STAGE_RUNS[stage]}`)
         .join(", ");
-      return `${stage}: ${passes}: ${stageVerdict(stage, outcome.passes)}${extra}`;
+      return `${stage}: ${passes}: ${stageVerdict(stage, outcome.passes, compared)}${extra}`;
     }
     case "unscreened":
       return `${stage}: unscreened: an arm lacks its ${STAGE_RUNS[stage]} judged runs after ${MAX_EXTRA_RUNS} extra runs${extra}`;
@@ -2781,17 +2842,163 @@ function verdictLine(
   const flagged = score.cases.filter((each) => each.flagged).length;
   const control = `the planted-loss control (case ${score.controlCase}) is a loss and its false-loss control is no loss`;
   if (outcome.verdict === "keeps") {
-    return `no loss detected by the registered rule: no confirmed case is a loss (${flagged} flagged of ${score.informative} informative), and ${control}${speaksFor(b, score)}`;
+    const kept =
+      b.compared === "none"
+        ? "no loss of no skill detected by the registered rule"
+        : "no loss detected by the registered rule";
+    return `${kept}: no confirmed case is a loss (${flagged} flagged of ${score.informative} informative), and ${control}${speaksFor(b, score)}`;
   }
   const losses = score.cases.filter((each) => each.loss).map((each) => each.caseId);
-  return `loss: in ${losses.join(", ")} the cut's text passes at least ${LOSS_GAP} fewer of ${FRESH_RUNS} fresh runs than the old text, and ${control}${speaksFor(b, score)}`;
+  if (b.compared === "none") {
+    return `loss: no skill loses against their skill on ${counted(losses.length, "case")} (${losses.join(", ")}): in each, no skill passes at least ${LOSS_GAP} fewer of ${FRESH_RUNS} fresh runs than their skill, and ${control}${speaksFor(b, score)}`;
+  }
+  return `loss: in ${losses.join(", ")} ${COMPARED_TEXT[b.compared]} passes at least ${LOSS_GAP} fewer of ${FRESH_RUNS} fresh runs than the old text, and ${control}${speaksFor(b, score)}`;
+}
+
+/** The compared arm as the report's sentences name it. */
+const COMPARED_TEXT: Readonly<Record<Compared, string>> = {
+  new: "the cut's text",
+  ours: "our skill's text",
+  none: "no skill",
+};
+
+/** The ours arm's notes of `result` (OursNote), one a stage that ran it. */
+function oursNotes(result: CaseResult): OursNote[] {
+  return Stage.options.flatMap((stage) => result.stages[stage]?.ours ?? []);
+}
+
+/** The paths inside the skill of the history reads the ours arm removed from case `result`, each
+ *  once, in order. */
+function removedReads(result: CaseResult): string[] {
+  return [...new Set(oursNotes(result).flatMap((note) => note.removedReads))];
+}
+
+/** The report's line on the compared arm: the cut's text; a skill of ours, a bundle where its text
+ *  replaced a skill of our name that a case's profile held; or no skill, which informs and clears
+ *  nothing. */
+function comparedLine(b: Behaviour, results: ReadonlyMap<string, CaseResult>): string {
+  if (b.compared === "new") return "compared arm: new (the cut's text)";
+  if (b.compared === "none") {
+    return "compared arm: none (no skill): the arm with no skill informs and clears nothing";
+  }
+  const noted = [...results.values()].flatMap((result) =>
+    oursNotes(result).map((note) => ({ caseId: result.caseId, note }))
+  );
+  const name = noted[0]?.note.name;
+  const ours = name === undefined ? "ours" : `ours (${name})`;
+  const bundled = [...new Set(noted.filter((each) => each.note.replacedOwn).map((e) => e.caseId))];
+  if (bundled.length === 0) {
+    return `compared arm: ${ours}: their skill hidden, ours in its place under its own name`;
+  }
+  const cases = new Set(noted.map((each) => each.caseId));
+  const some =
+    bundled.length === cases.size
+      ? ""
+      : `, in ${bundled.join(", ")}; in the other cases, ours in their skill's place under its own name`;
+  return `compared arm: ${ours}, a bundle: their skill hidden, ours at the given text (it replaced the profile's own ${name})${some}`;
+}
+
+/** Whether case `c` is a session case or a written one: its `source.kind`, a case with none read
+ *  as a session case. */
+function caseKind(c: Case): "session" | "written" {
+  return Reflect.get(c.source, "kind") === "written" ? "written" : "session";
+}
+
+/** The report's line of the cases of each kind, and the informative cases of each. */
+function kindLine(b: Behaviour, score: SkillScore): string {
+  const informative = new Set(score.cases.filter((c) => c.informative).map((c) => c.caseId));
+  const words = (["session", "written"] as const).map((kind) => {
+    const cases = b.cases.filter((c) => caseKind(c) === kind);
+    const of = cases.filter((c) => informative.has(c.id)).length;
+    return `${cases.length} ${kind} (${of} informative)`;
+  });
+  return `cases by kind: ${words.join(", ")}`;
+}
+
+/** The report's line of each model of the cases, with its cases, most first, a tie by model. */
+function caseModelsLine(b: Behaviour): string {
+  const models = new Map<string, number>();
+  for (const c of b.cases) models.set(c.model, (models.get(c.model) ?? 0) + 1);
+  const words = [...models]
+    .sort(([x, a], [y, z]) => z - a || x.localeCompare(y))
+    .map(([model, cases]) => `${model} ${counted(cases, "case")}`);
+  return `models of the cases: ${words.join(", ") || "none"}`;
+}
+
+/** The report's two lines of ours against old (their skill): each arm's screen passes, and the
+ *  confirm passes and losses where confirm runs are counted, summed over the screened cases, then
+ *  over those from whose history the ours arm removed no read. */
+function oursAgainstOldLines(
+  results: ReadonlyMap<string, CaseResult>,
+  score: SkillScore
+): string[] {
+  const screened = score.cases.filter((each) => each.screen.state === "counted");
+  const clean = screened.filter((each) => {
+    const result = results.get(each.caseId);
+    return result === undefined || removedReads(result).length === 0;
+  });
+  const sums = (cases: readonly CaseScore[]): string => {
+    /** The passes of `arm` summed over the counted stages of `stages`. */
+    const passes = (arm: ArmName, stages: readonly (Partial<Record<ArmName, number>> | null)[]) =>
+      stages.reduce((sum, each) => sum + (each?.[arm] ?? 0), 0);
+    const screens = cases.map(({ screen }) => (screen.state === "counted" ? screen.passes : null));
+    const screen = (["old", "ours", "none"] as const)
+      .map((arm) => `${arm} ${passes(arm, screens)}/${cases.length * SCREEN_RUNS}`)
+      .join(", ");
+    const confirms = cases.flatMap(({ confirm }) =>
+      confirm?.state === "counted" ? [confirm.passes] : []
+    );
+    const losses = cases.filter((each) => each.loss).length;
+    const confirm =
+      confirms.length === 0
+        ? "no confirm runs"
+        : `confirm on ${counted(confirms.length, "case")}: ${(["old", "ours"] as const)
+            .map((arm) => `${arm} ${passes(arm, confirms)}/${confirms.length * FRESH_RUNS}`)
+            .join(", ")}, ${losses} a loss, ${confirms.length - losses} no loss`;
+    return `screen ${screen}; ${confirm}`;
+  };
+  const ids = clean.length === 0 ? "" : ` (${clean.map((each) => each.caseId).join(", ")})`;
+  return [
+    `ours against old (their skill), over all ${counted(screened.length, "screened case")}: ${sums(screened)}`,
+    `ours against old (their skill), over the ${counted(clean.length, "screened case")} with no removed read${ids}: ${sums(clean)}`,
+  ];
+}
+
+/** A smallest drop's figure, as the report prints it. */
+function dropWords(drop: SmallestDrop): string {
+  const percent = `${(100 * drop.chance).toFixed(2)}%`;
+  if (drop.reaches) return `${drop.points} points (${percent})`;
+  if (drop.points === 0) return "no drop, since old passes none of its screen runs";
+  return `no drop down to 0 reaches ${100 * DROP_CHANCE}% (${percent} at ${drop.points} points)`;
+}
+
+/** The report's lines of the smallest drop (score.ts's `dropFigures`): each screened case's, and
+ *  the median over the screened cases and over the informative ones. */
+function dropLines(b: Behaviour, score: SkillScore): string[] {
+  const figures = dropFigures(score, b.compared);
+  const median = (points: number | undefined) =>
+    points === undefined
+      ? "none"
+      : points === Number.POSITIVE_INFINITY
+        ? `no drop down to 0 reaches ${100 * DROP_CHANCE}%`
+        : `${points} points`;
+  const informative = figures.cases.filter((each) => each.informative).length;
+  return [
+    `smallest drop the rule catches with a chance of at least ${100 * DROP_CHANCE}%, by screened case (${DROP_STEP_POINTS}-point steps below the case's screened pass rate of old; the rule's chance with the compared arm ${b.compared}):`,
+    ...figures.cases.map(
+      ({ caseId, drop }) => `  ${caseId} old ${(drop.old / 100).toFixed(1)}: ${dropWords(drop)}`
+    ),
+    `median smallest drop: ${median(figures.screened)} over the ${counted(figures.cases.length, "screened case")}; ${median(figures.informative)} over the ${counted(informative, "informative case")}`,
+  ];
 }
 
 /** `behaviour report`: prints each case's passes, the skill's verdict and the run's figures. */
-function reportCommand(b: Behaviour): void {
-  const results = readResults(b);
-  const score = scoreSkill(runRecords(results.values()));
+function reportCommand(given: Behaviour): void {
+  const results = readResults(given);
+  const b = { ...given, compared: recordedCompared(given, results)?.compared ?? given.compared };
+  const score = scoreSkill(runRecords(results.values()), b.compared);
   const lines = [`skill ${b.cases[0]?.skill}: ${b.cases.length} cases in ${b.casesFile}`];
+  lines.push(comparedLine(b, results));
   for (const c of b.cases) {
     const result = results.get(c.id);
     let line = "not run";
@@ -2801,6 +3008,10 @@ function reportCommand(b: Behaviour): void {
         .filter((stage) => result.stages[stage] !== undefined)
         .map((stage) => stageLine(result, stage))
         .join("; ");
+    }
+    const removed = result === undefined ? [] : removedReads(result);
+    if (removed.length > 0) {
+      line += `; ours left out the history's reads of ${removed.join(", ")} (our skill has no file at that path)`;
     }
     lines.push(`case ${c.id}: ${line}`);
   }
@@ -2819,6 +3030,7 @@ function reportCommand(b: Behaviour): void {
   lines.push(
     `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${dropped.length} dropped (${byControls} by the judge controls, ${notServed} ${MODEL_NOT_SERVED}, ${unreadable} ${UNREADABLE_DIRECTORY}), ${unscreened} unscreened, ${b.cases.length - results.size} not run`
   );
+  lines.push(kindLine(b, score));
   const byControl = ControlName.options.map((name) => {
     const count = dropped.filter((result) => result.controls?.failed.includes(name)).length;
     return `${CONTROLS[name].step} not judged ${CONTROLS[name].wanted} ${count}`;
@@ -2842,29 +3054,41 @@ function reportCommand(b: Behaviour): void {
       `controls: the planted-loss and false-loss controls are ${control.state === "running" ? "not all run (behaviour control)" : "unscreened: an arm lacks its judged runs"}`
     );
   }
+  if (b.compared === "ours") lines.push(...oursAgainstOldLines(results, score));
+  lines.push(caseModelsLine(b));
   lines.push(...modelLines(b, score));
   lines.push(`verdict: ${verdictLine(b, results, score)}`);
 
   const percent = (x: number) => `${(100 * x).toFixed(2)}%`;
   lines.push(
-    `sensitivity of the registered rule: the chance that it calls a loss in one informative case whose no-skill arm passes ${SENSITIVITY.none} of its runs, by the old text's and the cut's pass rates (exact binomial)`
+    b.compared === "none"
+      ? "sensitivity of the registered rule: the chance that it calls a loss in one case, by the old text's and no skill's pass rates (exact binomial; with no skill compared, the screen's gap counts once)"
+      : `sensitivity of the registered rule: the chance that it calls a loss in one informative case whose no-skill arm passes ${SENSITIVITY.none} of its runs, by the old text's and ${b.compared === "new" ? "the cut's" : "our skill's"} pass rates (exact binomial)`
   );
   for (const old of SENSITIVITY.old) {
     const row = SENSITIVITY.drops.map((drop) => {
       const cut = old - drop;
-      return `new ${cut.toFixed(1)} ${percent(lossChance({ old, cut, none: SENSITIVITY.none }))}`;
+      const none = b.compared === "none" ? cut : SENSITIVITY.none;
+      return `${b.compared} ${cut.toFixed(1)} ${percent(lossChance({ old, cut, none }, b.compared))}`;
     });
     lines.push(`  old ${old.toFixed(1)}: ${row.join(", ")}`);
   }
+  lines.push(...dropLines(b, score));
 
-  const chances = score.cases.flatMap((each) =>
-    each.informative && each.screen.state === "counted"
-      ? [{ id: each.caseId, chance: falseLossChance(each.screen.passes) }]
-      : []
-  );
+  const chances = score.cases.flatMap((each) => {
+    if (!each.informative || each.screen.state !== "counted") return [];
+    const { old, none, [b.compared]: other = 0 } = each.screen.passes;
+    return [{ id: each.caseId, chance: falseLossChance({ old, new: other, none }, b.compared) }];
+  });
   const rate = 1 - chances.reduce((none, { chance }) => none * (1 - chance), 1);
+  const pooled = `${2 * SCREEN_RUNS + 2}`;
+  const how = {
+    new: `when the cut's text is the old text; each case's chance is exact binomial given that it is informative, with the old and the cut's texts both passing at (old + new + 1)/${pooled} of their runs and no skill at (none + 1)/${SCREEN_RUNS + 2}`,
+    ours: `when our skill's text is the old text; each case's chance is exact binomial given that it is informative, with the old text and ours both passing at (old + ours + 1)/${pooled} of their runs and no skill at (none + 1)/${SCREEN_RUNS + 2}`,
+    none: `when no skill passes as the old text does; each case's chance is exact binomial, the screen's gap counted once, with the old text and no skill both passing at (old + none + 1)/${pooled} of their runs`,
+  }[b.compared];
   lines.push(
-    `false-loss rate at the cases run (an estimate): ${percent(rate)}, the chance that the registered rule calls a loss in one of the ${chances.length} informative cases when the cut's text is the old text; each case's chance is exact binomial given that it is informative, with the old and the cut's texts both passing at (old + new + 1)/${2 * SCREEN_RUNS + 2} of their runs and no skill at (none + 1)/${SCREEN_RUNS + 2}, from its screen passes, and the cases are combined as independent, 1 − Π(1 − chance)${chances.length === 0 ? "" : ` (${chances.map(({ id, chance }) => `${id} ${percent(chance)}`).join(", ")})`}`
+    `false-loss rate at the cases run (an estimate): ${percent(rate)}, the chance that the registered rule calls a loss in one of the ${chances.length} informative cases ${how}, from its screen passes, and the cases are combined as independent, 1 − Π(1 − chance)${chances.length === 0 ? "" : ` (${chances.map(({ id, chance }) => `${id} ${percent(chance)}`).join(", ")})`}`
   );
 
   const notes = new Map<string, z.infer<typeof CaptureNote>>();
@@ -2889,6 +3113,11 @@ function reportCommand(b: Behaviour): void {
     `spend at list price: $${total.toFixed(4)} (judge controls $${controlsUsd.toFixed(4)}, screen $${stageUsd.screen.toFixed(4)}, confirm $${stageUsd.confirm.toFixed(4)}, control $${stageUsd.control.toFixed(4)})`
   );
   lines.push(`peak resident memory: ${mib(peak)} MiB, the most at the end of a case`);
+  lines.push(
+    b.limits === undefined
+      ? "limits: not given (no --limits)"
+      : `limits (--limits ${b.limits.file}):\n${b.limits.text.replace(/\n$/, "")}`
+  );
   b.io.out(`${lines.join("\n")}\n`);
 }
 
@@ -2897,11 +3126,12 @@ function reportCommand(b: Behaviour): void {
 const BEHAVIOUR_COMMANDS = ["screen", "confirm", "control", "report"] as const;
 
 const BEHAVIOUR_USAGE = [
-  "usage: cli.ts behaviour <screen|confirm|control|report> --config <skill-cuts.json> --key-file <file> --out <dir> --old <dir> --new <dir> --cases <file>",
+  "usage: cli.ts behaviour <screen|confirm|control|report> --config <skill-cuts.json> --key-file <file> --out <dir> --old <dir> [--new <dir> | --ours <dir>] --cases <file>",
   "  [--planted-line <text>] [--budget-usd <n>] [--concurrency <n>] [--after-case <command>] [--request-log <file>]",
   "  [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>]",
   "  [--reading-models <file>] (the skill's <cut id>/models/<skill>.json, written by attribute)",
-  "  report needs only --config, --out, --old and --cases",
+  "  confirm [--case <id>] (40 fresh runs of old and the compared arm on that case alone, into its own --out)",
+  "  report needs only --config, --out, --old and --cases; [--limits <file>] (printed as it is)",
 ].join("\n");
 
 /** The reading sessions by model `file` holds: attribute.ts's `<cut id>/models/<skill>.json` of a
@@ -2914,6 +3144,30 @@ function readReadingModels(file: string): ModelCount {
     );
   }
   return parsed.data;
+}
+
+/** The compared arm the stages of `results` (`b`'s) record (a stage that records none was run with
+ *  `--new`), with a file that records it; undefined when no stage was run. Throws a refusal naming
+ *  two files that record different arms. */
+function recordedCompared(
+  b: Behaviour,
+  results: ReadonlyMap<string, CaseResult>
+): { compared: Compared; file: string } | undefined {
+  let found: { compared: Compared; file: string } | undefined;
+  for (const result of results.values()) {
+    for (const stage of Stage.options) {
+      const state = result.stages[stage];
+      if (state === undefined) continue;
+      const each = { compared: recordedArm(state), file: caseResultFile(b.out, result.caseId) };
+      found ??= each;
+      if (found.compared !== each.compared) {
+        throw new Refused(
+          `${found.file} holds runs made with the compared arm ${found.compared}, and ${each.file} with ${each.compared}: one --out holds the runs of one compared arm`
+        );
+      }
+    }
+  }
+  return found;
 }
 
 /** `skill-cuts behaviour <command>`. */
@@ -2929,7 +3183,9 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       out: { type: "string" },
       old: { type: "string" },
       new: { type: "string" },
+      ours: { type: "string" },
       cases: { type: "string" },
+      case: { type: "string" },
       "planted-line": { type: "string" },
       "after-case": { type: "string" },
       models: { type: "string" },
@@ -2940,17 +3196,29 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       "cache-dir": { type: "string" },
       scratch: { type: "string" },
       "reading-models": { type: "string" },
+      limits: { type: "string" },
     },
     BEHAVIOUR_USAGE
   );
   const report = command === "report";
   const given = required(
     values,
-    report
-      ? ["config", "out", "old", "cases"]
-      : ["config", "key-file", "out", "old", "new", "cases"],
+    report ? ["config", "out", "old", "cases"] : ["config", "key-file", "out", "old", "cases"],
     BEHAVIOUR_USAGE
   );
+  if (values.new !== undefined && values.ours !== undefined) {
+    throw new Refused(
+      `--new and --ours exclude each other: give one, or neither to compare the old text with no skill. ${BEHAVIOUR_USAGE}`
+    );
+  }
+  if (values.case !== undefined && command !== "confirm") {
+    throw new Refused("--case is for behaviour confirm only");
+  }
+  if (values.limits !== undefined && !report) {
+    throw new Refused("--limits is for behaviour report only");
+  }
+  const named: Compared =
+    values.new !== undefined ? "new" : values.ours !== undefined ? "ours" : "none";
   // A stage command writes the cases' session text under --out; `report` writes nothing.
   const inCheckout = report ? undefined : outRefusal(given.out);
   if (inCheckout !== undefined) throw new Refused(inCheckout);
@@ -2962,18 +3230,34 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     throw new Refused(messageFor(error));
   }
   if (cases.length === 0) throw new Refused(`${given.cases} holds no case`);
+  const one = values.case === undefined ? undefined : cases.find((c) => c.id === values.case);
+  if (values.case !== undefined && one === undefined) {
+    throw new Refused(`--case ${values.case}: ${given.cases} holds no case ${values.case}`);
+  }
+  if (one !== undefined && servedModel(one.model, config.servedModels) === undefined) {
+    throw new Refused(
+      `--case ${one.id}: its model ${one.model} is none the gateway serves (the configuration's servedModels: ${config.servedModels.join(", ") || "none"})`
+    );
+  }
   const readingModels = values["reading-models"];
+  const limits = values.limits;
   const behaviour: Behaviour = {
     io,
     command: `behaviour ${command}`,
     out: given.out,
     casesFile: given.cases,
     cases,
+    compared: named,
+    checkCompared: !report || values.new !== undefined || values.ours !== undefined,
     servedModels: config.servedModels,
     readingModels:
       readingModels === undefined
         ? undefined
         : { file: readingModels, count: readReadingModels(readingModels) },
+    limits:
+      limits === undefined
+        ? undefined
+        : { file: limits, text: readBytes(limits, "the limits text").toString("utf8") },
   };
   if (report) {
     reportCommand(behaviour);
@@ -2988,8 +3272,15 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     }
   }
 
-  if (!statSync(given.new, { throwIfNoEntry: false })?.isDirectory()) {
-    throw new Refused(`--new ${given.new} is not a directory`);
+  const comparedDir = values.new ?? values.ours;
+  if (
+    comparedDir !== undefined &&
+    !statSync(comparedDir, { throwIfNoEntry: false })?.isDirectory()
+  ) {
+    throw new Refused(`--${named} ${comparedDir} is not a directory`);
+  }
+  if (values.ours !== undefined && !isFile(path.join(values.ours, "SKILL.md"))) {
+    throw new Refused(`--ours ${values.ours} holds no SKILL.md`);
   }
   const unpriced = [
     ...new Set(
@@ -3021,12 +3312,19 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
   const plantedLine = values["planted-line"];
   const source = values.repos === undefined ? ghSource() : localSource(values.repos);
   const hints = gatewayHints(loggedGateway(gateway, log, "hint"));
-  const texts = { old: textDigest(given.old), new: textDigest(given.new) };
+  const texts: Texts = {
+    old: textDigest(given.old),
+    ...(values.new === undefined ? {} : { new: textDigest(values.new) }),
+    ...(values.ours === undefined ? {} : { ours: textDigest(values.ours) }),
+  };
   const runner: Runner = {
     ...behaviour,
     dirs: {
       old: given.old,
-      new: given.new,
+      ...(values.new === undefined ? {} : { new: values.new }),
+      ...(values.ours === undefined
+        ? {}
+        : { ours: { dir: values.ours, name: skillName(values.ours) } }),
       ...(plantedLine === undefined ? {} : { plantedLine }),
     },
     texts,
@@ -3064,6 +3362,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     afterCaseFailures: [],
   };
   if (command === "screen") await screenCommand(runner);
+  else if (command === "confirm" && one !== undefined) await confirmCaseCommand(runner, one);
   else if (command === "confirm") await confirmCommand(runner);
   else await controlStageCommand(runner);
   say(
@@ -3209,7 +3508,7 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
 
 const USAGE = [
   "usage: cli.ts <command> ...",
-  "  behaviour <screen|confirm|control|report> --config <skill-cuts.json> --key-file <file> --out <dir> --old <dir> --new <dir> --cases <file> ...",
+  "  behaviour <screen|confirm|control|report> --config <skill-cuts.json> --key-file <file> --out <dir> --old <dir> [--new <dir> | --ours <dir>] --cases <file> ...",
   "  read --prompt <name> --in <input.json> --out <answer.json> ...",
   "  control <map|attack|same-job|sentence> --in <input.json> --out <result.json> ...",
   "  control craft (--remove-section <heading> | --join-lines <a>-<b>) --copy-line <a>[-<b>] ... --original-line <a>[-<b>|all] ... <craft's flags> --out <dir>",
@@ -3229,6 +3528,7 @@ const USAGE = [
   "  build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>] [--max-search-minutes <m>]",
   "  build-tasks --config <skill-cuts.json> --copies <dir> --count <dir> --reprofile <tasks.jsonl> --profiles-out <new dir> [--context-session <store>:<hash>]",
   "  build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]",
+  "  results-index --count <set-count out dir> --nearest <dir> --cases <dir> --results <dir>",
 ].join("\n");
 
 /** The command line. Returns the exit status (EXIT). */
@@ -3276,6 +3576,8 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         return craftCoverageCommand(rest, io);
       case "proposals":
         return await proposalsCommand(rest, io);
+      case "results-index":
+        return resultsIndexMain(rest, io);
       default:
         throw new Refused(`no command ${JSON.stringify(command ?? "")}. ${USAGE}`);
     }
