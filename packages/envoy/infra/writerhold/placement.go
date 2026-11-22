@@ -67,6 +67,9 @@ func RetryPlacementUntil(ctx context.Context, deadline time.Time, op string, out
 		fmt.Fprintf(out, "%s: JetStream could not place it yet (attempt %d): %v; trying again\n", op, attempt, err)
 		select {
 		case <-within.Done():
+			if ctx.Err() != nil {
+				return unknownf(StepPostcheck, ctx.Err(), "%s: the command's context ended while JetStream refused to place it (code %d): %v", op, placementCode, err)
+			}
 			return unknownf(StepPostcheck, err, "%s: JetStream refused to place it (code %d) until %s, the restart's limit; a refusal that outlasts it may be one no retry mends, such as more copies than the cluster has members",
 				op, placementCode, deadline.UTC().Format(time.RFC3339))
 		case <-time.After(restartPoll):

@@ -76,3 +76,21 @@ func TestRetryPlacement(t *testing.T) {
 		require.Greater(t, calls, 1)
 	})
 }
+
+// RetryPlacement names the caller's context ending, inside its wait between two attempts, as that
+// context's error, never as the placement limit passing: the caller's cancel is no evidence that
+// JetStream could not place the stream for the restart's limit. Control: 870ce0c500, which answered
+// "JetStream refused to place it (code 10005) for 1m0s, the restart's limit".
+func TestRetryPlacementNamesACancelledCaller(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	err := RetryPlacement(ctx, time.Minute, "create KV_envoy_roles", &bytes.Buffer{}, func() error {
+		calls++
+		cancel()
+		return placementRefusal()
+	})
+	require.ErrorIs(t, err, context.Canceled, "the caller's cancel was not named: %v", err)
+	require.NotContains(t, err.Error(), "the restart's limit", "the caller's cancel was called the limit passing")
+	require.ErrorContains(t, err, "create KV_envoy_roles")
+	require.Equal(t, 1, calls)
+}
