@@ -2937,7 +2937,7 @@ delete from public.outbox where kind in ('pending_basis_seed', 'reparent_seed');
 -- The retirement of the task a stopped worker's claim holds, and the message that its phase ended.
 delete from public.outbox where kind = 'supervise' and payload->>'op' = 'retire_task';
 delete from public.outbox where kind = 'phase_ended';
--- The message that tells the implementer of a merge forward the move into the wait dropped.
+-- The message that tells the role a merge forward was asked of (the implementer, or the merger for an ask made in merging) that the move into the wait dropped it.
 delete from public.outbox
   where kind = 'role_message'
     and starts_with(payload->>'body', issue || ': the issue moved into awaiting_children, where it waits on its open Dispatch children.');
@@ -2950,7 +2950,7 @@ update public.outbox
     and jsonb_path_exists(payload, '$.catch_up.gates[*] ? (exists (@.pending) || exists (@.basis))');
 ```
 
-What each costs: an architect is not told of one move into the wait, one end of a basis wait, one changes request on an ancestor or one root resting on its ancestor; a root's pending basis is read again by nobody, which the earlier release reads as a step registered and not approved; a re-parented root and its new parent's architect are not told of the move; a stopped worker keeps the task its claim held for the stopped phase and is not told that the phase ended; an implementer is not told that a move into the wait dropped the merge forward asked of it; and a catch-up tells its architect a step's state without the basis it rests on.
+What each costs: an architect is not told of one move into the wait, one end of a basis wait, one changes request on an ancestor or one root resting on its ancestor; a root's pending basis is read again by nobody, which the earlier release reads as a step registered and not approved; a re-parented root and its new parent's architect are not told of the move; a stopped worker keeps the task its claim held for the stopped phase and is not told that the phase ended; the role a merge forward was asked of (the implementer, or the merger for an ask made in merging) is not told that a move into the wait dropped it; and a catch-up tells its architect a step's state without the basis it rests on.
 
 **Clear `phases.entry_from` with the same daemons stopped, whichever path the rollback takes.**
 

@@ -6117,9 +6117,10 @@ Seven of them source that file through [`lib/rig.sh`](#librigsh), and [`envoy-se
 require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the database" || fail "$db_host"
 ```
 
-The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prerequisites` check reads `LEGION_TEST_PG_DSN` for each proof that makes that run, which is every entry script that sources it.
+The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prerequisites` check reads `LEGION_TEST_PG_DSN` for each proof that makes that run, which is every entry script that sources it, with `require_loopback_env`.
 The tenth is [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh)'s negative control, which reads `LEGION_TEST_PG_DSN` with `require_loopback_dsn` before it builds the base commit's tree, through the copy [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources.
-The eleventh is [`approved-version-news.sh`](#approved-version-newssh)'s `arguments` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_dsn` before it builds or extracts anything, through that same copy.
+The eleventh is [`approved-version-news.sh`](#approved-version-newssh)'s `arguments` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it builds or extracts anything, through that same copy.
+`require_loopback_env` takes the variable's name rather than its value and hands the value to `require_loopback_dsn` with the shell's xtrace off, so a run under `bash -x` traces no DSN, where a caller's own line that passed the DSN would trace it.
 [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) read their DSN with `run_database_url` alone, in the step that names the run's own database.
 Every proof that writes a server its caller's DSN names reads that DSN with this guard before it starts anything.
 That is the first of two frames for the whole-daemon proofs: this guard reads the caller's DSN with libpq in the shell, and the test binary each of them runs reads every DSN it builds from that one back with pgx inside itself (`DatabaseURL`, `packages/daemon/internal/testpg/testdb/testdb.go`).
@@ -6173,9 +6174,9 @@ The two helpers a proof that writes a PostgreSQL server reads its caller's DSN w
 Both answers come from [`lib/loopback-dsn.py`](#libloopback-dsnpy), which this file addresses beside itself, so it needs nothing of its caller's.
 A third helper, `empty_public_schema`, empties the database a run was given, so that a server migrates it from nothing.
 [`lib/rig.sh`](#librigsh) sources this file, which is how seven of the eleven scripts that call its helpers themselves have it, and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
-The ninth, [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), sources it on its own too, and calls `require_loopback_dsn` in `prerequisites` for each proof that makes its run.
+The ninth, [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), sources it on its own too, and calls `require_loopback_env` in `prerequisites` for each proof that makes its run.
 The tenth, [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh), has it through that file, and calls `require_loopback_dsn` itself once more, for its negative control.
-The eleventh, [`approved-version-news.sh`](#approved-version-newssh), has it through that file too, and calls `require_loopback_dsn` in its own `arguments` check as well, before it builds or extracts anything.
+The eleventh, [`approved-version-news.sh`](#approved-version-newssh), has it through that file too, and calls `require_loopback_env` in its own `arguments` check as well, before it builds or extracts anything.
 
 ```sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"     # sourced, never run
@@ -6187,6 +6188,11 @@ The eleventh, [`approved-version-news.sh`](#approved-version-newssh), has it thr
   For a DSN [`lib/loopback-dsn.py`](#libloopback-dsnpy) refuses it assigns VAR that refusal line and returns 1, so each caller ends the run in its own words (`|| fail "$db_host"`, and `|| refuse "$db_host"` in [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `refuse` exits 2).
   NAME is the environment variable the caller read DSN from, and it starts the refusal, and WHAT is what the run does on that server, in a few words.
   The comment above it is the one copy of why every proof asks libpq, which clients the proofs then write the server with, and what a raise of the pinned pgx moves
+
+- `require_loopback_env VAR NAME WHAT`
+
+  is `require_loopback_dsn` on the DSN the variable NAME holds, read inside the function rather than passed by its caller.
+  A caller's own `require_loopback_dsn VAR NAME "$NAME" WHAT` line carries the DSN, which a run under `bash -x` writes into its transcript, while this call carries the variable's name alone.
 
 - `run_database_url VAR NAME DSN DATABASE WHAT`
 
@@ -6206,6 +6212,7 @@ The eleventh, [`approved-version-news.sh`](#approved-version-newssh), has it thr
   [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh) and [`lib/two-builds.sh`](#libtwo-buildssh)'s `two_builds_reset_database` call it
 
 `require_loopback_dsn` and `run_database_url` share one call to `lib/loopback-dsn.py`, which takes the DSN from the environment of a command substitution's own subshell, so no process list holds the password.
+Every helper here turns the shell's xtrace off for itself (`local -`), so a run under `bash -x` traces no DSN and no connection string from inside one.
 
 ## lib/held-port.py
 

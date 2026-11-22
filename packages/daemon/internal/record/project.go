@@ -834,10 +834,9 @@ func GateOpen(gate DesignGate) bool {
 
 // RequiredSteps is the steps a root must hold an open gate at before its tree works: the steps
 // it is given, in their order, or the single step spec when it is given none. It is the one
-// statement of the rule, which classify.RequiredSteps calls; internal/classify reads this
-// package, so the rule lives here, where every reader can reach it. It takes no rows, so a
-// caller that holds a root's rows gives it the steps that tree is gated on (TreeSteps) rather
-// than the deployment's list.
+// statement of the rule; internal/classify reads this package, so the rule lives here, where
+// every reader can reach it. It takes no rows, and its one caller, TreeGate.Required, gives it
+// the steps the tree is gated on (TreeSteps) rather than the deployment's list.
 //
 // The empty list keeps its own hold. A deployment that gates no step asks no person to approve
 // anything, and its registration opens the gate at once; but the registration itself is still
@@ -913,8 +912,10 @@ type TreeGate struct {
 
 // Required is the steps the tree's work waits on: RequiredSteps over the steps the tree is gated
 // on (TreeSteps), so a criteria row its architect registered beside a deployment's spec holds the
-// tree in every rule of the gate alike. It is the one writer of that rule: every reader of the
-// steps a tree's gate holds its work on reads them here.
+// tree in every rule of the gate alike. It is RequiredSteps' one caller, so every reader of those
+// steps reads them here: Open, EverOpened and OpenedAt; classify's FirstClosedStep and
+// StandingGate; workflow's basisStepsOf, gateAtSend, gateInQuestion, treeCatchUp and
+// gateStanding; and projection's basisGateReason.
 func (g TreeGate) Required() []DesignStep {
 	return RequiredSteps(TreeSteps(g.Steps, g.Rows))
 }

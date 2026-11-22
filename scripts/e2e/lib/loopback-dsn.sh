@@ -7,6 +7,12 @@
 # scripts/e2e/envoy-session-delivery.sh, which sources no rig: that proof keeps an await_port_file
 # and a keep_port of its own, written for its own pid map.
 # Sourced, never run.
+#
+# Every function here that holds a DSN or a connection string turns the shell's xtrace off for
+# itself (`local -`), the rule lib/process-tree.sh's env_of states for every reader of a secret, so
+# a run under `bash -x` traces no password from inside them. A caller's own line that passes a DSN
+# still carries it into the trace, so a caller whose DSN is a variable's value passes that
+# variable's name to require_loopback_env instead.
 
 # require_loopback_dsn VAR NAME DSN WHAT assigns VAR the host libpq reads from DSN, which is
 # 127.0.0.1, localhost or ::1, and returns 0. For a DSN the guard refuses it assigns VAR the
@@ -84,7 +90,20 @@
 # hostaddr. Measured with an exported entry that sets hostaddr=127.0.0.2: psql connected to
 # 127.0.0.2, and the guard printed 127.0.0.1 for the same DSN.
 require_loopback_dsn() {
+  local -
+  set +x
   _loopback_dsn "$1" "$2" "$3" "$4"
+}
+
+# require_loopback_env VAR NAME WHAT is require_loopback_dsn on the DSN the variable NAME holds,
+# read here rather than at the call: a caller's `require_loopback_dsn VAR NAME "$NAME" WHAT` line
+# carries the DSN, which a run under `bash -x` writes into its transcript, while this call carries
+# the variable's name alone. lib/live-daemon-proof.sh's prerequisites and approved-version-news.sh's
+# arguments check read LEGION_TEST_PG_DSN through it.
+require_loopback_env() {
+  local -
+  set +x
+  require_loopback_dsn "$1" "$2" "${!2-}" "$3"
 }
 
 # run_database_url VAR NAME DSN DATABASE WHAT assigns VAR the connection string that names the
@@ -117,6 +136,8 @@ require_loopback_dsn() {
 # first. The refusal line names the host, the hostaddr or the service libpq read, or the keyword
 # whose value the string cannot carry, and no other part of the DSN.
 run_database_url() {
+  local -
+  set +x
   _loopback_dsn "$1" "$2" "$3" "$5" --dbname "$4"
 }
 
@@ -133,6 +154,8 @@ run_database_url() {
 # may not create it again. Three callers run it: lib/two-builds.sh's two_builds_reset_database,
 # verification-results.sh and dispatch-claimant-delivery.sh.
 empty_public_schema() {
+  local -
+  set +x
   local reset_sql="do \$\$
 declare object record;
 begin
@@ -174,6 +197,8 @@ end
 # /proc/<pid>/cmdline holds until it execs. The helper is addressed beside this file, so a proof
 # that sources this file needs no variable of its own for the checkout.
 _loopback_dsn() {
+  local -
+  set +x
   local _answer_var=$1 _name=$2 _dsn=$3 _answer _status=0
   shift 3
   _answer=$(export "$_name=$_dsn"; python3 "${BASH_SOURCE[0]%/*}/loopback-dsn.py" \

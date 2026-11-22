@@ -505,8 +505,8 @@ func (r *childAdoptionLive) waitsForASlot(key string) {
 // route shows running in T (runsInTheArchitectsTree). The driver delivers the write's event as
 // Dispatch would, with the architect's registered session as its actor. The daemon takes the
 // write of the architect that owns key as it takes a person's move, so key leaves the workflow and
-// the slot its first phase took is freed: the child waiting next in T takes it, or it stands free
-// for the next step.
+// the slot its first phase took is freed: the child waiting next in T takes it, or T itself once no
+// child of it is open (R12), or it stands free for the next step.
 func (r *childAdoptionLive) backlogAndFree(key string) {
 	r.t.Helper()
 	r.runsInTheArchitectsTree(key)

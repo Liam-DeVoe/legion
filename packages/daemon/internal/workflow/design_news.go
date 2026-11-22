@@ -240,7 +240,7 @@ func gateAtSend(tree string, steps []record.DesignStep, gates map[record.DesignS
 	}
 	var opened record.DesignGate
 	var openedStep record.DesignStep
-	for _, step := range classify.RequiredSteps(classify.TreeSteps(steps, gates)) {
+	for _, step := range (record.TreeGate{Steps: steps, Rows: gates}).Required() {
 		row, ok := gates[step]
 		if !ok || row.ApprovedVersion == nil {
 			continue
