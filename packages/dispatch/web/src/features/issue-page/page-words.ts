@@ -644,10 +644,9 @@ export const STATE_LINES = freeze({
  *  it keeps (`ANSWER_LINES.kept_on_issue`, `kept_on_statement`): a row's Reply, and the box's
  *  control that writes on the issue instead. They stand here, ahead of `ANSWER_LINES`, because
  *  `CONTROL_LABELS` comes after it. `CONTROL_LABELS.reply` and `write_on_issue` are `main`'s
- *  lines, which this part keeps unchanged, so they repeat these words as literals;
- *  `IssueComposer.test.tsx` holds each equal to its constant here. */
-export const REPLY_WORD = "Reply";
-export const WRITE_ON_ISSUE_WORDS = "Write on the issue instead";
+ *  lines, which this part keeps unchanged, so they repeat these words as literals. */
+const REPLY_WORD = "Reply";
+const WRITE_ON_ISSUE_WORDS = "Write on the issue instead";
 
 /**
  * What the page says in answer to the reader's own act, and never on load: a copy they pressed,

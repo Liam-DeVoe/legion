@@ -64,7 +64,7 @@ import {
 import { FOOT_HEIGHT_PROPERTY } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
 import type { OutlineWriter } from "./outline-writer";
-import { ANSWER_LINES, CONTROL_LABELS, REPLY_WORD, WRITE_ON_ISSUE_WORDS } from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
 /**
  * The new issue page's one box to write in, drawn as
@@ -338,13 +338,13 @@ test("under a view or a document the box is hidden until the reader asks to writ
   await waitFor(() => expect(composerBox()).toHaveAttribute("hidden"));
 });
 
-// The kept lines name the way back by a control's words, declared once in `page-words.ts` as
-// `REPLY_WORD` and `WRITE_ON_ISSUE_WORDS`, while `CONTROL_LABELS` keeps its own words for the two
-// controls as `main` wrote them. Each pair stays equal, so a kept line never names a control the
-// page draws under other words.
+// The kept lines name the way back by a control's words: the box's control that writes on the
+// issue for what was written there, and a statement's Reply, pressed on that statement, for what
+// was written on one. Each line holds the words that control draws (`CONTROL_LABELS`), so a kept
+// line never names a control the page draws under other words.
 test("the kept lines name the Reply and the write-on-issue control by the words those controls draw", () => {
-  expect(CONTROL_LABELS.reply).toBe(REPLY_WORD);
-  expect(CONTROL_LABELS.write_on_issue).toBe(WRITE_ON_ISSUE_WORDS);
+  expect(ANSWER_LINES.kept_on_issue).toContain(CONTROL_LABELS.write_on_issue);
+  expect(ANSWER_LINES.kept_on_statement).toContain(`press ${CONTROL_LABELS.reply} `);
 });
 
 // The reviewer's finding 4593511272: a Reply is a move of the page's, which carries nothing, so

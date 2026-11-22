@@ -119,7 +119,7 @@ import {
   saveCommentEdit,
   unedited,
 } from "./send-request";
-import { type AwayAddress, useUnsentDrafts } from "./unsent-drafts";
+import { type AwayAddress, type AwayDraft, useUnsentDrafts } from "./unsent-drafts";
 import { useAgents } from "./useAgents";
 import { useComposerSend } from "./useComposerSend";
 import { useDraftHomes } from "./useDraftHomes";
@@ -201,7 +201,7 @@ function askOptionRows(ask: SentRequest["ask"] | undefined): AskOptionDraft[] {
  *  statement the issue page's box was on - which no two drafts kept under one name share. Two the
  *  box keeps on one statement's row, its words before a new version and after, share the row. The
  *  key names each field of `AwayAddress`, so the compiler asks for a field the address gains. */
-function awayKey({ anchor, replyTo, statement }: AwayAddress): string {
+function awayKey({ anchor, replyTo, statement }: AwayDraft): string {
   return JSON.stringify({
     anchor: [anchor?.artifact, anchor?.mark_id, anchor?.quote, anchor?.occurrence],
     replyTo: replyTo?.id,
@@ -850,7 +850,6 @@ export function MentionComposer({
     elsewhere,
     forgetUnsent,
     goneAway,
-    goneStatements,
     keepDraft,
     keepNothing,
     keptAway,
@@ -870,8 +869,6 @@ export function MentionComposer({
     intake,
     kind,
     listsReply,
-    // Only the issue page's box keeps a draft for a statement, and its host says which it draws.
-    listsStatement: outline?.statements?.drawn,
     mountedHeld,
     moves: ownMoves + cancels,
     outgoing,
@@ -1239,9 +1236,14 @@ export function MentionComposer({
   // waits beside the line in the host's words, as a reply kept for an entry the host no longer
   // lists does (`KeptDraftOffers`), with Discard my draft and, where the line writes on the issue
   // with nothing of its own, Use it here, which puts it in the field as a comment on the issue.
-  // Each is keyed by its whole address (`awayKey`): two kept on one row - its words before a new
-  // version and after - are two drafts.
+  // It answers no reply, so the drafts named with a kept line (`keptAway`) hold it, and it is
+  // taken out of them here. Each is keyed by its whole address (`awayKey`): two kept on one row -
+  // its words before a new version and after - are two drafts.
   const statementLook = outline?.statements;
+  const statementGone = (away: AwayDraft): boolean =>
+    away.statement !== undefined && statementLook?.drawn(away.statement) === false;
+  const goneStatements = keptAway.filter(statementGone);
+  const keptWithLine = keptAway.filter((away) => !statementGone(away));
   const goneStatementOffers =
     statementLook === undefined
       ? null
@@ -1367,7 +1369,7 @@ export function MentionComposer({
           the way back: the target line's control for the issue, a statement's Reply for that
           statement (`OutlineLook.kept`). Each line is keyed by its draft's whole address
           (`awayKey`). */}
-      {keptAway.map((away) => (
+      {keptWithLine.map((away) => (
         <p className={`text-sm ${quietTone}`} key={awayKey(away)} role="status">
           {!outlined || away.replyTo !== null || outline.kept === undefined
             ? keptAwayLine(away)
