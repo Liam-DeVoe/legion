@@ -296,3 +296,61 @@ func TestSourceIsTheFileThatTheBuildReads(t *testing.T) {
 	}
 	buildLeg(leg{"an overlay that only go's environment file (GOENV) names", "", "", Command{Name: "sourceprobe-goenv", Dir: dir}, "disk"})
 }
+
+// stopTB is a test that records what BuildCommand reports through it, each other call going to the
+// test it wraps: its Errorf lines, and its Fatalf line, at which it stops the call as testing.T stops
+// the test's goroutine, here by a panic of stopped that the caller recovers.
+type stopTB struct {
+	testing.TB
+	errors []string
+	fatal  string
+}
+
+type stopped struct{}
+
+func (s *stopTB) Errorf(format string, args ...any) {
+	s.errors = append(s.errors, fmt.Sprintf(format, args...))
+}
+
+func (s *stopTB) Fatalf(format string, args ...any) {
+	s.fatal = fmt.Sprintf(format, args...)
+	panic(stopped{})
+}
+
+// BuildCommand fails the test naming the build that failed. A command whose code does not compile is
+// built twice in one test: the first call runs the build, which fails, and reports the build's error
+// and then that the build of this call failed; the second is handed the build that failed, runs none,
+// and reports that an earlier build of it in this test failed.
+func TestBuildCommandNamesTheBuildThatFailed(t *testing.T) {
+	dir := t.TempDir()
+	for name, text := range map[string]string{
+		"go.mod":  "module example.com/brokenprobe\n\ngo 1.22\n",
+		"main.go": "package main\n\nfunc main() { notDeclared() }\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := Command{Name: "brokenprobe", Dir: dir}
+	s := &stopTB{TB: t}
+	for _, call := range []struct{ what, fatal string }{
+		{"the call that runs the build", "build brokenprobe: the build of it in this call failed"},
+		{"the call that asks for it again", "build brokenprobe: an earlier build of it in this test failed"},
+	} {
+		s.fatal = ""
+		path := func() (path string) {
+			defer func() {
+				if r := recover(); r != nil && r != (stopped{}) {
+					panic(r)
+				}
+			}()
+			return BuildCommand(s, c)
+		}()
+		if path != "" || s.fatal != call.fatal {
+			t.Errorf("%s: BuildCommand returns %q and fails the test with %q, want no path and %q", call.what, path, s.fatal, call.fatal)
+		}
+		if len(s.errors) != 1 || !strings.HasPrefix(s.errors[0], "build brokenprobe: exit status ") || !strings.Contains(s.errors[0], "notDeclared") {
+			t.Errorf("%s: the lines BuildCommand reported before it: %q, want the one line of the build's error", call.what, s.errors)
+		}
+	}
+}

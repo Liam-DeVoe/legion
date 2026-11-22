@@ -73,7 +73,9 @@ type builtBinary struct {
 // and the overlay of the build (Command.overlay: c's own -overlay flag, else ENVOY_TEST_GO_OVERLAY,
 // else GOFLAGS's) is passed to go build as its last flag, so a probe can build it from changed
 // sources without editing the tree; Command.Source reads a file as that build reads it. A test that
-// asks for the same build again is handed the one it already built (built).
+// asks for the same build again is handed the one it already built (built). Where the build failed,
+// it fails the test, naming the build that failed: the one this call ran, after runBuild's line with
+// the build's error, or an earlier call's in the same test, which it does not run again.
 func BuildCommand(t testing.TB, c Command) string {
 	t.Helper()
 	overlay, err := c.overlay()
@@ -89,9 +91,14 @@ func BuildCommand(t testing.TB, c Command) string {
 		t.Cleanup(func() { built.Delete(key) })
 	}
 	binary := entry.(*builtBinary)
-	binary.once.Do(func() { binary.path = runBuild(t, c, overlay) })
+	ran := false
+	binary.once.Do(func() { ran, binary.path = true, runBuild(t, c, overlay) })
 	if binary.path == "" {
-		t.Fatalf("build %s: an earlier build of it in this test failed", c.Name)
+		which := "an earlier build of it in this test"
+		if ran {
+			which = "the build of it in this call"
+		}
+		t.Fatalf("build %s: %s failed", c.Name, which)
 	}
 	return binary.path
 }
