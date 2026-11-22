@@ -350,6 +350,96 @@ func TestAnExistenceAnswerNoWriteKeptEndsTheKeptNoSuchProject(t *testing.T) {
 	r.hidden(t, "ACME", keptCarol, "while Dispatch is down after an answer that ACME exists no write kept")
 }
 
+// TestAKeptPublicIsNotServedBesideALaterAnswerThatItIsPrivate: bob was answered PUBP public at
+// t1. PUBP is then switched to private, its list naming ada alone, and the broker keeps a later
+// answer that it is private at t2: ada's, or the no-person answer the policy loader's question
+// keeps. bob was not asked since. A process whose Dispatch is down refuses bob's read under OrKept,
+// and does not show him PUBP's rows on the older public answer.
+//
+// The fault: KeptProjectStanding with no public rule; bob's read is answered public and visible.
+func TestAKeptPublicIsNotServedBesideALaterAnswerThatItIsPrivate(t *testing.T) {
+	for _, later := range []struct {
+		name, person string
+		visible      bool
+	}{
+		{"a listed person's answer", keptAda, true},
+		{"the no-person answer", "", false},
+	} {
+		t.Run(later.name, func(t *testing.T) {
+			st := storetest.Open(t)
+			t1 := time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC)
+			t2 := t1.Add(time.Hour)
+			if err := st.KeepProjectStanding(t.Context(), keptBob, "PUBP", "public", true, t1); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.KeepProjectStanding(t.Context(), later.person, "PUBP", "private", later.visible, t2); err != nil {
+				t.Fatal(err)
+			}
+			down := projectaccesstest.NewServer(t, nil, nil)
+			down.SetDown(true)
+			r := keepingClientOf(down, st)
+			if got, err := r.client.Access(projectaccess.OrKept(t.Context()), "PUBP", keptBob); err == nil && got.Visible {
+				t.Fatalf("Access(OrKept, PUBP, bob) while Dispatch is down = %+v; want refused: the broker keeps a later answer that PUBP is private, and bob was not asked since", got)
+			}
+		})
+	}
+}
+
+// TestAPrivateAnswerNoWriteKeptEndsTheKeptPublic: carol's read of PUBP, public, is kept. The
+// database then refuses writes, PUBP is made private, its list naming ada, and an answer that it is
+// private is read and not kept: ada's, or the no-person answer of States, as the policy loader
+// asks it. Once Dispatch stops answering, carol is refused on that answer rather than shown PUBP on
+// her older kept public one. Once the database takes writes again and PUBP is made public again,
+// dave's public answer is kept: dave is shown PUBP while Dispatch is down, and carol is still
+// refused, since PUBP was private after her own answer, as the Keeper reads a kept private one.
+//
+// Faults: keepProject remembering no answer that a project is private it could not keep; carol is
+// shown PUBP after the unkept private answer. A kept public answer forgetting the unkept private
+// one; carol is shown PUBP after dave's answer.
+func TestAPrivateAnswerNoWriteKeptEndsTheKeptPublic(t *testing.T) {
+	publicRow := projectaccesstest.Row{Visibility: "public", Owner: keptBob}
+	for _, later := range []struct {
+		name string
+		read func(t *testing.T, r *keptRig)
+	}{
+		{"a listed person's read", func(t *testing.T, r *keptRig) {
+			if got, err := r.client.Access(t.Context(), "PUBP", keptAda); err != nil || !got.Visible || got.Visibility != projectaccess.VisibilityPrivate {
+				t.Fatalf("Access(PUBP, ada) once PUBP is private = %+v, %v; want private and visible", got, err)
+			}
+		}},
+		{"the no-person read of States", func(t *testing.T, r *keptRig) {
+			states, err := r.client.States(t.Context(), []string{"PUBP"})
+			if err != nil || states["PUBP"].Visibility != projectaccess.VisibilityPrivate {
+				t.Fatalf("States(PUBP) once PUBP is private = %+v, %v; want private", states, err)
+			}
+		}},
+	} {
+		t.Run(later.name, func(t *testing.T) {
+			st := storetest.Open(t)
+			dispatch := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{"PUBP": publicRow}, keptKinds())
+			r := keepingClientOf(dispatch, st)
+			r.readAll(t, map[string][]string{keptCarol: {"PUBP"}})
+			refuseProjectKeeps(t, st)
+			dispatch.SetRow("PUBP", projectaccesstest.Row{Visibility: "private", Owner: keptBob, Listed: []string{keptAda}})
+			r.clock.advance(projectaccess.CacheTTL)
+			later.read(t, r)
+			dispatch.SetDown(true)
+			r.clock.advance(projectaccess.CacheTTL)
+			r.hidden(t, "PUBP", keptCarol, "while Dispatch is down after an answer that PUBP is private no write kept")
+
+			allowProjectKeeps(t, st)
+			dispatch.SetDown(false)
+			dispatch.SetRow("PUBP", publicRow)
+			r.clock.advance(projectaccess.CacheTTL)
+			r.readAll(t, map[string][]string{keptDave: {"PUBP"}})
+			dispatch.SetDown(true)
+			r.clock.advance(projectaccess.CacheTTL)
+			r.shown(t, "PUBP", keptDave, projectaccess.VisibilityPublic, "while Dispatch is down, kept public after the unkept private answer")
+			r.hidden(t, "PUBP", keptCarol, "while Dispatch is down, after dave's later public answer was kept")
+		})
+	}
+}
+
 // refuseProjectKeeps makes project_standing refuse every insert and update, as a database that
 // takes reads and no writes.
 func refuseProjectKeeps(t *testing.T, st *store.Store) {
@@ -363,5 +453,13 @@ func refuseProjectKeeps(t *testing.T, st *store.Store) {
 		if _, err := st.Pool.Exec(context.Background(), statement); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// allowProjectKeeps undoes refuseProjectKeeps: project_standing takes writes again.
+func allowProjectKeeps(t *testing.T, st *store.Store) {
+	t.Helper()
+	if _, err := st.Pool.Exec(context.Background(), `drop trigger project_standing_refused on project_standing`); err != nil {
+		t.Fatal(err)
 	}
 }

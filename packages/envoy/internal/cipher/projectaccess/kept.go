@@ -244,18 +244,19 @@ type orKeptKey struct{}
 
 // OrKept is ctx for project reads (Access) that, where Dispatch does not answer (Unanswered), a
 // client that keeps its answers (Keep) answers from the answer it kept for that person and project:
-// a project Dispatch last answered public and visible to them, or private and visible to them, is
-// answered visible, carrying its project, person and visibility alone and a zero AskedAt, since
-// nothing Dispatch answered since bounds its age; a key Dispatch last answered it holds no project
-// for is that answer again, a *ProjectNotFoundError with a zero AskedAt, until an answer that the
-// project exists is kept for anyone, asked at or after it; and every other read fails as with no
-// keeper: a project kept hidden from the person, one of which nothing is kept for them since it
-// was made, and one whose kept answer cannot be read. A read Dispatch answers is that answer, kept
-// as every answer is. The request machine's person rule reads under it (requests.Machine.maySee),
-// so while Dispatch does not answer a row is shown and decided by who last could; nothing else
-// does, so the token exchange, an enrollment and a release still fail while Dispatch does not
-// answer whether a person may see a project. It is a context marker, as Fresh is, so an Access
-// that hands the context on keeps the rule.
+// a project Dispatch last answered public and visible to them, until an answer that it is private
+// is kept for anyone, asked at or after it, or private and visible to them, is answered visible,
+// carrying its project, person and visibility alone and a zero AskedAt, since nothing Dispatch
+// answered since bounds its age; a key Dispatch last answered it holds no project for is that
+// answer again, a *ProjectNotFoundError with a zero AskedAt, until an answer that the project
+// exists is kept for anyone, asked at or after it; and every other read fails as with no keeper: a
+// project kept hidden from the person, one of which nothing is kept for them since it was made or
+// made private, and one whose kept answer cannot be read. A read Dispatch answers is that answer,
+// kept as every answer is. The request machine's person rule reads under it
+// (requests.Machine.maySee), so while Dispatch does not answer a row is shown and decided by who
+// last could; nothing else does, so the token exchange, an enrollment and a release still fail
+// while Dispatch does not answer whether a person may see a project. It is a context marker, as
+// Fresh is, so an Access that hands the context on keeps the rule.
 func OrKept(ctx context.Context) context.Context {
 	return context.WithValue(ctx, orKeptKey{}, true)
 }
@@ -274,8 +275,12 @@ func orKept(ctx context.Context) bool {
 // the person rather than show them the project on an older kept answer; so is an answer that the
 // project exists, that no write took (unkeptExists), so a later outage refuses everyone with no
 // answer of their own since rather than read the project as none on an older kept answer that
-// Dispatch held no such project. A write that takes forgets an unkept answer asked no later than
-// its own.
+// Dispatch held no such project; and so is an answer that the project is private, that no write
+// took (unkeptPrivate), so a later outage refuses everyone with no answer of their own since
+// rather than show them the project on an older kept answer that it was public. A write that takes
+// forgets an unkept answer asked no later than its own; an unkept private answer, only a write of
+// a private or no-project answer, since a later public answer does not undo that the project was
+// private after the person's own answer, as the Keeper reads a kept one.
 func (c *Client) keepProject(ctx context.Context, key accessKey, answer Answer, missing bool, asked time.Time) {
 	if c.keeper == nil {
 		return
@@ -300,6 +305,12 @@ func (c *Client) keepProject(ctx context.Context, key accessKey, answer Answer, 
 	case err != nil && !missing && (!ok || asked.After(remembered)):
 		c.unkeptExists[key.project] = asked
 	}
+	switch remembered, ok := c.unkeptPrivate[key.project]; {
+	case err == nil && ok && !remembered.After(asked) && (missing || visibility == VisibilityPrivate):
+		delete(c.unkeptPrivate, key.project)
+	case err != nil && !missing && visibility == VisibilityPrivate && (!ok || asked.After(remembered)):
+		c.unkeptPrivate[key.project] = asked
+	}
 	c.mu.Unlock()
 	if err != nil {
 		c.keepLog.Warn(keepProjectFailedMessage, "person", key.person, "project", key.project, "visible", visible && !missing,
@@ -313,8 +324,10 @@ func (c *Client) keepProject(ctx context.Context, key accessKey, answer Answer, 
 // ctx, bounded by keptReadTimeout. A kept answer showing the person the project is served, and a
 // kept answer that Dispatch holds no such project is that answer, unless this process read an
 // answer that the project exists, asked at or after it, and could not keep it (unkeptExists): that
-// is no answer for the person, as the Keeper reads a kept one. Every other read is cause, wrapped
-// with what was kept, as a client with no keeper fails it. Each read is counted in
+// is no answer for the person, as the Keeper reads a kept one; and so is a kept public answer
+// where this process read an answer that the project is private, asked at or after it, and could
+// not keep it (unkeptPrivate). Every other read is cause, wrapped with what was kept, as a client
+// with no keeper fails it. Each read is counted in
 // broker_project_visibility_unchecked_total by its label, and a served one logged at WARN
 // (KeptProjectMessage), at most once a minute per person and project.
 func (c *Client) keptProject(ctx context.Context, key accessKey, cause error) (Answer, error) {
@@ -324,6 +337,7 @@ func (c *Client) keptProject(ctx context.Context, key accessKey, cause error) (A
 	c.mu.Lock()
 	unkept, remembered := c.unkeptProjects[key]
 	exists, existsUnkept := c.unkeptExists[key.project]
+	private, privateUnkept := c.unkeptPrivate[key.project]
 	c.mu.Unlock()
 	var kept string
 	switch {
@@ -337,6 +351,8 @@ func (c *Client) keptProject(ctx context.Context, key accessKey, cause error) (A
 		kept = keptNone
 	case visibility == "":
 		kept = keptMissing
+	case visibility == VisibilityPublic && privateUnkept && !private.Before(askedAt):
+		kept = keptNone
 	case !visible:
 		kept = keptNotVisible
 	case visibility == VisibilityPublic:

@@ -144,3 +144,65 @@ func TestProjectStandingKeepsANoPersonAnswerForNoPersonAlone(t *testing.T) {
 		t.Fatalf("KeptProjectStanding(carol, PUB) after the no-person answer = %q visible %t as of %v (found %t, %v); want nothing kept", vis, visible, at, found, err)
 	}
 }
+
+// TestProjectStandingPublicEndsAtAnAnswerThatItIsPrivate: whether a project is public is a fact of
+// the project, so a person's kept public answer stands only until an answer that it is private,
+// kept for anyone, no person included, was asked at or after it; then that person, with no answer
+// of their own since, is kept nothing, and a read during an outage refuses them as one never
+// asked rather than show them the project's rows. bob is answered PUBP public as of t1; dave's
+// private answer as of t0, older, written after, ends nothing. PUBP is made private, its list
+// naming ada, whose answer as of t2 is kept: bob is kept nothing. PUBP is made public again, and
+// carol's answer as of t3 is kept: bob is still kept nothing, since PUBP was private after his own
+// answer, and ada keeps her private answer, which a switch to public does not end, since whether
+// she may see a private project rests on its list. A no-person answer that PUBP is private as of
+// t4, as the policy loader's question asks, ends carol's public answer the same way.
+//
+// Faults: KeptProjectStanding with no public rule; bob reads public as of t1 after ada's answer.
+// Every kept visibility ended by a later different one; ada reads nothing after carol's answer.
+func TestProjectStandingPublicEndsAtAnAnswerThatItIsPrivate(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := t.Context()
+	const ada, bob, carol, dave = "ada@example.com", "bob@example.com", "carol@example.com", "dave@example.com"
+	t0 := time.Date(2026, 11, 22, 0, 0, 1, 0, time.UTC)
+	t1, t2, t3, t4 := t0.Add(time.Second), t0.Add(2*time.Second), t0.Add(3*time.Second), t0.Add(4*time.Second)
+	// A read whose at is zero wants nothing kept.
+	type read struct {
+		person, visibility string
+		visible            bool
+		at                 time.Time
+	}
+	for _, step := range []struct {
+		person, visibility string
+		visible            bool
+		asked              time.Time
+		want               []read
+		write              string
+	}{
+		{bob, "public", true, t1, []read{{bob, "public", true, t1}}, "bob answered PUBP public as of t1"},
+		{dave, "private", true, t0, []read{{bob, "public", true, t1}, {dave, "private", true, t0}}, "dave's private answer as of t0, older, written after"},
+		{ada, "private", true, t2, []read{{bob, "", false, time.Time{}}, {ada, "private", true, t2}, {"", "", false, time.Time{}}},
+			"PUBP made private, ada on its list as of t2"},
+		{carol, "public", true, t3, []read{{bob, "", false, time.Time{}}, {carol, "public", true, t3}, {ada, "private", true, t2}},
+			"PUBP made public again, carol's answer as of t3"},
+		{"", "private", false, t4, []read{{carol, "", false, time.Time{}}, {ada, "private", true, t2}, {"", "private", false, t4}},
+			"PUBP made private again, the no-person answer as of t4"},
+	} {
+		if err := st.KeepProjectStanding(ctx, step.person, "PUBP", step.visibility, step.visible, step.asked); err != nil {
+			t.Fatalf("KeepProjectStanding for %s: %v", step.write, err)
+		}
+		for _, want := range step.want {
+			vis, visible, at, found, err := st.KeptProjectStanding(ctx, want.person, "PUBP")
+			if want.at.IsZero() {
+				if err != nil || found {
+					t.Fatalf("KeptProjectStanding(%q, PUBP) after %s = %q visible %t as of %v (found %t, %v); want nothing kept",
+						want.person, step.write, vis, visible, at, found, err)
+				}
+				continue
+			}
+			if err != nil || !found || vis != want.visibility || visible != want.visible || !at.Equal(want.at) {
+				t.Fatalf("KeptProjectStanding(%q, PUBP) after %s = %q visible %t as of %v (found %t, %v); want %q visible %t as of %v",
+					want.person, step.write, vis, visible, at, found, err, want.visibility, want.visible, want.at)
+			}
+		}
+	}
+}

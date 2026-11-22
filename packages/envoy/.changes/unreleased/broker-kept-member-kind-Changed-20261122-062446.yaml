@@ -15,16 +15,17 @@ body: |-
   older than that answer is not served, so that person is refused during an outage until a process
   of this release keeps their next answer. The broker also keeps each answer of whether a person may
   see a project, by person and project, in `project_standing` (migration `0047_project_standing`),
-  so while Dispatch does not answer, a request whose projects Dispatch last answered public or
-  visible to the reader is listed and decided as before, and a key Dispatch last answered is no
-  project, such as the `SHA` of `SHA-256` or the `GPT` of `GPT-5` in a reason, hides nothing, as
-  Dispatch's own answer does, until the broker keeps an answer for anyone that the project exists;
-  each is logged once a minute per person and project and counted in
+  so while Dispatch does not answer, a request whose projects Dispatch last answered visible to the
+  reader is listed and decided as before, and so is one whose projects it last answered public,
+  until the broker keeps an answer for anyone that the project is private; a key Dispatch last
+  answered is no project, such as the `SHA` of `SHA-256` or the `GPT` of `GPT-5` in a reason, hides
+  nothing, as Dispatch's own answer does, until the broker keeps an answer for anyone that the
+  project exists; each is logged once a minute per person and project and counted in
   `broker_project_visibility_unchecked_total`. A project last answered hidden from the reader, one
-  never answered for them since it was made, and one whose kept answer cannot be read are refused
-  as before. An answer Dispatch gives always wins and is kept, the later one winning, so a
-  demotion, or a change of a project's list, made during an outage takes effect when Dispatch
-  answers again.
+  never answered for them since it was made or made private, and one whose kept answer cannot be
+  read are refused as before. An answer Dispatch gives always wins and is kept, the later one
+  winning, so a demotion, or a change of a project's list, made during an outage takes effect when
+  Dispatch answers again.
 time: 2026-11-22T06:24:46Z
 custom:
     Issue: broker-kept-member-kind

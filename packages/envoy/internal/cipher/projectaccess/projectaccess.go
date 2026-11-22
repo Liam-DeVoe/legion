@@ -36,8 +36,9 @@
 // Dispatch gives always wins. It keeps each answer of the project route the same way
 // (project_standing, later by the time it was asked), and a read under OrKept, the request
 // machine's person rule's, answers from it while Dispatch cannot be asked: a project last answered
-// public or visible to the person shows it to them, a key last answered no project is no project
-// again until an answer that it exists is kept for anyone, and every other read is refused as
+// private and visible to the person shows it to them, and so does one last answered public until
+// an answer that it is private is kept for anyone; a key last answered no project is no project
+// again until an answer that it exists is kept for anyone; and every other read is refused as
 // before.
 package projectaccess
 
@@ -413,6 +414,12 @@ type Client struct {
 	// exists (Keeper.KeptProjectStanding), so it refuses as nothing kept. It is forgotten once a
 	// write for that project asked no earlier takes, and never otherwise.
 	unkeptExists map[string]time.Time
+	// unkeptPrivate is, for each project, when the latest answer that it is private, for any
+	// person or for none, which no write has kept, was asked: a kept public answer asked no later
+	// is no longer the project's, as the Keeper reads one beside a kept answer that it is private,
+	// so it refuses as nothing kept. It is forgotten once a write of a private or no-project
+	// answer for that project asked no earlier takes, and never otherwise.
+	unkeptPrivate map[string]time.Time
 	// keptNoted and keptProjectNoted are when MemberKind last counted each person's read, and
 	// Access each person and project's read, answered from what was kept, and under which label,
 	// so each counts, and logs a served read, once a minute per person or per person and project.
@@ -468,6 +475,7 @@ func New(baseURL string, account ciphertoken.Account, httpClient *http.Client) *
 		unkept:           map[string]unkeptKind{},
 		unkeptProjects:   map[accessKey]time.Time{},
 		unkeptExists:     map[string]time.Time{},
+		unkeptPrivate:    map[string]time.Time{},
 		keptNoted:        map[string]keptNote{},
 		keptProjectNoted: map[accessKey]keptNote{},
 	}
