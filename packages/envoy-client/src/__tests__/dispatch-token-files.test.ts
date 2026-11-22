@@ -20,6 +20,7 @@ import {
 } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
+import { stubDeviceLoginBroker } from "@legion/cipher-client/test/device-logins";
 import { DISPATCH_READ_ONLY_TOKEN } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { type FakeDispatchCall, startFakeDispatch } from "../../test/fake-dispatch";
@@ -572,6 +573,59 @@ describe("the dispatch command's token files", () => {
     expect(dispatch.presented.length).toBeGreaterThan(2);
     expect(listener.presented.length).toBeGreaterThan(0);
     expect(broker.trades).toEqual([]);
+  });
+
+  test("`dispatch login` refuses beside the token files", async () => {
+    // A broker that approves a device login at its first poll: beside the files the command asks
+    // it nothing, so no device grant starts and no login is kept on the copy.
+    const broker = stubDeviceLoginBroker();
+    servers.push(broker);
+    const dispatch = standInDispatch();
+    const copy = copyFiles();
+    const loginFile = path.join(tempDir(), "legion", "device-login.json");
+    const env = commandEnvironment(copy, dispatch.url, {
+      HOME: tempDir(),
+      AGENT_SECRETS_URL: broker.url,
+      AGENT_SECRETS_MACHINE_IDENTITY: "device-login",
+      AGENT_SECRETS_DEVICE_LOGIN_FILE: loginFile,
+    });
+    const beside = ["AGENT_SECRETS_URL is set", "AGENT_SECRETS_MACHINE_IDENTITY is set"];
+
+    const login = await run(["login", "--device", "--person", "ada@example.com"], env, copy.dir);
+    expect(login.code, login.stdout).toBe(2);
+    expect([login.stdout.includes(TOKEN_FILE), login.stdout.includes(KEY_FILE)]).toEqual([
+      true,
+      true,
+    ]);
+    // Each setting set beside the files is named as every other command's refusal names it, and
+    // no setting that is not set.
+    for (const { named } of REFUSED) {
+      expect([named, login.stdout.includes(named)]).toEqual([named, beside.includes(named)]);
+    }
+    expect([broker.authorizations, broker.polls, broker.refreshes, broker.trades]).toEqual([
+      [],
+      [],
+      [],
+      [],
+    ]);
+    // No login file, no lock and no copy of a login: not even the login's directory is made.
+    expect(existsSync(path.dirname(loginFile))).toBe(false);
+
+    // `dispatch login --help` answers as before.
+    const help = await run(["login", "--help"], env, copy.dir);
+    expect(help.code, help.stdout).toBe(0);
+    expect(help.stdout).toContain("Usage: dispatch login --device [--person <address>]");
+
+    // A tool's dry run that does not ask Dispatch prints the arguments, as it does with Dispatch
+    // off.
+    const dry = await run(
+      ["message", "--issue", "DSP-1", "--body", "hi", "--dry-run"],
+      env,
+      copy.dir
+    );
+    expect(dry.code, dry.stdout).toBe(0);
+    expect(JSON.parse(dry.stdout)).toEqual({ issue: "DSP-1", body: "hi" });
+    expect(dispatch.presented).toEqual([]);
   });
 
   test("a loop of reads sees the renamed token", async () => {

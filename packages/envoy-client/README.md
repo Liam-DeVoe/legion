@@ -1220,7 +1220,8 @@ and others cannot write to, it exits 2 before any request, so no person approves
 machine could not keep there. It exits 2 too, before any request, for a file setting that names
 something other than a regular file, a link to one included: a directory, which no save can
 replace, a named pipe, which a read waits on until a process writes to it, a socket, a device or a
-loop of links. It reads the login a new one replaces, and every login it trades, only from a
+loop of links. It exits 2, before any request, while either of the command's token files is set
+(below). It reads the login a new one replaces, and every login it trades, only from a
 regular file of at most 64 KiB, in a directory it checks before it opens the file; where the
 setting names a link, it checks the directory of each link on the way and of the file at its
 end as well. Every directory on the way to those but the ones above the home directory, which
@@ -1340,11 +1341,13 @@ settings is set alone, when `DISPATCH_URL` is not set, or when any of these is s
 `dispatch.token` in the chosen `envoy.json`, or a `dispatch.token` in the checkout's
 `.envoy/envoy.json`. The checkout's file is read for this check even with `DISPATCH_URL` set, and
 one that cannot be read is refused too, since whether it holds a token cannot be told. A `!`
-command in either `dispatch.token` is found by the field's presence and never run. A file that
-cannot be read, a token file that is empty or blank, and a key that is not P-256 in one PKCS#8 PEM
-block each fail the request with an error that names the setting and the file and quotes none of
-its bytes. Under a read-only token, a write prints Dispatch's refusal (`READ_ONLY_TOKEN: …`) and
-exits 1.
+command in either `dispatch.token` is found by the field's presence and never run. `dispatch login`
+exits 2 too, before any request, while either setting is set, and names each of the variables
+above that is set beside them: a device login asks the broker and keeps a login in a file, and the
+token files trade nothing. A file that cannot be read, a token file that is empty or blank, and a
+key that is not P-256 in one PKCS#8 PEM block each fail the request with an error that names the
+setting and the file and quotes none of its bytes. Under a read-only token, a write prints
+Dispatch's refusal (`READ_ONLY_TOKEN: …`) and exits 1.
 
 Only the `dispatch` command reads the two settings: it passes `tokenFiles` to
 `sessionDispatchSettings`. Every other caller of `dispatchSettings` that finds either set, each

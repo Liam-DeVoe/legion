@@ -9,7 +9,8 @@
 //
 // It is the one `dispatch` command that is no Dispatch tool: a person runs it in a terminal,
 // before any session exists, so it reads no host, no session and no envoy.json, only the
-// environment's broker settings.
+// environment's broker settings. Like every Dispatch call, it refuses beside the command's token
+// files (`tokenFilesTarget` in `dispatch-config.ts`).
 
 import { hostname } from "node:os";
 import {
@@ -31,6 +32,7 @@ import {
 import { PERSON_VAR } from "@legion/cipher-client/signins";
 import { DEVICE_LOGIN_COMMAND } from "@legion/cipher-client/token-errors";
 import { isHttpUrl, urlForText } from "@legion/contracts/log-text";
+import { settingsBesideTokenFiles, tokenFileSettings } from "../dispatch-config";
 import { messageFor } from "../errors";
 
 /** The exit codes of every `dispatch` command: done, refused, and a usage error. */
@@ -97,12 +99,12 @@ function parseLogin(argv: readonly string[]): ParsedLogin {
  * Runs `dispatch login` with `argv` (the words after `login`) in `env`, and answers its exit
  * code: 0 once the login is approved and kept; 1 when the broker refused it, the person denied it,
  * its code expired, or it could not be kept (the message then names its credential, live at the
- * broker, and any copy of it kept); 2 for a usage error, before any request: no `--device`, no
- * person (`--person`, else `AGENT_SECRETS_PERSON`), no broker (`AGENT_SECRETS_URL`) a device login
- * may use (https, or http on this machine's loopback), a login directory others may write to,
- * another user owns, or this user cannot enter and write to, or a login file setting that names
- * something other than a regular file (a directory, a named pipe, a socket, a device, a loop of
- * links).
+ * broker, and any copy of it kept); 2 for a usage error, before any request: either of the
+ * command's token files set (`tokenFileSettings`), no `--device`, no person (`--person`, else
+ * `AGENT_SECRETS_PERSON`), no broker (`AGENT_SECRETS_URL`) a device login may use (https, or http
+ * on this machine's loopback), a login directory others may write to, another user owns, or this
+ * user cannot enter and write to, or a login file setting that names something other than a
+ * regular file (a directory, a named pipe, a socket, a device, a loop of links).
  */
 export async function loginCommand(
   argv: readonly string[],
@@ -117,6 +119,18 @@ export async function loginCommand(
   if (parsed.kind === "help") {
     io.print(LOGIN_HELP);
     return OK;
+  }
+  // The token files are the dispatch command's only Dispatch credential, which trades nothing at
+  // the broker (`tokenFilesTarget`): a device login beside them would ask the broker and keep a
+  // login on the copy. It is refused before either, naming each setting set beside them as every
+  // Dispatch call names it.
+  const tokenFiles = tokenFileSettings(env);
+  if (tokenFiles.length > 0) {
+    const beside = settingsBesideTokenFiles(env);
+    return refuse(
+      `${tokenFiles.join(" and ")} ${tokenFiles.length === 1 ? "is" : "are"} set, and the token files are the dispatch command's only Dispatch credential, which trades nothing at the secrets broker; a device login asks the broker and keeps a login in a file, so it does not run beside them${beside.length === 0 ? "" : `: ${beside.join("; ")}`}. Run dispatch login in a shell that sets neither token file.`,
+      USAGE
+    );
   }
   if (parsed.kind === "refused")
     return refuse(`${parsed.problem}. Run dispatch login --help.`, USAGE);
