@@ -340,7 +340,8 @@ func TestTheEnrollmentIDsPrintOnOneLine(t *testing.T) {
 // form that stops while its request waits still prints the request's id where it is a UUID, the
 // shape of every id the broker makes, and the command that reads it again, which runs when pasted.
 // An id of another shape, 32 hex digits among them, is not printed, and the hint says so in place
-// of a command that would not run.
+// of a command that would not run. The test's resolver answers the stand-in's address for that
+// host (useResolver), so the row does not take its result from the machine's resolver.
 func TestTheExecFormNamesARequestItLeavesWaitingBesideAnUncleanAddress(t *testing.T) {
 	const shaped = "0f3b6c2e-5a1d-4e7f-9b80-2c4d6e8f0a1b"
 	const hex32 = "0123456789abcdef0123456789abcdef"
@@ -360,6 +361,7 @@ func TestTheExecFormNamesARequestItLeavesWaitingBesideAnUncleanAddress(t *testin
 		t.Run(row.name, func(t *testing.T) {
 			srv := forgedBroker(t, map[string]any{"POST /v1/requests": map[string]any{"request_id": row.id, "state": "pending"}})
 			unclean := strings.Replace(srv.URL, "127.0.0.1", "localhost.", 1)
+			useResolver(t, map[string]string{"localhost.": "127.0.0.1"})
 			if cipheraddr.New(unclean).Clean() {
 				t.Fatalf("%s is clean; the test needs an address Clean refuses", unclean)
 			}

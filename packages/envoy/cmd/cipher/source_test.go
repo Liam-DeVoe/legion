@@ -159,9 +159,11 @@ func TestExecFormNamesItsSourceBeforeItExecs(t *testing.T) {
 // that answered, a broker that was never reached, a URL no parser reads, a scheme-less URL, the
 // secret forms' own refusals, and a line naming a source - and for such a URL the transport's
 // cause prints as its class alone. A clean URL's messages read as before. No value forges a line
-// with a control byte, raw or escaped.
+// with a control byte, raw or escaped. Four addresses end their host before the '@', so their
+// calls go to AbCtok9f3, ab, tokuser9f3 or Ab. The test's resolver holds no address for these
+// names (runResolved), so the machine's resolver does not decide how those calls fail.
 func TestNoFormPrintsACredentialTheBrokerURLCarries(t *testing.T) {
-	binary := buildAgentSecrets(t)
+	unresolved := map[string]string{"AbCtok9f3": noSuchHost, "ab": noSuchHost, "tokuser9f3": noSuchHost, "Ab": noSuchHost}
 	keyDir := newKeyDir(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -209,7 +211,7 @@ func TestNoFormPrintsACredentialTheBrokerURLCarries(t *testing.T) {
 		{"a raw newline forging a line", "http://127.0.0.1:1\nagent-secrets: GRANT_ME from FORGED", []string{"self"}, names},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			stdout, stderr, _ := runAgentSecrets(t, binary, row.base, keyDir, nil, row.args...)
+			stdout, stderr, _ := runResolved(t, unresolved, row.base, keyDir, nil, row.args...)
 			output := stdout + stderr
 			for _, secret := range []string{"tokuser9f3", "hunter2pw", "%zz", "AbCtok9f3", "dEfgh", "1234/", "2pwSECRET", "77SECRET", "9zSECRET", "klSECRET",
 				"qtok", "ada@corp", "2540", "cd==", "lookup Ab", "host ab", "FORGED"} {
@@ -577,10 +579,10 @@ func TestAnAnswerFromABrokerWithNoSettingsRouteStillNamesTheBroker(t *testing.T)
 // connection), names the address it tried and the variable that named it, so a session that
 // inherited a stale AGENT_SECRETS_URL reads a stale address rather than a broker that is down.
 func TestABrokerThatCannotBeReachedSaysSo(t *testing.T) {
-	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
-
-	// broker.invalid is reserved (RFC 2606) and resolves nowhere; 127.0.0.1:1 answers nothing.
+	// broker.invalid has no address in the test's resolver (runResolved), as it has none in DNS
+	// (RFC 2606), so the machine's resolver does not decide the row. 127.0.0.1:1 answers nothing.
+	hosts := map[string]string{"broker.invalid": noSuchHost}
 	for _, row := range []struct {
 		name, base, what string
 		args             []string
@@ -590,7 +592,7 @@ func TestABrokerThatCannotBeReachedSaysSo(t *testing.T) {
 		{"nothing listening", "http://127.0.0.1:1", "the connection was refused", []string{"self"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			stdout, stderr, exit := runAgentSecrets(t, binary, row.base, keyDir, nil, row.args...)
+			stdout, stderr, exit := runResolved(t, hosts, row.base, keyDir, nil, row.args...)
 			if exit == 0 || strings.Contains(stdout, "the-child-ran") {
 				t.Fatalf("exit = %d, stdout %q; want a refusal and no command run", exit, stdout)
 			}
