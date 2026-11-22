@@ -151,19 +151,30 @@ func TestTheStateReadIsBoundedByTheRequestTimeout(t *testing.T) {
 }
 
 // TestABodyOverTheCapIsAFailedRead: a daemon answering more than ResponseLimit is a failed read,
-// never a parse of the first 64 MiB, and the failure names the answer's size and the cap. A
-// Content-Length over the cap is refused before the body is read. A body with no Content-Length
-// is read to the cap and the rest is counted, so the size is the whole body's and not the point
-// the read stopped. A body exactly at the cap is read, so the bound refuses only what is over it.
+// never a parse of the first 64 MiB, and the failure names the cap and what the read knows of the
+// answer's size. A Content-Length over the cap is refused before the body is read, and the failure
+// and the size name that length. A body with no Content-Length is read to one byte past the cap
+// and no further, whether it ends soon after the cap or never ends: the failure says the read
+// stopped there, and the size is that count, ResponseLimit+1. So a daemon that streams without end
+// costs one read of the cap and one byte. A body exactly at the cap is read, so the bound refuses
+// only what is over it.
 func TestABodyOverTheCapIsAFailedRead(t *testing.T) {
+	stopped := fmt.Sprintf("the answer is over the %d-byte cap: it declares no Content-Length, and the read stopped at %d bytes",
+		ResponseLimit, ResponseLimit+1)
 	for _, over := range []struct {
 		name     string
 		size     int
 		declared bool
+		failure  string
+		bytes    int64
+		// sentBelow is a bound on the bytes the daemon wrote before the client hung up, 0 for none.
+		// A daemon writes past what the client read only into the connection's buffers.
+		sentBelow int64
 	}{
-		{"one byte over the cap, chunked", ResponseLimit + 1, false},
-		{"with its Content-Length", 70_000_000, true},
-		{"chunked", 70_000_000, false},
+		{"one byte over the cap, chunked", ResponseLimit + 1, false, stopped, ResponseLimit + 1, 0},
+		{"with its Content-Length", 70_000_000, true, "the answer of 70000000 bytes is over the 67108864-byte cap", 70_000_000, ResponseLimit},
+		{"chunked", 70_000_000, false, stopped, ResponseLimit + 1, 0},
+		{"chunked and without end", 1 << 40, false, stopped, ResponseLimit + 1, 2 * ResponseLimit},
 	} {
 		t.Run(over.name, func(t *testing.T) {
 			server, written := streamedState(t, over.size, over.declared)
@@ -172,19 +183,19 @@ func TestABodyOverTheCapIsAFailedRead(t *testing.T) {
 			if !errors.Is(err, ErrResponseTooLarge) || !errors.Is(err, ErrUnavailable) {
 				t.Fatalf("a read of a body over the cap: err = %v, want one wrapping both ErrResponseTooLarge and ErrUnavailable", err)
 			}
-			if want := fmt.Sprintf("the answer of %d bytes is over the %d-byte cap", over.size, ResponseLimit); !strings.Contains(err.Error(), want) {
-				t.Errorf("the failure reads %q, want it to name the size and the cap: %q", err, want)
+			if !strings.Contains(err.Error(), over.failure) {
+				t.Errorf("the failure reads %q, want it to name the cap and what the read knows of the size: %q", err, over.failure)
 			}
-			if bytes != over.size {
-				t.Errorf("bytes = %d, want the answer's size (%d)", bytes, over.size)
+			if int64(bytes) != over.bytes {
+				t.Errorf("bytes = %d, want %d", bytes, over.bytes)
 			}
-			if !over.declared {
+			if over.sentBelow == 0 {
 				return
 			}
 			select {
 			case sent := <-written:
-				if sent >= ResponseLimit {
-					t.Errorf("the daemon wrote %d bytes before the client hung up, want fewer than the cap: a Content-Length over it is refused before the body is read", sent)
+				if sent >= over.sentBelow {
+					t.Errorf("the daemon wrote %d bytes before the client hung up, want fewer than %d: the read stops at the cap", sent, over.sentBelow)
 				}
 			case <-time.After(30 * time.Second):
 				t.Fatal("the daemon was still writing 30s after the read ended: the client did not hang up")
@@ -205,10 +216,11 @@ func TestABodyOverTheCapIsAFailedRead(t *testing.T) {
 	}
 }
 
-// TestABodyCutShortPastTheCapIsAtLeastWhatWasCounted: a body over the cap whose count ends on a
-// failed read, here a daemon that drops the connection in the middle of a chunked body, is a
-// failed read over the cap all the same, and its size is at least the bytes counted.
-func TestABodyCutShortPastTheCapIsAtLeastWhatWasCounted(t *testing.T) {
+// TestABodyCutShortPastTheCapStopsAtTheCap: a daemon that drops the connection in the middle of a
+// chunked body, after more than the cap, is a failed read over the cap. The read stops one byte
+// past the cap, before the drop, so the failure says the read stopped there and the size is
+// ResponseLimit+1, not the bytes the daemon sent.
+func TestABodyCutShortPastTheCapStopsAtTheCap(t *testing.T) {
 	const sent = ResponseLimit + 1<<20
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.Copy(w, io.LimitReader(paddedState(2*sent), sent))
@@ -222,11 +234,12 @@ func TestABodyCutShortPastTheCapIsAtLeastWhatWasCounted(t *testing.T) {
 	if !errors.Is(err, ErrResponseTooLarge) || !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("a read of a body cut short past the cap: err = %v, want one wrapping both ErrResponseTooLarge and ErrUnavailable", err)
 	}
-	if want := fmt.Sprintf("the answer of at least %d bytes is over the %d-byte cap", sent, ResponseLimit); !strings.Contains(err.Error(), want) {
+	if want := fmt.Sprintf("the answer is over the %d-byte cap: it declares no Content-Length, and the read stopped at %d bytes",
+		ResponseLimit, ResponseLimit+1); !strings.Contains(err.Error(), want) {
 		t.Errorf("the failure reads %q, want %q", err, want)
 	}
-	if bytes != sent {
-		t.Errorf("bytes = %d, want the %d counted", bytes, sent)
+	if bytes != ResponseLimit+1 {
+		t.Errorf("bytes = %d, want the %d the read stopped at", bytes, ResponseLimit+1)
 	}
 }
 
@@ -274,7 +287,7 @@ func TestAStateWithTheNewAdmissionFieldsParses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read a state carrying dispatch://INFRA-980's new fields: %v", err)
 	}
-	if bytes != len(newFieldsState) {
+	if int64(bytes) != int64(len(newFieldsState)) {
 		t.Errorf("bytes = %d, want the %d the daemon sent", bytes, len(newFieldsState))
 	}
 	if len(state.Issues) != 2 {

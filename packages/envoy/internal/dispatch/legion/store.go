@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -185,8 +186,8 @@ func settingWritten(ctx context.Context, tx pgx.Tx, project string) error {
 
 // recordRead is the step every whole read's record takes inside its transaction (recordWhole):
 // the read's observations where it observed them (recordObservations), its legion_reads row of
-// kind `read` at the read's time, naming reason and its failure, and its announcement on
-// StateChannel (NotifyRead). It answers how many observations it wrote.
+// kind `read` at the read's time, naming reason, its failure and its size (readBytes), and its
+// announcement on StateChannel (NotifyRead). It answers how many observations it wrote.
 //
 // The board's header reads the newest legion_reads row as the last read, and its columns read the
 // newest observations, so the two commit together or not at all: a read whose observations
@@ -202,7 +203,7 @@ func recordRead(ctx context.Context, tx pgx.Tx, project, reason string, read *wh
 		text := read.failure.Error()
 		failure = &text
 	}
-	if _, err := tx.Exec(ctx, insertRead, project, read.at, read.failure == nil, failure, read.bytes, readKindRead, reason); err != nil {
+	if _, err := tx.Exec(ctx, insertRead, project, read.at, read.failure == nil, failure, readBytes(read.bytes), readKindRead, reason); err != nil {
 		return 0, fmt.Errorf("store the Legion state read of %s: %w", project, err)
 	}
 	if err := NotifyRead(ctx, tx, project); err != nil {
@@ -217,6 +218,14 @@ const insertRead = `
 	insert into legion_reads (project, read_at, ok, error, bytes, kind, reason)
 	values ($1, $2, $3, $4, $5, $6, $7)
 `
+
+// readBytes is a whole read's size as its legion_reads row records it. bytes is an integer column
+// (migration 20261103170923_legion_state), so a size past what it holds, the Content-Length of an
+// answer over the cap, is recorded as math.MaxInt32, the most the column holds. The row's error
+// names the size whole (responseTooLarge), and the row is written all the same.
+func readBytes(size int64) int64 {
+	return min(size, math.MaxInt32)
+}
 
 // The kinds of legion_reads row (migration 20261118212431): a whole read of a daemon's state, and
 // one message of state events the intake applied.

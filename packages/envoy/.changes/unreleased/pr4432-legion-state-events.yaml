@@ -10,13 +10,16 @@ body: |-
   least a minute apart, whatever their reason. A message that calls for a read sooner makes none:
   Dispatch records the read as owed, sends the first such message back to the stream with a delay
   of the time left in the minute, and makes the read at its redelivery; every later message that
-  calls for the owed read is acknowledged. A read that fails sends that message back for another
-  minute, at most 10 times in all, and its next delivery is then acknowledged, so one message holds
-  the consumer's ack floor for about 11 minutes at the most. A failed read that no message holds,
-  a failed starting read or one whose message went back 10 times, waits for the project's next
-  message, boot, settings change or take-over. So where a message holds the read, a project that
-  goes quiet is a minute behind at the most; a burst of such messages makes one read a minute and
-  holds one message of the consumer's window, and the messages of other projects are not stopped.
+  calls for the owed read is acknowledged. A read that fails sends that message back until a
+  minute after that read began, at most 10 times in all, and its next delivery is then
+  acknowledged. The project's cursor counts these hand-backs, so a lease take-over does not start
+  the count again. A read waits 60 s at the most, so one message holds the consumer's ack floor for
+  about 11 minutes at the most, also when the daemon does not answer its reads, and a take-over
+  replays at most that long of messages. A failed read that no message holds, a failed starting
+  read or one whose message went back 10 times, waits for the project's next message, boot,
+  settings change or take-over. So where a message holds the read, a project that goes quiet is a
+  minute behind at the most; a burst of such messages makes one read a minute and holds one
+  message of the consumer's window, and the messages of other projects are not stopped.
   A message that goes back to the stream is logged once, as held, and with no other line. A good
   whole read takes the daemon's `daemon.stateRun` as the run of its starting point, so a boot
   message of that run that arrives after the read, at or below the read's sequence, makes no second
@@ -32,13 +35,14 @@ body: |-
   whole read.
   A whole read asks for `GET /legion/v1/state?view=observed`, which carries only the fields
   Dispatch reads. A daemon of an earlier build ignores the query and serves its whole state, which
-  Dispatch reads the same way. A whole read reads at most 64 MiB of the answer, not 8 MiB. A larger
-  answer is a failed read whose `legion_reads` row names the answer's size and the cap, and whose
-  `bytes` is that size, not the point where the read stopped.
+  Dispatch reads the same way. A whole read reads at most 64 MiB of the answer, not 8 MiB, and
+  stops one byte past the cap. A larger answer is a failed read whose `legion_reads` row names the
+  cap and the answer's `Content-Length` where it declares one, and otherwise the 64 MiB and one
+  byte where the read stopped; its `bytes` is that size.
   `legion_reads` records each transaction the intake applies as a row of kind `events` at the
   daemon's commit time. `legion_event_cursors` records how far the observations of each project
-  follow its daemon and the whole read it owes, with the reasons for that read and the stream
-  sequence of the message that holds it,
+  follow its daemon and the whole read it owes, with the reasons for that read, the stream
+  sequence of the message that holds it and how many times that message went back to the stream,
   `legion_event_parts` holds the parts of a split transaction, and
   `server_processes.legion_state_intake` tells a process of this build from one of an earlier
   build (migration `20261118212431_legion_events`). A call to a daemon waits up to 60 s, not 20 s.

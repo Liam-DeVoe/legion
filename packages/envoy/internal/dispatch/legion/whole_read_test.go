@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,7 +29,8 @@ func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats
 // fakeDaemon is a Legion daemon stand-in whose state document and status the test moves between
 // reads, counting the reads it served. delay is how long each answer waits, as a daemon reading a
 // state of several MB does (slows), held a gate each answer waits on until the test releases it
-// (holds), and refusals how many of the next reads it refuses with refusalStatus (refusesFor).
+// (holds), refusals how many of the next reads it refuses with refusalStatus (refusesFor), and
+// stall what each read runs before it waits, never to answer, until the client hangs up (stalls).
 type fakeDaemon struct {
 	*httptest.Server
 	mu            sync.Mutex
@@ -39,6 +41,7 @@ type fakeDaemon struct {
 	held          chan struct{}
 	refusals      int
 	refusalStatus int
+	stall         func()
 }
 
 // refusalBody is the body of every read a fakeDaemon refuses.
@@ -53,13 +56,18 @@ func newFakeDaemon(t *testing.T, body string) *fakeDaemon {
 			return
 		}
 		daemon.mu.Lock()
-		body, status, delay, held := daemon.body, daemon.status, daemon.delay, daemon.held
+		body, status, delay, held, stall := daemon.body, daemon.status, daemon.delay, daemon.held, daemon.stall
 		if daemon.refusals > 0 {
 			daemon.refusals--
 			body, status = refusalBody, daemon.refusalStatus
 		}
 		daemon.reads++
 		daemon.mu.Unlock()
+		if stall != nil {
+			stall()
+			<-r.Context().Done()
+			return
+		}
 		if held != nil {
 			select {
 			case <-held:
@@ -111,6 +119,14 @@ func (d *fakeDaemon) slows(delay time.Duration) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.delay = delay
+}
+
+// stalls has each read from here on run stall and then never answer: the read waits until the
+// client hangs up, at the end of the client's window or of its context.
+func (d *fakeDaemon) stalls(stall func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.stall = stall
 }
 
 // holds has each answer from here on wait until release is called, which the test's end calls
@@ -331,10 +347,11 @@ func TestAFailedReadRecordsTheFailureAndLeavesTheObservationsAlone(t *testing.T)
 }
 
 // TestAWholeReadOverTheCapRecordsItsSize: a daemon answering more than ResponseLimit is recorded
-// as a failed read whose legion_reads row names the answer's size and the cap and has that size
-// as its bytes, whether the answer declares its Content-Length or is sent chunked. A size past
-// what the integer column bytes holds is recorded as at least countedLimit, so the read's row is
-// still written.
+// as a failed read whose legion_reads row names the cap and what the read knows of the answer's
+// size, and has that size as its bytes: the answer's Content-Length where it declares one, and
+// otherwise ResponseLimit+1, where the read stopped. A Content-Length past what the integer column
+// bytes holds is named whole in the row's error and recorded as math.MaxInt32 in bytes, so the
+// read's row is still written.
 func TestAWholeReadOverTheCapRecordsItsSize(t *testing.T) {
 	for _, over := range []struct {
 		name     string
@@ -344,8 +361,8 @@ func TestAWholeReadOverTheCapRecordsItsSize(t *testing.T) {
 		bytes    int
 	}{
 		{"with its Content-Length", 70_000_000, true, "the answer of 70000000 bytes is over the 67108864-byte cap", 70_000_000},
-		{"chunked", 70_000_000, false, "the answer of 70000000 bytes is over the 67108864-byte cap", 70_000_000},
-		{"with a Content-Length past what bytes holds", 3_000_000_000, true, "the answer of at least 2147483647 bytes is over the 67108864-byte cap", countedLimit},
+		{"chunked", 70_000_000, false, "the answer is over the 67108864-byte cap: it declares no Content-Length, and the read stopped at 67108865 bytes", ResponseLimit + 1},
+		{"with a Content-Length past what bytes holds", 3_000_000_000, true, "the answer of 3000000000 bytes is over the 67108864-byte cap", math.MaxInt32},
 	} {
 		t.Run(over.name, func(t *testing.T) {
 			daemon, _ := streamedState(t, over.size, over.declared)

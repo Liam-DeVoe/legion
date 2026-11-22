@@ -53,13 +53,21 @@
 --   all.
 -- - read_owed is a whole read owed, which Postgres generates from read_reasons, so no write names
 --   it.
--- - read_tried_at is when the whole read the next one waits a minute after was tried, whatever
---   the next one's reason: each read but a good starting read sets it, and a good starting read
---   clears it, since no message called for it.
+-- - read_tried_at is when the whole read the next one waits a minute after began, whatever the
+--   next one's reason: each read but a good starting read sets it to the moment before its call
+--   to the daemon, so a read the daemon is slow to answer, or never answers, adds no time to the
+--   minute, and a good starting read clears it, since no message called for it.
 -- - read_holder is the stream sequence of the state message that holds the owed read: the
 --   message the intake sent back to the stream unacknowledged until the read is due, whose
 --   redelivery makes the read. Null where no message holds it. A read that succeeded clears it, and
 --   one that failed keeps it.
+-- - read_holds is how many times the message read_holder names has gone back to the stream
+--   holding the read: 1 when the intake records it as the holder, one more at each hand-back after
+--   it, and 0 where no message holds it. The intake acknowledges the holder once it has gone back
+--   10 times (legion's stateMaxHolds) and clears both columns. A lease take-over creates the
+--   intake's durable again, which starts the message's own delivery count again, and keeps this
+--   count, so the holder goes back 10 times at the most in all and holds the durable's ack floor
+--   for about 11 minutes at the most.
 -- - state_id is the id of the daemon's store (the state route's daemon.stateId, which every state
 --   message carries as stateId): a successful whole read sets it, and nothing else does. The
 --   intake applies no message of another id, and none at all while it is null, which is only while
@@ -125,6 +133,7 @@ create table legion_event_cursors (
   read_owed boolean generated always as (cardinality(read_reasons) > 0) stored,
   read_tried_at timestamptz,
   read_holder bigint,
+  read_holds integer not null default 0,
   state_id text,
   schema_version bigint
 );

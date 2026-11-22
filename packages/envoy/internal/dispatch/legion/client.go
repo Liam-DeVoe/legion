@@ -15,9 +15,9 @@
 //
 // Two bounds hold a read (the plan's D14, the spec's contract 6): RequestTimeout on the call and
 // ResponseLimit, 64 MiB, on the body. The read asks for the route's observed view, which carries
-// only the members Dispatch decodes (Client.State). A read over the cap is a failed read that names
-// the answer's size and the cap — the board's header says so and the last good observations stand
-// — never a parse of the first 64 MiB.
+// only the members Dispatch decodes (Client.State). A read over the cap stops one byte past it and
+// is a failed read that names the cap and what the read knows of the answer's size — the board's
+// header says so and the last good observations stand — never a parse of the first 64 MiB.
 package legion
 
 import (
@@ -26,7 +26,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -52,19 +51,15 @@ const RequestTimeout = 60 * time.Second
 const stateView = "observed"
 
 // ResponseLimit is the most of a daemon's answer Dispatch reads: 64 MiB. A body over it is a
-// failed read. The observed view (stateView) measured 665,962 bytes of the INFRA daemon's state at
-// 2026-11-20T20:35Z: 187 bytes for each of its 3,273 issues and about 54 KB for the project. INFRA
-// gains about 210 issues a day (INFRA-1000 was created 2026-11-02T08:52Z, INFRA-4855
-// 2026-11-20T20:21Z), so the view is about 15 MB after a year and reaches the cap after about four
-// and a half years. A daemon of an earlier build serves its whole state, which measured 7,307,929
-// bytes at the same time and 4,055,424 bytes on 2026-11-12, about 0.4 MB more each day: it stays
-// under the cap for about 150 days, which covers a rollout of the daemon that serves the view.
+// failed read, and the read stops one byte past it (readBounded). The observed view (stateView)
+// measured 665,962 bytes of the INFRA daemon's state at 2026-11-20T20:35Z: 187 bytes for each of
+// its 3,273 issues and about 54 KB for the project. INFRA gains about 210 issues a day (INFRA-1000
+// was created 2026-11-02T08:52Z, INFRA-4855 2026-11-20T20:21Z), so the view is about 15 MB after a
+// year and reaches the cap after about four and a half years. A daemon of an earlier build serves
+// its whole state, which measured 7,307,929 bytes at the same time and 4,055,424 bytes on
+// 2026-11-12, about 0.4 MB more each day: it stays under the cap for about 150 days, which covers a
+// rollout of the daemon that serves the view.
 const ResponseLimit = 64 << 20
-
-// countedLimit is the largest size a read reports. legion_reads.bytes is an integer column
-// (migration 20261103170923_legion_state), and a read whose row it cannot hold is never recorded,
-// so a larger answer is reported as at least countedLimit bytes.
-const countedLimit = math.MaxInt32
 
 // ErrUnavailable is every failed call to a daemon: it could not be reached, it answered something
 // other than 200, its answer was over the cap, or its answer was not the JSON the route serves.
@@ -74,22 +69,24 @@ var ErrUnavailable = errors.New("the Legion daemon could not be read")
 
 // ErrResponseTooLarge is an answer over ResponseLimit, wrapped beside ErrUnavailable so a caller
 // that wants to tell a daemon serving too much from a daemon that is down can. The failure a read
-// answers wraps it in responseTooLarge, which names the answer's size too.
+// answers wraps it in responseTooLarge, which names what the read knows of the answer's size too.
 var ErrResponseTooLarge = fmt.Errorf("the answer is over the %d-byte cap", ResponseLimit)
 
-// responseTooLarge is an answer over ResponseLimit as a failed read names it: its size in bytes and
-// the cap. Where the count stopped before the end of the body, size is a lower bound, and the
-// failure says "at least". It wraps ErrResponseTooLarge.
+// responseTooLarge is an answer over ResponseLimit as a failed read names it, with what the read
+// knows of its size: where the answer declares a Content-Length over the cap, that length
+// (declared), which the read refuses before it reads the body; otherwise the ResponseLimit+1
+// bytes the read stopped at, so the answer is at least that long and nothing more of it is read.
+// It wraps ErrResponseTooLarge.
 type responseTooLarge struct {
-	size    int
-	atLeast bool
+	size     int64
+	declared bool
 }
 
 func (e responseTooLarge) Error() string {
-	if e.atLeast {
-		return fmt.Sprintf("the answer of at least %d bytes is over the %d-byte cap", e.size, ResponseLimit)
+	if e.declared {
+		return fmt.Sprintf("the answer of %d bytes is over the %d-byte cap", e.size, ResponseLimit)
 	}
-	return fmt.Sprintf("the answer of %d bytes is over the %d-byte cap", e.size, ResponseLimit)
+	return fmt.Sprintf("the answer is over the %d-byte cap: it declares no Content-Length, and the read stopped at %d bytes", ResponseLimit, e.size)
 }
 
 func (responseTooLarge) Unwrap() error { return ErrResponseTooLarge }
@@ -146,10 +143,11 @@ func callFailure(err error) error {
 	return err
 }
 
-// State reads the daemon's own state: the state it answered and the bytes it sent, which a whole
-// read records whether the read succeeded or not (Intake.readWhole). Every failure wraps
-// ErrUnavailable. An answer over ResponseLimit wraps ErrResponseTooLarge too, and the bytes State
-// answers for it are the size its failure names (readBounded).
+// State reads the daemon's own state: the state it answered and the size of the answer as the read
+// knows it, which a whole read records whether the read succeeded or not (Intake.readWhole): the
+// bytes it read, or for an answer over ResponseLimit the size its failure names (readBounded).
+// Every failure wraps ErrUnavailable, and an answer over ResponseLimit wraps ErrResponseTooLarge
+// too.
 //
 // It asks for the route's observed view (stateView), so the body it reads and decodes grows by
 // the 187 bytes of each issue's observed members, not by the whole issue (ResponseLimit). A daemon
@@ -157,7 +155,7 @@ func callFailure(err error) error {
 // same way. The decode is loose — encoding/json ignores a field State does not name — so a daemon
 // that grows the route's shape is still read (state.go). The call carries no credential: the route
 // authenticates nobody.
-func (c *Client) State(ctx context.Context) (State, int, error) {
+func (c *Client) State(ctx context.Context) (State, int64, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+StatePath, nil)
 	if err != nil {
 		return State{}, 0, fmt.Errorf("%w: build GET %s: %v", ErrUnavailable, StatePath, err)
@@ -184,26 +182,22 @@ func (c *Client) State(ctx context.Context) (State, int, error) {
 }
 
 // readBounded reads body, whose Content-Length is length (-1 for none), and refuses an answer over
-// ResponseLimit with its size (responseTooLarge), so the refusal is never a parse of a truncated
-// document. A length over the cap is refused before anything is read. Otherwise it reads one byte
-// past the cap to tell a body exactly at it from one over it, and counts and discards the rest of a
-// body over it, under the call's own timeout and context. A count that a failed read or the
-// deadline cut short, or that stopped at countedLimit, is reported as at least what it counted.
-// The count it returns is the size the failure names.
-func readBounded(body io.Reader, length int64) ([]byte, int, error) {
+// ResponseLimit (responseTooLarge), so the refusal is never a parse of a truncated document. A
+// length over the cap is refused with that length before anything is read. Otherwise it reads one
+// byte past the cap at the most, to tell a body exactly at the cap from one over it, and refuses a
+// body that reaches that byte, with nothing more read: the answer is then at least ResponseLimit+1
+// bytes long. The size it returns is the bytes it read, or the size the refusal names.
+func readBounded(body io.Reader, length int64) ([]byte, int64, error) {
 	if length > ResponseLimit {
-		tooLarge := responseTooLarge{size: int(min(length, countedLimit)), atLeast: length > countedLimit}
-		return nil, tooLarge.size, tooLarge
+		return nil, length, responseTooLarge{size: length, declared: true}
 	}
 	read, err := io.ReadAll(io.LimitReader(body, ResponseLimit+1))
+	size := int64(len(read))
+	if size > ResponseLimit {
+		return nil, size, responseTooLarge{size: size}
+	}
 	if err != nil {
-		return nil, len(read), fmt.Errorf("read the answer: %v", err)
+		return nil, size, fmt.Errorf("read the answer: %v", err)
 	}
-	if len(read) <= ResponseLimit {
-		return read, len(read), nil
-	}
-	rest, err := io.Copy(io.Discard, io.LimitReader(body, countedLimit-int64(len(read))))
-	size := int64(len(read)) + rest
-	tooLarge := responseTooLarge{size: int(size), atLeast: err != nil || size == countedLimit}
-	return nil, tooLarge.size, tooLarge
+	return read, size, nil
 }

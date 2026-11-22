@@ -1745,18 +1745,19 @@ a message the database refuses for good (a Postgres error of SQLSTATE class 22 o
 and a read owed since one failed.
 The observed view carries only the members the intake decodes, and a daemon of an earlier build ignores the query and serves its whole state, which the intake reads the same way.
 A whole read waits up to 60 s (`legion.RequestTimeout`) and reads at most 64 MiB of the answer (`legion.ResponseLimit`).
-An answer over the cap is a failed read: its `legion_reads` row names the answer's size and the cap, and its `bytes` is that size.
+An answer over the cap is a failed read, and the read stops one byte past the cap: its `legion_reads` row names the cap and what the read knows of the answer's size, which is the answer's `Content-Length` where it declares one, and otherwise the 64 MiB and one byte where the read stopped; its `bytes` is that size.
 A project's whole reads start at least a minute apart (`legion.ReadRetryAfter`), whatever their reason, and a good starting read holds back no read after it.
 A message that calls for a read inside that minute makes none: the cursor records the read owed with the message's reason (`legion_event_cursors.read_reasons`).
 The first message that owes the read goes back to the stream unacknowledged, with a redelivery delay of the time left in the minute (`delivery.HeldMessage.HandBackAfter`), and the cursor names it as the read's holder (`read_holder`), so its redelivery makes the read;
 every later message that joins the owed read is acknowledged.
 A message that goes back to the stream logs `legion intake: a state message goes back to the stream until its project's owed whole read is due` at INFO and no other line for that delivery.
-A read that fails sends the holder back for another minute, at most 10 times in all (`stateMaxHolds`, counted on the message's own `NumDelivered`, so no column holds the count).
-The holder's next delivery is then acknowledged, whatever its read comes to, the cursor names no holder from then on, and the intake logs `legion intake: a state message went back to the stream the most times allowed for its project's owed whole read, so it is acknowledged and the read stays owed` at WARN.
+A read that fails sends the holder back until a minute after that read began, at most 10 times in all (`stateMaxHolds`).
+The cursor counts these hand-backs (`legion_event_cursors.read_holds`), so a take-over, which creates the durable again and starts the message's own delivery count again, does not start the count again.
+After the tenth hand-back the holder's next delivery is acknowledged, whatever its read comes to, the cursor names no holder from then on, and the intake logs `legion intake: a state message went back to the stream the most times allowed for its project's owed whole read, so it is acknowledged and the read stays owed` at WARN.
 A failed read that no message holds waits for the project's next message, boot, settings change or take-over, which makes it once the minute is over: a failed starting read is one, since no message makes it, and so is a read whose message went back 10 times.
 The durable sets no `MaxDeliver`, so the server never drops the holder, and its two-minute ack wait is past the longest delay.
 While the holder waits, the durable's ack floor stays below it, so a take-over, which creates the durable again at that floor, replays every message after the holder.
-The bound of 10 hand-backs holds the floor for about 11 minutes at the most where the daemon answers each read within seconds, and for up to a minute longer for each read the daemon does not answer.
+A read waits 60 s at the most and the minute counts from its start, so the bound of 10 hand-backs holds the floor for about 11 minutes at the most, whether or not the daemon answers its reads, and a take-over replays at most that long of messages.
 So a project has at most one whole read in flight and at most one owed, a burst of messages that call for reads holds the durable's window for one read at the most, and each project that owes a read holds one message of the window.
 Where a message holds the read, a project that goes quiet is at most a minute behind, and its message tries a read that fails again at most 10 times, a minute apart, before the read waits for the project's next message, boot, settings change or take-over.
 While a read is owed, the intake applies a message that follows the cursor, and drops a gap, a boot that does not follow, a part that does not continue the held parts and a message of another store, since the owed read holds their events.
