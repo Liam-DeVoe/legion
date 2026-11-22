@@ -706,7 +706,9 @@ its grants stay live; a secret with no tag is served as before. A broker with no
 A secret tagged `project-channels` is limited by the projects the credential names, whatever
 project the secret itself belongs to. A credential that names a private project, whether or not
 its person can still see it, gets the secret only behind the airlock, and is denied it
-`project-channels-need-airlock` where the secret has no airlock entry. The proxy then carries only
+`project-channels-need-airlock` where the airlock does not hold the secret back: where the secret
+has no airlock entry, or an entry that binds no host and carries only a judge or guidance, whose
+value the broker hands to the session as it does a secret with no entry. The proxy then carries only
 `POST /api/chat.postMessage` with `channel`, `thread_ts` and `text`, to a channel id that the owner
 of every private project the credential names has listed in Dispatch, and refuses every other call
 `CHANNEL_NOT_ALLOWED` without calling Slack. The credential has no channel at all when an owner
@@ -735,13 +737,19 @@ started fences a project Dispatch holds private from its first release, whatever
 broker keeps the last list it read, and the projects a switch to private recorded, in its own
 database (the stored private list). While it cannot read Dispatch's list, whatever the failure, it
 fences by the stored list instead: nothing while the store holds no private project, the stored
-projects' channels otherwise, read again within a minute. Every call on the secret is refused
-`PRIVATE_CHANNELS_UNREAD` only when a private project's entry carries no channel list, or the
-broker cannot read its own store or holds a project there whose channels it never read; it reads
-again within a minute. While no private project lists a channel, the proxy reads no body and
-every call is carried as before, at one read of the list a pod in each 30 seconds; a broker with
-no `BROKER_PROJECT_ACCESS_URL` asks Dispatch nothing and fences nothing. A broker whose
-`BROKER_PRIVATE_PROJECTS` names a project refuses to start without `BROKER_PROJECT_ACCESS_URL`.
+projects' channels otherwise, read again within a minute, for 10 minutes of the database's time
+after Dispatch last named each stored project, or a switch recorded it. Nothing but a good read
+tells the store of a channel an owner adds to a project that is already private, so the stored
+list can lack it; within those 10 minutes such a channel is open to the other credentials, as it is
+until a pod reads the list again while Dispatch answers, and past them every call on the secret is
+refused `PRIVATE_CHANNELS_UNREAD`. Every call is refused so too when a private project's entry
+carries no channel list, or the broker cannot read its own store or holds a project there whose
+channels it never read; it reads again within a minute. While no private project lists a channel,
+the proxy reads no body and every call is carried as before, at one read of the list a pod in each
+30 seconds; a broker with no `BROKER_PROJECT_ACCESS_URL` asks Dispatch nothing, fences nothing,
+and does not bound the secret's value to ten minutes either, since it learns of no private project
+until a setting changes and its pods restart. A broker whose `BROKER_PRIVATE_PROJECTS` names a
+project refuses to start without `BROKER_PROJECT_ACCESS_URL`.
 
 The stored list is an exception to the rule that a deployment with no private project behaves as
 before: while Dispatch's list cannot be read, the broker fences the channels of the projects its
@@ -753,8 +761,9 @@ project's own channels are fenced while Dispatch cannot be read, and the token s
 `chat.postMessage` and `conversations.replies` naming none of them, and `auth.test`.
 
 The fence holds only behind the airlock. So while a private project's owner lists a channel, the
-broker gives a `project-channels` secret with no airlock entry to no credential at all, denying it
-`project-channels-need-airlock`, and a grant made before then is not released again: the
+broker gives a `project-channels` secret the airlock does not hold back (no entry, or one that
+binds no host) to no credential at all, denying it `project-channels-need-airlock`, and a grant
+made before then is not released again: the
 session's next request for the secret is denied the same way rather than answered that grant.
 While it cannot read the list or its stored list, such a request or release is answered
 `503 PROJECT_ACCESS_UNAVAILABLE` and decided once it can.

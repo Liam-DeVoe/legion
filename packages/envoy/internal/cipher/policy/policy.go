@@ -628,8 +628,9 @@ type Secret struct {
 	// ProjectChannels is the secret's project-channels tag (TagProjectChannels), ProjectChannelsSlack
 	// or "" for a secret carrying none: a private project's credential may spend such a secret only
 	// where that project's owner allows, which the airlock's proxy is what enforces, so Evaluate
-	// refuses one that has no airlock entry (ReasonProjectChannelsNeedAirlock). It is in Version,
-	// so the airlock proxy reads again a value it read before the tag was added.
+	// refuses one the airlock does not hold back (AirlockBound false: no entry, or one that binds no
+	// host) (ReasonProjectChannelsNeedAirlock). It is in Version, so the airlock proxy reads again a
+	// value it read before the tag was added.
 	ProjectChannels string
 	// Admin is true when the secret carries admin: "true" (TagAdmin): its grant is an
 	// administrator's, which the rules hold to human tier, a requesters list and an hour's cap
@@ -640,6 +641,14 @@ type Secret struct {
 	// rules file. A string, not a pointer, for the same reason as MaxGrant. It is in Version, so
 	// a change to one secret's entry moves the policy version and ends the grants of that name.
 	AirlockDigest string
+	// AirlockBound is true when this secret's airlock entry binds a host (proxyrules.Rules.Bound),
+	// so the airlock holds its value back and the release hands the session a placeholder. It is
+	// false for a secret the rules do not name and for one whose entry binds no host, both of which
+	// the release hands over as the real value, though the second has an AirlockDigest: it is the
+	// one field "behind the airlock" is read from (Evaluate's ReasonProjectChannelsNeedAirlock and
+	// the release's public fence). It is not in Version on its own: it follows from the entry's
+	// hosts, which AirlockDigest fingerprints, so a change to it moves AirlockDigest and the version.
+	AirlockBound bool
 	// SessionDefault is true when the secret's default-grant tag is "session": a request naming
 	// no lifetime gets a grant that lasts until its session ends instead of DefaultGrantLifetime.
 	SessionDefault bool

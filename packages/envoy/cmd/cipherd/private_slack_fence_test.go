@@ -152,7 +152,7 @@ func freshPodFirstRead(t *testing.T, declare bool) {
 	}
 	body, _ := io.ReadAll(reply.Body)
 	reply.Body.Close()
-	if reply.StatusCode != http.StatusForbidden || !strings.Contains(string(body), "this Slack channel belongs to a private project") {
+	if reply.StatusCode != http.StatusForbidden || !strings.Contains(string(body), "a credential that names no private project spends this secret only on") {
 		t.Fatalf("the pod's first read of %s through the airlock = %d %q; want 403 PRIVATE_CHANNEL: PRIV, private in Dispatch, fences its channel before any answer of Dispatch's has called it private",
 			privChannel, reply.StatusCode, body)
 	}

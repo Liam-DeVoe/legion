@@ -747,12 +747,17 @@ func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string
 	}
 	// The channels the grant's credential may post to, for a project-channels secret released to
 	// a credential that names a private project (channelLimit), and otherwise the channels it may
-	// not name (privateChannels). Every value of a project-channels secret is bounded to
-	// airlockProjectRecheck itself, Limited or not, in every deployment: whether a project is
-	// private, the channels its owner allows, and which channels are private at all are
-	// Dispatch's and move no policy version, and the Slack bot token carries no dispatch-project
-	// tag, so the bound above would never reach it. Without it, a value released before the first
-	// private project, or before an owner's change to a list, would never learn either.
+	// not name (privateChannels). Every such value is bounded to airlockProjectRecheck itself,
+	// Limited or not, on a broker with project access: whether a project is private, the channels
+	// its owner allows, and which channels are private at all are Dispatch's and move no policy
+	// version, and the Slack bot token carries no dispatch-project tag, so the bound above would
+	// never reach it. Without it, a value released before the first private project, before a
+	// project the credential names turned private, or before an owner's change to a list, would
+	// never learn of it. A broker with no project-access client (Projects and PrivateList both nil,
+	// no BROKER_PROJECT_ACCESS_URL; cipherd sets both from one client or neither) knows no private
+	// project and learns of none until a setting changes, which restarts the pod and its proxy's
+	// values, so its value carries no fence and no bound of its own, as before the fence (R9):
+	// reading it again would only write the grant's audit row and mint its other names again.
 	limit := m.channelLimit(ctx, checked)
 	var fence privateFence
 	fenceRead := false
@@ -763,7 +768,7 @@ func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string
 			expires = recheck
 		}
 		value := AirlockSecret{Slots: released.split.values, Expires: expires, Type: released.secretType, Azure: released.split.azure}
-		if checked.set.Secrets[released.name].ProjectChannels == policy.ProjectChannelsSlack {
+		if checked.set.Secrets[released.name].ProjectChannels == policy.ProjectChannelsSlack && (m.Projects != nil || m.PrivateList != nil) {
 			bound := readAt.Add(airlockProjectRecheck)
 			switch {
 			case limit.limited:

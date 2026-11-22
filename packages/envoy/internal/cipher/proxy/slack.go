@@ -32,8 +32,9 @@ const (
 	// settling (requests.AirlockSecret.SettlesAt), before the time it settles at.
 	channelsSettle = "; this project's channels changed, and posting to them reopens at "
 	// privateChannel is the public fence's refusal's words (PRIVATE_CHANNEL); the rule the call
-	// broke follows them.
-	privateChannel = "this Slack channel belongs to a private project; only that project's credentials reach it"
+	// broke follows them. They say what the fence carries and never whether a channel the call
+	// named is a private project's, which a session could otherwise learn one id at a time.
+	privateChannel = "a credential that names no private project spends this secret only on chat.postMessage, conversations.replies and auth.test, naming each channel by its id and none a private project's owner listed"
 	// privateChannelsUnread is the words of PRIVATE_CHANNELS_UNREAD, every call on a name whose
 	// public fence the broker could not read (requests.AirlockSecret.ExcludedUnread).
 	privateChannelsUnread = "the broker could not read which Slack channels belong to private projects, so this secret serves no Slack call until it can; it asks again within a minute"
@@ -257,55 +258,79 @@ var fencedMethods = map[string]bool{
 //     which rule 5 reads.
 //
 // Each rule is checked in one place below, and each refuses an input no other rule refuses, which
-// TestAPublicSlackGrantNeverNamesAPrivateChannel drives. An empty body holds no key. The body
-// answered is the bytes read, which the caller serves upstream in place of r's own, so the call
-// Slack receives is the call this read.
+// TestAPublicSlackGrantNeverNamesAPrivateChannel drives. Rule 5 alone reads a channel against
+// excluded, so it runs last, on the query and the body alike, once every other rule has passed
+// both: a call another rule refuses is refused in the same words whatever channels it names. Rule
+// 5 refuses in rule 7's words (channelUnreached), so no refusal says whether a channel is a
+// private project's. An empty body holds no key. The body answered is the bytes read, which the
+// caller serves upstream in place of r's own, so the call Slack receives is the call this read.
 func slackCallExcluded(r *http.Request, excluded []string) (body []byte, why string) {
 	if !fencedMethods[r.URL.Path] {
 		return nil, "the Slack method is not one this secret is spent on outside a private project (chat.postMessage, conversations.replies, auth.test)"
 	}
+	var places []slackPlace
 	if r.URL.RawQuery != "" {
 		query, err := url.ParseQuery(r.URL.RawQuery)
 		if err != nil {
 			return nil, "the query cannot be read"
 		}
-		if why := argsExcluded(formArgs(query), excluded); why != "" {
-			return nil, "the query " + why
-		}
+		places = append(places, slackPlace{where: "the query", args: formArgs(query)})
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxSlackPostBody+1))
 	switch {
 	case err != nil:
 		return nil, "the body could not be read"
-	case len(body) == 0:
-		return body, ""
 	case len(body) > maxSlackPostBody:
 		return nil, "the body is larger than 1 MiB"
-	case len(r.Header.Values("Content-Encoding")) != 0:
+	case len(body) > 0 && len(r.Header.Values("Content-Encoding")) != 0:
 		return nil, "the body carries a Content-Encoding"
 	}
-	mediaType, why := slackBodyType(r)
-	if why != "" {
-		return nil, why
-	}
-	var args []slackArg
-	where := "the JSON body"
-	if mediaType == "application/json" {
-		if args, why = jsonArgs(body); why != "" {
+	if len(body) > 0 {
+		place, why := bodyPlace(r, body)
+		if why != "" {
 			return nil, why
 		}
-	} else {
-		where = "the form body"
-		form, err := url.ParseQuery(string(body))
-		if err != nil {
-			return nil, "the form body cannot be read"
-		}
-		args = formArgs(form)
+		places = append(places, place)
 	}
-	if why := argsExcluded(args, excluded); why != "" {
-		return nil, where + " " + why
+	for _, place := range places {
+		if why := argsUnreadable(place.args); why != "" {
+			return nil, place.where + " " + why
+		}
+	}
+	for _, place := range places {
+		if why := argsExcluded(place.args, excluded); why != "" {
+			return nil, place.where + " " + why
+		}
 	}
 	return body, ""
+}
+
+// slackPlace is one place a Slack call carries keys in, the query or the body, as a refusal names
+// it, with its keys' occurrences.
+type slackPlace struct {
+	where string
+	args  []slackArg
+}
+
+// bodyPlace is rules 2 to 4 over a non-empty body: its keys, read as its Content-Type says, or
+// why it cannot be read as Slack would.
+func bodyPlace(r *http.Request, body []byte) (slackPlace, string) {
+	mediaType, why := slackBodyType(r)
+	if why != "" {
+		return slackPlace{}, why
+	}
+	if mediaType == "application/json" {
+		args, why := jsonArgs(body)
+		if why != "" {
+			return slackPlace{}, why
+		}
+		return slackPlace{where: "the JSON body", args: args}, ""
+	}
+	form, err := url.ParseQuery(string(body))
+	if err != nil {
+		return slackPlace{}, "the form body cannot be read"
+	}
+	return slackPlace{where: "the form body", args: formArgs(form)}, ""
 }
 
 // slackArg is one occurrence of a key of a Slack call, as decoded, with its value when the key is
@@ -364,14 +389,9 @@ func jsonArgs(body []byte) ([]slackArg, string) {
 	return args, ""
 }
 
-// argsExcluded is rules 5, 6 and 7 over one place's keys: why they name one of excluded, or a
-// key or a channel Slack may read otherwise than the fence does, or "" when they name none.
-func argsExcluded(args []slackArg, excluded []string) string {
-	for _, arg := range args {
-		if channelKey(arg.key) && namesExcluded(arg.value, excluded) {
-			return "names a private project's channel under " + arg.key
-		}
-	}
+// argsUnreadable is rules 6 and 7 over one place's keys: why they hold a key or a channel Slack
+// may read otherwise than the fence does, or "" when they hold none. Neither reads excluded.
+func argsUnreadable(args []slackArg) string {
 	for _, arg := range args {
 		if !plainKey(arg.key) {
 			return "carries a key with a character other than an ASCII letter, a digit or _, which Slack may read as another key"
@@ -379,10 +399,29 @@ func argsExcluded(args []slackArg, excluded []string) string {
 	}
 	for _, arg := range args {
 		if channelKey(arg.key) && slices.ContainsFunc(strings.Split(arg.value, ","), func(part string) bool { return !slackID.MatchString(part) }) {
-			return "names a channel under " + arg.key + " by something other than its id, which only Slack resolves"
+			return channelUnreached(arg.key)
 		}
 	}
 	return ""
+}
+
+// argsExcluded is rule 5 over one place's keys: why they name one of excluded, in rule 7's words,
+// or "" when they name none.
+func argsExcluded(args []slackArg, excluded []string) string {
+	for _, arg := range args {
+		if channelKey(arg.key) && namesExcluded(arg.value, excluded) {
+			return channelUnreached(arg.key)
+		}
+	}
+	return ""
+}
+
+// channelUnreached is the words of rules 5 and 7 for a channel named under key: one a private
+// project's owner listed, and one named by something other than its id, read the same, so a
+// refusal never tells a credential that names no private project which ids are a private
+// project's.
+func channelUnreached(key string) string {
+	return "names a channel under " + key + " that this secret does not reach"
 }
 
 // channelKeys are the keys a Slack call names a channel under.

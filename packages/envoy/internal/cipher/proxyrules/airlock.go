@@ -62,6 +62,12 @@ func (r Rules) Bound(name string) *SecretRule {
 	return nil
 }
 
+// Binds is whether Bound answers an entry for this name: the policy loader's AirlockBound, so a
+// policy decision reads "behind the airlock" from the same answer the release does.
+func (r Rules) Binds(name string) bool {
+	return r.Bound(name) != nil
+}
+
 // Guidance is the judge's guidance for this name, "" when the file names no such secret or its
 // entry carries none.
 func (r Rules) Guidance(name string) string {

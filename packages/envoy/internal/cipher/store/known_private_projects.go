@@ -16,7 +16,13 @@ import (
 // projects the broker read from Dispatch, with their Slack channels, and the projects a switch to
 // private recorded before Dispatch committed it. The airlock's public Slack fence falls back to the
 // held rows when a read of Dispatch's list fails (requests.Machine.privateChannels): nothing while
-// none is held, the held rows' channels otherwise.
+// none is held, as a broker with no stored list answers; the held rows' channels while each was
+// last confirmed by Dispatch (KnownPrivateProject.ConfirmedAt: its newest listing or record)
+// within 10 minutes of the database's time; and, past that, no channel the fence could trust, so
+// every call on the token is refused PRIVATE_CHANNELS_UNREAD (requests' storedListMaxAge). Nothing
+// but a successful read moves a row's listing, so a channel an owner names on a project that is
+// already private, while Dispatch's list cannot be read, reaches no row: the bound is how long the
+// fence may miss such a channel.
 //
 // Every number here comes from one sequence, known_private_projects_seq: each record, each read's
 // stamp and each forget that names no record. So a number is never used twice, even after a row is
@@ -91,13 +97,18 @@ const keptUnderRecord = `(` + rowHeld + ` and coalesce(k.record, 0) > excluded.l
 
 // KnownPrivateProject is one held row: the project's key, its Slack channels, sorted (nil while
 // unknown), when the stored set last gained a channel or was started afresh on a row that was not
-// held (zero while unknown), and the database's time of the statement that read the row, so a
-// caller compares the two on the database's clock.
+// held (zero while unknown), when Dispatch last told the broker of the row (ConfirmedAt), and the
+// database's time of the statement that read the row, so a caller compares the times on the
+// database's clock.
 type KnownPrivateProject struct {
 	Key              string
 	SlackChannels    []string
 	ChannelsStoredAt time.Time
-	ReadAt           time.Time
+	// ConfirmedAt is the later of the stamp's time of the newest read that listed the row and its
+	// record's time: the last moment Dispatch's own answer stands behind the row's channels. A
+	// channel the owner named after it is one the row cannot hold.
+	ConfirmedAt time.Time
+	ReadAt      time.Time
 }
 
 // PrivateListStamp is one read's stamp: a number from the sequence and the database's time,
@@ -320,10 +331,11 @@ func (s *Store) ForgetPrivateProject(ctx context.Context, key string, record *in
 	return ForgetAnswer{Outcome: ForgetForgotten}, nil
 }
 
-// KnownPrivateProjects reads the held rows, sorted by key, in one statement, each with the
-// database's time of that statement; an empty non-nil slice when none is held.
+// KnownPrivateProjects reads the held rows, sorted by key, in one statement, each with when
+// Dispatch last told the broker of it (ConfirmedAt) and the database's time of that statement; an
+// empty non-nil slice when none is held.
 func (s *Store) KnownPrivateProjects(ctx context.Context) ([]KnownPrivateProject, error) {
-	rows, err := s.Pool.Query(ctx, `select project, slack_channels, channels_stored_at, `+dbNow+`
+	rows, err := s.Pool.Query(ctx, `select project, slack_channels, channels_stored_at, greatest(listed_at, recorded_at), `+dbNow+`
 		from known_private_projects
 		where greatest(coalesce(listed, 0), coalesce(record, 0)) > coalesce(forgotten, 0)
 		order by project`, s.DatabaseClockOffset.micros())
@@ -336,7 +348,7 @@ func (s *Store) KnownPrivateProjects(ctx context.Context) ([]KnownPrivateProject
 			project  KnownPrivateProject
 			storedAt *time.Time
 		)
-		if err := rows.Scan(&project.Key, &project.SlackChannels, &storedAt, &project.ReadAt); err != nil {
+		if err := rows.Scan(&project.Key, &project.SlackChannels, &storedAt, &project.ConfirmedAt, &project.ReadAt); err != nil {
 			rows.Close()
 			return nil, err
 		}

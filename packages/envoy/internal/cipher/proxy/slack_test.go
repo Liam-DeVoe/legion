@@ -476,7 +476,7 @@ func newSlackBroker(t *testing.T, rows map[string]projectaccesstest.Row, project
 	local := secrets.NewLocal(token)
 	loader := policytest.Loader(local)
 	loader.ProjectChecks = true
-	loader.AirlockDigest = rules.Digest
+	loader.AirlockDigest, loader.AirlockBound = rules.Digest, rules.Binds
 	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatalf("policy.NewCurrent: %v", err)

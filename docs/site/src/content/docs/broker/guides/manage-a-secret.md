@@ -262,7 +262,8 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   airlock ([The airlock](/legion/broker/concepts/#the-airlock)), and only to post with
   `POST /api/chat.postMessage`, carrying `channel`, `thread_ts` and `text`, to a channel id the
   owner of every private project it names allows; the proxy refuses every other call
-  `CHANNEL_NOT_ALLOWED`. Where the secret has no airlock entry, such a credential is denied it
+  `CHANNEL_NOT_ALLOWED`. Where the airlock does not hold the secret back (it has no airlock entry,
+  or an entry that binds no host and carries only a judge or guidance), such a credential is denied it
   `project-channels-need-airlock`, and so is every credential while a private project's owner
   lists a Slack channel. A credential that names no private project gets the secret as before,
   and behind the airlock, while a private project's owner lists a channel, the proxy carries for it

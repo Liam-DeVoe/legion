@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
@@ -107,13 +108,16 @@ func TestProjectChannelsTagMovesTheVersionOnlyWhenPresent(t *testing.T) {
 	}
 }
 
-// TestAProjectChannelsSecretOutsideTheAirlockIsDeniedToAPrivateProject: such a secret with no
-// airlock entry is denied, project-channels-need-airlock, to a credential that names a private
-// project, because a release outside the airlock hands the session the real token and the session
-// could then post anywhere. While a private project's owner names a Slack channel it is denied to
-// every credential outside the airlock, since such a token could read that channel. The same
-// secret behind the airlock, and the same secret asked for by a credential that names only a
-// public project while no private project names a channel, follow owner and tier as before.
+// TestAProjectChannelsSecretOutsideTheAirlockIsDeniedToAPrivateProject: such a secret the airlock
+// does not hold back is denied, project-channels-need-airlock, to a credential that names a
+// private project, because a release outside the airlock hands the session the real token and the
+// session could then post anywhere. While a private project's owner names a Slack channel it is
+// denied to every credential outside the airlock, since such a token could read that channel. An
+// entry that binds no host, carrying only a judge or guidance, is outside the airlock though it
+// has a digest: the release hands its value over as it does a name with no entry
+// (proxyrules.Rules.Bound), so it is denied the same. The same secret behind the airlock, and the
+// same secret asked for by a credential that names only a public project while no private project
+// names a channel, follow owner and tier as before.
 func TestAProjectChannelsSecretOutsideTheAirlockIsDeniedToAPrivateProject(t *testing.T) {
 	store := secrets.NewLocal(channelsSecret("SLACK_TOKEN", policy.OwnerShared, policy.TierAgent, policy.ProjectChannelsSlack))
 	loader := projectLoader(store)
@@ -121,11 +125,24 @@ func TestAProjectChannelsSecretOutsideTheAirlockIsDeniedToAPrivateProject(t *tes
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	loader.AirlockDigest = func(string) string { return "entry-one" }
-	behind, err := loader.Load(context.Background())
-	if err != nil {
-		t.Fatalf("Load with an airlock entry: %v", err)
+	// The loader reads the rules as cipherd wires them (policyLoader): the digest and the bound
+	// both from the one rules file.
+	loadWith := func(entry proxyrules.SecretRule) *policy.Set {
+		t.Helper()
+		rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{entry}}
+		loader.AirlockDigest, loader.AirlockBound = rules.Digest, rules.Binds
+		set, err := loader.Load(context.Background())
+		if err != nil {
+			t.Fatalf("Load with the airlock entry %+v: %v", entry, err)
+		}
+		if set.Secrets["SLACK_TOKEN"].AirlockDigest == "" {
+			t.Fatalf("the airlock entry %+v gave SLACK_TOKEN no digest; this test needs one", entry)
+		}
+		return set
 	}
+	behind := loadWith(proxyrules.SecretRule{Name: "SLACK_TOKEN", Hosts: []string{"slack.com"}})
+	judge := uint32(300)
+	hostless := loadWith(proxyrules.SecretRule{Name: "SLACK_TOKEN", Judge: &judge, Guidance: "grant it for posting release notes"})
 	source := secrets.LocalARN(policytest.ID("SLACK_TOKEN"))
 	fenced := func(r policy.Requester) policy.Requester {
 		r.PrivateChannelsNamed = true
@@ -147,6 +164,12 @@ func TestAProjectChannelsSecretOutsideTheAirlockIsDeniedToAPrivateProject(t *tes
 			policy.Decision{Outcome: policy.Deny, Reason: policy.ReasonProjectChannelsNeedAirlock, Source: source}},
 		{"outside the airlock, a credential naming the public project, while a private project names a channel", bare, fenced(credential(carol, "", pubProject)),
 			policy.Decision{Outcome: policy.Deny, Reason: policy.ReasonProjectChannelsNeedAirlock, Source: source}},
+		{"an entry that binds no host, a credential naming the private project", hostless, credential(carol, "", privProject),
+			policy.Decision{Outcome: policy.Deny, Reason: policy.ReasonProjectChannelsNeedAirlock, Source: source}},
+		{"an entry that binds no host, a credential naming no project, while a private project names a channel", hostless, fenced(credential(carol, "")),
+			policy.Decision{Outcome: policy.Deny, Reason: policy.ReasonProjectChannelsNeedAirlock, Source: source}},
+		{"an entry that binds no host, a credential naming no project", hostless, credential(carol, ""),
+			policy.Decision{Outcome: policy.Automatic, Source: source}},
 		{"behind the airlock, a credential naming the private project", behind, credential(carol, "", privProject),
 			policy.Decision{Outcome: policy.Automatic, Source: source}},
 		{"behind the airlock, a credential naming no project, while a private project names a channel", behind, fenced(credential(carol, "")),

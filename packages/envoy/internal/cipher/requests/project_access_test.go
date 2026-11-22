@@ -110,7 +110,7 @@ func newProjectFixture(t *testing.T, rules proxyrules.Rules, team projectaccesst
 	enrollmentID, key = newEnrollment(t, st, "session", "box-p-"+t.Name(), new(fixtureOperator), nil)
 	loader := policytest.Loader(local, fixtureService)
 	loader.ProjectChecks = true
-	loader.AirlockDigest = rules.Digest
+	loader.AirlockDigest, loader.AirlockBound = rules.Digest, rules.Binds
 	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatalf("policy.NewCurrent: %v", err)

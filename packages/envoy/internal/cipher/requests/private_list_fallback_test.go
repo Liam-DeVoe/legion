@@ -191,7 +191,10 @@ func publicRows() map[string]projectaccesstest.Row {
 // held row is the R9 exception's window alone: a refused switch's record until its forget, a
 // formerly private project until its forget, each fencing its own channel, and nothing once
 // forgotten or past the hold; a record made through a pod whose clock is 90 s behind the pod that
-// forgot the row holds the row again.
+// forgot the row holds the row again. A held row is trusted for storedListMaxAge (10 min) of the
+// database's time from its newest listing or record: within it the stored fence holds, and past it
+// the token is ExcludedUnread, a record's row too, and a store that also holds a younger record;
+// rows a forget released are not aged, and fence nothing past the bound, as today.
 func TestAFailedPrivateListReadFencesByTheStoredList(t *testing.T) {
 	ctx := context.Background()
 
@@ -390,6 +393,57 @@ func TestAFailedPrivateListReadFencesByTheStoredList(t *testing.T) {
 		got, read := releaseSlack(t, pod, grantID)
 		fencedBy(t, "(p) SWITCH recorded through pod B after pod A forgot it", got, read, switchChannel)
 	})
+
+	// The stored list's age bound (storedListMaxAge): a channel an owner names while the list
+	// fails reaches no row, so a row is trusted for 10 min of the database's time from when
+	// Dispatch last told the broker of it. Rows (q) and (r) spell the 10 minutes out, so a bound
+	// of another length fails one of them.
+	t.Run("(q) PRIV listed 10 min ago less a second, the list route down: [C1]", func(t *testing.T) {
+		m, grantID, dispatch := publicGrant(t, privRows(), true)
+		storeList(t, m.Store, store.KnownPrivateProject{Key: privProject, SlackChannels: []string{privChannel}})
+		advance(m.Store, 10*time.Minute-time.Second)
+		dispatch.SetPrivateProjectsDown(true)
+		got, read := releaseSlack(t, m, grantID)
+		fencedBy(t, "(q) PRIV listed within the bound", got, read, privChannel)
+	})
+
+	t.Run("(r) PRIV listed past 10 min ago, the list route down: unread", func(t *testing.T) {
+		m, grantID, dispatch := publicGrant(t, privRows(), true)
+		storeList(t, m.Store, store.KnownPrivateProject{Key: privProject, SlackChannels: []string{privChannel}})
+		advance(m.Store, 10*time.Minute+time.Second)
+		dispatch.SetPrivateProjectsDown(true)
+		got, read := releaseSlack(t, m, grantID)
+		unread(t, "(r) PRIV listed past the bound", got, read)
+	})
+
+	t.Run("(s) SWITCH's record not yet forgotten, past 10 min, the list route down: unread", func(t *testing.T) {
+		m, grantID, dispatch := publicGrant(t, publicRows(), true)
+		recordSwitch(t, m.Store, switchProject, switchChannel)
+		advance(m.Store, storedListMaxAge+time.Second)
+		dispatch.SetPrivateProjectsDown(true)
+		got, read := releaseSlack(t, m, grantID)
+		unread(t, "(s) SWITCH recorded past the bound", got, read)
+	})
+
+	t.Run("(t) PRIV listed past 10 min ago and SWITCH recorded since, the list route down: unread", func(t *testing.T) {
+		m, grantID, dispatch := publicGrant(t, privRows(), true)
+		storeList(t, m.Store, store.KnownPrivateProject{Key: privProject, SlackChannels: []string{privChannel}})
+		advance(m.Store, storedListMaxAge+time.Second)
+		recordSwitch(t, m.Store, switchProject, switchChannel)
+		dispatch.SetPrivateProjectsDown(true)
+		got, read := releaseSlack(t, m, grantID)
+		unread(t, "(t) PRIV listed past the bound beside SWITCH's younger record", got, read)
+	})
+
+	t.Run("(u) FORMER made public and forgotten, its row past 10 min, the list route down: today's answer", func(t *testing.T) {
+		m, grantID, dispatch := publicGrant(t, publicRows(), true)
+		former(t, m.Store)
+		forget(t, m.Store, formerProject, nil)
+		advance(m.Store, storedListMaxAge+time.Second)
+		dispatch.SetPrivateProjectsDown(true)
+		got, read := releaseSlack(t, m, grantID)
+		todays(t, "(u) FORMER, forgotten, past the bound", got, read)
+	})
 }
 
 // listedOf is key's listed number in st's stored private list, 0 when it has none.
@@ -409,10 +463,11 @@ func listedOf(t *testing.T, st *store.Store, key string) int64 {
 // the broker's stored private list holds for its project. PRIV names C1, stored long ago; while
 // the list route answers 404 and the project route answers, the owner adds C2: past
 // slackChannelSettle from that change, a credential naming PRIV is limited to [C1] without C2,
-// while an unlimited grant's Excluded is the stored [C1]. Once the list route answers again, the
-// read stores C2 at S, the credential gets no channel with SettlesAt at S plus slackChannelSettle,
-// decided on the database's time, and then [C1 C2]. A credential naming a private project with no
-// held row gets no channel.
+// while an unlimited grant is unread, since the store last heard of PRIV more than
+// storedListMaxAge ago and so cannot hold C2: C2 is open to no credential that names no private
+// project. Once the list route answers again, the read stores C2 at S, the credential gets no
+// channel with SettlesAt at S plus slackChannelSettle, decided on the database's time, and then
+// [C1 C2]. A credential naming a private project with no held row gets no channel.
 func TestAPrivateCredentialPostsOnlyToChannelsTheStoreHolds(t *testing.T) {
 	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule(slackToken, "")}}
 	m, enr, key, _ := newProjectFixture(t, rules, publicTeam)
@@ -437,8 +492,8 @@ func TestAPrivateCredentialPostsOnlyToChannelsTheStoreHolds(t *testing.T) {
 	if got := release(t, privProject); !got.Limited || !slices.Equal(got.Channels, []string{privChannel}) || !got.SettlesAt.IsZero() {
 		t.Fatalf("a credential naming PRIV while the list route answers 404, past the settle of the owner's change = Limited %v Channels %#v SettlesAt %v; want [%s] without %s, which the store does not hold", got.Limited, got.Channels, got.SettlesAt, privChannel, addedChannel)
 	}
-	if got := release(t); !slices.Equal(got.Excluded, []string{privChannel}) {
-		t.Fatalf("an unlimited grant while the list route answers 404 = Excluded %#v; want the stored [%s]", got.Excluded, privChannel)
+	if got := release(t); !got.ExcludedUnread || got.Excluded != nil || got.Limited {
+		t.Fatalf("an unlimited grant while the list route answers 404, over a store that last heard of PRIV past %v = Excluded %#v ExcludedUnread %v Limited %v; want unread: the stored [%s] lacks %s, which would be open", storedListMaxAge, got.Excluded, got.ExcludedUnread, got.Limited, privChannel, addedChannel)
 	}
 
 	dispatch.SetPrivateProjectsAbsent(false)

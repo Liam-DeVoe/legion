@@ -182,11 +182,13 @@ func grantFenced(r *rig, placeholder, grantID string, secret requests.AirlockSec
 // call carrying a key Slack may read as channel while the fence reads another (%20channel,
 // +channel, channel%00x, channel[], channel.), every call naming a channel other than by its id,
 // and every call it cannot read as naming none. Each of slackCallExcluded's seven rules has a case
-// that it alone refuses (fenceCase). The allowed calls naming a public channel, and auth.test,
-// reach the stand-in with the real token, and a grant with no Excluded carries every one of them
-// as before the fence. A name the broker could not read the fence of refuses every call
-// PRIVATE_CHANNELS_UNREAD, while Dispatch's list fails and while a private project's entry carries
-// no slack_channels, and serves again once a read answers.
+// that it alone refuses (fenceCase). A refusal reads the same, byte for byte but its answer id,
+// whether a channel the call names is PRIV's or the call is refused for another reason: so no
+// refusal tells the session which ids are a private project's. The allowed calls naming a public
+// channel, and auth.test, reach the stand-in with the real token, and a grant with no Excluded
+// carries every one of them as before the fence. A name the broker could not read the fence of
+// refuses every call PRIVATE_CHANNELS_UNREAD, while Dispatch's list fails and while a private
+// project's entry carries no slack_channels, and serves again once a read answers.
 func TestAPublicSlackGrantNeverNamesAPrivateChannel(t *testing.T) {
 	r := newRig(t, Options{Rules: slackRules()})
 	value := map[string]string{requests.SlotValue: slackValue}
@@ -213,6 +215,34 @@ func TestAPublicSlackGrantNeverNamesAPrivateChannel(t *testing.T) {
 	t.Run("auth.test, which names no channel and answers no channel's content", func(t *testing.T) {
 		check := slackPost{method: http.MethodPost, path: "/api/auth.test"}
 		sendSlack(t, r, client, fencedPlaceholder, check).served(t, "auth.test by a fenced grant", check, slackValue)
+	})
+
+	t.Run("a refusal reads the same whether a channel it names is a private project's", func(t *testing.T) {
+		// words is the refusal's text without its answer id, which every answer has of its own.
+		words := func(a slackAnswer) string {
+			if cut := strings.LastIndex(a.body, " (answer "); cut >= 0 {
+				return a.body[:cut]
+			}
+			return a.body
+		}
+		for _, pair := range []struct {
+			name           string
+			private, other slackPost
+		}{
+			// The same call, refused by rule 6 for its key, naming PRIV's channel and a public one.
+			{"a key Slack may read as another key", readAs("channel=" + privChannel + "&ts=" + slackThread + "&%20x=1"), readAs("channel=" + pubChannel + "&ts=" + slackThread + "&%20x=1")},
+			// PRIV's channel by its id, refused by rule 5, and a channel by its name, by rule 7.
+			{"conversations.replies naming PRIV's channel, and a channel by its name", readOf(privChannel), readOf("priv-team")},
+			{"chat.postMessage naming PRIV's channel, and a channel by its name", jsonPost(postTo(privChannel)), jsonPost(postTo("#priv-team"))},
+		} {
+			private := sendSlack(t, r, client, fencedPlaceholder, pair.private)
+			private.refusedAs(t, pair.name+", naming PRIV's channel", pair.private, codePrivateChannel, privateChannel)
+			other := sendSlack(t, r, client, fencedPlaceholder, pair.other)
+			other.refusedAs(t, pair.name+", naming another", pair.other, codePrivateChannel, privateChannel)
+			if words(private) != words(other) {
+				t.Errorf("%s: the refusal naming PRIV's channel reads %q and the other %q; want the same words, so neither says which channel is a private project's", pair.name, words(private), words(other))
+			}
+		}
 	})
 
 	t.Run("a fenced name whose entry is no header swap", func(t *testing.T) {
@@ -258,11 +288,12 @@ func TestAPublicSlackGrantNeverNamesAPrivateChannel(t *testing.T) {
 // TestAPublicSlackGrantIsTodaysWithNoPrivateProject: while no private project lists a channel, a
 // session naming no project is served every call as before the fence: a call the fence would
 // refuse if it read it - a search, a body of no type it reads, a compressed body, a body over 1 MiB
-// - is carried byte for byte, since with no channel excluded the proxy reads no body at all, and
-// the value carries the release's ten-minute bound all the same. On a broker with no
-// project-access client (R9's case) Dispatch is asked nothing; on one with it, Dispatch is asked
-// its list of private projects, through its 30 s cache, and nothing else: a second release inside
-// the cache's window asks nothing more.
+// - is carried byte for byte, since with no channel excluded the proxy reads no body at all. On a
+// broker with no project-access client (R9's case) Dispatch is asked nothing, and the value
+// carries no bound of its own, as before the fence, so the proxy reads the grant again only when
+// it is asked to; on one with it, the value carries the release's ten-minute bound, which the
+// proxy reads the grant again by, and Dispatch is asked its list of private projects, through its
+// 30 s cache, and nothing else: a second release inside the cache's window asks nothing more.
 func TestAPublicSlackGrantIsTodaysWithNoPrivateProject(t *testing.T) {
 	for _, access := range []bool{false, true} {
 		name := "a broker with no project-access client"
@@ -286,15 +317,17 @@ func TestAPublicSlackGrantIsTodaysWithNoPrivateProject(t *testing.T) {
 			// proxy's read of a second grant comes: the list the first kept answers it.
 			p.grants.again(t)
 			w.clock.advance(ownerChangeHeard - mintAgainBefore + time.Second)
-			p.send(t, historyOf(privChannel)).served(t, "a read after the proxy read the grant again", historyOf(privChannel), slackValue)
+			p.send(t, historyOf(privChannel)).served(t, "a read past the bound a value of a broker with project access carries", historyOf(privChannel), slackValue)
 			reads := p.grants.all()
-			if len(reads) != 3 {
-				t.Fatalf("the grant was read %d time(s); want three times: at the first call, once more at once, and once after its bound", len(reads))
+			// Three reads with project access: at the first call, once more at once, and once
+			// after the value's bound. Two with none: the value has no bound to read it again by.
+			if want := map[bool]int{false: 2, true: 3}[access]; len(reads) != want {
+				t.Fatalf("the grant was read %d time(s); want %d: at the first call, once more at once%s", len(reads), want, map[bool]string{false: ", and never for a bound, which the value does not carry", true: ", and once after its bound"}[access])
 			}
 			for i, values := range reads {
 				got := values[slackName]
-				if got.Limited || got.Excluded != nil || got.ExcludedUnread || got.Expires.IsZero() {
-					t.Fatalf("read %d of %s = Limited %v Excluded %#v ExcludedUnread %v Expires %v; want unlimited and unfenced, bounded", i+1, slackName, got.Limited, got.Excluded, got.ExcludedUnread, got.Expires)
+				if got.Limited || got.Excluded != nil || got.ExcludedUnread || got.Expires.IsZero() == access {
+					t.Fatalf("read %d of %s = Limited %v Excluded %#v ExcludedUnread %v Expires %v; want unlimited and unfenced, %s", i+1, slackName, got.Limited, got.Excluded, got.ExcludedUnread, got.Expires, map[bool]string{false: "with no expiry, as before the fence", true: "bounded"}[access])
 				}
 			}
 			// The member-kind read every release of a person's session makes on a broker with
@@ -605,7 +638,7 @@ func newFenceWorld(t *testing.T, rows map[string]projectaccesstest.Row, tagged b
 	w.local = secrets.NewLocal(slackToken(tagged))
 	loader := policytest.Loader(w.local)
 	loader.ProjectChecks = true
-	loader.AirlockDigest = w.rules.Digest
+	loader.AirlockDigest, loader.AirlockBound = w.rules.Digest, w.rules.Binds
 	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatalf("policy.NewCurrent: %v", err)

@@ -1399,9 +1399,11 @@ func newGroupReader(cfg config.Config, iamURL string, own oauth2.TokenSource) *g
 // on every set it makes live and names each full load's groups to.
 func policyLoader(cfg config.Config, secretStore secrets.Store, rules proxyrules.Rules, registry *metrics.Registry, groupReader record.Directory) policy.Loader {
 	// rules.Digest is "" for every secret when no rules file was named, so such a deployment's
-	// policy version is the one it has today.
+	// policy version is the one it has today. rules.Binds is the release's own answer to "behind
+	// the airlock" (requests.Machine.Airlock is these rules), which Evaluate reads for a
+	// project-channels secret.
 	return policy.Loader{Store: secretStore, Prefix: cfg.SecretsPrefix, Services: serviceNames(cfg), ServiceAccounts: cfg.ServiceAccountSecrets, AirlockDigest: rules.Digest,
-		StoreReads: policy.NewStoreReads(registry), Groups: groupReader}
+		AirlockBound: rules.Binds, StoreReads: policy.NewStoreReads(registry), Groups: groupReader}
 }
 
 // firstGroupReadsWait bounds how long the first policy load waits for the group reads it started

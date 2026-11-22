@@ -136,7 +136,9 @@ func attemptChannels(n int) []string {
 // record and kept after it adds its list to the record's rather than replacing it; a forget changes
 // only the record it names, or none younger than the hold; a record made again after its row was
 // deleted is numbered above the old one, so a delayed forget naming the old record changes nothing;
-// and the table holds each channel to one conversation id and a row to 1024 of them.
+// the table holds each channel to one conversation id and a row to 1024 of them; and a held row
+// answers when Dispatch last told the broker of it (ConfirmedAt): its newest listing's stamp or its
+// record's time, whichever is later, which the public fence ages the stored list by.
 func TestTheStoredPrivateListKeepsWhatAReadNamed(t *testing.T) {
 	c1, c2, c9 := "C0PRIV00001", "C0PRIV00002", "C0STALE0009"
 
@@ -448,6 +450,39 @@ func TestTheStoredPrivateListKeepsWhatAReadNamed(t *testing.T) {
 			case c.refusedBy != "" && (!errors.As(err, &refused) || refused.Code != "23514" || refused.ConstraintName != c.refusedBy):
 				t.Errorf("a row of %s = %v; want the table's check %s to refuse it (23514)", c.what, err, c.refusedBy)
 			}
+		}
+	})
+
+	t.Run("a held row answers when Dispatch last told the broker of it, its newest listing or record", func(t *testing.T) {
+		st := storetest.Open(t)
+		recordedAt := func(key string) time.Time {
+			t.Helper()
+			var at time.Time
+			if err := st.Pool.QueryRow(context.Background(), `select recorded_at from known_private_projects where project = $1`, key).Scan(&at); err != nil {
+				t.Fatalf("read %s's record time: %v", key, err)
+			}
+			return at
+		}
+		read := stamp(t, st)
+		keep(t, st, read, listedAs("PRIV", []string{c1}))
+		if got := heldRow(t, st, "PRIV"); !got.ConfirmedAt.Equal(read.At) {
+			t.Fatalf("PRIV listed by a read stamped %v answers ConfirmedAt %v; want the stamp's time", read.At, got.ConfirmedAt)
+		}
+		advance(st, time.Minute)
+		recordSwitch(t, st, "PRIV", c2)
+		if got, want := heldRow(t, st, "PRIV").ConfirmedAt, recordedAt("PRIV"); !got.Equal(want) || !got.After(read.At) {
+			t.Fatalf("PRIV recorded a minute after its listing at %v answers ConfirmedAt %v; want the record's time %v", read.At, got, want)
+		}
+		advance(st, time.Minute)
+		recordSwitch(t, st, "SWITCH", c9)
+		advance(st, time.Minute)
+		if got, want := heldRow(t, st, "SWITCH").ConfirmedAt, recordedAt("SWITCH"); !got.Equal(want) {
+			t.Fatalf("SWITCH, recorded and never listed, answers ConfirmedAt %v; want its record's time %v", got, want)
+		}
+		again := stamp(t, st)
+		keep(t, st, again, listedAs("PRIV", []string{c1, c2}))
+		if got := heldRow(t, st, "PRIV"); !got.ConfirmedAt.Equal(again.At) {
+			t.Fatalf("PRIV listed again by a read stamped %v answers ConfirmedAt %v; want that stamp's time, after its record", again.At, got.ConfirmedAt)
 		}
 	})
 }

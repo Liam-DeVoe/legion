@@ -27,9 +27,11 @@ import (
 // project-channels-need-airlock while a private project's owner names a channel, since released
 // outside the airlock it could read that channel; it is granted as before while no private
 // project names one; a fence the broker cannot read decides nothing (503); a fence answer aged
-// past projectaccess.CacheTTL is not decided on but asked again; and a grant made before a private
+// past projectaccess.CacheTTL is not decided on but asked again; a grant made before a private
 // project named a channel is neither released after it nor answered again to the session's next
-// request, which is denied naming why.
+// request, which is denied naming why; and an airlock entry that binds no host, carrying only
+// guidance, is outside the airlock as no entry is, since the release hands its value over
+// (proxyrules.Rules.Bound), so it is denied and its older grant refused the same.
 func TestAProjectChannelsSecretLeavesTheAirlockToNoCredentialWhilePrivateChannelsAreNamed(t *testing.T) {
 	if (proxyrules.Rules{}).Digest(slackToken) != "" {
 		t.Fatalf("empty rules give %s an airlock entry; this test needs it to have none", slackToken)
@@ -103,6 +105,26 @@ func TestAProjectChannelsSecretLeavesTheAirlockToNoCredentialWhilePrivateChannel
 		}
 		deniedFor(t, "the session's next request for "+slackToken+" once PRIV names a channel", again, err, slackToken, policy.ReasonProjectChannelsNeedAirlock)
 	})
+
+	t.Run("an airlock entry that binds no host is outside the airlock", func(t *testing.T) {
+		hostless := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: slackToken, Guidance: "grant it for posting release notes"}}}
+		if hostless.Digest(slackToken) == "" || hostless.Bound(slackToken) != nil {
+			t.Fatalf("the rules give %s the digest %q and the bound entry %+v; this row needs an entry with a digest that binds no host", slackToken, hostless.Digest(slackToken), hostless.Bound(slackToken))
+		}
+		b := newOutsideBrokerOf(t, hostless, fenceRows())
+		request, err := b.create(t)
+		deniedFor(t, "a session naming no project asking for "+slackToken+", whose airlock entry binds no host, while PRIV lists "+privChannel, request, err, slackToken, policy.ReasonProjectChannelsNeedAirlock)
+
+		b = newOutsideBrokerOf(t, hostless, noChannels())
+		request, err = b.create(t)
+		if err != nil || request.GrantID == nil {
+			t.Fatalf("%s, whose airlock entry binds no host, with no private channel named = %+v, %v; want granted", slackToken, request, err)
+		}
+		b.serve(t, fenceRows())
+		if release, err := b.m.Values(t.Context(), *request.GrantID, b.enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+			t.Fatalf("Values(%s), whose airlock entry binds no host, once PRIV lists %s = %+v, %v; want ErrGrantNotLive, not the real token", slackToken, privChannel, release, err)
+		}
+	})
 }
 
 // agedList is one answer agedFence gives: the list, and when its question was asked.
@@ -134,8 +156,8 @@ func (f *agedFence) PrivateProjectsFresh(ctx context.Context) ([]projectaccess.P
 	return f.PrivateProjects(ctx)
 }
 
-// outsideBroker is a broker whose rules give the Slack token no airlock entry, and whose session
-// names no project.
+// outsideBroker is a broker whose rules hold the Slack token outside the airlock, and whose
+// session names no project.
 type outsideBroker struct {
 	m        *Machine
 	enr      string
@@ -143,9 +165,17 @@ type outsideBroker struct {
 	dispatch *projectaccesstest.Server
 }
 
+// newOutsideBroker is newOutsideBrokerOf with rules that give the Slack token no airlock entry.
 func newOutsideBroker(t *testing.T, rows map[string]projectaccesstest.Row) *outsideBroker {
 	t.Helper()
-	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+	return newOutsideBrokerOf(t, proxyrules.Rules{}, rows)
+}
+
+// newOutsideBrokerOf is an outsideBroker under rules, which must not bind the Slack token to a
+// host, with Dispatch answering rows.
+func newOutsideBrokerOf(t *testing.T, rules proxyrules.Rules, rows map[string]projectaccesstest.Row) *outsideBroker {
+	t.Helper()
+	m, enr, key, _ := newProjectFixture(t, rules, publicTeam)
 	b := &outsideBroker{m: m, enr: enr, key: key}
 	b.serve(t, rows)
 	return b
@@ -226,7 +256,8 @@ func publicGrant(t *testing.T, rows map[string]projectaccesstest.Row, access boo
 // read no private answer since it started, reads that list at its first release, so a project
 // Dispatch holds private is fenced from then on whatever the broker's settings declare. With
 // project access and no private project, the list's cached read is all Dispatch is asked and
-// nothing is fenced; with no project-access client, Dispatch is asked nothing; a list it cannot
+// nothing is fenced; with no project-access client, Dispatch is asked nothing and the value carries
+// no bound of its own, as before the fence; a list it cannot
 // read is ExcludedUnread, read again within a minute; and a credential that names a private
 // project is Limited instead.
 func TestAPublicSlackGrantCarriesEveryPrivateChannel(t *testing.T) {
@@ -290,12 +321,13 @@ func TestAPublicSlackGrantCarriesEveryPrivateChannel(t *testing.T) {
 
 	t.Run("with no project-access client, nothing is fenced and Dispatch is asked nothing", func(t *testing.T) {
 		m, grantID, dispatch := publicGrant(t, fenceRows(), false)
-		read := time.Now()
 		values, _, err := m.AirlockValues(t.Context(), grantID)
 		if err != nil {
 			t.Fatalf("AirlockValues(%s): %v", slackToken, err)
 		}
-		unfenced(t, "a broker with no project-access client", values[slackToken], read)
+		if got := values[slackToken]; got.Limited || got.Channels != nil || got.Excluded != nil || got.ExcludedUnread || !got.Expires.IsZero() {
+			t.Fatalf("a broker with no project-access client: %s = Limited %v Channels %#v Excluded %#v ExcludedUnread %v Expires %v; want unlimited and unfenced, with no expiry, as before the fence: such a broker learns of no private project until a setting changes", slackToken, got.Limited, got.Channels, got.Excluded, got.ExcludedUnread, got.Expires)
+		}
 		if calls := dispatch.Calls(); calls != 0 {
 			t.Fatalf("a broker with no project-access client asked Dispatch %d time(s); want none", calls)
 		}

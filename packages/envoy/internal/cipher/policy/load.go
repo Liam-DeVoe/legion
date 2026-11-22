@@ -246,6 +246,13 @@ type Loader struct {
 	// do not name. In production: the loaded rules' Rules.Digest. A nil field is "" for every
 	// secret, which is a deployment with no rules file.
 	AirlockDigest func(name string) string
+	// AirlockBound is whether the secret's airlock entry binds a host, so the airlock holds its
+	// value back: false for a secret the rules do not name, and for one whose entry binds no host
+	// and carries only a judge or guidance, whose value is released to the command as a name with
+	// no entry is. In production: the loaded rules' Rules.Binds, the same rules AirlockDigest
+	// fingerprints and the release reads (requests.Machine.Airlock). A nil field is false for
+	// every secret, which is a deployment with no rules file.
+	AirlockBound func(name string) bool
 	// StoreReads counts each call to the store this loader makes, and Current makes through it,
 	// in broker_policy_store_reads_total (NewStoreReads): read=list for the List a Load takes,
 	// read=describe for the Describe a LoadOne takes, and read=value for each Read of a type
@@ -553,6 +560,9 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 	// The airlock names a secret by its policy name, the uppercased one Secret.Name holds.
 	if l.AirlockDigest != nil {
 		s.AirlockDigest = l.AirlockDigest(s.Name)
+	}
+	if l.AirlockBound != nil {
+		s.AirlockBound = l.AirlockBound(s.Name)
 	}
 	return s, "", nil
 }

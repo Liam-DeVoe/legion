@@ -95,13 +95,14 @@ const ReasonProjectNotNamed = "project-not-named"
 const ReasonProjectMissing = "project-missing"
 
 // ReasonProjectChannelsNeedAirlock is the Reason of a Deny for a project-channels secret
-// (TagProjectChannels) with no airlock entry, asked for by a credential that names a private
-// project (Requester.ListsPrivate), or by any credential while some private project's owner names
-// a Slack channel (Requester.PrivateChannelsNamed). Outside the airlock the release hands the
-// session the real token, which it could then spend anywhere: a private project's credential
-// outside its owner's channels, and any other credential in a private project's channel. Behind it
-// the proxy holds every call to those channels. With no private project naming a channel, a
-// credential that names no private project is unchanged.
+// (TagProjectChannels) the airlock does not hold back (Secret.AirlockBound false: no airlock
+// entry, or one that binds no host), asked for by a credential that names a private project
+// (Requester.ListsPrivate), or by any credential while some private project's owner names a Slack
+// channel (Requester.PrivateChannelsNamed). Outside the airlock the release hands the session the
+// real token, which it could then spend anywhere: a private project's credential outside its
+// owner's channels, and any other credential in a private project's channel. Behind it the proxy
+// holds every call to those channels. With no private project naming a channel, a credential that
+// names no private project is unchanged.
 const ReasonProjectChannelsNeedAirlock = "project-channels-need-airlock"
 
 // ListsPrivate reports whether any project the credential names is private: the one predicate
@@ -209,8 +210,10 @@ func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
 	// credential only behind the airlock, where the proxy holds each post to the channels that
 	// owner named, and to every other credential only behind it too while a private project names
 	// a channel, where the proxy fences those channels off. Outside it the release hands over the
-	// real token, which the session could then spend anywhere.
-	if secret.ProjectChannels != "" && secret.AirlockDigest == "" && (r.ListsPrivate() || r.PrivateChannelsNamed) {
+	// real token, which the session could then spend anywhere. An entry that binds no host is
+	// outside it, though it has a digest: the release hands its value over as it does a name with
+	// no entry (AirlockBound, which is the release's own proxyrules.Rules.Bound).
+	if secret.ProjectChannels != "" && !secret.AirlockBound && (r.ListsPrivate() || r.PrivateChannelsNamed) {
 		return Decision{Outcome: Deny, Reason: ReasonProjectChannelsNeedAirlock, Source: secret.Source}, nil
 	}
 	withheld := slices.Contains(r.Withheld, name)
