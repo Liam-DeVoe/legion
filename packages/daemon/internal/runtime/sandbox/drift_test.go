@@ -1172,3 +1172,32 @@ func TestPodDriftAndReplacePodRefuseALocatorTheRuntimeDidNotMint(t *testing.T) {
 // replacement is due, so the runtime goes on. The parameter is required, since a replacement is
 // the one call that deletes an issue's disk and every caller states what makes it still due.
 func stillDue(context.Context) error { return nil }
+
+// A live pod built for a plan whose agents are all roles drifts on its slots once a later version
+// of the plan names an agent no role has, `implementer-2` here, so the update round opens over it and
+// the start of that agent, which waits for a pod with its slot, is not left to wait for ever. A pod
+// that holds a slot the plan no longer names does not drift for it: it runs every agent there is.
+func TestAPodThatLacksASlotOfItsPlanDrifts(t *testing.T) {
+	want := "slots architect, planner, implementer, tester, reviewer, merger, now architect, planner, implementer, tester, reviewer, merger, implementer-2"
+	slotsReasons := func(drifted []string) []string {
+		return slices.DeleteFunc(drifted, func(reason string) bool { return !strings.HasPrefix(reason, "slots ") })
+	}
+	g := newRig(t, nil, withPlanAgents(map[claim.Agent]claim.Role{"implementer": claim.RoleImplementer, "reviewer": claim.RoleReviewer}))
+	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
+	if drifted := slotsReasons(driftOf(t, g.ctx, g.r, loc)); len(drifted) > 0 {
+		t.Fatalf("PodDrift of a pod built with every slot of its plan = %q, want no slots reason", drifted)
+	}
+	g.store.plan(testTree, map[claim.Agent]claim.Role{
+		"implementer": claim.RoleImplementer, "reviewer": claim.RoleReviewer, "implementer-2": claim.RoleImplementer,
+	})
+	if drifted := slotsReasons(driftOf(t, g.ctx, g.r, loc)); !slices.Equal(drifted, []string{want}) {
+		t.Errorf("PodDrift once the plan names implementer-2 = %q, want %q", drifted, want)
+	}
+
+	held := newRig(t, nil, withPlanAgents(map[claim.Agent]claim.Role{"implementer-2": claim.RoleImplementer}))
+	kept := held.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
+	held.store.plan(testTree, nil)
+	if drifted := slotsReasons(driftOf(t, held.ctx, held.r, kept)); len(drifted) > 0 {
+		t.Errorf("PodDrift of a pod holding a slot its plan no longer names = %q, want no slots reason", drifted)
+	}
+}

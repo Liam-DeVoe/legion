@@ -401,6 +401,26 @@ func TestATokenEndsInItsAgent(t *testing.T) {
 	}
 }
 
+// A claim's token names the Dispatch key of its issue whole, whatever its agent's name: the key's
+// project, which the token lowercases, reads back upper-cased, and the token of an agent of any key
+// gives that key again. The controller's token names no issue.
+func TestATokenNamesTheKeyOfItsIssue(t *testing.T) {
+	for _, key := range []string{"INFRA-12", "LEGION-208", "A2B-1"} {
+		for _, agent := range []Agent{"implementer", "implementer-2", "security-reviewer"} {
+			token, err := AgentToken("legion", key, agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, ok := token.IssueKey(); !ok || got != key {
+				t.Errorf("IssueKey of %s = %q, %v; want %s", token, got, ok, key)
+			}
+		}
+	}
+	if key, ok := ControllerToken("legion").IssueKey(); ok {
+		t.Errorf("IssueKey of the controller's token = %q, want none: it names no issue", key)
+	}
+}
+
 // NewToken is the token of a role's agent, and it still refuses a name that is no role: its callers
 // read that refusal as "no claim of this key". A deployment's role can be any name of the role
 // grammar, an agent's name such as `implementer-2` among them, so the controller's name is the one

@@ -26,10 +26,13 @@ type credentialWaitRuntime struct {
 	waits map[claim.Role]bool
 }
 
+func (credentialWaitRuntime) PodLacksSlot(string, claim.Token) (string, bool) { return "", false }
+
 func (credentialWaitRuntime) PodLacksRole(string, claim.Role) (string, bool) { return "", false }
 
-func (r credentialWaitRuntime) SlotWaitsForCredential(_ string, slot claim.Role) (string, bool) {
-	waits, live := r.waits[slot]
+func (r credentialWaitRuntime) SlotWaitsForCredential(token claim.Token) (string, bool) {
+	_, agent, _ := token.Cut()
+	waits, live := r.waits[claim.Role(agent)]
 	if !live {
 		return "", true
 	}

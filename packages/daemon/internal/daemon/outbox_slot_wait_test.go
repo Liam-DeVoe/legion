@@ -1,0 +1,93 @@
+package daemon
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/wait"
+)
+
+// slotsRuntime is the fake runtime with an issue pod that holds every role of the deployment and
+// lacks the slot of each claim lacks names, with the uid of the pod (runtime.IssuePodRoles): the
+// runtime picks a claim's slot from its token, so the fake answers by token.
+type slotsRuntime struct {
+	*fake.Runtime
+	lacks map[claim.Token]string
+}
+
+func (r slotsRuntime) PodLacksSlot(_ string, token claim.Token) (string, bool) {
+	pod, lacks := r.lacks[token]
+	return pod, lacks
+}
+
+func (slotsRuntime) PodLacksRole(string, claim.Role) (string, bool) { return "", false }
+
+func (slotsRuntime) SlotWaitsForCredential(claim.Token) (string, bool) { return "", true }
+
+// The start of a second agent of one role, `…-implementer-2` on step 3 of `implementer reviewer
+// implementer`, waits on its row where the issue's pod lacks the slot of that agent's name, though
+// the pod holds the role implementer: a launch would go into a pod with no slot of that name, and
+// no start ends another agent's process to make room. It makes no claim, the runtime is asked for
+// nothing, and the agent `…-implementer`, whose slot the pod holds, runs on. Once the pod holds the
+// slot (its update round replaced it), the same row creates the claim and spawns it.
+func TestAStartOfAnAgentWhosePodLacksItsSlotWaits(t *testing.T) {
+	runner, sup, rt, issue := podWaitRunner(t, nil)
+	implementer, err := claim.AgentToken("legion", issue.Key, "implementer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := claim.AgentToken("legion", issue.Key, "implementer-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	slots := slotsRuntime{Runtime: rt, lacks: map[claim.Token]string{second: "pod-1"}}
+	sup.deps.Runtime = slots
+	start := func(id int64, token claim.Token) error {
+		row := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleImplementer, Claim: token, Task: "Build it.", Generation: issue.Generation}, time.Now())
+		row.ID = id
+		return runner.execute(context.Background(), row)
+	}
+	if err := start(97, implementer); err != nil {
+		t.Fatalf("the start of %s = %v, want it to create its claim", implementer, err)
+	}
+	testwait.WithinPolling(t, 5*time.Second, 10*time.Millisecond, "the implementer's spawn", func() bool { return len(rt.CallsOf("Spawn")) == 1 })
+
+	err = start(98, second)
+	if !errors.Is(err, wait.ErrWaiting) || !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
+		t.Errorf("the start of %s = %v, want a wait that is runtime.ErrAwaitsPodUpdate", second, err)
+	}
+	if err == nil || !strings.HasPrefix(err.Error(), pods.StartWaitsForPodPrefix) || !strings.Contains(err.Error(), "without implementer-2, the slot of the claim's agent") {
+		t.Errorf("the start's text = %v, want it to begin %q and name the slot implementer-2", err, pods.StartWaitsForPodPrefix)
+	}
+	if _, found := sup.Machine(second); found {
+		t.Errorf("the start made the claim %s, want none while it waits", second)
+	}
+	if spawns, resumes, suspends := rt.CallsOf("Spawn"), rt.CallsOf("Resume"), rt.CallsOf("Suspend"); len(spawns) != 1 || len(resumes)+len(suspends) > 0 {
+		t.Errorf("the runtime was asked %d spawns, %d resumes and %d suspends, want the implementer's one spawn alone", len(spawns), len(resumes), len(suspends))
+	}
+	if _, found := sup.Machine(implementer); !found {
+		t.Errorf("the claim %s is gone, want it running beside the wait", implementer)
+	}
+
+	delete(slots.lacks, second)
+	if err := start(98, second); err != nil {
+		t.Fatalf("the start of %s once its pod holds its slot = %v, want it to create its claim", second, err)
+	}
+	testwait.WithinPolling(t, 5*time.Second, 10*time.Millisecond, "the spawn of implementer-2", func() bool {
+		for _, call := range rt.CallsOf("Spawn") {
+			if call.Spec.Claim == second {
+				return true
+			}
+		}
+		return false
+	})
+}

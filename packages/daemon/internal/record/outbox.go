@@ -944,9 +944,9 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // reached, or has not moved (dispatch://INFRA-2614).
 //
 // A pod-wait-held notice names an issue whose pod lacks the slot of a start's claim or the role
-// of its step, built before the deployment defined that name, where the start waits for it (the
-// outbox's roleWaitsForItsPod), and nothing ends that wait until
-// an operator acts: the idle rule keeps the pod because an operator's suspension holds a claim of
+// of its step, built before the deployment defined or the issue's plan named that name, where the
+// start waits for it (the outbox's roleWaitsForItsPod), and nothing ends that wait until an
+// operator acts: the idle rule keeps the pod because an operator's suspension holds a claim of
 // it (the daemon's releaseUnownedPod, told once per streak of that hold), or the deployment's idle
 // release is off and no claim records a process in the pod, so no update round opens over it
 // (told once per wait that finds no process there). Its Role is the waiting role, and its Reason

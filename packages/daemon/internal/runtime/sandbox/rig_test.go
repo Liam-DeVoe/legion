@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -350,8 +351,9 @@ func launchOf(t *testing.T, r *Runtime, spec runtime.SpawnSpec) launch {
 // fakeStore is the runtime's durable state, in memory: every tree is live (its lifecycle open)
 // unless closed says its cleanup confirmed, a claim of an issue runs a process only when running
 // names it, in the tree it names, an issue's Sandbox belongs to a tree only when homes names it
-// (to none otherwise), and a claim is stored unretired only when unretired names it. The store's
-// own rule for a Sandbox's home is held by its tests (store.IssueSandboxHome); here a test sets it.
+// (to none otherwise), a claim is stored unretired only when unretired names it, and an issue's
+// plan names the agents agents gives it (none otherwise). The store's own rule for a Sandbox's
+// home is held by its tests (store.IssueSandboxHome); here a test sets it.
 type fakeStore struct {
 	mu        sync.Mutex
 	closed    map[string]bool
@@ -359,6 +361,7 @@ type fakeStore struct {
 	homes     map[string]string
 	unretired map[claim.Token]bool
 	claims    []supervise.Claim
+	agents    map[string]map[claim.Agent]claim.Role
 }
 
 // runningClaim is a claim of an issue that runs a process (token:state), in tree.
@@ -367,8 +370,21 @@ type runningClaim struct{ tree, claim string }
 func newFakeStore() *fakeStore {
 	return &fakeStore{
 		closed: map[string]bool{}, running: map[string]runningClaim{}, homes: map[string]string{},
-		unretired: map[claim.Token]bool{},
+		unretired: map[claim.Token]bool{}, agents: map[string]map[claim.Agent]claim.Role{},
 	}
+}
+
+func (s *fakeStore) PlanAgents(_ context.Context, _, issue string) (map[claim.Agent]claim.Role, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.agents[issue]), nil
+}
+
+// plan sets the agents of issue's plan in force.
+func (s *fakeStore) plan(issue string, agents map[claim.Agent]claim.Role) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.agents[issue] = agents
 }
 
 func (s *fakeStore) ClaimUnretired(_ context.Context, token claim.Token) (bool, error) {

@@ -127,6 +127,18 @@ func (t Token) Cut() (issue string, agent Agent, ok bool) {
 	return match[1], Agent(match[2]), true
 }
 
+// IssueKey is the Dispatch key of the issue t's claim is on, read back from the issue's part of t
+// (Cut): its project upper-cased, since a key's project is upper-case letters and digits, which
+// AgentToken lowercases one to one, then its number. ok is false where Cut's is.
+func (t Token) IssueKey() (string, bool) {
+	issue, _, ok := t.Cut()
+	if !ok {
+		return "", false
+	}
+	parts := strings.Split(issue, "-")
+	return strings.ToUpper(parts[2]) + "-" + parts[3], true
+}
+
 // ControllerToken is the project controller's role token, `legion-<project>-controller`
 // (legion-roles.ts:66-69). project is already a ProjectToken.
 func ControllerToken(project string) Token { return Token("legion-" + project + "-controller") }

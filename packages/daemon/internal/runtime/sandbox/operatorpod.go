@@ -155,7 +155,9 @@ func podVariables(pod Pod, launchSecrets []string, exchange bool) map[string]set
 // account it impersonates, and mounts no session key at all), which the shim would export into Oh
 // My Pi's environment under the provider key's name. roles are every role whose launcher a pod of
 // the deployment can run (the runtime's issue roles, then the controller), whose own volumes the
-// operator's may not name. launchSecrets are the secrets every launch's
+// operator's may not name; nor may an operator's volume take the form of any slot's volume
+// (slotVolumeForm), since an issue's plan can give a slot to an agent whose name no role has, which
+// no check here can know. launchSecrets are the secrets every launch's
 // spec carries, by name, and providersSecrets those of them the providers Secret carries, none of
 // which may be the session database's URL key. exchange is whether the deployment names an
 // exchange audience (runtime.kubernetes.agent_secrets.exchange_audience): only then are the
@@ -186,6 +188,10 @@ func CheckPod(pod Pod, roles []claim.Role, providerKeys map[string]string, tools
 	for i, volume := range pod.Volumes {
 		if slices.Contains(volumes, volume.Name) {
 			return fmt.Errorf("runtime.kubernetes.pod.volumes[%d].name %s is a volume Legion puts in every pod", i, volume.Name)
+		}
+		if prefix := slotVolumeForm(volume.Name); prefix != "" {
+			return fmt.Errorf("runtime.kubernetes.pod.volumes[%d].name %s has the form of a volume Legion gives each slot of a pod, %s-<slot>, where a slot is a role or any agent an issue's plan names: name it otherwise",
+				i, volume.Name, prefix)
 		}
 		if claim := volume.PersistentVolumeClaim; claim != nil && legionClaim(claim.ClaimName) {
 			return fmt.Errorf("runtime.kubernetes.pod.volumes[%d].persistent_volume_claim.name %s is a claim Legion makes for an issue's, a tree's or a repository cache's own volume: name a claim of your own", i, claim.ClaimName)
