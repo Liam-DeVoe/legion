@@ -2714,6 +2714,21 @@ func OwnerClaim(issue Issue) (claim.Token, error) {
 	return token, nil
 }
 
+// OwnerActsAs is the role whose App the owner's slot holds while the owner does a step of issue's
+// task, and false where the owner does none: the role of the step where the issue's task stands at
+// a step of the key owner (PlaceRole is the architect and StepRole names that step) and the issue
+// stands in the phase that step runs as, unheld. Everywhere else the owner's slot holds the App of
+// the owner's own role: at the owner's retro, which is no step of the plan and which the owner does
+// as itself, at a step of another agent, with no plan rows, and while the issue is held, which a
+// stopped task holds too, since the owner does no step then (the route complete_step refuses a
+// report of it).
+func OwnerActsAs(issue Issue) (claim.Role, bool) {
+	if issue.Hold != nil || issue.PlaceRole != claim.RoleArchitect || issue.StepRole == "" || plan.RunsAs(string(issue.StepRole)) != issue.Phase {
+		return "", false
+	}
+	return issue.StepRole, true
+}
+
 // OwnerRule is which architects own an issue for an architect's request on it, the rule the
 // request's route judges and its fact judges again under the fact lock (workflow's Engine.Apply):
 // OwnerOfTree, every architect of the issue's tree (ArchitectOfTree), for register_plan and
