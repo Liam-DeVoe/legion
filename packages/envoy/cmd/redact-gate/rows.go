@@ -16,8 +16,8 @@ import (
 )
 
 // baseline runs the row's test unmutated in a scratch copy of the snapshot (stage 4); it must
-// pass. A test shared by several rows runs once. The longest correct run is kept: the inventory's
-// row_timeout is twice it, as measured.
+// pass. A test shared by several rows runs once. The longest correct run is kept. A run past its
+// bound is UNKNOWN, not a failure.
 func (g *gate) baseline(r *row, baselines map[string]error) {
 	key := r.Package + r.File + "\x00" + r.Test
 	if _, done := baselines[key]; !done {
@@ -33,7 +33,12 @@ func (g *gate) baseline(r *row, baselines map[string]error) {
 		}
 	}
 	if err := baselines[key]; err != nil {
-		g.fail("stage 4 (baseline) row %s: the unmutated test %s %v", r.ID, r.Test, err)
+		var late lateRun
+		if errors.As(err, &late) {
+			g.unknown("stage 4 (baseline) row %s: the unmutated test %s %v", r.ID, r.Test, err)
+		} else {
+			g.fail("stage 4 (baseline) row %s: the unmutated test %s %v", r.ID, r.Test, err)
+		}
 	}
 }
 
@@ -65,11 +70,15 @@ func (g *gate) gateRow(r *row, at [2]int) {
 		return
 	}
 	res := g.runTest(copyDir, r)
+	if res.timedOut {
+		g.unknown("stage 5 (mutation) row %s (%q in %s): the mutant's test %v", r.ID, r.Mutation.Preimage, r.Function, res.late())
+		return
+	}
 	if verdict := res.evidence(r); verdict != "" {
 		g.fail("stage 5 (mutation) row %s (%q in %s): %s", r.ID, r.Mutation.Preimage, r.Function, verdict)
 		return
 	}
-	fmt.Fprintf(g.out, "PASS stage 5 (mutation) row %s: the mutant fails %s at REDACT-ASSERT %s, its captured output naming a marker (%s)\n", r.ID, r.Test, r.Capture, res.elapsed.Round(time.Second))
+	fmt.Fprintf(g.out, "PASS stage 5 (mutation) row %s: the mutant fails %s at REDACT-ASSERT %s, its captured output naming a marker (%s, under its bound of %s)\n", r.ID, r.Test, r.Capture, res.elapsed.Round(time.Second), res.bound)
 }
 
 // onlyChange checks that the copy's mutated file differs from the snapshot's by the one
@@ -171,7 +180,27 @@ type result struct {
 	captures                            map[string][]string
 	blind                               []string // the print test's blind rows ("blind: ...")
 	elapsed                             time.Duration
+	startup, bound                      time.Duration // the start-up run's time, and the run's bound
+	stall                               string        // what a run past its bound printed of it
 	note                                string
+}
+
+// lateRun is a run that went past its bound: UNKNOWN, neither a pass nor a failure.
+type lateRun struct {
+	bound, startup time.Duration
+	stall          string
+}
+
+func (l lateRun) Error() string {
+	how := ""
+	if l.startup > 0 {
+		how = fmt.Sprintf(" (row_timeout and four times its start-up run's %s)", l.startup)
+	}
+	return fmt.Sprintf("went past its bound of %s%s, so it neither passed nor failed: run it again\n%s", l.bound, how, l.stall)
+}
+
+func (res result) late() lateRun {
+	return lateRun{bound: res.bound, startup: res.startup, stall: res.stall}
 }
 
 var (
@@ -200,7 +229,7 @@ func (res result) baselineErr() error {
 	case res.compileError:
 		return fmt.Errorf("does not compile: %s", res.note)
 	case res.timedOut:
-		return errors.New("timed out")
+		return res.late()
 	case !res.ran:
 		return errors.New("is missing: it did not run")
 	case res.failed:
@@ -229,7 +258,7 @@ func (res result) evidence(r *row) string {
 	case res.compileError:
 		return "the mutant does not compile: " + res.note
 	case res.timedOut:
-		return "the mutant's test timed out"
+		return "the mutant's test " + res.late().Error()
 	case !res.ran:
 		return "the test is missing"
 	case !res.failed:
@@ -284,10 +313,16 @@ func (res *result) scan(text string) {
 	res.blind = append(res.blind, blindLine.FindAllString(text, -1)...)
 }
 
-// runTest runs the row's test in the copy, with the gate's timeout. Each test's output is read
-// whole once the run ends, joined in the order its events came: test2json splits a line longer
-// than its buffer across several output events, and a REDACT-CAPTURE line of a long page is one,
-// so a capture read event by event would be cut short.
+// runTest runs the row's test in the copy, under a bound derived in the same run. Each test's
+// output is read whole once the run ends, joined in the order its events came: test2json splits a
+// line longer than its buffer across several output events, and a REDACT-CAPTURE line of a long
+// page is one, so a capture read event by event would be cut short.
+//
+// The bound is derived as check-redact-remote-text.sh derives each package's, whose comment says
+// why: the start-up run, `go test -json -count=1 -run '^$'` of the row's package in the copy,
+// timed, builds and links its test binary and runs it with no test under the box's load of that
+// moment; the bound is row_timeout, the row's own budget, plus four times that time. A start-up
+// run that fails is not read: the run after it fails the same way, and that run is read.
 func (g *gate) runTest(copyDir string, r *row) result {
 	res := result{captures: map[string][]string{}}
 	start := time.Now()
@@ -299,11 +334,18 @@ func (g *gate) runTest(copyDir string, r *row) result {
 		res.compileError, res.note = true, err.Error()
 		return res
 	}
-	cmd := exec.Command("go", "test", "-json", "-count=1", "-v", "-timeout", g.rowTimeout.String(), "-run", "^"+regexp.QuoteMeta(r.Test)+"$", r.Package)
+	startup := exec.Command("go", "test", "-json", "-count=1", "-run", "^$", r.Package)
+	startup.Dir = filepath.Join(copyDir, mod)
+	_ = startup.Run()
+	res.startup = ceilSecond(time.Since(start))
+	res.bound = g.rowTimeout + 4*res.startup
+	start = time.Now()
+	cmd := exec.Command("go", "test", "-json", "-count=1", "-v", "-timeout", res.bound.String(), "-run", "^"+regexp.QuoteMeta(r.Test)+"$", r.Package)
 	cmd.Dir = filepath.Join(copyDir, mod)
 	out, _ := cmd.CombinedOutput()
 	res.elapsed = time.Since(start)
 	output := map[string]*strings.Builder{}
+	var printed strings.Builder // all the test binary printed, in order, for a run past its bound
 	var tests []string
 	for _, line := range strings.Split(string(out), "\n") {
 		if !strings.HasPrefix(line, "{") {
@@ -316,7 +358,11 @@ func (g *gate) runTest(copyDir string, r *row) result {
 		if json.Unmarshal([]byte(line), &e) != nil {
 			continue
 		}
-		if strings.Contains(e.Output, "panic: test timed out") {
+		if e.Action == "output" {
+			printed.WriteString(e.Output)
+		}
+		// The binary's own panic at its -timeout, or the go command's kill a minute after it.
+		if strings.Contains(e.Output, "panic: test timed out") || strings.Contains(e.Output, "*** Test killed with quit: ran too long") {
 			res.timedOut = true
 		}
 		if e.Action == "build-fail" || strings.Contains(e.Output, "[build failed]") {
@@ -344,14 +390,106 @@ func (g *gate) runTest(copyDir string, r *row) result {
 	for _, test := range tests {
 		res.scan(output[test].String())
 	}
+	if res.timedOut {
+		res.stall = stall(printed.String())
+	}
 	return res
+}
+
+func ceilSecond(d time.Duration) time.Duration {
+	if t := d.Truncate(time.Second); t < d {
+		return t + time.Second
+	}
+	return d
+}
+
+var (
+	goroutineHead = regexp.MustCompile(`^goroutine \d+ `)
+	// testFrame is a frame of a test function in a goroutine dump: pkg.TestX( or pkg.TestX.func1(.
+	testFrame = regexp.MustCompile(`\.(Test(?:[A-Z0-9_]\w*)?)[.(]`)
+)
+
+// stall is what a run past its bound printed of it: the timeout's panic line with the tests it was
+// running, the go command's kill line, and the goroutines of the dump that run a test - each with
+// a frame of a test function other than TestMain - or, where none does, those in TestMain (a start
+// or an end past the bound). check-redact-remote-text.sh prints the same for a package.
+func stall(text string) string {
+	lines := strings.Split(text, "\n")
+	var shown []string
+	var blocks [][]string
+	var block []string
+	panicked := false
+	for i, line := range lines {
+		switch {
+		case !panicked && strings.HasPrefix(line, "panic: test timed out after "):
+			panicked = true
+			shown = append(shown, line)
+			for _, next := range lines[i+1:] {
+				if strings.TrimSpace(next) == "" {
+					break
+				}
+				shown = append(shown, next)
+			}
+		case strings.HasPrefix(line, "*** Test killed with quit: ran too long"):
+			shown = append(shown, line)
+		}
+		switch {
+		case goroutineHead.MatchString(line):
+			if block != nil {
+				blocks = append(blocks, block)
+			}
+			block = []string{line}
+		case block != nil && strings.TrimSpace(line) == "":
+			blocks = append(blocks, block)
+			block = nil
+		case block != nil:
+			block = append(block, line)
+		}
+	}
+	if block != nil {
+		blocks = append(blocks, block)
+	}
+	runs := func(b []string, main bool) bool {
+		for _, line := range b {
+			if m := testFrame.FindStringSubmatch(line); m != nil && (m[1] == "TestMain") == main {
+				return true
+			}
+		}
+		return false
+	}
+	var running [][]string
+	for _, main := range []bool{false, true} {
+		for _, b := range blocks {
+			if runs(b, main) {
+				running = append(running, b)
+			}
+		}
+		if len(running) > 0 {
+			break
+		}
+	}
+	for i, b := range running {
+		if i == 4 {
+			shown = append(shown, fmt.Sprintf("... (%d more goroutines running a test)", len(running)-4))
+			break
+		}
+		if len(b) > 24 {
+			b = append(b[:24:24], fmt.Sprintf("... (%d more lines)", len(b)-24))
+		}
+		shown = append(append(shown, ""), b...)
+	}
+	if len(running) == 0 {
+		shown = append(shown, "(no goroutine of the dump runs a test)")
+	}
+	return strings.Join(shown, "\n")
 }
 
 func (g *gate) runBun(copyDir string, r *row, res result, start time.Time) result {
 	pkg := strings.Join(strings.SplitN(r.File, "/", 3)[:2], "/")
 	report := filepath.Join(g.work, "junit.xml")
 	_ = os.Remove(report)
-	cmd := exec.Command("timeout", strconv.Itoa(int(g.rowTimeout.Seconds())), "bun", "test", "--reporter=junit", "--reporter-outfile="+report, strings.TrimPrefix(r.File, pkg+"/"))
+	res.bound = g.rowTimeout
+	cmd := exec.Command("timeout", strconv.Itoa(int(res.bound.Seconds())), "bun", "test", "--reporter=junit", "--reporter-outfile="+report, strings.TrimPrefix(r.File, pkg+"/"))
 	cmd.Dir = filepath.Join(copyDir, pkg)
 	out, err := cmd.CombinedOutput()
 	res.elapsed = time.Since(start)

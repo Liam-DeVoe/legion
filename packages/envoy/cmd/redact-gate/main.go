@@ -33,6 +33,11 @@
 //  5. mutation: each row's mutation, applied alone, makes its test fail at its designated
 //     assertion with a marker in the output the test captured there.
 //
+// Each run of stages 4 and 5 has a bound derived in the same run: row_timeout, the row's own
+// budget, plus four times its start-up run (runTest). A run past its bound is UNKNOWN, neither a
+// pass nor a failure: its stage stops, the gate prints the timeout's panic and the goroutine
+// running the test, and it exits 3 when nothing failed.
+//
 // -stage plan runs stages 1-3; -stage mutate runs 1-3 again and then 4 and 5. -report prints
 // the censuses' findings without judging them against rows. -controls runs the check's negative
 // controls (controls.go).
@@ -266,11 +271,12 @@ type gate struct {
 	inv                       inventory
 	base, head                string
 	snapshot                  string
-	rowTimeout                time.Duration
+	rowTimeout                time.Duration // each row's own budget; a run's bound adds its start-up (runTest)
 	longest                   time.Duration // the longest correct run of stage 4
 	longestRow                string
 	valueOf                   map[string][]valueOfSite // reflect.ValueOf sites by package
 	failures                  int
+	unknowns                  int // runs past their bound (stages 4 and 5): neither a pass nor a failure
 	out                       io.Writer
 }
 
@@ -331,7 +337,7 @@ type options struct {
 }
 
 // run is one gate run. It answers the exit status: 0 passed, 1 a stage failed, 2 the inventory
-// was refused.
+// was refused, 3 a run of stage 4 or 5 went past its bound and nothing failed (UNKNOWN).
 func run(repo, inventoryPath string, o options, out io.Writer) int {
 	g := &gate{repo: repo, inventoryPath: inventoryPath, out: out}
 	if err := g.load(!o.report); err != nil {
@@ -404,12 +410,18 @@ func run(repo, inventoryPath string, o options, out io.Writer) int {
 	if g.failures > 0 {
 		return g.stop(4, "baseline")
 	}
-	fmt.Fprintf(out, "PASS stage 4 (baseline): %d rows' tests pass unmutated; the longest correct run is %s (row %s), and row_timeout is %s\n", len(gated), g.longest.Round(time.Second), g.longestRow, g.rowTimeout)
+	if g.unknowns > 0 {
+		return g.stopUnknown(4, "baseline")
+	}
+	fmt.Fprintf(out, "PASS stage 4 (baseline): %d rows' tests pass unmutated; the longest correct run is %s (row %s); each run's bound is row_timeout, %s, plus four times its start-up run\n", len(gated), g.longest.Round(time.Second), g.longestRow, g.rowTimeout)
 	for _, r := range gated {
 		g.gateRow(r, ranges[r])
 	}
 	if g.failures > 0 {
 		return g.stop(5, "mutation")
+	}
+	if g.unknowns > 0 {
+		return g.stopUnknown(5, "mutation")
 	}
 	fmt.Fprintf(out, "PASS stage 5 (mutation): %d mutants caught; the gate ran %s\n", len(gated), time.Since(start).Round(time.Second))
 	return 0
@@ -420,9 +432,22 @@ func (g *gate) stop(stage int, name string) int {
 	return 1
 }
 
+// stopUnknown stops a stage none of whose runs failed but some went past their bound: their
+// verdict is UNKNOWN, so the gate's is too.
+func (g *gate) stopUnknown(stage int, name string) int {
+	fmt.Fprintf(g.out, "gate: stopped at stage %d (%s), UNKNOWN: %d runs went past their bound and none failed; run it again\n", stage, name, g.unknowns)
+	return 3
+}
+
 func (g *gate) fail(format string, args ...any) {
 	g.failures++
 	fmt.Fprintf(g.out, "FAIL "+format+"\n", args...)
+}
+
+// unknown reports a run past its bound, which is neither a pass nor a failure.
+func (g *gate) unknown(format string, args ...any) {
+	g.unknowns++
+	fmt.Fprintf(g.out, "UNKNOWN "+format+"\n", args...)
 }
 
 func (g *gate) load(needSites bool) error {
