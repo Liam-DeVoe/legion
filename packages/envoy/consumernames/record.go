@@ -83,8 +83,21 @@ type Record struct {
 	LastFloor *Floor `json:"last_floor,omitempty"`
 	// Retired are names never selected again; cleanup deletes only these (Names.Cleanup).
 	Retired []string `json:"retired,omitempty"`
+	// Abandoned are the retired candidates whose create may still have been in flight when they
+	// were retired (Step 0's or a retry's), each with the time until which it can still land: the
+	// retirement and the create's own bound (Op.CreateWithin). Cleanup drops one the server does not
+	// hold only once it reads it absent at or after that time, so a create that lands after the
+	// candidate was retired leaves a consumer the record still names, which the next cleanup
+	// deletes. Each is also in Retired.
+	Abandoned []Abandoned `json:"abandoned,omitempty"`
 	// Restore is a rollback in progress, which the rollback command writes; Names never writes it.
 	Restore *Restore `json:"restore,omitempty"`
+}
+
+// Abandoned is a retired candidate whose create may still land until Until.
+type Abandoned struct {
+	Name  string    `json:"name"`
+	Until time.Time `json:"until"`
 }
 
 // Op is an operation in flight.
@@ -103,6 +116,10 @@ type Op struct {
 	// still the start the record held before, which a call that closes the replace without creating
 	// keeps.
 	StartPending bool `json:"start_pending,omitempty"`
+	// CreateWithin is how long the reserving process's create of Candidate can run (its
+	// Config.CreateBound): a process that retires the candidate without seeing its create end
+	// keeps it named for that long after (Record.Abandoned).
+	CreateWithin time.Duration `json:"create_within,omitempty"`
 	// Native is the native policy the candidate's create keeps, for a native first create, whose
 	// Record.Start is then the numeric boundary recovery creates at instead, or 0 where the first
 	// create read no stream (Config.NativeFirstCreate): a retry then keeps the native policy too.
@@ -141,6 +158,7 @@ func (r Record) clone() Record {
 		c.Restore = &restore
 	}
 	c.Retired = slices.Clone(r.Retired)
+	c.Abandoned = slices.Clone(r.Abandoned)
 	return c
 }
 
@@ -152,6 +170,42 @@ func (r Record) retire(names ...string) Record {
 		}
 	}
 	return r
+}
+
+// abandon is r with candidate retired (retire) and kept until until, the time its create can no
+// longer land (Record.Abandoned).
+func (r Record) abandon(candidate string, until time.Time) Record {
+	if candidate == "" {
+		return r
+	}
+	r = r.retire(candidate)
+	r.Abandoned = append(slices.DeleteFunc(slices.Clone(r.Abandoned), func(a Abandoned) bool { return a.Name == candidate }),
+		Abandoned{Name: candidate, Until: until})
+	return r
+}
+
+// dropRetired is r with each retired name gone reports removed from Retired and Abandoned.
+func (r Record) dropRetired(gone func(name string) bool) Record {
+	r.Retired = slices.DeleteFunc(slices.Clone(r.Retired), gone)
+	if len(r.Retired) == 0 {
+		r.Retired = nil
+	}
+	r.Abandoned = slices.DeleteFunc(slices.Clone(r.Abandoned), func(a Abandoned) bool { return gone(a.Name) })
+	if len(r.Abandoned) == 0 {
+		r.Abandoned = nil
+	}
+	return r
+}
+
+// abandonedUntil is the time until which r's retired name can still land, and false for a name
+// no create of which was in flight when it was retired.
+func (r Record) abandonedUntil(name string) (time.Time, bool) {
+	for _, a := range r.Abandoned {
+		if a.Name == name {
+			return a.Until, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // The families a store's sentinel names (StoreState.Family): the session family's bucket,
@@ -449,6 +503,11 @@ func (r Record) check(key string) error {
 			return fmt.Errorf("its retired name %q names no consumer", name)
 		}
 	}
+	for _, a := range r.Abandoned {
+		if !slices.Contains(r.Retired, a.Name) || a.Until.IsZero() {
+			return fmt.Errorf("its abandoned candidate %+v is no retired name with a time", a)
+		}
+	}
 	if r.Restore != nil && (!consumerName(r.Restore.Target) || r.Restore.Phase == "") {
 		return fmt.Errorf("its restore %+v names no target or no phase", *r.Restore)
 	}
@@ -461,6 +520,8 @@ func (op Op) check() error {
 		return fmt.Errorf("its %s operation was reserved at no time", op.Kind)
 	case op.Native != "" && op.Native != NativeNew && op.Native != NativeAll:
 		return fmt.Errorf("its operation keeps the native policy %q, which is none", op.Native)
+	case op.CreateWithin < 0:
+		return fmt.Errorf("its operation's create bound %s is negative", op.CreateWithin)
 	}
 	switch op.Kind {
 	case OpCreate:

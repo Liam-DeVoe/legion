@@ -80,7 +80,7 @@ func (n *Names) abandon(ctx context.Context, sel Selection) (Selection, error) {
 			return sel, stepError(sel.Logical, OperationRecover, op.Old, err)
 		}
 	}
-	record := sel.Record.clone().retire(op.Candidate)
+	record := n.abandonCandidate(sel.Record.clone(), *op)
 	record.Op = nil
 	next, err := n.write(ctx, sel, record)
 	if err != nil {

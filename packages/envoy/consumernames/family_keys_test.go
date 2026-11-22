@@ -103,7 +103,7 @@ func TestAReaderOfTheTableDeletesNoConsumerOfAKeyOutsideItsFamily(t *testing.T) 
 	ctx := context.Background()
 	reader := func(h *harness, naming Naming) *Names {
 		cfg := naming.names().cfg
-		cfg.Store, cfg.Server, cfg.Owner, cfg.Now = h.store, h.server, "reader", h.clock.Now
+		cfg.Store, cfg.Server, cfg.Owner, cfg.Now, cfg.CreateBound = h.store, h.server, "reader", h.clock.Now, testCreateBound
 		cfg.Floor = func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream }
 		cfg.StreamID = func(context.Context) (string, error) { return "stream-1", nil }
 		return New(cfg)

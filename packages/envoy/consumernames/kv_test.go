@@ -118,13 +118,14 @@ func newLiveStoreAt(t *testing.T, uri string, state *StoreState, replicas int) *
 
 func (l *liveStore) names(owner string) *Names {
 	return New(Config{
-		Store:    l.store,
-		Server:   l.family,
-		Prefix:   func(string) string { return "session" },
-		Fixed:    func(string) string { return "session" },
-		Floor:    func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
-		StreamID: func(context.Context) (string, error) { return "names-stream", nil },
-		Owner:    owner,
+		Store:       l.store,
+		Server:      l.family,
+		Prefix:      func(string) string { return "session" },
+		Fixed:       func(string) string { return "session" },
+		Floor:       func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
+		StreamID:    func(context.Context) (string, error) { return "names-stream", nil },
+		Owner:       owner,
+		CreateBound: testCreateBound,
 	})
 }
 
@@ -401,7 +402,7 @@ func TestNoConsumerNameIsCreatedTwice(t *testing.T) {
 	}
 	recovery := New(Config{Store: live.store, Server: live.family, Prefix: func(string) string { return "session" }, Fixed: func(string) string { return "session" },
 		Floor: func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream }, StreamID: func(context.Context) (string, error) { return "names-stream", nil },
-		Owner: "p2", SettleAge: time.Millisecond})
+		Owner: "p2", SettleAge: time.Millisecond, CreateBound: testCreateBound})
 	if _, err := recovery.Select(ctx, "ses-1", create); err != nil {
 		t.Fatal(err)
 	}

@@ -40,15 +40,22 @@ revision:
 | --- | --- |
 | `key` | the key the record is stored under (below); a read refuses a record carrying any other |
 | `current` | the selected physical name, or empty |
-| `op` | the operation in flight: `create`, `replace` or `delete`, with its owner, candidate, old name, reservation time, `floor_recorded`, and `start_pending` for a replace whose start is read from its old name after the reservation (the record's saved start stands until then, and stays if the replace closes without a create) |
+| `op` | the operation in flight: `create`, `replace` or `delete`, with its owner, candidate, old name, reservation time, `floor_recorded`, `create_within` (the bound the reserving process's create of the candidate runs under, `Config.CreateBound`), and `start_pending` for a replace whose start is read from its old name after the reservation (the record's saved start stands until then, and stays if the replace closes without a create) |
 | `start` | the saved start, written before any destructive step |
 | `last_floor` | the current consumer's last ack floor, with the name and the stream identity it was read on |
 | `retired` | names never selected again; only these are ever deleted by a cleanup |
+| `abandoned` | the retired candidates whose create may still have been in flight when Step 0 or a retry retired them, each with the time until which it can still land: the retirement and the operation's `create_within` |
 | `restore` | a rollback in progress |
 
 - **Lifetime.** A record is never deleted and never expires. Publishing a new `current` clears
   `last_floor`. A replaced predecessor whose delete the server confirmed leaves `retired` again;
-  one whose delete failed stays there for the cleanup.
+  one whose delete failed stays there for the cleanup. A cleanup drops a retired name the server
+  does not hold, except an abandoned candidate read absent before its time has passed: its create
+  can still land, and the consumer it makes must stay named, so the next cleanup deletes it. Names
+  ends each create at the family's `Config.CreateBound`, the bound its requests run under: the
+  session family's consumer requests' 10 s, the listener's durable calls' 10 s. A create the server
+  applies later still, past the bound its client waited, is a stated limit: the consumer it leaves
+  is named by no record, and the stream's inactive threshold removes it.
 - **Where records live, and their keys.** A store reads and writes only its own family's
   sentinel and records:
   - The session family keeps its records in the KV bucket `envoy_session_consumers`

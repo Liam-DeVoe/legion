@@ -102,6 +102,9 @@ func newFreshSessions(s *SessionConsumers) *freshSessions {
 		},
 		Metadata: naming.Metadata,
 		CheckKey: naming.CheckKey,
+		// Each create is a consumer request with no deadline of its own, which request bounds by
+		// storedMessageWait: the bound a create's candidate is kept named for once retired.
+		CreateBound: storedMessageWait,
 		// The candidate as the server answers it, against the whole configuration a session
 		// consumer's create gives (freshConfig, ConsumerAdoptable): one that differs in a setting no
 		// update changes is refused. Its start Names checks, and every setting an update changes is

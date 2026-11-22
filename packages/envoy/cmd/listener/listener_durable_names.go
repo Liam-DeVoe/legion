@@ -82,8 +82,11 @@ func durableNames(client *bus.Client, durable string) *consumernames.Names {
 			return info.Config.Metadata[bus.StreamIDMetadataKey], nil
 		},
 		CheckKey: naming.CheckKey,
-		Metadata: naming.Metadata,
-		Owner:    fmt.Sprintf("%s/%s/%d", durable, host, os.Getpid()),
+		// Every call on the durable's names runs within durableNamesTimeout (boundedContext), its
+		// creates among them: the bound a create's candidate is kept named for once retired.
+		CreateBound: durableNamesTimeout,
+		Metadata:    naming.Metadata,
+		Owner:       fmt.Sprintf("%s/%s/%d", durable, host, os.Getpid()),
 		// The candidate as the server answers it, against the whole configuration the durable's
 		// create gives (durableCreateConfig, bus.Client.ConsumerAdoptable): one that differs in a
 		// setting no update changes, a push consumer delivering to a reply inbox, explicit acks,
