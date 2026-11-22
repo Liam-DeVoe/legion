@@ -316,15 +316,19 @@ func liveClaim(i int, token claim.Token, contract int) supervise.Claim {
 // startWaveDaemon runs a daemon over rt whose machines keep clock's time and whose log is
 // written as JSON to logged, with its orphan sweep an hour out unless tune moves it: a sweep on
 // the wall clock while a test holds the machines' own would reap and re-post on a cadence of its
-// own. Its machines' claim writes are bounded by the test binary's deadline less testwait's
-// margin (testwait.Remaining) rather than supervise's five seconds: a launch whose write that
-// bound cut is tried again at the probe interval on clock, an hour on, which no test moves to,
-// so on a loaded machine a turn whose write the store answered in six seconds launched nothing.
+// own. Its machines' claim writes end by the test binary's deadline less testwait's margin
+// (claimWriteUntil, a moment read once here and the same for every write, however late the write
+// begins) rather than five seconds after each begins: a launch whose write that bound cut is tried
+// again at the probe interval on clock, an hour on, which no test moves to, so on a loaded machine
+// a turn whose write the store answered in six seconds launched nothing. A wake's turn runs on the
+// test's goroutine (advanceTo), so a store that never answers holds that goroutine until the
+// moment and no later: the wait that follows then asks once and fails the row by name, before Go's
+// alarm.
 func startWaveDaemon(t *testing.T, cfg config.Config, clock *waveClock, rt *waveRuntime, logged *syncBuffer, tune func(*overrides)) *daemon {
 	t.Helper()
 	o := fakeRuntime(rt, &built{})
 	o.clock = clock
-	o.claimWrite = testwait.Remaining(t)
+	o.claimWriteUntil = time.Now().Add(testwait.Remaining(t))
 	o.orphanSweep = time.Hour
 	if tune != nil {
 		tune(&o)

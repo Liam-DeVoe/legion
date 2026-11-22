@@ -329,7 +329,7 @@ func (m *Machine) launchActivity(ctx context.Context) (ActivityReport, bool) {
 	if m.deps.ClaimActivity == nil {
 		return ActivityReport{}, false
 	}
-	reading, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
+	reading, cancel := m.deps.claimWriting(ctx)
 	defer cancel()
 	report, held, err := m.deps.ClaimActivity(reading, m.claim.Token, m.claim.Generation)
 	if err != nil {

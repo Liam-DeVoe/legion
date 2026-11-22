@@ -926,9 +926,15 @@ type Timeouts struct {
 	// connection's own patience: every other event for the claim queues behind the decision in
 	// flight, and a machine whose lock is held through an outage decides nothing at all. No
 	// setting names it, because the bound answers a question about the write rather than about a
-	// deployment, and internal/daemon's run sets it only for a whole-daemon test whose machines
-	// run on a clock the test moves (its overrides.claimWrite). Zero takes defaultClaimWrite.
+	// deployment, and no caller in internal/daemon sets it. Zero takes defaultClaimWrite.
 	ClaimWrite time.Duration
+	// ClaimWriteUntil, when not zero, replaces ClaimWrite with a moment every claim and delivery
+	// write must end by, whenever it starts. No setting names it either: internal/daemon's run sets
+	// it only for a whole-daemon test whose machines run on a clock the test moves (its
+	// overrides.claimWriteUntil), where a write ClaimWrite cut short is tried again at a probe
+	// interval that clock never reaches, and where the moment is the test binary's deadline less
+	// testwait's margin, so a store that never answers fails the row by name before Go's alarm.
+	ClaimWriteUntil time.Time
 }
 
 // Deps is what a machine is built from.
@@ -1238,6 +1244,15 @@ func (d Deps) claimWrite() time.Duration {
 		return defaultClaimWrite
 	}
 	return d.Timeouts.ClaimWrite
+}
+
+// claimWriting is ctx under the claim-write deadline: Timeouts.ClaimWriteUntil when it names one,
+// a moment rather than a span, else claimWrite from now.
+func (d Deps) claimWriting(ctx context.Context) (context.Context, context.CancelFunc) {
+	if until := d.Timeouts.ClaimWriteUntil; !until.IsZero() {
+		return context.WithDeadline(ctx, until)
+	}
+	return context.WithTimeout(ctx, d.claimWrite())
 }
 
 // RefusedError is a request the claim does not allow — the answer an API route gives its caller
@@ -4182,7 +4197,7 @@ func (m *Machine) forgetSend() {
 // the machine's lock for the length of the outage; a write it cuts short is owed and made again
 // at the claim's next decision (owes, repair).
 func (m *Machine) write(ctx context.Context, call func(context.Context) error) error {
-	writing, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
+	writing, cancel := m.deps.claimWriting(ctx)
 	defer cancel()
 	return call(writing)
 }
