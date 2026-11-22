@@ -289,11 +289,30 @@ func legionVolumeNames(roles []claim.Role, exchange bool) []string {
 		names = append(names, agentSecretsExchangeVolume)
 	}
 	for _, role := range roles {
-		names = append(names, roleVolume("launcher", role), roleVolume("private", role), roleVolume(stateVolume, role), roleVolume(ghVolume, role),
-			roleVolume(agentSecretsKeyVolume, role))
+		for _, prefix := range slotVolumePrefixes {
+			names = append(names, roleVolume(prefix, role))
+		}
 	}
 	slices.Sort(names)
 	return names
+}
+
+// slotVolumePrefixes are the prefixes of the volumes Legion gives each slot of a pod, each named
+// roleVolume(prefix, slot): its launcher token, private, state and gh directories, and its key
+// directory where the pod enrolls with the secrets broker.
+var slotVolumePrefixes = []string{"launcher", "private", stateVolume, ghVolume, agentSecretsKeyVolume}
+
+// slotVolumeForm is the prefix of slotVolumePrefixes whose form name has, `<prefix>-<slot>` for a
+// slot of any name of the agent grammar, and "" where it has none. A slot is a role's or an agent's
+// of an issue's plan, whose name no check at the daemon's boot can know, so an operator's volume of
+// that form is refused whatever the roles (CheckPod).
+func slotVolumeForm(name string) string {
+	for _, prefix := range slotVolumePrefixes {
+		if slot, ok := strings.CutPrefix(name, prefix+"-"); ok && (claim.IsRole(claim.Role(slot)) || claim.Role(slot) == claim.RoleController) {
+			return prefix
+		}
+	}
+	return ""
 }
 
 // legionMountPaths are where Legion mounts a volume in the containers the operator's mounts join,

@@ -12,10 +12,35 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
+
+// An operator's pod volume may not take the form of a volume Legion gives a slot, `<launcher,
+// private, state, gh or agent-secrets-key>-<name>` for any name of the agent grammar: an issue's
+// plan can name an agent whose name no role has, `implementer-2`, and that agent's slot volumes
+// would collide with such a volume at its pod's build, which no check at the daemon's boot could
+// see by the plan, since no plan is known then. A name of another form stays the operator's.
+func TestAnOperatorVolumeMayNotTakeTheFormOfASlotsVolume(t *testing.T) {
+	legion := append(slices.Clone(claim.Roles), claim.RoleController)
+	check := func(name string) error {
+		pod := Pod{Volumes: []corev1.Volume{{Name: name, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}}
+		return CheckPod(pod, legion, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false)
+	}
+	for _, name := range []string{"state-implementer-2", "launcher-security-reviewer", "private-a", "gh-implementer-3", "agent-secrets-key-checker"} {
+		want := "runtime.kubernetes.pod.volumes[0].name " + name + " has the form of a volume Legion gives each slot of a pod"
+		if err := check(name); err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("CheckPod of an operator volume %s = %v, want a refusal beginning %q", name, err, want)
+		}
+	}
+	for _, name := range []string{"operator-extra", "state", "statefile", "state-2", "gh-", "launchers-a"} {
+		if err := check(name); err != nil {
+			t.Errorf("CheckPod of an operator volume %s = %v, want it taken: it has no slot's form", name, err)
+		}
+	}
+}
 
 // secondImplementer is the agent of a plan's second implementer step on the rig's issue: a name
 // that is no role of the runtime.
