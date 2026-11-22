@@ -267,7 +267,10 @@ func decodeExact(s string, n int) ([]byte, bool) {
 // parted by whitespace or commas, each the unpadded base64url of a 32-byte Ed25519 public key, as
 // BROKER_NATS_HOLD_SIGNING_KEYS and every command that verifies the hold's rows write them. An entry
 // that is not one is refused naming setting and the entry's place in the list, never its text,
-// since text pasted there in error may be a private half. Blank text is no key and no error.
+// since text pasted there in error may be a private half. A key listed twice is refused naming
+// both places and its id (KeyID), never its text: the list was written in error. Two different
+// keys are kept whatever their ids, since Verify tries every listed key with a signature's id.
+// Blank text is no key and no error.
 func ParsePublicKeys(setting, raw string) ([]ed25519.PublicKey, error) {
 	var keys []ed25519.PublicKey
 	entries := strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
@@ -275,6 +278,11 @@ func ParsePublicKeys(setting, raw string) ([]ed25519.PublicKey, error) {
 		key, err := base64.RawURLEncoding.Strict().DecodeString(entry)
 		if err != nil || len(key) != ed25519.PublicKeySize {
 			return nil, fmt.Errorf("%s entry %d is not the unpadded base64url of a %d-byte Ed25519 public key", setting, index+1, ed25519.PublicKeySize)
+		}
+		for earlier, listed := range keys {
+			if listed.Equal(ed25519.PublicKey(key)) {
+				return nil, fmt.Errorf("%s entries %d and %d are one key, id %s: list each key once", setting, earlier+1, index+1, KeyID(listed))
+			}
 		}
 		keys = append(keys, ed25519.PublicKey(key))
 	}
