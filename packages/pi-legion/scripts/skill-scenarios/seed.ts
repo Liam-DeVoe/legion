@@ -153,7 +153,7 @@ import {
   listIssueAsks,
   listIssueMessages,
   patchIssue,
-  putRepoProject,
+  putProjectDefaultRepository,
   reviewArtifact,
 } from "../../../dispatch/e2e/api";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
@@ -652,12 +652,13 @@ export async function captureSpec(file: string, runDir: string): Promise<void> {
 }
 
 /** `project`: the world's project, with the repository the world is on as its default, as a
- * person maps it on the Settings page. Every issue of the project then resolves to that
- * repository, as an issue of a project with one repository does in production: the issue read
- * names it (`Repository:`), and a check's results are read against it. */
+ * person sets it in Settings' Projects table (`PUT /api/v1/projects/{key}/default-repository`,
+ * Dispatch's since #4457, which keeps no repository mapping). Every issue of the project then
+ * resolves to that repository, as an issue of a project with one repository does in production:
+ * the issue read names it (`Repository:`), and a check's results are read against it. */
 export async function seedProject(): Promise<void> {
   await createProject({ key: WORLD_PROJECT, name: "Widgets" });
-  await putRepoProject(WORLD_REPO, { project: WORLD_PROJECT, default: true }, PERSON);
+  await putProjectDefaultRepository(WORLD_PROJECT, WORLD_REPO, { login: PERSON });
   console.log(`seeded ${WORLD_PROJECT} on ${WORLD_REPO}`);
 }
 

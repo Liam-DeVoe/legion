@@ -87,6 +87,14 @@
       "ruled": "the architect's ruling of 2026-11-21T10:17:43Z, which re-files as a residual the entry the ruling of 2026-11-19T19:03Z declared unreachable",
       "words": "A head that conflicts with its base, and everything main's daemon does about one since #4464: the second read of the same head and base a minute after a first conflicting one, the messages that ask the implementer to merge the base forward and the phase's worker to stop writing, the refusal of a completion at the head a merge forward replaced, the read of the merge state a push asks for, and the review asked once the merge lands. An agent reaches it by a forced push to the issue branch: the world's `proc-receive` hook (rig.sh's fixture_first_commit) checks no fast-forward on any branch but the base. On a scratch copy of run 94caf2e09844's remote, `git push --force <remote> orphan:refs/heads/legion/WID-1` answered `+ a8dfa29...3b7b9ed orphan -> legion/WID-1 (forced update)`, exit 0, and `git merge-tree --write-tree` of the base and that head then refused, `fatal: refusing to merge unrelated histories`, exit 128. The world still reports such a head's merge state as `CLEAN` or `BLOCKED` (gh-call.ts's mergeStateOn, gh-threads.ts's mergeStateOf), and the daemon stand-in moves on no conflict. A run whose push leaves a head without the base's tip in its history is unhealthy from that push on (`rig.sh health`'s rule 24, `unmergedHead`, which names the first push to the issue branch whose head does not hold the base's tip), and the run is replaced.",
       "source": "packages/pi-envoy/scripts/README.md, \"Which of the world's answers are pinned, and to what\"; health.ts's rule 24"
+    },
+    {
+      "name": "rule 20's reply under a parent that is no number, read off its endpoint",
+      "check": "readers: no reader decides a world fact from an agent's text",
+      "at": "health\\.ts:\\d+ .*UNNUMBERED_REPLY\\.test\\(endpointPath\\(call\\.argv\\)\\)",
+      "ruled": "the architect's ruling of 2026-11-22T20:35:40Z, which declares the line a true statement of this check",
+      "words": "health.ts's rule 20 (`unmodelledWrite`) passes a reply POSTed under a parent that is no review comment's number (`…/pulls/<n>/comments/PRRT_…/replies`), which GitHub refuses 404 itself (`Parent comment not found`). The line reads the endpoint path and the exit from the world's record of the call, whose `handler` is `unrouted`, and no agent prose, as rule 13 reads a call's argv; it decides no thread the replay records. The check reads the path's `replies` as a write's name (`WORLD_ACT`), which the ruling leaves as it is.",
+      "source": "the tester's red row of 0c14edf9, health.test.ts, rule 20: \"a reply under a thread's node id, which GitHub refuses 404 itself, is no unmodelled write, and one under a number left unrouted is\""
     }
   ],
   "unreachable": [

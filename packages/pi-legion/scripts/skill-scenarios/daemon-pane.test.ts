@@ -1474,12 +1474,13 @@ describe("the label's build and its facts", () => {
   /** A checkout under the row's directory holding what facts reads, copied from this one as
    * gh-standin.test.ts's per-label rows copy the wrapper: the daemon's API package and engine.go,
    * the eleven other files the source shapes are read from (labelShapes), and the wrapper's
-   * package, internal/ghconfig and saved gh help, with `edit` applied to the wrapper's
-   * gh_help.go: a later wrapper's own source. */
+   * package, internal/ghconfig, internal/leakguard (whose words the wrapper refuses an owner in)
+   * and saved gh help, with `edit` applied to the wrapper's gh_help.go: a later wrapper's own
+   * source. */
   function factsCheckout(at: string, edit: (source: string) => string): string {
     const checkout = path.join(rig, at);
     const daemon = path.join(checkout, "packages", "daemon");
-    for (const dir of ["internal/api", "cmd/legion", "internal/ghconfig"]) {
+    for (const dir of ["internal/api", "cmd/legion", "internal/ghconfig", "internal/leakguard"]) {
       mkdirSync(path.join(daemon, dir), { recursive: true });
       for (const name of readdirSync(path.join(DAEMON_MODULE, dir)))
         if (name.endsWith(".go") && !name.endsWith("_test.go"))
@@ -1890,10 +1891,18 @@ describe("the shapes of a label's daemon source", () => {
     'type legionFooter struct {\n\tSession string          `json:"session"`\n\tHead    string          `json:"head"`\n\tEntry   json.RawMessage `json:"entry"`\n}';
   const FOOTER_DECODED =
     "var footer legionFooter\n\tif err := json.Unmarshal([]byte(rest[:end]), &footer); err != nil {\n\t\treturn legionFooter{}\n\t}";
+  // A footer's head read as a commit, 40 lowercase hexadecimal characters: through intake's own
+  // `fullCommitSHA`, main's since #2539, and through reviewround's `IsHead`, which #3995
+  // (b537812fb5) moved that test into unchanged (daemon-pane.ts's `HEAD_SPELLED`).
   const HEAD_WHOLE =
     'head := r.lastLegionFooter().Head\n\tif !fullCommitSHA(head) {\n\t\treturn ""\n\t}';
   const FORTY = "\tif len(s) != 40 {\n\t\treturn false\n\t}";
   const LOWER_HEX = "if (c < '0' || c > '9') && (c < 'a' || c > 'f') {";
+  const HEAD_IS =
+    'head := r.lastLegionFooter().Head\n\tif !reviewround.IsHead(head) {\n\t\treturn ""\n\t}';
+  const FORTY_IS = "\tif len(commit) != 40 {\n\t\treturn false\n\t}";
+  const LOWER_HEX_IS =
+    "for _, c := range []byte(commit) {\n\t\tif (c < '0' || c > '9') && (c < 'a' || c > 'f') {";
   const NO_HEAD = 'switch head := review.LegionHead(); {\n\tcase head == "":';
   const OTHER_HEAD = "\tcase head != pr.HeadSHA:";
   const RECORDED_ON =
@@ -2024,9 +2033,9 @@ describe("the shapes of a label's daemon source", () => {
       FOOTER_DECODED,
       FOOTER_DECODED.replace("if err := json.Unmarshal", "if err := jsonLenient.Unmarshal"),
     ],
-    [FACTS, HEAD_WHOLE, HEAD_WHOLE.replace("!fullCommitSHA(head)", 'head == ""')],
-    [FACTS, FORTY, FORTY.replace("!= 40", "< 7")],
-    [FACTS, LOWER_HEX, LOWER_HEX.replace(" {", " && (c < 'A' || c > 'F') {")],
+    [FACTS, HEAD_IS, HEAD_IS.replace("!reviewround.IsHead(head)", 'head == ""')],
+    [ROUND_WORDS, FORTY_IS, FORTY_IS.replace("!= 40", "< 7")],
+    [ROUND_WORDS, LOWER_HEX_IS, LOWER_HEX_IS.replace(" {", " && (c < 'A' || c > 'F') {")],
     [FACTS, FOOTER_MARKER, FOOTER_MARKER.replace("legion:", "legion ")],
     [FACTS, FOOTER_LAST, FOOTER_LAST.replace("LastIndex", "Index")],
     [FACTS, FOOTER_END, FOOTER_END.replace("-->", "\\n")],
@@ -2106,6 +2115,28 @@ describe("the shapes of a label's daemon source", () => {
         `${JSON.stringify(marker)} in packages/${file}, and this source does not`
       );
     });
+
+  // Catches: a reader that knows a footer's head test in one place alone. Main's daemon since
+  // #3995 (b537812fb5) reads the head through reviewround's `IsHead`, which took intake's own
+  // `fullCommitSHA` unchanged, and refused the head label's batch until the reader knew it; a label
+  // between #2539 and #3995 holds `fullCommitSHA`. Each is the one decision, a review App review held
+  // to its footer's head (`decidesByFooterHead`), and a source of the older spelling with its test
+  // changed is of no shape.
+  test("a source that reads a footer's head through reviewround.IsHead, main's since #3995, and one through intake's fullCommitSHA, main's since #2539, each hold a review to its footer's head", () => {
+    expect(labelShapes(copyOf(CHECKOUT)).decidesByFooterHead).toBe(true);
+    const older: (readonly [string, string, string])[] = [
+      [FACTS, HEAD_IS, HEAD_WHOLE],
+      [
+        FACTS,
+        "func (r PullRequestReview) LegionHead() string {",
+        `func fullCommitSHA(s string) bool {\n${FORTY}\n\tfor _, c := range s {\n\t\t${LOWER_HEX}\n\t\t\treturn false\n\t\t}\n\t}\n\treturn true\n}\n\nfunc (r PullRequestReview) LegionHead() string {`,
+      ],
+    ];
+    expect(labelShapes(copyWith(CHECKOUT, older)).decidesByFooterHead).toBe(true);
+    expect(() =>
+      labelShapes(copyWith(CHECKOUT, [...older, [FACTS, FORTY, FORTY.replace("!= 40", "< 7")]]))
+    ).toThrow(`${JSON.stringify(FORTY)} in packages/${FACTS}, and this source does not`);
+  });
 
   // Catches: a source in #4488's words, the base label's at main 724196ef, read as main's since
   // #4463 or as no shape, so its stand-in answered a body holding U+0000 in words that daemon never

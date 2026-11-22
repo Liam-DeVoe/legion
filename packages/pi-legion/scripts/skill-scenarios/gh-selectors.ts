@@ -267,6 +267,13 @@ const Leaf = z.object({
 });
 type Leaf = z.infer<typeof Leaf>;
 
+/** How a label's Legion gh wrapper refuses a call naming an owner its bundle holds no gh directory
+ * for (`ownerRefusal`), read off the label's source by daemon-pane.ts's `labelGhSelectors`:
+ * `one-line`, main's since #4459, leakguard's OwnerNotServedError alone; `setup-error`, main
+ * ff2a10ef's, the leak guard's setup error over gitcredential.go's older refusal. */
+export const UnservedOwner = z.enum(["one-line", "setup-error"]);
+export type UnservedOwner = z.infer<typeof UnservedOwner>;
+
 /** A label's selectors: every command of its gh, a group or a leaf, by its path's words joined
  * by a space; every cobra alias its helps list, by its spelling, the path it stands for; the
  * wrapper's patterns of a value, OWNER/REPO#N's only where its wrapper declares it
@@ -274,7 +281,9 @@ type Leaf = z.infer<typeof Leaf>;
  * owners it holds no directory for with the pane's own GH_CONFIG_DIR rather than refusing it
  * (main's since #4035, read off the label's source by daemon-pane.ts's `labelGhSelectors`), its
  * grammar of such a call (`paneToken`, gh-pane-token.ts); absent for a wrapper that refuses every
- * such call, main's before #4035. This is the file rig.sh writes into a run (RUN_SELECTORS). */
+ * such call, main's before #4035. And the shape of the wrapper's refusal of such an owner
+ * (`unservedOwner`), which the selectors of a run written before the rig read it do not hold.
+ * This is the file rig.sh writes into a run (RUN_SELECTORS). */
 export const GhSelectors = z.object({
   groups: z.array(z.string()),
   leaves: z.record(z.string(), Leaf),
@@ -287,6 +296,7 @@ export const GhSelectors = z.object({
     ownerLogin: z.string(),
   }),
   paneToken: ReadGrammar.optional(),
+  unservedOwner: UnservedOwner.optional(),
 });
 export type GhSelectors = z.infer<typeof GhSelectors>;
 
@@ -1168,23 +1178,36 @@ export function namesOwnerOutside(target: GhTarget | undefined, repo: string): b
 
 /** The line the Legion gh wrapper prints, refusing with exit 2 a call whose `target` names an
  * owner outside the project of the world's repository `repo`, with LEGION_GH_OWNERS_DIR
- * `ownersDir`; undefined for a call naming none. Its two readings of one owner, each measured on a
- * Legion pod on 2026-11-16:
- *   - a call naming one of that owner's repositories and no other (`gh repo view actions/checkout`,
- *     `gh release view v7.0.1 -R actions/checkout`, `gh api repos/actions/checkout/…`): the leak
- *     guard reads that repository's visibility through the wrapper, which refuses the read, and
- *     the guard's setup error refuses the call (gh.go's runGh, leakguard's SetupFailure);
- *   - a call naming the owner alone (`gh search repos checkout --owner actions`, `gh repo list
- *     actions`): the guard has no repository to read, and the wrapper's own lookup of the owner's
- *     gh directory refuses it (gitcredential.go's repositoryGHConfigDir).
- * A call naming two owners, the world's own among them where gh reads GH_REPO, is refused before
- * either, naming each with what named it (ghTargetOf's "more than one owner"). */
+ * `ownersDir`, in the shape `shape` of the label's wrapper (GhSelectors' `unservedOwner`, read off
+ * the label's source); undefined for a call naming none.
+ *   - `one-line`, main's since #4459: the wrapper's own lookup of the gh directory of each item the
+ *     call names, in the order it names them, refuses the first whose owner the bundle holds no
+ *     directory for, before any leak check, with leakguard's OwnerNotServedError after `legion
+ *     gh: ` (visibility.go's `the role's GitHub App is not installed on %q: %s holds no gh
+ *     directory for it`, gh_selectors.go's dir), whatever else the call names. The tester measured
+ *     it on 2026-11-22 at 17:55Z, `gh api -i repos/actions/checkout/git/ref/tags/v7.0.1`.
+ *   - `setup-error`, main ff2a10ef's, each reading measured on a Legion pod on 2026-11-16: a call
+ *     naming one of that owner's repositories and no other (`gh repo view actions/checkout`,
+ *     `gh release view v7.0.1 -R actions/checkout`, `gh api repos/actions/checkout/…`) is refused
+ *     by the leak guard's setup error over the wrapper's refusal of the guard's read of that
+ *     repository's visibility (gh.go's runGh, leakguard's SetupFailure); a call naming the owner
+ *     alone (`gh search repos checkout --owner actions`, `gh repo list actions`) by the wrapper's
+ *     own lookup of the owner's gh directory (gitcredential.go's `%q is not an owner of this
+ *     project: %s holds no gh directory for it`); and a call naming two owners, the world's own
+ *     among them where gh reads GH_REPO, before either, naming each with what named it (gh.go's
+ *     ghTargetOf, `the command names more than one owner`). */
 export function ownerRefusal(
   target: GhTarget | undefined,
   repo: string,
-  ownersDir: string
+  ownersDir: string,
+  shape: UnservedOwner
 ): string | undefined {
   if (target === undefined || !namesOwnerOutside(target, repo)) return undefined;
+  if (shape === "one-line") {
+    const world = (repo.split("/")[0] ?? "").toLowerCase();
+    const [owner] = target.owners.find(([one]) => one !== world) ?? [];
+    return `legion gh: the role's GitHub App is not installed on "${owner}": ${ownersDir} holds no gh directory for it\n`;
+  }
   const [first] = target.owners;
   if (target.owners.length > 1 || first === undefined) {
     const listed = target.owners.map(([owner, what]) => `${owner} (${what})`).sort();

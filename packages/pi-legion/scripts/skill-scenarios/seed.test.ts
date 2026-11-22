@@ -129,8 +129,9 @@ class FakeDispatch {
   results: Record<string, unknown>[] = [];
   /** Each issue write's body, as `PATCH /api/v1/issues/{key}` took it, with its caller. */
   issueWrites: { issue: string; who: string; body: Record<string, unknown> }[] = [];
-  /** Each repository mapping, as `PUT /api/v1/settings/repo-projects/{owner}/{repo}` took it. */
-  repoProjects: { repo: string; who: string; body: Record<string, unknown> }[] = [];
+  /** Each project's default repository, as `PUT /api/v1/projects/{key}/default-repository` took
+   * it (Dispatch's since #4457, which serves no repository mapping write). */
+  defaultRepositories: { project: string; who: string; body: Record<string, unknown> }[] = [];
   /** Each plan review, as `POST /api/v1/artifacts/{id}/plan-reviews` took it. */
   planReviews: { artifact: string; body: Record<string, unknown> }[] = [];
   /** Each person's review of a document, as `POST /api/v1/artifacts/{id}/reviews` took it. */
@@ -410,10 +411,10 @@ class FakeDispatch {
         },
       ],
       [
-        /^PUT \/api\/v1\/settings\/repo-projects\/([^/]+)\/([^/]+)$/,
-        (owner, repo) => {
-          this.repoProjects.push({ repo: `${owner}/${repo}`, who, body: body ?? {} });
-          return json({ repo: `${owner}/${repo}`, ...body });
+        /^PUT \/api\/v1\/projects\/([^/]+)\/default-repository$/,
+        (project) => {
+          this.defaultRepositories.push({ project, who, body: body ?? {} });
+          return json({ project, repo: body?.repo ?? null });
         },
       ],
       [
@@ -1125,13 +1126,15 @@ describe("capture-spec", () => {
 
 describe("project", () => {
   // Catches: a project with no repository, whose every issue reads `Repository: none` and whose
-  // checks compare with nothing (the batch of 2026-11-16 at 8a7d5cc12b43): the world's project maps
-  // the world's repository as its default, as a person maps it on the Settings page.
+  // checks compare with nothing (the batch of 2026-11-16 at 8a7d5cc12b43): the world's project has
+  // the world's repository as its default, as a person sets it in Settings' Projects table; and a
+  // seed that writes the repository mapping Dispatch has served no write of since #4457, which the
+  // fake serves no more either.
   test("files the world's project with the world's repository as its default", async () => {
     await seed.seedProject();
     expect(dispatch.projects).toEqual([{ key: WORLD_PROJECT, name: "Widgets", who: "alice" }]);
-    expect(dispatch.repoProjects).toEqual([
-      { repo: WORLD_REPO, who: "alice", body: { project: WORLD_PROJECT, default: true } },
+    expect(dispatch.defaultRepositories).toEqual([
+      { project: WORLD_PROJECT, who: "alice", body: { repo: WORLD_REPO } },
     ]);
   });
 });

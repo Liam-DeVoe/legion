@@ -45,14 +45,14 @@
  *      (GUARD_REFUSAL). No world of this rig plants a secret, so a refusal is the guard refusing
  *      what a production pod would let through, or a guard that could not start;
  *   7. gh: no `gh` call the gh stand-in refused (calls.jsonl, exit not 0) with a refusal the
- *      scenario does not declare for the calling role (GH_DECLARED, `ghRefusal`). The Legion gh
- *      wrapper's refusal of a call naming an owner outside the project, exit 2, is declared for
- *      every role (GH_DECLARED_EVERY_ROLE), the owners a call names read by the selector table of
- *      the wrapper of the run's label, which the world refused it by (<run>/gh-selectors.json,
- *      gh-selectors.ts's `runSelectors`). Where that wrapper runs such a call on the pane's own
- *      token instead (main's since #4035, gh-pane-token.ts's `runsOnPaneToken`), the world answered
- *      it as any other, and its 404 for what it does not hold is declared for every role too
- *      (OWNER_UNHELD). A worker run with a refused call whose selectors cannot
+ *      scenario does not declare for the calling role (GH_DECLARED, `ghRefusal`), and no call
+ *      naming an owner outside the project the world answered, with any status, otherwise than
+ *      production's gh answers it (`outsideAnswer`, the architect's ruling (a) of 2026-11-22): a
+ *      write refused exit 2, a `gh api` read of the label's wrapper's read grammar answered exit 0,
+ *      any other `gh api` call refused exit 2, and any other gh command naming such an owner
+ *      failing closed. The owners a call names are read by the selector table of the wrapper of
+ *      the run's label, which the world refused it by (<run>/gh-selectors.json, gh-selectors.ts's
+ *      `runSelectors`). A worker run with a call whose selectors cannot
  *      be read is unhealthy, since which refusal it was is unknown. A write the stand-in refused
  *      as one nothing of the world models is rule 20's. Rules 7 and 20 read only a call an agent
  *      of the run made itself (`typedBy`: its first word stands after a `gh` the agent ran), so
@@ -323,7 +323,15 @@ import {
   recordedCheckout,
   serves,
 } from "./daemon-pane";
-import { isPost, methodOf, readWorld, reviewsRoute, runNamed, submitsReview } from "./gh-call";
+import {
+  endpointPath,
+  isPost,
+  methodOf,
+  readWorld,
+  reviewsRoute,
+  runNamed,
+  submitsReview,
+} from "./gh-call";
 import { runsOnPaneToken } from "./gh-pane-token";
 import { isObject } from "./gh-routes";
 import { type GhSelectors, ghTargetOf, namesOwnerOutside, runSelectors } from "./gh-selectors";
@@ -673,23 +681,38 @@ const NO_RUN = [JOBS_404, RUN_404, VIEW_ID_REQUIRED, WATCH_ID_REQUIRED];
 /** `repos/<owner>/<repo>/actions/runs/<id>/jobs`, with the leading slash and the query string
  * `gh api` takes. */
 const JOBS = /^\/?repos\/[^/]+\/[^/]+\/actions\/runs\/\d+\/jobs(?:\?.*)?$/;
-/** The Legion gh wrapper's refusal of a call naming an owner outside the project, which the
- * world's gh gives as the wrapper does (gh-selectors.ts's `ownerRefusal`, in the line the wrapper
- * prints for the form that names it): exit 2 before gh runs, read back from the call by the
- * owners the wrapper's own selector table reads in it (`ghTargetOf`). It is judged by that status
- * alone, whichever of the wrapper's lines it was, as the tester's reader judges it, and a call
- * naming such an owner that exited with any other status is the world's gh answering otherwise
- * than production (OWNER_NOT_REFUSED), which no declaration takes. */
-const OWNER_REFUSED = 'legion gh: "<owner>" is not an owner of this project (exit 2)';
+/** What production's gh answers a call naming an owner outside the world's project, as the
+ * architect's rulings of 2026-11-22T16:36:59Z and 17:57Z read it (ruling (a), on the tester's
+ * capture, dispatch://INFRA-764/artifact/infra-764-pinned-actions-capture-txt v2, and as the
+ * tester's reader world-health.py v79 reads it). The call is read for such an owner by the label's
+ * wrapper's own selector table (`ghTargetOf`) whatever its status, before any route, and each
+ * answer production does not give is named (`outsideAnswer`):
+ *   - a write (gh-writes.ts's `callWrites`) is refused by the Legion gh wrapper, exit 2 before gh
+ *     runs (gh.go's runGh: a call naming an owner the bundle holds no directory for, but one that
+ *     writes nothing, R4 of INFRA-3399), so another non-zero status is OWNER_NOT_REFUSED;
+ *   - a `gh api` read whose every word is in the label's wrapper's read grammar (gh-pane-token.ts's
+ *     `runsOnPaneToken`: gh_reads.go's ghAPIReadOptions, `-X` exactly GET, no method override) is
+ *     run on the issue's token and answered by GitHub, exit 0 (the capture: round 33's six reads of
+ *     the pinned actions, 2026-11-22T17:55:33Z to 17:55:39Z), so any other status is
+ *     OUTSIDE_READ_UNANSWERED;
+ *   - any other `gh api` call (`-i` among them, measured refused at 17:55Z) is refused, exit 2, so
+ *     any other status, 0 among them, is OUTSIDE_FORM_NOT_REFUSED;
+ *   - any other gh command naming such an owner, and every read of a label whose wrapper reads no
+ *     read grammar (main's before #4035), is one no production answer is held here for, and fails
+ *     closed (OUTSIDE_UNHELD), as v79 reads a gh command other than `gh api`: a leaf read the
+ *     wrapper runs on the token (`gh repo view actions/checkout --json name`) is answered exit 0 by
+ *     GitHub, which the world's 404 is not; this also reads unhealthy a form outside the grammar the
+ *     wrapper refuses exit 2 (`gh repo view … --web`) and every read of an older label, each a run
+ *     replaced and never a wrong count.
+ * No declaration takes any of them. */
 const OWNER_NOT_REFUSED =
   "the refusal of an owner outside the project with another status than the Legion gh wrapper's 2";
-/** The world's GitHub's 404 to a read of another owner's repository that the label's Legion gh
- * wrapper runs on the pane's own token rather than refusing it (main's since #4035,
- * gh-pane-token.ts's `runsOnPaneToken`): the world holds its own project's repository alone, and
- * answers what it does not hold as GitHub answers a token that cannot see it. Read back from the
- * call by the owners it names and the record's `unrouted`. */
-const OWNER_UNHELD =
-  "gh: Not Found (HTTP 404) (a read of another owner's repository, which the pane's own token runs and the world does not hold)";
+const OUTSIDE_READ_UNANSWERED =
+  "a read of an owner outside the project in the Legion gh wrapper's read grammar answered otherwise than production's gh, which runs it on the issue's token and exits 0";
+const OUTSIDE_FORM_NOT_REFUSED =
+  "a `gh api` call of an owner outside the project in a form outside the Legion gh wrapper's read grammar answered otherwise than the wrapper's refusal, exit 2";
+const OUTSIDE_UNHELD =
+  "a read of an owner outside the project by a gh command other than a `gh api` call of the label's read grammar, which no answer of production's gh held here covers, so it fails closed";
 /** GitHub's answer to a role App's read of the user its token is (`gh api user`), which the
  * world's user route gives every role (rig.sh's fixture_write): an installation token is no
  * user's, and GitHub refuses it 403 (measured on 2026-11-17 from a Legion pod: `gh api user`, exit
@@ -709,20 +732,11 @@ const PULL_MISSING =
   "GraphQL: Could not resolve to a PullRequest or a Repository, or no pull requests found for branch (gh's refusal of one GitHub has not got)";
 const FIELD_UNKNOWN = "Unknown JSON field (gh's refusal of a --json field it does not take)";
 /** The refusals every role of every scenario may meet, since production refuses each so for every
- * role: OWNER_REFUSED and OWNER_UNHELD, since a correct agent of any role may read a repository of
- * another owner (a reviewer reading the tag an action of the world's workflow is pinned to from
- * that action's own repository, in the rehearsal of 2026-11-16), which the label's wrapper refuses
- * or runs on the pane's token as its shape does; USER_403, since any role may ask GitHub who its
- * token is; and PULL_MISSING and FIELD_UNKNOWN, since any role may read a pull request, and
- * production gives every role that names one, a branch, a repository or a field it has not got
- * gh's own refusal (the architect's ruling of 2026-11-17). */
-const GH_DECLARED_EVERY_ROLE: readonly string[] = [
-  OWNER_REFUSED,
-  OWNER_UNHELD,
-  USER_403,
-  PULL_MISSING,
-  FIELD_UNKNOWN,
-];
+ * role: USER_403, since any role may ask GitHub who its token is; and PULL_MISSING and
+ * FIELD_UNKNOWN, since any role may read a pull request, and production gives every role that
+ * names one, a branch, a repository or a field it has not got gh's own refusal (the architect's
+ * ruling of 2026-11-17). */
+const GH_DECLARED_EVERY_ROLE: readonly string[] = [USER_403, PULL_MISSING, FIELD_UNKNOWN];
 
 /** The gh refusals each scenario provokes on purpose, or that a correct agent meets in it, by the
  * role that meets them; every other refusal is unhealthy (rule 7). Both labels' worlds are one
@@ -779,15 +793,33 @@ const Fixtures = z.looseObject({ routes: z.array(Route) });
  * 200 (08:43:20 GMT), so a run that meets that 404 met GitHub's own. */
 const OWN_READ = /\/compare\/[^?]+\.\.|\/pulls\/\d+\/reviews\/\d+(?:\?|$)/;
 
-/** The refusal the gh stand-in gave `call`, which exited with a status other than 0, or undefined
+/** How `call`, naming an owner outside the project of the world's repository `repo` by
+ * `selectors`, was answered otherwise than production's gh answers it (OWNER_NOT_REFUSED's
+ * comment: a write refused exit 2, a `gh api` read of the label's read grammar answered exit 0,
+ * any other `gh api` call refused exit 2, and every other read failing closed); undefined where
+ * production gives that answer. `writes`: whether the call writes (`callWrites`). */
+function outsideAnswer(
+  call: RecordedCall,
+  writes: boolean,
+  selectors: GhSelectors,
+  repo: string
+): string | undefined {
+  const argv = call.argv ?? [];
+  if (writes) return call.exit === 2 ? undefined : OWNER_NOT_REFUSED;
+  if (selectors.paneToken === undefined || argv[0] !== "api") return OUTSIDE_UNHELD;
+  // Every worker pane that names its gh owners directory names its own GH_CONFIG_DIR, and the
+  // pane's GH_REPO the world's repository (daemon-pane.go's pane), which the record keeps neither
+  // of.
+  const pane = { GH_CONFIG_DIR: "<the pane's own>", GH_REPO: repo };
+  if (runsOnPaneToken(argv, selectors, repo, pane))
+    return call.exit === 0 ? undefined : OUTSIDE_READ_UNANSWERED;
+  return call.exit === 2 ? undefined : OUTSIDE_FORM_NOT_REFUSED;
+}
+
+/** The refusal the gh stand-in gave `call`, which names no owner outside the world's project
+ * (`outsideAnswer` reads one that does) and exited with a status other than 0, or undefined
  * when that status is no refusal of the world's. The record keeps the status and not the text, so
  * the refusal is read back from the call the way the stand-in decided it:
- *   - a call naming an owner outside the project (`outside`) is the wrapper's refusal of it, exit 2
- *     (OWNER_REFUSED), and with any other status the world answering otherwise than production
- *     (OWNER_NOT_REFUSED); but where the label's wrapper runs it on the pane's own token
- *     (`paneToken`) and the world answered it (its record names what answered, and no `wrapper`),
- *     it is read as every other call below, the world's 404 of no answer of its own being GitHub's
- *     for what it does not hold of that owner (OWNER_UNHELD);
  *   - a read of the pull request gh refused (`gh pr view`, `list` or `diff` of one, a branch or a
  *     repository GitHub has not got, or a `--json` field gh does not take) is the refusal the
  *     record names it by (PULL_MISSING, FIELD_UNKNOWN); another such read that exited non-zero
@@ -817,15 +849,9 @@ const OWN_READ = /\/compare\/[^?]+\.\.|\/pulls\/\d+\/reviews\/\d+(?:\?|$)/;
 function ghRefusal(
   call: RecordedCall,
   routes: readonly Route[],
-  repo: string | undefined,
-  outside: boolean,
-  paneToken: boolean
+  repo: string | undefined
 ): string | undefined {
   const argv = call.argv ?? [];
-  const answered =
-    paneToken && call.exit !== 2 && call.handler !== undefined && call.handler !== "wrapper";
-  if (outside && !answered) return call.exit === 2 ? OWNER_REFUSED : OWNER_NOT_REFUSED;
-  if (answered && call.handler === "unrouted") return OWNER_UNHELD;
   // gh's own refusals of a read of the pull request, which the record names (gh-view.ts).
   if (call.handler === PULL_NOT_FOUND) return PULL_MISSING;
   if (call.handler === FIELD_REFUSED) return FIELD_UNKNOWN;
@@ -907,13 +933,15 @@ export function typedBy(run: Pick<Run, "scenario" | "calls">): Typed {
   };
 }
 
-/** Rule 7: the first `gh` call of calls.jsonl the stand-in refused with a refusal neither
- * GH_DECLARED_EVERY_ROLE nor GH_DECLARED declares for the scenario and the calling role. In a
- * worker world each such call is read first for an owner outside the project, by the selectors
- * the world refused an owner by (gh-selectors.ts's `runSelectors`, which worker_boot writes from
- * the run's label's checkout), read at the first call that needs them. A run holding none was
- * answered by a world that refused no owner by them, and its calls are judged by their routes.
- * Only a call `typed` says an agent made is read (`typedBy`; every call, given none). */
+/** Rule 7: the first `gh` call of calls.jsonl the world answered otherwise than production's gh
+ * answers a call naming an owner outside the world's project (`outsideAnswer`, whatever its
+ * status, so a read answered exit 0 in a form production refuses is caught), or the stand-in
+ * refused with a refusal neither GH_DECLARED_EVERY_ROLE nor GH_DECLARED declares for the scenario
+ * and the calling role. In a worker world each call is read first for such an owner, by the
+ * selectors the world refused an owner by (gh-selectors.ts's `runSelectors`, which worker_boot
+ * writes from the run's label's checkout), read at the first call that needs them. A run holding
+ * none was answered by a world that refused no owner by them, and its calls are judged by their
+ * routes. Only a call `typed` says an agent made is read (`typedBy`; every call, given none). */
 export function ghUndeclared(
   run: Pick<Run, "dir" | "scenario">,
   typed: Typed = () => true
@@ -931,12 +959,12 @@ export function ghUndeclared(
     if (line.trim() === "") continue;
     const raw: unknown = JSON.parse(line);
     const call = RecordedCall.parse(raw);
-    if (call.as !== "gh" || call.exit === undefined || call.exit === 0) continue;
+    if (call.as !== "gh" || call.exit === undefined) continue;
     if (!typed({ ...call, argv: call.argv ?? [] })) continue;
-    // A write the world answered with no route and no answer of its own is rule 20's, which
-    // names it as the write it is (`unmodelledWrite`).
-    if (call.handler === "unrouted" && callWrites({ ...(raw as object), argv: call.argv ?? [] }))
-      continue;
+    const writes = callWrites({ ...(raw as object), argv: call.argv ?? [] });
+    // A write the world took is no refusal, and one it answered with no route and no answer of its
+    // own is rule 20's, which names it as the write it is (`unmodelledWrite`).
+    if (writes && (call.exit === 0 || call.handler === "unrouted")) continue;
     const named = `${CALLS}:${index + 1}, \`gh ${(call.argv ?? []).join(" ").slice(0, 160)}\` of the ${call.by ?? "unnamed role"}, exited ${call.exit}`;
     if (repo !== undefined && selectors === null) {
       try {
@@ -949,19 +977,14 @@ export function ghUndeclared(
       repo !== undefined &&
       selectors !== null &&
       selectors !== undefined &&
-      namesOwnerOutside(ghTargetOf(call.argv ?? [], selectors, {}), repo);
-    // Every worker pane that names its gh owners directory names its own GH_CONFIG_DIR, and the
-    // pane's GH_REPO the world's repository (daemon-pane.go's pane), which the record keeps
-    // neither of.
-    const paneToken =
-      outside &&
-      selectors !== null &&
-      selectors !== undefined &&
-      runsOnPaneToken(call.argv ?? [], selectors, repo ?? "", {
-        GH_CONFIG_DIR: "<the pane's own>",
-        GH_REPO: repo,
-      });
-    const refusal = ghRefusal(call, routes, repo, outside, paneToken);
+      namesOwnerOutside(ghTargetOf(call.argv ?? [], selectors, {}), repo)
+        ? selectors
+        : undefined;
+    if (outside === undefined && call.exit === 0) continue;
+    const refusal =
+      outside === undefined
+        ? ghRefusal(call, routes, repo)
+        : outsideAnswer(call, writes, outside, repo ?? "");
     if (refusal === undefined) continue;
     const declared = [
       ...GH_DECLARED_EVERY_ROLE,
@@ -977,14 +1000,23 @@ export function ghUndeclared(
  * fell to: rig.sh's fixture_write wrote it until the world modelled each write it answers, and it
  * answered each such write `{id:6001, html_url}` and exit 0, and changed nothing. */
 const CATCH_ALL_WRITE = "^gh api ";
+/** A reply POSTed under a parent that is no review comment's number (a review thread's node id,
+ * `PRRT_…`), which GitHub refuses itself: `gh api -i --method POST
+ * repos/cybermonklabs/legion/pulls/2827/comments/PRRT_kwDOrig0001/replies -f body=…` answered
+ * `HTTP/2.0 404 Not Found`, `{"message":"Parent comment not found"}` (`Date: Sun, 22 Nov 2026
+ * 16:30:31 GMT`, the tester's read; the architect's ruling of 2026-11-22T16:32Z). Its path,
+ * `endpointPath`. */
+const UNNUMBERED_REPLY =
+  /^repos\/[^/]+\/[^/]+\/pulls\/\d+\/comments\/(?!\d+\/replies$)[^/]+\/replies$/;
 
 /** Rule 20: the first write of calls.jsonl, read from production's side (gh-writes.ts's
  * `callWrites`), that no route or answer of the world models.
  * The gh stand-in records what answered each call (gh-standin.ts's `handler`), and a write it
  * answered with no route and no answer of its own (`unrouted`) was refused 404 where GitHub
- * answers it: the world could not take it. A write it answered with a success that kept nothing
- * of it (`keptNothing`) is named too. A record from before the stand-in kept `handler` is
- * read by the route that answered: a write the world's catch-all write route answered
+ * answers it: the world could not take it; but a reply under a parent that is no number
+ * (UNNUMBERED_REPLY) the world so refused got GitHub's own 404. A write it answered with a success
+ * that kept nothing of it (`keptNothing`) is named too. A record from before the stand-in kept
+ * `handler` is read by the route that answered: a write the world's catch-all write route answered
  * (CATCH_ALL_WRITE), which no answer of that world took either — it filed no comment in a review
  * thread when the run's calls are replayed over the world's threads (gh-threads.ts's
  * `threadCall`, as the stand-in answered the REST reply and the inline comment under that route),
@@ -1020,8 +1052,11 @@ export function unmodelledWrite(
     const filed = threadCall(at, threads, recorded);
     if ((call.as ?? "gh") !== "gh" || !typed(recorded) || !callWrites(recorded)) continue;
     const named = `${CALLS}:${index + 1}, \`gh ${call.argv.join(" ").slice(0, 160)}\` of the ${call.by ?? "unnamed role"}, exited ${call.exit}`;
-    if (call.handler === "unrouted")
+    if (call.handler === "unrouted") {
+      if (call.exit !== 0 && isPost(call.argv) && UNNUMBERED_REPLY.test(endpointPath(call.argv)))
+        continue;
       return `unmodelled write: ${named}: no route or answer of the world models it, so it was refused 404 where GitHub takes it`;
+    }
     if (keptNothing(recorded, call.body, routes))
       return `unmodelled write: ${named}: \`${call.handler}\` answered it a success that kept nothing of it, which no answer of the world models`;
     const submits =
@@ -3099,9 +3134,9 @@ function writtenReaches(one: ShellCommand, code: string, spoken: string): Reach[
 
 /** The text inside each command substitution of `code`, `$(…)` or `` `…` `` (`shellSpanEnd`),
  * outside single quotes and in double quotes too, but not the ones inside another, which are its
- * own text's. */
-function substitutionsIn(code: string): string[] {
-  const inner: string[] = [];
+ * own text's, each with where that text starts in `code`. */
+function substitutionsIn(code: string): { at: number; inner: string }[] {
+  const inner: { at: number; inner: string }[] = [];
   let double = false;
   for (let i = 0; i < code.length; i++) {
     const char = code[i] ?? "";
@@ -3114,7 +3149,8 @@ function substitutionsIn(code: string): string[] {
     } else if (char === "`" || code.startsWith("$(", i)) {
       const end = shellSpanEnd(code, i);
       if (end < 0) break;
-      inner.push(code.slice(i + (char === "`" ? 1 : 2), end - 1));
+      const at = i + (char === "`" ? 1 : 2);
+      inner.push({ at, inner: code.slice(at, end - 1) });
       i = end - 1;
     }
   }
@@ -3126,13 +3162,29 @@ function substitutionsIn(code: string): string[] {
  * assignment's value among them (`x=$(curl -s "$URL")`), as text of that command, so its
  * commands are read here, each as a command of its own. */
 function substitutionReaches(code: string): Reach[] {
-  return substitutionsIn(code).flatMap((inner) => {
+  return substitutionsIn(code).flatMap(({ inner }) => {
     const spoken = spokenOf(inner);
     return [
       ...commandsOf(spoken).flatMap((one) => writtenReaches(one, inner, spoken)),
       ...substitutionReaches(inner),
     ];
   });
+}
+
+/** Where each command in a command substitution of `code`, those nested in it included
+ * (`substitutionsIn`), lies in `code` that reads and sends nothing (a GET or a HEAD with no body,
+ * `httpRead`, and git's read of refs, `refsRead`), as `bashHosts` reads a command of the text's
+ * own: `SHA=$(curl -s https://… | grep …)` is such a read of its URL. */
+function substitutionReads(code: string): (readonly [from: number, to: number])[] {
+  return substitutionsIn(code).flatMap(({ at, inner }) => [
+    ...commandsOf(spokenOf(inner)).flatMap((one) => {
+      const run = assignmentsOf(one) === undefined ? invocationOf(one) : undefined;
+      return run !== undefined && (httpRead(run) || refsRead(run))
+        ? [[at + one.at, at + one.end] as const]
+        : [];
+    }),
+    ...substitutionReads(inner).map(([from, to]) => [at + from, at + to] as const),
+  ]);
 }
 
 /** A gap between two tokens of shell text (`shellTokens`) that holds blanks alone, so the two are
@@ -3460,13 +3512,30 @@ function childWords(scan: Scanned): (readonly [from: number, to: number])[] {
   return words;
 }
 
+/** Each segment of the path of each network URL of `code` (NETWORK_URL) that ends at a `/` with
+ * no `=` after it, at a `?` or a `#`, or where the URL ends: text the shell does not read as a
+ * variable's name, as `/git/ref/tags/$tag` names `ref` to no shell. */
+function urlSegments(code: string): (readonly [from: number, to: number])[] {
+  const segments: (readonly [from: number, to: number])[] = [];
+  for (const hit of code.matchAll(NETWORK_URL)) {
+    const url = hit[0];
+    const start = url.indexOf("/", url.indexOf("://") + 3);
+    if (start < 0) continue;
+    for (const one of url.slice(start).matchAll(/\/([\w.~%-]+)(?=\/(?!=)|[?#]|$)/g)) {
+      const from = (hit.index ?? 0) + start + (one.index ?? 0) + 1;
+      segments.push([from, from + (one[1] ?? "").length]);
+    }
+  }
+  return segments;
+}
+
 /** Whether every place `code` names the variable `name` is a read of it (`$name`, or `${name…}`
  * but its assigning `${name=…}` and `${name:=…}`), one of the sites `flowed` reads it set, or
  * inside a span that names no variable to the shell (`places`' `literal`: literal text `flowed`
- * reads as a value, a single-quoted word a process of its own is given). The places are read in
- * the text as written, quotes and all, so that none is missed for being quoted (`export
- * "name=…"`, `eval 'name=…'`, `[[ -v 'a[name=1]' ]]`): a word of quoted text that names it is one
- * more, but in one of those spans. */
+ * reads as a value, a single-quoted word a process of its own is given, a segment of a URL's path,
+ * `urlSegments`). The places are read in the text as written, quotes and all, so that none is
+ * missed for being quoted (`export "name=…"`, `eval 'name=…'`, `[[ -v 'a[name=1]' ]]`): a word of
+ * quoted text that names it is one more, but in one of those spans. */
 function namedOnlyAt(code: string, name: string, places: Places): boolean {
   const sites = new Set(places.sites.map((site) => site.at));
   for (const hit of code.matchAll(new RegExp(`(?<!\\w)${name}(?!\\w)`, "g"))) {
@@ -3490,9 +3559,10 @@ function namedOnlyAt(code: string, name: string, places: Places): boolean {
  * nothing set any other way is read, a command's output, a file's text, arithmetic, a loop over
  * anything but literal words, an assignment inside a bracket, a compound command or after `&&`,
  * and its expansion stays as written. A variable is read only where every place the text names it
- * is a read of it, a place `flowed` reads it set, literal text it reads as a value or a
+ * is a read of it, a place `flowed` reads it set, literal text it reads as a value, a
  * single-quoted word a process of its own is given (`namedOnlyAt`, `childWords`: the pattern of
- * `grep -E '"ref"'`), where no word of a command of SETS_NAMED ends with its name (`read -arepo`
+ * `grep -E '"ref"'`) or a segment of a URL's path (`urlSegments`: `…/git/ref/tags/$tag` of a loop
+ * over `ref`), where no word of a command of SETS_NAMED ends with its name (`read -arepo`
  * sets `repo`), and never one the shell sets itself (SHELL_SETS). The text is returned whole
  * where it holds what may set any variable unread: a comment (`#`, whose end the reader does not
  * read), a command of RUNS_TEXT, one of SETS_NAMED given an expansion among its words, one of
@@ -3534,7 +3604,7 @@ function literalFlow(
     if (words.some((one) => /[$`]/.test(one)) || /[(`]/.test(gaps[last + 1] ?? "")) return whole;
     naming.push(...words);
   }
-  const places: Places = { sites: [], literal: childWords(scan) };
+  const places: Places = { sites: [], literal: [...childWords(scan), ...urlSegments(code)] };
   flowed(code, 0, new Map(), undefined, places);
   const set = new Set(places.sites.map((site) => site.name));
   // The variables `env` gives the text that it names, each one whose value is a literal.
@@ -3861,10 +3931,20 @@ function bashHosts(
     // this command: `spoken` empties one that holds a separator.
     const quoted = inline.find((hit) => (hit.index ?? 0) >= one.at && (hit.index ?? 0) < one.end);
     const text = quoted === undefined ? program : (quoted[1] ?? "").slice(1, -1);
+    // The program is read as a command of its own, each of its reaches with it, so the URL
+    // reading of this text leaves its quoted string out: a GET the program runs is one there.
+    if (quoted !== undefined) {
+      const at = (quoted.index ?? 0) + quoted[0].length - (quoted[1] ?? "").length;
+      urls.fill("_", at, at + (quoted[1] ?? "").length);
+    }
     for (const reach of bashHosts(text, runs, flow.kept))
       commands.push({ ...reach, via: reach.via ?? ` in the program ${run.name} -c runs` });
   }
   commands.push(...substitutionReaches(code));
+  for (const [from, to] of substitutionReads(code)) {
+    for (const reach of urlHosts(code.slice(from, to))) gets.push({ ...reach, get: true });
+    urls.fill("_", from, to);
+  }
   const reached = urls
     .join("")
     .replace(TEXT_FLAG, (_all, lead, flag, separator) => `${lead}${flag}${separator}''`)

@@ -3949,7 +3949,7 @@ fixture_write() {
          status:"404"},
        stderr:"gh: Not Found (HTTP 404)\n", exit:1},
       {match:"^gh api .*actions/runs([ ?]|$)", methods:["GET"], stdout:{total_count:0, workflow_runs:[]}},
-      {match:"^gh api .*git/ref/", methods:["GET"], answer:"git-ref"},
+      {match:("^gh api .*repos/" + $repo_re + "/git/ref/"), methods:["GET"], answer:"git-ref"},
       {match:("^gh api .*repos/" + $repo_re + "/git/refs([/?][^ ]*)?( |$)"), methods:["GET"], answer:"git-ref"},
       {match:("^gh api .*repos/" + $repo_re + "/git/commits/[^/ ?]+([ ?]|$)"), methods:["GET"], answer:"git-commit"},
       {match:("^gh api .*repos/" + $repo_re + "/git/trees/[^ ?]+([ ?]|$)"), methods:["GET"], answer:"git-tree"},

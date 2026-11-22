@@ -150,6 +150,8 @@ import {
   reviewNode,
   unknownField,
 } from "./gh-view";
+// Production's answers to the reads of the actions the world's workflow pins (`PINNED_READS`).
+import pinnedActions from "./pinned-actions.json";
 // GitHub's REST objects more than one route carries — an account, an App, the repository, the
 // pull request — built one way for this stand-in and the HTTP one Dispatch reads.
 import {
@@ -462,18 +464,24 @@ function exit(status: number): never {
   );
   process.exit(status);
 }
+/** Whether the label's wrapper ran this call, which names only owners outside the world's
+ * project, on the pane's own token (`runsOnPaneToken`), so it reached GitHub. */
+let onPaneToken = false;
 /** The Legion gh wrapper's refusal of a call naming an owner outside the world's project, which
  * production's gh never reaches GitHub for: read by the wrapper's own selector table of the run's
  * label (gh-selectors.ts's `ghTargetOf`, over the selectors rig.sh's worker_boot wrote into the
- * run) and refused with the line the wrapper prints for that form of naming it (`ownerRefusal`),
- * exit 2, for every role, whatever the route behind it. The pane's GH_REPO is read where the
+ * run) and refused with the line that label's wrapper prints for that form of naming it
+ * (`ownerRefusal`, in the words the selectors read off the label's source, `unservedOwner`), exit
+ * 2, for every role, whatever the route behind it. The pane's GH_REPO is read where the
  * wrapper reads it. A pane that names no LEGION_GH_OWNERS_DIR is given the wrapper's refusal of
  * that, its first line, exit 2 too. Where the label's wrapper runs such a call on the pane's own
  * token instead (main's since #4035: a call that writes nothing, naming only owners outside the
  * project, from a pane that names its GH_CONFIG_DIR, gh-pane-token.ts's `runsOnPaneToken`), the
- * call goes on to the world's GitHub as any other does, and gets what it answers for that owner:
- * GitHub's 404 for a repository the world does not hold, as GitHub answers a token that cannot see
- * it. A run with no world names no project; a world whose selectors cannot be read is the rig's
+ * call goes on to the world's GitHub as any other does (`onPaneToken`), and gets what it answers
+ * for that owner: production's own answer to a read round 33's agents made of an action the
+ * world's workflow pins (`pinnedRead`), and GitHub's 404 for any other repository the world does
+ * not hold, as GitHub answers a token that cannot see it. A run with no world names no project; a
+ * world whose selectors cannot be read, or name no words of the wrapper's refusal, is the rig's
  * fault, and the call ends with 2, naming the file, as a world.json that is no world ends it.
  *
  * The wrapper's refusal of a write whose repository GitHub answers 404 to the leak guard's read of
@@ -504,8 +512,19 @@ if (as === "gh" && world !== undefined) {
     );
     exit(2);
   }
+  if (selectors.unservedOwner === undefined) {
+    process.stderr.write(
+      `gh: ${run}/${RUN_SELECTORS} names no words of the wrapper's refusal of an owner outside this world's project (rig.sh's worker_boot writes them, daemon-pane.ts's labelGhSelectors)\n`
+    );
+    exit(2);
+  }
   const owners = process.env.LEGION_GH_OWNERS_DIR;
-  const refusal = ownerRefusal(ghTargetOf(args, selectors, process.env), world.repo, owners ?? "");
+  const refusal = ownerRefusal(
+    ghTargetOf(args, selectors, process.env),
+    world.repo,
+    owners ?? "",
+    selectors.unservedOwner
+  );
   if (refusal !== undefined && !owners) {
     process.stderr.write(
       "legion gh: LEGION_GH_OWNERS_DIR is unset: a Legion pane or pod sets it, and nothing else runs this gh\n"
@@ -516,8 +535,36 @@ if (as === "gh" && world !== undefined) {
     process.stderr.write(refusal);
     exit(2);
   }
+  onPaneToken = refusal !== undefined;
   handler = "unrouted";
 }
+/** Production's answers to the reads agents made of the two actions the world's workflow pins
+ * (pinned-actions.json, the tester's capture of INFRA-764's round 33 reads: legion gh under the
+ * issue's token, 2026-11-22T17:55:33Z to 17:55:39Z, each exit 0), each by the command it was read
+ * with. Imported, so the bundle a run's `gh` runs carries it (rig.sh's standins). */
+const PINNED_READS = z
+  .object({
+    reads: z.array(
+      z.object({
+        command: z.array(z.string()),
+        read_at: z.string(),
+        exit: z.literal(0),
+        body: z.unknown(),
+      })
+    ),
+  })
+  .parse(pinnedActions).reads;
+/** The body production's gh answered this call with where it is a `gh api` read of a path
+ * pinned-actions.json captured and the label's wrapper ran it on the pane's token
+ * (`onPaneToken`): the architect's rulings of 2026-11-22T17:49:24Z and 18:00:12Z, which answer
+ * those reads, in every form legion gh runs that way, from the capture in place of the world's
+ * 404. Its `--jq`, `--paginate` and `--slurp` read that body below, as every answer's do. Undefined
+ * for any other call: a form the wrapper refuses (`-i`) is refused above, and no other read of
+ * another owner is modelled. */
+const pinned =
+  onPaneToken && args[0] === "api"
+    ? PINNED_READS.find(({ command }) => command.join(" ") === `gh api ${endpointPath(args)}`)?.body
+    : undefined;
 /** What `git -C <run>/remote.git <args...>` prints, or undefined when the command fails: the
  * run's own bare remote, read at the call. A run with no remote of its own fails every call. */
 function fromRemote(...args: string[]): string | undefined {
@@ -1988,6 +2035,7 @@ function prRead(): { text: string } | { json: unknown } | undefined {
 const viewed = prRead();
 if (
   !route &&
+  pinned === undefined &&
   compared === undefined &&
   viewed === undefined &&
   own === undefined &&
@@ -3087,7 +3135,10 @@ function reviewCommentJson(thread: Json, comment: Json, form: "pull" | "review")
   };
 }
 let output: unknown;
-if (compared !== undefined) {
+if (pinned !== undefined) {
+  output = pinned;
+  handler = "pinned read";
+} else if (compared !== undefined) {
   output = compared;
   handler = "comparison";
 } else if (own !== undefined) {

@@ -697,6 +697,53 @@ func TestTheCarryRuleIsStatedTwiceWordForWordAndOnlyNamedElsewhere(t *testing.T)
 	}
 }
 
+// A reviewer submits `REQUEST_CHANGES` only when a behavioural finding stands, and fixes a text
+// finding in a commit of its own (dispatch://INFRA-764 R1, spec v31). So every sentence of the
+// composed reviewer prompt that sends a finding to a request for changes names that finding
+// behavioural, in the terms roles/reviewer.md defines one by: the word itself, code that runs, an
+// error hidden, a gate broken, a test, a check with no passing result, an unmet requirement, or a
+// secret or private name. A forward merge of the base once brought back "So does a clear fix in a
+// file this pull request touches, whatever the bot calls it." beside a finding that requests
+// changes, which sends a text fix there too, so a sentence opening "So does" carries the request
+// of the sentence before it. A sentence sends a finding when it holds a request and names what the
+// request is over (a finding, a fix, a defect, a nit, a fault or a thread); a request it refuses
+// ("never a review that asks for changes", "rather than request changes") or one it only looks
+// back on ("after a request for changes") sends nothing. This shows the text is loaded, never that
+// a reviewer follows it.
+func TestEveryComposedReviewerSentenceThatRequestsChangesNamesABehaviouralFinding(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	notSending := regexp.MustCompile("(?i)never a review that asks for changes|rather than request changes|after a request for changes")
+	request := regexp.MustCompile("(?i)\\brequests? changes\\b|\\brequest for changes\\b|\\basks? for changes\\b|\\bsubmits? (?:the |a |an )?`REQUEST_CHANGES`|`REQUEST_CHANGES` (?:when|for|naming|only)\\b")
+	sendsFinding := regexp.MustCompile(`(?i)\b(?:findings?|fix(?:es)?|defects?|nits?|faults?|threads?)\b`)
+	behavioural := regexp.MustCompile(`(?i)behavioural|code that runs|hides? an error|breaks? a gate|\btests?\b|passing result|pass standing|unmet requirement|\bsecrets?\b|private name`)
+	const rule = "A reviewer submits `REQUEST_CHANGES` only when a behavioural finding stands"
+	checked, ruleChecked := 0, false
+	for _, paragraph := range strings.Split(composedText(t, composer, claim.RoleReviewer, false), "\n\n") {
+		previousRequests := false
+		for _, sentence := range strings.Split(foldWhitespace(paragraph), ". ") {
+			requests := request.MatchString(notSending.ReplaceAllString(sentence, "")) ||
+				(previousRequests && (strings.HasPrefix(sentence, "So does ") || strings.HasPrefix(sentence, "So do ")))
+			previousRequests = requests
+			if !requests || !sendsFinding.MatchString(sentence) {
+				continue
+			}
+			checked++
+			ruleChecked = ruleChecked || strings.HasPrefix(sentence, rule)
+			if !behavioural.MatchString(sentence) {
+				t.Errorf("the composed reviewer prompt sends a finding to a request for changes without naming it behavioural: %q", sentence)
+			}
+		}
+	}
+	// A split or a pattern that matches nothing passes every sentence it never reads, so the
+	// verdict rule's own sentence must be among those read.
+	if !ruleChecked {
+		t.Errorf("the guard read %d sentences of the composed reviewer prompt and not %q", checked, rule)
+	}
+}
+
 // A review the review App submits decides a round only when the head its Legion footer names is
 // the pull request's current head (`intake.PullRequestReview.LegionHead`, `workflow.refusesRound`),
 // so a reviewer whose prompt teaches the footer without the head submits a review every round

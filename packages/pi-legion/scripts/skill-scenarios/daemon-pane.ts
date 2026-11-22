@@ -430,7 +430,9 @@ export function labelGhTable(checkout: string): GhTable {
  * own tests (cmd/legion/testdata/gh-help), which is what the wrapper's table is held to there,
  * and whether that wrapper runs a read naming only owners it holds no directory for with the
  * pane's own GH_CONFIG_DIR (`PANE_TOKEN_READ`, main's since #4035) or refuses it
- * (`OWNER_ALWAYS_REFUSED`, main's before), read off its source as `labelShapes` reads the daemon's.
+ * (`OWNER_ALWAYS_REFUSED`, main's before), and in which words it refuses such an owner
+ * (`OWNER_NOT_SERVED`, main's since #4459, or `OWNER_SETUP_ERROR`, main ff2a10ef's), each read off
+ * its source as `labelShapes` reads the daemon's.
  * rig.sh's label_facts reads them at services_up and its worker_boot writes them into each run,
  * which the gh stand-in reads them from; health reads the run's label's here. Throws what the
  * reading refused, a wrapper of neither shape among it. */
@@ -458,12 +460,27 @@ export function labelGhSelectors(checkout: string): GhSelectors {
       },
     ]
   );
-  return selectorsOf(
-    table,
-    saved,
-    readFileSync(path.join(helps, "reference.txt"), "utf8"),
-    paneToken
+  const unservedOwner = sourceShape(
+    checkout,
+    "the gh wrapper's refusal of an owner it holds no directory for",
+    [
+      { name: "main's wrapper since #4459", markers: OWNER_NOT_SERVED, value: "one-line" as const },
+      {
+        name: "main ff2a10ef's wrapper, whose refusal the leak guard's setup error carries",
+        markers: OWNER_SETUP_ERROR,
+        value: "setup-error" as const,
+      },
+    ]
   );
+  return {
+    ...selectorsOf(
+      table,
+      saved,
+      readFileSync(path.join(helps, "reference.txt"), "utf8"),
+      paneToken
+    ),
+    unservedOwner,
+  };
 }
 
 const GH_SELECTORS_GO = "daemon/cmd/legion/gh_selectors.go";
@@ -490,6 +507,30 @@ const OWNER_ALWAYS_REFUSED: readonly Marker[] = [
     text: "func (s *selectors) dir(dirFor func(owner, name string) (string, error)) (string, error) {",
   },
   { file: GH_GO, text: "dir, err := sel.dir(dirFor)\n" },
+];
+/** The wrapper since #4459: its bundle's lookup of an owner it holds no directory for refuses with
+ * leakguard's OwnerNotServedError, whose words `legion gh` prints alone (visibility.go). */
+const OWNER_NOT_SERVED: readonly Marker[] = [
+  {
+    file: "daemon/internal/leakguard/visibility.go",
+    text: `return fmt.Sprintf("the role's GitHub App is not installed on %q: %s holds no gh directory for it", e.Owner, e.OwnersDir)`,
+  },
+  {
+    file: "daemon/cmd/legion/gitcredential.go",
+    text: 'return "", &leakguard.OwnerNotServedError{Owner: owner, OwnersDir: ownersDir}',
+  },
+];
+/** The wrapper of main ff2a10ef: its lookup refuses an owner in older words (gitcredential.go),
+ * and it refuses a call naming two owners before either (gh.go). */
+const OWNER_SETUP_ERROR: readonly Marker[] = [
+  {
+    file: "daemon/cmd/legion/gitcredential.go",
+    text: 'return "", fmt.Errorf("%q is not an owner of this project: %s holds no gh directory for it", owner, ownersDir)',
+  },
+  {
+    file: GH_GO,
+    text: 'return ghTarget{}, fmt.Errorf("the command names more than one owner, %s, so it sends no token; name one repository", strings.Join(listed, " and "))',
+  },
 ];
 
 /** Each refusal `labelDaemon` met in this process, by the daemon module and the bytes of the two
@@ -820,7 +861,8 @@ export interface LabelShapes {
    * names, 40 lowercase hexadecimal characters, is the pull request's head, compared exactly, and
    * its decision is recorded against that head: a footer that names no head, or another, decides
    * nothing (review.go's `refusesRound` and `reviewHead`, intake's `LegionHead` and
-   * `fullCommitSHA`, main's since #2539, a4c0ff994a). Its footer is decoded as a JSON object whose
+   * `fullCommitSHA`, main's since #2539, a4c0ff994a, the same test reviewround's `IsHead` since
+   * #3995). Its footer is decoded as a JSON object whose
    * `session` and `head` are strings, beside an `entry` kept raw (intake's `legionFooter`). False
    * for main `ff2a10ef`'s engine, which records a review's decision against its `commit_id` and
    * decodes the footer's `session` alone. */
@@ -993,10 +1035,10 @@ const FOOTER_FOUND: readonly Marker[] = [
 ];
 /** The head a review of the review App decides on, as main's engine since #2539 reads it: the
  * footer decoded whole into `session` and `head` strings and a raw `entry`, a decoding error
- * costing the whole footer; its head a commit only at 40 lowercase hexadecimal characters; a
- * review App review that names no head, or another than the pull request's, refused; and the
- * decision of a review App review recorded against that head, a person's against its
- * `commit_id`. */
+ * costing the whole footer; its head a commit only at 40 lowercase hexadecimal characters
+ * (`HEAD_SPELLED`, in either of its two places); a review App review that names no head, or
+ * another than the pull request's, refused; and the decision of a review App review recorded
+ * against that head, a person's against its `commit_id`. */
 const BY_FOOTER_HEAD: readonly Marker[] = [
   ...FOOTER_FOUND,
   {
@@ -1007,12 +1049,6 @@ const BY_FOOTER_HEAD: readonly Marker[] = [
     file: FACTS,
     text: "var footer legionFooter\n\tif err := json.Unmarshal([]byte(rest[:end]), &footer); err != nil {\n\t\treturn legionFooter{}\n\t}",
   },
-  {
-    file: FACTS,
-    text: 'head := r.lastLegionFooter().Head\n\tif !fullCommitSHA(head) {\n\t\treturn ""\n\t}',
-  },
-  { file: FACTS, text: "\tif len(s) != 40 {\n\t\treturn false\n\t}" },
-  { file: FACTS, text: "if (c < '0' || c > '9') && (c < 'a' || c > 'f') {" },
   { file: REVIEW, text: 'switch head := review.LegionHead(); {\n\tcase head == "":' },
   { file: REVIEW, text: "\tcase head != pr.HeadSHA:" },
   {
@@ -1024,6 +1060,32 @@ const BY_FOOTER_HEAD: readonly Marker[] = [
     text: "if e.byReviewApp(review.Author) {\n\t\treturn review.LegionHead()\n\t}\n\treturn review.CommitID",
   },
 ];
+/** Where main's engine reads a footer's head as a commit, 40 lowercase hexadecimal characters,
+ * nothing shorter compared with a head: since #2539, intake's own `fullCommitSHA`; since #3995
+ * (b537812fb5), which moved that test unchanged into reviewround's `IsHead` (the spelling a task's
+ * review-round sentences are read back by too), that one. The same decision in either place. */
+const HEAD_SPELLED: Readonly<Record<"since2539" | "since3995", readonly Marker[]>> = {
+  since2539: [
+    {
+      file: FACTS,
+      text: 'head := r.lastLegionFooter().Head\n\tif !fullCommitSHA(head) {\n\t\treturn ""\n\t}',
+    },
+    { file: FACTS, text: "\tif len(s) != 40 {\n\t\treturn false\n\t}" },
+    { file: FACTS, text: "if (c < '0' || c > '9') && (c < 'a' || c > 'f') {" },
+  ],
+  since3995: [
+    {
+      file: FACTS,
+      text: 'head := r.lastLegionFooter().Head\n\tif !reviewround.IsHead(head) {\n\t\treturn ""\n\t}',
+    },
+    { file: ROUND_WORDS, text: "func IsHead(commit string) bool {\n\tif len(commit) != 40 {" },
+    { file: ROUND_WORDS, text: "\tif len(commit) != 40 {\n\t\treturn false\n\t}" },
+    {
+      file: ROUND_WORDS,
+      text: "for _, c := range []byte(commit) {\n\t\tif (c < '0' || c > '9') && (c < 'a' || c > 'f') {",
+    },
+  ],
+};
 /** The same as main `ff2a10ef`'s engine has it: the footer's `session` decoded alone, and every
  * review's decision recorded against its `commit_id`, which no footer's head refuses. */
 const BY_COMMIT_ID: readonly Marker[] = [
@@ -1663,7 +1725,16 @@ export function labelShapes(checkout: string): LabelShapes {
       },
     ]),
     decidesByFooterHead: sourceShape(checkout, "the head a review of the review App decides on", [
-      { name: "main's daemon since #2539", markers: BY_FOOTER_HEAD, value: true },
+      {
+        name: "main's daemon since #3995, which reads the head through reviewround.IsHead",
+        markers: [...BY_FOOTER_HEAD, ...HEAD_SPELLED.since3995],
+        value: true,
+      },
+      {
+        name: "main's daemon since #2539",
+        markers: [...BY_FOOTER_HEAD, ...HEAD_SPELLED.since2539],
+        value: true,
+      },
       {
         name: "main ff2a10ef's daemon, which records a review's decision against its commit_id",
         markers: BY_COMMIT_ID,
