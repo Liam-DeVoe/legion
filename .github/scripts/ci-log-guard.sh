@@ -66,7 +66,7 @@ ci_log_token() {
 # empty token, or one naming a command, makes the runner refuse the stop or never resume.
 _ci_log_token_ok() {
   case $1 in
-    *[!0-9a-f]* | '') return 1 ;;
+    '' | *[!0-9a-f]*) return 1 ;;
   esac
   [ "${#1}" -eq 32 ]
 }
