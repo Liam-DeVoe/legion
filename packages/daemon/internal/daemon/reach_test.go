@@ -926,3 +926,70 @@ func TestAPausedProjectNamesNoWorkflowClaimInAnyLine(t *testing.T) {
 		}
 	})
 }
+
+// A sweep made while the daemon's relaunch of its controller is in flight reads the row that
+// relaunch writes, and judges nothing of it: the relaunch's launch on a fresh session, tried again
+// at the probe interval, records the claim launching with no session, which read as an episode's
+// end would close the controller's lines and forget the mark. Once the relaunch answers, its
+// record carries the episode, so a controller that never comes back gets R6's not-back line 20
+// minutes after the relaunch.
+func TestASweepDuringTheControllersRelaunchKeepsItsEpisode(t *testing.T) {
+	r := newReachRig(t, true)
+	project, _ := claim.ProjectToken("legion")
+	token := claim.ControllerToken(project)
+	controller := supervise.Claim{Token: token, Project: project, Role: claim.RoleController, Generation: 1,
+		State: supervise.StateIdle, Session: "ses_controller", LastReady: reachBoot.Add(-time.Hour),
+		Locator: pluginTestLocator(token), ActivityAt: reachBoot}
+	relaunchedAt := reachBoot.Add(21 * time.Minute)
+	launching := controller
+	launching.Generation, launching.State, launching.Session, launching.Locator = 2, supervise.StateLaunching, "", nil
+	launching.LastRelaunch, launching.LastRelaunchGeneration = relaunchedAt, 0
+	asked, release := make(chan struct{}, 1), make(chan struct{})
+	r.k.relaunch = func(context.Context, supervise.Claim, time.Time) (supervise.Claim, error) {
+		asked <- struct{}{}
+		<-release
+		return launching, nil
+	}
+
+	r.at(21 * time.Minute)
+	r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
+	r.k.sweep(context.Background(), []supervise.Claim{controller})
+	<-asked
+	r.at(22 * time.Minute)
+	r.listing(map[string]time.Duration{"ses_other": 22 * time.Minute})
+	r.k.sweep(context.Background(), []supervise.Claim{r.with(launching)})
+	close(release)
+	r.k.wait()
+	if got := r.reach(token); !got.Unreachable() || !got.Relaunched || !got.RelaunchedAt.Equal(relaunchedAt) {
+		t.Fatalf("after the relaunch answered the record is %+v, want the controller marked with the relaunch at %v", got, relaunchedAt)
+	}
+	r.sweepMinutes(23, 45, func() []supervise.Claim { return []supervise.Claim{r.with(launching)} })
+	if lines := r.lines(fleetalert.ControllerUnreachable.Word); lines != 1 {
+		t.Fatalf("R6 wrote %d controller-unreachable lines for a relaunched controller that never came back, want one", lines)
+	}
+}
+
+// A relaunch that a suspension of the claim cut, or whose failed stop a waiting suspension now
+// decides, answers ErrSuspensionWaiting: the keeper records no refusal and writes no line, even
+// for the controller, whose refusals write the line at once, and the next sweep judges the claim
+// as the suspension leaves it.
+func TestARelaunchASuspensionTookOverWritesNoLine(t *testing.T) {
+	r := newReachRig(t, true)
+	project, _ := claim.ProjectToken("legion")
+	token := claim.ControllerToken(project)
+	controller := supervise.Claim{Token: token, Project: project, Role: claim.RoleController, Generation: 1,
+		State: supervise.StateIdle, Session: "ses_controller", LastReady: reachBoot.Add(-time.Hour),
+		Locator: pluginTestLocator(token), ActivityAt: reachBoot}
+	r.mu.Lock()
+	r.relaunch = fmt.Errorf("launch the relaunched process: %w: %w", supervise.ErrSuspensionWaiting, context.Canceled)
+	r.mu.Unlock()
+	r.at(21 * time.Minute)
+	r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
+	r.sweep(controller)
+	if lines := r.lines(fleetalert.ControllerRelaunchRefused.Word); lines != 0 {
+		t.Fatalf("R6 wrote %d refused lines for a relaunch a suspension took over, want none", lines)
+	}
+	if got := r.reach(token); !got.RefusedAt.IsZero() {
+		t.Fatalf("the record after a relaunch a suspension took over = %+v, want no refusal", got)
+	}
+}

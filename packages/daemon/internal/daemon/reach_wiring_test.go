@@ -304,3 +304,67 @@ func TestTheTimeAProjectIsPausedIsNoRefusalTime(t *testing.T) {
 		t.Fatalf("R6 wrote %d refused lines 60 minutes after the resume, want one", lines)
 	}
 }
+
+// cutStartRuntime holds a resume, once armed, until its context ends, as a Sandbox start waits
+// minutes on its pod: the relaunch's start, which only a suspension's cut ends.
+type cutStartRuntime struct {
+	runtime.Runtime
+	armed   atomic.Bool
+	entered chan struct{}
+}
+
+func (r *cutStartRuntime) Resume(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
+	if !r.armed.Load() {
+		return r.Runtime.Resume(ctx, prev, spec)
+	}
+	r.entered <- struct{}{}
+	<-ctx.Done()
+	return runtime.Locator{}, ctx.Err()
+}
+
+// An operator who suspends a claim while the daemon's relaunch of it waits on its start cuts that
+// start, on the claim's real machine: the keeper records no refusal and writes no line for an
+// operator's own act, and the sweep after reads the suspension as the operator's hold.
+func TestAnOperatorsSuspensionDuringTheDaemonsRelaunchWritesNoLine(t *testing.T) {
+	r, sup := relaunchRig(t)
+	rt := &cutStartRuntime{Runtime: sup.deps.Runtime, entered: make(chan struct{}, 1)}
+	sup.deps.Runtime = rt
+	worker := waitingQuietly(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"))
+	if _, err := sup.restore(context.Background(), []supervise.Claim{worker}); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := sup.Machine(worker.Token)
+	rt.armed.Store(true)
+
+	r.at(21 * time.Minute)
+	r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
+	r.k.sweep(context.Background(), []supervise.Claim{worker})
+	select {
+	case <-rt.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the daemon's relaunch never reached the claim's start")
+	}
+	suspended := make(chan error, 1)
+	go func() {
+		suspended <- m.Handle(context.Background(), supervise.RequestSuspend{Claim: worker.Token,
+			Reason: "an operator stops the claim", By: supervise.SuspendedByOperator})
+	}()
+	r.k.wait()
+	select {
+	case <-suspended:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the operator's suspension never answered")
+	}
+	if got := r.reach(worker.Token); !got.RefusedAt.IsZero() {
+		t.Fatalf("the record after an operator's suspension cut the daemon's relaunch = %+v, want no refusal", got)
+	}
+	r.at(22 * time.Minute)
+	r.listing(map[string]time.Duration{"ses_other": 22 * time.Minute})
+	r.sweep(r.with(m.Claim()))
+	if got := r.reach(worker.Token); !got.RefusedAt.IsZero() {
+		t.Fatalf("the record the sweep after wrote = %+v, want no refusal", got)
+	}
+	if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 0 {
+		t.Fatalf("R6 wrote %d refused lines for a relaunch an operator's suspension cut, want none", lines)
+	}
+}

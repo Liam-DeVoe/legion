@@ -187,6 +187,41 @@ func TestACopyStoredWhileARelaunchLandsIsRecordedUnderThePublishingGeneration(t 
 	}
 }
 
+// A copy stored while the relaunch's launch is under way is stored for the process that launch
+// starts, not one the claim already ran: the launch moves the claim's generation before its
+// process exists, so the claim reads generation 2, launching, at the publish. The copy is
+// recorded under the generation of the last process that can have said ready, 1, so generation 2
+// finishes the row once it says ready on that session. Recorded under the claim's own generation,
+// 2, no process of that generation would finish it.
+func TestACopyStoredWhileARelaunchsLaunchIsUnderWayIsFinishedByItsProcess(t *testing.T) {
+	for name, payload := range storedRows(t) {
+		t.Run(name, func(t *testing.T) {
+			publisher := newStoringPublisher()
+			runner, sup, pool := hookRunner(t, publisher)
+			implementer := sessionKeptClaim(t, sup, claim.RoleImplementer, supervise.StateWorking)
+			session := implementer.Claim().Session
+			publisher.storeFor(notify.RoleTopicPrefix+string(implementer.Claim().Token), session)
+			relaunchedOnto(t, runner, session, supervise.StateLaunching)
+			enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", payload, time.Now().Add(-time.Minute)))
+			key := record.OutboxKey(outboxRowIDs(t, pool)[0])
+
+			drain(t, runner)
+			if got := publisher.attemptsOf(key); got != 1 {
+				t.Fatalf("publishes of %s = %d, want the first", key, got)
+			}
+			relaunchedOnto(t, runner, session, supervise.StateIdle)
+			dueNow(t, pool)
+			drain(t, runner)
+			if got := publisher.attemptsOf(key); got != 1 {
+				t.Fatalf("publishes of %s = %d after the launched process holds its role, want no new one: the copy was stored before it said ready", key, got)
+			}
+			if left := outboxRows(t, pool); left != 0 {
+				t.Fatalf("outbox rows left = %d, want the row finished by the launched process", left)
+			}
+		})
+	}
+}
+
 // Control: a publish that was not stored — the listener did not answer — is published again
 // under the same key once the session holds its role again.
 func TestAMessageWhoseEarlierPublishWasNotStoredIsPublishedAgain(t *testing.T) {

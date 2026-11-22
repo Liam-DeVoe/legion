@@ -2272,8 +2272,9 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // own (routineWaiting: a role message a project's pause still owes its role) is returned as it
 // is, never held or finished. Every other failure publish answers keeps the row's retry, a
 // publish the listener stored for a holder as that stored copy (storedAnswer), so the retry
-// records it under the claim's generation as it stood before the publish: a relaunch that ends
-// while the publish waits for its answer is a newer process than the one the copy was stored for.
+// records it under the generation of the claim's last process that can have said ready, read
+// before the publish (readyGeneration): a process the claim starts after that read, its launch
+// under way at the publish included, is a newer one than the copy was stored for.
 func (r *outbox) heldDelivery(ctx context.Context, row record.OutboxRow, token claim.Token, what string, owed bool, moved func(record.Issue) bool, publish func() error, undelivered func(error)) error {
 	if !owed {
 		if ended, err := r.holdEnded(ctx, row, token, what, moved); err != nil || ended {
@@ -2283,7 +2284,7 @@ func (r *outbox) heldDelivery(ctx context.Context, row record.OutboxRow, token c
 	if r.storedForItsSession(row, token, what) {
 		return nil
 	}
-	generation := r.claimGeneration(token)
+	generation := r.readyGeneration(token)
 	err := publish()
 	var routine routineWaiting
 	if errors.As(err, &routine) {
@@ -2375,13 +2376,21 @@ func storedAnswer(generation uint64, err error) error {
 	return storedCopy{holder: notDelivered.Holder, generation: generation, err: err}
 }
 
-// claimGeneration is the generation of token's claim as its machine last published it, and 0
-// where the outbox reads no supervisor.
-func (r *outbox) claimGeneration(token claim.Token) uint64 {
+// readyGeneration is the generation of the last process of token's claim that can have said ready,
+// as its machine last published the claim: the claim's own where it says ready, and the one below
+// it otherwise, since every launch moves the generation before its process starts
+// (supervise.Machine's launchNow), so a claim not ready records a process that has not said ready,
+// and every older one is below it. A copy recorded under it is read by any process that says
+// ready on the session after it. It is 0 where the outbox reads no supervisor.
+func (r *outbox) readyGeneration(token claim.Token) uint64 {
 	if r.supervisor == nil {
 		return 0
 	}
-	return r.supervisedClaim(token).Generation
+	held := r.supervisedClaim(token)
+	if supervise.SaidReady(held.State) || held.Generation == 0 {
+		return held.Generation
+	}
+	return held.Generation - 1
 }
 
 // storedForItsSession is whether a role message or hook prompt row that the listener stored for a

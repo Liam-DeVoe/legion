@@ -120,7 +120,22 @@ var (
 	// — the store did not answer it, or the request's time ran out waiting on it — so the relaunch
 	// stopped nothing, and the daemon asks again at its next sweep.
 	ErrTreeCheckFailed = errors.New("the daemon could not read the claim's tree lifecycle from its store, so nothing was stopped; read the daemon's store errors for that claim's tree, and the daemon asks again at its next sweep")
+	// ErrSuspensionWaiting: a suspension of the claim, an operator's or the daemon's own, reached
+	// the machine while the relaunch held it and cut the relaunch's start, or waited while its stop
+	// failed. The suspension decides the claim's process next (suspensionWaits).
+	ErrSuspensionWaiting = errors.New("a suspension of the claim reached it during the relaunch and decides its process")
 )
+
+// suspensionWaits is whether a suspension of the claim cut the start of the launch in flight
+// (startStopped, which this reads without taking it from the suspension's own row) or waits for
+// the machine's lock (suspendsWaiting): the relaunch's own decision holds that lock, so a
+// suspension sent meanwhile has not decided anything the claim's published view could show.
+func (m *Machine) suspensionWaits() bool {
+	m.startMu.Lock()
+	stopped := m.startStopped
+	m.startMu.Unlock()
+	return stopped || m.suspendsWaiting.Load() > 0
+}
 
 // RelaunchGuard is why a relaunch must not cut c's process now, and "" when it may (R5): the worker
 // stream showed a step in the last 20 minutes, the claim is in a turn whose session sent an
@@ -348,11 +363,15 @@ func (m *Machine) relaunchUnreachable(ctx context.Context, ev RequestRelaunch) e
 		m.log.Error("supervise: the relaunch's stop did not end the claim's process; nothing more is done",
 			"incarnation", loc.Incarnation, "error", err)
 		// The process still runs, so the relaunch recorded before the stop is put back: its end
-		// is charged as any other, and the 6 hours are not spent.
+		// is charged as any other, and the 6 hours are not spent. The write outlives the request's
+		// context, which a daemon's halt cancels mid-stop, under the claim write's own deadline.
 		m.claim.LastRelaunch, m.claim.LastRelaunchGeneration = lastAt, lastGeneration
-		if werr := m.persist(ctx); werr != nil {
+		if werr := m.persist(context.WithoutCancel(ctx)); werr != nil {
 			m.log.Warn("supervise: the relaunch the failed stop put back was not written; it is written at the claim's next decision",
 				"error", werr)
+		}
+		if m.suspensionWaits() {
+			return refuse(fmt.Errorf("%w: %w", ErrSuspensionWaiting, err))
 		}
 		return refuse(err)
 	}
@@ -398,10 +417,14 @@ func (m *Machine) launchOnceTakenBack(ctx context.Context) error {
 
 // launchMade is the relaunch's answer once its stop has let the process go: err, the answer of its
 // launch, except a launch left to be tried again (launchRetried), which the daemon makes itself,
-// so the relaunch is made and answers nil, with that launch's error written to the log. Every
-// other error — a refusal of the tree's after the stop, or the claim failed at its launch budget —
-// arms no retry and is answered.
+// so the relaunch is made and answers nil, with that launch's error written to the log. A launch
+// whose start a suspension cut answers ErrSuspensionWaiting with it, since that suspension, not
+// the relaunch, decides the process now. Every other error — a refusal of the tree's after the
+// stop, or the claim failed at its launch budget — arms no retry and is answered.
 func (m *Machine) launchMade(err error) error {
+	if err != nil && !errors.As(err, new(launchRetried)) && m.suspensionWaits() {
+		return fmt.Errorf("%w: %w", ErrSuspensionWaiting, err)
+	}
 	if !errors.As(err, new(launchRetried)) {
 		return err
 	}

@@ -339,6 +339,15 @@ func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
 		if !k.reachWatched(c) {
 			continue
 		}
+		if k.relaunching[c.Token] {
+			// This daemon's relaunch of c is in flight: the row the sweep read is that relaunch's
+			// own writes, its record before the stop and its launch's, a fresh session not yet
+			// recorded among them, so nothing is read of it and nothing judged. Only the
+			// relaunch's answer moves the record (relaunchClaim). For its pod's other claims it
+			// reaches no Envoy meanwhile.
+			readings[c.Token] = read{k.recordOf(c), reachMarked}
+			continue
+		}
 		rec, verdict := k.reading(c, now)
 		readings[c.Token] = read{rec, verdict}
 		watched = append(watched, c)
@@ -439,15 +448,10 @@ func (k *reachKeeper) judge(ctx context.Context, c supervise.Claim, rec supervis
 // c's last relaunch (relaunchTakenIn), begins a record anew for a session c records afresh, counts
 // from the session's first ready, and makes the mark, which it logs; it acts on nothing, and it
 // ends no episode, which is judge's to decide. The one session change that keeps the record is the
-// daemon's own controller's relaunch launching it on a fresh session (carriesItsEpisode). While
-// this daemon's own relaunch of c is in flight, the relaunch c records is the one that relaunch
-// wrote before its stop, which a stop that fails puts back, so it is taken in only from that
-// relaunch's answer (relaunchClaim). The caller holds mu.
+// daemon's own controller's relaunch launching it on a fresh session (carriesItsEpisode). The
+// sweep reads no claim whose relaunch by this daemon is in flight (sweep). The caller holds mu.
 func (k *reachKeeper) reading(c supervise.Claim, now time.Time) (supervise.Reach, reachVerdict) {
-	rec := k.recordOf(c)
-	if !k.relaunching[c.Token] {
-		rec = relaunchTakenIn(c, rec)
-	}
+	rec := relaunchTakenIn(c, k.recordOf(c))
 	if k.carriesItsEpisode(c, rec) {
 		if c.Session == "" {
 			// The relaunch's own launch has recorded no session yet: the episode goes on.
@@ -670,6 +674,9 @@ func (k *reachKeeper) relaunchClaim(ctx context.Context, c supervise.Claim, sinc
 	case !rec.Unreachable() || !rec.Since.Equal(since) || ctx.Err() != nil:
 	case errors.Is(err, supervise.ErrOperatorSuspensionHeld), k.operatorHolds != nil && k.operatorHolds(c.Token):
 		k.storeEach(ctx, c.Token, k.suspensionHolds(c, rec, at))
+	case errors.Is(err, supervise.ErrSuspensionWaiting):
+		k.log.Info("reach: a suspension of the claim reached its machine during the daemon's relaunch of it and decides its process; the next sweep judges it as it stands",
+			"claim", c.Token, "error", err)
 	case errors.As(err, &machine) && machine.Err == nil && supervise.IsGone(machine.State):
 		k.log.Info("reach: the claim's process was let go while the daemon's relaunch of it waited; the next sweep judges it as it stands",
 			"claim", c.Token, "state", machine.State)

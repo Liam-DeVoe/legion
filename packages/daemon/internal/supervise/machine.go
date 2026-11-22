@@ -1640,10 +1640,13 @@ type Machine struct {
 	// while the decision that started the launch holds mu for minutes (stopStart, startable).
 	// storeFaultTold is when the issue and the controller were last told the session store could
 	// not answer, so a start that retries every minute reports once an hour (startWaitsForStore).
-	startMu        sync.Mutex
-	cancelStart    context.CancelFunc
-	startStopped   bool
-	storeFaultTold time.Time
+	startMu      sync.Mutex
+	cancelStart  context.CancelFunc
+	startStopped bool
+	// suspendsWaiting is how many suspensions wait for mu (Handle), read by a relaunch whose stop
+	// or start ended while one waited (suspensionWaits).
+	suspendsWaiting atomic.Int32
+	storeFaultTold  time.Time
 	// wake is the launch the wake pacing holds until its turn (reserveWake), run when TimerWake
 	// fires (wakeNow); nil for none. It lives as long as that timer, which letGo disarms with it,
 	// and it is memory only, as relaunch and staleRelaunch are: a restart loses no wake. A
@@ -1862,10 +1865,18 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	// rule once, here, before anything reads it, as intake.ApplyFact gives every fact. Strings
 	// returns ev itself when nothing in it changes, and leaves its bytes as they are.
 	ev = storetext.Strings(ev)
-	if request, suspending := ev.(RequestSuspend); suspending && !m.pauseStopEnded(request) {
+	request, suspending := ev.(RequestSuspend)
+	suspending = suspending && !m.pauseStopEnded(request)
+	if suspending {
 		m.stopStart("a suspension of the claim is waiting for its start")
+		// Counted while it waits for the lock, so a relaunch that holds the lock can tell its stop
+		// or its start ended under a suspension that owns the claim's process (suspensionWaits).
+		m.suspendsWaiting.Add(1)
 	}
 	m.mu.Lock()
+	if suspending {
+		m.suspendsWaiting.Add(-1)
+	}
 	defer m.unlock()
 	if timer, fired := ev.(Timer); fired && m.ctx.Err() != nil {
 		m.log.Info("supervise: a timer fired after the machine's context ended; it decides nothing",
