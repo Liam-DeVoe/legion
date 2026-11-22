@@ -46,7 +46,7 @@ import { masked, rowLimit, runBounded } from "./bounded-subprocess";
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const driverPath = join(dispatchPackage, "e2e/acceptance/replace-blocks.sh");
 /** Where the hand-over message e2e/local-instance.ts prints is written (`handOverMessage`). */
-const handOverPath = join(dispatchPackage, "e2e/local-instance-support.ts");
+const handOverPath = join(dispatchPackage, "e2e/local-instance-hand-over.ts");
 
 /** LEGION_TEST_PG_DSN as this run has it, quotes and all, which `drive` hands the driver
  *  unchanged, so the guard reads it through the driver's own strip of its quotes. */
@@ -84,7 +84,7 @@ if (!live) {
 }
 
 /** The first line of the hand-over message e2e/local-instance.ts prints once the instance is up
- *  (`handOverMessage` in e2e/local-instance-support.ts), the message that holds DATABASE_URL. The
+ *  (`handOverMessage` in e2e/local-instance-hand-over.ts), the message that holds DATABASE_URL. The
  *  fixture log below is built from it, and a row ties it to the line the message writes and to
  *  the line the driver's cut names. */
 const handOverHeading = "Dispatch local instance is up.";
@@ -532,7 +532,7 @@ test("the hand-over heading is the line the instance writes and the line the dri
   const written = JSON.stringify(`\n${handOverHeading}\n`);
   expect(
     source.split(written).length - 1,
-    `e2e/local-instance-support.ts (handOverMessage, which e2e/local-instance.ts prints) does not ` +
+    `e2e/local-instance-hand-over.ts (handOverMessage, which e2e/local-instance.ts prints) does not ` +
       `write ${written} once, as a line of its own. The driver cuts the instance's log at that ` +
       "line, and this file's fixture log is built from it."
   ).toBe(1);
