@@ -32,8 +32,7 @@ func TestOnlyTheBackwardMovePostsAReasonOnTheIssue(t *testing.T) {
 
 // A backward move names the role that asked and gives that role's words as they end, with one full
 // stop added where they end in none; words that are only space read as none. A worker's own move
-// is asked by the role running the phase it left. The carry's move back to testing is asked by the
-// reviewer, whose approve carried no tester's pass, from whichever phase the issue stood in.
+// is asked by the role running the phase it left.
 func TestABackwardMoveNamesWhoAskedAndGivesTheirWords(t *testing.T) {
 	for _, tc := range []struct {
 		from, to phase.Phase
@@ -47,8 +46,6 @@ func TestABackwardMoveNamesWhoAskedAndGivesTheirWords(t *testing.T) {
 			"Legion moved this issue from reviewing back to planning at the reviewer's request: the plan names the wrong table."},
 		{phase.Merging, phase.Testing, claim.RoleMerger, "  \n",
 			"Legion moved this issue from merging back to testing at the merger's request, which gave no reason."},
-		{phase.Accepting, phase.Testing, claim.RoleReviewer, "its approve names no testedCommit",
-			"Legion moved this issue from accepting back to testing at the reviewer's request: its approve names no testedCommit."},
 	} {
 		if got := moveReason(TriggerBackward, tc.from, tc.to, tc.by, tc.reason); got != tc.want {
 			t.Fatalf("%s to %s by the %s with %q posts %q, want %q", tc.from, tc.to, tc.by, tc.reason, got, tc.want)

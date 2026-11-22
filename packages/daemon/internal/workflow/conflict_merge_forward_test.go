@@ -426,7 +426,7 @@ func TestAConflictIsActedOnOnlyWhenNeeded(t *testing.T) {
 		confirmsConflict(t, pool, every)
 		assertNothingActed(t, pool, phase.Reviewing)
 		applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
-			Role: claim.RoleReviewer, Claim: "reviewer-claim", Summary: "ship it", Verdict: "approve", Commit: conflictHead, HandoffRecord: "review-1", HandoffVersion: 1})
+			Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "ship it", Verdict: "approve", Commit: conflictHead, HandoffRecord: "review-1", HandoffVersion: 1})
 		askedInAccepting := func() {
 			t.Helper()
 			if got := issuePhase(t, pool); got != phase.Accepting {

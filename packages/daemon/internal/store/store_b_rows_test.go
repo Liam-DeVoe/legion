@@ -40,8 +40,9 @@ import (
 //     no role, as one App's push does (record.ClassifiedPush);
 //   - the reviewer's verdict, as the workflow records a completion of reviewing (workflow's
 //     handoff and decisionOf): on the reviewer's phases row, the round's decision approved at the
-//     head with testedCommit, the commit of the tester's pass it carries there, and the commit it
-//     read; and the same verdict in verdicts (workflow's recordVerdict);
+//     head and the commit it read; and the same verdict in verdicts, as the verdict of the review
+//     step it ran, step 4 of the task default (workflow's recordVerdict); and the owner's
+//     acceptance at that head, the approve of step 5 that the architect's sign-off records;
 //   - a pull request with no Legion issue, at a head (outside_pull_requests), a review of it from
 //     the CI reviewer, a review of the Legion head from a person with no submission time
 //     (verdict_reviews), the side reviewer a controller named for it (side_reviewers) and that
@@ -51,7 +52,8 @@ import (
 //     commit of the merge queue's group (verdict_writes);
 //   - one outbox row of each kind B runs, through record.NewOutboxRow, among them the ask for the
 //     reviewer's verdict past review that the workflow queues for a push (askVerdict): the
-//     merge-forward review with no reason. The test fails when a kind of B's lanes has no row
+//     merge-forward review with no reason; and the same ask of the architect that ran the owner's
+//     acceptance, a role message to its claim. The test fails when a kind of B's lanes has no row
 //     here, so a kind added to B is a kind this pair reads too.
 func TestRowsForTheBuildBeforeB(t *testing.T) {
 	ctx := context.Background()
@@ -102,11 +104,12 @@ func TestRowsForTheBuildBeforeB(t *testing.T) {
 	const repo = "acme/widgets"
 	widgets := ghrepo.MustParse(repo)
 	// tested is the commit of the tester's pass, pushedFrom the head a push past review replaced,
-	// head the head it left, which the reviewer approves, group the merge queue's group commit for
-	// the pull request, and outsideHead the head of the pull request no Legion issue owns.
+	// head the head it left, which the reviewer and the owner approve, group the merge queue's group
+	// commit for the pull request, and outsideHead the head of the pull request no Legion issue owns.
 	tested, pushedFrom, head, group, outsideHead := beforeBSHA(t), beforeBSHA(t), beforeBSHA(t), beforeBSHA(t), beforeBSHA(t)
 	at := time.Now().UTC().Truncate(time.Microsecond)
 	reviewerClaim := claim.Token("legion-acme-" + strings.ToLower(key) + "-reviewer")
+	architectClaim := claim.Token("legion-acme-" + strings.ToLower(key) + "-architect")
 	const summary = "The change does what its plan says, and the tester's pass covers this head."
 
 	payloads := []struct {
@@ -127,6 +130,7 @@ func TestRowsForTheBuildBeforeB(t *testing.T) {
 		{key, record.CheckLook{Look: 1, OpenedAt: at}},
 		{key, record.CheckBound{}},
 		{key, record.RoleMessage{Role: "legion.acme." + key + ".reviewer", Body: fmt.Sprintf("Pull request #%d: CI settled at %s.", number, head)}},
+		{key, record.RoleMessage{Role: string(architectClaim), Body: fmt.Sprintf("%s: a push moved the head of %s#%d past review. Send your verdict on %s with review_verdict.", key, repo, number, head)}},
 		{key, record.HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing,
 			Count: 1, Counts: map[string]int{"reviewing-implementing": 1}, PullRequest: fmt.Sprintf("%s#%d", repo, number),
 			Prompt: "Read the reviewer's findings before you write anything."}},
@@ -182,13 +186,17 @@ func TestRowsForTheBuildBeforeB(t *testing.T) {
 		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleReviewer, Claim: reviewerClaim,
 			HandoffCommit: head, Summary: summary, CompletedAt: at, ReviewedHead: head,
 			Entry: 1, EntryTask: "Review pull request #" + fmt.Sprint(number) + ".",
-			Decision: &record.ReviewDecision{State: "approved", Body: summary, Head: head, TestedCommit: tested}}); err != nil {
+			Decision: &record.ReviewDecision{State: "approved", Body: summary, Head: head}}); err != nil {
 			return err
 		}
 
-		if _, err := RecordVerdictTx(ctx, tx, Verdict{Repository: widgets, Number: number, Head: head, Issue: key, Verdict: VerdictApprove,
-			TestedCommit: tested, Session: string(reviewerClaim), RecordedAt: at}); err != nil {
-			return err
+		for _, given := range []Verdict{
+			{Repository: widgets, Number: number, Head: head, Issue: key, Task: "default", Step: 4, Verdict: VerdictApprove, Session: string(reviewerClaim), RecordedAt: at},
+			{Repository: widgets, Number: number, Head: head, Issue: key, Task: "default", Step: 5, Verdict: VerdictApprove, Session: string(architectClaim), RecordedAt: at},
+		} {
+			if _, err := RecordVerdictTx(ctx, tx, given); err != nil {
+				return err
+			}
 		}
 		if _, err := RecordOutsidePullRequestTx(ctx, tx, OutsidePullRequest{Repository: widgets, Number: outside, Head: outsideHead, RecordedAt: at}); err != nil {
 			return err
@@ -236,15 +244,17 @@ func TestRowsForTheBuildBeforeB(t *testing.T) {
 		t.Fatalf("write B's rows: %v", err)
 	}
 
-	// What was committed reads back through B's own reads, the column's own key among it: the
-	// decision stores testedCommit under that name, which the build before B skips.
+	// What was committed reads back through B's own reads: each review step's verdict at the head,
+	// and the reviewer's decision, a state and a head in the keys every build reads.
 	if err := st.Tx(ctx, func(tx pgx.Tx) error {
-		verdict, ok, err := VerdictTx(ctx, tx, widgets, number, head)
-		if err != nil {
-			return err
-		}
-		if !ok || verdict.TestedCommit != tested || verdict.Issue != key {
-			t.Errorf("the reviewer's verdict on %s#%d at %s reads back as %+v (found %t)", repo, number, head, verdict, ok)
+		for step, by := range map[int]claim.Token{4: reviewerClaim, 5: architectClaim} {
+			verdict, ok, err := StepVerdictTx(ctx, tx, widgets, number, head, "default", step)
+			if err != nil {
+				return err
+			}
+			if !ok || verdict.Session != string(by) || verdict.Issue != key {
+				t.Errorf("the verdict of step %d on %s#%d at %s reads back as %+v (found %t), want %s's", step, repo, number, head, verdict, ok, by)
+			}
 		}
 		if pr, ok, err := OutsidePullRequestTx(ctx, tx, widgets, outside); err != nil {
 			return err
@@ -261,15 +271,8 @@ func TestRowsForTheBuildBeforeB(t *testing.T) {
 			return err
 		}
 		i := slices.IndexFunc(phases, func(row record.PhaseRow) bool { return row.Role == claim.RoleReviewer })
-		if i < 0 || phases[i].Decision == nil || phases[i].Decision.TestedCommit != tested || phases[i].ReviewedHead != head {
-			t.Errorf("the phases of %s read back as %+v; want the reviewer's decision with testedCommit %s", key, phases, tested)
-		}
-		var stored string
-		if err := tx.QueryRow(ctx, "select coalesce(decision->>'testedCommit', '') from phases where issue = $1 and role = $2", key, string(claim.RoleReviewer)).Scan(&stored); err != nil {
-			return err
-		}
-		if stored != tested {
-			t.Errorf("the reviewer's decision column holds testedCommit %q; want %q", stored, tested)
+		if i < 0 || phases[i].Decision == nil || phases[i].Decision.State != "approved" || phases[i].Decision.Head != head || phases[i].ReviewedHead != head {
+			t.Errorf("the phases of %s read back as %+v; want the reviewer's decision approved at %s", key, phases, head)
 		}
 		var kinds int
 		if err := tx.QueryRow(ctx, "select count(distinct kind) from outbox where id = any($1)", queued).Scan(&kinds); err != nil {
@@ -282,6 +285,6 @@ func TestRowsForTheBuildBeforeB(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("read back B's rows: %v", err)
 	}
-	t.Logf("wrote and left issue %s with pull request %s#%d at %s, the reviewer's approval with testedCommit %s, outside pull request #%d at %s, its side reviewer and verdict, three writes of legion-verdict (the merge group's on %s), and %d outbox rows of %d kinds",
-		key, repo, number, head, tested, outside, outsideHead, group, len(payloads), len(written))
+	t.Logf("wrote and left issue %s with pull request %s#%d at %s, the reviewer's and the owner's approvals there, outside pull request #%d at %s, its side reviewer and verdict, three writes of legion-verdict (the merge group's on %s), and %d outbox rows of %d kinds",
+		key, repo, number, head, outside, outsideHead, group, len(payloads), len(written))
 }

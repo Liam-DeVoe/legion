@@ -85,9 +85,9 @@ var beforeBTables = []string{"outside_pull_requests", "verdict_reviews", "side_r
 //     nothing.
 //   - The record's reads read every row of issues, phases and pull_requests, the tables this
 //     build knows that B writes rows of: Issues lists every issue, and Phases and PullRequest
-//     of each of them read as many rows as the tables hold. The reviewer's decision B writes
-//     carries testedCommit, a key this build does not know; the decision column is read
-//     leniently, so this build reads the state and the head of each such decision.
+//     of each of them read as many rows as the tables hold. The reviewer's decision B writes is a
+//     state and a head in the keys this build reads, and this build reads each decision's state
+//     and head as the column holds them.
 //   - The record's writes write an issue, its pull request, the reviewer's verdict (the round's
 //     decision, as this build records a review's) and an outbox row with no error, and each
 //     reads back.
@@ -232,25 +232,25 @@ func TestTheBuildBeforeBReadsBsStore(t *testing.T) {
 				t.Errorf("issues, phases or pull_requests holds no row (%d, %d, %d), so a read of it read nothing: TestRowsForTheBuildBeforeB writes each", issueRows, phaseRows, pullRequestRows)
 			}
 
-			// B's reviewer's verdict: the decision rows that carry testedCommit, which this build's
-			// ReviewDecision has no field for, and what each holds of the keys this build reads.
+			// B's reviewer's verdict: each decision row, and what it holds of the keys this build
+			// reads.
 			rows, err := tx.Query(ctx, `select issue, role, coalesce(decision->>'state', ''), coalesce(decision->>'head', '') from phases
-				where decision ? 'testedCommit' order by issue, role`)
+				where decision is not null and decision <> 'null'::jsonb order by issue, role`)
 			if err != nil {
 				return err
 			}
 			defer rows.Close()
-			tested := 0
+			decided := 0
 			for rows.Next() {
 				var issue, role, state, head string
 				if err := rows.Scan(&issue, &role, &state, &head); err != nil {
 					return err
 				}
-				tested++
+				decided++
 				got, ok := decisions[issue+"/"+role]
 				switch {
 				case !ok:
-					t.Errorf("Phases read no %s row of %s, whose decision carries testedCommit", role, issue)
+					t.Errorf("Phases read no %s row of %s, whose decision the column holds", role, issue)
 				case got == nil || got.State != state || got.Head != head:
 					t.Errorf("the %s row of %s decided %s at %s; this build read %+v", role, issue, state, head, got)
 				}
@@ -258,10 +258,10 @@ func TestTheBuildBeforeBReadsBsStore(t *testing.T) {
 			if err := rows.Err(); err != nil {
 				return err
 			}
-			if tested == 0 {
-				t.Error("no phases row holds a decision with testedCommit, so no read here read the reviewer's verdict B writes: TestRowsForTheBuildBeforeB writes one")
+			if decided == 0 {
+				t.Error("no phases row holds a decision, so no read here read the reviewer's verdict B writes: TestRowsForTheBuildBeforeB writes one")
 			}
-			t.Logf("read %d issues, %d phases rows, %d pull requests and %d decisions that carry testedCommit", len(issues), phasesRead, pullRequestsRead, tested)
+			t.Logf("read %d issues, %d phases rows, %d pull requests and %d decisions", len(issues), phasesRead, pullRequestsRead, decided)
 			return nil
 		}); err != nil {
 			t.Fatalf("read the record: %v", err)

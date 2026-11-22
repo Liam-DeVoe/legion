@@ -13,63 +13,56 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/verdict"
 )
 
-// A head that moves in review (spec R4, R5; Design, "A head that moves in review"). A check run
-// belongs to one commit, so a head a push leaves has no legion-verdict until a verdict names it.
-// The tester's pass at commit A counts at head B only where the reviewer's verdict at B names A,
-// the commit of the tester's recorded pass, as its testedCommit, by which the reviewer states that
-// no commit since A changes code that runs (verdict.PassCounts). The daemon compares those two
-// recorded commits and reads no diff, so a path a compare would leave out cannot carry a change
-// past the tester. An approve that carries no pass sends the issue back to testing, in reviewing
-// (handoff) and past review (reviewVerdict) alike, and nothing writes success on its head: the
-// move clears the tester's pass. Past review, every move of the head asks the round's recorded
-// reviewer for its verdict at the new head (askVerdict, and mergeForwardLanded for a merge
-// forward's landing).
-
-// heldVerdictApplied is the line the end of a hold logs when it applies the reviewer's verdict past
-// review that the issue took while held (applyHeldVerdict).
-const heldVerdictApplied = "workflow: the hold ended, and the reviewer's approve taken while it held carries no tester's pass; the issue goes back to testing"
+// A head that moves past review (spec R4, R5; Design, "A head that moves in review"). A check run
+// belongs to one commit, so a head a push leaves has no legion-verdict until the review steps'
+// verdicts name it, and a testing step passes at that head only by the check states Dispatch
+// publishes there. Past review, every move of the head asks the agents of the review steps for
+// their verdicts at the new head (askVerdict, and mergeForwardLanded for a merge forward's
+// landing).
 
 // reviewVerdict applies the verdict past review (intake.ReviewVerdict, which the review-verdict
-// route queues): the round's recorded reviewer's approve or changes at the head the pull request
-// moved to while the issue stands past its review (record.PastReview). It writes the round's
-// decision at that head on the reviewer's row (decisionOf) and the verdict the writer of
-// legion-verdict reads there (recordVerdict), whose write the fact's commit asks for
-// (askMergeState). It writes no handoff and makes no completion, and it moves no phase, but where
-// an approve carries no tester's pass to the head (uncarried): then the issue goes back to testing
-// at the reviewer's request (moveBackToTesting).
+// route queues): the approve or changes, at the head the pull request moved to while the issue
+// stands past its review (record.PastReview), of the agent of a review step of the issue's task,
+// as the step's record names it (reviewSteps): the reviewer, or the architect that ran the owner's
+// acceptance. It records that step's verdict at that head (recordVerdict), whose write of
+// legion-verdict the fact's commit asks for (askMergeState), and the reviewer's is also the round's
+// decision there, on the reviewer's row (decisionOf), which the next ask of the reviewer counts its
+// range from (verdictSince). It writes no handoff, makes no completion and moves no phase.
 //
-// The route judged the call against the record before the fact's transaction, and the record can
-// move between the two, so the same judgement is made again here under the fact's lock, each
-// refusal recording nothing: a claim that is not the one whose completion ended the round
+// Every judgement of the call is made here, under the fact's lock, each refusal recording nothing:
+// a claim the record names the agent of no review step of the issue's task
 // (VERDICT_CALLER_FORBIDDEN), an issue no longer past its review (VERDICT_NOT_PAST_REVIEW), a
 // lingering tree (TREE_LINGERING), and a head the pull request has moved off
-// (VERDICT_HEAD_NOT_CURRENT). A held issue moves only when its hold ends, so a verdict taken while
-// held is recorded and moves nothing then: the hold's end applies it (applyHeldVerdict), so the
-// reviewer sends it once, whatever becomes of its session meanwhile.
+// (VERDICT_HEAD_NOT_CURRENT). The agent of the step the issue stands in counts, the owner's
+// acceptance in accepting: it runs that step, and its verdict there is a verdict of that step.
 func (e *Engine) reviewVerdict(ctx context.Context, tx pgx.Tx, fact intake.ReviewVerdict) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+	w, err := e.walk(ctx, tx, *issue)
 	if err != nil {
 		return intake.Result{}, err
 	}
-	if reviewer.Claim != fact.Claim {
+	steps, err := e.reviewSteps(ctx, tx, *issue, w)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	step, ok := stepOfAgent(steps, fact.Claim)
+	if !ok {
 		return intake.Result{Refusal: &intake.Refusal{Status: 403, Code: "VERDICT_CALLER_FORBIDDEN", Message: fmt.Sprintf(
-			"review_verdict is the verdict of the reviewer whose completion ended the review round of %s, claim %q, and this call is claim %s's; nothing was recorded",
-			issue.Key, reviewer.Claim, fact.Claim)}}, nil
+			"review_verdict is the verdict of the agent of a review step of %s's task, as its step record names it, and %s; this call is claim %s's. An architect that ran a child's acceptance names that child as issue; nothing was recorded",
+			issue.Key, agentsOf(steps), fact.Claim)}}, nil
 	}
 	if !record.PastReview(*issue) {
 		return refused("VERDICT_NOT_PAST_REVIEW", fmt.Sprintf(
-			"%s stands in %s: review_verdict is the reviewer's verdict on a head that moved past review, in accepting, retro or merging; nothing was recorded",
+			"%s stands in %s: review_verdict is the verdict of a review step's agent on a head that moved past review, in accepting, retro or merging; nothing was recorded",
 			issue.Key, record.StandsAt(*issue))), nil
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
-		return refusedLingering(*issue, "the reviewer's verdict past review"), err
+		return refusedLingering(*issue, "the verdict past review"), err
 	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
@@ -83,123 +76,41 @@ func (e *Engine) reviewVerdict(ctx context.Context, tx pgx.Tx, fact intake.Revie
 		return refused("VERDICT_HEAD_NOT_CURRENT", fmt.Sprintf(
 			"this verdict is on %s, and %s: read that head and send the verdict on it; nothing was recorded", fact.Commit, current)), nil
 	}
-	decision := decisionOf(intake.HandoffComplete{Verdict: fact.Verdict, Summary: fact.Summary, Commit: fact.Commit, TestedCommit: fact.TestedCommit})
+	decision := decisionOf(intake.HandoffComplete{Verdict: fact.Verdict, Summary: fact.Summary, Commit: fact.Commit})
 	if decision == nil {
 		// The route takes approve and changes alone (api's reviewerVerdictOf).
 		return intake.Result{}, nil
 	}
-	tester, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleTester)
-	if err != nil {
+	if step.at == phase.Reviewing {
+		reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		reviewer.Decision = decision
+		if err := e.store.PutPhase(ctx, tx, reviewer); err != nil {
+			return intake.Result{}, err
+		}
+	}
+	if err := e.recordVerdict(ctx, tx, issue.Key, pr, step.place, fact.Claim, fact.Verdict, fact.Commit); err != nil {
 		return intake.Result{}, err
 	}
-	back := uncarried(fact.Verdict, fact.Commit, fact.TestedCommit)
-	reviewer.Decision = decision
-	if err := e.store.PutPhase(ctx, tx, reviewer); err != nil {
-		return intake.Result{}, err
-	}
-	if err := e.recordVerdict(ctx, tx, issue.Key, pr, fact.Claim, fact.Verdict, fact.Commit, fact.TestedCommit); err != nil {
-		return intake.Result{}, err
-	}
-	// The round's decision on the reviewer's row is the record changing, so the issue moved (the
-	// rule in dispatchIssue), as at the completion that wrote the decision before it (handoff).
+	// A step's verdict is the record changing, so the issue moved (the rule in dispatchIssue), as
+	// at the completion that wrote the round's decision before it (handoff).
 	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 		return intake.Result{}, err
 	}
-	e.logOnCommit(ctx, "workflow: recorded the reviewer's verdict past review", "issue", issue.Key, "tree", issue.Tree,
-		"phase", record.StandsAt(*issue), "verdict", fact.Verdict, "commit", fact.Commit, "testedCommit", fact.TestedCommit)
-	if !back || issue.Phase == phase.Held {
-		return intake.Result{}, nil
-	}
-	return intake.Result{}, e.moveBackToTesting(ctx, tx, *issue, record.PhaseRow{Issue: issue.Key, Role: claim.RoleReviewer}, pr, tester, fact.Commit, fact.TestedCommit)
+	e.logOnCommit(ctx, "workflow: recorded a review step's verdict past review", "issue", issue.Key, "tree", issue.Tree,
+		"phase", record.StandsAt(*issue), "step", step.place.Place, "agent", fact.Claim, "verdict", fact.Verdict, "commit", fact.Commit)
+	return intake.Result{}, nil
 }
 
-// applyHeldVerdict applies, as issue's hold ends (retryPhase, with issue released to the phase it
-// was held from), the verdict past review it took while held (reviewVerdict), and says whether it
-// moved the issue: the newest verdict the store records at the head pr stands at (store.Verdict,
-// which recordVerdict wrote), where it is this issue's reviewer's approve that carries no tester's
-// pass to that head (uncarried), sends the issue back to testing at the reviewer's request, as it
-// would have the moment it came, and is logged. A verdict at a head the pull request has moved off
-// is of code the issue no longer stands on, and the push that moved it asked the reviewer again
-// (askVerdict). An issue in reviewing took no verdict while held: its reviewer's completion is
-// what decides that round, and its own approve is acted on as it lands (handoff).
-func (e *Engine) applyHeldVerdict(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) (bool, error) {
-	if !record.PastReview(issue) || pr == nil {
-		return false, nil
-	}
-	repository, err := ghrepo.Parse("the repository of "+issue.Key+"'s pull request", pr.Repo)
-	if err != nil {
-		return false, err
-	}
-	given, found, err := store.VerdictTx(ctx, tx, repository, pr.Number, pr.HeadSHA)
-	if err != nil || !found || given.Issue != issue.Key {
-		return false, err
-	}
-	tester, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleTester)
-	if err != nil || !uncarried(string(given.Verdict), pr.HeadSHA, given.TestedCommit) {
-		return false, err
-	}
-	e.logOnCommit(ctx, heldVerdictApplied, "issue", issue.Key, "tree", issue.Tree, "phase", issue.Phase,
-		"commit", pr.HeadSHA, "testedCommit", given.TestedCommit, "reviewer", given.Session)
-	return true, e.moveBackToTesting(ctx, tx, issue, record.PhaseRow{Issue: issue.Key, Role: claim.RoleReviewer}, pr, tester, pr.HeadSHA, given.TestedCommit)
-}
-
-// uncarried is whether word, a reviewer's verdict at commit carrying the tester's pass at tested,
-// is an approve that the tester's pass does not count at (verdict.PassCounts, the rule the writer
-// of legion-verdict decides by). Only a tester's pass is judged, and the carry reads none
-// (verdict.NoTestingPass): the record keeps no tester's verdict, since Dispatch's check states at
-// the tested head decide the testing phase, so no approve is sent back to testing for want of one
-// until a testing step is decided by its check states at the head. A changes is a refusal
-// whatever it carries, and ends the round as one.
-func uncarried(word, commit, tested string) bool {
-	pass := verdict.NoTestingPass
-	return store.VerdictWord(word) == store.VerdictApprove && pass.Verdict == verdict.TesterPass &&
-		!verdict.PassCounts(pass, commit, tested)
-}
-
-// testAgain sends issue, in reviewing, back to testing where the reviewer's completion is an
-// approve that carries no tester's pass to the commit it names (uncarried), and says whether it
-// did: such an approve ends no round, since no pass stands on its head. by is the reviewer's row as
-// the completion left it, which the move hands on as the reviewer's request.
-func (e *Engine) testAgain(ctx context.Context, tx pgx.Tx, issue record.Issue, by record.PhaseRow, pr *record.PullRequest, word, commit, tested string) (bool, error) {
-	tester, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleTester)
-	if err != nil || !uncarried(word, commit, tested) {
-		return false, err
-	}
-	return true, e.moveBackToTesting(ctx, tx, issue, by, pr, tester, commit, tested)
-}
-
-// moveBackToTesting moves issue back to testing at the reviewer's request (by, whose role is the
-// reviewer's), as a backward move does, with the reason the tester's task, the architect's notice
-// and the post on the issue give: the approve of commit carries no pass, and commit is the head to
-// test. The move clears the tester's pass (clearHandoff), so the writer of legion-verdict decides
-// no success on commit until the tester passes it.
-func (e *Engine) moveBackToTesting(ctx context.Context, tx pgx.Tx, issue record.Issue, by record.PhaseRow, pr *record.PullRequest, tester record.PhaseRow, commit, tested string) error {
-	named := "names no testedCommit"
-	if tested != "" {
-		named = "names testedCommit " + tested
-	}
-	passed := "the tester's recorded pass names no commit, so it counts at no head"
-	if tester.HandoffCommit != "" {
-		passed = fmt.Sprintf("the tester's recorded pass is at %s, so that pass does not count at %s", tester.HandoffCommit, commit)
-	}
-	reason := fmt.Sprintf("the reviewer's approve of %s %s, and %s: test %s", commit, named, passed, commit)
-	e.logOnCommit(ctx, "workflow: the reviewer's approve carries no tester's pass; the issue goes back to testing", "issue", issue.Key,
-		"tree", issue.Tree, "phase", record.StandsAt(issue), "commit", commit, "testedCommit", tested, "testerCommit", tester.HandoffCommit)
-	return e.transition(ctx, tx, issue, TriggerBackward, phase.Testing, by, pr, reason)
-}
-
-// askVerdict asks the round's recorded reviewer for its verdict at pr's head, which a push moved
-// there from from while issue stands past its review (spec R5, "The verdict past review"): every
-// push in accepting, retro or merging, a retro commit and an implementer's correction among them,
-// leaves a head with no legion-verdict, which cannot merge until the reviewer's verdict there is
-// written. A merge forward's landing asks in mergeForwardLanded, so this is every other move. The
-// ask names the range the reviewer has not judged: from the head of its last verdict
-// (verdictSince), so a second push before it answers still asks about every commit since that
-// verdict, to the head the push made; a push back to the head of that verdict asks nothing. It is
-// the review row a landing writes (record.MergeForwardReview), which wakes a released reviewer: a
-// new outbox kind or payload key would be one the release before it cannot read (spec R15). Its
-// executor delivers it while the issue stands past its review at that head (leftMergeForwardAt).
-// A tree that lingers, where every role is suspended, asks nothing.
+// askVerdict asks the agent of each review step of issue's task that has passed for its verdict at
+// pr's head, which a push moved there from from while issue stands past its review (spec R5, "The
+// verdict past review"): every push in accepting, retro or merging, a retro commit and an
+// implementer's correction among them, leaves a head with no legion-verdict, which cannot merge
+// until the review steps' verdicts there are written. A merge forward's landing asks in
+// mergeForwardLanded, so this is every other move (askReviewSteps). A tree that lingers, where
+// every role is suspended, asks nothing.
 func (e *Engine) askVerdict(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, from string) error {
 	if !record.PastReview(issue) || from == "" || from == pr.HeadSHA {
 		return nil
@@ -207,28 +118,112 @@ func (e *Engine) askVerdict(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return err
 	}
-	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+	_, err := e.askReviewSteps(ctx, tx, issue, pr, from, cmp.Or(pr.Base, issue.DefaultBranch), "")
+	return err
+}
+
+// askReviewSteps asks the agent of each review step of issue's task that has passed (passed) for
+// its verdict at pr's head, which the push from from moved there, the landing of a merge forward
+// of base where why names its reason, and says whether it asked any. Each ask names the range that
+// agent has not judged: from the head of its step's last verdict (verdictSince for the reviewer,
+// whose row's decision its verdicts write; the store's last verdict of the step for every other),
+// so a second push before it answers still asks about every commit since that verdict; where none
+// is recorded, from from. A push back to the head of that verdict asks nothing of that agent; a
+// landing asks all the same, since its merge is what the agent reads.
+//
+// The reviewer is asked by the merge-forward review (record.MergeForwardReview) on its role's
+// topic, which wakes a released reviewer: a new outbox kind or payload key would be one the release
+// before it cannot read (spec R15). Its executor delivers it while the issue stands past its review
+// at that head (leftMergeForwardAt). The agent of every other review step, the architect that ran
+// the owner's acceptance, is asked by a role message to the claim its step's record names
+// (record.RoleMessage, stepVerdictAsk), the kind every release reads, which reaches it while that
+// claim holds its role; a step whose record names no claim is asked nothing.
+func (e *Engine) askReviewSteps(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, from, base string, why record.ConflictWhy) (bool, error) {
+	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
-		return err
+		return false, err
 	}
-	since := verdictSince(reviewer, pr.HeadSHA, from)
-	if since == "" {
-		return nil
-	}
-	addressed, err := e.addressRoles(issue.Project, []roleRecipient{{issue: issue.Key, role: claim.RoleReviewer, row: issue.Key}}, nil)
+	steps, err := e.reviewSteps(ctx, tx, issue, w)
 	if err != nil {
-		return err
+		return false, err
 	}
-	at := record.StandsAt(issue)
-	for _, to := range addressed {
-		if err := e.enqueue(ctx, tx, to.issue, record.MergeForwardMessage{Role: claim.RoleReviewer, Step: record.MergeForwardReview,
-			Head: since, Landed: pr.HeadSHA, Base: cmp.Or(pr.Base, issue.DefaultBranch), Phase: at, PullRequest: pr.Number}); err != nil {
-			return err
+	at, asked := record.StandsAt(issue), false
+	for _, step := range steps {
+		if !step.passed(w, issue) || step.at != phase.Reviewing && step.agent == "" {
+			continue
 		}
+		since, err := e.stepVerdictSince(ctx, tx, issue, pr, step, from)
+		if err != nil {
+			return false, err
+		}
+		if why != "" {
+			since = cmp.Or(since, from)
+		}
+		if since == "" {
+			continue
+		}
+		if step.at == phase.Reviewing {
+			addressed, err := e.addressRoles(issue.Project, []roleRecipient{{issue: issue.Key, role: claim.RoleReviewer, row: issue.Key}}, nil)
+			if err != nil {
+				return false, err
+			}
+			for _, to := range addressed {
+				if err := e.enqueue(ctx, tx, to.issue, record.MergeForwardMessage{Role: claim.RoleReviewer, Step: record.MergeForwardReview,
+					Head: since, Landed: pr.HeadSHA, Base: base, Phase: at, PullRequest: pr.Number, Why: why}); err != nil {
+					return false, err
+				}
+			}
+		} else if err := e.enqueue(ctx, tx, issue.Key, record.RoleMessage{Role: string(step.agent),
+			Body: stepVerdictAsk(issue.Key, pr, at, since, base, why)}); err != nil {
+			return false, err
+		}
+		asked = true
+		e.logOnCommit(ctx, "workflow: the head moved past review; a review step's agent is asked for its verdict", "issue", issue.Key,
+			"tree", issue.Tree, "phase", at, "step", step.place.Place, "agent", step.agent, "pullRequest", pr.Number, "head", since, "landed", pr.HeadSHA)
 	}
-	e.logOnCommit(ctx, "workflow: the head moved past review; the reviewer is asked for its verdict", "issue", issue.Key, "tree", issue.Tree,
-		"phase", at, "pullRequest", pr.Number, "head", since, "landed", pr.HeadSHA)
-	return nil
+	return asked, nil
+}
+
+// stepVerdictSince is the head of step's last verdict on pr, "" where it names pr's head, so no
+// verdict of that step is owed there, and otherwise where none is recorded: the reviewer's row's
+// decision for the reviewer's step (verdictSince), and the store's last verdict of the step for
+// every other (store.LastStepVerdictTx).
+func (e *Engine) stepVerdictSince(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, step reviewStep, otherwise string) (string, error) {
+	if step.at == phase.Reviewing {
+		reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+		return verdictSince(reviewer, pr.HeadSHA, otherwise), err
+	}
+	repository, err := ghrepo.Parse("the repository of "+issue.Key+"'s pull request", pr.Repo)
+	if err != nil {
+		return "", err
+	}
+	given, found, err := store.LastStepVerdictTx(ctx, tx, repository, pr.Number, step.place.Task, step.place.Place)
+	switch {
+	case err != nil || !found || given.Issue != issue.Key:
+		return otherwise, err
+	case given.Head == pr.HeadSHA:
+		return "", nil
+	}
+	return given.Head, nil
+}
+
+// stepVerdictAsk is the role message that asks the agent of a review step other than the
+// reviewer's for its verdict at pr's head (askReviewSteps): issue, what moved the head (the merge of
+// base forward where why names a reason, any other push where it names none), the phase the issue
+// stands in at, both heads, how to read what changed since the old head, since, and the call that
+// answers: review_verdict with its verdict, the new head as its commit and the issue it is for,
+// since the agent's own grant is of its own issue. The sentences are short and plain, one
+// instruction to a sentence, because an agent reads them (ASD-STE100).
+func stepVerdictAsk(issue string, pr *record.PullRequest, at phase.Phase, since, base string, why record.ConflictWhy) string {
+	pull := fmt.Sprintf("pull request %s#%d", pr.Repo, pr.Number)
+	moved, read := "a push moved the head of "+pull, "Read what changed since the old head"
+	if why != "" {
+		moved, read = fmt.Sprintf("the merge of %s forward landed on %s", base, pull), "Read what the merge changed since the old head"
+	}
+	return fmt.Sprintf("%s: %s, and the issue stands in %s. The old head is %s, and the new head is %s. %s: run `git diff %s %s`."+
+		" Then send your verdict on the new head with review_verdict: verdict approve or changes, commit %s, issue %s."+
+		" Write no handoff for this verdict, and make no sign_off and no request_backward_move for it.",
+		issue, moved, at, since, pr.HeadSHA, read, since, pr.HeadSHA, pr.HeadSHA, issue)
 }
 
 // verdictSince is the head the round's recorded reviewer last gave its verdict on (its row's

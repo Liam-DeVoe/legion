@@ -22,7 +22,10 @@ import (
 // the later of two rows of their key, a refusal over an approval among them, and every other read
 // answers each row of its key in the order the rows were written: each later row of a key carries
 // an earlier time, so the order is the rows' ids and never their times. A key no row holds reads
-// as none. A review GitHub gave no submission time is stored with none, a null.
+// as none. A review GitHub gave no submission time is stored with none, a null. A Legion issue's
+// verdict is the verdict of one step of its task: the reads of a step's verdict, at a head and at
+// any head, answer the newest row of that task and step alone, while the read of a head's newest
+// verdict answers the newest row of any step.
 func TestTheVerdictTablesRoundTrip(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -40,8 +43,16 @@ func TestTheVerdictTablesRoundTrip(t *testing.T) {
 		State: "changes_requested", RecordedAt: minute(2)}
 	firstNamed := SideReviewer{Repository: widgets, Number: 42, Head: "h2", Session: "ses-first", RecordedAt: minute(6)}
 	namedAgain := SideReviewer{Repository: widgets, Number: 42, Head: "h2", Session: "ses-second", RecordedAt: minute(5)}
-	legionVerdict := Verdict{Repository: widgets, Number: 7, Head: "h5", Issue: "LEGION-7", Verdict: VerdictApprove,
-		TestedCommit: "h4", Session: "ses-reviewer", RecordedAt: minute(7)}
+	// LEGION-7's verdicts: its reviewer's (step 4 of the task default) at h4 and then at h5, the
+	// owner's acceptance (step 5) at h5, and, newest of all at h5, a row of another task's step 5.
+	reviewerEarlier := Verdict{Repository: widgets, Number: 7, Head: "h4", Issue: "LEGION-7", Task: "default", Step: 4, Verdict: VerdictApprove,
+		Session: "ses-reviewer", RecordedAt: minute(13)}
+	legionVerdict := Verdict{Repository: widgets, Number: 7, Head: "h5", Issue: "LEGION-7", Task: "default", Step: 4, Verdict: VerdictApprove,
+		Session: "ses-reviewer", RecordedAt: minute(7)}
+	ownerVerdict := Verdict{Repository: widgets, Number: 7, Head: "h5", Issue: "LEGION-7", Task: "default", Step: 5, Verdict: VerdictChanges,
+		Session: "ses-architect", RecordedAt: minute(6)}
+	otherTask := Verdict{Repository: widgets, Number: 7, Head: "h5", Issue: "LEGION-7", Task: "other", Step: 5, Verdict: VerdictApprove,
+		Session: "ses-other", RecordedAt: minute(5)}
 	sideApproval := Verdict{Repository: widgets, Number: 42, Head: "h2", Verdict: VerdictApprove, Session: "ses-second",
 		RecordedAt: minute(9)}
 	sideRefusal := Verdict{Repository: widgets, Number: 42, Head: "h2", Verdict: VerdictChanges, Session: "ses-second",
@@ -65,7 +76,10 @@ func TestTheVerdictTablesRoundTrip(t *testing.T) {
 		ciRefusal.ID = written(RecordVerdictReviewTx(ctx, tx, ciRefusal))
 		firstNamed.ID = written(RecordSideReviewerTx(ctx, tx, firstNamed))
 		namedAgain.ID = written(RecordSideReviewerTx(ctx, tx, namedAgain))
+		reviewerEarlier.ID = written(RecordVerdictTx(ctx, tx, reviewerEarlier))
 		legionVerdict.ID = written(RecordVerdictTx(ctx, tx, legionVerdict))
+		ownerVerdict.ID = written(RecordVerdictTx(ctx, tx, ownerVerdict))
+		otherTask.ID = written(RecordVerdictTx(ctx, tx, otherTask))
 		sideApproval.ID = written(RecordVerdictTx(ctx, tx, sideApproval))
 		sideRefusal.ID = written(RecordVerdictTx(ctx, tx, sideRefusal))
 		ownRun.ID = written(RecordVerdictWriteTx(ctx, tx, ownRun))
@@ -161,7 +175,8 @@ func TestTheVerdictTablesRoundTrip(t *testing.T) {
 			t.Errorf("the side reviewer of %s#42 at h2 reads %+v (found %v), want the later of its two namings, %+v", spelledOtherwise, named, ok, namedAgain)
 		}
 
-		for _, want := range []Verdict{legionVerdict, sideRefusal} {
+		// The newest verdict at a head is the newest row of any step: another task's at h5.
+		for _, want := range []Verdict{otherTask, sideRefusal} {
 			got, ok, err := VerdictTx(ctx, tx, spelledOtherwise, want.Number, want.Head)
 			if err != nil {
 				return err
@@ -171,6 +186,36 @@ func TestTheVerdictTablesRoundTrip(t *testing.T) {
 				t.Errorf("the verdict on %s#%d at %s reads %+v (found %v), want the newest of its rows, %+v",
 					spelledOtherwise, want.Number, want.Head, got, ok, want)
 			}
+		}
+		// A step's verdict at h5 is that task's and that step's newest row there: the reviewer's
+		// under the owner's later row, and the owner's under the other task's later row.
+		for _, want := range []Verdict{legionVerdict, ownerVerdict} {
+			got, ok, err := StepVerdictTx(ctx, tx, spelledOtherwise, 7, "h5", want.Task, want.Step)
+			if err != nil {
+				return err
+			}
+			got.RecordedAt = got.RecordedAt.UTC()
+			if !ok || !reflect.DeepEqual(got, want) {
+				t.Errorf("the verdict of step %d of task %s on %s#7 at h5 reads %+v (found %v), want %+v", want.Step, want.Task, spelledOtherwise, got, ok, want)
+			}
+		}
+		// A step's last verdict at any head is the newest row of that task and step: the reviewer's
+		// at h5 over its earlier one at h4, and the owner's under the other task's later row.
+		for _, want := range []Verdict{legionVerdict, ownerVerdict} {
+			got, ok, err := LastStepVerdictTx(ctx, tx, spelledOtherwise, 7, want.Task, want.Step)
+			if err != nil {
+				return err
+			}
+			got.RecordedAt = got.RecordedAt.UTC()
+			if !ok || !reflect.DeepEqual(got, want) {
+				t.Errorf("the last verdict of step %d of task %s on %s#7 reads %+v (found %v), want %+v", want.Step, want.Task, spelledOtherwise, got, ok, want)
+			}
+		}
+		if v, ok, err := StepVerdictTx(ctx, tx, widgets, 7, "h4", "default", 5); err != nil || ok {
+			t.Errorf("the verdict of step 5 on %s#7 at h4, which no row records, reads %+v (found %v, %v), want none", widgets, v, ok, err)
+		}
+		if v, ok, err := LastStepVerdictTx(ctx, tx, widgets, 7, "default", 3); err != nil || ok {
+			t.Errorf("the last verdict of step 3 on %s#7, which no row records, reads %+v (found %v, %v), want none", widgets, v, ok, err)
 		}
 
 		writes, err := VerdictWritesTx(ctx, tx, spelledOtherwise, "h2")
@@ -303,6 +348,21 @@ func TestTheVerdictTableWritesRefuseAnIncompleteRow(t *testing.T) {
 			n.Number = -1
 			return RecordSideReviewerTx(ctx, tx, n)
 		}, "number"},
+		{"a Legion issue's verdict of no task", func(tx pgx.Tx) (int64, error) {
+			v := verdict
+			v.Issue, v.Step = "LEGION-7", 4
+			return RecordVerdictTx(ctx, tx, v)
+		}, "step"},
+		{"a Legion issue's verdict of no step", func(tx pgx.Tx) (int64, error) {
+			v := verdict
+			v.Issue, v.Task = "LEGION-7", "default"
+			return RecordVerdictTx(ctx, tx, v)
+		}, "step"},
+		{"a verdict of a step on no Legion issue", func(tx pgx.Tx) (int64, error) {
+			v := verdict
+			v.Task, v.Step = "default", 4
+			return RecordVerdictTx(ctx, tx, v)
+		}, "step"},
 		{"a verdict of a word no reader knows", func(tx pgx.Tx) (int64, error) {
 			v := verdict
 			v.Verdict = "pass"

@@ -1,0 +1,7 @@
+{
+  "grantId": "grant-for-one-command",
+  "verdict": "changes",
+  "commit": "c0de0000000000000000000000000000000000ff",
+  "issue": "LEGION-208",
+  "summary": "The owner reads a change the plan does not cover."
+}

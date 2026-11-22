@@ -1888,8 +1888,7 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // names both heads and the phase, and what moved the head: the merge of the base forward where the
 // row names a Why, any other push where it names none. It tells the reviewer to read what changed
 // the same way, and to send its verdict on the new head with review_verdict: approve or changes,
-// the new head as the commit, and testedCommit, the commit of the tester's pass, only where no
-// commit since that pass changes code that runs (spec R4, R5). It posts its findings as a COMMENT
+// with the new head as the commit (spec R5). It posts its findings as a COMMENT
 // review, writes no handoff and makes no completion, and then tells what it decided, on their role
 // topics, to the architect and to the worker of the phase the issue stands in (the implementer in
 // retro, the merger in merging; the architect alone in accepting).
@@ -1944,8 +1943,7 @@ func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 		}
 		return fmt.Sprintf("%s: %s, and the issue stands in %s. The old head is %s, and the new head is %s."+
 			" %s%s"+
-			" Then send your verdict on the new head with review_verdict: verdict approve or changes, commit %s,"+
-			" and testedCommit set to the commit of the tester's pass only where no commit since that pass changes code that runs."+
+			" Then send your verdict on the new head with review_verdict: verdict approve or changes, commit %s."+
 			" Post your findings as a COMMENT review. Write no handoff and make no completion for this verdict. Then tell %s, what you decided.",
 			issue, moved, p.Phase, p.Head, p.Landed, read, p.readMerge(), p.Landed, tell)
 	}

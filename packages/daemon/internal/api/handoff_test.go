@@ -913,8 +913,9 @@ func TestHandoffCompleteRefusesAnImplementersLeftCompletionNamingNoRecord(t *tes
 }
 
 // A phase completion is held to the fields of its role: the implementer's to its commit, and no
-// completion names a verdict (VERDICT_NOT_TAKEN, TestAPhaseCompletionCarriesNoVerdict). The
-// tester's completion names its record and no verdict, and a retry of it is deduplicated.
+// completion of a step that is no review names a verdict (VERDICT_ROLE_FORBIDDEN here,
+// TestAPhaseCompletionCarriesNoVerdict). The tester's completion names its record and no verdict,
+// and a retry of it is deduplicated.
 func TestHandoffCompleteEnforcesRoleSpecificFieldsAndDeduplicatesTheRecord(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h, facts := newHandoffHarness(t, github, nil, nil)
@@ -924,7 +925,7 @@ func TestHandoffCompleteEnforcesRoleSpecificFieldsAndDeduplicatesTheRecord(t *te
 	written := tester.writeHandoff("test", 1)
 
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
-	refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Verdict: "pass", Commit: "bbccdd"}), http.StatusBadRequest, "VERDICT_NOT_TAKEN")
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Verdict: "pass", Commit: "bbccdd"}), http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN")
 
 	request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1}
 	completion(t, h.complete(request))
@@ -1327,7 +1328,7 @@ func TestHandoffCompleteReadsTheCommitOnlyForAPhaseCompletionAfterTheGrant(t *te
 	if message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented"}), http.StatusBadRequest, "MISSING_FIELD"); message != "commit is required" {
 		t.Fatalf("a phase completion naming no commit was refused with %q; want the field named", message)
 	}
-	refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Verdict: "pending", Commit: headSHA}), http.StatusBadRequest, "VERDICT_NOT_TAKEN")
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Verdict: "pending", Commit: headSHA}), http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN")
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("facts = %#v, want none", got)
 	}

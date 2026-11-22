@@ -12,9 +12,10 @@
 -- its author, whether GitHub gives the author write access, its state, and when GitHub says it was
 -- submitted (null when the event did not say). side_reviewers records each naming of a reviewer
 -- session for a pull request at a head. verdicts records each verdict, approve or changes, with
--- the session that gave it and the commit of the tester's pass it carries to the head
--- (tested_commit, empty for none); issue is the Legion issue whose head it is, empty for a pull
--- request no Legion issue owns. verdict_writes records each check run (kind check_run) and commit
+-- the session that gave it; issue is the Legion issue whose head it is, empty for a pull request
+-- no Legion issue owns, and task and step are the review step of that issue's task whose agent
+-- gave it, by the task's id and the step's place from 1 ('' and 0 for no Legion issue's verdict).
+-- verdict_writes records each check run (kind check_run) and commit
 -- status (kind status) the daemon wrote on a head: GitHub's id of it, its conclusion, the id of
 -- the run or status of another writer it went over (foreign_id, 0 for none) and when it was
 -- written.
@@ -71,8 +72,9 @@ create table verdicts (
   number integer not null default 0,
   head text not null default '',
   issue text not null default '',
+  task text not null default '',
+  step integer not null default 0,
   verdict text not null default '',
-  tested_commit text not null default '',
   session text not null default '',
   recorded_at timestamptz not null default now());
 create index verdicts_head on verdicts (lower(repository), number, head, id);

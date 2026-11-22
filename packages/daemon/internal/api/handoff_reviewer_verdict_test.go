@@ -11,48 +11,48 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// testedSHA is the commit of the tester's recorded pass that a reviewer's verdict at headSHA
-// carries to that head (testedCommit) in these tests.
-const testedSHA = "7e57000000000000000000000000000000000aa1"
-
 // reviewCompletion is the reviewer's completion of reviewing as the `legion` tool posts it: a
 // fresh grant, its own review record, the head that record names (commit, "" for a record that
-// names none) and the verdict and testedCommit it was given.
-func reviewCompletion(t *testing.T, reviewer liveClaim, verdict, commit, tested string) HandoffCompleteRequest {
+// names none) and the verdict it was given.
+func reviewCompletion(t *testing.T, reviewer liveClaim, verdict, commit string) HandoffCompleteRequest {
 	t.Helper()
 	return HandoffCompleteRequest{GrantID: reviewer.grant(t), Summary: "reviewed", Verdict: verdict, Commit: commit,
-		TestedCommit: tested, HandoffID: reviewer.writeHandoff("review", 1), HandoffVersion: 1}
+		HandoffID: reviewer.writeHandoff("review", 1), HandoffVersion: 1}
 }
 
-// The reviewer's verdict reaches the daemon as the verdict of its completion of reviewing: approve
-// or changes, at the head its review record names, with testedCommit where the verdict carries
-// the tester's pass to that head. The route hands each to the workflow as the reviewer sent it. A
-// reviewer's word that is not one of the two is refused REVIEWER_VERDICT_REQUIRED, a reviewer's
-// verdict that names no commit VERDICT_COMMIT_REQUIRED, every other role's verdict, the tester's
-// among them, VERDICT_NOT_TAKEN (206's refusal, narrowed to the steps that are no review), and
-// testedCommit from any role but the reviewer VERDICT_ROLE_FORBIDDEN; each refusal is written
-// before the fact, so nothing is recorded.
+// The verdict of a review step reaches the daemon as the verdict of its agent's completion: the
+// reviewer's completion of reviewing carries approve or changes at the head its review record
+// names, and the route hands each to the workflow as the reviewer sent it, which takes it only
+// from the claim the step's record names (workflow's TestReviewStepVerdictFromItsOwnClaim). A
+// reviewer's word that is not one of the two is refused REVIEWER_VERDICT_REQUIRED, and a
+// reviewer's verdict that names no commit VERDICT_COMMIT_REQUIRED. A testing step's completion
+// carries no verdict, since Dispatch's check states at the tested head decide it, so the tester's
+// verdict is refused VERDICT_NOT_TAKEN (206's refusal), and the agent of every step of another
+// type, or of no step, gets VERDICT_ROLE_FORBIDDEN: the implementer, the planner, the merger and
+// the architect, whose acceptance is its sign_off. Each refusal is written before the fact, so
+// nothing is recorded.
 func TestHandoffReviewerVerdict(t *testing.T) {
-	for _, tc := range []struct {
-		name, verdict, tested string
-	}{
-		{name: "approve at a commit", verdict: "approve"},
-		{name: "changes at a commit", verdict: "changes"},
-		{name: "approve at H2 carrying the tester's pass at H1", verdict: "approve", tested: testedSHA},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, verdict := range []string{"approve", "changes"} {
+		t.Run(verdict+" at a commit", func(t *testing.T) {
 			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 			seedIssueAt(t, h, "LEGION-208", phase.Reviewing)
 			reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
 
-			completion(t, h.complete(reviewCompletion(t, reviewer, tc.verdict, headSHA, tc.tested)))
+			completion(t, h.complete(reviewCompletion(t, reviewer, verdict, headSHA)))
 			fact := lastCompletion(t, facts)
-			if fact.Role != claim.RoleReviewer || fact.Verdict != tc.verdict || fact.Commit != headSHA || fact.TestedCommit != tc.tested {
-				t.Fatalf("the reviewer's completion = %+v, want its verdict %s at %s with testedCommit %q", fact, tc.verdict, headSHA, tc.tested)
+			if fact.Role != claim.RoleReviewer || fact.Claim != reviewer.token || fact.Verdict != verdict || fact.Commit != headSHA {
+				t.Fatalf("the reviewer's completion = %+v, want %s's verdict %s at %s", fact, reviewer.token, verdict, headSHA)
 			}
 		})
 	}
 
+	// otherVerdict is a completion that names its own handoff record of word and the verdict approve.
+	otherVerdict := func(word string) func(t *testing.T, c liveClaim) HandoffCompleteRequest {
+		return func(t *testing.T, c liveClaim) HandoffCompleteRequest {
+			return HandoffCompleteRequest{GrantID: c.grant(t), Summary: "done", Verdict: "approve", Commit: headSHA, HandoffID: c.writeHandoff(word, 1), HandoffVersion: 1}
+		}
+	}
+	roleForbidden := []string{"only the agent of a review step", "sign_off", "nothing was recorded"}
 	for _, tc := range []struct {
 		name   string
 		role   claim.Role
@@ -65,7 +65,7 @@ func TestHandoffReviewerVerdict(t *testing.T) {
 		{
 			name: "a reviewer's verdict that names no commit", role: claim.RoleReviewer, at: phase.Reviewing,
 			send: func(t *testing.T, c liveClaim) HandoffCompleteRequest {
-				return reviewCompletion(t, c, "approve", "", "")
+				return reviewCompletion(t, c, "approve", "")
 			},
 			status: http.StatusBadRequest, code: "VERDICT_COMMIT_REQUIRED", says: []string{"reviewer", "`head`", "nothing was recorded"},
 		},
@@ -74,48 +74,35 @@ func TestHandoffReviewerVerdict(t *testing.T) {
 			send: func(t *testing.T, c liveClaim) HandoffCompleteRequest {
 				return HandoffCompleteRequest{GrantID: c.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA, HandoffID: c.writeHandoff("test", 1), HandoffVersion: 1}
 			},
-			status: http.StatusBadRequest, code: "VERDICT_NOT_TAKEN", says: []string{"only a reviewer's completion carries one", "nothing was recorded"},
+			status: http.StatusBadRequest, code: "VERDICT_NOT_TAKEN", says: []string{"check states", "nothing was recorded"},
 		},
 		{
 			name: "a reviewer's pass", role: claim.RoleReviewer, at: phase.Reviewing,
 			send: func(t *testing.T, c liveClaim) HandoffCompleteRequest {
-				return reviewCompletion(t, c, "pass", headSHA, "")
+				return reviewCompletion(t, c, "pass", headSHA)
 			},
 			status: http.StatusBadRequest, code: "REVIEWER_VERDICT_REQUIRED", says: []string{"approve", "changes", `not "pass"`},
 		},
 		{
 			name: "a reviewer's word no verdict has", role: claim.RoleReviewer, at: phase.Reviewing,
 			send: func(t *testing.T, c liveClaim) HandoffCompleteRequest {
-				return reviewCompletion(t, c, "maybe", headSHA, "")
+				return reviewCompletion(t, c, "maybe", headSHA)
 			},
 			status: http.StatusBadRequest, code: "REVIEWER_VERDICT_REQUIRED", says: []string{"approve", "changes", `not "maybe"`},
 		},
 		{
 			name: "a reviewer's completion with no verdict", role: claim.RoleReviewer, at: phase.Reviewing,
-			send:   func(t *testing.T, c liveClaim) HandoffCompleteRequest { return reviewCompletion(t, c, "", headSHA, "") },
+			send:   func(t *testing.T, c liveClaim) HandoffCompleteRequest { return reviewCompletion(t, c, "", headSHA) },
 			status: http.StatusBadRequest, code: "REVIEWER_VERDICT_REQUIRED", says: []string{"approve", "changes", "names none"},
 		},
-		{
-			name: "an implementer's verdict", role: claim.RoleImplementer, at: phase.Implementing,
-			send: func(t *testing.T, c liveClaim) HandoffCompleteRequest {
-				return HandoffCompleteRequest{GrantID: c.grant(t), Summary: "implemented", Verdict: "approve", Commit: headSHA, HandoffID: c.writeHandoff("implement", 1), HandoffVersion: 1}
-			},
-			status: http.StatusBadRequest, code: "VERDICT_NOT_TAKEN", says: []string{"only a reviewer's completion carries one", "nothing was recorded"},
-		},
-		{
-			name: "an implementer's completion that names testedCommit", role: claim.RoleImplementer, at: phase.Implementing,
-			send: func(t *testing.T, c liveClaim) HandoffCompleteRequest {
-				return HandoffCompleteRequest{GrantID: c.grant(t), Summary: "implemented", Commit: headSHA, TestedCommit: testedSHA, HandoffID: c.writeHandoff("implement", 1), HandoffVersion: 1}
-			},
-			status: http.StatusBadRequest, code: "VERDICT_ROLE_FORBIDDEN", says: []string{"testedCommit", "reviewer"},
-		},
-		{
-			name: "a tester's completion that names testedCommit", role: claim.RoleTester, at: phase.Testing,
-			send: func(t *testing.T, c liveClaim) HandoffCompleteRequest {
-				return HandoffCompleteRequest{GrantID: c.grant(t), Summary: "tests pass", Commit: headSHA, TestedCommit: testedSHA, HandoffID: c.writeHandoff("test", 1), HandoffVersion: 1}
-			},
-			status: http.StatusBadRequest, code: "VERDICT_ROLE_FORBIDDEN", says: []string{"testedCommit", "reviewer"},
-		},
+		{name: "an implementer's verdict", role: claim.RoleImplementer, at: phase.Implementing, send: otherVerdict("implement"),
+			status: http.StatusBadRequest, code: "VERDICT_ROLE_FORBIDDEN", says: roleForbidden},
+		{name: "a planner's verdict", role: claim.RolePlanner, at: phase.Planning, send: otherVerdict("plan"),
+			status: http.StatusBadRequest, code: "VERDICT_ROLE_FORBIDDEN", says: roleForbidden},
+		{name: "a merger's verdict", role: claim.RoleMerger, at: phase.Merging, send: otherVerdict("merge"),
+			status: http.StatusBadRequest, code: "VERDICT_ROLE_FORBIDDEN", says: roleForbidden},
+		{name: "an architect's verdict", role: claim.RoleArchitect, at: phase.Accepting, send: otherVerdict("accept"),
+			status: http.StatusBadRequest, code: "VERDICT_ROLE_FORBIDDEN", says: roleForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
@@ -196,7 +183,7 @@ func TestAStaleReviewerPassIsApproveAndFailIsChanges(t *testing.T) {
 			for _, word := range []struct{ sent, recorded string }{{sent: "pass", recorded: "approve"}, {sent: "fail", recorded: "changes"}} {
 				t.Run(word.sent, func(t *testing.T) {
 					h, facts, reviewer := reviewerAt(t)
-					completion(t, h.complete(reviewCompletion(t, reviewer, word.sent, headSHA, "")))
+					completion(t, h.complete(reviewCompletion(t, reviewer, word.sent, headSHA)))
 					if fact := lastCompletion(t, facts); fact.Role != claim.RoleReviewer || fact.Verdict != word.recorded || fact.Commit != headSHA {
 						t.Fatalf("the stale reviewer's %s = %+v, want the verdict %s at %s", word.sent, fact, word.recorded, headSHA)
 					}
@@ -205,7 +192,7 @@ func TestAStaleReviewerPassIsApproveAndFailIsChanges(t *testing.T) {
 			for _, verdict := range []string{"pending", ""} {
 				t.Run("verdict "+verdict, func(t *testing.T) {
 					h, facts, reviewer := reviewerAt(t)
-					message := refused(t, h.complete(reviewCompletion(t, reviewer, verdict, headSHA, "")), http.StatusBadRequest, "REVIEWER_VERDICT_REQUIRED")
+					message := refused(t, h.complete(reviewCompletion(t, reviewer, verdict, headSHA)), http.StatusBadRequest, "REVIEWER_VERDICT_REQUIRED")
 					for _, want := range []string{"pass, which this daemon takes as approve", "fail, which it takes as changes", "nothing was recorded"} {
 						if !strings.Contains(message, want) {
 							t.Fatalf("the refusal of the stale reviewer's verdict %q says %q, want it to say %q", verdict, message, want)
@@ -226,7 +213,7 @@ func TestAStaleReviewerPassIsApproveAndFailIsChanges(t *testing.T) {
 		if got := pluginContractOf(t, h, reviewer.token); got < ReviewerVerdictContract {
 			t.Fatalf("the reviewer's plugin declared contract %d, below ReviewerVerdictContract %d: this case proves nothing", got, ReviewerVerdictContract)
 		}
-		message := refused(t, h.complete(reviewCompletion(t, reviewer, "pass", headSHA, "")), http.StatusBadRequest, "REVIEWER_VERDICT_REQUIRED")
+		message := refused(t, h.complete(reviewCompletion(t, reviewer, "pass", headSHA)), http.StatusBadRequest, "REVIEWER_VERDICT_REQUIRED")
 		if strings.Contains(message, "takes as approve") {
 			t.Fatalf("the refusal of a current reviewer's pass says %q, which names the old contract's words", message)
 		}

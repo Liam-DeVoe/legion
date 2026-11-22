@@ -89,9 +89,10 @@ const (
 	VerdictChanges = verdict.ReviewerChanges
 )
 
-// Verdict is one verdict a reviewer session gave on a pull request at a head: a Legion issue's
-// reviewer on its issue's head, or the side reviewer a controller named on a head no Legion issue
-// owns. The newest verdict on a pull request and head stands (VerdictTx).
+// Verdict is one verdict a session gave on a pull request at a head: the agent of a review step of
+// a Legion issue's task on its issue's head, or the side reviewer a controller named on a head no
+// Legion issue owns. The newest verdict on a pull request and head stands (VerdictTx), and of a
+// Legion issue's step the newest verdict of that step (StepVerdictTx).
 type Verdict struct {
 	// ID is the row's own id, which the store fills.
 	ID         int64
@@ -99,12 +100,16 @@ type Verdict struct {
 	Number     int
 	Head       string
 	// Issue is the Legion issue whose head it is, empty for a pull request no Legion issue owns.
-	Issue   string
+	Issue string
+	// Task and Step are the review step of Issue's task whose agent gave the verdict: the task's id
+	// and the step's place in it, from 1 (workflow's StepID keys a step's record by the same two).
+	// A Legion issue's verdict names both, and a verdict on a head no Legion issue owns names
+	// neither: "" and 0.
+	Task    string
+	Step    int
 	Verdict VerdictWord
-	// TestedCommit is the commit of the tester's pass that the reviewer says the verdict carries to
-	// Head, empty for none.
-	TestedCommit string
-	// Session is the reviewer session that gave the verdict.
+	// Session is the claim of the step's agent, or the side reviewer's session, that gave the
+	// verdict.
 	Session string
 	// RecordedAt is when the daemon recorded the verdict.
 	RecordedAt time.Time
@@ -284,8 +289,9 @@ func SideReviewerTx(ctx context.Context, tx pgx.Tx, repository ghrepo.Repository
 	return r, true, nil
 }
 
-// RecordVerdictTx records a reviewer session's verdict on a pull request at a head and answers the
-// row's id.
+// RecordVerdictTx records a session's verdict on a pull request at a head and answers the row's
+// id. A Legion issue's verdict names the step it is of, and a verdict no Legion issue owns names
+// none, or the write refuses it.
 func RecordVerdictTx(ctx context.Context, tx pgx.Tx, v Verdict) (int64, error) {
 	what := fmt.Sprintf("the verdict on %s#%d at %s", v.Repository, v.Number, v.Head)
 	if err := validPullRequestRow(what, v.Repository, v.Number, v.Head, v.RecordedAt); err != nil {
@@ -297,31 +303,60 @@ func RecordVerdictTx(ctx context.Context, tx pgx.Tx, v Verdict) (int64, error) {
 	if v.Session == "" {
 		return 0, fmt.Errorf("%s needs the session that gave it", what)
 	}
+	if named := v.Task != "" || v.Step != 0; v.Issue != "" && (v.Task == "" || v.Step < 1) || v.Issue == "" && named {
+		return 0, fmt.Errorf("%s names the step %q/%d for the issue %q: a Legion issue's verdict names the task and the step, from 1, of its review step, and a verdict no Legion issue owns names no step",
+			what, v.Task, v.Step, v.Issue)
+	}
 	return insertID(ctx, tx, what, `insert into verdicts
-		(repository, number, head, issue, verdict, tested_commit, session, recorded_at)
-		values ($1, $2, $3, $4, $5, $6, $7, $8) returning id`,
-		v.Repository.String(), v.Number, v.Head, v.Issue, string(v.Verdict), v.TestedCommit, v.Session, v.RecordedAt)
+		(repository, number, head, issue, task, step, verdict, session, recorded_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id`,
+		v.Repository.String(), v.Number, v.Head, v.Issue, v.Task, v.Step, string(v.Verdict), v.Session, v.RecordedAt)
 }
 
-// VerdictTx is the newest verdict on a pull request at a head, and whether any row records one.
-func VerdictTx(ctx context.Context, tx pgx.Tx, repository ghrepo.Repository, number int, head string) (Verdict, bool, error) {
+// verdictColumns are the columns scanVerdict reads, in its order.
+const verdictColumns = `id, repository, number, head, issue, task, step, verdict, session, recorded_at`
+
+// scanVerdict reads the newest row the query answers (verdictColumns), and whether it answers one;
+// what names the verdict in a failure.
+func scanVerdict(row pgx.Row, what string) (Verdict, bool, error) {
 	var v Verdict
 	var stored, word string
-	err := tx.QueryRow(ctx, `select id, repository, number, head, issue, verdict, tested_commit, session, recorded_at
-		from verdicts where lower(repository) = lower($1) and number = $2 and head = $3 order by id desc limit 1`,
-		repository.String(), number, head).
-		Scan(&v.ID, &stored, &v.Number, &v.Head, &v.Issue, &word, &v.TestedCommit, &v.Session, &v.RecordedAt)
+	err := row.Scan(&v.ID, &stored, &v.Number, &v.Head, &v.Issue, &v.Task, &v.Step, &word, &v.Session, &v.RecordedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Verdict{}, false, nil
 	}
 	if err != nil {
-		return Verdict{}, false, fmt.Errorf("read the verdict on %s#%d at %s: %w", repository, number, head, err)
+		return Verdict{}, false, fmt.Errorf("read %s: %w", what, err)
 	}
 	v.Verdict = VerdictWord(word)
 	if v.Repository, err = parseRepository("verdicts", v.ID, stored); err != nil {
 		return Verdict{}, false, err
 	}
 	return v, true, nil
+}
+
+// VerdictTx is the newest verdict on a pull request at a head, of any step, and whether any row
+// records one.
+func VerdictTx(ctx context.Context, tx pgx.Tx, repository ghrepo.Repository, number int, head string) (Verdict, bool, error) {
+	return scanVerdict(tx.QueryRow(ctx, `select `+verdictColumns+`
+		from verdicts where lower(repository) = lower($1) and number = $2 and head = $3 order by id desc limit 1`,
+		repository.String(), number, head), fmt.Sprintf("the verdict on %s#%d at %s", repository, number, head))
+}
+
+// StepVerdictTx is the newest verdict of the step at place step of task on a pull request at a
+// head, and whether any row records one.
+func StepVerdictTx(ctx context.Context, tx pgx.Tx, repository ghrepo.Repository, number int, head, task string, step int) (Verdict, bool, error) {
+	return scanVerdict(tx.QueryRow(ctx, `select `+verdictColumns+`
+		from verdicts where lower(repository) = lower($1) and number = $2 and head = $3 and task = $4 and step = $5 order by id desc limit 1`,
+		repository.String(), number, head, task, step), fmt.Sprintf("the verdict of step %d of task %s on %s#%d at %s", step, task, repository, number, head))
+}
+
+// LastStepVerdictTx is the newest verdict of the step at place step of task on a pull request, at
+// whichever head it names, and whether any row records one.
+func LastStepVerdictTx(ctx context.Context, tx pgx.Tx, repository ghrepo.Repository, number int, task string, step int) (Verdict, bool, error) {
+	return scanVerdict(tx.QueryRow(ctx, `select `+verdictColumns+`
+		from verdicts where lower(repository) = lower($1) and number = $2 and task = $3 and step = $4 order by id desc limit 1`,
+		repository.String(), number, task, step), fmt.Sprintf("the last verdict of step %d of task %s on %s#%d", step, task, repository, number))
 }
 
 // RecordVerdictWriteTx records one check run or commit status the daemon wrote and answers the

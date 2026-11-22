@@ -216,7 +216,7 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 			answer(map[string]any{"id": status.ID, "state": status.State})
 		case r.Method == http.MethodGet && len(parts) == 2 && parts[0] == "compare":
 			// The writer makes no compare call: the carry of a tester's pass is the reviewer's
-			// testedCommit, never a diff (spec R4). The fake answers one as GitHub answers two
+			// tested commit, never a diff (spec R4). The fake answers one as GitHub answers two
 			// identical trees and records it, so a writer that carried a pass on that answer shows.
 			g.events = append(g.events, "compared "+parts[1])
 			answer(map[string]any{"status": "identical", "ahead_by": 0, "behind_by": 0, "files": []any{}})
@@ -393,9 +393,13 @@ func reviewingWithPass(t *testing.T, pool *store.Pool) {
 	clearCaptureMergeState(t, pool)
 }
 
+// captureReviewer is CAPTURE-1's reviewer claim, the agent its reviewer's step records (the start
+// writes the phase worker's claim), which alone the daemon takes that step's verdict from.
+const captureReviewer claim.Token = "legion-capture-capture-1-reviewer"
+
 // reviewerVerdict is the reviewer's completion of reviewing with verdict at commit.
 func reviewerVerdict(verdict, commit string, n int) intake.HandoffComplete {
-	return intake.HandoffComplete{Generation: 1, Issue: "CAPTURE-1", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed",
+	return intake.HandoffComplete{Generation: 1, Issue: "CAPTURE-1", Role: claim.RoleReviewer, Claim: captureReviewer, Summary: "reviewed",
 		Verdict: verdict, Commit: commit, HandoffRecord: fmt.Sprintf("review-%d", n), HandoffVersion: n}
 }
 

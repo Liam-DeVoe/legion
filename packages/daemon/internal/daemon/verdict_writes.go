@@ -503,7 +503,7 @@ func (w *workflowRuntime) legionInputs(ctx context.Context, tx pgx.Tx, issue rec
 		return verdict.Inputs{}, err
 	}
 	if found && given.Issue == issue.Key {
-		in.Reviewer = verdict.Reviewer{Verdict: given.Verdict, Commit: given.Head, TestedCommit: given.TestedCommit}
+		in.Reviewer = verdict.Reviewer{Verdict: given.Verdict, Commit: given.Head}
 	}
 	in.Reviews, err = reviewsOf(ctx, tx, repository, pr.Number)
 	return in, err

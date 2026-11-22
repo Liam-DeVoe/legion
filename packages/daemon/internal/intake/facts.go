@@ -951,12 +951,14 @@ type HandoffComplete struct {
 	// staleEntryRefusal).
 	Entry   int64
 	Summary string
-	// Verdict is the reviewer's approve or changes on the head Commit names; empty for every other
-	// role's completion, since no other completion carries a verdict (api's VERDICT_NOT_TAKEN) and
-	// the check states Dispatch publishes at the tested head decide the testing phase. A reviewer on
-	// the daemon contract before the reviewer's verdict sends that contract's pass and fail, which
-	// the route reads as approve and changes (api's reviewerVerdictOf), so the workflow reads the
-	// reviewer's two words alone.
+	// Verdict is the verdict of a review step's agent, approve or changes, on the head Commit
+	// names: the reviewer's, whose step is of the type review; empty for every other completion,
+	// since no other completion carries a verdict (api's VERDICT_NOT_TAKEN for the tester, whose
+	// step the check states Dispatch publishes at the tested head decide, and VERDICT_ROLE_FORBIDDEN
+	// for every other role). A reviewer on the daemon contract before the reviewer's verdict sends
+	// that contract's pass and fail, which the route reads as approve and changes (api's
+	// reviewerVerdictOf), so the workflow reads the reviewer's two words alone, and takes them only
+	// from the claim the review step's record names (workflow's handoff).
 	Verdict string
 	// Commit is the commit the completion reports: for the planner, the implementer's implementing
 	// round, the tester and the reviewer the head their handoff record names, empty where a
@@ -965,11 +967,6 @@ type HandoffComplete struct {
 	// from the route, which refuses one naming no commit (TESTED_HEAD_REQUIRED), since the testing
 	// move reads the check states at the head it names and at no other (workflow's testedHead).
 	Commit string
-	// TestedCommit is the reviewer's alone: the commit of the tester's pass that its verdict at
-	// Commit carries, where it states that no commit from TestedCommit to Commit changes code that
-	// runs. Empty where the verdict carries no pass, and on every other role's completion, which
-	// the route refuses for naming one (VERDICT_ROLE_FORBIDDEN).
-	TestedCommit string
 	// HandoffRecord and HandoffVersion name the Dispatch handoff record the completion of a phase
 	// with a handoff ends with (phase.Handoff): the route read it back from Dispatch and held it to
 	// the issue, the phase's word, this version and the claim's session before it applied the fact.
@@ -1008,21 +1005,19 @@ type HandoffComplete struct {
 
 func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
 
-// ReviewVerdict is the verdict of an issue's recorded reviewer on the head its pull request moved
-// to past review (`POST /legion/v1/review-verdict`, api/review_verdict.go): the issue stands in
-// accepting, retro or merging, Claim is the reviewer's claim that the round's record names, and
-// Commit is the head the daemon's record holds for the pull request when the route took the call.
-// Verdict is approve or changes, TestedCommit the commit of the tester's pass the verdict carries
-// to Commit ("" where it carries none), and Summary the reviewer's two sentences. It is no
-// completion and no handoff: it moves no phase, except where its TestedCommit carries no tester's
-// pass, which sends the issue back to testing (the workflow's to decide).
+// ReviewVerdict is the verdict past review of the agent of a review step of an issue's task on the
+// head its pull request moved to (`POST /legion/v1/review-verdict`, api/review_verdict.go): the
+// reviewer, or the architect that ran the owner's acceptance. Issue is the issue the call names, or
+// the caller's own where it names none, and Claim the caller's claim, which the workflow takes only
+// where the record names it the agent of a review step of Issue's task (workflow's reviewVerdict).
+// Commit is the head the call names, Verdict approve or changes, and Summary the agent's two
+// sentences. It is no completion and no handoff, and it moves no phase.
 type ReviewVerdict struct {
-	Issue        string
-	Claim        claim.Token
-	Verdict      string
-	Commit       string
-	TestedCommit string
-	Summary      string
+	Issue   string
+	Claim   claim.Token
+	Verdict string
+	Commit  string
+	Summary string
 }
 
 func (f ReviewVerdict) namedIssue() (string, bool) { return f.Issue, true }

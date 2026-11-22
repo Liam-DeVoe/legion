@@ -1219,8 +1219,7 @@ func TestTheReviewAsksForTheVerdictWhateverMovedTheHead(t *testing.T) {
 		Phase: phase.Retro, PullRequest: 42}
 	landing := push
 	landing.Why = ConflictMergeNext
-	const asked = " Then send your verdict on the new head with review_verdict: verdict approve or changes, commit d00d," +
-		" and testedCommit set to the commit of the tester's pass only where no commit since that pass changes code that runs." +
+	const asked = " Then send your verdict on the new head with review_verdict: verdict approve or changes, commit d00d." +
 		" Post your findings as a COMMENT review. Write no handoff and make no completion for this verdict." +
 		" Then tell the architect and the implementer, each on its own role topic, what you decided."
 	for _, tc := range []struct {

@@ -1165,6 +1165,14 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	if refusal := planRatingRefusal(fact, current && issue.Phase == phase.Retro, reported); refusal != nil {
 		return intake.Result{Refusal: refusal, Unspent: true}, nil
 	}
+	// A review step's verdict is taken only from the claim its step record names
+	// (reviewStepRefusal), judged before anything is written, and left unspent so the same
+	// completion applies once the record names its claim.
+	if current && fact.Verdict != "" {
+		if refusal, err := e.reviewStepRefusal(ctx, tx, *issue, fact); err != nil || refusal != nil {
+			return intake.Result{Refusal: refusal, Unspent: refusal != nil}, err
+		}
+	}
 	// The round as the completion found it is what a notice is deduped against (settleRound): a
 	// round already stuck at this head before the completion was told then, and the completion
 	// adds nothing to it; a round the completion itself leaves stuck - one it completed with no
@@ -1173,23 +1181,23 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	row.Claim, row.HandoffCommit, row.Summary, row.CompletedAt = fact.Claim, fact.Commit, fact.Summary, e.now()
 	row.HandoffRecord, row.HandoffVersion, row.StatesSerial = fact.HandoffRecord, fact.HandoffVersion, fact.StatesSerial
 	// The reviewer's verdict is the round's decision (decisionOf): approve or changes at the commit
-	// it names, with the tester's pass it carries there. That commit is also the code the reviewer
-	// read, which the task of its next round names (record.PhaseRow.ReviewedHead), while the row
-	// holds the task of the entry that stands: a row a new generation's clear emptied, or one the
-	// entry upgrade filled with no task, keeps its commit until the next entry's start, so the
-	// first review of a re-admitted tree reads the whole change. Only a completion of reviewing
-	// while the round is open writes either: one the issue has left moves nothing (leftItsPhase),
-	// and its round was ended by something else. A completion with no verdict, which a reviewer
-	// before the verdict sent, leaves the decision as it stands, and a round it completes with none
-	// is stuck (stuckUndecided). The verdict is recorded as the head's too (recordVerdict), which
-	// the writer of legion-verdict reads and no person's review of the round overwrites.
+	// it names. That commit is also the code the reviewer read, which the task of its next round
+	// names (record.PhaseRow.ReviewedHead), while the row holds the task of the entry that stands:
+	// a row a new generation's clear emptied, or one the entry upgrade filled with no task, keeps
+	// its commit until the next entry's start, so the first review of a re-admitted tree reads the
+	// whole change. Only a completion of reviewing while the round is open writes either: one the
+	// issue has left moves nothing (leftItsPhase), and its round was ended by something else. A
+	// completion with no verdict, which a reviewer before the verdict sent, leaves the decision as
+	// it stands, and a round it completes with none is stuck (stuckUndecided). The verdict is
+	// recorded as its review step's at that head too (recordStepVerdict), which the writer of
+	// legion-verdict reads and no person's review of the round overwrites.
 	if current && issue.Phase == phase.Reviewing && fact.Role == claim.RoleReviewer {
 		if decision := decisionOf(fact); decision != nil {
 			row.Decision = decision
 			if row.EntryTask != "" {
 				row.ReviewedHead = fact.Commit
 			}
-			if err := e.recordVerdict(ctx, tx, issue.Key, pr, fact.Claim, fact.Verdict, fact.Commit, fact.TestedCommit); err != nil {
+			if err := e.recordStepVerdict(ctx, tx, *issue, pr, phase.Reviewing, fact.Claim, fact.Verdict, fact.Commit); err != nil {
 				return intake.Result{}, err
 			}
 		}
@@ -1226,11 +1234,6 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		// returns to the step the steps' types give (decideTesting).
 		return intake.Result{}, e.decideTesting(ctx, tx, *issue, row, pr, true, returnTo)
 	case phase.Reviewing:
-		// An approve that carries no tester's pass to the head it names ends no round: the work
-		// goes back to testing instead (testAgain, spec R4).
-		if moved, err := e.testAgain(ctx, tx, *issue, row, pr, fact.Verdict, fact.Commit, fact.TestedCommit); err != nil || moved {
-			return intake.Result{}, err
-		}
 		_, err := e.settleRound(ctx, tx, *issue, row, pr, found, byCompletion)
 		return intake.Result{}, err
 	case phase.Retro:
@@ -2158,9 +2161,7 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // completion of the same commit would be refused as not new. A round its reviewer completed that
 // nothing would end is stuck: the reviewer's task says why, so the restarted reviewer decides
 // it. The architect, who ordered the retry, is told nothing: a notice now would read as the
-// reviewer's answer to its request. Past the review, the reviewer's verdict the issue took while
-// held is applied first (applyHeldVerdict): an approve at the head that carries no tester's pass
-// sends the issue back to testing instead of releasing it to from's worker.
+// reviewer's answer to its request.
 //
 // freshSession is the operator's `--fresh-session`: the start it queues retries the claim in a
 // new session rather than the one it recorded. An architect's retry of a held phase asks for
@@ -2196,14 +2197,6 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
 		return "", err
-	}
-	// A verdict past review the issue took while held moves it now, as it would have when it came
-	// (applyHeldVerdict), and no worker of the phase it left is started.
-	if moved, err := e.applyHeldVerdict(ctx, tx, issue, pr); err != nil || moved {
-		if err != nil {
-			return "", err
-		}
-		return e.phaseNow(ctx, tx, issue)
 	}
 	if from == phase.Reviewing {
 		reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
@@ -2323,6 +2316,12 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if err != nil {
 		return intake.Result{}, err
 	}
+	// The owner's move back from accepting is its acceptance's changes at the head (recordAcceptance).
+	if fact.Requester == claim.RoleArchitect {
+		if err := e.recordAcceptance(ctx, tx, *issue, fact.By, store.VerdictChanges, pr); err != nil {
+			return intake.Result{}, err
+		}
+	}
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerBackward, fact.To, row, pr, fact.Reason)
 }
 
@@ -2371,6 +2370,10 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
+		return intake.Result{}, err
+	}
+	// The sign-off is the owner's acceptance's approve at the head (recordAcceptance).
+	if err := e.recordAcceptance(ctx, tx, *issue, fact.By, store.VerdictApprove, pr); err != nil {
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerSignOff, "", review, pr, "")
