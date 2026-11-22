@@ -388,6 +388,29 @@ test("a typed block's row and its chip draw the block's own content, not its kin
   expect(step?.chips.map((chip) => chip.name)).toEqual(["The first statement."]);
 });
 
+// Every re-read of the tree builds the drafts again, from an answer whose unchanged objects the
+// cache keeps. A row handed a new reading or a new source draws its words again, and a link
+// focused in them loses the focus, so drawing the same answer twice hands a typed block's row the
+// same cut reading and the same source, and a comment's row the same source.
+test("drawing the same answer twice hands a row the same reading and the same source", () => {
+  const tree = answer([
+    block("r1", "requirement", KEY, SPEC, 0, {
+      text_tree: typedReading("requirement", { blockId: "r1" }, "The first statement."),
+    }),
+    personsComment("c1", "r1", "2026-11-05T09:00:00Z"),
+  ]);
+  const builds = [drawn(tree).drafts, drawn(tree).drafts];
+
+  const [row, again] = builds.map((drafts) => drafts.get(blockNodeId("spec", "r1")));
+  expect(row?.tree).toEqual(reading("The first statement."));
+  expect(row?.source).toEqual({ id: SPEC.id, kind: "artifact" });
+  expect(again?.tree).toBe(row?.tree);
+  expect(again?.source).toBe(row?.source);
+  const [turn, turnAgain] = builds.map((drafts) => drafts.get("c1"));
+  expect(turn?.source).toEqual({ id: "c1", kind: "comment" });
+  expect(turnAgain?.source).toBe(turn?.source);
+});
+
 // A node's `author` lists every author of its first version, whoever made it first ahead of the
 // rest, and a row draws one name: a comment two authors wrote draws the first of them, and a
 // message whose list is empty draws none.
