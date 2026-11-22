@@ -143,7 +143,7 @@ the artifact this job uploaded on the attempt before.
 
 ## The shard job, its stacks and its container
 
-One leg of the lane's rows. Each leg runs the lane's projects with `--shard=N/4` over four
+One leg of the lane's rows. Each leg runs the rows the deal gives it over four
 Playwright workers, and the run's `globalSetup` starts one stack per worker, each with a
 Postgres, a harness and a file-store bucket of its own (packages/dispatch/e2e/
 harness-pool.ts), so this job has no `postgres:` service and no job-level DATABASE_URL:
@@ -307,9 +307,9 @@ wall-clock rows are the alone job's.
 
 ## Why the leg count stands in two places
 
-Four legs. The count is written here and in the `--shard` denominator of the browser step
-(`--shard=$shard/4` in .github/scripts/dispatch-browser-shard-suite.sh), and nowhere else, so the two move together: a denominator larger than the leg list
-would leave the rows of the missing legs unrun with nothing red.
+Four legs. The count is written here and in the `legs` value of the browser step
+(`legs=4` in .github/scripts/dispatch-browser-shard-suite.sh), and nowhere else, so the two move together: a count larger than the leg list
+would leave the rows dealt to the missing legs unrun with nothing red, and a smaller one fails each leg above it, whose number the deal refuses.
 
 ## What the shard job downloads in place of a Go build
 
@@ -460,6 +460,35 @@ reporter's output, so a green run reports what it ran too.
 The step's budget, `timeout-minutes: 11`, is the 11 minutes the job's head derives from main's
 own full-lane runs of 2026-11-18 to 2026-11-21, whose maximum is 531 s; the job's head gives
 the census's query and why the budget is read again as the suite grows.
+
+## How a shard leg chooses its tests
+
+Each leg runs whole files, dealt to the legs by the seconds they took rather than by their count.
+`--shard=N/4` cut the run's ordered tests into four runs of equal count, and with `fullyParallel` each run held neighbouring files, so the slow `issue-page-*` files fell to one leg.
+In full-lane run 45008983778 the legs' rows summed to 2,026 s, 2,395 s, 1,718 s and 1,456 s, and the second leg reached its 11-minute step limit with 49 of its 419 tests not finished.
+
+Before its run, each leg runs packages/dispatch/e2e/tools/shard-deal.ts with its number, the leg count and the run's own selection: the config, the lane's projects and its grep.
+The tool lists that selection with `playwright test --list`, which loads the spec files and runs no `globalSetup`, so it starts no stack (the list mode's task list, node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:7140-7142).
+It groups the listed tests by project and file and deals the groups to the legs: the heaviest first, each onto the leg with the fewest planned seconds, ties broken by name, so every leg computes the same deal from the same checkout.
+It writes this leg's groups to the file the run's `--test-list` reads, one `[project] › <file>` line each with the file named from the config's directory, which is how `loadTestList` (:2746 of that file) compares it, and which takes every test of that file in that project.
+So every listed test runs in exactly one leg, and a file's hooks and serial blocks stay on one machine.
+The step's log holds every leg's planned seconds, this leg's groups, and the listing's own milliseconds in its `bounded child:` line.
+
+The weights are packages/dispatch/e2e/shard-times.json: for each `[project] › e2e/<file>`, the seconds of every attempt of its tests, and how many tests those were.
+A group weighs its recorded seconds scaled to the tests the run lists of it, so the pull-request lane's `@pr` share of a file, and a file that gained tests, weigh what they hold.
+A group the table does not hold weighs its test count times the table's median seconds per test.
+A stale table only makes the deal less even: the tests come from the listing, never from the table.
+The table now is read from the four legs of run 45008983778, so the two files of its second leg that never ran weigh by the median, and the two it ran in part are scaled from the tests that ran.
+Refresh it from a green full-lane run's shard legs, from packages/dispatch, as the tool's head says:
+
+  gh run view <run> --json jobs --jq '.jobs[] | select(.name | contains("shard")) | .databaseId'
+  gh run view --job <job> --log > shard-<n>.log
+  bun e2e/tools/shard-deal.ts --record shard-*.log > e2e/shard-times.json
+
+Measured on a pod at this change's base, 2da43fb6, over the full lane's 1,676 tests in 320 groups: four legs plan 1,937 s each, and two legs plan 3,874 s and 3,875 s.
+The four legs' plan is below the 2,026 s of that run's fullest leg that ended inside the limit, and the two legs' plan is twice it.
+The listing took 36.7 s and 40.2 s with an empty transform cache and 9.4 s to 10.2 s with a full one.
+It fills the cache under the run's own TMPDIR, and the run then loads only its own files: in list mode a leg's `--shard=2/4` load took 38.9 s from an empty cache, against 40.4 s for the deal and 7.2 s for that leg's `--test-list` load after it, so the deal adds about 9 s to a leg on that pod.
 
 ## Why the file store's address is set on the step and not in the environment
 
