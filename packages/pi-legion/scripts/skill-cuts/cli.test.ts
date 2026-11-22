@@ -2052,6 +2052,130 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
   }, 60_000);
 });
 
+// The architect's ruling on `confirm --confirm-flagged` (2026-11-22T21:46Z): it confirms each
+// flagged case that is not dropped whatever the skill's informative count or other reasons for no
+// verdict, so a case run again alone can be confirmed; it confirms no case its screen did not
+// flag; and the report of a run it confirmed gives case results only, never a skill verdict.
+describe("behaviour: confirm --confirm-flagged", () => {
+  const SIX = ["c01", "c02", "c03", "c04", "c05", "c06"];
+  /** The report's verdict line of a run with a confirm made by `--confirm-flagged`. */
+  const CASE_RESULT_ONLY = "verdict: case result only; no skill verdict stands (--confirm-flagged)";
+
+  // Catches: a case run again alone that can never be confirmed, since its skill has too few
+  // informative cases for a verdict; and a confirm without the option that no longer waits for one.
+  test("confirms the flagged case of a one-case run, 40 runs of old and of new, where confirm without it makes none, and report gives its case result and no skill verdict", async () => {
+    const s = scenario("confirm-flagged-one", LOSS_SKILL(), [{ id: "c01" }]);
+    recordCaptures(s, ["old", "new"]);
+    answer = behaviourStandIn;
+    plantResult(s, "c01", { stages: { screen: plantedStage(s, "c01", "screen", FLAGGED) } });
+    const tooFew = `fewer than ${MIN_INFORMATIVE_CASES} informative cases: 1`;
+
+    let from = recorder.requests.length;
+    const without = await cli(behaviour("confirm", s));
+    expect({ code: without.code, stderr: without.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(without.stdout).toContain(`no confirm runs: the skill gets no verdict: ${tooFew}`);
+    expect(requestsSince(from)).toHaveLength(0);
+    expect(result(s.out, "c01").stages.confirm).toBeUndefined();
+
+    from = recorder.requests.length;
+    const ran = await cli(behaviour("confirm", s, "--confirm-flagged", "--concurrency", "32"));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(ran.stdout).toContain(
+      `--confirm-flagged: each flagged case that is not dropped is confirmed, though the skill gets no verdict (${tooFew}); report gives the case results only, and no skill verdict`
+    );
+    expect(ran.stdout).toContain("1 flagged cases: c01");
+    // FRESH_RUNS replays of each of old and new, and a judgement of each.
+    expect(requestsSince(from)).toHaveLength(2 * FRESH_RUNS * 2);
+    const c01 = result(s.out, "c01");
+    expect([c01.stages.confirm?.state, c01.stages.confirm?.confirmFlagged]).toEqual([
+      "counted",
+      true,
+    ]);
+    expect(passes(c01, "confirm")).toEqual({ old: FRESH_RUNS, new: 0 });
+
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = reported.stdout.split("\n");
+    expect(lines).toContain(
+      "case c01: screen: old 10/10, new 0/10, none 0/10: informative, flagged; confirm: old 40/40, new 0/40: a loss"
+    );
+    expect(lines.filter((line) => line.startsWith("verdict: "))).toEqual([CASE_RESULT_ONLY]);
+  }, 60_000);
+
+  // Catches: an option that confirms every screened case, or every case whose cut passes fewer
+  // runs than the old text, in place of the cases the screen's rule flagged.
+  test("confirms no case its screen did not flag", async () => {
+    const s = scenario("confirm-flagged-unflagged", LOSS_SKILL(), [
+      { id: "c01" },
+      { id: "c02" },
+      { id: "c03" },
+    ]);
+    recordCaptures(s, ["old", "new"]);
+    answer = behaviourStandIn;
+    // c01 is flagged and confirmed before; c02 is informative and not flagged; c03's cut passes
+    // 10 fewer runs than the old text, but no skill passes as many as the old text, so it is not
+    // informative, and not flagged.
+    plantResult(s, "c01", {
+      stages: {
+        screen: plantedStage(s, "c01", "screen", FLAGGED),
+        confirm: plantedStage(s, "c01", "confirm", { old: FRESH_RUNS, new: 0 }, runnerDigest()),
+      },
+    });
+    plantResult(s, "c02", { stages: { screen: plantedStage(s, "c02", "screen", KEPT) } });
+    plantResult(s, "c03", {
+      stages: {
+        screen: plantedStage(s, "c03", "screen", { old: SCREEN_RUNS, new: 0, none: SCREEN_RUNS }),
+      },
+    });
+    const from = recorder.requests.length;
+    const ran = await cli(behaviour("confirm", s, "--confirm-flagged"));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(ran.stdout).toContain("1 flagged cases: c01");
+    expect(ran.stdout).toContain("case c01: confirmed before, skipped");
+    expect(requestsSince(from)).toHaveLength(0);
+    expect(result(s.out, "c02").stages.confirm).toBeUndefined();
+    expect(result(s.out, "c03").stages.confirm).toBeUndefined();
+  }, 60_000);
+
+  // Catches: a skill verdict over a confirm the option made, which ran whatever the skill's
+  // informative count and controls; and a report that needs the option given again to know.
+  test("report of a run with a confirm made by --confirm-flagged gives the case results and no skill verdict, where the same runs without it give one", async () => {
+    const s = scenario(
+      "confirm-flagged-report",
+      LOSS_SKILL(),
+      [...SIX, "c07"].map((id) => ({ id }))
+    );
+    plantSix(s, SIX, "c01");
+    const screen = plantedStage(s, "c07", "screen", FLAGGED);
+    const confirm = plantedStage(s, "c07", "confirm", { old: FRESH_RUNS, new: 0 });
+    plantResult(s, "c07", { stages: { screen, confirm } });
+    const before = await cli(report(s));
+    expect({ code: before.code, stderr: before.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(before.stdout.split("\n")).toContain(
+      `verdict: loss: in c07 the cut's text passes at least 10 fewer of 40 fresh runs than the old text, and the planted-loss control (case c01) is a loss and its false-loss control is no loss${unmeasured(7, 7)}`
+    );
+
+    plantResult(s, "c07", { stages: { screen, confirm: { ...confirm, confirmFlagged: true } } });
+    const ran = await cli(report(s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = ran.stdout.split("\n");
+    expect(lines).toContain(
+      "case c07: screen: old 10/10, new 0/10, none 0/10: informative, flagged; confirm: old 40/40, new 0/40: a loss"
+    );
+    expect(lines).toContain(
+      `cases: 7 screened, 7 informative, 1 flagged, 1 confirmed losses; 0 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}), 0 unscreened, 0 not run`
+    );
+    expect(lines.filter((line) => line.startsWith("verdict: "))).toEqual([CASE_RESULT_ONLY]);
+
+    // report reads the option from the results, and is refused it.
+    const given = await cli([...report(s), "--confirm-flagged"]);
+    expect(given.code).toBe(2);
+    expect(given.stderr).toContain(
+      "--confirm-flagged goes with behaviour confirm only: report reads from the case results whether their confirms were made with it."
+    );
+  }, 60_000);
+});
+
 describe("refusals before any model call", () => {
   test("a --config that is not a configuration is refused (exit 2) by read, control, behaviour and load", async () => {
     const { keyFile } = setup();

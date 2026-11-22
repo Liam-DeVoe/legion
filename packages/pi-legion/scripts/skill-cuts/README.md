@@ -55,7 +55,8 @@ bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
   [--after-case <command>] [--request-log <file>] \
   [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] \
   [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] \
-  [--reading-models <file>] [--again <case id>]...    (--again: confirm only)
+  [--reading-models <file>] [--again <case id>]... [--confirm-flagged]
+                                 (--again, --confirm-flagged: confirm only)
 ```
 
 One skill per run: `--old` and `--new` are that skill's own directories, and `--cases` holds that
@@ -90,6 +91,17 @@ skill's cases (`cases.ts`), one JSON object per line.
   a flagged case whose confirm is finished, on this runner; it is refused (exit 2), naming the
   case, where the case already has three confirms at these texts on this runner (no fourth runs)
   or two that agree (a third runs only where two disagree).
+  `--confirm-flagged` confirms each flagged case that is not dropped even where the skill can get
+  no verdict (fewer than 6 informative cases, a control that failed, or no case left to be the
+  control case), where `confirm` without it makes no run. It is the route for a one-case rerun,
+  a case another tree asks to run again: a case file of that case alone, `screen`, then
+  `confirm --confirm-flagged`. It runs the same confirm stage (40 fresh runs of old and new; a
+  third confirm where the last two at the same texts on one runner disagree, and the three
+  pooled), and `--again` works with it as without it. It never confirms a case the screen did not
+  flag. Each confirm it runs records it in the case's results (`confirmFlagged`), so `report`
+  needs no option to know it: the report of such a run gives the case results as any report does,
+  and as its verdict line `verdict: case result only; no skill verdict stands (--confirm-flagged)`,
+  never a skill verdict. The other commands refuse the option (exit 2).
 - `control`: on the skill's control case, 40 runs each of three arms: old; `minus` (old without
   each line of the case's file that is the case's line, trimmed, or without each line that is
   `--planted-line`; a rule written twice is still the rule, so every copy goes; a link in the old
@@ -125,9 +137,10 @@ skill's cases (`cases.ts`), one JSON object per line.
   `pooled confirms` line naming each such case with its three results and the pooled numbers; the
   control case's passes of old, `minus` and `twin` and what each control says, and each dropped
   case the control case took the place of; the skill's verdict and its reason (`keeps` prints as
-  "no loss detected by the registered rule"), ending with how many of the skill's screened cases
-  have a listing measure that could not be measured; the drops per judge control and the drops
-  counted as `model-not-served`, as `unreadable-directory`, as `listing-misses`, as
+  "no loss detected by the registered rule"; a run with a confirm made by `--confirm-flagged` gets
+  the verdict line under `confirm` above in its place), ending with how many of the skill's
+  screened cases have a listing measure that could not be measured; the drops per judge control
+  and the drops counted as `model-not-served`, as `unreadable-directory`, as `listing-misses`, as
   `injection-unrebuildable`, the last by kind (a case under each kind it holds), and as `path-form`,
   by the arm whose text holds the file; the verdict line also counts the screened cases whose
   profile took names from their recorded listing (`fromRecorded`, below); an estimate of
